@@ -60,7 +60,7 @@ func New(next http.Handler, openapi *openapi.Schema, application, version string
 }
 
 // getResource will resolve to a resource type.
-func getResource(w *middleware.LoggingResponseWriter, r *http.Request, route *routers.Route, params map[string]string) *Resource {
+func getResource(w *middleware.Capture, r *http.Request, route *routers.Route, params map[string]string) *Resource {
 	// Creates rely on the response containing the resource ID in the response metadata.
 	if r.Method == http.MethodPost {
 		// Nothing written, possibly a bug somewhere?
@@ -106,9 +106,7 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writer := middleware.NewLoggingResponseWriter(w)
-
-	l.next.ServeHTTP(writer, r)
+	capture := middleware.CaptureResponse(w, r, l.next)
 
 	// Users and auditors care about things coming, going and changing, who did
 	// those things and when?  Certainly not periodic polling that is par for the
@@ -131,7 +129,7 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// If you cannot derive the resource, then discard.
-	resource := getResource(writer, r, route, params)
+	resource := getResource(capture, r, route, params)
 	if resource == nil {
 		return
 	}
@@ -150,7 +148,7 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"scope", params,
 		"resource", resource,
 		"result", &Result{
-			Status: writer.StatusCode(),
+			Status: capture.StatusCode(),
 		},
 	}
 

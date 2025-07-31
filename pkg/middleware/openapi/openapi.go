@@ -18,7 +18,6 @@ limitations under the License.
 package openapi
 
 import (
-	"bytes"
 	"context"
 	goerrors "errors"
 	"fmt"
@@ -31,6 +30,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/core/pkg/server/middleware"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -79,55 +79,6 @@ func NewValidator(authorizer Authorizer, next http.Handler, openapi *openapi.Sch
 		next:       next,
 		openapi:    openapi,
 	}
-}
-
-// bufferingResponseWriter saves the response code and body so that we can
-// validate them.
-type bufferingResponseWriter struct {
-	// next is the parent handler.
-	next http.ResponseWriter
-
-	// code is the HTTP status code.
-	code int
-
-	// body is a copy of the HTTP response body.
-	// This valus will be nil if no body was written.
-	body io.ReadCloser
-}
-
-// Ensure the correct interfaces are implmeneted.
-var _ http.ResponseWriter = &bufferingResponseWriter{}
-
-// Header returns the HTTP headers.
-func (w *bufferingResponseWriter) Header() http.Header {
-	return w.next.Header()
-}
-
-// Write writes out a body, if WriteHeader has not been called this will
-// be done with a 200 status code.
-func (w *bufferingResponseWriter) Write(body []byte) (int, error) {
-	buf := &bytes.Buffer{}
-	buf.Write(body)
-
-	w.body = io.NopCloser(buf)
-
-	return w.next.Write(body)
-}
-
-// WriteHeader writes out the HTTP headers with the provided status code.
-func (w *bufferingResponseWriter) WriteHeader(statusCode int) {
-	w.code = statusCode
-
-	w.next.WriteHeader(statusCode)
-}
-
-// StatusCode calculates the status code returned to the client.
-func (w *bufferingResponseWriter) StatusCode() int {
-	if w.code == 0 {
-		return http.StatusOK
-	}
-
-	return w.code
 }
 
 func (v *Validator) validateRequest(r *http.Request, route *routers.Route, params map[string]string) (*openapi3filter.ResponseValidationInput, error) {
@@ -188,10 +139,10 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 	return responseValidationInput, nil
 }
 
-func (v *Validator) validateResponse(w *bufferingResponseWriter, r *http.Request, responseValidationInput *openapi3filter.ResponseValidationInput) {
-	responseValidationInput.Status = w.StatusCode()
-	responseValidationInput.Header = w.Header()
-	responseValidationInput.Body = w.body
+func (v *Validator) validateResponse(res *middleware.Capture, header http.Header, r *http.Request, responseValidationInput *openapi3filter.ResponseValidationInput) {
+	responseValidationInput.Status = res.StatusCode()
+	responseValidationInput.Header = header
+	responseValidationInput.Body = io.NopCloser(res.Body())
 
 	if err := openapi3filter.ValidateResponse(r.Context(), responseValidationInput); err != nil {
 		log.FromContext(r.Context()).Error(err, "response openapi schema validation failure")
@@ -313,14 +264,8 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 	// Replace the authorization context with the handler context.
 	r = r.WithContext(ctx)
 
-	// Override the writer so we can inspect the contents and status.
-	writer := &bufferingResponseWriter{
-		next: w,
-	}
-
-	v.next.ServeHTTP(writer, r)
-
-	v.validateResponse(writer, r, responseValidationInput)
+	response := middleware.CaptureResponse(w, r, v.next)
+	v.validateResponse(response, w.Header(), r, responseValidationInput)
 
 	return nil
 }
