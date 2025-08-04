@@ -21,18 +21,15 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
-	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,12 +38,14 @@ import (
 type Client struct {
 	client    client.Client
 	namespace string
+	pdp       rbac.PolicyDecisionPoint
 }
 
-func New(client client.Client, namespace string) *Client {
+func New(client client.Client, namespace string, pdp rbac.PolicyDecisionPoint) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+		pdp:       pdp,
 	}
 }
 
@@ -140,131 +139,39 @@ func (c *Client) get(ctx context.Context, organizationID string) (*unikornv1.Org
 	return result, nil
 }
 
-func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, error) {
+func (c *Client) list(ctx context.Context) (*unikornv1.OrganizationList, error) {
 	result := &unikornv1.OrganizationList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: c.namespace}); err != nil {
 		return nil, err
 	}
 
-	out := map[string]*unikornv1.Organization{}
-
-	for i := range result.Items {
-		out[result.Items[i].Name] = &result.Items[i]
-	}
-
-	return out, nil
-}
-
-func (c *Client) getUserbyEmail(ctx context.Context, rbacClient *rbac.RBAC, info *authorization.Info, email string) (*unikornv1.User, error) {
-	// If you aren't looking at yourself, then you need global read permissions, you cannot
-	// go probing for other users or organizations, massive data breach!
-	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
-		if err := rbac.AllowGlobalScope(ctx, "identity:users", openapi.Read); err != nil {
-			return nil, errors.HTTPForbidden("user not permitted to read users globally").WithError(err)
-		}
-	}
-
-	user, err := rbacClient.GetActiveUser(ctx, email)
-	if err != nil {
-		return nil, errors.HTTPNotFound().WithError(err)
-	}
-
-	return user, nil
-}
-
-func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, email *string) ([]string, error) {
-	info, err := authorization.FromContext(ctx)
-	if err != nil {
-		return nil, errors.OAuth2ServerError("userinfo is not set").WithError(err)
-	}
-
-	if info.ServiceAccount {
-		account, err := rbacClient.GetServiceAccount(ctx, info.Userinfo.Sub)
-		if err != nil {
-			return nil, errors.HTTPForbidden("service account not found").WithError(err)
-		}
-
-		return []string{account.Labels[constants.OrganizationLabel]}, nil
-	}
-
-	var user *unikornv1.User
-
-	if email != nil {
-		user, err = c.getUserbyEmail(ctx, rbacClient, info, *email)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		user, err = rbacClient.GetActiveUser(ctx, info.Userinfo.Sub)
-		if err != nil {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
-	}
-
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-
-	if err := c.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
-		return nil, err
-	}
-
-	result := make([]string, len(organizationUsers.Items))
-
-	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
-	}
-
 	return result, nil
 }
 
-func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string) (openapi.Organizations, error) {
-	// This is the only special case in the system.  When requesting organizations we
-	// will have an unscoped ACL, so can check for global access to all organizations.
-	// If we don't have that then we need to use RBAC to get a list of organizations we are
-	// members of and return only them.
-	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read); err == nil && email == nil {
-		var result unikornv1.OrganizationList
-
-		if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: c.namespace}); err != nil {
-			return nil, err
-		}
-
-		return convertList(&result), nil
-	}
-
+func (c *Client) List(ctx context.Context, email *string) (openapi.Organizations, error) {
 	organizations, err := c.list(ctx)
 	if err != nil {
 		return nil, errors.OAuth2ServerError("failed to list organizations").WithError(err)
 	}
 
-	organizationIDs, err := c.organizationIDs(ctx, rbacClient, email)
-	if err != nil {
-		return nil, err
+	// Apply RNAC.
+	allowed := rbac.AllowBulk(ctx, c.pdp, "identity:organizations", openapi.Read, organizations)
+
+	result := &unikornv1.OrganizationList{
+		Items: rbac.FilterAllowed(organizations.Items, allowed),
 	}
 
-	result := unikornv1.OrganizationList{
-		Items: make([]unikornv1.Organization, len(organizationIDs)),
-	}
-
-	for i := range organizationIDs {
-		organization, ok := organizations[organizationIDs[i]]
-		if !ok {
-			return nil, errors.OAuth2ServerError("failed to find organization for user")
-		}
-
-		result.Items[i] = *organization
-	}
-
-	return convertList(&result), nil
+	return convertList(result), nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID string) (*openapi.OrganizationRead, error) {
 	result, err := c.get(ctx, organizationID)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:organizations", openapi.Read, result); err != nil {
 		return nil, err
 	}
 
@@ -312,6 +219,10 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 		return err
 	}
 
+	if err := c.pdp.Allow(ctx, "identity:organizations", openapi.Update, current); err != nil {
+		return err
+	}
+
 	required, err := c.generate(ctx, request)
 	if err != nil {
 		return err
@@ -339,6 +250,10 @@ func (c *Client) Create(ctx context.Context, request *openapi.OrganizationWrite)
 		return nil, err
 	}
 
+	if err := c.pdp.Allow(ctx, "identity:organizations", openapi.Create, org); err != nil {
+		return nil, err
+	}
+
 	if err := c.client.Create(ctx, org); err != nil {
 		return nil, errors.OAuth2ServerError("failed to create organization").WithError(err)
 	}
@@ -352,6 +267,10 @@ func (c *Client) Delete(ctx context.Context, organizationID string) error {
 			Name:      organizationID,
 			Namespace: c.namespace,
 		},
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:organizations", openapi.Delete, resource); err != nil {
+		return err
 	}
 
 	if err := c.client.Delete(ctx, resource); err != nil {

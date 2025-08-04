@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/mail"
 	"slices"
 
 	"github.com/spf13/pflag"
@@ -321,8 +322,32 @@ func (r *RBAC) accumulatePermissions(groups map[string]*unikornv1.Group, roles m
 	return nil
 }
 
+type accountType int
+
+const (
+	atUser accountType = iota
+	atService
+	atSystem
+)
+
+func getAccountType(info *authorization.Info) accountType {
+	// It's an email address, so it's a user.
+	if _, err := mail.ParseAddress(info.Actor); err == nil {
+		return atUser
+	}
+
+	// It's via a token, so it's a service account.
+	if info.Token != "" {
+		return atService
+	}
+
+	// Must have been via mTLS, so a system account.
+	return atSystem
+}
+
 // GetACL returns a granular set of permissions for a user based on their scope.
 // This is used for API level access control and UX.
+// TODO: get rid of the organizationID parameter...
 //
 //nolint:cyclop,gocognit
 func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
@@ -331,6 +356,8 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	if err != nil {
 		return nil, err
 	}
+
+	accountType := getAccountType(info)
 
 	roles, err := r.getRoles(ctx)
 	if err != nil {
@@ -356,27 +383,27 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 
 	var projectACLs []openapi.AclScopedEndpoints
 
-	switch {
-	case info.SystemAccount:
+	switch accountType {
+	case atSystem:
 		// System accounts act on behalf of users, so by definition need globally
 		// scoped roles.  As such they are explcitly mapped by the operations team
 		// when deploying.
-		roleID, ok := r.options.SystemAccountRoleIDs[info.Userinfo.Sub]
+		roleID, ok := r.options.SystemAccountRoleIDs[info.Actor]
 		if !ok {
-			return nil, fmt.Errorf("%w: system account '%s' not registered", ErrResourceReference, info.Userinfo.Sub)
+			return nil, fmt.Errorf("%w: system account '%s' not registered", ErrResourceReference, info.Actor)
 		}
 
 		role, ok := roles[roleID]
 		if !ok {
-			return nil, fmt.Errorf("%w: system account '%s' references undefined role ID", ErrResourceReference, info.Userinfo.Sub)
+			return nil, fmt.Errorf("%w: system account '%s' references undefined role ID", ErrResourceReference, info.Actor)
 		}
 
 		addScopesToEndpointList(&globalACL, role.Spec.Scopes.Global)
 
-	case info.ServiceAccount:
+	case atService:
 		// Service accounts are bound to an organization, so we get groups from the organization
 		// it's part of and not the one supplied via the API.
-		serviceAccount, err := r.GetServiceAccount(ctx, info.Userinfo.Sub)
+		serviceAccount, err := r.GetServiceAccount(ctx, info.Actor)
 		if err != nil {
 			return nil, err
 		}
@@ -395,10 +422,10 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 			return nil, err
 		}
 
-	default:
+	case atUser:
 		// A subject may be part of any organization's group, so look for that user
 		// and a record that indicates they are part of an organization.
-		user, err := r.GetActiveUser(ctx, info.Userinfo.Sub)
+		user, err := r.GetActiveUser(ctx, info.Actor)
 		if err != nil {
 			return nil, err
 		}

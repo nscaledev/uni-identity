@@ -94,20 +94,6 @@ paths:
       responses:
         '302':
           description: A redirect to the specified identity provider URI.
-  /oauth2/v2/onboard:
-    description: |-
-      If a user doesn't exist, we can offer them the option of creating a
-      new organization, this facilitates that flow.
-    post:
-      description: |-
-        Returns the user's chosen organization name back to the identity service
-        for creation of that organization, default user groups, and addition of
-        that user to a group to allow login.
-      requestBody:
-        $ref: '#/components/requestBodies/onboardRequest'
-      responses:
-        '302':
-          description: A redirect to the specified identity provider URI.
   /oauth2/v2/userinfo:
     description: |-
       Returns introspection information about an access token.
@@ -1204,38 +1190,6 @@ components:
         state:
           description: The state string supplied by the authorization endpoint.
           type: string
-    onboardRequestOptions:
-      description: Onboard request options.
-      type: object
-      required:
-      - state
-      - organization_name
-      - group_name
-      properties:
-        state:
-          description: Server provided state.
-          type: string
-        organization_name:
-          description: The organization name.
-          type: string
-        organization_description:
-          description: A verbose organization description.
-          type: string
-          nullable: true
-        group_name:
-          description: An initial group name,
-          type: string
-        group_description:
-          description: A verbose initial group description.
-          type: string
-          nullable: true
-        roles:
-          description: A list of roles to grant the user.
-          type: array
-          nullable: true
-          items:
-            description: A role name.
-            type: string
     authorizationRequestOptions:
       description: OAuth 2.0/OIDC authorization endpoint request.
       type: object
@@ -2063,17 +2017,6 @@ components:
           example:
             state: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
             email: joe.bloggs@acme.com
-    onboardRequest:
-      description: Information necessary to create a new user and organization.
-      required: true
-      content:
-        application/x-www-form-urlencoded:
-          schema:
-            $ref: '#/components/schemas/onboardRequestOptions'
-          example:
-            state: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
-            organization_name: acme.com
-            group_name: administrators
     tokenRequest:
       description: OAuth 2.0 token request, consult the relevant OAuth2 and OIDC specifications for further details.
       required: true

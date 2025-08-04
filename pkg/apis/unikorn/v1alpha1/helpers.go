@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"errors"
+	"iter"
 	"slices"
 
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
@@ -65,4 +66,34 @@ func (u *User) Session(clientID string) (*UserSession, error) {
 	}
 
 	return &u.Spec.Sessions[index], nil
+}
+
+func (l *OrganizationList) All() iter.Seq[*Organization] {
+	return func(yield func(t *Organization) bool) {
+		for i := range l.Items {
+			if !yield(&l.Items[i]) {
+				return
+			}
+		}
+	}
+}
+
+func (l *ProjectList) All() iter.Seq[*Project] {
+	return func(yield func(t *Project) bool) {
+		for i := range l.Items {
+			if !yield(&l.Items[i]) {
+				return
+			}
+		}
+	}
+}
+
+func (l *GroupList) All() iter.Seq[*Group] {
+	return func(yield func(t *Group) bool) {
+		for i := range l.Items {
+			if !yield(&l.Items[i]) {
+				return
+			}
+		}
+	}
 }

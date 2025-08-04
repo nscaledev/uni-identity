@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,13 +42,15 @@ type Client struct {
 	// client allows Kubernetes API access.
 	client    client.Client
 	namespace string
+	pdp       rbac.PolicyDecisionPoint
 }
 
 // New returns a new client with required parameters.
-func New(client client.Client, namespace string) *Client {
+func New(client client.Client, namespace string, pdp rbac.PolicyDecisionPoint) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+		pdp:       pdp,
 	}
 }
 
@@ -77,7 +80,7 @@ func convertList(in *unikornv1.ProjectList) openapi.Projects {
 }
 
 func (c *Client) List(ctx context.Context, organizationID string) (openapi.Projects, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +89,12 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Proje
 
 	if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
 		return nil, err
+	}
+
+	allowed := rbac.AllowBulk(ctx, c.pdp, "identity:projects", openapi.Read, &result)
+
+	result = unikornv1.ProjectList{
+		Items: rbac.FilterAllowed(result.Items, allowed),
 	}
 
 	slices.SortStableFunc(result.Items, func(a, b unikornv1.Project) int {
@@ -110,13 +119,17 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, proj
 }
 
 func (c *Client) Get(ctx context.Context, organizationID, projectID string) (*openapi.ProjectRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
 	result, err := c.get(ctx, organization, projectID)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:projects", openapi.Read, result); err != nil {
 		return nil, err
 	}
 
@@ -153,13 +166,17 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 
 // Create creates the implicit project indentified by the JTW claims.
 func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.ProjectWrite) (*openapi.ProjectRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
 	resource, err := c.generate(ctx, organization, request)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:projects", openapi.Create, resource); err != nil {
 		return nil, err
 	}
 
@@ -171,13 +188,17 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 }
 
 func (c *Client) Update(ctx context.Context, organizationID, projectID string, request *openapi.ProjectWrite) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}
 
 	current, err := c.get(ctx, organization, projectID)
 	if err != nil {
+		return err
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:projects", openapi.Update, current); err != nil {
 		return err
 	}
 
@@ -204,7 +225,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 
 // Delete deletes the project.
 func (c *Client) Delete(ctx context.Context, organizationID, projectID string) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}
@@ -214,6 +235,10 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 			Name:      projectID,
 			Namespace: organization.Namespace,
 		},
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:projects", openapi.Delete, project); err != nil {
+		return err
 	}
 
 	if err := c.client.Delete(ctx, project); err != nil {

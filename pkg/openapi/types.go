@@ -338,27 +338,6 @@ type Oauth2ProviderWrite struct {
 // Oauth2Providers A list of OAuth 2.0 providers.
 type Oauth2Providers = []Oauth2ProviderRead
 
-// OnboardRequestOptions Onboard request options.
-type OnboardRequestOptions struct {
-	// GroupDescription A verbose initial group description.
-	GroupDescription *string `json:"group_description"`
-
-	// GroupName An initial group name,
-	GroupName string `json:"group_name"`
-
-	// OrganizationDescription A verbose organization description.
-	OrganizationDescription *string `json:"organization_description"`
-
-	// OrganizationName The organization name.
-	OrganizationName string `json:"organization_name"`
-
-	// Roles A list of roles to grant the user.
-	Roles *[]string `json:"roles"`
-
-	// State Server provided state.
-	State string `json:"state"`
-}
-
 // OpenidConfiguration OpenID configuration.
 type OpenidConfiguration struct {
 	// AuthorizationEndpoint The OAuth 2.0 endpoint that initiates authentication.
@@ -973,9 +952,6 @@ type PostOauth2V2AuthorizationFormdataRequestBody = AuthorizationRequestOptions
 
 // PostOauth2V2LoginFormdataRequestBody defines body for PostOauth2V2Login for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2LoginFormdataRequestBody = LoginRequestOptions
-
-// PostOauth2V2OnboardFormdataRequestBody defines body for PostOauth2V2Onboard for application/x-www-form-urlencoded ContentType.
-type PostOauth2V2OnboardFormdataRequestBody = OnboardRequestOptions
 
 // PostOauth2V2TokenFormdataRequestBody defines body for PostOauth2V2Token for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2TokenFormdataRequestBody = TokenRequestOptions

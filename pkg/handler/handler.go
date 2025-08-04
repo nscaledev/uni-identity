@@ -19,10 +19,8 @@ limitations under the License.
 package handler
 
 import (
-	"context"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
@@ -37,7 +35,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/serviceaccounts"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
 	"github.com/unikorn-cloud/identity/pkg/jose"
-	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -61,17 +58,20 @@ type Handler struct {
 	// rbac gives access to low level rbac functionality.
 	rbac *rbac.RBAC
 
+	pdp rbac.PolicyDecisionPoint
+
 	// options allows behaviour to be defined on the CLI.
 	options *Options
 }
 
-func New(client client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, rbac *rbac.RBAC, options *Options) (*Handler, error) {
+func New(client client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, rbac *rbac.RBAC, pdp rbac.PolicyDecisionPoint, options *Options) (*Handler, error) {
 	h := &Handler{
 		client:    client,
 		namespace: namespace,
 		issuer:    issuer,
 		oauth2:    oauth2,
 		rbac:      rbac,
+		pdp:       pdp,
 		options:   options,
 	}
 
@@ -158,10 +158,6 @@ func (h *Handler) PostOauth2V2Authorization(w http.ResponseWriter, r *http.Reque
 
 func (h *Handler) PostOauth2V2Login(w http.ResponseWriter, r *http.Request) {
 	h.oauth2.Login(w, r)
-}
-
-func (h *Handler) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
-	h.oauth2.Onboard(w, r)
 }
 
 func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
@@ -261,8 +257,12 @@ func (h *Handler) GetOidcCallback(w http.ResponseWriter, r *http.Request) {
 	h.oauth2.Callback(w, r)
 }
 
+func (h *Handler) oauth2ProvidersClient() *oauth2providers.Client {
+	return oauth2providers.New(h.client, h.namespace, h.pdp)
+}
+
 func (h *Handler) GetApiV1Oauth2providers(w http.ResponseWriter, r *http.Request) {
-	result, err := oauth2providers.New(h.client, h.namespace).ListGlobal(r.Context())
+	result, err := h.oauth2ProvidersClient().ListGlobal(r.Context())
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -273,28 +273,29 @@ func (h *Handler) GetApiV1Oauth2providers(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) GetApiV1Acl(w http.ResponseWriter, r *http.Request) {
-	// The middleware will populate this from the URL, and thus not have access to any
-	// scoping information, so just return anything at the global scope.
-	// TODO: we may want to consider just returning everything across all organizations.
-	result := rbac.FromContext(r.Context())
+	result, err := h.rbac.GetACL(r.Context(), "")
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
 
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
+// TODO: Delete me.
 func (h *Handler) GetApiV1OrganizationsOrganizationIDAcl(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	result := rbac.FromContext(r.Context())
+	result, err := h.rbac.GetACL(r.Context(), organizationID)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
 
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDRoles(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:roles", openapi.Read, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	result, err := roles.New(h.client, h.namespace).List(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
@@ -306,12 +307,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDRoles(w http.ResponseWriter
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDOauth2providers(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:oauth2providers", openapi.Read, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result, err := oauth2providers.New(h.client, h.namespace).List(r.Context(), organizationID)
+	result, err := h.oauth2ProvidersClient().List(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -322,11 +318,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDOauth2providers(w http.Resp
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDOauth2providers(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:oauth2providers", openapi.Create, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.Oauth2ProviderWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -334,7 +325,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDOauth2providers(w http.Res
 		return
 	}
 
-	result, err := oauth2providers.New(h.client, h.namespace).Create(r.Context(), organizationID, request)
+	result, err := h.oauth2ProvidersClient().Create(r.Context(), organizationID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -345,11 +336,6 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDOauth2providers(w http.Res
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDOauth2providersProviderID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, providerID openapi.Oauth2ProvderIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:oauth2providers", openapi.Update, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.Oauth2ProviderWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -357,7 +343,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDOauth2providersProviderID(w
 		return
 	}
 
-	if err := oauth2providers.New(h.client, h.namespace).Update(r.Context(), organizationID, providerID, request); err != nil {
+	if err := h.oauth2ProvidersClient().Update(r.Context(), organizationID, providerID, request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -367,12 +353,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDOauth2providersProviderID(w
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, providerID openapi.Oauth2ProvderIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:oauth2providers", openapi.Delete, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	if err := oauth2providers.New(h.client, h.namespace).Delete(r.Context(), organizationID, providerID); err != nil {
+	if err := h.oauth2ProvidersClient().Delete(r.Context(), organizationID, providerID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -381,8 +362,12 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderI
 	w.WriteHeader(http.StatusOK)
 }
 
+func (h *Handler) organizationClient() *organizations.Client {
+	return organizations.New(h.client, h.namespace, h.pdp)
+}
+
 func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, params openapi.GetApiV1OrganizationsParams) {
-	result, err := organizations.New(h.client, h.namespace).List(r.Context(), h.rbac, params.Email)
+	result, err := h.organizationClient().List(r.Context(), params.Email)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -393,11 +378,6 @@ func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, 
 }
 
 func (h *Handler) PostApiV1Organizations(w http.ResponseWriter, r *http.Request) {
-	if err := rbac.AllowGlobalScope(r.Context(), "identity:organizations", openapi.Create); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.OrganizationWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -405,7 +385,7 @@ func (h *Handler) PostApiV1Organizations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	result, err := organizations.New(h.client, h.namespace).Create(r.Context(), request)
+	result, err := h.organizationClient().Create(r.Context(), request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -416,12 +396,7 @@ func (h *Handler) PostApiV1Organizations(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:organizations", openapi.Read, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result, err := organizations.New(h.client, h.namespace).Get(r.Context(), organizationID)
+	result, err := h.organizationClient().Get(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -432,11 +407,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:organizations", openapi.Update, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.OrganizationWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -444,7 +414,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *
 		return
 	}
 
-	if err := organizations.New(h.client, h.namespace).Update(r.Context(), organizationID, request); err != nil {
+	if err := h.organizationClient().Update(r.Context(), organizationID, request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -454,12 +424,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowGlobalScope(r.Context(), "identity:organizations", openapi.Delete); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	if err := organizations.New(h.client, h.namespace).Delete(r.Context(), organizationID); err != nil {
+	if err := h.organizationClient().Delete(r.Context(), organizationID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -468,13 +433,12 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationID(w http.ResponseWriter, 
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) GetApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:groups", openapi.Read, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
+func (h *Handler) groupClient() *groups.Client {
+	return groups.New(h.client, h.namespace, h.pdp)
+}
 
-	result, err := groups.New(h.client, h.namespace).List(r.Context(), organizationID)
+func (h *Handler) GetApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
+	result, err := h.groupClient().List(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -485,11 +449,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDGroups(w http.ResponseWrite
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:groups", openapi.Create, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.GroupWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -497,7 +456,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDGroups(w http.ResponseWrit
 		return
 	}
 
-	result, err := groups.New(h.client, h.namespace).Create(r.Context(), organizationID, request)
+	result, err := h.groupClient().Create(r.Context(), organizationID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -508,12 +467,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDGroups(w http.ResponseWrit
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, groupID openapi.GroupidParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:groups", openapi.Read, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result, err := groups.New(h.client, h.namespace).Get(r.Context(), organizationID, groupID)
+	result, err := h.groupClient().Get(r.Context(), organizationID, groupID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -524,12 +478,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, groupID openapi.GroupidParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:groups", openapi.Delete, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	if err := groups.New(h.client, h.namespace).Delete(r.Context(), organizationID, groupID); err != nil {
+	if err := h.groupClient().Delete(r.Context(), organizationID, groupID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -539,11 +488,6 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Res
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, groupID openapi.GroupidParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:groups", openapi.Update, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.GroupWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -551,7 +495,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 		return
 	}
 
-	if err := groups.New(h.client, h.namespace).Update(r.Context(), organizationID, groupID, request); err != nil {
+	if err := h.groupClient().Update(r.Context(), organizationID, groupID, request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -560,30 +504,22 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 	w.WriteHeader(http.StatusOK)
 }
 
+func (h *Handler) projectClient() *projects.Client {
+	return projects.New(h.client, h.namespace, h.pdp)
+}
+
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	result, err := projects.New(h.client, h.namespace).List(r.Context(), organizationID)
+	result, err := h.projectClient().List(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
-
-	ctx := r.Context()
-
-	// Apply RBAC after listing as a filter.
-	result = slices.DeleteFunc(result, func(resource openapi.ProjectRead) bool {
-		return rbac.AllowProjectScope(ctx, "identity:projects", openapi.Read, organizationID, resource.Metadata.Id) != nil
-	})
 
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:projects", openapi.Create, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.ProjectWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -591,7 +527,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjects(w http.ResponseWr
 		return
 	}
 
-	result, err := projects.New(h.client, h.namespace).Create(r.Context(), organizationID, request)
+	result, err := h.projectClient().Create(r.Context(), organizationID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -602,12 +538,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjects(w http.ResponseWr
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:projects", openapi.Read, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result, err := projects.New(h.client, h.namespace).Get(r.Context(), organizationID, projectID)
+	result, err := h.projectClient().Get(r.Context(), organizationID, projectID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -618,11 +549,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:projects", openapi.Update, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.ProjectWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -630,7 +556,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 		return
 	}
 
-	if err := projects.New(h.client, h.namespace).Update(r.Context(), organizationID, projectID, request); err != nil {
+	if err := h.projectClient().Update(r.Context(), organizationID, projectID, request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -640,12 +566,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:projects", openapi.Delete, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	if err := projects.New(h.client, h.namespace).Delete(r.Context(), organizationID, projectID); err != nil {
+	if err := h.projectClient().Delete(r.Context(), organizationID, projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -655,65 +576,13 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http
 }
 
 func (h *Handler) serviceAccountsClient(r *http.Request) *serviceaccounts.Client {
-	return serviceaccounts.New(h.client, h.namespace, r.Host, h.oauth2, &h.options.ServiceAccounts)
-}
-
-// allowServiceAccountOrSelfAccess allows either access to a service account via the usual RBAC
-// interfaces, or allows the service account to access itself.  This allows for fully transparent
-// rotation without any end user interaction, think Let's Encrypt's automatic certificate issuing.
-func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclOperation, organizationID, serviceAccountID string) error {
-	info, err := authorization.FromContext(ctx)
-	if err != nil {
-		return errors.OAuth2ServerError("unable to get authorization info").WithError(err)
-	}
-
-	if info.ServiceAccount && (serviceAccountID == "" || info.Userinfo.Sub == serviceAccountID) {
-		return nil
-	}
-
-	return rbac.AllowOrganizationScope(ctx, "identity:serviceaccounts", operation, organizationID)
-}
-
-// filterServiceAccounts is used when reading service accounts to only return the service account
-// for a service accounts access token.
-func filterServiceAccounts(ctx context.Context, organizationID string, serviceAccounts *openapi.ServiceAccounts) error {
-	// If the actor has full access don't modify.
-	if rbac.AllowOrganizationScope(ctx, "identity:serviceaccounts", openapi.Read, organizationID) == nil {
-		return nil
-	}
-
-	// Otherwise it's a service account without full read privileges, so we allow it
-	// to read itself in order to acquire its ID via introspection for rotation.
-	info, err := authorization.FromContext(ctx)
-	if err != nil {
-		return errors.OAuth2ServerError("unable to get authorization info").WithError(err)
-	}
-
-	if !info.ServiceAccount {
-		return nil
-	}
-
-	*serviceAccounts = slices.DeleteFunc(*serviceAccounts, func(serviceAccount openapi.ServiceAccountRead) bool {
-		return serviceAccount.Metadata.Id != info.Userinfo.Sub
-	})
-
-	return nil
+	return serviceaccounts.New(h.client, h.namespace, r.Host, h.oauth2, h.pdp, &h.options.ServiceAccounts)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDServiceaccounts(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	// NOTE: this allows regular RBAC based access or a service account to self discover its ID.
-	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Read, organizationID, ""); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
+	// TODO: a service account should be able to see itself.
 	result, err := h.serviceAccountsClient(r).List(r.Context(), organizationID)
 	if err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	if err := filterServiceAccounts(r.Context(), organizationID, &result); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -723,11 +592,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDServiceaccounts(w http.Resp
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccounts(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:serviceaccounts", openapi.Create, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.ServiceAccountWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -746,11 +610,6 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccounts(w http.Res
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, serviceAccountID openapi.ServiceAccountIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:serviceaccounts", openapi.Update, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.ServiceAccountWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -769,11 +628,6 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccou
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, serviceAccountID openapi.ServiceAccountIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:serviceaccounts", openapi.Delete, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	if err := h.serviceAccountsClient(r).Delete(r.Context(), organizationID, serviceAccountID); err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -784,12 +638,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAc
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotate(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, serviceAccountID openapi.ServiceAccountIDParameter) {
-	// NOTE: this allows regular RBAC based access or a service account to self rotate.
-	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Update, organizationID, serviceAccountID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
+	// TODO: a service account should be able to rotate itself.
 	result, err := h.serviceAccountsClient(r).Rotate(r.Context(), organizationID, serviceAccountID)
 	if err != nil {
 		errors.HandleError(w, r, err)
@@ -801,7 +650,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAcco
 }
 
 func (h *Handler) usersClient(r *http.Request) *users.Client {
-	return users.New(r.Host, h.client, h.namespace, h.issuer, &h.options.Users)
+	return users.New(r.Host, h.client, h.namespace, h.issuer, h.pdp, &h.options.Users)
 }
 
 func (h *Handler) GetApiV1Signup(w http.ResponseWriter, r *http.Request) {
@@ -809,11 +658,6 @@ func (h *Handler) GetApiV1Signup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:users", openapi.Read, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	result, err := h.usersClient(r).List(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
@@ -825,11 +669,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:users", openapi.Create, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.UserWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -848,11 +687,6 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDUsers(w http.ResponseWrite
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, userID openapi.UserIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:users", openapi.Delete, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	if err := h.usersClient(r).Delete(r.Context(), organizationID, userID); err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -863,11 +697,6 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.Respo
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, userID openapi.UserIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:users", openapi.Update, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.UserWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -886,15 +715,10 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.Response
 }
 
 func (h *Handler) quotasClient() *quotas.Client {
-	return quotas.New(h.client, h.namespace)
+	return quotas.New(h.client, h.namespace, h.pdp)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:quotas", openapi.Read, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	result, err := h.quotasClient().Get(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
@@ -906,11 +730,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWrite
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	if err := rbac.AllowOrganizationScope(r.Context(), "identity:quotas", openapi.Update, organizationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.QuotasWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -929,7 +748,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWrite
 }
 
 func (h *Handler) allocationsClient() *allocations.Client {
-	return allocations.New(h.client, h.namespace)
+	return allocations.New(h.client, h.namespace, h.pdp)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
@@ -941,20 +760,11 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.Response
 		return
 	}
 
-	result = slices.DeleteFunc(result, func(resource openapi.AllocationRead) bool {
-		return rbac.AllowProjectScope(ctx, "identity:allocations", openapi.Read, organizationID, resource.Metadata.ProjectId) != nil
-	})
-
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Create, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.AllocationWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {
@@ -973,11 +783,6 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocatio
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Delete, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	if err := h.allocationsClient().Delete(r.Context(), organizationID, projectID, allocationID); err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -988,11 +793,6 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocat
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Read, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	result, err := h.allocationsClient().Get(r.Context(), organizationID, projectID, allocationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
@@ -1004,11 +804,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Update, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
 	request := &openapi.AllocationWrite{}
 
 	if err := util.ReadJSONBody(r, request); err != nil {

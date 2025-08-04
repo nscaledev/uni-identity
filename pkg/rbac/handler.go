@@ -18,12 +18,82 @@ package rbac
 
 import (
 	"context"
+	"iter"
 	"slices"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+type Lister[T metav1.Object] interface {
+	metav1.ListInterface
+	All() iter.Seq[T]
+}
+
+// NOTE: this should be flexible enough to interact with any RBAC solution.
+type PolicyDecisionPoint interface {
+	// Allow grants access to a single resource.
+	// TODO: we can actually infer the "endpoint" from the resource type using the
+	// apimachinery scheme.
+	Allow(ctx context.Context, endpoint string, operation openapi.AclOperation, resource metav1.Object) error
+}
+
+func AllowBulk[T metav1.Object, L Lister[T]](ctx context.Context, pdp PolicyDecisionPoint, endpoint string, operation openapi.AclOperation, resources L) []error {
+	//nolint:prealloc
+	var allowed []error
+
+	for resource := range resources.All() {
+		allowed = append(allowed, pdp.Allow(ctx, endpoint, operation, resource))
+	}
+
+	return allowed
+}
+
+func FilterAllowed[T any](in []T, allowed []error) []T {
+	out := make([]T, 0, len(in))
+
+	for i := range in {
+		if allowed[i] == nil {
+			out = append(out, in[i])
+		}
+	}
+
+	return out
+}
+
+type LocalPDP struct {
+	rbac *RBAC
+}
+
+func NewLocalPDP(rbac *RBAC) *LocalPDP {
+	return &LocalPDP{
+		rbac: rbac,
+	}
+}
+
+func (r *LocalPDP) Allow(ctx context.Context, endpoint string, operation openapi.AclOperation, resource metav1.Object) error {
+	// TODO: This is going to suck for bulk operations...
+	acl, err := r.rbac.GetACL(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	labels := resource.GetLabels()
+
+	if _, ok := labels[constants.OrganizationLabel]; ok {
+		if _, ok := labels[constants.ProjectLabel]; ok {
+			return AllowProjectScope(acl, endpoint, operation, labels[constants.OrganizationLabel], labels[constants.ProjectLabel])
+		}
+
+		return AllowOrganizationScope(acl, endpoint, operation, labels[constants.OrganizationLabel])
+	}
+
+	return AllowGlobalScope(acl, endpoint, operation)
+}
 
 // operationAllowedByEndpoints iterates through all endpoints and tries to match the required name and
 // operation.
@@ -44,9 +114,7 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 }
 
 // AllowGlobalScope tries to allow the requested operation at the global scope.
-func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
-	acl := FromContext(ctx)
-
+func AllowGlobalScope(acl *openapi.Acl, endpoint string, operation openapi.AclOperation) error {
 	if acl.Global == nil {
 		return errors.HTTPForbidden("operation is not allowed by rbac (no global endpoints)")
 	}
@@ -56,12 +124,10 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 
 // AllowOrganizationScope tries to allow the requested operation at the global scope, then
 // the organization scope.
-func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
-	if AllowGlobalScope(ctx, endpoint, operation) == nil {
+func AllowOrganizationScope(acl *openapi.Acl, endpoint string, operation openapi.AclOperation, organizationID string) error {
+	if AllowGlobalScope(acl, endpoint, operation) == nil {
 		return nil
 	}
-
-	acl := FromContext(ctx)
 
 	if acl.Organization == nil || acl.Organization.Id != organizationID {
 		return errors.HTTPForbidden("operation is not allowed by rbac (no matching organization endpoints)")
@@ -72,12 +138,10 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
 // the organization scope, and finally at the project scope.
-func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
+func AllowProjectScope(acl *openapi.Acl, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	if AllowOrganizationScope(acl, endpoint, operation, organizationID) == nil {
 		return nil
 	}
-
-	acl := FromContext(ctx)
 
 	if acl.Projects == nil {
 		return errors.HTTPForbidden("operation is not allowed by rbac (no project endpoints)")
@@ -100,29 +164,31 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 // the role, which is then used to determine role visibility and limit privilege
 // escalation.
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string) error {
-	for _, endpoint := range role.Spec.Scopes.Global {
-		for _, operation := range endpoint.Operations {
-			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
-				return err
+	/*
+		for _, endpoint := range role.Spec.Scopes.Global {
+			for _, operation := range endpoint.Operations {
+				if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
+					return err
+				}
 			}
 		}
-	}
 
-	for _, endpoint := range role.Spec.Scopes.Organization {
-		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
-				return err
+		for _, endpoint := range role.Spec.Scopes.Organization {
+			for _, operation := range endpoint.Operations {
+				if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+					return err
+				}
 			}
 		}
-	}
 
-	for _, endpoint := range role.Spec.Scopes.Project {
-		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
-				return err
+		for _, endpoint := range role.Spec.Scopes.Project {
+			for _, operation := range endpoint.Operations {
+				if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+					return err
+				}
 			}
 		}
-	}
+	*/
 
 	return nil
 }

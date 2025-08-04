@@ -140,7 +140,7 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Version: l.version,
 		},
 		"actor", &Actor{
-			Subject: info.Userinfo.Sub,
+			Subject: info.Actor,
 		},
 		"operation", &Operation{
 			Verb: r.Method,

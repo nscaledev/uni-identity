@@ -36,7 +36,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
-	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -117,11 +116,9 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		return nil, err
 	}
 
-	rbac := rbac.New(client, s.Options.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.Options.Namespace, client, issuer, rbac)
-
-	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
+	r := rbac.New(client, s.Options.Namespace, &s.RBACOptions)
+	pdp := rbac.NewLocalPDP(r)
+	oauth2 := oauth2.New(&s.OAuth2Options, s.Options.Namespace, client, issuer, r)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -130,11 +127,11 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		ErrorHandlerFunc: handler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
 			audit.Middleware(schema, constants.Application, constants.Version),
-			openapimiddleware.Middleware(authorizer, schema),
+			openapimiddleware.Middleware(schema),
 		},
 	}
 
-	handlerInterface, err := handler.New(client, s.Options.Namespace, issuer, oauth2, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, s.Options.Namespace, issuer, oauth2, r, pdp, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}
