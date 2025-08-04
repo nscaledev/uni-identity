@@ -150,9 +150,6 @@ type ServerInterface interface {
 	// (POST /oauth2/v2/login)
 	PostOauth2V2Login(w http.ResponseWriter, r *http.Request)
 
-	// (POST /oauth2/v2/onboard)
-	PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request)
-
 	// (POST /oauth2/v2/token)
 	PostOauth2V2Token(w http.ResponseWriter, r *http.Request)
 
@@ -392,11 +389,6 @@ func (_ Unimplemented) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {
 
 // (POST /oauth2/v2/login)
 func (_ Unimplemented) PostOauth2V2Login(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// (POST /oauth2/v2/onboard)
-func (_ Unimplemented) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1871,20 +1863,6 @@ func (siw *ServerInterfaceWrapper) PostOauth2V2Login(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
-// PostOauth2V2Onboard operation middleware
-func (siw *ServerInterfaceWrapper) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PostOauth2V2Onboard(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // PostOauth2V2Token operation middleware
 func (siw *ServerInterfaceWrapper) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 
@@ -2188,9 +2166,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/oauth2/v2/login", wrapper.PostOauth2V2Login)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/oauth2/v2/onboard", wrapper.PostOauth2V2Onboard)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/oauth2/v2/token", wrapper.PostOauth2V2Token)

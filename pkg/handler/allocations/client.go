@@ -28,6 +28,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,12 +49,14 @@ type Client struct {
 	client client.Client
 	// namespace is the base identity namespace.
 	namespace string
+	pdp       rbac.PolicyDecisionPoint
 }
 
-func New(client client.Client, namespace string) *Client {
+func New(client client.Client, namespace string, pdp rbac.PolicyDecisionPoint) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+		pdp:       pdp,
 	}
 }
 

@@ -17,23 +17,17 @@ limitations under the License.
 package users
 
 import (
-	"bytes"
 	"context"
 	goerrors "errors"
-	"fmt"
-	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spf13/pflag"
-	gomail "gopkg.in/gomail.v2"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
@@ -44,10 +38,9 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/html"
 	"github.com/unikorn-cloud/identity/pkg/jose"
-	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
-	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -94,17 +87,19 @@ type Client struct {
 	namespace string
 	// issuer for creating signup tokens.
 	issuer *jose.JWTIssuer
+	pdp    rbac.PolicyDecisionPoint
 	// options are any options to be passed to the handler.
 	options *Options
 }
 
 // New creates a new user client.
-func New(host string, client client.Client, namespace string, issuer *jose.JWTIssuer, options *Options) *Client {
+func New(host string, client client.Client, namespace string, issuer *jose.JWTIssuer, pdp rbac.PolicyDecisionPoint, options *Options) *Client {
 	return &Client{
 		host:      host,
 		client:    client,
 		namespace: namespace,
 		issuer:    issuer,
+		pdp:       pdp,
 		options:   options,
 	}
 }
@@ -299,149 +294,6 @@ func convertList(in *unikornv1.OrganizationUserList, users *unikornv1.UserList, 
 	return out, nil
 }
 
-const (
-	defaultEmailVerificationSubject = "Welcome to Unikorn Cloud!"
-)
-
-type emailConfiguration struct {
-	subject string
-	body    string
-}
-
-// getEmailVerification returns either the user defined subject and body,
-// which allows branding and marketing, or a default fallback.
-func (c *Client) getEmailVerification(ctx context.Context, verifyLink string) (*emailConfiguration, error) {
-	if c.options.emailVerificationTemplateConfigMap == "" {
-		defaultEmailVerificationBody, err := html.WelcomeEmail(verifyLink)
-		if err != nil {
-			return nil, err
-		}
-
-		out := &emailConfiguration{
-			subject: defaultEmailVerificationSubject,
-			body:    string(defaultEmailVerificationBody),
-		}
-
-		return out, nil
-	}
-
-	configMap := &corev1.ConfigMap{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: c.options.emailVerificationTemplateConfigMap}, configMap); err != nil {
-		return nil, err
-	}
-
-	subject, ok := configMap.Data["subject"]
-	if !ok {
-		return nil, fmt.Errorf("%w: user verification email configmap missing subject", ErrConfiguration)
-	}
-
-	templateData, ok := configMap.Data["template"]
-	if !ok {
-		return nil, fmt.Errorf("%w: user verification email configmap missing template", ErrConfiguration)
-	}
-
-	t, err := template.New("welcome").Parse(templateData)
-	if err != nil {
-		return nil, err
-	}
-
-	data := map[string]any{
-		"verifyLink": verifyLink,
-	}
-
-	body := &bytes.Buffer{}
-
-	if err := t.Execute(body, data); err != nil {
-		return nil, err
-	}
-
-	out := &emailConfiguration{
-		subject: subject,
-		body:    body.String(),
-	}
-
-	return out, nil
-}
-
-type smtpConfiguration struct {
-	host     string
-	port     int
-	username string
-	password string
-}
-
-// getSMTPConfiguration verifies and loads SMTP configuration.
-func (c *Client) getSMTPConfiguration(ctx context.Context) (*smtpConfiguration, error) {
-	host, portStr, err := net.SplitHostPort(c.options.smtpServer)
-	if err != nil {
-		return nil, err
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return nil, err
-	}
-
-	secret := &corev1.Secret{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: c.options.smtpCredentialsSecret}, secret); err != nil {
-		return nil, err
-	}
-
-	username, ok := secret.Data["username"]
-	if !ok {
-		return nil, fmt.Errorf("%w: smtp secret missing username", ErrConfiguration)
-	}
-
-	password, ok := secret.Data["password"]
-	if !ok {
-		return nil, fmt.Errorf("%w: smtp secret missing password", ErrConfiguration)
-	}
-
-	out := &smtpConfiguration{
-		host:     host,
-		port:     port,
-		username: string(username),
-		password: string(password),
-	}
-
-	return out, nil
-}
-
-// notifyGlobalUserCreation sends an email to the user asking them to click a link in order to
-// verify themselves.
-func (c *Client) notifyGlobalUserCreation(ctx context.Context, user *unikornv1.User) error {
-	info, err := authorization.FromContext(ctx)
-	if err != nil {
-		return err
-	}
-
-	verifyLink := fmt.Sprintf("https://%s/api/v1/signup?token=%s&clientID=%s", c.host, user.Spec.Signup.Token, info.ClientID)
-
-	email, err := c.getEmailVerification(ctx, verifyLink)
-	if err != nil {
-		return err
-	}
-
-	smtp, err := c.getSMTPConfiguration(ctx)
-	if err != nil {
-		return err
-	}
-
-	m := gomail.NewMessage()
-	m.SetHeader("From", smtp.username)
-	m.SetAddressHeader("To", user.Spec.Subject, "New User")
-	m.SetHeader("Subject", email.subject)
-	m.SetBody("text/html", email.body)
-
-	if err := gomail.NewDialer(smtp.host, smtp.port, smtp.username, smtp.password).DialAndSend(m); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 type SignupClaims struct {
 	jwt.Claims `json:",inline"`
 
@@ -592,8 +444,6 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 }
 
 func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.UserWrite) (*unikornv1.User, error) {
-	log := log.FromContext(ctx)
-
 	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
 	if err == nil {
 		return user, nil
@@ -626,13 +476,6 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 		return nil, errors.OAuth2ServerError("failed to create user").WithError(err)
 	}
 
-	if c.options.emailVerification {
-		if err := c.notifyGlobalUserCreation(ctx, resource); err != nil {
-			// TODO: perhaps consider deleting the user immediately.
-			log.Error(err, "failed to send user creation notification")
-		}
-	}
-
 	return resource, nil
 }
 
@@ -652,7 +495,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	// Create the organization user.
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -680,7 +523,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 
 // List retrieves information about all users in the organization.
 func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -708,7 +551,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users
 // Update modifies any metadata for the user if it exists.  If a matching account
 // doesn't exist it raises an error.
 func (c *Client) Update(ctx context.Context, organizationID, userID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -760,7 +603,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 
 // Delete removes the user and revokes the access token.
 func (c *Client) Delete(ctx context.Context, organizationID, userID string) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}

@@ -29,10 +29,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
-	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/mock"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -153,16 +151,6 @@ func addPrincipalHeader(t *testing.T, r *http.Request) {
 	r.Header.Set(principal.Header, value)
 }
 
-// authInfoFixture creates a fixture to be returned from the Authorizer interface
-// on successful authentication.
-func authInfoFixture(actor string) *authorization.Info {
-	return &authorization.Info{
-		Userinfo: &identityapi.Userinfo{
-			Sub: actor,
-		},
-	}
-}
-
 // handler is a HTTP handler that records expected things that should exist in
 // hte request context and allows inspection of them.
 type handler struct {
@@ -202,8 +190,7 @@ func (h *handler) validate(t *testing.T, actor string) {
 
 	// Check the authentication information is good for auditing.
 	require.NotNil(t, h.authinfo)
-	require.NotNil(t, h.authinfo.Userinfo)
-	require.Equal(t, actor, h.authinfo.Userinfo.Sub)
+	require.Equal(t, actor, h.authinfo.Actor)
 
 	// Check the Acl is good for RBAC.
 	require.NotNil(t, h.acl)
@@ -214,13 +201,13 @@ func (h *handler) validate(t *testing.T, actor string) {
 }
 
 // mustNewValidator creates an OpanAPI validator middleware, the thing we are testing.
-func mustNewValidator(t *testing.T, authorizer openapi.Authorizer, handler http.Handler) *openapi.Validator {
+func mustNewValidator(t *testing.T, handler http.Handler) *openapi.Validator {
 	t.Helper()
 
 	schema, err := coreapi.NewSchema(identityapi.GetSwagger)
 	require.NoError(t, err)
 
-	return openapi.NewValidator(authorizer, handler, schema)
+	return openapi.NewValidator(handler, schema)
 }
 
 // TestUserToServiceAuthenticationFailure tests we propagate the correct error when
@@ -231,11 +218,8 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
-	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.OAuth2AccessDenied(""))
-
 	h := &handler{}
-	v := mustNewValidator(t, authorizer, h)
+	v := mustNewValidator(t, h)
 
 	w := newResponseWriter()
 
@@ -255,12 +239,8 @@ func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
-	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor), nil)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
-
 	h := &handler{}
-	v := mustNewValidator(t, authorizer, h)
+	v := mustNewValidator(t, h)
 
 	w := newResponseWriter()
 
@@ -281,10 +261,8 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
-	authorizer := mock.NewMockAuthorizer(c)
-
 	h := &handler{}
-	v := mustNewValidator(t, authorizer, h)
+	v := mustNewValidator(t, h)
 
 	w := newResponseWriter()
 
@@ -307,10 +285,8 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
-	authorizer := mock.NewMockAuthorizer(c)
-
 	h := &handler{}
-	v := mustNewValidator(t, authorizer, h)
+	v := mustNewValidator(t, h)
 
 	w := newResponseWriter()
 
@@ -332,11 +308,8 @@ func TestServiceToServiceAuthenticationFailure(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
-	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.OAuth2AccessDenied(""))
-
 	h := &handler{}
-	v := mustNewValidator(t, authorizer, h)
+	v := mustNewValidator(t, h)
 
 	w := newResponseWriter()
 
@@ -357,11 +330,8 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
-	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
-
 	h := &handler{}
-	v := mustNewValidator(t, authorizer, h)
+	v := mustNewValidator(t, h)
 
 	w := newResponseWriter()
 
@@ -384,12 +354,8 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
-	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
-
 	h := &handler{}
-	v := mustNewValidator(t, authorizer, h)
+	v := mustNewValidator(t, h)
 
 	w := newResponseWriter()
 

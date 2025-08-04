@@ -30,6 +30,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
@@ -46,13 +47,15 @@ type Client struct {
 	client client.Client
 	// namespace is the namespace the identity service is running in.
 	namespace string
+	pdp       rbac.PolicyDecisionPoint
 }
 
 // New creates a new user client.
-func New(client client.Client, namespace string) *Client {
+func New(client client.Client, namespace string, pdp rbac.PolicyDecisionPoint) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+		pdp:       pdp,
 	}
 }
 
@@ -176,7 +179,7 @@ func (c *Client) Get(ctx context.Context, organizationID string) (*openapi.Quota
 func (c *Client) Update(ctx context.Context, organizationID string, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
 	common := common.New(c.client)
 
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,15 +61,17 @@ type Client struct {
 	oauth2 *oauth2.Authenticator
 	// options are any deployment defaults.
 	options *Options
+	pdp     rbac.PolicyDecisionPoint
 }
 
 // New creates a new service account client.
-func New(client client.Client, namespace, host string, oauth2 *oauth2.Authenticator, options *Options) *Client {
+func New(client client.Client, namespace, host string, oauth2 *oauth2.Authenticator, pdp rbac.PolicyDecisionPoint, options *Options) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
 		host:      host,
 		oauth2:    oauth2,
+		pdp:       pdp,
 		options:   options,
 	}
 }
@@ -235,7 +238,7 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 
 // Create makes a new service account and issues an access token.
 func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountCreate, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +266,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 
 // Get retrieves information about a service account.
 func (c *Client) Get(ctx context.Context, organizationID, serviceAccountID string) (*openapi.ServiceAccountRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +286,7 @@ func (c *Client) Get(ctx context.Context, organizationID, serviceAccountID strin
 
 // List retrieves information about all service accounts in the organization.
 func (c *Client) List(ctx context.Context, organizationID string) (openapi.ServiceAccounts, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +308,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Servi
 // Update modifies any metadata for the service account if it exists.  If a matching account
 // doesn't exist it raises an error.
 func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -352,7 +355,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 // Rotate is a special version of Update where everything about the resource is preserved
 // with the exception of the access token.
 func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID string) (*openapi.ServiceAccountCreate, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +390,7 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 
 // Delete removes the service account and revokes the access token.
 func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID string) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}

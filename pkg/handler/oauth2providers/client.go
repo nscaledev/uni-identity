@@ -27,6 +27,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,12 +38,14 @@ import (
 type Client struct {
 	client    client.Client
 	namespace string
+	pdp       rbac.PolicyDecisionPoint
 }
 
-func New(client client.Client, namespace string) *Client {
+func New(client client.Client, namespace string, pdp rbac.PolicyDecisionPoint) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+		pdp:       pdp,
 	}
 }
 
@@ -72,13 +75,6 @@ func convert(in *unikornv1.OAuth2Provider) *openapi.Oauth2ProviderRead {
 		t := openapi.Oauth2ProviderType(*in.Spec.Type)
 		out.Spec.Type = &t
 	}
-
-	/*
-		// Only show sensitive details for organizations you are an admin of.
-		if showDetails(permissions) {
-			out.Spec.ClientSecret = in.Spec.ClientSecret
-		}
-	*/
 
 	return out
 }
@@ -112,7 +108,7 @@ func (c *Client) ListGlobal(ctx context.Context) (openapi.Oauth2Providers, error
 }
 
 func (c *Client) List(ctx context.Context, organizationID string) (openapi.Oauth2Providers, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +146,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 }
 
 func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.Oauth2ProviderWrite) (*openapi.Oauth2ProviderRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +164,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 }
 
 func (c *Client) Update(ctx context.Context, organizationID, providerID string, request *openapi.Oauth2ProviderWrite) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}
@@ -200,7 +196,7 @@ func (c *Client) Update(ctx context.Context, organizationID, providerID string, 
 }
 
 func (c *Client) Delete(ctx context.Context, organizationID, providerID string) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}

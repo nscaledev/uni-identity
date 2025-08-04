@@ -21,7 +21,7 @@ import (
 	"fmt"
 
 	"github.com/unikorn-cloud/core/pkg/errors"
-	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 )
 
 // Info contains all the information we can derive from an
@@ -29,18 +29,11 @@ import (
 type Info struct {
 	// Token is a copy of the access token made available to handlers.
 	Token string
-	// Userinfo is a parsed version of the token, used primarily for
-	// auditing etc.
-	Userinfo *openapi.Userinfo
-	// ClientID optionally records the oauth2 client that initiated
-	// the session, and can be used to route errors to the correct
-	// endpoint.
-	ClientID string
-	// SystemAccount means this belongs to a system account that is
-	// authenticated with X.509.
-	SystemAccount bool
-	// ServiceAccount means this belongs explicitly to a service account.
-	ServiceAccount bool
+	// Actor is the identity of the user (email) or the service (X.509 CN)
+	// used by RBAC to check permissions.
+	Actor string
+	// Principal is the user, or user we are acting on behalf of.
+	Principal *principal.Principal
 }
 
 type keyType int

@@ -255,7 +255,7 @@ func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 		return err
 	}
 
-	meta.Annotations[constants.CreatorAnnotation] = info.Userinfo.Sub
+	meta.Annotations[constants.CreatorAnnotation] = info.Actor
 
 	principal, err := principal.FromContext(ctx)
 	if err != nil {

@@ -39,12 +39,14 @@ import (
 type Client struct {
 	client    client.Client
 	namespace string
+	pdp       rbac.PolicyDecisionPoint
 }
 
-func New(client client.Client, namespace string) *Client {
+func New(client client.Client, namespace string, pdp rbac.PolicyDecisionPoint) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+		pdp:       pdp,
 	}
 }
 
@@ -88,7 +90,7 @@ func convertList(in *unikornv1.GroupList) openapi.Groups {
 }
 
 func (c *Client) List(ctx context.Context, organizationID string) (openapi.Groups, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +99,12 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Group
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
 		return nil, errors.OAuth2ServerError("failed to list groups").WithError(err)
+	}
+
+	allowed := rbac.AllowBulk(ctx, c.pdp, "identity:groups", openapi.Read, result)
+
+	result = &unikornv1.GroupList{
+		Items: rbac.FilterAllowed(result.Items, allowed),
 	}
 
 	return convertList(result), nil
@@ -117,13 +125,17 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, grou
 }
 
 func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*openapi.GroupRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
 	result, err := c.get(ctx, organization, groupID)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:groups", openapi.Read, result); err != nil {
 		return nil, err
 	}
 
@@ -175,13 +187,17 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 }
 
 func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.GroupWrite) (*openapi.GroupRead, error) {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
 	resource, err := c.generate(ctx, organization, request)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:groups", openapi.Create, resource); err != nil {
 		return nil, err
 	}
 
@@ -193,13 +209,17 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 }
 
 func (c *Client) Update(ctx context.Context, organizationID, groupID string, request *openapi.GroupWrite) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}
 
 	current, err := c.get(ctx, organization, groupID)
 	if err != nil {
+		return err
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:groups", openapi.Update, current); err != nil {
 		return err
 	}
 
@@ -225,8 +245,19 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 }
 
 func (c *Client) Delete(ctx context.Context, organizationID, groupID string) error {
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	organization, err := organizations.New(c.client, c.namespace, c.pdp).GetMetadata(ctx, organizationID)
 	if err != nil {
+		return err
+	}
+
+	resource := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      groupID,
+			Namespace: organization.Namespace,
+		},
+	}
+
+	if err := c.pdp.Allow(ctx, "identity:groups", openapi.Delete, resource); err != nil {
 		return err
 	}
 
@@ -253,13 +284,6 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 				return errors.OAuth2ServerError("failed to update project").WithError(err)
 			}
 		}
-	}
-
-	resource := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      groupID,
-			Namespace: organization.Namespace,
-		},
 	}
 
 	if err := c.client.Delete(ctx, resource); err != nil {
