@@ -20,6 +20,7 @@ package authorizer
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,8 +51,6 @@ type Authorizer struct {
 	// tokenCache is used to enhance interaction as the validation is a
 	// very expensive operation.
 	tokenCache *cache.LRUExpireCache
-	// externalProviders maps issuer URLs to their OIDC provider configurations
-	externalProviders map[string]*ExternalOIDCProvider
 }
 
 type ExternalOIDCProvider struct {
@@ -67,9 +66,7 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		client:        client,
 		options:       options,
 		clientOptions: clientOptions,
-		// TODO: make this configurable, possibly even a shared flag with the
-		// authorizer to maintain consistency.
-		tokenCache: cache.NewLRUExpireCache(4096),
+		tokenCache:    cache.NewLRUExpireCache(4096),
 	}
 }
 
@@ -167,6 +164,12 @@ func (a *Authorizer) getIdentityHTTPClient(ctx context.Context) (*http.Client, e
 
 // extractIssuerFromToken extracts the issuer claim from a JWT.
 func (a *Authorizer) extractIssuerFromToken(tokenString string) (string, error) {
+	// Hack: if it looks like an encrypted access token, assume it's from the Identity service. Platforms don't typically encrypt access tokens; the Identity service can do, because it encrypts service token keys.
+	parts := strings.Split(tokenString, ".")
+	if len(parts) == 5 {
+		return a.options.Host(), nil
+	}
+
 	// Parse without verification to get the issuer claim
 	token, err := jwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{jose.RS256}) // Auth0 uses RS256 https://auth0.com/docs/secure/tokens/access-tokens#sample-access-token
 	if err != nil {
@@ -237,9 +240,12 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		if err != nil {
 			return nil, errors.OAuth2ServerError("oidc service discovery failed").WithError(err)
 		}
-	} else if externalProvider, exists := a.externalProviders[issuer]; exists {
-		// Use external provider
-		provider = externalProvider.Provider
+	} else if slices.Contains(a.options.ExternalIssuers, issuer) {
+		// The provider is an allowed external provider
+		provider, err = oidc.NewProvider(ctx, issuer)
+		if err != nil {
+			return nil, errors.OAuth2AccessDenied("unable to access provider").WithError(err)
+		}
 	} else {
 		return nil, errors.OAuth2AccessDenied("unknown or untrusted issuer").WithValues("issuer", issuer)
 	}

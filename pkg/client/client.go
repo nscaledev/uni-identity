@@ -20,17 +20,28 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/spf13/pflag"
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type Options = coreclient.HTTPOptions
+type Options struct {
+	*coreclient.HTTPOptions
+	ExternalIssuers []string
+}
+
+func (opts *Options) AddFlags(flags *pflag.FlagSet) {
+	opts.HTTPOptions.AddFlags(flags)
+	flags.StringArrayVar(&opts.ExternalIssuers, "external-issuer", nil, "hostnames for external OIDC issuers, assumed to support discovery")
+}
 
 // NewOptions must be used to create options for consistency.
 func NewOptions() *Options {
-	return coreclient.NewHTTPOptions("identity")
+	return &Options{
+		HTTPOptions: coreclient.NewHTTPOptions("identity"),
+	}
 }
 
 // Client wraps up the raw OpenAPI client with things to make it useable e.g.
@@ -42,7 +53,7 @@ type Client struct {
 // New creates a new client.
 func New(client client.Client, options *Options, clientOptions *coreclient.HTTPClientOptions) *Client {
 	return &Client{
-		base: NewBaseClient(client, options, clientOptions),
+		base: NewBaseClient(client, options.HTTPOptions, clientOptions),
 	}
 }
 

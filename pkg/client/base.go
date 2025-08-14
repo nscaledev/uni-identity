@@ -44,13 +44,13 @@ type BaseClient struct {
 	// client is a Kubenetes client.
 	client client.Client
 	// options allows setting of options from the CLI
-	options *Options
+	options *coreclient.HTTPOptions
 	// clientOptions may be specified to inject client certificates etc.
 	clientOptions *coreclient.HTTPClientOptions
 }
 
 // NewBaseClient creates a new client.
-func NewBaseClient(client client.Client, options *Options, clientOptions *coreclient.HTTPClientOptions) *BaseClient {
+func NewBaseClient(client client.Client, options *coreclient.HTTPOptions, clientOptions *coreclient.HTTPClientOptions) *BaseClient {
 	return &BaseClient{
 		client:        client,
 		options:       options,
