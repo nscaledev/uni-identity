@@ -26,6 +26,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"golang.org/x/oauth2"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
@@ -48,6 +50,13 @@ type Authorizer struct {
 	// tokenCache is used to enhance interaction as the validation is a
 	// very expensive operation.
 	tokenCache *cache.LRUExpireCache
+	// externalProviders maps issuer URLs to their OIDC provider configurations
+	externalProviders map[string]*ExternalOIDCProvider
+}
+
+type ExternalOIDCProvider struct {
+	Provider *oidc.Provider
+	Audience string // Expected audience for this provider
 }
 
 var _ openapi.Authorizer = &Authorizer{}
@@ -156,7 +165,23 @@ func (a *Authorizer) getIdentityHTTPClient(ctx context.Context) (*http.Client, e
 	return client, nil
 }
 
-// authorizeOAuth2 checks APIs that require and oauth2 bearer token.
+// extractIssuerFromToken extracts the issuer claim from a JWT.
+func (a *Authorizer) extractIssuerFromToken(tokenString string) (string, error) {
+	// Parse without verification to get the issuer claim
+	token, err := jwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{jose.RS256}) // Auth0 uses RS256 https://auth0.com/docs/secure/tokens/access-tokens#sample-access-token
+	if err != nil {
+		return "", err
+	}
+
+	claims := map[string]string{}
+	if err := token.UnsafeClaimsWithoutVerification(claims); err != nil {
+		return "", err
+	}
+
+	return claims["iss"], nil
+}
+
+// authorizeOAuth2 checks APIs that require an oauth2 bearer token.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	ctx := r.Context()
 
@@ -183,18 +208,12 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return info, nil
 	}
 
-	client, err := a.getIdentityHTTPClient(ctx)
+	// Extract issuer from token to determine which provider to use. This has safeguards:
+	// - the issuer must be explicitly allowed by configuration (so you can't rock up with your own self-issued token)
+	// - this doesn't validate the token, it merely finds the place to validate the token; calling <issuer>/userinfo will validate it
+	issuer, err := a.extractIssuerFromToken(rawToken)
 	if err != nil {
-		return nil, err
-	}
-
-	ctx = oidc.ClientContext(ctx, client)
-
-	// Perform userinfo call against the identity service that will validate the token
-	// and also return some information about the user that we can use for audit logging.
-	provider, err := oidc.NewProvider(ctx, a.options.Host())
-	if err != nil {
-		return nil, errors.OAuth2ServerError("oidc service discovery failed").WithError(err)
+		return nil, errors.OAuth2InvalidRequest("failed to extract issuer from token").WithError(err)
 	}
 
 	token := &oauth2.Token{
@@ -202,7 +221,31 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		TokenType:   authorizationScheme,
 	}
 
-	ui, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
+	var ui *oidc.UserInfo
+	var provider *oidc.Provider
+
+	// Check if this is our internal identity service
+	if issuer == a.options.Host() { // FIXME is this definitely correct? Do we use Host() as the issuer in our tokens?
+		client, err := a.getIdentityHTTPClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		ctx = oidc.ClientContext(ctx, client)
+
+		provider, err = oidc.NewProvider(ctx, a.options.Host())
+		if err != nil {
+			return nil, errors.OAuth2ServerError("oidc service discovery failed").WithError(err)
+		}
+	} else if externalProvider, exists := a.externalProviders[issuer]; exists {
+		// Use external provider
+		provider = externalProvider.Provider
+	} else {
+		return nil, errors.OAuth2AccessDenied("unknown or untrusted issuer").WithValues("issuer", issuer)
+	}
+
+	// Validate token with the appropriate provider
+	ui, err = provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
 	if err != nil {
 		if oidcErrorIsUnauthorized(err) {
 			return nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
@@ -214,7 +257,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	claims := &identityapi.Userinfo{}
 
 	if err := ui.Claims(claims); err != nil {
-		return nil, errors.OAuth2ServerError("failed to extrac user information").WithError(err)
+		return nil, errors.OAuth2ServerError("failed to extract user information").WithError(err)
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights

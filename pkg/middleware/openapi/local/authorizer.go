@@ -62,7 +62,7 @@ func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	return parts[0], parts[1], nil
 }
 
-// authorizeOAuth2 checks APIs that require and oauth2 bearer token.
+// authorizeOAuth2 checks APIs that require an oauth2 bearer token.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	authorizationScheme, token, err := getHTTPAuthenticationScheme(r)
 	if err != nil {
