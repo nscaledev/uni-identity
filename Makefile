@@ -134,6 +134,13 @@ images: $(CONTROLLER_BINARIES) ${CRDDIR}
 	for image in ${CONTROLLERS}; do docker buildx build --platform $(BUILDX_PLATFORMS) $(BUILDX_OUTPUT) -f docker/$${image}/Dockerfile -t ${DOCKER_ORG}/$${image}:${VERSION} .; done;
 	if [ -n "$(RELEASE)" ]; then docker buildx rm unikorn; fi
 
+.PHONY: push-daily
+push-daily: images
+	for image in ${CONTROLLERS}; do \
+	  docker tag ${DOCKER_ORG}/$${image}:${VERSION} ${DOCKER_ORG}/daily/$${image}:${VERSION}-${REVISION} && \
+	  docker push ${DOCKER_ORG}/daily/$${image}:${VERSION}-${REVISION}; \
+	done
+
 # Purely lazy command that builds and pushes to docker hub.
 .PHONY: images-push
 images-push: images
