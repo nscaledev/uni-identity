@@ -60,6 +60,7 @@ projectController:
 # oauth2 issuer etc.
 identity:
   host: identity.acme.org
+  externalIssuers: ~
 
 onboarding:
   # Allows anonymous signups.  Be damn sure if you do this you are in control
