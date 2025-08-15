@@ -1,5 +1,7 @@
 FROM gcr.io/distroless/static:nonroot
 
+LABEL org.opencontainers.image.source=https://github.com/nscaledev/uni-identity
+
 # This is implcitly created by 'docker buildx build'
 ARG TARGETARCH
 
