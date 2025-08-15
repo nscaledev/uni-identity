@@ -176,12 +176,16 @@ func (a *Authorizer) extractIssuerFromToken(tokenString string) (string, error) 
 		return "", err
 	}
 
-	claims := map[string]string{}
-	if err := token.UnsafeClaimsWithoutVerification(claims); err != nil {
+	type issuerClaim struct {
+		Issuer string `json:"iss"`
+	}
+	var claims issuerClaim
+
+	if err := token.UnsafeClaimsWithoutVerification(&claims); err != nil {
 		return "", err
 	}
 
-	return claims["iss"], nil
+	return claims.Issuer, nil
 }
 
 // authorizeOAuth2 checks APIs that require an oauth2 bearer token.
