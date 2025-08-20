@@ -58,6 +58,11 @@ func organizationSelector(organizationID string) (labels.Selector, error) {
 }
 
 func projectSelector(organizationID, projectID string) (labels.Selector, error) {
+	kindRequirement, err := labels.NewRequirement(constants.KindLabel, selection.Equals, []string{constants.KindLabelValueProject})
+	if err != nil {
+		return labels.Nothing(), err
+	}
+
 	organizationIDRequirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
 	if err != nil {
 		return labels.Nothing(), err
@@ -68,10 +73,11 @@ func projectSelector(organizationID, projectID string) (labels.Selector, error) 
 		return labels.Nothing(), err
 	}
 
-	return labels.NewSelector().Add(*organizationIDRequirement, *projectIDRequirement), nil
+	return labels.NewSelector().Add(*kindRequirement, *organizationIDRequirement, *projectIDRequirement), nil
 }
 
-func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
+// ProjectNamespace is shared by higher order services.
+func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, projectID string) (*corev1.Namespace, error) {
 	selector, err := projectSelector(organizationID, projectID)
 	if err != nil {
 		return nil, err
@@ -83,7 +89,7 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID
 
 	var resources corev1.NamespaceList
 
-	if err := c.client.List(ctx, &resources, options); err != nil {
+	if err := cli.List(ctx, &resources, options); err != nil {
 		return nil, err
 	}
 
@@ -92,6 +98,10 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID
 	}
 
 	return &resources.Items[0], nil
+}
+
+func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
+	return ProjectNamespace(ctx, c.client, organizationID, projectID)
 }
 
 func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv1.Quota, bool, error) {
