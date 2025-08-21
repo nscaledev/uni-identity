@@ -265,6 +265,10 @@ func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 		return err
 	}
 
+	if meta.Annotations == nil {
+		meta.Annotations = map[string]string{}
+	}
+
 	meta.Annotations[constants.CreatorAnnotation] = info.Userinfo.Sub
 
 	principal, err := principal.FromContext(ctx)
@@ -275,10 +279,18 @@ func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 	meta.Annotations[constants.CreatorPrincipalAnnotation] = principal.Actor
 
 	if principal.OrganizationID != "" {
+		if meta.Labels == nil {
+			meta.Labels = map[string]string{}
+		}
+
 		meta.Labels[constants.OrganizationPrincipalLabel] = principal.OrganizationID
 	}
 
 	if principal.ProjectID != "" {
+		if meta.Labels == nil {
+			meta.Labels = map[string]string{}
+		}
+
 		meta.Labels[constants.ProjectPrincipalLabel] = principal.ProjectID
 	}
 
