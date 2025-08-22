@@ -141,6 +141,7 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		"actor", &Actor{
 			Subject: info.Userinfo.Sub,
+			Email:   info.Userinfo.Email,
 		},
 		"operation", &Operation{
 			Verb: r.Method,

@@ -67,7 +67,7 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 	}
 }
 
-func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+func (r *RBAC) GetUserByEmail(ctx context.Context, email string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
 	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
@@ -75,7 +75,7 @@ func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, er
 	}
 
 	index := slices.IndexFunc(result.Items, func(user unikornv1.User) bool {
-		return user.Spec.Subject == subject
+		return user.Spec.Subject == email
 	})
 
 	if index < 0 {
@@ -85,9 +85,32 @@ func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, er
 	return &result.Items[index], nil
 }
 
+func (r *RBAC) GetActiveUserByEmail(ctx context.Context, email string) (*unikornv1.User, error) {
+	user, err := r.GetUserByEmail(ctx, email)
+	if err != nil {
+		return nil, err
+	}
+
+	if user.Spec.State != unikornv1.UserStateActive {
+		return nil, fmt.Errorf("%w: user is not active", ErrResourceReference)
+	}
+
+	return user, nil
+}
+
+func (r *RBAC) GetUserByID(ctx context.Context, userID string) (*unikornv1.User, error) {
+	result := &unikornv1.User{}
+
+	if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: userID}, result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // GetActiveUser returns a user that match the subject and is active.
-func (r *RBAC) GetActiveUser(ctx context.Context, subject string) (*unikornv1.User, error) {
-	user, err := r.GetUser(ctx, subject)
+func (r *RBAC) GetActiveUserByID(ctx context.Context, userID string) (*unikornv1.User, error) {
+	user, err := r.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +421,7 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	default:
 		// A subject may be part of any organization's group, so look for that user
 		// and a record that indicates they are part of an organization.
-		user, err := r.GetActiveUser(ctx, info.Userinfo.Sub)
+		user, err := r.GetActiveUserByID(ctx, info.Userinfo.Sub)
 		if err != nil {
 			return nil, err
 		}

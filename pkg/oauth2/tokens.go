@@ -60,9 +60,6 @@ type FederatedClaims struct {
 	Provider string `json:"idp"`
 	// ClientID is the oauth2 client that the user is using.
 	ClientID string `json:"cid"`
-	// UserID is set when the token is issued to a user.
-	// TODO: this should be the subject.
-	UserID string `json:"uid"`
 	// Scope is the set of scopes requested by the client, and is used to
 	// populate the userinfo response.
 	Scope Scope `json:"sco"`
@@ -233,7 +230,7 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 	}
 
 	if info.Federated != nil {
-		user, err := a.getUser(ctx, info.Federated.UserID)
+		user, err := a.getUser(ctx, info.Subject)
 		if err != nil {
 			return nil, err
 		}
@@ -364,8 +361,7 @@ func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo,
 		return nil
 	}
 
-	// TODO: the subject should be the user ID anyway...
-	user, err := a.rbac.GetActiveUser(ctx, claims.Subject)
+	user, err := a.rbac.GetActiveUserByID(ctx, claims.Subject)
 	if err != nil {
 		return err
 	}

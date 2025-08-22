@@ -165,7 +165,7 @@ func (c *Client) getUserbyEmail(ctx context.Context, rbacClient *rbac.RBAC, info
 		}
 	}
 
-	user, err := rbacClient.GetActiveUser(ctx, email)
+	user, err := rbacClient.GetActiveUserByEmail(ctx, email)
 	if err != nil {
 		return nil, errors.HTTPNotFound().WithError(err)
 	}
@@ -196,7 +196,7 @@ func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, ema
 			return nil, err
 		}
 	} else {
-		user, err = rbacClient.GetActiveUser(ctx, info.Userinfo.Sub)
+		user, err = rbacClient.GetActiveUserByID(ctx, info.Userinfo.Sub)
 		if err != nil {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}

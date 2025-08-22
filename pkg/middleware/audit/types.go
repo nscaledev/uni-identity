@@ -22,7 +22,8 @@ type Component struct {
 }
 
 type Actor struct {
-	Subject string `json:"subject"`
+	Subject string  `json:"subject"`
+	Email   *string `json:"email,omitempty"`
 }
 
 type Resource struct {

@@ -97,13 +97,11 @@ func TestTokens(t *testing.T) {
 	time.Sleep(2 * josetesting.RefreshPeriod)
 
 	issueInfo := &oauth2.IssueInfo{
-		Issuer:   "https://foo.com",
-		Audience: "foo.com",
-		Subject:  "barry@foo.com",
-		Type:     oauth2.TokenTypeFederated,
-		Federated: &oauth2.FederatedClaims{
-			UserID: "fake",
-		},
+		Issuer:    "https://foo.com",
+		Audience:  "foo.com",
+		Subject:   "fake",
+		Type:      oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{},
 	}
 
 	tokens, err := authenticator.Issue(ctx, issueInfo)
