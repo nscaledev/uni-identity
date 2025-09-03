@@ -44,6 +44,14 @@ var (
 	ErrResponse = errors.New("unexpected http response")
 )
 
+// ServiceDescriptor is used to define tracing information.
+type ServiceDescriptor struct {
+	// ServiceName is the name of the service.
+	ServiceName string
+	// ServiceVersion is the version of the service.
+	ServiceVersion string
+}
+
 type TokenIssuer struct {
 	// client is a Kubernetes client.
 	client client.Client
