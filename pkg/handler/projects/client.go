@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // Client wraps up project related management handling.
@@ -222,6 +223,57 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 		}
 
 		return errors.OAuth2ServerError("failed to delete project").WithError(err)
+	}
+
+	return nil
+}
+
+// ReferenceCreate adds a external reference to the project that blocks deletion
+// until it has been removed.
+func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID, reference string) error {
+	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+
+	resource, err := c.get(ctx, organization, projectID)
+	if err != nil {
+		return err
+	}
+
+	if resource.DeletionTimestamp != nil {
+		return errors.OAuth2InvalidRequest("unable to add reference, resource is being deleted")
+	}
+
+	if ok := controllerutil.AddFinalizer(resource, reference); !ok {
+		return nil
+	}
+
+	if err := c.client.Update(ctx, resource); err != nil {
+		return errors.OAuth2ServerError("failed to update project").WithError(err)
+	}
+
+	return nil
+}
+
+// ReferenceDelete removes an external reference from the project.
+func (c *Client) ReferenceDelete(ctx context.Context, organizationID, projectID, reference string) error {
+	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+
+	resource, err := c.get(ctx, organization, projectID)
+	if err != nil {
+		return err
+	}
+
+	if ok := controllerutil.RemoveFinalizer(resource, reference); !ok {
+		return nil
+	}
+
+	if err := c.client.Update(ctx, resource); err != nil {
+		return errors.OAuth2ServerError("failed to update project").WithError(err)
 	}
 
 	return nil

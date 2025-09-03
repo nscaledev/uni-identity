@@ -150,6 +150,7 @@ roles:
         identity:users: [create,read,update,delete]
         identity:groups: [create,read,update,delete]
         identity:projects: [create,read,update,delete]
+        identity:projects/references: [create,read,update,delete]
         identity:quotas: [create,read,update,delete]
         identity:allocations: [create,read,update,delete]
         region:regions: [create,read,update,delete]
@@ -180,6 +181,7 @@ roles:
     scopes:
       global:
         identity:allocations: [create,read,update,delete]
+        identity:projects/references: [create,delete]
         region:identities: [create,read,delete]
         region:regions: [read]
         region:regions/detail: [read]
