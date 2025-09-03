@@ -128,8 +128,9 @@ platformAdministrators:
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:
-  unikorn-kubernetes: infra-manager-service
-  unikorn-compute: infra-manager-service
+  unikorn-region: region-service
+  unikorn-kubernetes: kubernetes-service
+  unikorn-compute: compute-service
 
 # A static list of roles.
 # Any unscoped API resources are to be managed by the platform operator
@@ -150,6 +151,7 @@ roles:
         identity:users: [create,read,update,delete]
         identity:groups: [create,read,update,delete]
         identity:projects: [create,read,update,delete]
+        identity:projects/references: [create,read,update,delete]
         identity:quotas: [create,read,update,delete]
         identity:allocations: [create,read,update,delete]
         region:regions: [create,read,update,delete]
@@ -157,7 +159,9 @@ roles:
         region:images: [create,read,update,delete]
         region:externalnetworks: [create,read,update,delete]
         region:identities: [create,read,update,delete]
+        region:identities/references: [create,read,update,delete]
         region:networks: [create,read,update,delete]
+        region:networks/references: [create,read,update,delete]
         region:securitygroups: [create,read,update,delete]
         region:servers: [create,read,update,delete]
         kubernetes:regions: [create,read,update,delete]
@@ -172,32 +176,43 @@ roles:
         compute:clusters: [create,read,update,delete]
         application:applications: [create,read,update,delete]
         application:applicationsets: [create,read,update,delete]
-  # An infrastructure manager service is a role primarily for Kubernetes like
-  # services that can manage identities and physical networks on behalf of a cluster.
-  infra-manager-service:
-    decription: Infrastructure manager service
+  region-service:
+    decription: Region service
     protected: true
     scopes:
       global:
+        identity:projects/references: [create,delete]
+  kubernetes-service:
+    description: Kubernetes service
+    protected: true
+    scopes:
+      global:
+        identity:projects/references: [create,delete]
         identity:allocations: [create,read,update,delete]
-        region:identities: [create,read,delete]
+        region:identities: [create,read,delete] # Create/delete V1 only
+        region:identities/references: [create,delete] # TODO: V1 only.
         region:regions: [read]
-        region:regions/detail: [read]
+        region:regions/detail: [read] # Gets access to the Kubernetes config for Lite.
         region:flavors: [read]
         region:images: [read]
         region:externalnetworks: [read]
-        region:networks: [create,read,delete]
-        region:servers: [create,read,update,delete]
-        region:securitygroups: [create,read,update,delete]
-  # An application manager is a role primarily for the application service that
-  # needs to be able to see the Kubernetes clusters it's deploying applications
-  # on to.
-  application-manager-service:
-    description: Application manager service
+        region:networks: [create,read,delete] # TODO: Create/delete V1 only
+        region:networks/references: [create,delete]
+  compute-service:
+    decription: Compute service
     protected: true
     scopes:
       global:
-        kubernetes:clusters: [read]
+        identity:projects/references: [create,delete]
+        identity:allocations: [create,read,update,delete]
+        region:identities: [create,read,delete] # TODO: V2 delete me, created by network
+        region:regions: [read]
+        region:flavors: [read]
+        region:images: [read]
+        region:networks: [create,read,delete] # TODO: V2 read only
+        region:networks/references: [create,delete]
+        region:servers: [create,read,update,delete]
+        region:securitygroups: [create,read,update,delete] # TODO: v2 read only
   # An administrator can do anything within an organization.
   administrator:
     description: Organization administrator

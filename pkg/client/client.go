@@ -23,6 +23,8 @@ import (
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -55,4 +57,10 @@ func (c *Client) HTTPClient(ctx context.Context) (*http.Client, error) {
 // from another service provider's API.
 func (c *Client) APIClient(ctx context.Context, accessToken AccessTokenGetter) (*openapi.ClientWithResponses, error) {
 	return APIClient(ctx, c.base, openapi.NewBuilder(), accessToken)
+}
+
+// ControllerClient returns a new OpenAPI client that can be used to access the API from another
+// controller.  It requires a resource that stores the identity principal information.
+func (c *Client) ControllerClient(ctx context.Context, accessToken AccessTokenGetter, resource metav1.Object) (*openapi.ClientWithResponses, error) {
+	return ControllerClient(ctx, c.base, openapi.NewBuilder(), accessToken, resource)
 }

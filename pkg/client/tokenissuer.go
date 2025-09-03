@@ -43,6 +43,14 @@ var (
 	ErrResponse = errors.New("unexpected http response")
 )
 
+// ServiceDescriptor is used to define tracing information.
+type ServiceDescriptor struct {
+	// ServiceName is the name of the service.
+	ServiceName string
+	// ServiceVersion is the version of the service.
+	ServiceVersion string
+}
+
 type TokenIssuer struct {
 	// client is a Kubernetes client.
 	client client.Client
@@ -53,19 +61,16 @@ type TokenIssuer struct {
 	// to ensure cloud identities and networks are provisioned, as well
 	// as deptovisioning them.
 	clientOptions *coreclient.HTTPClientOptions
-	// serviceName for tracing.
-	serviceName string
-	// serviceVersion for tracing.
-	serviceVersion string
+	// serviceDescriptor defines tracing information.
+	serviceDescriptor ServiceDescriptor
 }
 
-func NewTokenIssuer(client client.Client, identityOptions *Options, clientOptions *coreclient.HTTPClientOptions, serviceName, serviceVersion string) *TokenIssuer {
+func NewTokenIssuer(client client.Client, identityOptions *Options, clientOptions *coreclient.HTTPClientOptions, serviceDescriptor ServiceDescriptor) *TokenIssuer {
 	return &TokenIssuer{
-		client:          client,
-		identityOptions: identityOptions,
-		clientOptions:   clientOptions,
-		serviceName:     serviceName,
-		serviceVersion:  serviceVersion,
+		client:            client,
+		identityOptions:   identityOptions,
+		clientOptions:     clientOptions,
+		serviceDescriptor: serviceDescriptor,
 	}
 }
 
@@ -78,7 +83,7 @@ func (a *StaticAccessTokenGetter) Get() string {
 }
 
 // Issue issues an access token for the non-user client/service.
-func (i *TokenIssuer) Issue(ctx context.Context, traceName string) (*StaticAccessTokenGetter, error) {
+func (i *TokenIssuer) Issue(ctx context.Context) (*StaticAccessTokenGetter, error) {
 	identityClient := New(i.client, i.identityOptions, i.clientOptions)
 
 	identityHTTPClient, err := identityClient.HTTPClient(ctx)
@@ -112,13 +117,13 @@ func (i *TokenIssuer) Issue(ctx context.Context, traceName string) (*StaticAcces
 	// for now.  Caching the client leads to having to cache the access token somehow
 	// and then token rotation when it expires, so don't be too tempted to change this.
 	attr := []attribute.KeyValue{
-		semconv.ServiceName(i.serviceName),
-		semconv.ServiceVersion(i.serviceVersion),
+		semconv.ServiceName(i.serviceDescriptor.ServiceName),
+		semconv.ServiceVersion(i.serviceDescriptor.ServiceVersion),
 	}
 
 	tracer := otel.GetTracerProvider().Tracer("access token issuer")
 
-	spanContext, span := tracer.Start(ctx, traceName, trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attr...))
+	spanContext, span := tracer.Start(ctx, "issue-service-token", trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attr...))
 	defer span.End()
 
 	ctx = spanContext
