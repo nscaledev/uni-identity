@@ -815,6 +815,65 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+  /api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference}:
+    description: |-
+      Implements project management services.  Projects are associated with
+      user groups, and provide project-scoped role-based access control.
+      Infrastructure provisioning, for example the Compute and Kubernetes services,
+      occurs within a project.
+    parameters:
+    - $ref: '#/components/parameters/organizationIDParameter'
+    - $ref: '#/components/parameters/projectIDParameter'
+    - $ref: '#/components/parameters/referenceParameter'
+    put:
+      x-no-body: true
+      description: |
+        Idempotent interface for adding external references to a project.
+        Project deletion will be deferred until all external references are
+        deleted.  The intention here is for external things like clusters
+        networks, storage etc. to register themselves with a project, rather
+        than the identity service having to know about all 3rd party oddons.
+        External services register individual resources on normal reconciliation.
+        Open receiving a project deletion event, they then deprovision and
+        unregister themselves.  This ensures correct ordering of resource
+        deletion where there are some implicit dependencies.
+      security:
+      - oauth2Authentication: []
+      responses:
+        '201':
+          description: Reference successfully added.
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+    delete:
+      description: |
+        Idempotent interface for adding external references to a project.
+        Project deletion will be deferred until all external references are
+        deleted.  The intention here is for external things like clusters
+        networks, storage etc. to register themselves with a project, rather
+        than the identity service having to know about all 3rd party oddons.
+        External services register individual resources on normal reconciliation.
+        Open receiving a project deletion event, they then deprovision and
+        unregister themselves.  This ensures correct ordering of resource
+        deletion where there are some implicit dependencies.
+      security:
+      - oauth2Authentication: []
+      responses:
+        '204':
+          description: Reference successfully removed.
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
   /api/v1/organizations/{organizationID}/quotas:
     description: |-
       Provides management of resource limits.  These are typically managed by the
@@ -1030,6 +1089,14 @@ components:
       in: query
       description: A user's email address.
       schema:
+        type: string
+    referenceParameter:
+      name: reference
+      in: path
+      description: A resource reference.
+      required: true
+      schema:
+        # TODO: this should be a limited to a Kubernetes finalizer.
         type: string
   schemas:
     openidConfiguration:
