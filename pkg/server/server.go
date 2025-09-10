@@ -26,17 +26,21 @@ import (
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel/sdk/trace"
 
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/manager/otel"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
+	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/hybrid"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -121,7 +125,28 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 	oauth2 := oauth2.New(&s.OAuth2Options, s.Options.Namespace, client, issuer, rbac)
 
 	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
+	var authorizer openapimiddleware.Authorizer
+	if s.Options.ExternalOIDCHost != "" {
+		// Create hybrid authorizer for external OIDC + local service tokens
+		localAuth := local.NewLocalAuthenticator(oauth2)
+		
+		// Create remote authenticator options for external OIDC
+		remoteOptions := &identityclient.Options{
+			Host:     s.Options.ExternalOIDCHost,
+			Insecure: false, // Always use HTTPS for external providers
+		}
+		clientOptions := &coreclient.HTTPClientOptions{}
+		
+		remoteAuth := remote.NewRemoteAuthenticator(client, remoteOptions, clientOptions)
+		
+		// Use local RBAC for ACL provider
+		aclProvider := local.NewAuthorizer(oauth2, rbac)
+		
+		authorizer = hybrid.NewHybridAuthorizer(localAuth, remoteAuth, aclProvider)
+	} else {
+		// Use local-only authorizer (existing behavior)
+		authorizer = local.NewAuthorizer(oauth2, rbac)
+	}
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!

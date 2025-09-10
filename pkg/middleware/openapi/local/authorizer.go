@@ -66,11 +66,6 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
 }
 
-// ExtractToken extracts the bearer token from the request
-func (a *Authorizer) ExtractToken(r *http.Request) (string, error) {
-	return a.extractor.ExtractToken(r)
-}
-
 // Authenticate validates the token and returns user information
 func (a *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	return a.authenticator.Authenticate(r, token)

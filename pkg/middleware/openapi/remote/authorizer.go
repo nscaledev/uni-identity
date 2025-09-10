@@ -66,11 +66,6 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	return a.authenticator.Authenticate(r, token)
 }
 
-// ExtractToken extracts the bearer token from the request
-func (a *Authorizer) ExtractToken(r *http.Request) (string, error) {
-	return a.extractor.ExtractToken(r)
-}
-
 // Authenticate validates the token and returns user information
 func (a *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	return a.authenticator.Authenticate(r, token)

@@ -49,6 +49,11 @@ type Options struct {
 
 	// RequestTimeout places a hard limit on all requests lengths.
 	RequestTimeout time.Duration
+
+	// ExternalOIDCHost specifies an external OIDC provider to use for federated
+	// authentication. When set, a hybrid authenticator will be created that routes
+	// JWE tokens to local authentication and JWT tokens to the external provider.
+	ExternalOIDCHost string
 }
 
 // addFlags allows server options to be modified.
@@ -59,4 +64,5 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.ReadHeaderTimeout, "server-read-header-timeout", time.Second, "How long to wait for the client to send headers.")
 	f.DurationVar(&o.WriteTimeout, "server-write-timeout", 10*time.Second, "How long to wait for the API to respond to the client.")
 	f.DurationVar(&o.RequestTimeout, "server-request-timeout", 30*time.Second, "How long to wait of a request to be serviced.")
+	f.StringVar(&o.ExternalOIDCHost, "external-oidc-host", "", "External OIDC provider host for hybrid authentication (e.g. https://accounts.google.com)")
 }

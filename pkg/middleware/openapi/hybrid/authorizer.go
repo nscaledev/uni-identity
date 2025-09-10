@@ -45,11 +45,6 @@ func NewHybridAuthorizer(localAuth, remoteAuth openapi.Authenticator, aclProvide
 	}
 }
 
-// ExtractToken extracts the bearer token from the request
-func (h *HybridAuthorizer) ExtractToken(r *http.Request) (string, error) {
-	return h.extractor.ExtractToken(r)
-}
-
 // Authenticate validates the token and returns user information
 func (h *HybridAuthorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	return h.authenticator.Authenticate(r, token)
@@ -68,7 +63,7 @@ func (h *HybridAuthorizer) Authorize(authentication *openapi3filter.Authenticati
 
 	r := authentication.RequestValidationInput.Request
 
-	token, err := h.ExtractToken(r)
+	token, err := h.extractor.ExtractToken(r)
 	if err != nil {
 		return nil, err
 	}
