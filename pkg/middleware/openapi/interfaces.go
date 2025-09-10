@@ -20,6 +20,7 @@ package openapi
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 
@@ -27,7 +28,26 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
+// TokenExtractor handles extracting tokens from HTTP requests
+type TokenExtractor interface {
+	// ExtractToken gets the bearer token from the Authorization header
+	ExtractToken(r *http.Request) (string, error)
+}
+
+// Authenticator handles token validation and user identity extraction
+type Authenticator interface {
+	// Authenticate validates a token and returns user information
+	Authenticate(r *http.Request, token string) (*authorization.Info, error)
+}
+
+// ACLProvider handles access control and permissions
+type ACLProvider interface {
+	// GetACL retrieves access control information from authenticated user context
+	GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error)
+}
+
 // Authorizer allows authorizers to be plugged in interchangeably.
+// This is the legacy interface that combines authentication and authorization.
 type Authorizer interface {
 	// Authorize checks the request against the OpenAPI security scheme
 	// and returns the access token.

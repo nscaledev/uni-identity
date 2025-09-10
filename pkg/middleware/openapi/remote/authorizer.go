@@ -15,39 +15,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package authorizer
+package remote
 
 import (
 	"context"
 	"net/http"
-	"strconv"
-	"strings"
-	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/getkin/kin-openapi/openapi3filter"
-	"golang.org/x/oauth2"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/common"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
-
-	"k8s.io/apimachinery/pkg/util/cache"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Authorizer provides OpenAPI based authorization middleware.
 type Authorizer struct {
+	extractor     *common.BearerTokenExtractor
+	authenticator *RemoteAuthenticator
 	client        client.Client
 	options       *identityclient.Options
 	clientOptions *coreclient.HTTPClientOptions
-	// tokenCache is used to enhance interaction as the validation is a
-	// very expensive operation.
-	tokenCache *cache.LRUExpireCache
 }
 
 var _ openapi.Authorizer = &Authorizer{}
@@ -55,179 +48,32 @@ var _ openapi.Authorizer = &Authorizer{}
 // NewAuthorizer returns a new authorizer with required parameters.
 func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *Authorizer {
 	return &Authorizer{
+		extractor:     &common.BearerTokenExtractor{},
+		authenticator: NewRemoteAuthenticator(client, options, clientOptions),
 		client:        client,
 		options:       options,
 		clientOptions: clientOptions,
-		// TODO: make this configurable, possibly even a shared flag with the
-		// authorizer to maintain consistency.
-		tokenCache: cache.NewLRUExpireCache(4096),
 	}
-}
-
-// getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
-// Authorization header.
-func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return "", "", errors.OAuth2InvalidRequest("authorization header missing")
-	}
-
-	parts := strings.Split(header, " ")
-	if len(parts) != 2 {
-		return "", "", errors.OAuth2InvalidRequest("authorization header malformed")
-	}
-
-	return parts[0], parts[1], nil
-}
-
-// oidcErrorIsUnauthorized tries to convert the error returned by the OIDC library
-// into a proper status code, as it doesn't wrap anything useful.
-// The error looks like "{code} {text code}: {body}".
-func oidcErrorIsUnauthorized(err error) bool {
-	// Does it look like it contains the colon?
-	fields := strings.Split(err.Error(), ":")
-	if len(fields) < 2 {
-		return false
-	}
-
-	// What about a number followed by a string?
-	fields = strings.Split(fields[0], " ")
-	if len(fields) < 2 {
-		return false
-	}
-
-	code, err := strconv.Atoi(fields[0])
-	if err != nil {
-		return false
-	}
-
-	// Is the number a 403?
-	return code == http.StatusUnauthorized
-}
-
-type requestMutatingTransport struct {
-	base    http.RoundTripper
-	mutator func(r *http.Request) error
-}
-
-func (t *requestMutatingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if err := t.mutator(req); err != nil {
-		return nil, err
-	}
-
-	return t.base.RoundTrip(req)
-}
-
-// getIdentityHTTPClient returns a raw HTTP client for the identity service
-// that handles TLS, trace context and client certificate propagation.
-func (a *Authorizer) getIdentityHTTPClient(ctx context.Context) (*http.Client, error) {
-	// The identity client neatly wraps up TLS...
-	identity := identityclient.New(a.client, a.options, a.clientOptions)
-
-	client, err := identity.HTTPClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Whe need to mutate the request to do trace context propagation and
-	// client certificate propagation if it's a token bound to an X.509
-	// certificate.
-	mutator := func(req *http.Request) error {
-		if err := identityclient.TraceContextRequestMutator(ctx, req); err != nil {
-			return err
-		}
-
-		if err := identityclient.CertificateRequestMutator(ctx, req); err != nil {
-			return err
-		}
-
-		return nil
-	}
-
-	// But it doesn't do request mutation, so we have to slightly hack it by
-	// making a nested transport.
-	client = &http.Client{
-		Transport: &requestMutatingTransport{
-			base:    client.Transport,
-			mutator: mutator,
-		},
-	}
-
-	return client, nil
 }
 
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
-	ctx := r.Context()
-
-	authorizationScheme, rawToken, err := getHTTPAuthenticationScheme(r)
+	token, err := a.extractor.ExtractToken(r)
 	if err != nil {
 		return nil, err
 	}
 
-	if !strings.EqualFold(authorizationScheme, "bearer") {
-		return nil, errors.OAuth2InvalidRequest("authorization scheme not allowed").WithValues("scheme", authorizationScheme)
-	}
+	return a.authenticator.Authenticate(r, token)
+}
 
-	if value, ok := a.tokenCache.Get(rawToken); ok {
-		claims, ok := value.(*identityapi.Userinfo)
-		if !ok {
-			return nil, errors.OAuth2ServerError("invalid token cache data")
-		}
+// ExtractToken extracts the bearer token from the request
+func (a *Authorizer) ExtractToken(r *http.Request) (string, error) {
+	return a.extractor.ExtractToken(r)
+}
 
-		info := &authorization.Info{
-			Token:    rawToken,
-			Userinfo: claims,
-		}
-
-		return info, nil
-	}
-
-	client, err := a.getIdentityHTTPClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx = oidc.ClientContext(ctx, client)
-
-	// Perform userinfo call against the identity service that will validate the token
-	// and also return some information about the user that we can use for audit logging.
-	provider, err := oidc.NewProvider(ctx, a.options.Host())
-	if err != nil {
-		return nil, errors.OAuth2ServerError("oidc service discovery failed").WithError(err)
-	}
-
-	token := &oauth2.Token{
-		AccessToken: rawToken,
-		TokenType:   authorizationScheme,
-	}
-
-	ui, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
-	if err != nil {
-		if oidcErrorIsUnauthorized(err) {
-			return nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
-		}
-
-		return nil, err
-	}
-
-	claims := &identityapi.Userinfo{}
-
-	if err := ui.Claims(claims); err != nil {
-		return nil, errors.OAuth2ServerError("failed to extrac user information").WithError(err)
-	}
-
-	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
-	// could still be valid for months...
-	a.tokenCache.Add(rawToken, claims, time.Hour)
-
-	out := &authorization.Info{
-		Token:    rawToken,
-		Userinfo: claims,
-	}
-
-	return out, nil
+// Authenticate validates the token and returns user information
+func (a *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
+	return a.authenticator.Authenticate(r, token)
 }
 
 // Authorize checks the request against the OpenAPI security scheme.

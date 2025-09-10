@@ -20,100 +20,41 @@ package local
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/common"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/util"
 )
 
 // Authorizer provides OpenAPI based authorization middleware.
 type Authorizer struct {
-	authenticator *oauth2.Authenticator
+	extractor     *common.BearerTokenExtractor
+	authenticator *LocalAuthenticator
 	rbac          *rbac.RBAC
 }
 
 // NewAuthorizer returns a new authorizer with required parameters.
 func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Authorizer {
 	return &Authorizer{
-		authenticator: authenticator,
+		extractor:     &common.BearerTokenExtractor{},
+		authenticator: NewLocalAuthenticator(authenticator),
 		rbac:          rbac,
 	}
 }
 
-// getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
-// Authorization header.
-func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return "", "", errors.OAuth2InvalidRequest("authorization header missing")
-	}
-
-	parts := strings.Split(header, " ")
-	if len(parts) != 2 {
-		return "", "", errors.OAuth2InvalidRequest("authorization header malformed")
-	}
-
-	return parts[0], parts[1], nil
-}
-
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
-	authorizationScheme, token, err := getHTTPAuthenticationScheme(r)
+	token, err := a.extractor.ExtractToken(r)
 	if err != nil {
 		return nil, err
 	}
 
-	if !strings.EqualFold(authorizationScheme, "bearer") {
-		return nil, errors.OAuth2InvalidRequest("authorization scheme not allowed").WithValues("scheme", authorizationScheme)
-	}
-
-	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
-	if err != nil {
-		return nil, err
-	}
-
-	info := &authorization.Info{
-		Token:    token,
-		Userinfo: userinfo,
-	}
-
-	switch claims.Type {
-	case oauth2.TokenTypeFederated:
-		info.ClientID = claims.Federated.ClientID
-	case oauth2.TokenTypeServiceAccount:
-		info.ServiceAccount = true
-	case oauth2.TokenTypeService:
-		// All API requests will ultimately end up here as service call back
-		// into the identity service to validate the token presented to the API.
-		// If the token is bound to a certificate, we also expect the client
-		// certificate to be presented by the first client in the chain and
-		// propagated here.
-		certPEM, err := authorization.ClientCertFromContext(r.Context())
-		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate not present for bound token").WithError(err)
-		}
-
-		certificate, err := util.GetClientCertificate(certPEM)
-		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate parse error").WithError(err)
-		}
-
-		thumbprint := util.GetClientCertifcateThumbprint(certificate)
-
-		if thumbprint != claims.Service.X509Thumbprint {
-			return nil, errors.OAuth2AccessDenied("client certificate mismatch for bound token")
-		}
-
-		info.SystemAccount = true
-	}
-
-	return info, nil
+	return a.authenticator.Authenticate(r, token)
 }
 
 // Authorize checks the request against the OpenAPI security scheme.
@@ -123,6 +64,16 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 	}
 
 	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
+}
+
+// ExtractToken extracts the bearer token from the request
+func (a *Authorizer) ExtractToken(r *http.Request) (string, error) {
+	return a.extractor.ExtractToken(r)
+}
+
+// Authenticate validates the token and returns user information
+func (a *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
+	return a.authenticator.Authenticate(r, token)
 }
 
 // GetACL retrieves access control information from the subject identified
