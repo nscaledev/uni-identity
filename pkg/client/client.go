@@ -33,6 +33,10 @@ func NewOptions() *Options {
 	return coreclient.NewHTTPOptions("identity")
 }
 
+func NewOIDCOptions() *Options {
+	return coreclient.NewHTTPOptions("oidc")
+}
+
 // Client wraps up the raw OpenAPI client with things to make it useable e.g.
 // authorization and TLS.
 type Client struct {

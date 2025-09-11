@@ -26,13 +26,11 @@ import (
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel/sdk/trace"
 
-	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/manager/otel"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
-	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -126,26 +124,13 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 
 	// Setup middleware.
 	var authorizer openapimiddleware.Authorizer
-	if s.Options.ExternalOIDCHost != "" {
-		// Create hybrid authorizer for external OIDC + local service tokens
-		localAuth := local.NewLocalAuthenticator(oauth2)
-		
-		// Create remote authenticator options for external OIDC
-		remoteOptions := &identityclient.Options{
-			Host:     s.Options.ExternalOIDCHost,
-			Insecure: false, // Always use HTTPS for external providers
-		}
-		clientOptions := &coreclient.HTTPClientOptions{}
-		
-		remoteAuth := remote.NewRemoteAuthenticator(client, remoteOptions, clientOptions)
-		
-		// Use local RBAC for ACL provider
-		aclProvider := local.NewAuthorizer(oauth2, rbac)
-		
-		authorizer = hybrid.NewHybridAuthorizer(localAuth, remoteAuth, aclProvider)
-	} else {
-		// Use local-only authorizer (existing behavior)
+	if s.Options.ExternalOIDCOptions.Host() == "" { // External OIDC has not been provided
+		// Fallback to local-only for now
 		authorizer = local.NewAuthorizer(oauth2, rbac)
+	} else { // External OIDC has been provided
+		remoteAuth := remote.NewRemoteAuthenticator(client, s.Options.ExternalOIDCOptions, s.Options.HTTPClientOptions)
+		localAuth := local.NewLocalAuthenticator(oauth2)
+		authorizer = hybrid.NewHybridAuthorizer(localAuth, remoteAuth, rbac)
 	}
 
 	// Middleware specified here is applied to all requests post-routing.
