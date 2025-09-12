@@ -46,11 +46,11 @@ func (h *HybridAuthenticator) Authenticate(r *http.Request, token string) (*auth
 	tokenType := h.detector.DetectTokenType(token)
 
 	switch tokenType {
-	case common.TokenTypeJWE:
+	case common.TokenTypeLocalJWE:
 		// Local encrypted tokens (service accounts, X.509 certificates)
 		return h.localAuth.Authenticate(r, token)
 
-	case common.TokenTypeJWT:
+	case common.TokenTypeJWT, common.TokenTypeExternalJWE:
 		// External signed tokens (federated users)
 		return h.remoteAuth.Authenticate(r, token)
 

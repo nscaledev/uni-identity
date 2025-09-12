@@ -28,8 +28,10 @@ type TokenType int
 const (
 	// TokenTypeUnknown represents an unrecognized token format
 	TokenTypeUnknown TokenType = iota
-	// TokenTypeJWE represents encrypted tokens (local service)
-	TokenTypeJWE
+	// TokenTypeLocalJWE represents encrypted tokens from local service
+	TokenTypeLocalJWE
+	// TokenTypeExternalJWE represents encrypted tokens from external OIDC (e.g. Auth0)
+	TokenTypeExternalJWE
 	// TokenTypeJWT represents signed tokens (external OIDC)
 	TokenTypeJWT
 )
@@ -43,8 +45,12 @@ func (d *TokenDetector) DetectTokenType(token string) TokenType {
 
 	// JWE tokens have 5 parts: header.encrypted_key.iv.ciphertext.tag
 	if len(parts) == 5 {
-		if d.isJWEHeader(parts[0]) {
-			return TokenTypeJWE
+		isJWE, hasIssuer := d.analyzeJWEHeader(parts[0])
+		if isJWE {
+			if hasIssuer { // FIXME: we should also check that the iss field matches our expected issuer. Although, we will subsequently try validating the access token with the configured external provider.
+				return TokenTypeExternalJWE
+			}
+			return TokenTypeLocalJWE
 		}
 	}
 
@@ -56,21 +62,25 @@ func (d *TokenDetector) DetectTokenType(token string) TokenType {
 	return TokenTypeUnknown
 }
 
-// isJWEHeader checks if the token header indicates JWE encryption
-func (d *TokenDetector) isJWEHeader(headerB64 string) bool {
+// analyzeJWEHeader checks if the token header indicates JWE encryption and if it has an issuer
+func (d *TokenDetector) analyzeJWEHeader(headerB64 string) (isJWE bool, hasIssuer bool) {
 	headerBytes, err := base64.RawURLEncoding.DecodeString(headerB64)
 	if err != nil {
-		return false
+		return false, false
 	}
 
 	var header map[string]interface{}
 	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return false
+		return false, false
 	}
 
 	// JWE headers have both "alg" and "enc" fields
 	_, hasAlg := header["alg"]
 	_, hasEnc := header["enc"]
+	isJWE = hasAlg && hasEnc
 
-	return hasAlg && hasEnc
+	// Check for issuer field (Auth0 uses a directly encrypted access token with this field set)
+	_, hasIss := header["iss"]
+
+	return isJWE, hasIss
 }

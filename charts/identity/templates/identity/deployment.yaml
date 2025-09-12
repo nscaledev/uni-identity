@@ -23,7 +23,7 @@ spec:
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
         - --host=https://{{ include "unikorn.identity.host" . }}
         {{- with $oidchost := .Values.identity.externalOIDCHost }}
-        - --oidc-host=https://{{ $oidchost }}
+        - --oidc-host=https://{{ $oidchost }}/
         {{- end }}
         - --jose-tls-secret={{ .Release.Name }}-jose-tls
         - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
