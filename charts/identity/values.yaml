@@ -59,7 +59,8 @@ projectController:
 # Sets the DNS hosts, X.509 certificate subject alternative names and
 # oauth2 issuer etc.
 identity:
-  host: identity.acme.org
+  host: identity.unikorn.nscale.org
+  externalOIDCHost: ~
 
 onboarding:
   # Allows anonymous signups.  Be damn sure if you do this you are in control
