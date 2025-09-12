@@ -51,8 +51,17 @@ func (h *HybridAuthenticator) Authenticate(r *http.Request, token string) (*auth
 		return h.localAuth.Authenticate(r, token)
 
 	case common.TokenTypeJWT, common.TokenTypeExternalJWE:
-		// External signed tokens (federated users)
-		return h.remoteAuth.Authenticate(r, token)
+		// This could be a token from the Identity service, or from an external provider.
+		// Internally, we use the email as the subject of users; so, standardise that if
+		// possible.
+		info, err := h.remoteAuth.Authenticate(r, token)
+		if err != nil {
+			return nil, err
+		}
+		if email := info.Userinfo.Email; email != nil {
+			info.Userinfo.Sub = *email
+		}
+		return info, nil
 
 	default:
 		return nil, errors.OAuth2InvalidRequest("unrecognized token format")
