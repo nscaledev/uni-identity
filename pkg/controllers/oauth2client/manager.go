@@ -17,6 +17,8 @@ limitations under the License.
 package oauth2client
 
 import (
+	"context"
+
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	coremanager "github.com/unikorn-cloud/core/pkg/manager"
 	"github.com/unikorn-cloud/core/pkg/manager/options"
@@ -65,7 +67,7 @@ func (*Factory) RegisterWatches(manager manager.Manager, controller controller.C
 // Upgrade can perform metadata upgrades of all versioned resources on restart/upgrade
 // of the controller.  This must not affect the spec in any way as it causes split brain
 // and potential fail.
-func (*Factory) Upgrade(_ client.Client) error {
+func (*Factory) Upgrade(_ context.Context, _ client.Client, _ *options.Options) error {
 	return nil
 }
 
