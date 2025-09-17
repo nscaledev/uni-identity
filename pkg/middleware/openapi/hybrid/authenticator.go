@@ -50,10 +50,7 @@ func (h *HybridAuthenticator) Authenticate(r *http.Request, token string) (*auth
 		// Local encrypted tokens (service accounts, X.509 certificates)
 		return h.localAuth.Authenticate(r, token)
 
-	case common.TokenTypeJWT, common.TokenTypeExternalJWE:
-		// This could be a token from the Identity service, or from an external provider.
-		// Internally, we use the email as the subject of users; so, standardise that if
-		// possible.
+	case common.TokenTypeJWT, common.TokenTypeExternalJWE, common.TokenTypeExternalOpaque:
 		info, err := h.remoteAuth.Authenticate(r, token)
 		if err != nil {
 			return nil, err

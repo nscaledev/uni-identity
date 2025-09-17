@@ -30,8 +30,10 @@ const (
 	TokenTypeUnknown TokenType = iota
 	// TokenTypeLocalJWE represents encrypted tokens from local service
 	TokenTypeLocalJWE
-	// TokenTypeExternalJWE represents encrypted tokens from external OIDC (e.g. Auth0)
+	// TokenTypeExternalJWE represents encrypted tokens from external OIDC
 	TokenTypeExternalJWE
+	// TokenTypeExternalOpaque represents opaque tokens from external OIDC
+	TokenTypeExternalOpaque
 	// TokenTypeJWT represents signed tokens (external OIDC)
 	TokenTypeJWT
 )
@@ -57,6 +59,11 @@ func (d *TokenDetector) DetectTokenType(token string) TokenType {
 	// JWT tokens have 3 parts: header.payload.signature
 	if len(parts) == 3 {
 		return TokenTypeJWT
+	}
+
+	// if it's just one part, assume it's an opaque token, and use the external provider.
+	if len(parts) == 1 {
+		return TokenTypeExternalOpaque
 	}
 
 	return TokenTypeUnknown
