@@ -771,9 +771,6 @@ type Userinfo struct {
 	// Sub The access token's subject.
 	Sub string `json:"sub"`
 
-	// UpdatedAt Then the user's profile was last updated.
-	UpdatedAt *string `json:"updated_at,omitempty"`
-
 	// Website URL to the user's website.
 	Website *string `json:"website,omitempty"`
 

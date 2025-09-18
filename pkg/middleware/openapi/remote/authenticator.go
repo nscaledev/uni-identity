@@ -183,7 +183,7 @@ func (a *RemoteAuthenticator) Authenticate(r *http.Request, token string) (*auth
 	claims := &identityapi.Userinfo{}
 
 	if err := ui.Claims(claims); err != nil {
-		return nil, errors.OAuth2ServerError("failed to extrac user information").WithError(err)
+		return nil, errors.OAuth2ServerError("failed to extract user information").WithError(err)
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights

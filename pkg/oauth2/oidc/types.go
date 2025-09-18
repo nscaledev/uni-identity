@@ -72,8 +72,6 @@ type Profile struct {
 	ZoneInfo string `json:"zoneinfo,omitempty"`
 	// Locale is the user's RFC5646 language tag.
 	Locale string `json:"locale,omitempty"`
-	// UpdatedAt is when the user's profile was last updated.
-	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // Email are claims that make be returned by requesting the

@@ -86,7 +86,7 @@ func (d *TokenDetector) analyzeJWEHeader(headerB64 string) (isJWE bool, hasIssue
 	_, hasEnc := header["enc"]
 	isJWE = hasAlg && hasEnc
 
-	// Check for issuer field (Auth0 uses a directly encrypted access token with this field set)
+	// Check for issuer field (Auth0 uses a directly encrypted access token, with this field set in the header)
 	_, hasIss := header["iss"]
 
 	return isJWE, hasIss
