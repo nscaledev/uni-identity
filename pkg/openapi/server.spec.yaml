@@ -11,7 +11,7 @@ info:
     if they are being consumed by a horizontally scalable platform care must be taken
     to ensure token rotation is handled atomically by a single process, and the tokens
     are distributed to each service instance synchronously.
-  version: 1.6.0
+  version: 1.7.0
 paths:
   /.well-known/openid-configuration:
     description: |-
