@@ -126,7 +126,7 @@ func (p *Provisioner) deprovisionDescendants(ctx context.Context, namespace *cor
 		return err
 	}
 
-	cli, err := coreclient.ProvisionerClientFromContext(ctx)
+	cli, err := coreclient.FromContext(ctx)
 	if err != nil {
 		return err
 	}
