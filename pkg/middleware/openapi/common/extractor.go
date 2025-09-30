@@ -23,10 +23,10 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 )
 
-// BearerTokenExtractor extracts bearer tokens from HTTP Authorization headers
+// BearerTokenExtractor extracts bearer tokens from HTTP Authorization headers.
 type BearerTokenExtractor struct{}
 
-// ExtractToken gets the bearer token from the Authorization header
+// ExtractToken gets the bearer token from the Authorization header.
 func (e *BearerTokenExtractor) ExtractToken(r *http.Request) (string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {

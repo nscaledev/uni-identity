@@ -22,55 +22,71 @@ import (
 	"strings"
 )
 
-// TokenType represents different token formats
 type TokenType int
 
 const (
-	// TokenTypeUnknown represents an unrecognized token format
-	TokenTypeUnknown TokenType = iota
-	// TokenTypeJWE represents encrypted tokens (local service)
-	TokenTypeJWE
-	// TokenTypeJWT represents signed tokens (external OIDC)
-	TokenTypeJWT
+	Local   TokenType = iota
+	Remote  TokenType = iota
+	Invalid TokenType = iota
 )
 
-// TokenDetector detects token types based on format
-type TokenDetector struct{}
+// TokenDetector detects token types based on what it can introspect about the token.
+type TokenDetector struct {
+	ExternalIssuer string
+	LocalIssuer    string
+}
 
-// DetectTokenType analyzes a token and returns its type
-func (d *TokenDetector) DetectTokenType(token string) TokenType {
-	parts := strings.Split(token, ".")
-
-	// JWE tokens have 5 parts: header.encrypted_key.iv.ciphertext.tag
-	if len(parts) == 5 {
-		if d.isJWEHeader(parts[0]) {
-			return TokenTypeJWE
+func (d *TokenDetector) detectIssuer(header string, def TokenType) TokenType {
+	if iss := tryExtractIssuer(header); iss != "" {
+		switch iss {
+		case d.ExternalIssuer:
+			return Remote
+		case d.LocalIssuer:
+			return Local
+		default:
+			return Invalid // signaling: not an OK issuer
 		}
 	}
 
-	// JWT tokens have 3 parts: header.payload.signature
-	if len(parts) == 3 {
-		return TokenTypeJWT
-	}
-
-	return TokenTypeUnknown
+	return def // signaling: try the default
 }
 
-// isJWEHeader checks if the token header indicates JWE encryption
-func (d *TokenDetector) isJWEHeader(headerB64 string) bool {
+// DetectTokenIssuer analyzes a token and returns its issuer, so far as it can tell.
+func (d *TokenDetector) DetectTokenIssuer(token string) TokenType {
+	parts := strings.Split(token, ".")
+
+	// JWE tokens have 5 parts: header.encrypted_key.iv.ciphertext.tag
+	// The issuer _might_ be included in the unencrypted header (it's not standard);
+	// if it's not, we conclude it's the local issuer. (Historically, JWE have been used by UNI for service account tokens)
+	if len(parts) == 5 {
+		return d.detectIssuer(parts[0], Local)
+	}
+
+	// JWT tokens have 3 parts: header.payload.signature
+	// The issuer is in the payload, so check there. If not present, we conclude it's a dodgy token and return Invalid.
+	if len(parts) == 3 {
+		return d.detectIssuer(parts[1], Invalid)
+	}
+
+	// Apparently not a JWT token; try the remote, on the basis that it might be an opaque token.
+	return Remote
+}
+
+// tryExtractIssuer tries to get the `iss` field from a header; and returns "" if it's not a valid header, or the value is not present.
+func tryExtractIssuer(headerB64 string) string {
 	headerBytes, err := base64.RawURLEncoding.DecodeString(headerB64)
 	if err != nil {
-		return false
+		return ""
 	}
 
-	var header map[string]interface{}
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return false
+	type header struct {
+		Issuer string `json:"iss,omitempty"`
 	}
 
-	// JWE headers have both "alg" and "enc" fields
-	_, hasAlg := header["alg"]
-	_, hasEnc := header["enc"]
+	var hdr header
+	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
+		return ""
+	}
 
-	return hasAlg && hasEnc
+	return hdr.Issuer
 }

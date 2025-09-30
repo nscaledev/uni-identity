@@ -43,18 +43,18 @@ func NewHybridAuthenticator(localAuth, remoteAuth openapi.Authenticator) *Hybrid
 
 // Authenticate validates a token using the appropriate authenticator based on token type
 func (h *HybridAuthenticator) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
-	tokenType := h.detector.DetectTokenType(token)
+	tokenType := h.detector.DetectTokenIssuer(token)
 
 	switch tokenType {
-	case common.TokenTypeJWE:
+	case common.Local:
 		// Local encrypted tokens (service accounts, X.509 certificates)
 		return h.localAuth.Authenticate(r, token)
 
-	case common.TokenTypeJWT:
+	case common.Remote:
 		// External signed tokens (federated users)
 		return h.remoteAuth.Authenticate(r, token)
 
 	default:
-		return nil, errors.OAuth2InvalidRequest("unrecognized token format")
+		return nil, errors.OAuth2InvalidRequest("unrecognized token")
 	}
 }
