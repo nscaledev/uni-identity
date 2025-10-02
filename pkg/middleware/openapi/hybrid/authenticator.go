@@ -25,24 +25,24 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/common"
 )
 
-// HybridAuthenticator routes between local and remote authentication based on token type
-type HybridAuthenticator struct {
+// Authenticator routes between local and remote authentication based on token type.
+type Authenticator struct {
 	detector   *common.TokenDetector
 	localAuth  openapi.Authenticator
 	remoteAuth openapi.Authenticator
 }
 
-// NewHybridAuthenticator creates a new hybrid authenticator
-func NewHybridAuthenticator(localAuth, remoteAuth openapi.Authenticator) *HybridAuthenticator {
-	return &HybridAuthenticator{
+// NewAuthenticator creates a new hybrid authenticator.
+func NewAuthenticator(localAuth, remoteAuth openapi.Authenticator) *Authenticator {
+	return &Authenticator{
 		detector:   &common.TokenDetector{},
 		localAuth:  localAuth,
 		remoteAuth: remoteAuth,
 	}
 }
 
-// Authenticate validates a token using the appropriate authenticator based on token type
-func (h *HybridAuthenticator) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
+// Authenticate validates a token using the appropriate authenticator based on token type.
+func (h *Authenticator) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	tokenType := h.detector.DetectTokenIssuer(token)
 
 	switch tokenType {
@@ -54,6 +54,8 @@ func (h *HybridAuthenticator) Authenticate(r *http.Request, token string) (*auth
 		// External signed tokens (federated users)
 		return h.remoteAuth.Authenticate(r, token)
 
+	case common.Invalid:
+		fallthrough
 	default:
 		return nil, errors.OAuth2InvalidRequest("unrecognized token")
 	}
