@@ -39,9 +39,7 @@ import (
 
 // RemoteAuthenticator handles authentication for external OIDC tokens
 type RemoteAuthenticator struct {
-	client        client.Client
-	options       *identityclient.Options
-	clientOptions *coreclient.HTTPClientOptions
+	identityClienter
 	// tokenCache is used to enhance interaction as the validation is a
 	// very expensive operation.
 	tokenCache *cache.LRUExpireCache
@@ -50,10 +48,12 @@ type RemoteAuthenticator struct {
 // NewRemoteAuthenticator creates a new remote authenticator
 func NewRemoteAuthenticator(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *RemoteAuthenticator {
 	return &RemoteAuthenticator{
-		client:        client,
-		options:       options,
-		clientOptions: clientOptions,
-		tokenCache:    cache.NewLRUExpireCache(4096),
+		identityClienter: identityClienter{
+			client:        client,
+			options:       options,
+			clientOptions: clientOptions,
+		},
+		tokenCache: cache.NewLRUExpireCache(4096),
 	}
 }
 
@@ -99,7 +99,7 @@ func (t *requestMutatingTransport) RoundTrip(req *http.Request) (*http.Response,
 // that handles TLS, trace context and client certificate propagation.
 func (a *RemoteAuthenticator) getIdentityHTTPClient(ctx context.Context) (*http.Client, error) {
 	// The identity client neatly wraps up TLS...
-	identity := identityclient.New(a.client, a.options, a.clientOptions)
+	identity := a.newIdentityClient()
 
 	client, err := identity.HTTPClient(ctx)
 	if err != nil {

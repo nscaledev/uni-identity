@@ -34,25 +34,29 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Authorizer provides OpenAPI based authorization middleware.
-type Authorizer struct {
-	extractor     *common.BearerTokenExtractor
-	authenticator *RemoteAuthenticator
+type identityClienter struct {
 	client        client.Client
 	options       *identityclient.Options
 	clientOptions *coreclient.HTTPClientOptions
 }
 
-var _ openapi.Authorizer = &Authorizer{}
+func (id identityClienter) newIdentityClient() *identityclient.Client {
+	return identityclient.New(id.client, id.options, id.clientOptions)
+}
+
+// Authorizer provides OpenAPI based authorization middleware.
+type Authorizer struct {
+	extractor     *common.BearerTokenExtractor
+	authenticator *RemoteAuthenticator
+	openapi.ACLProvider
+}
 
 // NewAuthorizer returns a new authorizer with required parameters.
 func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *Authorizer {
 	return &Authorizer{
 		extractor:     &common.BearerTokenExtractor{},
 		authenticator: NewRemoteAuthenticator(client, options, clientOptions),
-		client:        client,
-		options:       options,
-		clientOptions: clientOptions,
+		ACLProvider:   NewRemoteACL(client, options, clientOptions),
 	}
 }
 
@@ -86,15 +90,29 @@ func (a Getter) Get() string {
 	return string(a)
 }
 
+type RemoteACL struct {
+	identityClienter
+}
+
+func NewRemoteACL(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *RemoteACL {
+	return &RemoteACL{
+		identityClienter: identityClienter{
+			client:        client,
+			options:       options,
+			clientOptions: clientOptions,
+		},
+	}
+}
+
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
-func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
+func (a *RemoteACL) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	client, err := identityclient.New(a.client, a.options, a.clientOptions).APIClient(ctx, Getter(info.Token))
+	client, err := a.newIdentityClient().APIClient(ctx, Getter(info.Token))
 	if err != nil {
 		return nil, errors.OAuth2ServerError("failed to create identity client").WithError(err)
 	}
