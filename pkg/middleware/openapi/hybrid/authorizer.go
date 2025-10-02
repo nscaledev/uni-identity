@@ -29,34 +29,34 @@ import (
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
-// HybridAuthorizer combines hybrid authentication with ACL authorization
-type HybridAuthorizer struct {
+// Authorizer combines hybrid authentication with ACL authorization.
+type Authorizer struct {
 	extractor     *common.BearerTokenExtractor
-	authenticator *HybridAuthenticator
+	authenticator *Authenticator
 	aclProvider   openapi.ACLProvider
 }
 
-// NewHybridAuthorizer creates a new hybrid authorizer
-func NewHybridAuthorizer(localAuth, remoteAuth openapi.Authenticator, aclProvider openapi.ACLProvider) *HybridAuthorizer {
-	return &HybridAuthorizer{
+// NewHybridAuthorizer creates a new hybrid authorizer.
+func NewAuthorizer(localAuth, remoteAuth openapi.Authenticator, aclProvider openapi.ACLProvider) *Authorizer {
+	return &Authorizer{
 		extractor:     &common.BearerTokenExtractor{},
-		authenticator: NewHybridAuthenticator(localAuth, remoteAuth),
+		authenticator: NewAuthenticator(localAuth, remoteAuth),
 		aclProvider:   aclProvider,
 	}
 }
 
-// Authenticate validates the token and returns user information
-func (h *HybridAuthorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
+// Authenticate validates the token and returns user information.
+func (h *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	return h.authenticator.Authenticate(r, token)
 }
 
-// GetACL retrieves access control information
-func (h *HybridAuthorizer) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
+// GetACL retrieves access control information.
+func (h *Authorizer) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
 	return h.aclProvider.GetACL(ctx, organizationID)
 }
 
-// Authorize provides legacy OpenAPI3Filter compatibility
-func (h *HybridAuthorizer) Authorize(authentication *openapi3filter.AuthenticationInput) (*authorization.Info, error) {
+// Authorize provides legacy OpenAPI3Filter compatibility.
+func (h *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInput) (*authorization.Info, error) {
 	if authentication.SecurityScheme.Type != "oauth2" {
 		return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
 	}

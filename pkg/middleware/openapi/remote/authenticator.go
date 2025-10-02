@@ -37,17 +37,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// RemoteAuthenticator handles authentication for external OIDC tokens
-type RemoteAuthenticator struct {
+// Authenticator handles authentication for OIDC tokens by calling /userinfo using HTTP(S).
+type Authenticator struct {
 	identityClienter
 	// tokenCache is used to enhance interaction as the validation is a
 	// very expensive operation.
 	tokenCache *cache.LRUExpireCache
 }
 
-// NewRemoteAuthenticator creates a new remote authenticator
-func NewRemoteAuthenticator(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *RemoteAuthenticator {
-	return &RemoteAuthenticator{
+// NewAuthenticator creates a new remote authenticator.
+func NewAuthenticator(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *Authenticator {
+	return &Authenticator{
 		identityClienter: identityClienter{
 			client:        client,
 			options:       options,
@@ -97,7 +97,7 @@ func (t *requestMutatingTransport) RoundTrip(req *http.Request) (*http.Response,
 
 // getIdentityHTTPClient returns a raw HTTP client for the identity service
 // that handles TLS, trace context and client certificate propagation.
-func (a *RemoteAuthenticator) getIdentityHTTPClient(ctx context.Context) (*http.Client, error) {
+func (a *Authenticator) getIdentityHTTPClient(ctx context.Context) (*http.Client, error) {
 	// The identity client neatly wraps up TLS...
 	identity := a.newIdentityClient()
 
@@ -133,8 +133,8 @@ func (a *RemoteAuthenticator) getIdentityHTTPClient(ctx context.Context) (*http.
 	return client, nil
 }
 
-// Authenticate validates an external OIDC token and returns user information
-func (a *RemoteAuthenticator) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
+// Authenticate validates an external OIDC token and returns user information.
+func (a *Authenticator) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	ctx := r.Context()
 
 	// Check cache first
@@ -188,7 +188,7 @@ func (a *RemoteAuthenticator) Authenticate(r *http.Request, token string) (*auth
 
 	// The cache entry needs a timeout as a federated user may have had their rights
 	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
-	// could still be valid for months...
+	// could still be valid for months.
 	a.tokenCache.Add(token, claims, time.Hour)
 
 	out := &authorization.Info{

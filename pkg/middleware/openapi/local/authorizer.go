@@ -34,7 +34,7 @@ import (
 // Authorizer provides OpenAPI based authorization middleware.
 type Authorizer struct {
 	extractor     *common.BearerTokenExtractor
-	authenticator *LocalAuthenticator
+	authenticator *Authenticator
 	rbac          *rbac.RBAC
 }
 
@@ -42,7 +42,7 @@ type Authorizer struct {
 func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Authorizer {
 	return &Authorizer{
 		extractor:     &common.BearerTokenExtractor{},
-		authenticator: NewLocalAuthenticator(authenticator),
+		authenticator: NewAuthenticator(authenticator),
 		rbac:          rbac,
 	}
 }
@@ -66,7 +66,7 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
 }
 
-// Authenticate validates the token and returns user information
+// Authenticate validates the token and returns user information.
 func (a *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	return a.authenticator.Authenticate(r, token)
 }

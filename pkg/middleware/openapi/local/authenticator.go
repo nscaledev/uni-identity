@@ -25,20 +25,20 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/util"
 )
 
-// LocalAuthenticator handles authentication for local JWE tokens
-type LocalAuthenticator struct {
+// Authenticator handles authentication for local JWE tokens.
+type Authenticator struct {
 	authenticator *oauth2.Authenticator
 }
 
-// NewLocalAuthenticator creates a new local authenticator
-func NewLocalAuthenticator(authenticator *oauth2.Authenticator) *LocalAuthenticator {
-	return &LocalAuthenticator{
+// NewAuthenticator creates a new local authenticator.
+func NewAuthenticator(authenticator *oauth2.Authenticator) *Authenticator {
+	return &Authenticator{
 		authenticator: authenticator,
 	}
 }
 
-// Authenticate validates a local JWE token and returns user information
-func (a *LocalAuthenticator) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
+// Authenticate validates a local JWE token and returns user information.
+func (a *Authenticator) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
 	if err != nil {
 		return nil, err

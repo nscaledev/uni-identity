@@ -47,7 +47,7 @@ func (id identityClienter) newIdentityClient() *identityclient.Client {
 // Authorizer provides OpenAPI based authorization middleware.
 type Authorizer struct {
 	extractor     *common.BearerTokenExtractor
-	authenticator *RemoteAuthenticator
+	authenticator *Authenticator
 	openapi.ACLProvider
 }
 
@@ -55,8 +55,8 @@ type Authorizer struct {
 func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *Authorizer {
 	return &Authorizer{
 		extractor:     &common.BearerTokenExtractor{},
-		authenticator: NewRemoteAuthenticator(client, options, clientOptions),
-		ACLProvider:   NewRemoteACL(client, options, clientOptions),
+		authenticator: NewAuthenticator(client, options, clientOptions),
+		ACLProvider:   NewACL(client, options, clientOptions),
 	}
 }
 
@@ -70,7 +70,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	return a.authenticator.Authenticate(r, token)
 }
 
-// Authenticate validates the token and returns user information
+// Authenticate validates the token and returns user information.
 func (a *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
 	return a.authenticator.Authenticate(r, token)
 }
@@ -90,12 +90,12 @@ func (a Getter) Get() string {
 	return string(a)
 }
 
-type RemoteACL struct {
+type ACL struct {
 	identityClienter
 }
 
-func NewRemoteACL(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *RemoteACL {
-	return &RemoteACL{
+func NewACL(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *ACL {
+	return &ACL{
 		identityClienter: identityClienter{
 			client:        client,
 			options:       options,
@@ -106,7 +106,7 @@ func NewRemoteACL(client client.Client, options *identityclient.Options, clientO
 
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
-func (a *RemoteACL) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
+func (a *ACL) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, err
