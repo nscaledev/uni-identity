@@ -34,6 +34,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
+	"github.com/unikorn-cloud/core/pkg/util"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,19 +54,16 @@ type TokenIssuer struct {
 	// to ensure cloud identities and networks are provisioned, as well
 	// as deptovisioning them.
 	clientOptions *coreclient.HTTPClientOptions
-	// serviceName for tracing.
-	serviceName string
-	// serviceVersion for tracing.
-	serviceVersion string
+	// serviceDescriptor defines application tracing information.
+	serviceDescriptor util.ServiceDescriptor
 }
 
-func NewTokenIssuer(client client.Client, identityOptions *Options, clientOptions *coreclient.HTTPClientOptions, serviceName, serviceVersion string) *TokenIssuer {
+func NewTokenIssuer(client client.Client, identityOptions *Options, clientOptions *coreclient.HTTPClientOptions, serviceDescriptor util.ServiceDescriptor) *TokenIssuer {
 	return &TokenIssuer{
-		client:          client,
-		identityOptions: identityOptions,
-		clientOptions:   clientOptions,
-		serviceName:     serviceName,
-		serviceVersion:  serviceVersion,
+		client:            client,
+		identityOptions:   identityOptions,
+		clientOptions:     clientOptions,
+		serviceDescriptor: serviceDescriptor,
 	}
 }
 
@@ -78,7 +76,7 @@ func (a *StaticAccessTokenGetter) Get() string {
 }
 
 // Issue issues an access token for the non-user client/service.
-func (i *TokenIssuer) Issue(ctx context.Context, traceName string) (*StaticAccessTokenGetter, error) {
+func (i *TokenIssuer) Issue(ctx context.Context) (*StaticAccessTokenGetter, error) {
 	identityClient := New(i.client, i.identityOptions, i.clientOptions)
 
 	identityHTTPClient, err := identityClient.HTTPClient(ctx)
@@ -112,13 +110,13 @@ func (i *TokenIssuer) Issue(ctx context.Context, traceName string) (*StaticAcces
 	// for now.  Caching the client leads to having to cache the access token somehow
 	// and then token rotation when it expires, so don't be too tempted to change this.
 	attr := []attribute.KeyValue{
-		semconv.ServiceName(i.serviceName),
-		semconv.ServiceVersion(i.serviceVersion),
+		semconv.ServiceName(i.serviceDescriptor.Name),
+		semconv.ServiceVersion(i.serviceDescriptor.Version),
 	}
 
 	tracer := otel.GetTracerProvider().Tracer("access token issuer")
 
-	spanContext, span := tracer.Start(ctx, traceName, trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attr...))
+	spanContext, span := tracer.Start(ctx, "issue-service-token", trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attr...))
 	defer span.End()
 
 	ctx = spanContext
