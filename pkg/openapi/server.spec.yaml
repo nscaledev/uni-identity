@@ -1383,6 +1383,13 @@ components:
       required:
       - sub
       properties:
+        acctype:
+          description: Denotes the type of account represented. This is non-standard claim.
+          type: string
+          enum:
+          - system
+          - service
+          - user
         sub:
           description: The access token's subject.
           type: string

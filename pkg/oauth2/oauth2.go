@@ -1761,11 +1761,17 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		Sub: claims.Subject,
 	}
 
-	if claims.Type == TokenTypeFederated {
+	switch claims.Type {
+	case TokenTypeFederated:
 		if slices.Contains(claims.Federated.Scope, "email") {
 			userinfo.Email = ptr.To(claims.Subject)
 			userinfo.EmailVerified = ptr.To(true)
 		}
+		userinfo.Acctype = ptr.To(openapi.User)
+	case TokenTypeServiceAccount:
+		userinfo.Acctype = ptr.To(openapi.Service)
+	case TokenTypeService:
+		userinfo.Acctype = ptr.To(openapi.System)
 	}
 
 	return userinfo, claims, nil

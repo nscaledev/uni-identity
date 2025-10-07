@@ -113,6 +113,13 @@ const (
 	Suspended UserState = "suspended"
 )
 
+// Defines values for UserinfoAcctype.
+const (
+	Service UserinfoAcctype = "service"
+	System  UserinfoAcctype = "system"
+	User    UserinfoAcctype = "user"
+)
+
 // Acl A list of access control scopes and permissions.
 type Acl struct {
 	// Global A list of access control scopes.
@@ -729,6 +736,9 @@ type UserWrite struct {
 
 // Userinfo Access token introspection data.
 type Userinfo struct {
+	// Acctype Denotes the type of account represented. This is non-standard claim.
+	Acctype *UserinfoAcctype `json:"acctype,omitempty"`
+
 	// Birthdate The users' birth date formatted according to ISO8601.  The year portion may be 0000 if they choose not to reveal they are really old.
 	Birthdate *time.Time `json:"birthdate,omitempty"`
 
@@ -780,6 +790,9 @@ type Userinfo struct {
 	// Zoneinfo The user's IANA assigned timezone.
 	Zoneinfo *string `json:"zoneinfo,omitempty"`
 }
+
+// UserinfoAcctype Denotes the type of account represented. This is non-standard claim.
+type UserinfoAcctype string
 
 // UserinfoRequestOptions A userinfo POST request.
 type UserinfoRequestOptions struct {
