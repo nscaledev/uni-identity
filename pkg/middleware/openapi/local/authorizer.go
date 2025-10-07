@@ -79,15 +79,17 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	}
 
 	info := &authorization.Info{
-		Token:    token,
-		Userinfo: userinfo,
+		Token:          token,
+		Userinfo:       userinfo,
+		SystemAccount:  userinfo.IsSystem(),
+		ServiceAccount: userinfo.IsServiceAccount(),
 	}
 
+	// If we've got past authenticator.GetUserinfo, we are checking our own tokens; these
+	// have additional claims which need verification.
 	switch claims.Type {
 	case oauth2.TokenTypeFederated:
 		info.ClientID = claims.Federated.ClientID
-	case oauth2.TokenTypeServiceAccount:
-		info.ServiceAccount = true
 	case oauth2.TokenTypeService:
 		// All API requests will ultimately end up here as service call back
 		// into the identity service to validate the token presented to the API.
@@ -109,8 +111,6 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		if thumbprint != claims.Service.X509Thumbprint {
 			return nil, errors.OAuth2AccessDenied("client certificate mismatch for bound token")
 		}
-
-		info.SystemAccount = true
 	}
 
 	return info, nil

@@ -214,17 +214,19 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	claims := &identityapi.Userinfo{}
 
 	if err := ui.Claims(claims); err != nil {
-		return nil, errors.OAuth2ServerError("failed to extrac user information").WithError(err)
+		return nil, errors.OAuth2ServerError("failed to extract user information").WithError(err)
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
+	// rescinded and we don't know about it, and long lived tokens e.g. service accounts,
 	// could still be valid for months...
 	a.tokenCache.Add(rawToken, claims, time.Hour)
 
 	out := &authorization.Info{
-		Token:    rawToken,
-		Userinfo: claims,
+		Token:          rawToken,
+		Userinfo:       claims,
+		SystemAccount:  claims.IsSystem(),
+		ServiceAccount: claims.IsServiceAccount(),
 	}
 
 	return out, nil
