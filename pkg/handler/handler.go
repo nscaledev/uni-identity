@@ -20,10 +20,8 @@ package handler
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/util"
@@ -52,27 +50,21 @@ type Handler struct {
 	// namespace is the namespace we are running in.
 	namespace string
 
-	// issuer allows creation and validation of JWT bearer tokens.
-	issuer *jose.JWTIssuer
-
-	// oauth2 is the oauth2 deletgating authenticator.
-	oauth2 *oauth2.Authenticator
-
 	// rbac gives access to low level rbac functionality.
 	rbac *rbac.RBAC
 
-	// options allows behaviour to be defined on the CLI.
+	*Oauth2Handler
+
 	options *Options
 }
 
 func New(client client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, rbac *rbac.RBAC, options *Options) (*Handler, error) {
 	h := &Handler{
-		client:    client,
-		namespace: namespace,
-		issuer:    issuer,
-		oauth2:    oauth2,
-		rbac:      rbac,
-		options:   options,
+		client:        client,
+		namespace:     namespace,
+		Oauth2Handler: NewOauth2Handler(oauth2, issuer, &options.Oauth2),
+		rbac:          rbac,
+		options:       options,
 	}
 
 	return h, nil
@@ -85,180 +77,12 @@ func (h *Handler) setCacheable(w http.ResponseWriter) {
 }
 */
 
-func (h *Handler) setUncacheable(w http.ResponseWriter) {
+func setUncacheable(w http.ResponseWriter) {
 	w.Header().Add("Cache-Control", "no-cache")
 }
 
-func (h *Handler) setUncacheableNoStore(w http.ResponseWriter) {
+func setUncacheableNoStore(w http.ResponseWriter) {
 	w.Header().Add("Cache-Control", "no-store")
-}
-
-func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request) {
-	result := &openapi.OpenidConfiguration{
-		Issuer:                h.options.Host,
-		AuthorizationEndpoint: fmt.Sprintf("%s/oauth2/v2/authorization", h.options.Host),
-		TokenEndpoint:         fmt.Sprintf("%s/oauth2/v2/token", h.options.Host),
-		UserinfoEndpoint:      fmt.Sprintf("%s/oauth2/v2/userinfo", h.options.Host),
-		JwksUri:               fmt.Sprintf("%s/oauth2/v2/jwks", h.options.Host),
-		ScopesSupported: []openapi.Scope{
-			openapi.ScopeEmail,
-			openapi.ScopeOpenid,
-			openapi.ScopeProfile,
-		},
-		ClaimsSupported: []openapi.Claim{
-			openapi.ClaimAud,
-			openapi.ClaimEmail,
-			openapi.ClaimEmailVerified,
-			openapi.ClaimExp,
-			openapi.ClaimFamilyName,
-			openapi.ClaimGivenName,
-			openapi.ClaimIat,
-			openapi.ClaimIss,
-			openapi.ClaimLocale,
-			openapi.ClaimName,
-			openapi.ClaimPicture,
-			openapi.ClaimSub,
-		},
-		ResponseTypesSupported: []openapi.ResponseType{
-			openapi.ResponseTypeCode,
-			openapi.ResponseTypeIdToken,
-		},
-		ResponseModesSupported: []openapi.ResponseMode{
-			openapi.Query,
-		},
-		TokenEndpointAuthMethodsSupported: []openapi.AuthMethod{
-			openapi.ClientSecretBasic,
-			openapi.ClientSecretPost,
-			openapi.TlsClientAuth,
-		},
-		GrantTypesSupported: []openapi.GrantType{
-			openapi.AuthorizationCode,
-			openapi.ClientCredentials,
-			openapi.RefreshToken,
-		},
-		IdTokenSigningAlgValuesSupported: []openapi.SigningAlgorithm{
-			openapi.ES512,
-		},
-		CodeChallengeMethodsSupported: []openapi.CodeChallengeMethod{
-			openapi.Plain,
-			openapi.S256,
-		},
-	}
-
-	util.WriteJSONResponse(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
-	h.oauth2.Authorization(w, r)
-}
-
-func (h *Handler) PostOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
-	h.oauth2.Authorization(w, r)
-}
-
-func (h *Handler) PostOauth2V2Login(w http.ResponseWriter, r *http.Request) {
-	h.oauth2.Login(w, r)
-}
-
-func (h *Handler) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
-	h.oauth2.Onboard(w, r)
-}
-
-func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
-	result, err := h.oauth2.Token(w, r)
-	if err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	// See OIDC 1.0 Section 3.1.3.3.
-	h.setUncacheableNoStore(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		errors.HandleError(w, r, errors.OAuth2ServerError("authorization header not set"))
-		return
-	}
-
-	parts := strings.Split(header, " ")
-
-	if len(parts) != 2 {
-		errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header malformed"))
-		return
-	}
-
-	if !strings.EqualFold(parts[0], "bearer") {
-		errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization scheme not allowed"))
-		return
-	}
-
-	userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
-	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
-		return
-	}
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, userinfo)
-}
-
-func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
-	if header := r.Header.Get("Authorization"); header != "" {
-		parts := strings.Split(header, " ")
-
-		if len(parts) != 2 {
-			errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header malformed"))
-			return
-		}
-
-		if !strings.EqualFold(parts[0], "bearer") {
-			errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization scheme not allowed"))
-			return
-		}
-
-		userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
-		if err != nil {
-			errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
-			return
-		}
-
-		h.setUncacheable(w)
-		util.WriteJSONResponse(w, r, http.StatusOK, userinfo)
-
-		return
-	}
-
-	if err := r.ParseForm(); err != nil {
-		errors.HandleError(w, r, errors.OAuth2InvalidRequest("unable to parse form data").WithError(err))
-		return
-	}
-
-	userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, r.Form.Get("access_token"))
-	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
-		return
-	}
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, userinfo)
-}
-
-func (h *Handler) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {
-	result, _, err := h.issuer.GetJSONWebKeySet(r.Context())
-	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2ServerError("unable to generate json web key set").WithError(err))
-		return
-	}
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) GetOidcCallback(w http.ResponseWriter, r *http.Request) {
-	h.oauth2.Callback(w, r)
 }
 
 func (h *Handler) GetApiV1Oauth2providers(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +92,7 @@ func (h *Handler) GetApiV1Oauth2providers(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -278,14 +102,14 @@ func (h *Handler) GetApiV1Acl(w http.ResponseWriter, r *http.Request) {
 	// TODO: we may want to consider just returning everything across all organizations.
 	result := rbac.FromContext(r.Context())
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDAcl(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
 	result := rbac.FromContext(r.Context())
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -301,7 +125,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDRoles(w http.ResponseWriter
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -317,7 +141,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDOauth2providers(w http.Resp
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -340,7 +164,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDOauth2providers(w http.Res
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusCreated, result)
 }
 
@@ -362,7 +186,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDOauth2providersProviderID(w
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -377,7 +201,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderI
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -388,7 +212,7 @@ func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -411,7 +235,7 @@ func (h *Handler) PostApiV1Organizations(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusAccepted, result)
 }
 
@@ -427,7 +251,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -449,7 +273,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -464,7 +288,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationID(w http.ResponseWriter, 
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -480,7 +304,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDGroups(w http.ResponseWrite
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -503,7 +327,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDGroups(w http.ResponseWrit
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusCreated, result)
 }
 
@@ -519,7 +343,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -534,7 +358,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Res
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -556,7 +380,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -574,7 +398,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWri
 		return rbac.AllowProjectScope(ctx, "identity:projects", openapi.Read, organizationID, resource.Metadata.Id) != nil
 	})
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -597,7 +421,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjects(w http.ResponseWr
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusAccepted, result)
 }
 
@@ -613,7 +437,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -635,7 +459,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -650,7 +474,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -718,7 +542,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDServiceaccounts(w http.Resp
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -741,7 +565,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccounts(w http.Res
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusCreated, result)
 }
 
@@ -764,7 +588,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccou
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -779,7 +603,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAc
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -796,7 +620,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAcco
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -820,7 +644,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -843,7 +667,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDUsers(w http.ResponseWrite
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusCreated, result)
 }
 
@@ -858,7 +682,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.Respo
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -881,7 +705,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.Response
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -901,7 +725,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWrite
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -924,7 +748,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWrite
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -945,7 +769,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.Response
 		return rbac.AllowProjectScope(ctx, "identity:allocations", openapi.Read, organizationID, resource.Metadata.ProjectId) != nil
 	})
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -968,7 +792,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocatio
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusCreated, result)
 }
 
@@ -983,7 +807,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocat
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -999,7 +823,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
@@ -1022,6 +846,6 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	h.setUncacheable(w)
+	setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }

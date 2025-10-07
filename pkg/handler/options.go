@@ -26,8 +26,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
 )
 
-// Options defines configurable handler options.
-type Options struct {
+type Oauth2Options struct {
 	// Host is the hostname of the service, this will be used as the oauth2
 	// issuer etc.
 	Host string
@@ -35,19 +34,28 @@ type Options struct {
 	// cacheMaxAge defines the max age for cachable items e.g. images and
 	// flavors don't change all that often.
 	CacheMaxAge time.Duration
+}
 
+func (o *Oauth2Options) AddFlags(f *pflag.FlagSet) {
+	f.StringVar(&o.Host, "host", "", "The service hostname.")
+	f.DurationVar(&o.CacheMaxAge, "cache-max-age", 24*time.Hour, "How long to cache long-lived queries in the browser.")
+}
+
+// Options defines configurable handler options.
+type Options struct {
 	// ServiceAccounts define any service account tunables.
 	ServiceAccounts serviceaccounts.Options
 
 	// Users define any user tunables.
 	Users users.Options
+
+	// Oauth2 sets options for Oauth2 endpoints
+	Oauth2 Oauth2Options
 }
 
 // AddFlags adds the options flags to the given flag set.
 func (o *Options) AddFlags(f *pflag.FlagSet) {
-	f.StringVar(&o.Host, "host", "", "The service hostname.")
-	f.DurationVar(&o.CacheMaxAge, "cache-max-age", 24*time.Hour, "How long to cache long-lived queries in the browser.")
-
+	o.Oauth2.AddFlags(f)
 	o.ServiceAccounts.AddFlags(f)
 	o.Users.AddFlags(f)
 }
