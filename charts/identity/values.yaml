@@ -197,7 +197,7 @@ roles:
         region:images: [read]
         region:externalnetworks: [read]
         region:networks: [create,read,delete] # TODO: Create/delete V1 only
-  compute_service:
+  compute-service:
     decription: Compute service
     protected: true
     scopes:
