@@ -99,6 +99,12 @@ type ServerInterface interface {
 	// (PUT /api/v1/organizations/{organizationID}/projects/{projectID}/allocations/{allocationID})
 	PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter, allocationID AllocationIDParameter)
 
+	// (DELETE /api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference})
+	DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter, reference ReferenceParameter)
+
+	// (PUT /api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference})
+	PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter, reference ReferenceParameter)
+
 	// (GET /api/v1/organizations/{organizationID}/quotas)
 	GetApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
 
@@ -307,6 +313,16 @@ func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAlloc
 
 // (PUT /api/v1/organizations/{organizationID}/projects/{projectID}/allocations/{allocationID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter, allocationID AllocationIDParameter) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (DELETE /api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference})
+func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter, reference ReferenceParameter) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (PUT /api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference})
+func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter, reference ReferenceParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1384,6 +1400,104 @@ func (siw *ServerInterfaceWrapper) PutApiV1OrganizationsOrganizationIDProjectsPr
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference operation middleware
+func (siw *ServerInterfaceWrapper) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "organizationID" -------------
+	var organizationID OrganizationIDParameter
+
+	err = runtime.BindStyledParameterWithOptions("simple", "organizationID", chi.URLParam(r, "organizationID"), &organizationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "organizationID", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "projectID" -------------
+	var projectID ProjectIDParameter
+
+	err = runtime.BindStyledParameterWithOptions("simple", "projectID", chi.URLParam(r, "projectID"), &projectID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "projectID", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "reference" -------------
+	var reference ReferenceParameter
+
+	err = runtime.BindStyledParameterWithOptions("simple", "reference", chi.URLParam(r, "reference"), &reference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "reference", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, Oauth2AuthenticationScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w, r, organizationID, projectID, reference)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference operation middleware
+func (siw *ServerInterfaceWrapper) PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "organizationID" -------------
+	var organizationID OrganizationIDParameter
+
+	err = runtime.BindStyledParameterWithOptions("simple", "organizationID", chi.URLParam(r, "organizationID"), &organizationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "organizationID", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "projectID" -------------
+	var projectID ProjectIDParameter
+
+	err = runtime.BindStyledParameterWithOptions("simple", "projectID", chi.URLParam(r, "projectID"), &projectID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "projectID", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "reference" -------------
+	var reference ReferenceParameter
+
+	err = runtime.BindStyledParameterWithOptions("simple", "reference", chi.URLParam(r, "reference"), &reference, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "reference", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, Oauth2AuthenticationScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w, r, organizationID, projectID, reference)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetApiV1OrganizationsOrganizationIDQuotas operation middleware
 func (siw *ServerInterfaceWrapper) GetApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWriter, r *http.Request) {
 
@@ -2137,6 +2251,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/api/v1/organizations/{organizationID}/projects/{projectID}/allocations/{allocationID}", wrapper.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference}", wrapper.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference}", wrapper.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/organizations/{organizationID}/quotas", wrapper.GetApiV1OrganizationsOrganizationIDQuotas)

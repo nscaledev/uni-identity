@@ -128,6 +128,7 @@ platformAdministrators:
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:
+  unikorn-region: region-service
   unikorn-kubernetes: kubernetes-service
   unikorn-compute: compute-service
 
@@ -150,6 +151,7 @@ roles:
         identity:users: [create,read,update,delete]
         identity:groups: [create,read,update,delete]
         identity:projects: [create,read,update,delete]
+        identity:projects/references: [create,read,update,delete]
         identity:quotas: [create,read,update,delete]
         identity:allocations: [create,read,update,delete]
         region:regions: [create,read,update,delete]
@@ -157,7 +159,9 @@ roles:
         region:images: [create,read,update,delete]
         region:externalnetworks: [create,read,update,delete]
         region:identities: [create,read,update,delete]
+        region:identities/references: [create,read,update,delete]
         region:networks: [create,read,update,delete]
+        region:networks/references: [create,read,update,delete]
         region:securitygroups: [create,read,update,delete]
         region:servers: [create,read,update,delete]
         kubernetes:regions: [create,read,update,delete]
@@ -172,15 +176,23 @@ roles:
         compute:clusters: [create,read,update,delete]
         application:applications: [create,read,update,delete]
         application:applicationsets: [create,read,update,delete]
-  kubernetes-service:
-    decription: Kubernetes service
+  region-service:
+    decription: Region service
     protected: true
     scopes:
       global:
+        identity:projects/references: [create,delete]
+  kubernetes-service:
+    description: Kubernetes service
+    protected: true
+    scopes:
+      global:
+        identity:projects/references: [create,delete]
         identity:allocations: [create,read,update,delete]
         region:identities: [create,read,delete] # TODO: Create/delete V1 only
+        region:identities/references: [create,delete] # TODO: V1 only.
         region:regions: [read]
-        region:regions/detail: [read]
+        region:regions/detail: [read] # Gets access to the Kubernetes config for Lite.
         region:flavors: [read]
         region:images: [read]
         region:externalnetworks: [read]

@@ -805,6 +805,9 @@ type OrganizationIDParameter = string
 // ProjectIDParameter defines model for projectIDParameter.
 type ProjectIDParameter = string
 
+// ReferenceParameter defines model for referenceParameter.
+type ReferenceParameter = string
+
 // ServiceAccountIDParameter defines model for serviceAccountIDParameter.
 type ServiceAccountIDParameter = string
 

@@ -654,6 +654,36 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http
 	w.WriteHeader(http.StatusAccepted)
 }
 
+func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, reference openapi.ReferenceParameter) {
+	if err := rbac.AllowProjectScope(r.Context(), "identity:projects/references", openapi.Create, organizationID, projectID); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	if err := projects.New(h.client, h.namespace).ReferenceCreate(r.Context(), organizationID, projectID, reference); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, reference openapi.ReferenceParameter) {
+	if err := rbac.AllowProjectScope(r.Context(), "identity:projects/references", openapi.Delete, organizationID, projectID); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	if err := projects.New(h.client, h.namespace).ReferenceDelete(r.Context(), organizationID, projectID, reference); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) serviceAccountsClient(r *http.Request) *serviceaccounts.Client {
 	return serviceaccounts.New(h.client, h.namespace, r.Host, h.oauth2, &h.options.ServiceAccounts)
 }
