@@ -1428,12 +1428,26 @@ components:
         expires_in:
           description: The time in seconds the token will last for.
           type: integer
+    authClaims:
+      description: Custom claims for authorisation, specific to UNI
+      required:
+      - acctype
+      properties:
+        acctype:
+          description: Denotes the type of account represented. This is non-standard claim.
+          type: string
+          enum:
+          - system
+          - service
+          - user
     userinfo:
       description: Access token introspection data.
       type: object
       required:
       - sub
       properties:
+        "https://unikorn-cloud.org/authz":
+          $ref: "#/components/schemas/authClaims"
         sub:
           description: The access token's subject.
           type: string
