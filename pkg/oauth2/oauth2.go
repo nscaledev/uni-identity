@@ -1775,15 +1775,24 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
+	authz := &openapi.AuthClaims{}
 	userinfo := &openapi.Userinfo{
-		Sub: claims.Subject,
+		Sub:                       claims.Subject,
+		HttpsunikornCloudOrgauthz: authz,
 	}
 
-	if claims.Type == TokenTypeFederated {
+	switch claims.Type {
+	case TokenTypeFederated:
 		if slices.Contains(claims.Federated.Scope, "email") {
 			userinfo.Email = ptr.To(claims.Subject)
 			userinfo.EmailVerified = ptr.To(true)
 		}
+
+		authz.Acctype = openapi.User
+	case TokenTypeServiceAccount:
+		authz.Acctype = openapi.Service
+	case TokenTypeService:
+		authz.Acctype = openapi.System
 	}
 
 	return userinfo, claims, nil
