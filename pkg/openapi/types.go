@@ -21,6 +21,13 @@ const (
 	Update AclOperation = "update"
 )
 
+// Defines values for AuthClaimsAcctype.
+const (
+	Service AuthClaimsAcctype = "service"
+	System  AuthClaimsAcctype = "system"
+	User    AuthClaimsAcctype = "user"
+)
+
 // Defines values for AuthMethod.
 const (
 	ClientSecretBasic AuthMethod = "client_secret_basic"
@@ -216,6 +223,15 @@ type AllocationWrite struct {
 	// Spec A set of resource allocations.
 	Spec AllocationSpec `json:"spec"`
 }
+
+// AuthClaims Custom claims for authorisation, specific to UNI
+type AuthClaims struct {
+	// Acctype Denotes the type of account represented. This is non-standard claim.
+	Acctype AuthClaimsAcctype `json:"acctype"`
+}
+
+// AuthClaimsAcctype Denotes the type of account represented. This is non-standard claim.
+type AuthClaimsAcctype string
 
 // AuthMethod Supported authentication methods.
 type AuthMethod string
@@ -802,6 +818,9 @@ type Userinfo struct {
 
 	// GivenName The user's forename.
 	GivenName *string `json:"given_name,omitempty"`
+
+	// HttpsunikornCloudOrgauthz Custom claims for authorisation, specific to UNI
+	HttpsunikornCloudOrgauthz *AuthClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
 
 	// Locale The user's RFC5646 language tag.
 	Locale *string `json:"locale,omitempty"`
