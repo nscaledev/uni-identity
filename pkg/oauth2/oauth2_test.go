@@ -249,6 +249,11 @@ func TestUserinfoCustomClaims(t *testing.T) {
 
 			rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
+			issuerHost := handlercommon.IssuerValue{
+				URL:      tc.issueInfo.Issuer,
+				Hostname: tc.issueInfo.Audience, // setting this from the audience is somewhat arbitrary; but it's not under test here.
+			}
+
 			authenticator := oauth2.New(&oauth2.Options{
 				AccessTokenDuration:      accessTokenDuration,
 				RefreshTokenDuration:     refreshTokenDuration,
@@ -256,7 +261,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				TokenCacheSize:           1024,
 				CodeCacheSize:            1024,
 				AccountCreationCacheSize: 1024,
-			}, josetesting.Namespace, client, issuer, rbac)
+			}, josetesting.Namespace, issuerHost, client, issuer, rbac)
 
 			time.Sleep(2 * josetesting.RefreshPeriod)
 
