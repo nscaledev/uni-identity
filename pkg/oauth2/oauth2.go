@@ -56,6 +56,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/util"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/utils/ptr"
 
@@ -1743,6 +1744,29 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")
 }
 
+func (a *Authenticator) getOrgIDs(ctx context.Context, subject string) ([]string, error) {
+	user, err := a.rbac.GetActiveUser(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+
+	selector := labels.SelectorFromSet(map[string]string{
+		constants.UserLabel: user.Name,
+	})
+
+	organizationUsers := &unikornv1.OrganizationUserList{}
+	if err := a.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
+		return nil, err
+	}
+
+	result := make([]string, len(organizationUsers.Items))
+	for i := range organizationUsers.Items {
+		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
+	}
+
+	return result, nil
+}
+
 // GetUserinfo does access token introspection.
 func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
 	verifyInfo := &VerifyInfo{
@@ -1771,8 +1795,18 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		}
 
 		authz.Acctype = openapi.User
+
+		orgs, err := a.getOrgIDs(ctx, claims.Subject)
+		if err != nil {
+			return nil, nil, errors.OAuth2ServerError("could not query orgs").WithError(err)
+		}
+
+		if orgs != nil {
+			authz.OrgIds = orgs
+		}
 	case TokenTypeServiceAccount:
 		authz.Acctype = openapi.Service
+		authz.OrgIds = []string{claims.ServiceAccount.OrganizationID}
 	case TokenTypeService:
 		authz.Acctype = openapi.System
 	}
