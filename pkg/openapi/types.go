@@ -228,6 +228,10 @@ type AllocationWrite struct {
 type AuthClaims struct {
 	// Acctype Denotes the type of account represented. This is non-standard claim.
 	Acctype AuthClaimsAcctype `json:"acctype"`
+
+	// OrgIds The IDs of organisations of which the account is a member. This may be just the org for which
+	// they are currently authenticated.
+	OrgIds []string `json:"orgIds"`
 }
 
 // AuthClaimsAcctype Denotes the type of account represented. This is non-standard claim.

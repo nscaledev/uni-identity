@@ -1562,6 +1562,7 @@ components:
       description: Custom claims for authorisation, specific to UNI
       required:
       - acctype
+      - orgIds
       properties:
         acctype:
           description: Denotes the type of account represented. This is non-standard claim.
@@ -1570,6 +1571,14 @@ components:
           - system
           - service
           - user
+        orgIds:
+          description: |
+            The IDs of organisations of which the account is a member. This may be just the org for which
+            they are currently authenticated.
+          type: array
+          items:
+            description: An organisation ID.
+            type: string
     userinfo:
       description: Access token introspection data.
       type: object
