@@ -769,6 +769,9 @@ type Userinfo struct {
 	// Nickname The user's nickname.
 	Nickname *string `json:"nickname,omitempty"`
 
+	// OrgIds The IDs of organisations of which the account is a member.
+	OrgIds *[]string `json:"org_ids"`
+
 	// Picture URL to the user's picture.
 	Picture *string `json:"picture,omitempty"`
 

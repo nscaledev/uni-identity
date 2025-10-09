@@ -1390,6 +1390,13 @@ components:
           - system
           - service
           - user
+        org_ids:
+          description: The IDs of organisations of which the account is a member.
+          type: array
+          nullable: true
+          items:
+            description: An organisation ID.
+            type: string
         sub:
           description: The access token's subject.
           type: string
