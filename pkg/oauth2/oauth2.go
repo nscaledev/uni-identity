@@ -1727,7 +1727,7 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
 	}
 
-	// We support 3 garnt types:
+	// We support 3 grant types:
 	// * "authorization_code" is used by all humans in the system
 	// * "refresh_token" is used by anyone to get a new access token
 	// * "client_credentials" is used by other services for IPC
