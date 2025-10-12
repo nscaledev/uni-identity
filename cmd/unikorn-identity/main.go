@@ -32,6 +32,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/client"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/migration"
 	"github.com/unikorn-cloud/identity/pkg/server"
 
 	"k8s.io/client-go/rest"
@@ -87,6 +88,19 @@ func start() {
 
 		return
 	}
+
+	// Run one-time migration to convert groups from UserIDs to Subjects.
+	// This must happen before the server starts to ensure the new authorization
+	// code can find users by subject.
+	logger.Info("running group migration")
+
+	if err := migration.MigrateGroupsToSubjects(ctx, directclient, s.CoreOptions.Namespace, s.HandlerOptions.Issuer); err != nil {
+		logger.Error(err, "group migration failed - server will not start")
+
+		return
+	}
+
+	logger.Info("group migration completed successfully")
 
 	server, err := s.GetServer(client, directclient)
 	if err != nil {
