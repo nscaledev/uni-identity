@@ -1686,11 +1686,15 @@ components:
       description: A group.
       type: object
       required:
-      - userIDs
+      - subjects
       - serviceAccountIDs
       - roleIDs
       properties:
         userIDs:
+          description: 'DEPRECATED: Use subjects instead. References K8s OrganizationUser resource names.'
+          $ref: '#/components/schemas/stringList'
+        subjects:
+          description: 'Canonical user identifiers (typically email addresses) that are members of the group.'
           $ref: '#/components/schemas/stringList'
         serviceAccountIDs:
           $ref: '#/components/schemas/stringList'
@@ -2183,8 +2187,8 @@ components:
             spec:
               roleIDs:
               - 64c46f16-43b1-495d-8ee3-040b8321050d
-              userIDs:
-              - b0c0dc92-b123-410e-bad6-75a2265ca6e1
+              subjects:
+              - user@example.com
               serviceAccountIDs: []
     updateGroupRequest:
       description: Body required to update a group.
@@ -2200,8 +2204,8 @@ components:
             spec:
               roleIDs:
               - 64c46f16-43b1-495d-8ee3-040b8321050d
-              userIDs:
-              - b0c0dc92-b123-410e-bad6-75a2265ca6e1
+              subjects:
+              - user@example.com
               serviceAccountIDs: []
     createProjectRequest:
       description: Project request parameters.
@@ -2474,8 +2478,8 @@ components:
               provisioningStatus: provisioned
               healthStatus: healthy
             spec:
-              userIDs:
-              - d4600d6e-e965-4b44-a808-84fb2fa36702
+              subjects:
+              - user@example.com
               serviceAccountIDs:
               - a0e9c93a-3a47-4ea1-9caf-22757428a810
               roleIDs:
@@ -2496,8 +2500,8 @@ components:
               provisioningStatus: provisioned
               healthStatus: healthy
             spec:
-              userIDs:
-              - d4600d6e-e965-4b44-a808-84fb2fa36702
+              subjects:
+              - user@example.com
               serviceAccountIDs:
               - a0e9c93a-3a47-4ea1-9caf-22757428a810
               roleIDs:

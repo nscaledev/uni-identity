@@ -210,6 +210,11 @@ func (in *GroupSpec) DeepCopyInto(out *GroupSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.Subjects != nil {
+		in, out := &in.Subjects, &out.Subjects
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.ServiceAccountIDs != nil {
 		in, out := &in.ServiceAccountIDs, &out.ServiceAccountIDs
 		*out = make([]string, len(*in))

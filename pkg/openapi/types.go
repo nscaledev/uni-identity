@@ -269,8 +269,11 @@ type GroupSpec struct {
 	// ServiceAccountIDs A list of strings.
 	ServiceAccountIDs StringList `json:"serviceAccountIDs"`
 
+	// Subjects A list of strings.
+	Subjects StringList `json:"subjects"`
+
 	// UserIDs A list of strings.
-	UserIDs StringList `json:"userIDs"`
+	UserIDs *StringList `json:"userIDs,omitempty"`
 }
 
 // GroupWrite A group when created or updated.

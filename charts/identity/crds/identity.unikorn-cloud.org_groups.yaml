@@ -59,6 +59,14 @@ spec:
                 items:
                   type: string
                 type: array
+              subjects:
+                description: |-
+                  Subjects are canonical user identifiers (typically email addresses)
+                  that are members of the group. This works with both local users
+                  and federated identity providers like Auth0.
+                items:
+                  type: string
+                type: array
               tags:
                 description: Tags are aribrary user data.
                 items:
@@ -76,7 +84,11 @@ spec:
                   type: object
                 type: array
               userIDs:
-                description: UserIDs are a list of users that are members of the group.
+                description: |-
+                  UserIDs are a list of users that are members of the group.
+                  DEPRECATED: Use Subjects instead. This field references K8s
+                  OrganizationUser resource names which couples the authorization
+                  to the K8s user database.
                 items:
                   type: string
                 type: array

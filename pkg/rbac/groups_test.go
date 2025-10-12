@@ -81,28 +81,11 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 	}
 
 	// addUserToOrgInGroups creates the relationship between a (global) user and an organisation.
-	addUserToOrgInGroups := func(user *unikornv1.User, org *unikornv1.Organization, groups []*unikornv1.Group) {
-		// create an Org'User to represent the membership
-		orguser := &unikornv1.OrganizationUser{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: org.Status.Namespace,
-				Name:      org.Name + "--" + user.Name,
-				Labels: map[string]string{
-					constants.OrganizationLabel: org.Name,
-					constants.UserLabel:         user.Name,
-				},
-			},
-			Spec: unikornv1.OrganizationUserSpec{
-				State: unikornv1.UserStateActive,
-			},
-		}
-
+	addUserToOrgInGroups := func(user *unikornv1.User, _ *unikornv1.Organization, groups []*unikornv1.Group) {
 		// and add the orguser ID to the group
 		for _, g := range groups {
-			g.Spec.UserIDs = append(g.Spec.UserIDs, orguser.Name)
+			g.Spec.Subjects = append(g.Spec.Subjects, user.Spec.Subject)
 		}
-
-		appendObjects(orguser)
 	}
 
 	// Create global Users

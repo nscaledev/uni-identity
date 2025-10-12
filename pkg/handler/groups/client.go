@@ -53,7 +53,7 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
 		Spec: openapi.GroupSpec{
 			RoleIDs:           openapi.StringList{},
-			UserIDs:           openapi.StringList{},
+			Subjects:          openapi.StringList{},
 			ServiceAccountIDs: openapi.StringList{},
 		},
 	}
@@ -62,8 +62,8 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 		out.Spec.RoleIDs = in.Spec.RoleIDs
 	}
 
-	if in.Spec.UserIDs != nil {
-		out.Spec.UserIDs = in.Spec.UserIDs
+	if in.Spec.Subjects != nil {
+		out.Spec.Subjects = in.Spec.Subjects
 	}
 
 	if in.Spec.ServiceAccountIDs != nil {
@@ -162,7 +162,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 		Spec: unikornv1.GroupSpec{
 			Tags:              conversion.GenerateTagList(in.Metadata.Tags),
 			RoleIDs:           in.Spec.RoleIDs,
-			UserIDs:           in.Spec.UserIDs,
+			Subjects:          in.Spec.Subjects,
 			ServiceAccountIDs: in.Spec.ServiceAccountIDs,
 		},
 	}

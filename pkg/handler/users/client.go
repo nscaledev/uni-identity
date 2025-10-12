@@ -120,9 +120,9 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
-// updateGroups takes a user name and a requested list of groups and adds to
+// updateGroups takes a user subject and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, userID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) updateGroups(ctx context.Context, subject string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	for i := range groups.Items {
 		current := &groups.Items[i]
 
@@ -130,19 +130,19 @@ func (c *Client) updateGroups(ctx context.Context, userID string, groupIDs opena
 
 		if slices.Contains(groupIDs, current.Name) {
 			// Add to a group where it should be a member but isn't.
-			if slices.Contains(current.Spec.UserIDs, userID) {
+			if slices.Contains(current.Spec.Subjects, subject) {
 				continue
 			}
 
-			updated.Spec.UserIDs = append(updated.Spec.UserIDs, userID)
+			updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
 		} else {
 			// Remove from any groups its a member of but shouldn't be.
-			if !slices.Contains(current.Spec.UserIDs, userID) {
+			if !slices.Contains(current.Spec.Subjects, subject) {
 				continue
 			}
 
-			updated.Spec.UserIDs = slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
-				return id == userID
+			updated.Spec.Subjects = slices.DeleteFunc(updated.Spec.Subjects, func(s string) bool {
+				return s == subject
 			})
 		}
 
@@ -269,7 +269,7 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 	}
 
 	for _, group := range groups.Items {
-		if slices.Contains(group.Spec.UserIDs, in.Name) {
+		if slices.Contains(group.Spec.Subjects, user.Spec.Subject) {
 			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
 		}
 	}
@@ -671,7 +671,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -746,7 +746,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -774,12 +774,17 @@ func (c *Client) Delete(ctx context.Context, organizationID, userID string) erro
 		return errors.OAuth2ServerError("failed to get user for delete").WithError(err)
 	}
 
+	user, err := c.getGlobalUserByID(ctx, resource.Labels[constants.UserLabel])
+	if err != nil {
+		return errors.OAuth2ServerError("failed to get user for delete").WithError(err)
+	}
+
 	groups, err := c.listGroups(ctx, organization)
 	if err != nil {
 		return err
 	}
 
-	if err := c.updateGroups(ctx, userID, nil, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, nil, groups); err != nil {
 		return err
 	}
 

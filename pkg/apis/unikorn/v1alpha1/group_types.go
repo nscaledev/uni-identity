@@ -52,7 +52,14 @@ type GroupSpec struct {
 	// CRDs.
 	Users []string `json:"users,omitempty"`
 	// UserIDs are a list of users that are members of the group.
+	// DEPRECATED: Use Subjects instead. This field references K8s
+	// OrganizationUser resource names which couples the authorization
+	// to the K8s user database.
 	UserIDs []string `json:"userIDs,omitempty"`
+	// Subjects are canonical user identifiers (typically email addresses)
+	// that are members of the group. This works with both local users
+	// and federated identity providers like Auth0.
+	Subjects []string `json:"subjects,omitempty"`
 	// ServiceAccountIDs are a list of service accounts that are members of
 	// the group.
 	ServiceAccountIDs []string `json:"serviceAccountIDs,omitempty"`
