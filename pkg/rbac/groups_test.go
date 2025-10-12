@@ -62,6 +62,8 @@ const (
 	altOrgID = "alt-org-id"
 	altOrgNS = "alt-namespace"
 
+	//nolint:godot
+	// Users
 	userAliceSubject = "alice@example.com"
 	userAliceID      = "user-alice"
 
@@ -74,15 +76,21 @@ const (
 	serviceAccountAlphaName = "sa-alpha"
 	serviceAccountBetaName  = "sa-beta"
 
+	//nolint:godot
+	// Groups
 	groupAdminsID   = "group-admins"
 	groupDevelopers = "group-developers"
 	groupReaders    = "group-readers"
 	groupServices   = "group-services"
 
+	//nolint:godot
+	// Roles
 	roleAdminID     = "role-admin"
 	roleDeveloperID = "role-developer"
 	roleReaderID    = "role-reader"
 
+	//nolint:godot
+	// Projects
 	projectAlphaID = "project-alpha"
 	projectBetaID  = "project-beta"
 )
@@ -342,6 +350,7 @@ func setupTestEnvironment(t *testing.T) fixture {
 
 	createObjects(groupAdminsObj, groupReadersObj, groupDevelopersObj, groupServicesObj, groupAltServicesObj)
 
+	// Create Projects
 	projectAlpha := &unikornv1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testOrgNS,
