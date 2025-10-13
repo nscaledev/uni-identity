@@ -1723,10 +1723,11 @@ components:
       description: A group.
       type: object
       required:
-      - userIDs
       - serviceAccountIDs
       - roleIDs
       properties:
+        subjects:
+          $ref: '#/components/schemas/stringList'
         userIDs:
           $ref: '#/components/schemas/stringList'
         serviceAccountIDs:
