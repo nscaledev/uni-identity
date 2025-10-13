@@ -162,8 +162,12 @@ roles:
         region:identities/references: [create,read,update,delete]
         region:networks: [create,read,update,delete]
         region:networks/references: [create,read,update,delete]
+        region:networks:v2: [create,read,update,delete]
+        region:networks:v2/references: [create,read,update,delete]
         region:securitygroups: [create,read,update,delete]
+        region:securitygroups:v2: [create,read,update,delete]
         region:servers: [create,read,update,delete]
+        region:servers:v2: [create,read,update,delete]
         kubernetes:regions: [create,read,update,delete]
         kubernetes:flavors: [create,read,update,delete]
         kubernetes:images: [create,read,update,delete]
@@ -208,8 +212,11 @@ roles:
         region:flavors: [read]
         region:images: [read]
         region:networks: [create,read,delete] # TODO: Create/delete V1 only
+        region:networks:v2: [read]
         region:servers: [create,read,update,delete]
-        region:securitygroups: [create,read,update,delete] # TODO: Create/delete/update V1 only
+        region:servers:v2: [create,read,update,delete]
+        region:securitygroups: [create,read,update,delete]
+        region:securitygroups:v2: [read]
   # An administrator can do anything within an organization.
   administrator:
     description: Organization administrator
@@ -224,6 +231,8 @@ roles:
         identity:projects: [create,read,update,delete]
         identity:quotas: [read]
         region:regions: [read]
+        region:networks:v2: [create,read,update,delete]
+        region:securitygroups:v2: [create,read,update,delete]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
         kubernetes:images: [read]
@@ -251,6 +260,8 @@ roles:
         compute:images: [read]
       project:
         identity:projects: [read]
+        region:networks:v2: [create,read,update,delete]
+        region:securitygroups:v2: [create,read,update,delete]
         kubernetes:clusters: [create,read,update,delete]
         kubernetes:virtualclusters: [create,read,update,delete]
         compute:clusters: [create,read,update,delete]
@@ -272,6 +283,8 @@ roles:
         compute:images: [read]
       project:
         identity:projects: [read]
+        region:networks:v2: [read]
+        region:securitygroups:v2: [read]
         kubernetes:clusters: [read]
         kubernetes:virtualclusters: [read]
         compute:clusters: [read]
