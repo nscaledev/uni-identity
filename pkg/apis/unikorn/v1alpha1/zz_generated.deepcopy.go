@@ -200,13 +200,13 @@ func (in *GroupSpec) DeepCopyInto(out *GroupSpec) {
 		*out = make(unikornv1alpha1.TagList, len(*in))
 		copy(*out, *in)
 	}
-	if in.Users != nil {
-		in, out := &in.Users, &out.Users
+	if in.UserIDs != nil {
+		in, out := &in.UserIDs, &out.UserIDs
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
-	if in.UserIDs != nil {
-		in, out := &in.UserIDs, &out.UserIDs
+	if in.Subjects != nil {
+		in, out := &in.Subjects, &out.Subjects
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
