@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -53,7 +54,8 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
 		Spec: openapi.GroupSpec{
 			RoleIDs:           openapi.StringList{},
-			UserIDs:           openapi.StringList{},
+			UserIDs:           &openapi.StringList{},
+			Subjects:          &openapi.StringList{},
 			ServiceAccountIDs: openapi.StringList{},
 		},
 	}
@@ -63,7 +65,11 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 	}
 
 	if in.Spec.UserIDs != nil {
-		out.Spec.UserIDs = in.Spec.UserIDs
+		out.Spec.UserIDs = &in.Spec.UserIDs
+	}
+
+	if in.Spec.Subjects != nil {
+		out.Spec.Subjects = &in.Spec.Subjects
 	}
 
 	if in.Spec.ServiceAccountIDs != nil {
@@ -156,13 +162,39 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 		}
 	}
 
+	// On the way in, we prioritise Subjects over UserIDs. If you provided subjects, those are used and the userIDs ignored.
+	// If you provide UserIDs, they are converted to subjects, and both are stored.
+	var subjects, userIDs openapi.StringList
+	if in.Spec.Subjects != nil {
+		// On the assumption that the caller understands Subjects, just use the subjects. This is a one-way step, since
+		// we don't attempt to find OrganizationUser records and populate .UserIDs, so it'll be empty hereafter.
+		subjects = *in.Spec.Subjects
+	} else if in.Spec.UserIDs != nil {
+		// On the assumption that the caller understands UserIDs,
+		for _, userorgid := range *in.Spec.UserIDs {
+			userIDs = append(userIDs, userorgid)
+			var orguser unikornv1.OrganizationUser
+			if err := c.client.Get(ctx, client.ObjectKey{Name: userorgid, Namespace: organization.Namespace}, &orguser); err != nil {
+				return nil, errors.OAuth2ServerError("failed to get organization member record").WithError(err)
+			}
+			userid := orguser.Labels[constants.UserLabel]
+
+			var user unikornv1.User
+			if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
+				return nil, errors.OAuth2ServerError("failed to get user record").WithError(err)
+			}
+			subjects = append(subjects, user.Spec.Subject)
+		}
+	}
+
 	// TODO: validate user and service account existence.
 	out := &unikornv1.Group{
 		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
 		Spec: unikornv1.GroupSpec{
 			Tags:              conversion.GenerateTagList(in.Metadata.Tags),
 			RoleIDs:           in.Spec.RoleIDs,
-			UserIDs:           in.Spec.UserIDs,
+			Subjects:          subjects,
+			UserIDs:           userIDs,
 			ServiceAccountIDs: in.Spec.ServiceAccountIDs,
 		},
 	}
