@@ -35,6 +35,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -44,7 +45,6 @@ const (
 	testOrgID     = "test-org"
 	testOrgNS     = "test-org-ns"
 
-	// Users
 	userAliceSubject = "alice@example.com"
 	userAliceID      = "user-alice"
 
@@ -54,31 +54,32 @@ const (
 	userCharlieSubject = "charlie@example.com"
 	userCharlieID      = "user-charlie"
 
-	// Groups
 	groupAdminsID   = "group-admins"
 	groupDevelopers = "group-developers"
 	groupReaders    = "group-readers"
 
-	// Roles
 	roleAdminID     = "role-admin"
 	roleDeveloperID = "role-developer"
 	roleReaderID    = "role-reader"
 
-	// Projects
 	projectAlphaID = "project-alpha"
 	projectBetaID  = "project-beta"
 )
 
 // The API handlers like to have things in the context, so they can label any resources they make.
 func newContext(t *testing.T) context.Context {
+	t.Helper()
+
 	ctx := authorization.NewContext(t.Context(), &authorization.Info{
 		Userinfo: &openapi.Userinfo{
 			Sub: "test-subject",
 		},
 	})
+
 	ctx = principal.NewContext(ctx, &principal.Principal{
 		Actor: "test-principal",
 	})
+
 	return ctx
 }
 
@@ -135,6 +136,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 
 	createObjects := func(objs ...client.Object) {
 		t.Helper()
+
 		for i := range objs {
 			require.NoError(t, c.Create(t.Context(), objs[i]))
 		}
@@ -143,9 +145,9 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 	organization := newOrganization(testNamespace, testOrgID, testOrgNS)
 
 	createObjects(organization)
-	require.NoError(t, c.Update(t.Context(), organization)) // to update the status with our
+	require.NoError(t, c.Update(t.Context(), organization)) // to update the status with a namespace.
 
-	// Create Roles with different permission scopes
+	// Create Roles with different permission scopes.
 	roleAdmin := &unikornv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
@@ -250,7 +252,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 
 	createObjects(groupAdminsObj, groupReadersObj, groupDevelopersObj)
 
-	// Create Projects
 	projectAlpha := &unikornv1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testOrgNS,
@@ -289,7 +290,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 }
 
 // getACLForUser is a helper to get the ACL for a given user subject.
-func getACLForUser(t *testing.T, ctx context.Context, rbacClient *rbac.RBAC, subject string) *openapi.Acl {
+func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi.Acl {
 	t.Helper()
 
 	// Create authorization info with user subject
@@ -299,7 +300,7 @@ func getACLForUser(t *testing.T, ctx context.Context, rbacClient *rbac.RBAC, sub
 		},
 	}
 
-	ctx = authorization.NewContext(ctx, info)
+	ctx := authorization.NewContext(t.Context(), info)
 
 	acl, err := rbacClient.GetACL(ctx, testOrgID)
 	require.NoError(t, err)
@@ -309,33 +310,37 @@ func getACLForUser(t *testing.T, ctx context.Context, rbacClient *rbac.RBAC, sub
 }
 
 // TestGroupMigrationACLContent verifies the actual ACL content is correct.
+//
+//nolint:cyclop
 func TestGroupACLContent(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
 	_, rbacClient := setupTestEnvironment(t)
 
-	// Test Alice (Admin) - should have global and organization permissions
-	aclAlice := getACLForUser(t, ctx, rbacClient, userAliceSubject)
+	// Test Alice (Admin) - should have global and organization permissions.
+	aclAlice := getACLForUser(t, rbacClient, userAliceSubject)
 	assert.NotNil(t, aclAlice.Global, "Alice should have global permissions")
 	assert.NotNil(t, aclAlice.Organization, "Alice should have organization permissions")
 	assert.Nil(t, aclAlice.Projects, "Alice should not have project-specific permissions")
 
 	// Verify Alice has users:manage globally
 	hasUsersManage := false
+
 	for _, endpoint := range *aclAlice.Global {
 		if endpoint.Name == "users:manage" {
 			hasUsersManage = true
+
 			assert.Contains(t, endpoint.Operations, openapi.Create)
 			assert.Contains(t, endpoint.Operations, openapi.Read)
 			assert.Contains(t, endpoint.Operations, openapi.Update)
 			assert.Contains(t, endpoint.Operations, openapi.Delete)
 		}
 	}
+
 	assert.True(t, hasUsersManage, "Alice should have users:manage permission")
 
-	// Test Bob (Developer) - should have organization read and project permissions
-	aclBob := getACLForUser(t, ctx, rbacClient, userBobSubject)
+	// Test Bob (Developer) - should have organization read and project permissions.
+	aclBob := getACLForUser(t, rbacClient, userBobSubject)
 	assert.Nil(t, aclBob.Global, "Bob should not have global permissions")
 	assert.NotNil(t, aclBob.Organization, "Bob should have organization permissions")
 	assert.NotNil(t, aclBob.Projects, "Bob should have project permissions")
@@ -343,45 +348,54 @@ func TestGroupACLContent(t *testing.T) {
 
 	// Verify Bob has org:read
 	hasOrgRead := false
+
 	for _, endpoint := range aclBob.Organization.Endpoints {
 		if endpoint.Name == "org:read" {
 			hasOrgRead = true
+
 			require.Contains(t, endpoint.Operations, openapi.Read)
 		}
 	}
+
 	assert.True(t, hasOrgRead, "Bob should have org:read permission")
 
-	// Test Charlie (Developer + Reader) - should have merged permissions
-	aclCharlie := getACLForUser(t, ctx, rbacClient, userCharlieSubject)
+	// Test Charlie (Developer + Reader) - should have merged permissions.
+	aclCharlie := getACLForUser(t, rbacClient, userCharlieSubject)
 	assert.Nil(t, aclCharlie.Global, "Charlie should not have global permissions")
 	assert.NotNil(t, aclCharlie.Organization, "Charlie should have organization permissions")
 	assert.NotNil(t, aclCharlie.Projects, "Charlie should have project permissions")
 	assert.Len(t, *aclCharlie.Projects, 2, "Charlie should have access to 2 projects")
 
-	// Charlie should have both deploy and read permissions on projects (merged from two groups)
+	// Charlie should have both deploy and read permissions on projects (merged from two groups).
 	for _, project := range *aclCharlie.Projects {
 		if project.Id == projectAlphaID {
-			// Alpha: only developers group, so deploy but no read-specific
+			// Alpha: only developers group, so deploy but no read-specific.
 			hasProjectDeploy := false
+
 			for _, endpoint := range project.Endpoints {
 				if endpoint.Name == "project:deploy" {
 					hasProjectDeploy = true
 				}
 			}
+
 			require.True(t, hasProjectDeploy, "Charlie should have deploy on project-alpha")
 		}
+
 		if project.Id == projectBetaID {
-			// Beta: both groups, so should have both deploy and read
+			// Beta: both groups, so should have both deploy and read.
 			hasProjectDeploy := false
 			hasProjectRead := false
+
 			for _, endpoint := range project.Endpoints {
 				if endpoint.Name == "project:deploy" {
 					hasProjectDeploy = true
 				}
+
 				if endpoint.Name == "project:read" {
 					hasProjectRead = true
 				}
 			}
+
 			assert.True(t, hasProjectDeploy, "Charlie should have deploy on project-beta")
 			assert.True(t, hasProjectRead, "Charlie should have read on project-beta")
 		}
