@@ -104,6 +104,13 @@ spec:
                 items:
                   type: string
                 type: array
+              users:
+                description: |-
+                  Users are a list of user names that are members of the group.
+                  CRDs.
+                items:
+                  type: string
+                type: array
             type: object
           status:
             description: GroupStatus defines the status of the group.

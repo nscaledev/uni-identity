@@ -61,6 +61,7 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 		Spec: openapi.GroupSpec{
 			RoleIDs:           openapi.StringList{},
 			UserIDs:           &openapi.StringList{},
+			Subjects:          &[]openapi.Subject{},
 			ServiceAccountIDs: openapi.StringList{},
 		},
 	}
