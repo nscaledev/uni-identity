@@ -120,6 +120,42 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
+func removeFromGroup(subject, orgUserID string, updated *unikornv1.Group) bool {
+	var needsPatching bool
+	// Remove from any groups it's a member of but shouldn't be.
+	if slices.Contains(updated.Spec.UserIDs, orgUserID) {
+		updated.Spec.UserIDs = slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
+			return id == orgUserID
+		})
+		needsPatching = true
+	}
+
+	if slices.Contains(updated.Spec.Subjects, subject) {
+		updated.Spec.Subjects = slices.DeleteFunc(updated.Spec.Subjects, func(sub string) bool {
+			return sub == subject
+		})
+		needsPatching = true
+	}
+
+	return needsPatching
+}
+
+func addToGroup(subject, orgUserID string, updated *unikornv1.Group) bool {
+	var needsPatching bool
+	// Add to a group where it should be a member but isn't.
+	if !slices.Contains(updated.Spec.UserIDs, orgUserID) {
+		updated.Spec.UserIDs = append(updated.Spec.UserIDs, orgUserID)
+		needsPatching = true
+	}
+
+	if !slices.Contains(updated.Spec.Subjects, subject) {
+		updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
+		needsPatching = true
+	}
+
+	return needsPatching
+}
+
 // updateGroups takes a user name and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
 func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
@@ -138,30 +174,9 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 		var needsPatching bool
 
 		if slices.Contains(groupIDs, current.Name) {
-			// Add to a group where it should be a member but isn't.
-			if !slices.Contains(current.Spec.UserIDs, orgUserID) {
-				needsPatching = true
-				updated.Spec.UserIDs = append(updated.Spec.UserIDs, orgUserID)
-			}
-
-			if !slices.Contains(current.Spec.Subjects, subject) {
-				needsPatching = true
-				updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
-			}
+			needsPatching = addToGroup(subject, orgUserID, updated)
 		} else {
-			// Remove from any groups it's a member of but shouldn't be.
-			if slices.Contains(updated.Spec.UserIDs, orgUserID) {
-				needsPatching = true
-				updated.Spec.UserIDs = slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
-					return id == orgUserID
-				})
-			}
-			if slices.Contains(updated.Spec.Subjects, subject) {
-				needsPatching = true
-				updated.Spec.Subjects = slices.DeleteFunc(updated.Spec.Subjects, func(sub string) bool {
-					return sub == subject
-				})
-			}
+			needsPatching = removeFromGroup(subject, orgUserID, updated)
 		}
 
 		if needsPatching {
