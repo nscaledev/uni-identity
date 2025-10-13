@@ -24,9 +24,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/handler/users"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	corev1 "k8s.io/api/core/v1"
@@ -66,6 +69,19 @@ const (
 	projectBetaID  = "project-beta"
 )
 
+// The API handlers like to have things in the context, so they can label any resources they make.
+func newContext(t *testing.T) context.Context {
+	ctx := authorization.NewContext(t.Context(), &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: "test-subject",
+		},
+	})
+	ctx = principal.NewContext(ctx, &principal.Principal{
+		Actor: "test-principal",
+	})
+	return ctx
+}
+
 // setupTestEnvironment creates a comprehensive RBAC test environment with users, groups, roles, and projects.
 func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 	t.Helper()
@@ -77,72 +93,37 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 	createObjects := func(objs ...client.Object) {
+		t.Helper()
 		for i := range objs {
 			require.NoError(t, c.Create(t.Context(), objs[i]))
 		}
 	}
 
-	// addUserToOrgInGroups creates the relationship between a (global) user and an organisation.
-	addUserToOrgInGroups := func(user *unikornv1.User, org *unikornv1.Organization, groups []*unikornv1.Group) {
-		// create an Org'User to represent the membership
-		orguser := &unikornv1.OrganizationUser{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: org.Status.Namespace,
-				Name:      org.Name + "--" + user.Name,
-				Labels: map[string]string{
-					constants.OrganizationLabel: org.Name,
-					constants.UserLabel:         user.Name,
-				},
-			},
-			Spec: unikornv1.OrganizationUserSpec{
-				State: unikornv1.UserStateActive,
-			},
+	createUser := func(id, subject string, groups []*unikornv1.Group) {
+		t.Helper()
+		groupids := make([]string, len(groups))
+		for i := range groups {
+			groupids[i] = groups[i].Name
 		}
 
-		// and add the orguser ID to the group
-		for _, g := range groups {
-			g.Spec.UserIDs = append(g.Spec.UserIDs, orguser.Name)
-			require.NoError(t, c.Update(t.Context(), g))
-		}
-
-		createObjects(orguser)
+		userclient := users.New("identity.unikorn-cloud.org", c, testNamespace, nil /* issuer */, &users.Options{
+			// luckily these are all to do with email verification, which we don't want to use.
+		})
+		// this is needed because deep in the bowels of request handling, it's consulted in
+		// order to set some Kubernetes object metadata.
+		ctx := newContext(t)
+		_, err := userclient.Create(ctx, testOrgID, &openapi.UserWrite{
+			Metadata: &coreopenapi.ResourceWriteMetadata{
+				Name: id,
+			},
+			Spec: openapi.UserSpec{
+				Subject:  subject,
+				State:    openapi.Active,
+				GroupIDs: groupids,
+			},
+		})
+		require.NoError(t, err)
 	}
-
-	// Create global Users
-	userAlice := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      userAliceID,
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: userAliceSubject,
-			State:   unikornv1.UserStateActive,
-		},
-	}
-
-	userBob := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      userBobID,
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: userBobSubject,
-			State:   unikornv1.UserStateActive,
-		},
-	}
-
-	userCharlie := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      userCharlieID,
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: userCharlieSubject,
-			State:   unikornv1.UserStateActive,
-		},
-	}
-
-	createObjects(userAlice, userBob, userCharlie)
 
 	// Create Organization
 	organization := &unikornv1.Organization{
@@ -157,7 +138,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 	}
 
 	createObjects(organization)
-	require.NoError(t, c.Update(t.Context(), organization))
+	require.NoError(t, c.Update(t.Context(), organization)) // to update the status with our
 
 	// Create Roles with different permission scopes
 	roleAdmin := &unikornv1.Role{
@@ -264,10 +245,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 
 	createObjects(groupAdminsObj, groupReadersObj, groupDevelopersObj)
 
-	addUserToOrgInGroups(userAlice, organization, []*unikornv1.Group{groupAdminsObj})
-	addUserToOrgInGroups(userBob, organization, []*unikornv1.Group{groupDevelopersObj})
-	addUserToOrgInGroups(userCharlie, organization, []*unikornv1.Group{groupReadersObj, groupDevelopersObj})
-
 	// Create Projects
 	projectAlpha := &unikornv1.Project{
 		ObjectMeta: metav1.ObjectMeta{
@@ -296,6 +273,10 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 	}
 
 	createObjects(projectAlpha, projectBeta)
+
+	createUser(userAliceID, userAliceSubject, []*unikornv1.Group{groupAdminsObj})
+	createUser(userBobID, userBobSubject, []*unikornv1.Group{groupDevelopersObj})
+	createUser(userCharlieID, userCharlieSubject, []*unikornv1.Group{groupReadersObj, groupDevelopersObj})
 
 	rbacClient := rbac.New(c, testNamespace, &rbac.Options{})
 
