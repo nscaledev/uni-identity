@@ -357,6 +357,54 @@ func TestRemoteTokenCaching(t *testing.T) {
 	require.Equal(t, int32(1), server.Called.Load())
 }
 
+func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
+	t.Helper()
+
+	_, _, serverCertPEM, serverKeyPEM, err := mtlstest.GenerateCACerts()
+	require.NoError(t, err)
+
+	unauthNamespace := "unauthorised"
+
+	// Create a separate signing key secret with the unauthorized server's keys
+	unauthorizedSigningSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: unauthNamespace,
+			Name:      "unauthorized-jose-tls",
+		},
+		Data: map[string][]byte{
+			corev1.TLSCertKey:       serverCertPEM,
+			corev1.TLSPrivateKeyKey: serverKeyPEM,
+		},
+	}
+
+	unauthorizedSigningKey := &unikornv1.SigningKey{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: unauthNamespace,
+			Name:      jose.SigningKeyName,
+		},
+		Spec: unikornv1.SigningKeySpec{
+			PrivateKeys: []unikornv1.PrivateKey{
+				{PEM: serverKeyPEM},
+			},
+		},
+	}
+
+	// Create a separate k8s client with the unauthorized keys
+	unauthorizedClient := fake.NewClientBuilder().
+		WithScheme(k8sClient.Scheme()).
+		WithObjects(unauthorizedSigningSecret, unauthorizedSigningKey).
+		Build()
+
+	// Create issuer with the separate key
+	unauthorizedIssuer := jose.NewJWTIssuer(unauthorizedClient, unauthNamespace, &jose.Options{
+		IssuerSecretName: unauthorizedSigningSecret.Name,
+	})
+	token, err := unauthorizedIssuer.EncodeJWT(t.Context(), map[string]any{"iss": "https://unknown.example.com"})
+	require.NoError(t, err)
+
+	return token
+}
+
 // TestRemoteInvalidToken tests authentication with an invalid token.
 func TestRemoteInvalidRequest(t *testing.T) {
 	t.Parallel()
@@ -370,6 +418,10 @@ func TestRemoteInvalidRequest(t *testing.T) {
 		"invalid token": func(req *http.Request) {
 			req.Header.Set("Authorization", "Bearer invalid-token")
 		},
+		"unauthorized token": func(req *http.Request) {
+			t := generatePlausibleToken(t, k8sClient)
+			req.Header.Set("Authorization", "Bearer "+t)
+		},
 	}
 
 	for name, fn := range requestMutators {
@@ -381,6 +433,7 @@ func TestRemoteInvalidRequest(t *testing.T) {
 			info, err := auth.Authorize(authInput(req))
 
 			require.Error(t, err)
+			println(name, err.Error())
 			require.Nil(t, info)
 		})
 	}

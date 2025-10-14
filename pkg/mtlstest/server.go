@@ -85,7 +85,7 @@ func NewMTLSServer(handler http.Handler) (*MTLSServer, error) {
 	s := &MTLSServer{}
 
 	// Generate CA certificate
-	caCert, caKey, caCertPEM, caKeyPEM, err := generateCA()
+	caCert, caKey, caCertPEM, caKeyPEM, err := GenerateCACerts()
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +190,7 @@ func (s *MTLSServer) Client() (*http.Client, error) {
 }
 
 // generateCA creates a self-signed CA certificate for testing.
-func generateCA() (*x509.Certificate, *ecdsa.PrivateKey, []byte, []byte, error) {
+func GenerateCACerts() (*x509.Certificate, *ecdsa.PrivateKey, []byte, []byte, error) {
 	privateKey, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	if err != nil {
 		return nil, nil, nil, nil, err
