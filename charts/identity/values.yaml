@@ -281,6 +281,10 @@ roles:
 # Quota metadata and defaults are defined here.  Quotas are extensible
 # so you can create 3rd party quota resources externally.
 quotas:
+  networks:
+    displayName: Networks
+    description: Layer 3 networks.
+    default: 5
   clusters:
     displayName: Clusters
     description: All cluster types e.g. Kubernetes, compute, etc.
@@ -293,6 +297,15 @@ quotas:
     displayName: GPUs
     description: General purpose GPUs for AI workloads.
     default: 40
+  publicips:
+    displayName: Public IPs
+    description: Public IP addresses.
+    default: 5
+  filestorage:
+    displayName: File Storage
+    description: Persistent network file storage.
+    default: 1Ti
+    format: binary
 
 ingress:
   # Sets the ingress class to use.

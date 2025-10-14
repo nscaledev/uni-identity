@@ -397,6 +397,17 @@ type ServiceAccountSpec struct {
 type ServiceAccountStatus struct {
 }
 
+// QuotaFormat is a hint for clients how to format the value.
+// +kubebuilder:validation:Enum=decimal;binary
+type QuotaFormat string
+
+const (
+	// Decimal is used for discrete things like CPUs, GPUs, VLANs etc.
+	Decimal QuotaFormat = "decimal"
+	// Binary is used for things like RAM and storage (because using decimal is just marketing).
+	Binary QuotaFormat = "binary"
+)
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type QuotaMetadataList struct {
 	metav1.TypeMeta `json:",inline"`
@@ -424,6 +435,9 @@ type QuotaMetadataSpec struct {
 	Description string `json:"description"`
 	// Default is the default quantity to set on creation.
 	Default *resource.Quantity `json:"default"`
+	// Format is a formatting hint.
+	// +kubebuilder:default="decimal"
+	Format QuotaFormat `json:"format,omitempty"`
 }
 
 type QuotaMetadataStatus struct {
