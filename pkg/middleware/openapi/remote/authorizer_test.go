@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,8 +58,13 @@ const (
 	certificateName = "jose-tls"
 )
 
+type server struct {
+	*mtlstest.MTLSServer
+	Called *atomic.Int32 // used to check that cache is used rather than repeating calls
+}
+
 // setupTestEnvironment creates a test environment with necessary K8s resources and identity server.
-func setupTestEnvironment(t *testing.T) (client.Client, *mtlstest.MTLSServer, string) {
+func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	t.Helper()
 
 	// Create K8s scheme and client
@@ -70,8 +76,10 @@ func setupTestEnvironment(t *testing.T) (client.Client, *mtlstest.MTLSServer, st
 	// in the K8s secrets. However, we need the authenticator to create the
 	// handler, so we'll use a placeholder handler first.
 	var authenticator *oauth2.Authenticator
-
+	// Similarly, the handler needs the server URL, so declare first and assign after.
 	var mtlsServer *mtlstest.MTLSServer
+
+	var called atomic.Int32
 
 	// Create mTLS server with handler
 	var err error
@@ -92,6 +100,8 @@ func setupTestEnvironment(t *testing.T) (client.Client, *mtlstest.MTLSServer, st
 			_ = json.NewEncoder(w).Encode(config)
 
 		case "/oauth2/v2/userinfo":
+			called.Add(1)
+
 			// Userinfo endpoint. This part of the handler is copied from handlers/handler.go, because the
 			// "full" handler has too many dependencies that are irrelevant here.
 			header := r.Header.Get("Authorization")
@@ -126,6 +136,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *mtlstest.MTLSServer, st
 		}
 	}))
 	require.NoError(t, err)
+	t.Cleanup(mtlsServer.Close)
 
 	// Create signing key secret (for JWT signing)
 	signingSecret := &corev1.Secret{
@@ -246,7 +257,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *mtlstest.MTLSServer, st
 	require.NotNil(t, tokens)
 	accessToken := tokens.AccessToken
 
-	return fakeClient, mtlsServer, accessToken
+	return fakeClient, &server{mtlsServer, &called}, accessToken
 }
 
 // The fields are all unexported, and the only way to set them is with flags. So,
@@ -287,21 +298,8 @@ func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string
 	return authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
 }
 
-// TestRemoteFederatedTokenAuthentication tests authentication via remote identity service.
-func TestRemoteFederatedTokenAuthentication(t *testing.T) {
-	t.Parallel()
-
-	k8sClient, server, accessToken := setupTestEnvironment(t)
-	defer server.Close()
-
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
-
-	// Create test request
-	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	// Test Authorize
-	authInput := &openapi3filter.AuthenticationInput{
+func authInput(req *http.Request) *openapi3filter.AuthenticationInput {
+	return &openapi3filter.AuthenticationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{
 			Request: req,
 		},
@@ -309,8 +307,21 @@ func TestRemoteFederatedTokenAuthentication(t *testing.T) {
 			Type: "oauth2",
 		},
 	}
+}
 
-	info, err := auth.Authorize(authInput)
+// TestRemoteFederatedTokenAuthentication tests authentication via remote identity service.
+func TestRemoteFederatedTokenAuthentication(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, accessToken := setupTestEnvironment(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	// Create test request
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	info, err := auth.Authorize(authInput(req))
 
 	require.NoError(t, err)
 	require.NotNil(t, info)
@@ -322,7 +333,6 @@ func TestRemoteTokenCaching(t *testing.T) {
 	t.Parallel()
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
-	defer server.Close()
 
 	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
@@ -330,16 +340,7 @@ func TestRemoteTokenCaching(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req1.Header.Set("Authorization", "Bearer "+accessToken)
 
-	authInput1 := &openapi3filter.AuthenticationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request: req1,
-		},
-		SecurityScheme: &openapi3.SecurityScheme{
-			Type: "oauth2",
-		},
-	}
-
-	info1, err := auth.Authorize(authInput1)
+	info1, err := auth.Authorize(authInput(req1))
 
 	require.NoError(t, err)
 	require.NotNil(t, info1)
@@ -348,105 +349,41 @@ func TestRemoteTokenCaching(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req2.Header.Set("Authorization", "Bearer "+accessToken)
 
-	authInput2 := &openapi3filter.AuthenticationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request: req2,
-		},
-		SecurityScheme: &openapi3.SecurityScheme{
-			Type: "oauth2",
-		},
-	}
-
-	info2, err := auth.Authorize(authInput2)
+	info2, err := auth.Authorize(authInput(req2))
 
 	require.NoError(t, err)
 	require.NotNil(t, info2)
 	require.Equal(t, info1.Userinfo.Sub, info2.Userinfo.Sub)
+	require.Equal(t, int32(1), server.Called.Load())
 }
 
 // TestRemoteInvalidToken tests authentication with an invalid token.
-func TestRemoteInvalidToken(t *testing.T) {
+func TestRemoteInvalidRequest(t *testing.T) {
 	t.Parallel()
 
 	k8sClient, server, _ := setupTestEnvironment(t)
-	defer server.Close()
 
 	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
-	// Create test request with invalid token
-	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req.Header.Set("Authorization", "Bearer invalid-token")
-
-	// Test Authorize
-	authInput := &openapi3filter.AuthenticationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request: req,
-		},
-		SecurityScheme: &openapi3.SecurityScheme{
-			Type: "oauth2",
+	requestMutators := map[string]func(*http.Request){
+		"missing token": func(*http.Request) {},
+		"invalid token": func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer invalid-token")
 		},
 	}
 
-	info, err := auth.Authorize(authInput)
+	for name, fn := range requestMutators {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Error(t, err)
-	require.Nil(t, info)
-}
+			req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+			fn(req)
+			info, err := auth.Authorize(authInput(req))
 
-// TestRemoteMissingAuthorizationHeader tests authentication without Authorization header.
-func TestRemoteMissingAuthorizationHeader(t *testing.T) {
-	t.Parallel()
-
-	k8sClient, server, _ := setupTestEnvironment(t)
-	defer server.Close()
-
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
-
-	// Create test request without Authorization header
-	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-
-	// Test Authorize
-	authInput := &openapi3filter.AuthenticationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request: req,
-		},
-		SecurityScheme: &openapi3.SecurityScheme{
-			Type: "oauth2",
-		},
+			require.Error(t, err)
+			require.Nil(t, info)
+		})
 	}
-
-	info, err := auth.Authorize(authInput)
-
-	require.Error(t, err)
-	require.Nil(t, info)
-}
-
-// TestRemoteGetACLWithOrganization tests ACL retrieval with organization context.
-func TestRemoteGetACLWithOrganization(t *testing.T) {
-	t.Parallel()
-
-	k8sClient, server, accessToken := setupTestEnvironment(t)
-	defer server.Close()
-
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
-
-	// Authenticate first
-	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	authInput := &openapi3filter.AuthenticationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request: req,
-		},
-		SecurityScheme: &openapi3.SecurityScheme{
-			Type: "oauth2",
-		},
-	}
-
-	info, err := auth.Authorize(authInput)
-
-	require.NoError(t, err)
-	require.NotNil(t, info)
 }
 
 // TestRemoteUnsupportedScheme tests authentication with unsupported scheme.
@@ -454,7 +391,6 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 	t.Parallel()
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
-	defer server.Close()
 
 	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
