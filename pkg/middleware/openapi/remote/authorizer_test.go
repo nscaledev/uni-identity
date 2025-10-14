@@ -17,16 +17,7 @@ limitations under the License.
 package authorizer_test
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
-	"math/big"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -45,6 +36,7 @@ import (
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
+	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
@@ -65,110 +57,75 @@ const (
 	certificateName = "jose-tls"
 )
 
-// generateCA creates a self-signed CA certificate for testing.
-func generateCA() (*x509.Certificate, *ecdsa.PrivateKey, []byte, []byte, error) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			CommonName: "Test CA",
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	cert, err := x509.ParseCertificate(certDER)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	privDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
-
-	return cert, privateKey, certPEM, privPEM, nil
-}
-
-// generateCertificate creates a certificate signed by the given CA for testing.
-func generateCertificate(cn string, caCert *x509.Certificate, caKey *ecdsa.PrivateKey) ([]byte, []byte, error) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	template := &x509.Certificate{
-		SerialNumber: serialNumber,
-		Subject: pkix.Name{
-			CommonName: cn,
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
-		DNSNames:              []string{"localhost"},
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, caCert, &privateKey.PublicKey, caKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	privDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
-
-	return certPEM, privPEM, nil
-}
-
 // setupTestEnvironment creates a test environment with necessary K8s resources and identity server.
-func setupTestEnvironment(t *testing.T) (client.Client, *httptest.Server, string) {
+func setupTestEnvironment(t *testing.T) (client.Client, *mtlstest.MTLSServer, string) {
 	t.Helper()
-
-	// Generate CA certificate
-	caCert, caKey, caCertPEM, caPrivPEM, err := generateCA()
-	require.NoError(t, err)
-
-	// Generate server certificate signed by CA
-	serverCertPEM, serverPrivPEM, err := generateCertificate("test-server", caCert, caKey)
-	require.NoError(t, err)
-
-	// Generate client certificate signed by CA
-	clientCertPEM, clientPrivPEM, err := generateCertificate("test-client", caCert, caKey)
-	require.NoError(t, err)
 
 	// Create K8s scheme and client
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	// We need to create the mTLS server early so we can use its certificates
+	// in the K8s secrets. However, we need the authenticator to create the
+	// handler, so we'll use a placeholder handler first.
+	var authenticator *oauth2.Authenticator
+
+	var mtlsServer *mtlstest.MTLSServer
+
+	// Create mTLS server with handler
+	var err error
+	mtlsServer, err = mtlstest.NewMTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			u := mtlsServer.URL()
+			// OIDC discovery endpoint
+			config := map[string]interface{}{
+				"issuer":                 u,
+				"userinfo_endpoint":      u + "/oauth2/v2/userinfo",
+				"jwks_uri":               u + "/.well-known/jwks.json",
+				"token_endpoint":         u + "/oauth2/v2/token",
+				"authorization_endpoint": u + "/oauth2/v2/authorization",
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(config)
+
+		case "/oauth2/v2/userinfo":
+			// Userinfo endpoint. This part of the handler is copied from handlers/handler.go, because the
+			// "full" handler has too many dependencies that are irrelevant here.
+			header := r.Header.Get("Authorization")
+			if header == "" {
+				errors.HandleError(w, r, errors.OAuth2UnauthorizedClient("missing auth header"))
+				return
+			}
+
+			parts := strings.Split(header, " ")
+
+			if len(parts) != 2 {
+				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header malformed"))
+				return
+			}
+
+			if !strings.EqualFold(parts[0], "bearer") {
+				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization scheme not allowed"))
+				return
+			}
+
+			userinfo, _, err := authenticator.GetUserinfo(r.Context(), r, parts[1])
+			if err != nil {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(userinfo)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	require.NoError(t, err)
 
 	// Create signing key secret (for JWT signing)
 	signingSecret := &corev1.Secret{
@@ -177,8 +134,8 @@ func setupTestEnvironment(t *testing.T) (client.Client, *httptest.Server, string
 			Name:      certificateName,
 		},
 		Data: map[string][]byte{
-			corev1.TLSCertKey:       serverCertPEM,
-			corev1.TLSPrivateKeyKey: serverPrivPEM,
+			corev1.TLSCertKey:       mtlsServer.ServerCertPEM,
+			corev1.TLSPrivateKeyKey: mtlsServer.ServerKeyPEM,
 		},
 	}
 
@@ -190,8 +147,8 @@ func setupTestEnvironment(t *testing.T) (client.Client, *httptest.Server, string
 		},
 		Type: corev1.SecretTypeTLS,
 		Data: map[string][]byte{
-			corev1.TLSCertKey:       clientCertPEM,
-			corev1.TLSPrivateKeyKey: clientPrivPEM,
+			corev1.TLSCertKey:       mtlsServer.ClientCertPEM,
+			corev1.TLSPrivateKeyKey: mtlsServer.ClientKeyPEM,
 		},
 	}
 
@@ -202,8 +159,8 @@ func setupTestEnvironment(t *testing.T) (client.Client, *httptest.Server, string
 		},
 		Type: corev1.SecretTypeTLS,
 		Data: map[string][]byte{
-			corev1.TLSCertKey:       caCertPEM,
-			corev1.TLSPrivateKeyKey: caPrivPEM,
+			corev1.TLSCertKey:       mtlsServer.CACertPEM,
+			corev1.TLSPrivateKeyKey: mtlsServer.CAKeyPEM,
 		},
 	}
 
@@ -215,7 +172,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *httptest.Server, string
 		},
 		Spec: unikornv1.SigningKeySpec{
 			PrivateKeys: []unikornv1.PrivateKey{
-				{PEM: serverPrivPEM},
+				{PEM: mtlsServer.ServerKeyPEM},
 			},
 		},
 	}
@@ -266,84 +223,13 @@ func setupTestEnvironment(t *testing.T) (client.Client, *httptest.Server, string
 		CodeCacheSize:            10,
 		AccountCreationCacheSize: 10,
 	}
-	authenticator := oauth2.New(oauth2Options, testNamespace, fakeClient, issuer, rbacClient)
-
-	// Create CA pool for client certificate verification
-	clientCAPool := x509.NewCertPool()
-	clientCAPool.AppendCertsFromPEM(caCertPEM)
-
-	// Create test HTTP server that simulates identity service
-	var accessToken string
-
-	var server *httptest.Server
-	server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
-			// OIDC discovery endpoint
-			config := map[string]interface{}{
-				"issuer":                 server.URL,
-				"userinfo_endpoint":      server.URL + "/oauth2/v2/userinfo",
-				"jwks_uri":               server.URL + "/.well-known/jwks.json",
-				"token_endpoint":         server.URL + "/oauth2/v2/token",
-				"authorization_endpoint": server.URL + "/oauth2/v2/authorization",
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(config)
-
-		case "/oauth2/v2/userinfo":
-			// Userinfo endpoint. This part of the handler is copied from handlers/handler.go, because the
-			// "full" handler has too many dependencies that are irrelevant here.
-			header := r.Header.Get("Authorization")
-			if header == "" {
-				errors.HandleError(w, r, errors.OAuth2UnauthorizedClient("missing auth header"))
-				return
-			}
-
-			parts := strings.Split(header, " ")
-
-			if len(parts) != 2 {
-				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header malformed"))
-				return
-			}
-
-			if !strings.EqualFold(parts[0], "bearer") {
-				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization scheme not allowed"))
-				return
-			}
-
-			userinfo, _, err := authenticator.GetUserinfo(r.Context(), r, parts[1])
-			if err != nil {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(userinfo)
-
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-
-	// Load server certificate
-	serverCert, err := tls.X509KeyPair(serverCertPEM, serverPrivPEM)
-	require.NoError(t, err)
-
-	// Configure server TLS before starting
-	server.TLS = &tls.Config{
-		MinVersion:   tls.VersionTLS13,
-		Certificates: []tls.Certificate{serverCert},
-		ClientCAs:    clientCAPool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-	}
-	server.StartTLS()
+	authenticator = oauth2.New(oauth2Options, testNamespace, fakeClient, issuer, rbacClient)
 
 	// Issue a test token
 	ctx := t.Context()
-	u, _ := url.Parse(server.URL)
+	u, _ := url.Parse(mtlsServer.URL())
 	issueInfo := &oauth2.IssueInfo{
-		Issuer:   server.URL,
+		Issuer:   mtlsServer.URL(),
 		Audience: u.Host, // the issuer is https://..., but the audience is the host.
 		Subject:  testSubject,
 		Type:     oauth2.TokenTypeFederated,
@@ -358,9 +244,9 @@ func setupTestEnvironment(t *testing.T) (client.Client, *httptest.Server, string
 	tokens, err := authenticator.Issue(ctx, issueInfo)
 	require.NoError(t, err)
 	require.NotNil(t, tokens)
-	accessToken = tokens.AccessToken
+	accessToken := tokens.AccessToken
 
-	return fakeClient, server, accessToken
+	return fakeClient, mtlsServer, accessToken
 }
 
 // The fields are all unexported, and the only way to set them is with flags. So,
@@ -408,10 +294,10 @@ func TestRemoteFederatedTokenAuthentication(t *testing.T) {
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 	defer server.Close()
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
 	// Create test request
-	req := httptest.NewRequest(http.MethodGet, server.URL+"/api/v1/test", nil)
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	// Test Authorize
@@ -438,10 +324,10 @@ func TestRemoteTokenCaching(t *testing.T) {
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 	defer server.Close()
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
 	// First request
-	req1 := httptest.NewRequest(http.MethodGet, server.URL+"/api/v1/test", nil)
+	req1 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req1.Header.Set("Authorization", "Bearer "+accessToken)
 
 	authInput1 := &openapi3filter.AuthenticationInput{
@@ -459,7 +345,7 @@ func TestRemoteTokenCaching(t *testing.T) {
 	require.NotNil(t, info1)
 
 	// Second request with same token (should hit cache)
-	req2 := httptest.NewRequest(http.MethodGet, server.URL+"/api/v1/test", nil)
+	req2 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req2.Header.Set("Authorization", "Bearer "+accessToken)
 
 	authInput2 := &openapi3filter.AuthenticationInput{
@@ -485,10 +371,10 @@ func TestRemoteInvalidToken(t *testing.T) {
 	k8sClient, server, _ := setupTestEnvironment(t)
 	defer server.Close()
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
 	// Create test request with invalid token
-	req := httptest.NewRequest(http.MethodGet, server.URL+"/api/v1/test", nil)
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer invalid-token")
 
 	// Test Authorize
@@ -514,10 +400,10 @@ func TestRemoteMissingAuthorizationHeader(t *testing.T) {
 	k8sClient, server, _ := setupTestEnvironment(t)
 	defer server.Close()
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
 	// Create test request without Authorization header
-	req := httptest.NewRequest(http.MethodGet, server.URL+"/api/v1/test", nil)
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 
 	// Test Authorize
 	authInput := &openapi3filter.AuthenticationInput{
@@ -542,10 +428,10 @@ func TestRemoteGetACLWithOrganization(t *testing.T) {
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 	defer server.Close()
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
 	// Authenticate first
-	req := httptest.NewRequest(http.MethodGet, server.URL+"/api/v1/test", nil)
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	authInput := &openapi3filter.AuthenticationInput{
@@ -570,10 +456,10 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 	defer server.Close()
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
 
 	// Create test request
-	req := httptest.NewRequest(http.MethodGet, server.URL+"/api/v1/test", nil)
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	// Test Authorize with unsupported scheme
