@@ -57,6 +57,13 @@ spec:
                   DisplayName allows the user control over how the metadata
                   is presented.
                 type: string
+              format:
+                default: decimal
+                description: Format is a formatting hint.
+                enum:
+                - decimal
+                - binary
+                type: string
             required:
             - default
             - description
