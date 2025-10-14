@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
@@ -137,12 +138,13 @@ func TestUserinfoCustomClaims(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string]struct {
-		objects       []client.Object
-		issueInfo     *oauth2.IssueInfo
-		postIssue     func(*testing.T, context.Context, client.Client, *oauth2.Tokens)
-		expectedSub   string
-		expectedEmail *string
-		expectedType  openapi.AuthClaimsAcctype
+		objects        []client.Object
+		issueInfo      *oauth2.IssueInfo
+		postIssue      func(*testing.T, context.Context, client.Client, *oauth2.Tokens)
+		expectedSub    string
+		expectedEmail  *string
+		expectedType   openapi.AuthClaimsAcctype
+		expectedOrgIDs []string
 	}{
 		"federated user": {
 			objects: []client.Object{
@@ -167,9 +169,58 @@ func TestUserinfoCustomClaims(t *testing.T) {
 					Scope:  oauth2.NewScope("openid email"),
 				},
 			},
-			expectedSub:   "user@example.com",
-			expectedEmail: ptr.To("user@example.com"),
-			expectedType:  openapi.User,
+			expectedSub:    "user@example.com",
+			expectedEmail:  ptr.To("user@example.com"),
+			expectedType:   openapi.User,
+			expectedOrgIDs: []string{},
+		},
+		"federated user with orgs": {
+			objects: []client.Object{
+				&unikornv1.User{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: josetesting.Namespace,
+						Name:      "test-user",
+					},
+					Spec: unikornv1.UserSpec{
+						Subject: "user@example.com",
+						State:   unikornv1.UserStateActive,
+					},
+				},
+				&unikornv1.OrganizationUser{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: josetesting.Namespace,
+						Name:      "org1-user",
+						Labels: map[string]string{
+							constants.UserLabel:         "test-user",
+							constants.OrganizationLabel: "org1",
+						},
+					},
+				},
+				&unikornv1.OrganizationUser{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: josetesting.Namespace,
+						Name:      "org2-user",
+						Labels: map[string]string{
+							constants.UserLabel:         "test-user",
+							constants.OrganizationLabel: "org2",
+						},
+					},
+				},
+			},
+			issueInfo: &oauth2.IssueInfo{
+				Issuer:   "https://test.com",
+				Audience: "test.com",
+				Subject:  "user@example.com",
+				Type:     oauth2.TokenTypeFederated,
+				Federated: &oauth2.FederatedClaims{
+					UserID: "test-user",
+					Scope:  oauth2.NewScope("openid email"),
+				},
+			},
+			expectedSub:    "user@example.com",
+			expectedEmail:  ptr.To("user@example.com"),
+			expectedType:   openapi.User,
+			expectedOrgIDs: []string{"org1", "org2"},
 		},
 		"service account": {
 			objects: []client.Object{
@@ -209,8 +260,9 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				serviceAccount.Spec.AccessToken = tokens.AccessToken
 				require.NoError(t, c.Update(ctx, serviceAccount))
 			},
-			expectedSub:  "test-service-account",
-			expectedType: openapi.Service,
+			expectedSub:    "test-service-account",
+			expectedType:   openapi.Service,
+			expectedOrgIDs: []string{"test-org"},
 		},
 		"system service": {
 			issueInfo: &oauth2.IssueInfo{
@@ -219,8 +271,9 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				Subject:  "system-service",
 				Type:     oauth2.TokenTypeService,
 			},
-			expectedSub:  "system-service",
-			expectedType: openapi.System,
+			expectedSub:    "system-service",
+			expectedType:   openapi.System,
+			expectedOrgIDs: nil,
 		},
 	}
 
@@ -280,6 +333,13 @@ func TestUserinfoCustomClaims(t *testing.T) {
 
 			require.NotNil(t, userinfo.HttpsunikornCloudOrgauthz)
 			assert.Equal(t, tc.expectedType, userinfo.HttpsunikornCloudOrgauthz.Acctype)
+
+			if tc.expectedOrgIDs != nil {
+				require.NotNil(t, userinfo.HttpsunikornCloudOrgauthz.OrgIds)
+				assert.ElementsMatch(t, tc.expectedOrgIDs, userinfo.HttpsunikornCloudOrgauthz.OrgIds)
+			} else {
+				assert.Nil(t, userinfo.HttpsunikornCloudOrgauthz.OrgIds)
+			}
 		})
 	}
 }
