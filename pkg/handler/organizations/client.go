@@ -32,6 +32,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -159,7 +160,7 @@ func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, 
 	return out, nil
 }
 
-func (c *Client) getUserbyEmail(ctx context.Context, rbacClient *rbac.RBAC, info *authorization.Info, email string) (*unikornv1.User, error) {
+func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
 	// If you aren't looking at yourself, then you need global read permissions, you cannot
 	// go probing for other users or organizations, massive data breach!
 	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
@@ -168,7 +169,7 @@ func (c *Client) getUserbyEmail(ctx context.Context, rbacClient *rbac.RBAC, info
 		}
 	}
 
-	user, err := rbacClient.GetActiveUser(ctx, email)
+	user, err := userdb.GetActiveUser(ctx, email)
 	if err != nil {
 		return nil, errors.HTTPNotFound().WithError(err)
 	}
@@ -176,14 +177,14 @@ func (c *Client) getUserbyEmail(ctx context.Context, rbacClient *rbac.RBAC, info
 	return user, nil
 }
 
-func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, email *string) ([]string, error) {
+func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabase, email *string) ([]string, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: userinfo is not set", err)
 	}
 
 	if info.ServiceAccount {
-		account, err := rbacClient.GetServiceAccount(ctx, info.Userinfo.Sub)
+		account, err := userdb.GetServiceAccount(ctx, info.Userinfo.Sub)
 		if err != nil {
 			return nil, errors.HTTPForbidden("service account not found").WithError(err)
 		}
@@ -194,12 +195,12 @@ func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, ema
 	var user *unikornv1.User
 
 	if email != nil {
-		user, err = c.getUserbyEmail(ctx, rbacClient, info, *email)
+		user, err = c.getUserbyEmail(ctx, userdb, info, *email)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		user, err = rbacClient.GetActiveUser(ctx, info.Userinfo.Sub)
+		user, err = userdb.GetActiveUser(ctx, info.Userinfo.Sub)
 		if err != nil {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
@@ -224,7 +225,7 @@ func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, ema
 	return result, nil
 }
 
-func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string) (openapi.Organizations, error) {
+func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *string) (openapi.Organizations, error) {
 	// This is the only special case in the system.  When requesting organizations we
 	// will have an unscoped ACL, so can check for global access to all organizations.
 	// If we don't have that then we need to use RBAC to get a list of organizations we are
@@ -244,7 +245,7 @@ func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string)
 		return nil, fmt.Errorf("%w: failed to list organizations", err)
 	}
 
-	organizationIDs, err := c.organizationIDs(ctx, rbacClient, email)
+	organizationIDs, err := c.organizationIDs(ctx, userdb, email)
 	if err != nil {
 		return nil, err
 	}

@@ -367,7 +367,7 @@ func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo,
 	}
 
 	// TODO: the subject should be the user ID anyway...
-	user, err := a.rbac.GetActiveUser(ctx, claims.Subject)
+	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
 		return err
 	}
