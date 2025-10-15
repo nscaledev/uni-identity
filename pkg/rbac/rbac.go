@@ -36,7 +36,10 @@ import (
 )
 
 var (
-	ErrResourceReference = errors.New("resource reference error")
+	ErrResourceReference      = errors.New("resource reference error")
+	ErrNoAuthz                = errors.New("no authorization data in userinfo")
+	ErrWrongOrganizationCount = errors.New("expected exactly one organization ID")
+	ErrNotInOrganization      = errors.New("subject not a member of organization")
 )
 
 type Options struct {
@@ -67,89 +70,10 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 	}
 }
 
-func (r *RBAC) getUser(ctx context.Context, subject string) (*unikornv1.User, error) {
-	result := &unikornv1.UserList{}
-
-	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
-		return nil, err
-	}
-
-	index := slices.IndexFunc(result.Items, func(user unikornv1.User) bool {
-		return user.Spec.Subject == subject
-	})
-
-	if index < 0 {
-		return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)
-	}
-
-	return &result.Items[index], nil
-}
-
-// GetActiveUser returns a user that match the subject and is active.
-func (r *RBAC) getActiveUser(ctx context.Context, subject string) (*unikornv1.User, error) {
-	user, err := r.getUser(ctx, subject)
-	if err != nil {
-		return nil, err
-	}
-
-	if user.Spec.State != unikornv1.UserStateActive {
-		return nil, fmt.Errorf("%w: user is not active", ErrResourceReference)
-	}
-
-	return user, nil
-}
-
-// GetActiveOrganizationUser gets an organization user that references the actual user.
-func (r *RBAC) getActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.OrganizationLabel: organizationID,
-		constants.UserLabel:         user.Name,
-	})
-
-	result := &unikornv1.OrganizationUserList{}
-
-	if err := r.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
-		return nil, err
-	}
-
-	if len(result.Items) != 1 {
-		return nil, fmt.Errorf("%w: user does not exist in organization or exists multiple times", ErrResourceReference)
-	}
-
-	organizationUser := &result.Items[0]
-
-	if organizationUser.Spec.State != unikornv1.UserStateActive {
-		return nil, fmt.Errorf("%w: user is not active", ErrResourceReference)
-	}
-
-	return organizationUser, nil
-}
-
-// GetServiceAccount looks up a service account.
-func (r *RBAC) getServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
-	result := &unikornv1.ServiceAccountList{}
-
-	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
-		return nil, err
-	}
-
-	predicate := func(s unikornv1.ServiceAccount) bool {
-		return s.Name != id
-	}
-
-	result.Items = slices.DeleteFunc(result.Items, predicate)
-
-	if len(result.Items) != 1 {
-		return nil, fmt.Errorf("%w: expected 1 instance of service account ID %s", ErrResourceReference, id)
-	}
-
-	return &result.Items[0], nil
-}
-
 // groupUserFilter checks if the group contains the user.
-func groupUserFilter(id string) func(unikornv1.Group) bool {
+func groupSubjectFilter(subject string) func(unikornv1.Group) bool {
 	return func(group unikornv1.Group) bool {
-		return !slices.Contains(group.Spec.UserIDs, id)
+		return !slices.Contains(group.Spec.Subjects, subject)
 	}
 }
 
@@ -212,6 +136,15 @@ func (r *RBAC) getProjects(ctx context.Context, organizationID string) (*unikorn
 	}
 
 	return result, nil
+}
+
+func (r *RBAC) getOrganizationNamespace(ctx context.Context, orgID string) (string, error) {
+	var org unikornv1.Organization
+	if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: orgID}, &org); err != nil {
+		return "", err
+	}
+
+	return org.Status.Namespace, nil
 }
 
 func convertOperation(in unikornv1.Operation) openapi.AclOperation {
@@ -326,11 +259,15 @@ func (r *RBAC) accumulatePermissions(groups map[string]*unikornv1.Group, roles m
 //
 //nolint:cyclop,gocognit
 func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
-	// All the tokens introspecition info is in the context...
+	// All the tokens introspection info is in the context...
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
+
+	// these we will use throughout
+	userinfo := info.Userinfo
+	subject := userinfo.Sub
 
 	roles, err := r.getRoles(ctx)
 	if err != nil {
@@ -356,37 +293,47 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 
 	var projectACLs []openapi.AclScopedEndpoints
 
-	switch {
-	case info.SystemAccount:
+	accounttype := openapi.User // default in case we have no authz info in the userinfo
+
+	authz := userinfo.HttpsunikornCloudOrgauthz
+	if authz != nil {
+		accounttype = authz.Acctype
+	}
+
+	switch accounttype {
+	case openapi.System:
 		// System accounts act on behalf of users, so by definition need globally
-		// scoped roles.  As such they are explcitly mapped by the operations team
+		// scoped roles.  As such they are explicitly mapped by the operations team
 		// when deploying.
-		roleID, ok := r.options.SystemAccountRoleIDs[info.Userinfo.Sub]
+		roleID, ok := r.options.SystemAccountRoleIDs[subject]
 		if !ok {
-			return nil, fmt.Errorf("%w: system account '%s' not registered", ErrResourceReference, info.Userinfo.Sub)
+			return nil, fmt.Errorf("%w: system account '%s' not registered", ErrResourceReference, subject)
 		}
 
 		role, ok := roles[roleID]
 		if !ok {
-			return nil, fmt.Errorf("%w: system account '%s' references undefined role ID", ErrResourceReference, info.Userinfo.Sub)
+			return nil, fmt.Errorf("%w: system account '%s' references undefined role ID", ErrResourceReference, subject)
 		}
 
 		addScopesToEndpointList(&globalACL, role.Spec.Scopes.Global)
 
-	case info.ServiceAccount:
-		// Service accounts are bound to an organization, so we get groups from the organization
-		// it's part of and not the one supplied via the API.
-		serviceAccount, err := r.getServiceAccount(ctx, info.Userinfo.Sub)
+	case openapi.Service:
+		if authz == nil {
+			return nil, ErrNoAuthz
+		}
+
+		if len(authz.OrgIds) != 1 {
+			return nil, ErrWrongOrganizationCount
+		}
+
+		subjectOrganizationID := authz.OrgIds[0]
+		orgNamespace, err := r.getOrganizationNamespace(ctx, subjectOrganizationID)
+
 		if err != nil {
 			return nil, err
 		}
 
-		subjectOrganizationID, ok := serviceAccount.Labels[constants.OrganizationLabel]
-		if !ok {
-			return nil, fmt.Errorf("%w: organization missing from service account %s", ErrResourceReference, serviceAccount.Name)
-		}
-
-		groups, err := r.getGroups(ctx, serviceAccount.Namespace, groupServiceAccountFilter(serviceAccount.Name))
+		groups, err := r.getGroups(ctx, orgNamespace, groupServiceAccountFilter(subject))
 		if err != nil {
 			return nil, err
 		}
@@ -395,17 +342,12 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 			return nil, err
 		}
 
+	case openapi.User: // just to be exhaustive; we behave the same way if it's somehow unset
+		fallthrough
 	default:
-		// A subject may be part of any organization's group, so look for that user
-		// and a record that indicates they are part of an organization.
-		user, err := r.getActiveUser(ctx, info.Userinfo.Sub)
-		if err != nil {
-			return nil, err
-		}
-
 		switch {
-		case slices.Contains(r.options.PlatformAdministratorSubjects, user.Spec.Subject):
-			// Handle platform adinistrator accounts.
+		case slices.Contains(r.options.PlatformAdministratorSubjects, subject):
+			// Handle platform administrator accounts.
 			// These purposefully cannot be granted via the API and must be
 			// conferred by the operations team.
 			for _, id := range r.options.PlatformAdministratorRoleIDs {
@@ -416,12 +358,21 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 		case organizationID != "":
 			// Otherwise if the organization ID is set, then the user must be a
 			// member of that organization.
-			organizationUser, err := r.getActiveOrganizationUser(ctx, organizationID, user)
+			var orgIDs []string
+			if authz != nil {
+				orgIDs = authz.OrgIds
+			}
+
+			if !slices.Contains(orgIDs, organizationID) {
+				return nil, ErrNotInOrganization
+			}
+
+			orgNamespace, err := r.getOrganizationNamespace(ctx, organizationID)
 			if err != nil {
 				return nil, err
 			}
 
-			groups, err := r.getGroups(ctx, organizationUser.Namespace, groupUserFilter(organizationUser.Name))
+			groups, err := r.getGroups(ctx, orgNamespace, groupSubjectFilter(subject))
 			if err != nil {
 				return nil, err
 			}
