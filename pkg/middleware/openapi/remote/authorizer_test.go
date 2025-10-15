@@ -41,6 +41,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -347,12 +348,16 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		CodeCacheSize:            10,
 		AccountCreationCacheSize: 10,
 	}
+
 	u, _ := url.Parse(mtlsServer.URL())
 	iss := handlercommon.IssuerValue{
 		URL:      mtlsServer.URL(),
 		Hostname: u.Host,
 	}
-	authenticator = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, rbacClient)
+
+	userdb := userdb.NewUserDatabase(fakeClient, testNamespace)
+
+	authenticator = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, userdb, rbacClient)
 
 	// Issue a test token
 	ctx := t.Context()
