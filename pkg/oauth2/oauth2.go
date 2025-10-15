@@ -57,9 +57,9 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/types"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 	"github.com/unikorn-cloud/identity/pkg/util"
 
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/utils/ptr"
 
@@ -148,6 +148,10 @@ type Authenticator struct {
 	// jwtIssuer allows creation and validation of JWT bearer tokens.
 	jwtIssuer *jose.JWTIssuer
 
+	// userdb has all the operations needed for consulting the user database (User, OrganizationUser, ServiceAccount)
+	userdb *userdb.UserDatabase
+
+	// rbac is needed only for constructing a "superuser context"
 	rbac *rbac.RBAC
 
 	// tokenCache is used to enhance interaction as the validation is a
@@ -164,13 +168,14 @@ type Authenticator struct {
 
 // New returns a new authenticator with required fields populated.
 // You must call AddFlags after this.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, rbac *rbac.RBAC) *Authenticator {
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) *Authenticator {
 	return &Authenticator{
 		options:              options,
 		namespace:            namespace,
 		client:               client,
 		issuer:               issuer,
 		jwtIssuer:            jwtIssuer,
+		userdb:               userdb,
 		rbac:                 rbac,
 		tokenCache:           cache.NewLRUExpireCache(options.TokenCacheSize),
 		codeCache:            cache.NewLRUExpireCache(options.CodeCacheSize),
@@ -922,7 +927,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	// Now we have done code exchange, we have access to the id_token and that
 	// allows us to see if the user actually exists.  If it doesn't then we
 	// either deny entry or let them signup.
-	user, err := a.rbac.GetUser(r.Context(), idToken.Email.Email)
+	user, err := a.userdb.GetUser(r.Context(), idToken.Email.Email)
 	if err != nil {
 		if !goerrors.Is(err, rbac.ErrResourceReference) {
 			redirector.raise(ErrorServerError, "user lookup failure")
@@ -1281,7 +1286,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shadowUser, err := a.rbac.GetUser(r.Context(), state.IDToken.Email.Email)
+	shadowUser, err := a.userdb.GetUser(r.Context(), state.IDToken.Email.Email)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to read shadow user")
 		return
@@ -1487,7 +1492,7 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 
 // revokeSession revokes all tokens for a clientID.
 func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
-	user, err := a.rbac.GetActiveUser(ctx, subject)
+	user, err := a.userdb.GetActiveUser(ctx, subject)
 	if err != nil {
 		return err
 	}
@@ -1631,7 +1636,7 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 		return err
 	}
 
-	user, err := a.rbac.GetActiveUser(ctx, claims.Subject)
+	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
 	}
@@ -1762,29 +1767,6 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")
 }
 
-func (a *Authenticator) getOrgIDs(ctx context.Context, subject string) ([]string, error) {
-	user, err := a.rbac.GetActiveUser(ctx, subject)
-	if err != nil {
-		return nil, err
-	}
-
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-	if err := a.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
-		return nil, err
-	}
-
-	result := make([]string, len(organizationUsers.Items))
-	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
-	}
-
-	return result, nil
-}
-
 // GetUserinfo does access token introspection.
 func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
 	verifyInfo := &VerifyInfo{
@@ -1814,9 +1796,9 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 
 		authz.Acctype = openapi.User
 
-		orgs, err := a.getOrgIDs(ctx, claims.Subject)
+		orgs, err := a.userdb.GetOrganizationIDs(ctx, claims.Subject)
 		if err != nil {
-			return nil, nil, errors.OAuth2ServerError("could not query orgs").WithError(err)
+			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
 		}
 
 		if orgs != nil {

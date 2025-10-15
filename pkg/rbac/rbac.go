@@ -69,7 +69,7 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 	}
 }
 
-func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+func (r *RBAC) getUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
 	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
@@ -87,9 +87,9 @@ func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, er
 	return &result.Items[index], nil
 }
 
-// GetActiveUser returns a user that match the subject and is active.
-func (r *RBAC) GetActiveUser(ctx context.Context, subject string) (*unikornv1.User, error) {
-	user, err := r.GetUser(ctx, subject)
+// getActiveUser returns a user that match the subject and is active.
+func (r *RBAC) getActiveUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+	user, err := r.getUser(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -101,8 +101,8 @@ func (r *RBAC) GetActiveUser(ctx context.Context, subject string) (*unikornv1.Us
 	return user, nil
 }
 
-// GetActiveOrganizationUser gets an organization user that references the actual user.
-func (r *RBAC) GetActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
+// getActiveOrganizationUser gets an organization user that references the actual user.
+func (r *RBAC) getActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
 	selector := labels.SelectorFromSet(map[string]string{
 		constants.OrganizationLabel: organizationID,
 		constants.UserLabel:         user.Name,
@@ -127,8 +127,8 @@ func (r *RBAC) GetActiveOrganizationUser(ctx context.Context, organizationID str
 	return organizationUser, nil
 }
 
-// GetActiveOrganizationUsers returns all active organization users for a given subject.
-func (r *RBAC) GetActiveOrganizationUsers(ctx context.Context, user *unikornv1.User) (*unikornv1.OrganizationUserList, error) {
+// getActiveOrganizationUsers returns all active organization users for a given subject.
+func (r *RBAC) getActiveOrganizationUsers(ctx context.Context, user *unikornv1.User) (*unikornv1.OrganizationUserList, error) {
 	selector := labels.SelectorFromSet(map[string]string{
 		constants.UserLabel: user.Name,
 	})
@@ -146,8 +146,8 @@ func (r *RBAC) GetActiveOrganizationUsers(ctx context.Context, user *unikornv1.U
 	return result, nil
 }
 
-// GetServiceAccount looks up a service account.
-func (r *RBAC) GetServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
+// getServiceAccount looks up a service account.
+func (r *RBAC) getServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
 	result := &unikornv1.ServiceAccountList{}
 
 	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
@@ -563,7 +563,7 @@ func (r *RBAC) processSystemAccountACL(ctx context.Context, subject string) (*op
 // then adds their permissions to the ACL.  As service accounts are bound to a specific
 // organization we must check the scoped organization matches that of the service account.
 func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizationID string) (*openapi.Acl, error) {
-	serviceAccount, err := r.GetServiceAccount(ctx, subject)
+	serviceAccount, err := r.getServiceAccount(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -616,7 +616,7 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 //
 //nolint:cyclop
 func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationID string) (*openapi.Acl, error) {
-	user, err := r.GetActiveUser(ctx, subject)
+	user, err := r.getActiveUser(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -637,7 +637,7 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 	}
 
 	if organizationID != "" {
-		organizationUser, err := r.GetActiveOrganizationUser(ctx, organizationID, user)
+		organizationUser, err := r.getActiveOrganizationUser(ctx, organizationID, user)
 		if err != nil {
 			return nil, err
 		}
@@ -661,7 +661,7 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 	}
 
 	// Unscoped ACL handling.
-	organizationUsers, err := r.GetActiveOrganizationUsers(ctx, user)
+	organizationUsers, err := r.getActiveOrganizationUsers(ctx, user)
 	if err != nil {
 		return nil, err
 	}
