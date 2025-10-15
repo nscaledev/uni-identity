@@ -489,6 +489,9 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 	}
 
 	subjectOrganizationID := authz.OrgIds[0]
+	if subjectOrganizationID != organizationID {
+		return nil, ErrNotInOrganization
+	}
 
 	organizationNamespace, err := r.getOrganizationNamespace(ctx, subjectOrganizationID)
 	if err != nil {
@@ -513,10 +516,8 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 	}
 
 	// Scoped ACL handling.
-	if subjectOrganizationID == organizationID {
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID); err != nil {
-			return nil, err
-		}
+	if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID); err != nil {
+		return nil, err
 	}
 
 	// Unscoped ACL handling.
