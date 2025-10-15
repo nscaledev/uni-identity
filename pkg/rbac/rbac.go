@@ -327,6 +327,10 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 		}
 
 		subjectOrganizationID := authz.OrgIds[0]
+		if subjectOrganizationID != organizationID {
+			return nil, ErrNotInOrganization
+		}
+
 		orgNamespace, err := r.getOrganizationNamespace(ctx, subjectOrganizationID)
 
 		if err != nil {

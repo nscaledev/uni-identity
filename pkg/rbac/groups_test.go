@@ -46,6 +46,9 @@ const (
 	testOrgID     = "test-org"
 	testOrgNS     = "test-org-ns"
 
+	altOrgID = "alt-org-id"
+	altOrgNS = "alt-namespace"
+
 	userAliceSubject = "alice@example.com"
 	userAliceID      = "user-alice"
 
@@ -55,9 +58,13 @@ const (
 	userCharlieSubject = "charlie@example.com"
 	userCharlieID      = "user-charlie"
 
+	serviceAccountAlphaID = "sa-alpha"
+	serviceAccountBetaID  = "sa-beta"
+
 	groupAdminsID   = "group-admins"
 	groupDevelopers = "group-developers"
 	groupReaders    = "group-readers"
+	groupServices   = "group-services"
 
 	roleAdminID     = "role-admin"
 	roleDeveloperID = "role-developer"
@@ -130,7 +137,7 @@ func newOrganization(objectNamespace, name, orgNamespace string) *unikornv1.Orga
 }
 
 // setupTestEnvironment creates a comprehensive RBAC test environment with users, groups, roles, and projects.
-func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
+func setupTestEnvironment(t *testing.T) *rbac.RBAC {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
@@ -149,7 +156,18 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 
 	organization := newOrganization(testNamespace, testOrgID, testOrgNS)
 
-	createObjects(organization)
+	altOrganization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      altOrgID,
+		},
+		Spec: unikornv1.OrganizationSpec{},
+		Status: unikornv1.OrganizationStatus{
+			Namespace: altOrgNS,
+		},
+	}
+
+	createObjects(organization, altOrganization)
 	require.NoError(t, c.Update(t.Context(), organization)) // to update the status with a namespace.
 
 	// Create Roles with different permission scopes.
@@ -255,7 +273,19 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 		},
 	}
 
-	createObjects(groupAdminsObj, groupReadersObj, groupDevelopersObj)
+	// Group for service accounts
+	groupServicesObj := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupServices,
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs:           []string{roleDeveloperID},
+			ServiceAccountIDs: []string{serviceAccountAlphaID},
+		},
+	}
+
+	createObjects(groupAdminsObj, groupReadersObj, groupDevelopersObj, groupServicesObj)
 
 	projectAlpha := &unikornv1.Project{
 		ObjectMeta: metav1.ObjectMeta{
@@ -266,7 +296,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 			},
 		},
 		Spec: unikornv1.ProjectSpec{
-			GroupIDs: []string{groupDevelopers}, // Only developers have access
+			GroupIDs: []string{groupDevelopers, groupServices}, // Developers and services have access
 		},
 	}
 
@@ -279,7 +309,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 			},
 		},
 		Spec: unikornv1.ProjectSpec{
-			GroupIDs: []string{groupDevelopers, groupReaders}, // Developers and readers
+			GroupIDs: []string{groupDevelopers, groupReaders, groupServices}, // Developers, readers, and services
 		},
 	}
 
@@ -291,7 +321,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *rbac.RBAC) {
 
 	rbacClient := rbac.New(c, testNamespace, &rbac.Options{})
 
-	return c, rbacClient
+	return rbacClient
 }
 
 // getACLForUser is a helper to get the ACL for a given user subject.
@@ -324,7 +354,7 @@ func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi
 func TestGroupACLContent(t *testing.T) {
 	t.Parallel()
 
-	_, rbacClient := setupTestEnvironment(t)
+	rbacClient := setupTestEnvironment(t)
 
 	// Test Alice (Admin) - should have global and organization permissions.
 	aclAlice := getACLForUser(t, rbacClient, userAliceSubject)
@@ -409,4 +439,158 @@ func TestGroupACLContent(t *testing.T) {
 			assert.True(t, hasProjectRead, "Charlie should have read on project-beta")
 		}
 	}
+}
+
+// getACLForServiceAccount is a helper to get the ACL for a given service account.
+func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string, orgIDs []string) *openapi.Acl {
+	t.Helper()
+
+	// Create authorization info for service account
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: subject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  orgIDs,
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	acl, err := rbacClient.GetACL(ctx, testOrgID)
+	require.NoError(t, err)
+	require.NotNil(t, acl)
+
+	return acl
+}
+
+// TestServiceAccountACL verifies that service accounts get correct permissions via groups.
+func TestServiceAccountACL(t *testing.T) {
+	t.Parallel()
+
+	rbacClient := setupTestEnvironment(t)
+
+	// Test service account that's a member of the services group
+	aclAlpha := getACLForServiceAccount(t, rbacClient, serviceAccountAlphaID, []string{testOrgID})
+	assert.Nil(t, aclAlpha.Global, "Service account should not have global permissions")
+	assert.NotNil(t, aclAlpha.Organization, "Service account should have organization permissions")
+	assert.NotNil(t, aclAlpha.Projects, "Service account should have project permissions")
+
+	// Verify service account has org:read (from developer role)
+	hasOrgRead := false
+
+	for _, endpoint := range aclAlpha.Organization.Endpoints {
+		if endpoint.Name == "org:read" {
+			hasOrgRead = true
+
+			require.Contains(t, endpoint.Operations, openapi.Read)
+		}
+	}
+
+	assert.True(t, hasOrgRead, "Service account should have org:read permission")
+
+	// Service account should have access to projects (from developer role)
+	assert.Len(t, *aclAlpha.Projects, 2, "Service account should have access to 2 projects")
+
+	// Test service account not in any group
+	aclBeta := getACLForServiceAccount(t, rbacClient, serviceAccountBetaID, []string{testOrgID})
+	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
+	assert.Nil(t, aclBeta.Organization, "Service account not in groups should not have organization permissions")
+	assert.Nil(t, aclBeta.Projects, "Service account not in groups should not have project permissions")
+}
+
+// TestServiceAccountWrongOrganization verifies that service accounts from different orgs fail.
+func TestServiceAccountMissingOrganization(t *testing.T) {
+	t.Parallel()
+
+	rbacClient := setupTestEnvironment(t)
+
+	// Service account claims to be from a different organization
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{"different-org"},
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	// This should fail because the organization doesn't exist
+	_, err := rbacClient.GetACL(ctx, testOrgID)
+	require.Error(t, err, "Should fail when service account's organization doesn't exist")
+}
+
+// TestServiceAccountMissingOrgIDs tests error handling when service account has no org IDs.
+func TestServiceAccountMissingOrgIDs(t *testing.T) {
+	t.Parallel()
+
+	rbacClient := setupTestEnvironment(t)
+
+	// Service account with no org IDs
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{}, // Empty org IDs
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	_, err := rbacClient.GetACL(ctx, testOrgID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
+}
+
+// TestServiceAccountMultipleOrgIDs tests error handling when service account has multiple org IDs.
+func TestServiceAccountMultipleOrgIDs(t *testing.T) {
+	t.Parallel()
+
+	rbacClient := setupTestEnvironment(t)
+
+	// Service account with multiple org IDs (should only have one)
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{testOrgID, "another-org"},
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	_, err := rbacClient.GetACL(ctx, testOrgID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
+}
+
+func TestServiceAccount_WrongOrganization(t *testing.T) {
+	t.Parallel()
+
+	rbacClient := setupTestEnvironment(t)
+
+	// Service account with multiple org IDs (should only have one)
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{testOrgID},
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	_, err := rbacClient.GetACL(ctx, altOrgID) // <-- asking about **alternative org**
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrNotInOrganization)
 }
