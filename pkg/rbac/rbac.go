@@ -67,7 +67,7 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 	}
 }
 
-func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+func (r *RBAC) getUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
 	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
@@ -86,8 +86,8 @@ func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, er
 }
 
 // GetActiveUser returns a user that match the subject and is active.
-func (r *RBAC) GetActiveUser(ctx context.Context, subject string) (*unikornv1.User, error) {
-	user, err := r.GetUser(ctx, subject)
+func (r *RBAC) getActiveUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+	user, err := r.getUser(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (r *RBAC) GetActiveUser(ctx context.Context, subject string) (*unikornv1.Us
 }
 
 // GetActiveOrganizationUser gets an organization user that references the actual user.
-func (r *RBAC) GetActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
+func (r *RBAC) getActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
 	selector := labels.SelectorFromSet(map[string]string{
 		constants.OrganizationLabel: organizationID,
 		constants.UserLabel:         user.Name,
@@ -126,7 +126,7 @@ func (r *RBAC) GetActiveOrganizationUser(ctx context.Context, organizationID str
 }
 
 // GetServiceAccount looks up a service account.
-func (r *RBAC) GetServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
+func (r *RBAC) getServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
 	result := &unikornv1.ServiceAccountList{}
 
 	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
@@ -376,7 +376,7 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	case info.ServiceAccount:
 		// Service accounts are bound to an organization, so we get groups from the organization
 		// it's part of and not the one supplied via the API.
-		serviceAccount, err := r.GetServiceAccount(ctx, info.Userinfo.Sub)
+		serviceAccount, err := r.getServiceAccount(ctx, info.Userinfo.Sub)
 		if err != nil {
 			return nil, err
 		}
@@ -398,7 +398,7 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	default:
 		// A subject may be part of any organization's group, so look for that user
 		// and a record that indicates they are part of an organization.
-		user, err := r.GetActiveUser(ctx, info.Userinfo.Sub)
+		user, err := r.getActiveUser(ctx, info.Userinfo.Sub)
 		if err != nil {
 			return nil, err
 		}
@@ -416,7 +416,7 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 		case organizationID != "":
 			// Otherwise if the organization ID is set, then the user must be a
 			// member of that organization.
-			organizationUser, err := r.GetActiveOrganizationUser(ctx, organizationID, user)
+			organizationUser, err := r.getActiveOrganizationUser(ctx, organizationID, user)
 			if err != nil {
 				return nil, err
 			}

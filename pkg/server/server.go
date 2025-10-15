@@ -39,6 +39,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -104,8 +105,9 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		return nil, err
 	}
 
+	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
 	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, client, issuer, rbac)
+	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, client, issuer, userdb, rbac)
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
@@ -121,7 +123,7 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		},
 	}
 
-	handlerInterface, err := handler.New(client, s.CoreOptions.Namespace, issuer, oauth2, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}

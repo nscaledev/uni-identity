@@ -33,6 +33,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -89,6 +90,7 @@ func TestTokens(t *testing.T) {
 
 	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
 
+	userDatabase := userdb.NewUserDatabase(client, josetesting.Namespace)
 	rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
 	options := &oauth2.Options{
@@ -100,7 +102,7 @@ func TestTokens(t *testing.T) {
 		AccountCreationCacheSize: 1024,
 	}
 
-	authenticator := oauth2.New(options, josetesting.Namespace, client, issuer, rbac)
+	authenticator := oauth2.New(options, josetesting.Namespace, client, issuer, userDatabase, rbac)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
 
@@ -294,6 +296,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 
 			require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
 
+			userDatabase := userdb.NewUserDatabase(client, josetesting.Namespace)
 			rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
 			authenticator := oauth2.New(&oauth2.Options{
@@ -303,7 +306,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				TokenCacheSize:           1024,
 				CodeCacheSize:            1024,
 				AccountCreationCacheSize: 1024,
-			}, josetesting.Namespace, client, issuer, rbac)
+			}, josetesting.Namespace, client, issuer, userDatabase, rbac)
 
 			time.Sleep(2 * josetesting.RefreshPeriod)
 
