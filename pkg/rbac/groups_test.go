@@ -302,6 +302,10 @@ func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
 			Sub: subject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+				OrgIds:  []string{testOrgID},
+			},
 		},
 	}
 
