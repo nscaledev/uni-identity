@@ -588,7 +588,6 @@ func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string
 				OrgIds:  organizationIDs,
 			},
 		},
-		ServiceAccount: true,
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
@@ -636,16 +635,6 @@ func TestServiceAccountACLOrganizationScoped(t *testing.T) {
 	assert.Nil(t, aclBeta.Projects, "Service account not in groups should not have project permissions")
 }
 
-func TestServiceAccountOrganizationScoped_WrongOrganization(t *testing.T) {
-	t.Parallel()
-
-	f := setupTestEnvironment(t)
-
-	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID, []string{altOrgID})
-	assert.Empty(t, aclAlpha.Organization, "Service account bound to org B should have no permissions in org A")
-	assert.Empty(t, aclAlpha.Projects, "Service account bound to org B should have no permissions in org A")
-}
-
 func TestServiceAccountACL(t *testing.T) {
 	t.Parallel()
 
@@ -655,6 +644,7 @@ func TestServiceAccountACL(t *testing.T) {
 	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID, []string{testOrgID})
 	require.Nil(t, aclAlpha.Global, "Service account should not have global permissions")
 	require.NotNil(t, aclAlpha.Organizations, "Service account should have organization permissions")
+	require.NotNil(t, aclAlpha.Projects, "Service account should have project permissions")
 
 	alphaOrganizations := *aclAlpha.Organizations
 	require.Len(t, alphaOrganizations, 1, "Service account should have one organization")
@@ -683,19 +673,99 @@ func TestServiceAccountACL(t *testing.T) {
 	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID, []string{testOrgID})
 	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
 	assert.Nil(t, aclBeta.Organizations, "Service account not in groups should not have organization permissions")
+	assert.Nil(t, aclBeta.Projects, "Service account not in groups should not have project permissions")
 }
 
+// TestServiceAccountMissingOrganization tests error handling when service account's organization doesn't exist.
+func TestServiceAccountMissingOrganization(t *testing.T) {
+	t.Parallel()
+
+	f := setupTestEnvironment(t)
+
+	// Service account claims to be from a different organization
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: f.serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{"different-org"},
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	// This should fail because the organization doesn't exist
+	_, err := f.rbac.GetACL(ctx, testOrgID)
+	require.Error(t, err, "Should fail when service account's organization doesn't exist")
+}
+
+// TestServiceAccountMissingOrgIDs tests error handling when service account has no org IDs.
+func TestServiceAccountMissingOrgIDs(t *testing.T) {
+	t.Parallel()
+
+	f := setupTestEnvironment(t)
+
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: f.serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{},
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	_, err := f.rbac.GetACL(ctx, testOrgID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
+}
+
+// TestServiceAccountMultipleOrgIDs tests error handling when service account has multiple org IDs.
+func TestServiceAccountMultipleOrgIDs(t *testing.T) {
+	t.Parallel()
+
+	f := setupTestEnvironment(t)
+
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: f.serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{testOrgID, "another-org"},
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	_, err := f.rbac.GetACL(ctx, testOrgID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
+}
+
+// TestServiceAccountWrongOrganization verifies that service accounts from different orgs fail.
 func TestServiceAccount_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
 	f := setupTestEnvironment(t)
 
-	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID, []string{altOrgID})
-	require.NotNil(t, aclAlpha.Organizations, "Service account should have organization permissions")
+	// Service account with multiple org IDs (should only have one)
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: f.serviceAccountAlphaID,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
+				OrgIds:  []string{testOrgID},
+			},
+		},
+	}
 
-	alphaOrganizations := *aclAlpha.Organizations
-	require.Len(t, alphaOrganizations, 1, "Service account should have one organization")
+	ctx := authorization.NewContext(t.Context(), info)
 
-	alphaOrganization := &alphaOrganizations[0]
-	require.Equal(t, altOrgID, alphaOrganization.Id, "Service account should have permissions for the organization it's bound to")
+	_, err := f.rbac.GetACL(ctx, altOrgID) // <-- asking about **alternative org**
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrNotInOrganization)
 }
