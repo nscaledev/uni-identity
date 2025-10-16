@@ -58,6 +58,118 @@ const (
 	certificateName = "jose-tls"
 )
 
+// TestRemoteFederatedTokenAuthentication tests authentication via remote identity service.
+func TestRemoteFederatedTokenAuthentication(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, accessToken := setupTestEnvironment(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	// Create test request
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	info, err := auth.Authorize(authInput(req))
+
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	require.Equal(t, testSubject, info.Userinfo.Sub)
+}
+
+// TestRemoteTokenCaching tests that tokens are cached properly.
+func TestRemoteTokenCaching(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, accessToken := setupTestEnvironment(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	// First request
+	req1 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+	req1.Header.Set("Authorization", "Bearer "+accessToken)
+
+	info1, err := auth.Authorize(authInput(req1))
+
+	require.NoError(t, err)
+	require.NotNil(t, info1)
+
+	// Second request with same token (should hit cache)
+	req2 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+	req2.Header.Set("Authorization", "Bearer "+accessToken)
+
+	info2, err := auth.Authorize(authInput(req2))
+
+	require.NoError(t, err)
+	require.NotNil(t, info2)
+	require.Equal(t, info1.Userinfo.Sub, info2.Userinfo.Sub)
+	require.Equal(t, int32(1), server.Called.Load())
+}
+
+// TestRemoteInvalidToken tests authentication with an invalid token.
+func TestRemoteInvalidRequest(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, _ := setupTestEnvironment(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	requestMutators := map[string]func(*http.Request){
+		"missing token": func(*http.Request) {},
+		"invalid token": func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer invalid-token")
+		},
+		"unauthorized token": func(req *http.Request) {
+			t := generatePlausibleToken(t, k8sClient)
+			req.Header.Set("Authorization", "Bearer "+t)
+		},
+	}
+
+	for name, fn := range requestMutators {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+			fn(req)
+			info, err := auth.Authorize(authInput(req))
+
+			require.Error(t, err)
+			require.Nil(t, info)
+		})
+	}
+}
+
+// TestRemoteUnsupportedScheme tests authentication with unsupported scheme.
+func TestRemoteUnsupportedScheme(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, accessToken := setupTestEnvironment(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	// Create test request
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	// Test Authorize with unsupported scheme
+	authInput := &openapi3filter.AuthenticationInput{
+		RequestValidationInput: &openapi3filter.RequestValidationInput{
+			Request: req,
+		},
+		SecurityScheme: &openapi3.SecurityScheme{
+			Type: "basic",
+		},
+	}
+
+	info, err := auth.Authorize(authInput)
+
+	require.Error(t, err)
+	require.Nil(t, info)
+	require.Contains(t, err.Error(), "unsupported")
+}
+
+// ---- helpers
+
 type server struct {
 	*mtlstest.MTLSServer
 	Called *atomic.Int32 // used to check that cache is used rather than repeating calls
@@ -309,54 +421,6 @@ func authInput(req *http.Request) *openapi3filter.AuthenticationInput {
 	}
 }
 
-// TestRemoteFederatedTokenAuthentication tests authentication via remote identity service.
-func TestRemoteFederatedTokenAuthentication(t *testing.T) {
-	t.Parallel()
-
-	k8sClient, server, accessToken := setupTestEnvironment(t)
-
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
-
-	// Create test request
-	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	info, err := auth.Authorize(authInput(req))
-
-	require.NoError(t, err)
-	require.NotNil(t, info)
-	require.Equal(t, testSubject, info.Userinfo.Sub)
-}
-
-// TestRemoteTokenCaching tests that tokens are cached properly.
-func TestRemoteTokenCaching(t *testing.T) {
-	t.Parallel()
-
-	k8sClient, server, accessToken := setupTestEnvironment(t)
-
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
-
-	// First request
-	req1 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req1.Header.Set("Authorization", "Bearer "+accessToken)
-
-	info1, err := auth.Authorize(authInput(req1))
-
-	require.NoError(t, err)
-	require.NotNil(t, info1)
-
-	// Second request with same token (should hit cache)
-	req2 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req2.Header.Set("Authorization", "Bearer "+accessToken)
-
-	info2, err := auth.Authorize(authInput(req2))
-
-	require.NoError(t, err)
-	require.NotNil(t, info2)
-	require.Equal(t, info1.Userinfo.Sub, info2.Userinfo.Sub)
-	require.Equal(t, int32(1), server.Called.Load())
-}
-
 func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
 	t.Helper()
 
@@ -403,67 +467,4 @@ func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
 	require.NoError(t, err)
 
 	return token
-}
-
-// TestRemoteInvalidToken tests authentication with an invalid token.
-func TestRemoteInvalidRequest(t *testing.T) {
-	t.Parallel()
-
-	k8sClient, server, _ := setupTestEnvironment(t)
-
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
-
-	requestMutators := map[string]func(*http.Request){
-		"missing token": func(*http.Request) {},
-		"invalid token": func(req *http.Request) {
-			req.Header.Set("Authorization", "Bearer invalid-token")
-		},
-		"unauthorized token": func(req *http.Request) {
-			t := generatePlausibleToken(t, k8sClient)
-			req.Header.Set("Authorization", "Bearer "+t)
-		},
-	}
-
-	for name, fn := range requestMutators {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-			fn(req)
-			info, err := auth.Authorize(authInput(req))
-
-			require.Error(t, err)
-			println(name, err.Error())
-			require.Nil(t, info)
-		})
-	}
-}
-
-// TestRemoteUnsupportedScheme tests authentication with unsupported scheme.
-func TestRemoteUnsupportedScheme(t *testing.T) {
-	t.Parallel()
-
-	k8sClient, server, accessToken := setupTestEnvironment(t)
-
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
-
-	// Create test request
-	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	// Test Authorize with unsupported scheme
-	authInput := &openapi3filter.AuthenticationInput{
-		RequestValidationInput: &openapi3filter.RequestValidationInput{
-			Request: req,
-		},
-		SecurityScheme: &openapi3.SecurityScheme{
-			Type: "basic",
-		},
-	}
-
-	info, err := auth.Authorize(authInput)
-
-	require.Error(t, err)
-	require.Nil(t, info)
-	require.Contains(t, err.Error(), "unsupported")
 }
