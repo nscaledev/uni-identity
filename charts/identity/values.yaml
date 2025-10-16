@@ -185,6 +185,7 @@ roles:
     protected: true
     scopes:
       global:
+        identity:allocations: [create,read,update,delete]
         identity:projects/references: [create,delete]
   kubernetes-service:
     description: Kubernetes service
