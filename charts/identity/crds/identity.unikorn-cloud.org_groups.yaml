@@ -59,6 +59,14 @@ spec:
                 items:
                   type: string
                 type: array
+              subjects:
+                description: |-
+                  Subjects is a list of user subjects that are members of the group. Unlike
+                  UserIDs these do not have to refer to objects within the user database; they
+                  can refer to users at an external IdP, for example.
+                items:
+                  type: string
+                type: array
               tags:
                 description: Tags are aribrary user data.
                 items:
@@ -76,14 +84,9 @@ spec:
                   type: object
                 type: array
               userIDs:
-                description: UserIDs are a list of users that are members of the group.
-                items:
-                  type: string
-                type: array
-              users:
                 description: |-
-                  Users are a list of user names that are members of the group.
-                  CRDs.
+                  UserIDs are a list of users that are members of the group.
+                  Deprecated: use Subjects instead.
                 items:
                   type: string
                 type: array

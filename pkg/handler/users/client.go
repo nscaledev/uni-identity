@@ -120,34 +120,69 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
+func removeFromGroup(subject, orgUserID string, updated *unikornv1.Group) bool {
+	var needsPatching bool
+	// Remove from any groups it's a member of but shouldn't be.
+	if slices.Contains(updated.Spec.UserIDs, orgUserID) {
+		updated.Spec.UserIDs = slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
+			return id == orgUserID
+		})
+		needsPatching = true
+	}
+
+	if slices.Contains(updated.Spec.Subjects, subject) {
+		updated.Spec.Subjects = slices.DeleteFunc(updated.Spec.Subjects, func(sub string) bool {
+			return sub == subject
+		})
+		needsPatching = true
+	}
+
+	return needsPatching
+}
+
+func addToGroup(subject, orgUserID string, updated *unikornv1.Group) bool {
+	var needsPatching bool
+	// Add to a group where it should be a member but isn't.
+	if !slices.Contains(updated.Spec.UserIDs, orgUserID) {
+		updated.Spec.UserIDs = append(updated.Spec.UserIDs, orgUserID)
+		needsPatching = true
+	}
+
+	if !slices.Contains(updated.Spec.Subjects, subject) {
+		updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
+		needsPatching = true
+	}
+
+	return needsPatching
+}
+
 // updateGroups takes a user name and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, userID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// find the subject, so we can add/remove that as well
+	var user unikornv1.User
+	if err := c.client.Get(ctx, client.ObjectKey{Name: globalUserID, Namespace: c.namespace}, &user); err != nil {
+		return err
+	}
+
+	subject := user.Spec.Subject
+
 	for i := range groups.Items {
 		current := &groups.Items[i]
-
 		updated := current.DeepCopy()
 
+		var needsPatching bool
+
 		if slices.Contains(groupIDs, current.Name) {
-			// Add to a group where it should be a member but isn't.
-			if slices.Contains(current.Spec.UserIDs, userID) {
-				continue
-			}
-
-			updated.Spec.UserIDs = append(updated.Spec.UserIDs, userID)
+			needsPatching = addToGroup(subject, orgUserID, updated)
 		} else {
-			// Remove from any groups its a member of but shouldn't be.
-			if !slices.Contains(current.Spec.UserIDs, userID) {
-				continue
-			}
-
-			updated.Spec.UserIDs = slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
-				return id == userID
-			})
+			needsPatching = removeFromGroup(subject, orgUserID, updated)
 		}
 
-		if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-			return errors.OAuth2ServerError("failed to patch group").WithError(err)
+		if needsPatching {
+			if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+				return errors.OAuth2ServerError("failed to patch group").WithError(err)
+			}
 		}
 	}
 
@@ -671,7 +706,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Name, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -746,7 +781,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Name, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -779,7 +814,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, userID string) erro
 		return err
 	}
 
-	if err := c.updateGroups(ctx, userID, nil, groups); err != nil {
+	if err := c.updateGroups(ctx, resource.Labels[constants.UserLabel], userID, nil, groups); err != nil {
 		return err
 	}
 
