@@ -21,7 +21,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -29,11 +28,9 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -157,72 +154,37 @@ func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, 
 	return out, nil
 }
 
-func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
+func (c *Client) checkUserByEmail(ctx context.Context, info *authorization.Info, email string) error {
 	// If you aren't looking at yourself, then you need global read permissions, you cannot
 	// go probing for other users or organizations, massive data breach!
 	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
 		if err := rbac.AllowGlobalScope(ctx, "identity:users", openapi.Read); err != nil {
-			return nil, errors.HTTPForbidden("user not permitted to read users globally").WithError(err)
+			return errors.HTTPForbidden("user not permitted to read users globally").WithError(err)
 		}
 	}
 
-	user, err := userdb.GetActiveUser(ctx, email)
-	if err != nil {
-		return nil, errors.HTTPNotFound().WithError(err)
-	}
-
-	return user, nil
+	return nil
 }
 
-func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabase, email *string) ([]string, error) {
+func (c *Client) organizationIDs(ctx context.Context, email *string) ([]string, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, errors.OAuth2ServerError("userinfo is not set").WithError(err)
 	}
 
-	if info.ServiceAccount {
-		account, err := userdb.GetServiceAccount(ctx, info.Userinfo.Sub)
-		if err != nil {
-			return nil, errors.HTTPForbidden("service account not found").WithError(err)
-		}
-
-		return []string{account.Labels[constants.OrganizationLabel]}, nil
-	}
-
-	var user *unikornv1.User
-
 	if email != nil {
-		user, err = c.getUserbyEmail(ctx, userdb, info, *email)
-		if err != nil {
+		if err = c.checkUserByEmail(ctx, info, *email); err != nil {
 			return nil, err
 		}
-	} else {
-		user, err = userdb.GetActiveUser(ctx, info.Userinfo.Sub)
-		if err != nil {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
 	}
 
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-
-	if err := c.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
-		return nil, err
+	if info.Userinfo.HttpsunikornCloudOrgauthz != nil {
+		return info.Userinfo.HttpsunikornCloudOrgauthz.OrgIds, nil
 	}
-
-	result := make([]string, len(organizationUsers.Items))
-
-	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
-	}
-
-	return result, nil
+	return nil, nil
 }
 
-func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *string) (openapi.Organizations, error) {
+func (c *Client) List(ctx context.Context, email *string) (openapi.Organizations, error) {
 	// This is the only special case in the system.  When requesting organizations we
 	// will have an unscoped ACL, so can check for global access to all organizations.
 	// If we don't have that then we need to use RBAC to get a list of organizations we are
@@ -242,7 +204,7 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 		return nil, errors.OAuth2ServerError("failed to list organizations").WithError(err)
 	}
 
-	organizationIDs, err := c.organizationIDs(ctx, userdb, email)
+	organizationIDs, err := c.organizationIDs(ctx, email)
 	if err != nil {
 		return nil, err
 	}
