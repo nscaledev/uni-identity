@@ -21,6 +21,7 @@ import (
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	idclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/common"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/hybrid"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 
@@ -37,6 +38,10 @@ func NewAuthorizer(kubeclient client.Client, clientopts *coreclient.HTTPClientOp
 
 	externalAuthn := remote.NewAuthenticator(kubeclient, external, clientopts)
 	internalAuthn := remote.NewAuthenticator(kubeclient, internal, clientopts)
+	detector := &common.TokenDetector{
+		ExternalIssuer: external.Host(),
+		LocalIssuer:    internal.Host(),
+	}
 
-	return hybrid.NewAuthorizer(internalAuthn, externalAuthn, remote.NewACL(kubeclient, internal, clientopts))
+	return hybrid.NewAuthorizer(internalAuthn, externalAuthn, detector, remote.NewACL(kubeclient, internal, clientopts))
 }

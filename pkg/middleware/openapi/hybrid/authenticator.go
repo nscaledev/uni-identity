@@ -33,9 +33,9 @@ type Authenticator struct {
 }
 
 // NewAuthenticator creates a new hybrid authenticator.
-func NewAuthenticator(localAuth, remoteAuth openapi.Authenticator) *Authenticator {
+func NewAuthenticator(localAuth, remoteAuth openapi.Authenticator, detector *common.TokenDetector) *Authenticator {
 	return &Authenticator{
-		detector:   &common.TokenDetector{},
+		detector:   detector,
 		localAuth:  localAuth,
 		remoteAuth: remoteAuth,
 	}

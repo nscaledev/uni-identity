@@ -37,10 +37,10 @@ type Authorizer struct {
 }
 
 // NewHybridAuthorizer creates a new hybrid authorizer.
-func NewAuthorizer(localAuth, remoteAuth openapi.Authenticator, aclProvider openapi.ACLProvider) *Authorizer {
+func NewAuthorizer(localAuth, remoteAuth openapi.Authenticator, detector *common.TokenDetector, aclProvider openapi.ACLProvider) *Authorizer {
 	return &Authorizer{
 		extractor:     &common.BearerTokenExtractor{},
-		authenticator: NewAuthenticator(localAuth, remoteAuth),
+		authenticator: NewAuthenticator(localAuth, remoteAuth, detector),
 		aclProvider:   aclProvider,
 	}
 }
