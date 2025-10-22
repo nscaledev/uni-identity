@@ -25,17 +25,22 @@ import (
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel/sdk/trace"
 
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
+	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/common"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/hybrid"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -64,6 +69,12 @@ type Server struct {
 
 	// RBACOptions are for RBAC related things.
 	RBACOptions rbac.Options
+
+	// ClientOptions are for generic TLS client options e.g. certificates.
+	ClientOptions coreclient.HTTPClientOptions
+
+	// ExternalOIDCOptions specifies an external OIDC platform to use for authentication.
+	ExternalOIDCOptions *identityclient.Options
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -74,6 +85,12 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.OAuth2Options.AddFlags(flags)
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
+	s.ClientOptions.AddFlags(flags)
+
+	if s.ExternalOIDCOptions == nil {
+		s.ExternalOIDCOptions = identityclient.NewExternalOptions()
+	}
+	s.ExternalOIDCOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
@@ -108,7 +125,20 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, client, issuer, rbac)
 
 	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
+	var authorizer openapimiddleware.Authorizer
+
+	if s.ExternalOIDCOptions.Host() == "" { // External OIDC has not been provided
+		// Fallback to local-only for now
+		authorizer = local.NewAuthorizer(oauth2, rbac)
+	} else { // External OIDC has been provided
+		remoteAuth := remote.NewAuthenticator(client, s.ExternalOIDCOptions, &s.ClientOptions)
+		localAuth := local.NewAuthenticator(oauth2)
+		detector := &common.TokenDetector{
+			ExternalIssuer: s.ExternalOIDCOptions.Host(),
+			LocalIssuer:    s.HandlerOptions.Host,
+		}
+		authorizer = hybrid.NewAuthorizer(localAuth, remoteAuth, detector, rbac)
+	}
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
