@@ -1719,6 +1719,22 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/roleRead'
+    subject:
+      description: A user account, as described when member of a group.
+      type: object
+      required:
+      - id
+      - issuer
+      properties:
+        id:
+          description: The identitifier for this subject, given by the issuer.
+          type: string
+        email:
+          description: An email for the user, if supplied by the issuer.
+          type: string
+        issuer:
+          description: The issuer URL.
+          type: string
     groupSpec:
       description: A group.
       type: object
@@ -1727,7 +1743,10 @@ components:
       - roleIDs
       properties:
         subjects:
-          $ref: '#/components/schemas/stringList'
+          description: "list of subjects that are assigned to this group"
+          type: array
+          items:
+            $ref: '#/components/schemas/subject'
         userIDs:
           $ref: '#/components/schemas/stringList'
         serviceAccountIDs:

@@ -33,6 +33,7 @@ import (
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -55,7 +56,6 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 		Spec: openapi.GroupSpec{
 			RoleIDs:           openapi.StringList{},
 			UserIDs:           &openapi.StringList{},
-			Subjects:          &openapi.StringList{},
 			ServiceAccountIDs: openapi.StringList{},
 		},
 	}
@@ -69,7 +69,17 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 	}
 
 	if in.Spec.Subjects != nil {
-		out.Spec.Subjects = &in.Spec.Subjects
+		subjects := make([]openapi.Subject, len(in.Spec.Subjects))
+		for i, insub := range in.Spec.Subjects {
+			subjects[i].Id = insub.ID
+			subjects[i].Issuer = insub.Issuer
+
+			if insub.Email != "" {
+				subjects[i].Email = ptr.To(insub.Email)
+			}
+		}
+
+		out.Spec.Subjects = &subjects
 	}
 
 	if in.Spec.ServiceAccountIDs != nil {
@@ -136,6 +146,20 @@ func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*open
 	return convert(result), nil
 }
 
+func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
+	subjects := make([]unikornv1.GroupSubject, len(in))
+	for i, insub := range in {
+		subjects[i].ID = insub.Id
+		subjects[i].Issuer = insub.Issuer
+
+		if insub.Email != nil {
+			subjects[i].Email = *insub.Email
+		}
+	}
+
+	return subjects
+}
+
 // populateSubjectsAndUserIDs takes the API request and populates the UserIDs and Subjects fields of a Group. This elides
 // between the old way of setting groups (userIDs pointing to OrganizationUser records), and the new way (Subjects pointing to
 // user records *somewhere*).
@@ -144,14 +168,18 @@ func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*open
 // If you provide **UserIDs**, this func assumes you are an old-style client: the given UserIDs are converted to subjects,
 // and both subjects and userIDs are stored.
 func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.Group, organization *organizations.Meta, in *openapi.GroupWrite) error {
-	var subjects, userIDs openapi.StringList
+	var (
+		subjects []unikornv1.GroupSubject
+		userIDs  []string
+	)
 
 	if in.Spec.Subjects != nil {
 		// On the assumption that the caller understands Subjects, just use the subjects. This is a one-way step, since
 		// we don't attempt to find OrganizationUser records and populate .UserIDs, so it'll be empty hereafter.
-		subjects = *in.Spec.Subjects
+		subjects = generateSubjects(*in.Spec.Subjects)
 	} else if in.Spec.UserIDs != nil {
-		// On the assumption that the caller understands UserIDs,
+		// Assume that if UserIDs are used, we are still referring only to the UNI user database.
+		// Thus, we can fill in subjects by looking up the user records.
 		for _, userorgid := range *in.Spec.UserIDs {
 			userIDs = append(userIDs, userorgid)
 
@@ -167,7 +195,11 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 				return errors.OAuth2ServerError("failed to get user record").WithError(err)
 			}
 
-			subjects = append(subjects, user.Spec.Subject)
+			subjects = append(subjects, unikornv1.GroupSubject{
+				ID:     user.Spec.Subject,
+				Email:  user.Spec.Subject,
+				Issuer: "",
+			})
 		}
 	}
 

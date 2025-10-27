@@ -120,27 +120,31 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
-func removeFromGroup(subject, orgUserID string, updated *unikornv1.Group) bool {
+// removeFromGroup removes the UserID and subject records if they are present.
+func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
-	// Remove from any groups it's a member of but shouldn't be.
-	if slices.Contains(updated.Spec.UserIDs, orgUserID) {
-		updated.Spec.UserIDs = slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
-			return id == orgUserID
-		})
+
+	userIDs := slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
+		return id == orgUserID
+	})
+	if len(userIDs) != len(updated.Spec.UserIDs) {
+		updated.Spec.UserIDs = userIDs
 		needsPatching = true
 	}
 
-	if slices.Contains(updated.Spec.Subjects, subject) {
-		updated.Spec.Subjects = slices.DeleteFunc(updated.Spec.Subjects, func(sub string) bool {
-			return sub == subject
-		})
+	subjects := slices.DeleteFunc(updated.Spec.Subjects, func(sub unikornv1.GroupSubject) bool {
+		return sub.ID == subject.ID && sub.Issuer == subject.Issuer
+	})
+	if len(subjects) != len(updated.Spec.Subjects) {
+		updated.Spec.Subjects = subjects
 		needsPatching = true
 	}
 
 	return needsPatching
 }
 
-func addToGroup(subject, orgUserID string, updated *unikornv1.Group) bool {
+// addToGroup adds the Subject and userID if not present.
+func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
 	// Add to a group where it should be a member but isn't.
 	if !slices.Contains(updated.Spec.UserIDs, orgUserID) {
@@ -165,7 +169,11 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 		return err
 	}
 
-	subject := user.Spec.Subject
+	subject := unikornv1.GroupSubject{
+		ID:     user.Spec.Subject,
+		Email:  user.Spec.Subject,
+		Issuer: "", // Issuer empty for local users
+	}
 
 	for i := range groups.Items {
 		current := &groups.Items[i]

@@ -65,7 +65,21 @@ spec:
                   UserIDs these do not have to refer to objects within the user database; they
                   can refer to users at an external IdP, for example.
                 items:
-                  type: string
+                  description: |-
+                    GroupSubject represents a user that is a member of the group. The ID identifies the
+                    account at the issuer, and the email and issuer fields help with legibility, since
+                    the ID tends to be opaque.
+                  properties:
+                    ID:
+                      type: string
+                    email:
+                      type: string
+                    issuer:
+                      type: string
+                  required:
+                  - ID
+                  - issuer
+                  type: object
                 type: array
               tags:
                 description: Tags are aribrary user data.
