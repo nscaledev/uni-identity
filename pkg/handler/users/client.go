@@ -86,25 +86,25 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 
 // Client is responsible for user management.
 type Client struct {
-	// host is the hostname of this service.
-	host string
+	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
+	issuer common.IssuerValue
 	// client is the Kubernetes client.
 	client client.Client
 	// namespace is the namespace the identity service is running in.
 	namespace string
-	// issuer for creating signup tokens.
-	issuer *jose.JWTIssuer
+	// jwtIssuer for creating signup tokens.
+	jwtIssuer *jose.JWTIssuer
 	// options are any options to be passed to the handler.
 	options *Options
 }
 
 // New creates a new user client.
-func New(host string, client client.Client, namespace string, issuer *jose.JWTIssuer, options *Options) *Client {
+func New(client client.Client, namespace string, jwtIssuer *jose.JWTIssuer, issuer common.IssuerValue, options *Options) *Client {
 	return &Client{
-		host:      host,
+		issuer:    issuer,
 		client:    client,
 		namespace: namespace,
-		issuer:    issuer,
+		jwtIssuer: jwtIssuer,
 		options:   options,
 	}
 }
@@ -460,7 +460,7 @@ func (c *Client) notifyGlobalUserCreation(ctx context.Context, user *unikornv1.U
 		return err
 	}
 
-	verifyLink := fmt.Sprintf("https://%s/api/v1/signup?token=%s&clientID=%s", c.host, user.Spec.Signup.Token, info.ClientID)
+	verifyLink := fmt.Sprintf("%s/api/v1/signup?token=%s&clientID=%s", c.issuer.URL, user.Spec.Signup.Token, info.ClientID)
 
 	email, err := c.getEmailVerification(ctx, verifyLink)
 	if err != nil {
@@ -496,7 +496,7 @@ type SignupClaims struct {
 func (c *Client) issueSignupToken(ctx context.Context, user *unikornv1.User) (string, error) {
 	claims := &SignupClaims{
 		Claims: jwt.Claims{
-			Issuer:  "https://" + c.host,
+			Issuer:  c.issuer.URL,
 			Subject: user.Spec.Subject,
 			Audience: []string{
 				user.Spec.Subject,
@@ -507,7 +507,7 @@ func (c *Client) issueSignupToken(ctx context.Context, user *unikornv1.User) (st
 		UserID: user.Name,
 	}
 
-	token, err := c.issuer.EncodeJWEToken(ctx, claims, jose.TokenTypeUserSignupToken)
+	token, err := c.jwtIssuer.EncodeJWEToken(ctx, claims, jose.TokenTypeUserSignupToken)
 	if err != nil {
 		return "", err
 	}
@@ -577,7 +577,7 @@ func (c *Client) Signup(w http.ResponseWriter, r *http.Request) {
 
 	claims := &SignupClaims{}
 
-	if err := c.issuer.DecodeJWEToken(r.Context(), tokenRaw, claims, jose.TokenTypeUserSignupToken); err != nil {
+	if err := c.jwtIssuer.DecodeJWEToken(r.Context(), tokenRaw, claims, jose.TokenTypeUserSignupToken); err != nil {
 		// TODO: has it expired?  Issue a new one!
 		c.handleError(w, r, cli, "user signup failure", "error decoding token")
 		return

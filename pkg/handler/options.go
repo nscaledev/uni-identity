@@ -22,19 +22,19 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/serviceaccounts"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
 )
 
 // Options defines configurable handler options.
 type Options struct {
-	// Host is the hostname of the service, this will be used as the oauth2
-	// issuer etc.
-	Host string
-
 	// cacheMaxAge defines the max age for cachable items e.g. images and
 	// flavors don't change all that often.
 	CacheMaxAge time.Duration
+
+	// Options contains options shared across multiple handler components.
+	Issuer common.IssuerValue
 
 	// ServiceAccounts define any service account tunables.
 	ServiceAccounts serviceaccounts.Options
@@ -45,7 +45,8 @@ type Options struct {
 
 // AddFlags adds the options flags to the given flag set.
 func (o *Options) AddFlags(f *pflag.FlagSet) {
-	f.StringVar(&o.Host, "host", "", "The service hostname.")
+	// This is given the arg name --host for backward-compatibility; the expected value includes the scheme, e.g., https://identity.unikorn-cloud.org
+	f.Var(&o.Issuer, "host", "The service hostname.")
 	f.DurationVar(&o.CacheMaxAge, "cache-max-age", 24*time.Hour, "How long to cache long-lived queries in the browser.")
 
 	o.ServiceAccounts.AddFlags(f)

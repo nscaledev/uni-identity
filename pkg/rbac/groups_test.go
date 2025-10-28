@@ -26,6 +26,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -91,7 +92,11 @@ func createUser(t *testing.T, c client.Client, id, subject string, groups []*uni
 		groupids[i] = groups[i].Name
 	}
 
-	userclient := users.New("identity.unikorn-cloud.org", c, testNamespace, nil /* issuer */, &users.Options{
+	iss := handlercommon.IssuerValue{
+		URL:      "https://identity.unikorn-cloud.org",
+		Hostname: "identity.unikorn-cloud.org",
+	}
+	userclient := users.New(c, testNamespace, nil /* JWT issuer */, iss, &users.Options{
 		// luckily these are all to do with email verification, which we don't want to use.
 	})
 

@@ -221,7 +221,7 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 		Service:        info.Service,
 	}
 
-	at, err := a.issuer.EncodeJWEToken(ctx, atClaims, jose.TokenTypeAccessToken)
+	at, err := a.jwtIssuer.EncodeJWEToken(ctx, atClaims, jose.TokenTypeAccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +253,7 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 			Federated: info.Federated,
 		}
 
-		rt, err := a.issuer.EncodeJWEToken(ctx, rtClaims, jose.TokenTypeRefreshToken)
+		rt, err := a.jwtIssuer.EncodeJWEToken(ctx, rtClaims, jose.TokenTypeRefreshToken)
 		if err != nil {
 			return nil, err
 		}
@@ -295,7 +295,7 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 	// Parse and verify the claims with the public key.
 	claims := &Claims{}
 
-	if err := a.issuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
+	if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
 		return nil, fmt.Errorf("failed to decrypt claims: %w", err)
 	}
 

@@ -41,12 +41,14 @@ import (
 type Client struct {
 	client    client.Client
 	namespace string
+	issuer    common.IssuerValue
 }
 
-func New(client client.Client, namespace string) *Client {
+func New(client client.Client, namespace string, internalIssuer common.IssuerValue) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+		issuer:    internalIssuer,
 	}
 }
 
@@ -198,7 +200,7 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 			subjects = append(subjects, unikornv1.GroupSubject{
 				ID:     user.Spec.Subject,
 				Email:  user.Spec.Subject,
-				Issuer: "",
+				Issuer: c.issuer.URL,
 			})
 		}
 	}
