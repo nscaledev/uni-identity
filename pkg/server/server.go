@@ -105,7 +105,7 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 	}
 
 	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, client, issuer, rbac)
+	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, rbac)
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)

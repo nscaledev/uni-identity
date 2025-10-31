@@ -54,8 +54,8 @@ type Client struct {
 	client client.Client
 	// namespace is the namespace the identity service is running in.
 	namespace string
-	// host is the hostname of this service.
-	host string
+	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
+	issuer common.IssuerValue
 	// oauth2 is used to issue access tokens.
 	oauth2 *oauth2.Authenticator
 	// options are any deployment defaults.
@@ -63,11 +63,11 @@ type Client struct {
 }
 
 // New creates a new service account client.
-func New(client client.Client, namespace, host string, oauth2 *oauth2.Authenticator, options *Options) *Client {
+func New(client client.Client, namespace string, issuer common.IssuerValue, oauth2 *oauth2.Authenticator, options *Options) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
-		host:      host,
+		issuer:    issuer,
 		oauth2:    oauth2,
 		options:   options,
 	}
@@ -128,8 +128,8 @@ func convertList(in *unikornv1.ServiceAccountList, groups *unikornv1.GroupList) 
 // generateAccessToken generates a service account token for the given service account.
 func (c *Client) generateAccessToken(ctx context.Context, organization *organizations.Meta, serviceAccountID string) (*oauth2.Tokens, error) {
 	issueInfo := &oauth2.IssueInfo{
-		Issuer:   "https://" + c.host,
-		Audience: c.host,
+		Issuer:   c.issuer.URL,
+		Audience: c.issuer.Hostname,
 		Subject:  serviceAccountID,
 		Type:     oauth2.TokenTypeServiceAccount,
 		ServiceAccount: &oauth2.ServiceAccountClaims{

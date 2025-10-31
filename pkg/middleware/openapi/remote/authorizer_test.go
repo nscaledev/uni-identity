@@ -35,6 +35,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
@@ -346,11 +347,15 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		CodeCacheSize:            10,
 		AccountCreationCacheSize: 10,
 	}
-	authenticator = oauth2.New(oauth2Options, testNamespace, fakeClient, issuer, rbacClient)
+	u, _ := url.Parse(mtlsServer.URL())
+	iss := handlercommon.IssuerValue{
+		URL:      mtlsServer.URL(),
+		Hostname: u.Host,
+	}
+	authenticator = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, rbacClient)
 
 	// Issue a test token
 	ctx := t.Context()
-	u, _ := url.Parse(mtlsServer.URL())
 	issueInfo := &oauth2.IssueInfo{
 		Issuer:   mtlsServer.URL(),
 		Audience: u.Host, // the issuer is https://..., but the audience is the host.

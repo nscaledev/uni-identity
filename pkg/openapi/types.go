@@ -262,8 +262,11 @@ type GroupSpec struct {
 	// ServiceAccountIDs A list of strings.
 	ServiceAccountIDs StringList `json:"serviceAccountIDs"`
 
+	// Subjects list of subjects that are assigned to this group
+	Subjects *[]Subject `json:"subjects,omitempty"`
+
 	// UserIDs A list of strings.
-	UserIDs StringList `json:"userIDs"`
+	UserIDs *StringList `json:"userIDs,omitempty"`
 }
 
 // GroupWrite A group when created or updated.
@@ -641,6 +644,18 @@ type SigningAlgorithm string
 
 // StringList A list of strings.
 type StringList = []string
+
+// Subject A user account, as described when member of a group.
+type Subject struct {
+	// Email An email for the user, if supplied by the issuer.
+	Email *string `json:"email,omitempty"`
+
+	// Id The identitifier for this subject, given by the issuer.
+	Id string `json:"id"`
+
+	// Issuer The issuer URL.
+	Issuer string `json:"issuer"`
+}
 
 // Token OAuth 2.0 token result.
 type Token struct {

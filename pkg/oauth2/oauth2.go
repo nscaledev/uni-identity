@@ -43,6 +43,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util/retry"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/groups"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
@@ -138,8 +139,11 @@ type Authenticator struct {
 
 	client client.Client
 
-	// issuer allows creation and validation of JWT bearer tokens.
-	issuer *jose.JWTIssuer
+	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
+	issuer common.IssuerValue
+
+	// jwtIssuer allows creation and validation of JWT bearer tokens.
+	jwtIssuer *jose.JWTIssuer
 
 	rbac *rbac.RBAC
 
@@ -157,12 +161,13 @@ type Authenticator struct {
 
 // New returns a new authenticator with required fields populated.
 // You must call AddFlags after this.
-func New(options *Options, namespace string, client client.Client, issuer *jose.JWTIssuer, rbac *rbac.RBAC) *Authenticator {
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, rbac *rbac.RBAC) *Authenticator {
 	return &Authenticator{
 		options:              options,
 		namespace:            namespace,
 		client:               client,
 		issuer:               issuer,
+		jwtIssuer:            jwtIssuer,
 		rbac:                 rbac,
 		tokenCache:           cache.NewLRUExpireCache(options.TokenCacheSize),
 		codeCache:            cache.NewLRUExpireCache(options.CodeCacheSize),
@@ -543,7 +548,7 @@ func (a *Authenticator) authorizationSilent(r *http.Request, redirector *redirec
 
 	code := &Code{}
 
-	if err := a.issuer.DecodeJWEToken(r.Context(), cookie.Value, code, jose.TokenTypeAuthorizationCode); err != nil {
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), cookie.Value, code, jose.TokenTypeAuthorizationCode); err != nil {
 		return false
 	}
 
@@ -598,7 +603,7 @@ func (a *Authenticator) authorizationSilent(r *http.Request, redirector *redirec
 		IDToken:        code.IDToken,
 	}
 
-	newCode, err := a.issuer.EncodeJWEToken(r.Context(), oauth2Code, jose.TokenTypeAuthorizationCode)
+	newCode, err := a.jwtIssuer.EncodeJWEToken(r.Context(), oauth2Code, jose.TokenTypeAuthorizationCode)
 	if err != nil {
 		return false
 	}
@@ -679,7 +684,7 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 		Query: query.Encode(),
 	}
 
-	state, err := a.issuer.EncodeJWEToken(r.Context(), stateClaims, jose.TokenTypeLoginDialogState)
+	state, err := a.jwtIssuer.EncodeJWEToken(r.Context(), stateClaims, jose.TokenTypeLoginDialogState)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to encode request state")
 		return
@@ -733,7 +738,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 
 	state := &LoginStateClaims{}
 
-	if err := a.issuer.DecodeJWEToken(r.Context(), r.Form.Get("state"), state, jose.TokenTypeLoginDialogState); err != nil {
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), r.Form.Get("state"), state, jose.TokenTypeLoginDialogState); err != nil {
 		htmlError(w, r, http.StatusBadRequest, "login state failed to decode")
 		return
 	}
@@ -812,7 +817,7 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 		ClientQuery:    query.Encode(),
 	}
 
-	state, err := a.issuer.EncodeJWEToken(r.Context(), oidcState, jose.TokenTypeLoginState)
+	state, err := a.jwtIssuer.EncodeJWEToken(r.Context(), oidcState, jose.TokenTypeLoginState)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to encode oidc state: "+err.Error())
 		return
@@ -867,7 +872,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	// Extract our state for the next part...
 	state := &State{}
 
-	if err := a.issuer.DecodeJWEToken(r.Context(), query.Get("state"), state, jose.TokenTypeLoginState); err != nil {
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), query.Get("state"), state, jose.TokenTypeLoginState); err != nil {
 		htmlError(w, r, http.StatusBadRequest, "oidc state failed to decode")
 		return
 	}
@@ -942,7 +947,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 			IDToken:        idToken,
 		}
 
-		state, err := a.issuer.EncodeJWEToken(r.Context(), onboardingState, jose.TokenTypeOnboardState)
+		state, err := a.jwtIssuer.EncodeJWEToken(r.Context(), onboardingState, jose.TokenTypeOnboardState)
 		if err != nil {
 			redirector.raise(ErrorServerError, "failed to encode onboarding state: "+err.Error())
 			return
@@ -991,7 +996,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 
 // authorizationCodeRedirect packages up an authorization code and redirects to the client.
 func (a *Authenticator) authorizationCodeRedirect(w http.ResponseWriter, r *http.Request, redirector *redirector, clientQuery url.Values, code *Code) {
-	codeCipher, err := a.issuer.EncodeJWEToken(r.Context(), code, jose.TokenTypeAuthorizationCode)
+	codeCipher, err := a.jwtIssuer.EncodeJWEToken(r.Context(), code, jose.TokenTypeAuthorizationCode)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to encode authorization code: "+err.Error())
 		return
@@ -1085,7 +1090,7 @@ func (a *Authenticator) validateOnboardState(ctx context.Context, w http.Respons
 
 	state := &OnboardingState{}
 
-	if err := a.issuer.DecodeJWEToken(ctx, stateRaw, state, jose.TokenTypeOnboardState); err != nil {
+	if err := a.jwtIssuer.DecodeJWEToken(ctx, stateRaw, state, jose.TokenTypeOnboardState); err != nil {
 		htmlError(w, r, http.StatusBadRequest, "account creation state failed to decode")
 		return nil, nil, false
 	}
@@ -1097,6 +1102,16 @@ func (a *Authenticator) validateOnboardState(ctx context.Context, w http.Respons
 	}
 
 	return state, query, true
+}
+
+// getInternalIssuer returns the conventional token issuer for tokens issued here.
+func (a *Authenticator) getInternalIssuer() string {
+	return a.issuer.URL
+}
+
+// getAudience returns the conventional audience for tokens issued here.
+func (a *Authenticator) getAudience() string {
+	return a.issuer.Hostname
 }
 
 // Onboard creates a user's initial account and organization under guidance
@@ -1228,7 +1243,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 		groupRequest.Metadata.Description = ptr.To(r.Form.Get("group_description"))
 	}
 
-	group, err := groups.New(a.client, a.namespace).Create(ctx, organization.Metadata.Id, groupRequest)
+	group, err := groups.New(a.client, a.namespace, a.issuer).Create(ctx, organization.Metadata.Id, groupRequest)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to create group")
 		return
@@ -1245,7 +1260,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	user, err := users.New(r.Host, a.client, a.namespace, a.issuer, &users.Options{}).Create(ctx, organization.Metadata.Id, userRequest)
+	user, err := users.New(a.client, a.namespace, a.jwtIssuer, a.issuer, &users.Options{}).Create(ctx, organization.Metadata.Id, userRequest)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to create user")
 		return
@@ -1258,7 +1273,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 	// Finally when the optional webhook is
 	userRequest.Spec.State = openapi.Active
 
-	if _, err := users.New(r.Host, a.client, a.namespace, a.issuer, &users.Options{}).Update(ctx, organization.Metadata.Id, user.Metadata.Id, userRequest); err != nil {
+	if _, err := users.New(a.client, a.namespace, a.jwtIssuer, a.issuer, &users.Options{}).Update(ctx, organization.Metadata.Id, user.Metadata.Id, userRequest); err != nil {
 		redirector.raise(ErrorServerError, "failed to create user")
 		return
 	}
@@ -1397,7 +1412,7 @@ func (a *Authenticator) oidcIDToken(r *http.Request, idToken *oidc.IDToken, quer
 
 	claims := &oidc.IDToken{
 		Claims: jwt.Claims{
-			Issuer: "https://" + r.Host,
+			Issuer: a.getInternalIssuer(),
 			// TODO: we should use the user ID.
 			Subject: idToken.Email.Email,
 			Audience: []string{
@@ -1428,7 +1443,7 @@ func (a *Authenticator) oidcIDToken(r *http.Request, idToken *oidc.IDToken, quer
 		claims.Profile = idToken.Profile
 	}
 
-	token, err := a.issuer.EncodeJWT(r.Context(), claims)
+	token, err := a.jwtIssuer.EncodeJWT(r.Context(), claims)
 	if err != nil {
 		return nil, err
 	}
@@ -1507,7 +1522,7 @@ func (a *Authenticator) TokenAuthorizationCode(w http.ResponseWriter, r *http.Re
 
 	code := &Code{}
 
-	if err := a.issuer.DecodeJWEToken(r.Context(), codeRaw, code, jose.TokenTypeAuthorizationCode); err != nil {
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), codeRaw, code, jose.TokenTypeAuthorizationCode); err != nil {
 		return nil, errors.OAuth2InvalidRequest("failed to parse code: " + err.Error())
 	}
 
@@ -1538,8 +1553,8 @@ func (a *Authenticator) TokenAuthorizationCode(w http.ResponseWriter, r *http.Re
 	a.codeCache.Remove(codeRaw)
 
 	info := &IssueInfo{
-		Issuer:   "https://" + r.Host,
-		Audience: r.Host,
+		Issuer:   a.getInternalIssuer(),
+		Audience: a.getAudience(),
 		// TODO: we should probably use the user ID here.
 		Subject: code.IDToken.Email.Email,
 		Type:    TokenTypeFederated,
@@ -1651,7 +1666,7 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 	// Validate the refresh token and extract the claims.
 	claims := &RefreshTokenClaims{}
 
-	if err := a.issuer.DecodeJWEToken(r.Context(), refreshTokenRaw, claims, jose.TokenTypeRefreshToken); err != nil {
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), refreshTokenRaw, claims, jose.TokenTypeRefreshToken); err != nil {
 		return nil, errors.OAuth2InvalidGrant("refresh token is invalid or has expired").WithError(err)
 	}
 
@@ -1660,8 +1675,8 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 	}
 
 	info := &IssueInfo{
-		Issuer:    "https://" + r.Host,
-		Audience:  r.Host,
+		Issuer:    a.getInternalIssuer(),
+		Audience:  a.getAudience(),
 		Subject:   claims.Subject,
 		Type:      TokenTypeFederated,
 		Federated: claims.Federated,
@@ -1698,8 +1713,8 @@ func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Re
 	thumbprint := util.GetClientCertifcateThumbprint(certificate)
 
 	info := &IssueInfo{
-		Issuer:   "https://" + r.Host,
-		Audience: r.Host,
+		Issuer:   a.getInternalIssuer(),
+		Audience: a.getAudience(),
 		Subject:  certificate.Subject.CommonName,
 		Type:     TokenTypeService,
 		Service: &ServiceClaims{
@@ -1746,8 +1761,8 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 // GetUserinfo does access token introspection.
 func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
 	verifyInfo := &VerifyInfo{
-		Issuer:   "https://" + r.Host,
-		Audience: r.Host,
+		Issuer:   a.getInternalIssuer(),
+		Audience: a.getAudience(),
 		Token:    token,
 	}
 

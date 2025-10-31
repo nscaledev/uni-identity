@@ -47,12 +47,13 @@ type Group struct {
 type GroupSpec struct {
 	// Tags are aribrary user data.
 	Tags unikornv1core.TagList `json:"tags,omitempty"`
-	// Users are a list of user names that are members of the group.
-	// TODO: remove me, this is kept alive to allow migration to User
-	// CRDs.
-	Users []string `json:"users,omitempty"`
 	// UserIDs are a list of users that are members of the group.
+	// Deprecated: use Subjects instead.
 	UserIDs []string `json:"userIDs,omitempty"`
+	// Subjects is a list of user subjects that are members of the group. Unlike
+	// UserIDs these do not have to refer to objects within the user database; they
+	// can refer to users at an external IdP, for example.
+	Subjects []GroupSubject `json:"subjects,omitempty"`
 	// ServiceAccountIDs are a list of service accounts that are members of
 	// the group.
 	ServiceAccountIDs []string `json:"serviceAccountIDs,omitempty"`
@@ -62,3 +63,12 @@ type GroupSpec struct {
 
 // GroupStatus defines the status of the group.
 type GroupStatus struct{}
+
+// GroupSubject represents a user that is a member of the group. The ID identifies the
+// account at the issuer, and the email and issuer fields help with legibility, since
+// the ID tends to be opaque.
+type GroupSubject struct {
+	ID     string `json:"ID"` //nolint:tagliatelle
+	Issuer string `json:"issuer"`
+	Email  string `json:"email,omitempty"`
+}
