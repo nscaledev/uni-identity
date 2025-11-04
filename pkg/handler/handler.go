@@ -96,10 +96,10 @@ func (h *Handler) setUncacheableNoStore(w http.ResponseWriter) {
 func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request) {
 	result := &openapi.OpenidConfiguration{
 		Issuer:                h.options.Issuer.URL,
-		AuthorizationEndpoint: fmt.Sprintf("%s/oauth2/v2/authorization", h.options.Issuer.Hostname),
-		TokenEndpoint:         fmt.Sprintf("%s/oauth2/v2/token", h.options.Issuer.Hostname),
-		UserinfoEndpoint:      fmt.Sprintf("%s/oauth2/v2/userinfo", h.options.Issuer.Hostname),
-		JwksUri:               fmt.Sprintf("%s/oauth2/v2/jwks", h.options.Issuer.Hostname),
+		AuthorizationEndpoint: fmt.Sprintf("%s/oauth2/v2/authorization", h.options.Issuer.URL),
+		TokenEndpoint:         fmt.Sprintf("%s/oauth2/v2/token", h.options.Issuer.URL),
+		UserinfoEndpoint:      fmt.Sprintf("%s/oauth2/v2/userinfo", h.options.Issuer.URL),
+		JwksUri:               fmt.Sprintf("%s/oauth2/v2/jwks", h.options.Issuer.URL),
 		ScopesSupported: []openapi.Scope{
 			openapi.ScopeEmail,
 			openapi.ScopeOpenid,
