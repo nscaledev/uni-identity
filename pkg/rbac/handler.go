@@ -63,11 +63,23 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 
 	acl := FromContext(ctx)
 
-	if acl.Organization == nil || acl.Organization.Id != organizationID {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no matching organization endpoints)")
+	if acl.Organizations == nil {
+		return errors.HTTPForbidden("operation is not allowed by rbac (no organizations defined)")
 	}
 
-	return operationAllowedByEndpoints(acl.Organization.Endpoints, endpoint, operation)
+	for _, organization := range *acl.Organizations {
+		if organization.Id != organizationID {
+			continue
+		}
+
+		if organization.Endpoints == nil {
+			return errors.HTTPForbidden("operation is not allowed by rbac (no organizations endpoints)")
+		}
+
+		return operationAllowedByEndpoints(*organization.Endpoints, endpoint, operation)
+	}
+
+	return errors.HTTPForbidden("operation is not allowed by rbac (no matching organization endpoint)")
 }
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
@@ -79,17 +91,29 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 
 	acl := FromContext(ctx)
 
-	if acl.Projects == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no project endpoints)")
+	if acl.Organizations == nil {
+		return errors.HTTPForbidden("operation is not allowed by rbac (no organizations defined)")
 	}
 
-	for _, project := range *acl.Projects {
-		if project.Id != projectID {
+	for _, organization := range *acl.Organizations {
+		if organization.Id != organizationID {
 			continue
 		}
 
-		if err := operationAllowedByEndpoints(project.Endpoints, endpoint, operation); err == nil {
-			return nil
+		if organization.Endpoints != nil {
+			if operationAllowedByEndpoints(*organization.Endpoints, endpoint, operation) == nil {
+				return nil
+			}
+		}
+
+		if organization.Projects != nil {
+			for _, project := range *organization.Projects {
+				if project.Id != projectID {
+					continue
+				}
+
+				return operationAllowedByEndpoints(project.Endpoints, endpoint, operation)
+			}
 		}
 	}
 
