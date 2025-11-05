@@ -751,3 +751,89 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 	assert.True(t, subjects[userAliceSubject], "Alice's subject should be present")
 	assert.True(t, subjects[userBobSubject], "Bob's subject should be present")
 }
+
+// TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError tests that providing both Subjects
+// and UserIDs returns an error.
+func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	c := setupTestClient(t)
+	ctx := newContext(t)
+
+	// Create a User in the global namespace
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      userAliceID,
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: userAliceSubject,
+			State:   unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(ctx, user))
+
+	// Create an OrganizationUser that links to the User
+	orgUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      orguserAliceID,
+			Labels: map[string]string{
+				constants.UserLabel:         userAliceID,
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(ctx, orgUser))
+
+	// Create a group
+	group := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupTestID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{},
+		},
+	}
+	require.NoError(t, c.Create(ctx, group))
+
+	// Create groups client
+	issuer := handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
+	}
+	groupsClient := groups.New(c, testNamespace, issuer)
+
+	// Try to update the group with BOTH Subjects and UserIDs
+	subjects := []openapi.Subject{
+		{
+			Id:     userAliceSubject,
+			Issuer: testIssuerURL,
+			Email:  ptr.To(userAliceSubject),
+		},
+	}
+	userIDs := openapi.StringList{orguserAliceID}
+
+	updateRequest := &openapi.GroupWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{
+			Name: groupTestID,
+		},
+		Spec: openapi.GroupSpec{
+			RoleIDs:           openapi.StringList{},
+			Subjects:          &subjects,
+			UserIDs:           &userIDs,
+			ServiceAccountIDs: openapi.StringList{},
+		},
+	}
+
+	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	require.Error(t, err, "Should error when both subjects and userIDs are provided")
+	assert.Contains(t, err.Error(), "cannot provide both", "Error should indicate both fields were provided")
+}
