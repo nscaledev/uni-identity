@@ -33,6 +33,7 @@ import (
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -162,6 +163,93 @@ func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
 	return subjects
 }
 
+// findUserBySubject finds a User resource by subject field.
+func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikornv1.User, error) {
+	var users unikornv1.UserList
+	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		return nil, errors.OAuth2ServerError("failed to list users").WithError(err)
+	}
+
+	for i := range users.Items {
+		if users.Items[i].Spec.Subject == subject {
+			return &users.Items[i], nil
+		}
+	}
+
+	return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s does not exist", subject))
+}
+
+// findOrgUserByUserID finds an OrganizationUser in an org by the user ID label.
+func (c *Client) findOrgUserByUserID(ctx context.Context, orgNamespace, userID string) (*unikornv1.OrganizationUser, error) {
+	var orgUsers unikornv1.OrganizationUserList
+
+	selector := labels.SelectorFromSet(labels.Set{constants.UserLabel: userID})
+	if err := c.client.List(ctx, &orgUsers, &client.ListOptions{Namespace: orgNamespace, LabelSelector: selector}); err != nil {
+		return nil, errors.OAuth2ServerError("failed to list organization users").WithError(err)
+	}
+
+	switch len(orgUsers.Items) {
+	case 0:
+		return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with ID %s is not a member of this organization", userID))
+	case 1:
+		return &orgUsers.Items[0], nil
+	default:
+		return nil, errors.OAuth2ServerError(fmt.Sprintf("inconsistent number of organisation users for user with ID %s", userID))
+	}
+}
+
+// subjectsToUserIDs converts internal subjects to UserIDs.
+func (c *Client) subjectsToUserIDs(ctx context.Context, subjects []unikornv1.GroupSubject, organization *organizations.Meta) ([]string, error) {
+	var userIDs []string //nolint:prealloc
+
+	for _, subject := range subjects {
+		if subject.Issuer != c.issuer.URL {
+			continue // Skip external subjects
+		}
+
+		user, err := c.findUserBySubject(ctx, subject.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		orgUser, err := c.findOrgUserByUserID(ctx, organization.Namespace, user.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		userIDs = append(userIDs, orgUser.Name)
+	}
+
+	return userIDs, nil
+}
+
+// userIDsToSubjects converts UserIDs to subjects.
+func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organization *organizations.Meta) ([]unikornv1.GroupSubject, error) {
+	subjects := make([]unikornv1.GroupSubject, 0, len(userIDs))
+
+	for _, orgUserID := range userIDs {
+		var orguser unikornv1.OrganizationUser
+		if err := c.client.Get(ctx, client.ObjectKey{Name: orgUserID, Namespace: organization.Namespace}, &orguser); err != nil {
+			return nil, errors.OAuth2ServerError("failed to get organization member record").WithError(err)
+		}
+
+		userid := orguser.Labels[constants.UserLabel]
+
+		var user unikornv1.User
+		if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
+			return nil, errors.OAuth2ServerError("failed to get user record").WithError(err)
+		}
+
+		subjects = append(subjects, unikornv1.GroupSubject{
+			ID:     user.Spec.Subject,
+			Email:  user.Spec.Subject,
+			Issuer: c.issuer.URL,
+		})
+	}
+
+	return subjects, nil
+}
+
 // populateSubjectsAndUserIDs takes the API request and populates the UserIDs and Subjects fields of a Group. This elides
 // between the old way of setting groups (userIDs pointing to OrganizationUser records), and the new way (Subjects pointing to
 // user records *somewhere*).
@@ -173,80 +261,22 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 	var (
 		subjects []unikornv1.GroupSubject
 		userIDs  []string
+		err      error
 	)
 
 	if in.Spec.Subjects != nil {
-		// Store the subjects as provided
 		subjects = generateSubjects(*in.Spec.Subjects)
 
-		// For subjects with the internal issuer, also populate UserIDs for backwards compatibility
-		for _, subject := range subjects {
-			if subject.Issuer != c.issuer.URL {
-				// Skip external subjects
-				continue
-			}
-
-			// Find the User by subject
-			var users unikornv1.UserList
-			if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
-				return errors.OAuth2ServerError("failed to list users").WithError(err)
-			}
-
-			var matchedUser *unikornv1.User
-			for i := range users.Items {
-				if users.Items[i].Spec.Subject == subject.ID {
-					matchedUser = &users.Items[i]
-					break
-				}
-			}
-
-			if matchedUser == nil {
-				return errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s does not exist", subject.ID))
-			}
-
-			// Find the OrganizationUser for this User in this organization
-			var orgUsers unikornv1.OrganizationUserList
-			if err := c.client.List(ctx, &orgUsers, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-				return errors.OAuth2ServerError("failed to list organization users").WithError(err)
-			}
-
-			var matchedOrgUser *unikornv1.OrganizationUser
-			for i := range orgUsers.Items {
-				if orgUsers.Items[i].Labels[constants.UserLabel] == matchedUser.Name {
-					matchedOrgUser = &orgUsers.Items[i]
-					break
-				}
-			}
-
-			if matchedOrgUser == nil {
-				return errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s is not a member of this organization", subject.ID))
-			}
-
-			userIDs = append(userIDs, matchedOrgUser.Name)
+		userIDs, err = c.subjectsToUserIDs(ctx, subjects, organization)
+		if err != nil {
+			return err
 		}
 	} else if in.Spec.UserIDs != nil {
-		// Assume that if UserIDs are used, we are still referring only to the UNI user database.
-		// Thus, we can fill in subjects by looking up the user records.
-		for _, userorgid := range *in.Spec.UserIDs {
-			userIDs = append(userIDs, userorgid)
+		userIDs = *in.Spec.UserIDs
 
-			var orguser unikornv1.OrganizationUser
-			if err := c.client.Get(ctx, client.ObjectKey{Name: userorgid, Namespace: organization.Namespace}, &orguser); err != nil {
-				return errors.OAuth2ServerError("failed to get organization member record").WithError(err)
-			}
-
-			userid := orguser.Labels[constants.UserLabel]
-
-			var user unikornv1.User
-			if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
-				return errors.OAuth2ServerError("failed to get user record").WithError(err)
-			}
-
-			subjects = append(subjects, unikornv1.GroupSubject{
-				ID:     user.Spec.Subject,
-				Email:  user.Spec.Subject,
-				Issuer: c.issuer.URL,
-			})
+		subjects, err = c.userIDsToSubjects(ctx, userIDs, organization)
+		if err != nil {
+			return err
 		}
 	}
 
