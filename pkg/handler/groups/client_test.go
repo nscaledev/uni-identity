@@ -489,3 +489,265 @@ func TestUpdateGroupWithNonExistentSubject_ReturnsError(t *testing.T) {
 	require.Error(t, err, "Should error when subject does not exist")
 	assert.Contains(t, err.Error(), "user", "Error should indicate issue with user lookup")
 }
+
+// TestUpdateGroupWithUserIDs_PopulatesSubjects tests that when a group is updated with UserIDs
+// (old-style API), those UserIDs are converted to Subjects.
+func TestUpdateGroupWithUserIDs_PopulatesSubjects(t *testing.T) {
+	t.Parallel()
+
+	c := setupTestClient(t)
+	ctx := newContext(t)
+
+	// Create a User in the global namespace
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      userAliceID,
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: userAliceSubject,
+			State:   unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(ctx, user))
+
+	// Create an OrganizationUser that links to the User
+	orgUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      orguserAliceID,
+			Labels: map[string]string{
+				constants.UserLabel:         userAliceID,
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(ctx, orgUser))
+
+	// Create a group
+	group := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupTestID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{},
+		},
+	}
+	require.NoError(t, c.Create(ctx, group))
+
+	// Create groups client
+	issuer := handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
+	}
+	groupsClient := groups.New(c, testNamespace, issuer)
+
+	// Update the group with UserIDs (old-style API)
+	userIDs := openapi.StringList{orguserAliceID}
+
+	updateRequest := &openapi.GroupWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{
+			Name: groupTestID,
+		},
+		Spec: openapi.GroupSpec{
+			RoleIDs:           openapi.StringList{},
+			UserIDs:           &userIDs,
+			ServiceAccountIDs: openapi.StringList{},
+		},
+	}
+
+	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	require.NoError(t, err)
+
+	// Fetch the updated group
+	var updatedGroup unikornv1.Group
+	err = c.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &updatedGroup)
+	require.NoError(t, err)
+
+	// Verify that UserIDs are populated
+	require.NotNil(t, updatedGroup.Spec.UserIDs)
+	require.Len(t, updatedGroup.Spec.UserIDs, 1)
+	assert.Equal(t, orguserAliceID, updatedGroup.Spec.UserIDs[0])
+
+	// Verify that Subjects are also populated (converted from UserIDs)
+	require.NotNil(t, updatedGroup.Spec.Subjects)
+	require.Len(t, updatedGroup.Spec.Subjects, 1, "Subjects should be populated from UserIDs")
+	assert.Equal(t, userAliceSubject, updatedGroup.Spec.Subjects[0].ID, "Subject ID should match user's subject")
+	assert.Equal(t, testIssuerURL, updatedGroup.Spec.Subjects[0].Issuer, "Subject issuer should be internal issuer")
+	assert.Equal(t, userAliceSubject, updatedGroup.Spec.Subjects[0].Email, "Subject email should match user's subject")
+}
+
+// TestUpdateGroupWithInvalidUserID_ReturnsError tests that when an invalid UserID is provided,
+// an error is returned.
+func TestUpdateGroupWithInvalidUserID_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	c := setupTestClient(t)
+	ctx := newContext(t)
+
+	// Create a group
+	group := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupTestID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{},
+		},
+	}
+	require.NoError(t, c.Create(ctx, group))
+
+	// Create groups client
+	issuer := handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
+	}
+	groupsClient := groups.New(c, testNamespace, issuer)
+
+	// Try to update the group with an invalid UserID
+	userIDs := openapi.StringList{"nonexistent-orguser"}
+
+	updateRequest := &openapi.GroupWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{
+			Name: groupTestID,
+		},
+		Spec: openapi.GroupSpec{
+			RoleIDs:           openapi.StringList{},
+			UserIDs:           &userIDs,
+			ServiceAccountIDs: openapi.StringList{},
+		},
+	}
+
+	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	require.Error(t, err, "Should error when UserID is invalid")
+	assert.Contains(t, err.Error(), "organization member", "Error should indicate issue with organization member lookup")
+}
+
+// TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects tests that when multiple UserIDs
+// are provided, all are converted to Subjects.
+func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
+	t.Parallel()
+
+	c := setupTestClient(t)
+	ctx := newContext(t)
+
+	const (
+		userBobSubject = "bob@example.com"
+		userBobID      = "user-bob"
+		orguserBobID   = "orguser-bob"
+	)
+
+	// Create users and org users for Alice and Bob
+	users := []struct {
+		userID    string
+		subject   string
+		orguserID string
+	}{
+		{userAliceID, userAliceSubject, orguserAliceID},
+		{userBobID, userBobSubject, orguserBobID},
+	}
+
+	for _, u := range users {
+		user := &unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: testNamespace,
+				Name:      u.userID,
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: u.subject,
+				State:   unikornv1.UserStateActive,
+			},
+		}
+		require.NoError(t, c.Create(ctx, user))
+
+		orgUser := &unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: testOrgNS,
+				Name:      u.orguserID,
+				Labels: map[string]string{
+					constants.UserLabel:         u.userID,
+					constants.OrganizationLabel: testOrgID,
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{
+				State: unikornv1.UserStateActive,
+			},
+		}
+		require.NoError(t, c.Create(ctx, orgUser))
+	}
+
+	// Create a group
+	group := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupTestID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{},
+		},
+	}
+	require.NoError(t, c.Create(ctx, group))
+
+	// Create groups client
+	issuer := handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
+	}
+	groupsClient := groups.New(c, testNamespace, issuer)
+
+	// Update the group with multiple UserIDs
+	userIDs := openapi.StringList{orguserAliceID, orguserBobID}
+
+	updateRequest := &openapi.GroupWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{
+			Name: groupTestID,
+		},
+		Spec: openapi.GroupSpec{
+			RoleIDs:           openapi.StringList{},
+			UserIDs:           &userIDs,
+			ServiceAccountIDs: openapi.StringList{},
+		},
+	}
+
+	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	require.NoError(t, err)
+
+	// Fetch the updated group
+	var updatedGroup unikornv1.Group
+	err = c.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &updatedGroup)
+	require.NoError(t, err)
+
+	// Verify that UserIDs are populated
+	require.NotNil(t, updatedGroup.Spec.UserIDs)
+	require.Len(t, updatedGroup.Spec.UserIDs, 2)
+	assert.Contains(t, updatedGroup.Spec.UserIDs, orguserAliceID)
+	assert.Contains(t, updatedGroup.Spec.UserIDs, orguserBobID)
+
+	// Verify that Subjects are also populated
+	require.NotNil(t, updatedGroup.Spec.Subjects)
+	require.Len(t, updatedGroup.Spec.Subjects, 2, "All UserIDs should be converted to Subjects")
+
+	// Check that both subjects are present
+	subjects := make(map[string]bool)
+	for _, s := range updatedGroup.Spec.Subjects {
+		subjects[s.ID] = true
+
+		assert.Equal(t, testIssuerURL, s.Issuer, "All subjects should have internal issuer")
+	}
+
+	assert.True(t, subjects[userAliceSubject], "Alice's subject should be present")
+	assert.True(t, subjects[userBobSubject], "Bob's subject should be present")
+}
