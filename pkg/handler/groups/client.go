@@ -165,8 +165,8 @@ func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
 // populateSubjectsAndUserIDs takes the API request and populates the UserIDs and Subjects fields of a Group. This elides
 // between the old way of setting groups (userIDs pointing to OrganizationUser records), and the new way (Subjects pointing to
 // user records *somewhere*).
-// If you provide **subjects**, the func assumes clients have been ported to use
-// subjects: the subjects are used and the userIDs cleared.
+// If you provide **subjects**, the func converts subjects with the internal issuer to UserIDs as well, allowing
+// both old and new clients to coexist during migration.
 // If you provide **UserIDs**, this func assumes you are an old-style client: the given UserIDs are converted to subjects,
 // and both subjects and userIDs are stored.
 func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.Group, organization *organizations.Meta, in *openapi.GroupWrite) error {
@@ -176,9 +176,54 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 	)
 
 	if in.Spec.Subjects != nil {
-		// On the assumption that the caller understands Subjects, just use the subjects. This is a one-way step, since
-		// we don't attempt to find OrganizationUser records and populate .UserIDs, so it'll be empty hereafter.
+		// Store the subjects as provided
 		subjects = generateSubjects(*in.Spec.Subjects)
+
+		// For subjects with the internal issuer, also populate UserIDs for backwards compatibility
+		for _, subject := range subjects {
+			if subject.Issuer != c.issuer.URL {
+				// Skip external subjects
+				continue
+			}
+
+			// Find the User by subject
+			var users unikornv1.UserList
+			if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+				return errors.OAuth2ServerError("failed to list users").WithError(err)
+			}
+
+			var matchedUser *unikornv1.User
+			for i := range users.Items {
+				if users.Items[i].Spec.Subject == subject.ID {
+					matchedUser = &users.Items[i]
+					break
+				}
+			}
+
+			if matchedUser == nil {
+				return errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s does not exist", subject.ID))
+			}
+
+			// Find the OrganizationUser for this User in this organization
+			var orgUsers unikornv1.OrganizationUserList
+			if err := c.client.List(ctx, &orgUsers, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
+				return errors.OAuth2ServerError("failed to list organization users").WithError(err)
+			}
+
+			var matchedOrgUser *unikornv1.OrganizationUser
+			for i := range orgUsers.Items {
+				if orgUsers.Items[i].Labels[constants.UserLabel] == matchedUser.Name {
+					matchedOrgUser = &orgUsers.Items[i]
+					break
+				}
+			}
+
+			if matchedOrgUser == nil {
+				return errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s is not a member of this organization", subject.ID))
+			}
+
+			userIDs = append(userIDs, matchedOrgUser.Name)
+		}
 	} else if in.Spec.UserIDs != nil {
 		// Assume that if UserIDs are used, we are still referring only to the UNI user database.
 		// Thus, we can fill in subjects by looking up the user records.
