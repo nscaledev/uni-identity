@@ -403,17 +403,6 @@ func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl 
 		return nil
 	}
 
-	for groupID, group := range groups {
-		for _, roleID := range group.Spec.RoleIDs {
-			role, ok := roles[roleID]
-			if !ok {
-				return fmt.Errorf("%w: role %s referenced by group %s does not exist", errors.ErrConsistency, roleID, groupID)
-			}
-
-			acl.Global = addScopesToEndpointList(acl.Global, role.Spec.Scopes.Global)
-		}
-	}
-
 	organizationEndpoints, err := accumulateOrganizationPermissions(groups, roles)
 	if err != nil {
 		return err

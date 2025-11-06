@@ -322,27 +322,11 @@ func TestGroupACLContent(t *testing.T) {
 
 	_, rbacClient := setupTestEnvironment(t)
 
-	// Test Alice (Admin) - should have global and organization permissions.
+	// Test Alice (Admin) - should have organization permissions.
 	aclAlice := getACLForUser(t, rbacClient, userAliceSubject)
-	assert.NotNil(t, aclAlice.Global, "Alice should have global permissions")
+	assert.Nil(t, aclAlice.Global, "Alice should not have global permissions")
 	assert.NotNil(t, aclAlice.Organization, "Alice should have organization permissions")
 	assert.Nil(t, aclAlice.Projects, "Alice should not have project-specific permissions")
-
-	// Verify Alice has users:manage globally
-	hasUsersManage := false
-
-	for _, endpoint := range *aclAlice.Global {
-		if endpoint.Name == "users:manage" {
-			hasUsersManage = true
-
-			assert.Contains(t, endpoint.Operations, openapi.Create)
-			assert.Contains(t, endpoint.Operations, openapi.Read)
-			assert.Contains(t, endpoint.Operations, openapi.Update)
-			assert.Contains(t, endpoint.Operations, openapi.Delete)
-		}
-	}
-
-	assert.True(t, hasUsersManage, "Alice should have users:manage permission")
 
 	// Test Bob (Developer) - should have organization read and project permissions.
 	aclBob := getACLForUser(t, rbacClient, userBobSubject)
