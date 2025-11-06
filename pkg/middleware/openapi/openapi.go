@@ -135,7 +135,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 		}
 
 		// Get the ACL associated with the actor.
-		acl, err := v.authorizer.GetACL(authorization.NewContext(ctx, info), params["organizationID"])
+		acl, err := v.authorizer.GetACL(authorization.NewContext(ctx, info))
 		if err != nil {
 			v.err = err
 			return err

@@ -57,16 +57,16 @@ func (mr *MockAuthorizerMockRecorder) Authorize(authentication any) *gomock.Call
 }
 
 // GetACL mocks base method.
-func (m *MockAuthorizer) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
+func (m *MockAuthorizer) GetACL(ctx context.Context) (*openapi.Acl, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetACL", ctx, organizationID)
+	ret := m.ctrl.Call(m, "GetACL", ctx)
 	ret0, _ := ret[0].(*openapi.Acl)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // GetACL indicates an expected call of GetACL.
-func (mr *MockAuthorizerMockRecorder) GetACL(ctx, organizationID any) *gomock.Call {
+func (mr *MockAuthorizerMockRecorder) GetACL(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetACL", reflect.TypeOf((*MockAuthorizer)(nil).GetACL), ctx, organizationID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetACL", reflect.TypeOf((*MockAuthorizer)(nil).GetACL), ctx)
 }

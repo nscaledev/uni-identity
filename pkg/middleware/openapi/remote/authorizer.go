@@ -277,7 +277,7 @@ func (a Getter) Get(_ context.Context) (string, error) {
 
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
-func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
+func (a *Authorizer) GetACL(ctx context.Context) (*identityapi.Acl, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -296,20 +296,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		return nil, errors.OAuth2ServerError("failed to create identity client").WithError(err)
 	}
 
-	if organizationID == "" {
-		response, err := client.GetApiV1AclWithResponse(ctx)
-		if err != nil {
-			return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
-		}
-
-		if response.StatusCode() != http.StatusOK {
-			return nil, errors.OAuth2ServerError("ACL get call didn't succeed")
-		}
-
-		return response.JSON200, nil
-	}
-
-	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, organizationID)
+	response, err := client.GetApiV1AclWithResponse(ctx)
 	if err != nil {
 		return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
 	}

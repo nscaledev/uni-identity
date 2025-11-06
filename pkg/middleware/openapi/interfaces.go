@@ -36,5 +36,5 @@ type Authorizer interface {
 
 	// GetACL retrieves access control information from the subject identified
 	// by the Authorize call.
-	GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error)
+	GetACL(ctx context.Context) (*openapi.Acl, error)
 }
