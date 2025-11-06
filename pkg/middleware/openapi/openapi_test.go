@@ -249,7 +249,7 @@ func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 
 	authorizer := mock.NewMockAuthorizer(c)
 	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor), nil)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
@@ -408,7 +408,7 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 
 	authorizer := mock.NewMockAuthorizer(c)
 	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)

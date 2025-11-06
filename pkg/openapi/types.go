@@ -132,14 +132,8 @@ type Acl struct {
 	// Global A list of access control scopes.
 	Global *AclEndpoints `json:"global,omitempty"`
 
-	// Organization An organization the subject is a member of.
-	Organization *AclOrganization `json:"organization,omitempty"`
-
 	// Organizations A list of organizations the subject is a member of.
 	Organizations *AclOrganizationList `json:"organizations,omitempty"`
-
-	// Projects A list of projects the subject is a member of.
-	Projects *AclProjectList `json:"projects,omitempty"`
 }
 
 // AclEndpoint A set of access control permissions for a resource type.
