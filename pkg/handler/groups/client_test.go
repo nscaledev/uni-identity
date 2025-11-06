@@ -100,44 +100,52 @@ func setupTestClient(t *testing.T) client.Client {
 	return c
 }
 
-// TestUpdateGroupWithSubjects_PopulatesUserIDs tests that when a group is updated with Subjects
-// that have the internal issuer, those subjects are converted to UserIDs.
-func TestUpdateGroupWithSubjects_PopulatesUserIDs(t *testing.T) {
-	t.Parallel()
+// createUserWithoutOrgMembership creates a User without an OrganizationUser.
+func (f *groupTestFixture) createUserWithoutOrgMembership(t *testing.T, userID, subject string) {
+	t.Helper()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
-
-	// Create a User in the global namespace
 	user := &unikornv1.User{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
-			Name:      userAliceID,
+			Name:      userID,
 		},
 		Spec: unikornv1.UserSpec{
-			Subject: userAliceSubject,
+			Subject: subject,
 			State:   unikornv1.UserStateActive,
 		},
 	}
-	require.NoError(t, c.Create(ctx, user))
+	require.NoError(t, f.client.Create(newContext(t), user))
+}
 
-	// Create an OrganizationUser that links to the User
-	orgUser := &unikornv1.OrganizationUser{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      orguserAliceID,
-			Labels: map[string]string{
-				constants.UserLabel:         userAliceID,
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.OrganizationUserSpec{
-			State: unikornv1.UserStateActive,
-		},
+// groupTestFixture holds common test setup.
+type groupTestFixture struct {
+	client       client.Client
+	groupsClient *groups.Client
+	issuer       handlercommon.IssuerValue
+}
+
+// setupGroupTestFixture creates a test fixture with all common setup.
+func setupGroupTestFixture(t *testing.T) *groupTestFixture {
+	t.Helper()
+
+	c := setupTestClient(t)
+
+	issuer := handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
 	}
-	require.NoError(t, c.Create(ctx, orgUser))
 
-	// Create a group
+	return &groupTestFixture{
+		client:       c,
+		groupsClient: groups.New(c, testNamespace, issuer),
+		issuer:       issuer,
+	}
+}
+
+// createGroup creates a test group.
+func (f *groupTestFixture) createGroup(t *testing.T) {
+	t.Helper()
+
 	group := &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testOrgNS,
@@ -150,42 +158,90 @@ func TestUpdateGroupWithSubjects_PopulatesUserIDs(t *testing.T) {
 			RoleIDs: []string{},
 		},
 	}
-	require.NoError(t, c.Create(ctx, group))
+	require.NoError(t, f.client.Create(newContext(t), group))
+}
 
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
+// getGroup fetches the test group.
+func (f *groupTestFixture) getGroup(t *testing.T) *unikornv1.Group {
+	t.Helper()
 
-	// Update the group with Subjects (new-style API)
-	subjects := []openapi.Subject{
-		{
-			Id:     userAliceSubject,
-			Issuer: testIssuerURL, // Internal issuer
-			Email:  ptr.To(userAliceSubject),
+	var group unikornv1.Group
+	err := f.client.Get(newContext(t), client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &group)
+	require.NoError(t, err)
+
+	return &group
+}
+
+// createUserWithOrgMembership creates a User and OrganizationUser pair.
+func (f *groupTestFixture) createUserWithOrgMembership(t *testing.T, userID, subject, orgUserID string) {
+	t.Helper()
+
+	ctx := newContext(t)
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      userID,
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: subject,
+			State:   unikornv1.UserStateActive,
 		},
 	}
+	require.NoError(t, f.client.Create(ctx, user))
 
-	updateRequest := &openapi.GroupWrite{
+	orgUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      orgUserID,
+			Labels: map[string]string{
+				constants.UserLabel:         userID,
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, f.client.Create(ctx, orgUser))
+}
+
+// makeGroupUpdateRequest builds a group update request.
+func makeGroupUpdateRequest(subjects *[]openapi.Subject, userIDs *openapi.StringList) *openapi.GroupWrite {
+	return &openapi.GroupWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{
 			Name: groupTestID,
 		},
 		Spec: openapi.GroupSpec{
 			RoleIDs:           openapi.StringList{},
-			Subjects:          &subjects,
+			Subjects:          subjects,
+			UserIDs:           userIDs,
 			ServiceAccountIDs: openapi.StringList{},
 		},
 	}
+}
 
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+// TestUpdateGroupWithSubjects_PopulatesUserIDs tests that when a group is updated with Subjects
+// that have the internal issuer, those subjects are converted to UserIDs.
+func TestUpdateGroupWithSubjects_PopulatesUserIDs(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createGroup(t)
+
+	subjects := []openapi.Subject{
+		{
+			Id:     userAliceSubject,
+			Issuer: testIssuerURL,
+			Email:  ptr.To(userAliceSubject),
+		},
+	}
+
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
-	// Fetch the updated group
-	var updatedGroup unikornv1.Group
-	err = c.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &updatedGroup)
-	require.NoError(t, err)
+	updatedGroup := f.getGroup(t)
 
 	// Verify that Subjects are populated
 	require.NotNil(t, updatedGroup.Spec.Subjects)
@@ -204,58 +260,21 @@ func TestUpdateGroupWithSubjects_PopulatesUserIDs(t *testing.T) {
 func TestUpdateGroupWithExternalSubjects_DoesNotPopulateUserIDs(t *testing.T) {
 	t.Parallel()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
+	f := setupGroupTestFixture(t)
+	f.createGroup(t)
 
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
-
-	// Update the group with external Subjects
 	subjects := []openapi.Subject{
 		{
 			Id:     "external-user@github.com",
-			Issuer: "https://github.com", // External issuer
+			Issuer: "https://github.com",
 			Email:  ptr.To("external-user@github.com"),
 		},
 	}
 
-	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
-			Name: groupTestID,
-		},
-		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
-			Subjects:          &subjects,
-			ServiceAccountIDs: openapi.StringList{},
-		},
-	}
-
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
-	// Fetch the updated group
-	var updatedGroup unikornv1.Group
-	err = c.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &updatedGroup)
-	require.NoError(t, err)
+	updatedGroup := f.getGroup(t)
 
 	// Verify that Subjects are populated
 	require.NotNil(t, updatedGroup.Spec.Subjects)
@@ -270,92 +289,27 @@ func TestUpdateGroupWithExternalSubjects_DoesNotPopulateUserIDs(t *testing.T) {
 func TestUpdateGroupWithMixedSubjects_PopulatesOnlyInternalUserIDs(t *testing.T) {
 	t.Parallel()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createGroup(t)
 
-	// Create a User in the global namespace
-	user := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      userAliceID,
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: userAliceSubject,
-			State:   unikornv1.UserStateActive,
-		},
-	}
-	require.NoError(t, c.Create(ctx, user))
-
-	// Create an OrganizationUser that links to the User
-	orgUser := &unikornv1.OrganizationUser{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      orguserAliceID,
-			Labels: map[string]string{
-				constants.UserLabel:         userAliceID,
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.OrganizationUserSpec{
-			State: unikornv1.UserStateActive,
-		},
-	}
-	require.NoError(t, c.Create(ctx, orgUser))
-
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
-
-	// Update the group with mixed Subjects (internal + external)
 	subjects := []openapi.Subject{
 		{
 			Id:     userAliceSubject,
-			Issuer: testIssuerURL, // Internal issuer
+			Issuer: testIssuerURL,
 			Email:  ptr.To(userAliceSubject),
 		},
 		{
 			Id:     "external-user@github.com",
-			Issuer: "https://github.com", // External issuer
+			Issuer: "https://github.com",
 			Email:  ptr.To("external-user@github.com"),
 		},
 	}
 
-	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
-			Name: groupTestID,
-		},
-		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
-			Subjects:          &subjects,
-			ServiceAccountIDs: openapi.StringList{},
-		},
-	}
-
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
-	// Fetch the updated group
-	var updatedGroup unikornv1.Group
-	err = c.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &updatedGroup)
-	require.NoError(t, err)
+	updatedGroup := f.getGroup(t)
 
 	// Verify that Subjects are populated with both users
 	require.NotNil(t, updatedGroup.Spec.Subjects)
@@ -372,65 +326,19 @@ func TestUpdateGroupWithMixedSubjects_PopulatesOnlyInternalUserIDs(t *testing.T)
 func TestUpdateGroupWithNonMemberSubject_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
+	f := setupGroupTestFixture(t)
+	f.createUserWithoutOrgMembership(t, "user-nonmember", "nonmember@example.com")
+	f.createGroup(t)
 
-	// Create a User in the global namespace (but no OrganizationUser linking them to the org)
-	user := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      "user-nonmember",
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: "nonmember@example.com",
-			State:   unikornv1.UserStateActive,
-		},
-	}
-	require.NoError(t, c.Create(ctx, user))
-
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
-
-	// Try to update the group with a Subject for a user that's not in the organization
 	subjects := []openapi.Subject{
 		{
 			Id:     "nonmember@example.com",
-			Issuer: testIssuerURL, // Internal issuer
+			Issuer: testIssuerURL,
 			Email:  ptr.To("nonmember@example.com"),
 		},
 	}
 
-	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
-			Name: groupTestID,
-		},
-		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
-			Subjects:          &subjects,
-			ServiceAccountIDs: openapi.StringList{},
-		},
-	}
-
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject is not a member of the organization")
 	assert.Contains(t, err.Error(), "not a member of", "Error should indicate the user is not a member")
 }
@@ -440,52 +348,18 @@ func TestUpdateGroupWithNonMemberSubject_ReturnsError(t *testing.T) {
 func TestUpdateGroupWithNonExistentSubject_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
+	f := setupGroupTestFixture(t)
+	f.createGroup(t)
 
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
-
-	// Try to update the group with a Subject for a user that doesn't exist at all
 	subjects := []openapi.Subject{
 		{
 			Id:     "doesnotexist@example.com",
-			Issuer: testIssuerURL, // Internal issuer
+			Issuer: testIssuerURL,
 			Email:  ptr.To("doesnotexist@example.com"),
 		},
 	}
 
-	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
-			Name: groupTestID,
-		},
-		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
-			Subjects:          &subjects,
-			ServiceAccountIDs: openapi.StringList{},
-		},
-	}
-
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject does not exist")
 	assert.Contains(t, err.Error(), "user", "Error should indicate issue with user lookup")
 }
@@ -495,81 +369,16 @@ func TestUpdateGroupWithNonExistentSubject_ReturnsError(t *testing.T) {
 func TestUpdateGroupWithUserIDs_PopulatesSubjects(t *testing.T) {
 	t.Parallel()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createGroup(t)
 
-	// Create a User in the global namespace
-	user := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      userAliceID,
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: userAliceSubject,
-			State:   unikornv1.UserStateActive,
-		},
-	}
-	require.NoError(t, c.Create(ctx, user))
-
-	// Create an OrganizationUser that links to the User
-	orgUser := &unikornv1.OrganizationUser{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      orguserAliceID,
-			Labels: map[string]string{
-				constants.UserLabel:         userAliceID,
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.OrganizationUserSpec{
-			State: unikornv1.UserStateActive,
-		},
-	}
-	require.NoError(t, c.Create(ctx, orgUser))
-
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
-
-	// Update the group with UserIDs (old-style API)
 	userIDs := openapi.StringList{orguserAliceID}
 
-	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
-			Name: groupTestID,
-		},
-		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
-			UserIDs:           &userIDs,
-			ServiceAccountIDs: openapi.StringList{},
-		},
-	}
-
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
 	require.NoError(t, err)
 
-	// Fetch the updated group
-	var updatedGroup unikornv1.Group
-	err = c.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &updatedGroup)
-	require.NoError(t, err)
+	updatedGroup := f.getGroup(t)
 
 	// Verify that UserIDs are populated
 	require.NotNil(t, updatedGroup.Spec.UserIDs)
@@ -589,46 +398,12 @@ func TestUpdateGroupWithUserIDs_PopulatesSubjects(t *testing.T) {
 func TestUpdateGroupWithInvalidUserID_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
+	f := setupGroupTestFixture(t)
+	f.createGroup(t)
 
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
-
-	// Try to update the group with an invalid UserID
 	userIDs := openapi.StringList{"nonexistent-orguser"}
 
-	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
-			Name: groupTestID,
-		},
-		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
-			UserIDs:           &userIDs,
-			ServiceAccountIDs: openapi.StringList{},
-		},
-	}
-
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
 	require.Error(t, err, "Should error when UserID is invalid")
 	assert.Contains(t, err.Error(), "organization member", "Error should indicate issue with organization member lookup")
 }
@@ -637,9 +412,6 @@ func TestUpdateGroupWithInvalidUserID_ReturnsError(t *testing.T) {
 // are provided, all are converted to Subjects.
 func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 	t.Parallel()
-
-	c := setupTestClient(t)
-	ctx := newContext(t)
 
 	const (
 		userBobSubject = "bob@example.com"
@@ -657,56 +429,13 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 		{userBobID, userBobSubject, orguserBobID},
 	}
 
+	f := setupGroupTestFixture(t)
+
 	for _, u := range users {
-		user := &unikornv1.User{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: testNamespace,
-				Name:      u.userID,
-			},
-			Spec: unikornv1.UserSpec{
-				Subject: u.subject,
-				State:   unikornv1.UserStateActive,
-			},
-		}
-		require.NoError(t, c.Create(ctx, user))
-
-		orgUser := &unikornv1.OrganizationUser{
-			ObjectMeta: metav1.ObjectMeta{
-				Namespace: testOrgNS,
-				Name:      u.orguserID,
-				Labels: map[string]string{
-					constants.UserLabel:         u.userID,
-					constants.OrganizationLabel: testOrgID,
-				},
-			},
-			Spec: unikornv1.OrganizationUserSpec{
-				State: unikornv1.UserStateActive,
-			},
-		}
-		require.NoError(t, c.Create(ctx, orgUser))
+		f.createUserWithOrgMembership(t, u.userID, u.subject, u.orguserID)
 	}
 
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
+	f.createGroup(t)
 
 	// Update the group with multiple UserIDs
 	userIDs := openapi.StringList{orguserAliceID, orguserBobID}
@@ -722,13 +451,11 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 		},
 	}
 
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
 	require.NoError(t, err)
 
 	// Fetch the updated group
-	var updatedGroup unikornv1.Group
-	err = c.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupTestID}, &updatedGroup)
-	require.NoError(t, err)
+	updatedGroup := f.getGroup(t)
 
 	// Verify that UserIDs are populated
 	require.NotNil(t, updatedGroup.Spec.UserIDs)
@@ -757,59 +484,11 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	c := setupTestClient(t)
-	ctx := newContext(t)
+	f := setupGroupTestFixture(t)
 
-	// Create a User in the global namespace
-	user := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      userAliceID,
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: userAliceSubject,
-			State:   unikornv1.UserStateActive,
-		},
-	}
-	require.NoError(t, c.Create(ctx, user))
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
 
-	// Create an OrganizationUser that links to the User
-	orgUser := &unikornv1.OrganizationUser{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      orguserAliceID,
-			Labels: map[string]string{
-				constants.UserLabel:         userAliceID,
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.OrganizationUserSpec{
-			State: unikornv1.UserStateActive,
-		},
-	}
-	require.NoError(t, c.Create(ctx, orgUser))
-
-	// Create a group
-	group := &unikornv1.Group{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testOrgNS,
-			Name:      groupTestID,
-			Labels: map[string]string{
-				constants.OrganizationLabel: testOrgID,
-			},
-		},
-		Spec: unikornv1.GroupSpec{
-			RoleIDs: []string{},
-		},
-	}
-	require.NoError(t, c.Create(ctx, group))
-
-	// Create groups client
-	issuer := handlercommon.IssuerValue{
-		URL:      testIssuerURL,
-		Hostname: testIssuerHost,
-	}
-	groupsClient := groups.New(c, testNamespace, issuer)
+	f.createGroup(t)
 
 	// Try to update the group with BOTH Subjects and UserIDs
 	subjects := []openapi.Subject{
@@ -833,7 +512,7 @@ func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := groupsClient.Update(ctx, testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
 	require.Error(t, err, "Should error when both subjects and userIDs are provided")
 	assert.Contains(t, err.Error(), "cannot provide both", "Error should indicate both fields were provided")
 }
