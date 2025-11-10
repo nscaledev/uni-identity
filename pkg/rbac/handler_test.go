@@ -21,8 +21,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 const (
@@ -190,6 +193,766 @@ func TestUnscopedACL(t *testing.T) {
 					require.NoError(t, err)
 				}
 			}
+		})
+	}
+}
+
+const (
+	organizationID1 = "foo"
+	projectID1_1    = "bar"
+	projectID1_2    = "baz"
+	organizationID2 = "foo2"
+	projectID2_1    = "bar2"
+	projectID2_2    = "baz2"
+)
+
+func aclFilterFixtureAdmin() *openapi.Acl {
+	return &openapi.Acl{}
+}
+
+func aclFilterFixtureUser() *openapi.Acl {
+	return &openapi.Acl{
+		Organizations: &openapi.AclOrganizationList{
+			{
+				Id: organizationID1,
+				Projects: &openapi.AclProjectList{
+					{
+						Id: projectID1_1,
+					},
+					{
+						Id: projectID1_2,
+					},
+				},
+			},
+			{
+				Id: organizationID2,
+				Projects: &openapi.AclProjectList{
+					{
+						Id: projectID2_1,
+					},
+					{
+						Id: projectID2_2,
+					},
+				},
+			},
+		},
+	}
+}
+
+// TestUnscopedACLFiltersUser tests filtering e.g. limiting via label selection to reduce
+// the working set size before doing a full RBAC check.
+func TestUnscopedACLFiltersUser(t *testing.T) {
+	t.Parallel()
+
+	acl := aclFilterFixtureUser()
+
+	organizationIDs := rbac.OrganizationIDs(rbac.NewContext(t.Context(), acl))
+	require.Len(t, organizationIDs, 2)
+	require.Equal(t, organizationID1, organizationIDs[0])
+	require.Equal(t, organizationID2, organizationIDs[1])
+
+	projectIDs := rbac.ProjectIDs(rbac.NewContext(t.Context(), acl), organizationID1)
+	require.Len(t, projectIDs, 2)
+	require.Equal(t, projectID1_1, projectIDs[0])
+	require.Equal(t, projectID1_2, projectIDs[1])
+
+	projectIDs = rbac.ProjectIDs(rbac.NewContext(t.Context(), acl), organizationID2)
+	require.Len(t, projectIDs, 2)
+	require.Equal(t, projectID2_1, projectIDs[0])
+	require.Equal(t, projectID2_2, projectIDs[1])
+
+	projectIDs = rbac.ProjectIDs(rbac.NewContext(t.Context(), acl), "wibble")
+	require.Nil(t, projectIDs)
+}
+
+func userOrganizationSelector(t *testing.T, query []string) labels.Selector {
+	t.Helper()
+
+	selector, err := rbac.AddOrganizationIDQuery(rbac.NewContext(t.Context(), aclFilterFixtureUser()), labels.Everything(), query)
+	require.NoError(t, err)
+
+	return selector
+}
+
+func adminOrganizationSelector(t *testing.T, query []string) labels.Selector {
+	t.Helper()
+
+	selector, err := rbac.AddOrganizationIDQuery(rbac.NewContext(t.Context(), aclFilterFixtureAdmin()), labels.Everything(), query)
+	require.NoError(t, err)
+
+	return selector
+}
+
+func userOrganizationAndProjectSelector(t *testing.T, organizationQuery, projectQuery []string) labels.Selector {
+	t.Helper()
+
+	selector, err := rbac.AddOrganizationAndProjectIDQuery(rbac.NewContext(t.Context(), aclFilterFixtureUser()), labels.Everything(), organizationQuery, projectQuery)
+	require.NoError(t, err)
+
+	return selector
+}
+
+func adminOrganizationAndProjectSelector(t *testing.T, organizationQuery, projectQuery []string) labels.Selector {
+	t.Helper()
+
+	selector, err := rbac.AddOrganizationAndProjectIDQuery(rbac.NewContext(t.Context(), aclFilterFixtureAdmin()), labels.Everything(), organizationQuery, projectQuery)
+	require.NoError(t, err)
+
+	return selector
+}
+
+// TestOrganizationSelection tests no organization query defaults to all
+// organizations in the ACL.
+func TestOrganizationSelection(t *testing.T) {
+	t.Parallel()
+
+	userSelector := userOrganizationSelector(t, nil)
+	adminSelector := adminOrganizationSelector(t, nil)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 2 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+			matchesAdmin: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationSelectionWithSingleQuery tests a single organization query
+// returns only resources from that organization.
+func TestOrganizationSelectionWithSingleQuery(t *testing.T) {
+	t.Parallel()
+
+	query := []string{
+		organizationID1,
+	}
+
+	userSelector := userOrganizationSelector(t, query)
+	adminSelector := adminOrganizationSelector(t, query)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationSelectionWithMultipleQuery tests multiple organization queries
+// return all resources from those organizations, constrained to those in the ACL.
+func TestOrganizationSelectionWithMultipleQuery(t *testing.T) {
+	t.Parallel()
+
+	query := []string{
+		organizationID1,
+		organizationID2,
+		"wibble",
+	}
+
+	userSelector := userOrganizationSelector(t, query)
+	adminSelector := adminOrganizationSelector(t, query)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 2 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+			matchesAdmin: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationAndProjectSelection tests that no organization or project queries
+// defaults to all resources in organizations defined in the ACL.
+func TestOrganizationAndProjectSelection(t *testing.T) {
+	t.Parallel()
+
+	userSelector := userOrganizationAndProjectSelector(t, nil, nil)
+	adminSelector := adminOrganizationAndProjectSelector(t, nil, nil)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 2 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+			matchesAdmin: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationAndProjectSelectionWithOrganizationQuerySingle tests a single organization
+// query returns only resources in that organization.
+func TestOrganizationAndProjectSelectionWithOrganizationQuerySingle(t *testing.T) {
+	t.Parallel()
+
+	query := []string{
+		organizationID1,
+	}
+
+	userSelector := userOrganizationAndProjectSelector(t, query, nil)
+	adminSelector := adminOrganizationAndProjectSelector(t, query, nil)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple tests multiple organization
+// queries return only resources in those organizations, constrained to those in the ACL.
+func TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple(t *testing.T) {
+	t.Parallel()
+
+	query := []string{
+		organizationID1,
+		organizationID2,
+		"wibble",
+	}
+
+	userSelector := userOrganizationAndProjectSelector(t, query, nil)
+	adminSelector := adminOrganizationAndProjectSelector(t, query, nil)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Matches resource in organization 2 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+			matchesAdmin: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationAndProjectSelectionWithProjectQuerySingle tests a single project
+// query returns only resources in that project.
+func TestOrganizationAndProjectSelectionWithProjectQuerySingle(t *testing.T) {
+	t.Parallel()
+
+	query := []string{
+		projectID1_1,
+	}
+
+	userSelector := userOrganizationAndProjectSelector(t, nil, query)
+	adminSelector := adminOrganizationAndProjectSelector(t, nil, query)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+		},
+		{
+			name: "Does not match resource in organization 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationAndProjectSelectionWithProjectQueryMultiple tests multiple project
+// queries returns only objects in those projects, constained to projects in the ACL.
+func TestOrganizationAndProjectSelectionWithProjectQueryMultiple(t *testing.T) {
+	t.Parallel()
+
+	query := []string{
+		projectID1_1,
+		projectID2_1,
+		"wibble",
+	}
+
+	userSelector := userOrganizationAndProjectSelector(t, nil, query)
+	adminSelector := adminOrganizationAndProjectSelector(t, nil, query)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+		},
+		{
+			name: "Matches resource in organization 2 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 2 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_2,
+			},
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+			matchesAdmin: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationAndProjectSelectionWithOrganizationAndProjectQuerySingle tests that a
+// combination of a single organization and project query retusn only resources in that
+// project in that organization.
+func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQuerySingle(t *testing.T) {
+	t.Parallel()
+
+	organizationQuery := []string{
+		organizationID1,
+	}
+
+	projectQuery := []string{
+		projectID1_1,
+	}
+
+	userSelector := userOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
+	adminSelector := adminOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+		},
+		{
+			name: "Does not match resource in organization 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple tests multiple
+// organization and project queries returns any resource in one of the organizations and one
+// of the projects, constrained by what's in the ACL.
+func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple(t *testing.T) {
+	t.Parallel()
+
+	organizationQuery := []string{
+		organizationID1,
+		organizationID2,
+		"wibble",
+	}
+
+	projectQuery := []string{
+		projectID1_1,
+		projectID2_1,
+		"wibble",
+	}
+
+	userSelector := userOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
+	adminSelector := adminOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
+
+	tests := []struct {
+		name         string
+		labels       labels.Labels
+		matchesUser  bool
+		matchesAdmin bool
+	}{
+		{
+			name: "Matches resource in organization 1 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 1 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID1,
+				constants.ProjectLabel:      projectID1_2,
+			},
+		},
+		{
+			name: "Matches resource in organization 2 and project 1",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_1,
+			},
+			matchesUser:  true,
+			matchesAdmin: true,
+		},
+		{
+			name: "Does not match resource in organization 2 and project 2",
+			labels: labels.Set{
+				constants.OrganizationLabel: organizationID2,
+				constants.ProjectLabel:      projectID2_2,
+			},
+		},
+		{
+			name: "Does not match resource in unknown organization",
+			labels: labels.Set{
+				constants.OrganizationLabel: "wibble",
+				constants.ProjectLabel:      "wibble",
+			},
+			matchesAdmin: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
+			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
 		})
 	}
 }
