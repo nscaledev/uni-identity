@@ -1673,33 +1673,53 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/aclEndpoint'
-    aclScopedEndpoints:
-      description: Resource scoped endpoint permissions.
+    aclProject:
+      description: A project the subject is a member of.
       type: object
       required:
       - id
       - endpoints
       properties:
         id:
-          description: The resource ID this scope applies to.
+          description: The project ID.
           type: string
         endpoints:
           $ref: '#/components/schemas/aclEndpoints'
-    aclScopedEndpointsList:
-      description: A list of resource scoped endpoint permissions.
+    aclProjectList:
+      description: A list of projects the subject is a member of.
       type: array
       items:
-        $ref: '#/components/schemas/aclScopedEndpoints'
+        $ref: '#/components/schemas/aclProject'
+    aclOrganization:
+      description: An organization the subject is a member of.
+      type: object
+      required:
+      - id
+      properties:
+        id:
+          description: The organization ID.
+          type: string
+        endpoints:
+          $ref: '#/components/schemas/aclEndpoints'
+        projects:
+          $ref: '#/components/schemas/aclProjectList'
+    aclOrganizationList:
+      description: A list of organizations the subject is a member of.
+      type: array
+      items:
+        $ref: '#/components/schemas/aclOrganization'
     acl:
       description: A list of access control scopes and permissions.
       type: object
       properties:
         global:
           $ref: '#/components/schemas/aclEndpoints'
+        organizations:
+          $ref: '#/components/schemas/aclOrganizationList'
         organization:
-          $ref: '#/components/schemas/aclScopedEndpoints'
+          $ref: '#/components/schemas/aclOrganization'
         projects:
-          $ref: '#/components/schemas/aclScopedEndpointsList'
+          $ref: '#/components/schemas/aclProjectList'
     stringList:
       description: A list of strings.
       type: array

@@ -118,11 +118,14 @@ type Acl struct {
 	// Global A list of access control scopes.
 	Global *AclEndpoints `json:"global,omitempty"`
 
-	// Organization Resource scoped endpoint permissions.
-	Organization *AclScopedEndpoints `json:"organization,omitempty"`
+	// Organization An organization the subject is a member of.
+	Organization *AclOrganization `json:"organization,omitempty"`
 
-	// Projects A list of resource scoped endpoint permissions.
-	Projects *AclScopedEndpointsList `json:"projects,omitempty"`
+	// Organizations A list of organizations the subject is a member of.
+	Organizations *AclOrganizationList `json:"organizations,omitempty"`
+
+	// Projects A list of projects the subject is a member of.
+	Projects *AclProjectList `json:"projects,omitempty"`
 }
 
 // AclEndpoint A set of access control permissions for a resource type.
@@ -143,17 +146,32 @@ type AclOperation string
 // AclOperations A list of access control operations.
 type AclOperations = []AclOperation
 
-// AclScopedEndpoints Resource scoped endpoint permissions.
-type AclScopedEndpoints struct {
+// AclOrganization An organization the subject is a member of.
+type AclOrganization struct {
+	// Endpoints A list of access control scopes.
+	Endpoints *AclEndpoints `json:"endpoints,omitempty"`
+
+	// Id The organization ID.
+	Id string `json:"id"`
+
+	// Projects A list of projects the subject is a member of.
+	Projects *AclProjectList `json:"projects,omitempty"`
+}
+
+// AclOrganizationList A list of organizations the subject is a member of.
+type AclOrganizationList = []AclOrganization
+
+// AclProject A project the subject is a member of.
+type AclProject struct {
 	// Endpoints A list of access control scopes.
 	Endpoints AclEndpoints `json:"endpoints"`
 
-	// Id The resource ID this scope applies to.
+	// Id The project ID.
 	Id string `json:"id"`
 }
 
-// AclScopedEndpointsList A list of resource scoped endpoint permissions.
-type AclScopedEndpointsList = []AclScopedEndpoints
+// AclProjectList A list of projects the subject is a member of.
+type AclProjectList = []AclProject
 
 // AllocationRead An allocation of resources.
 type AllocationRead struct {

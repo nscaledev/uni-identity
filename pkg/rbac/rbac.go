@@ -126,6 +126,25 @@ func (r *RBAC) GetActiveOrganizationUser(ctx context.Context, organizationID str
 	return organizationUser, nil
 }
 
+// GetActiveOrganizationUsers returns all active organization users for a given subject.
+func (r *RBAC) GetActiveOrganizationUsers(ctx context.Context, user *unikornv1.User) (*unikornv1.OrganizationUserList, error) {
+	selector := labels.SelectorFromSet(map[string]string{
+		constants.UserLabel: user.Name,
+	})
+
+	result := &unikornv1.OrganizationUserList{}
+
+	if err := r.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
+		return nil, err
+	}
+
+	result.Items = slices.DeleteFunc(result.Items, func(organizationUser unikornv1.OrganizationUser) bool {
+		return organizationUser.Spec.State != unikornv1.UserStateActive
+	})
+
+	return result, nil
+}
+
 // GetServiceAccount looks up a service account.
 func (r *RBAC) GetServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
 	result := &unikornv1.ServiceAccountList{}
@@ -146,6 +165,8 @@ func (r *RBAC) GetServiceAccount(ctx context.Context, id string) (*unikornv1.Ser
 
 	return &result.Items[0], nil
 }
+
+type groupSubjectFilterGetter func(id string) func(unikornv1.Group) bool
 
 // groupUserFilter checks if the group contains the user.
 func groupUserFilter(id string) func(unikornv1.Group) bool {
@@ -287,6 +308,9 @@ func addScopesToEndpointList(e *openapi.AclEndpoints, scopes []unikornv1.RoleSco
 
 // accumulateGlobalPermissions adds any global permissions referenced in roles by the
 // supplied groups the subject is a member of to the ACL.
+// NOTE: this deliberately doesn't accept groups, as standard users should never be
+// granted global permissions.  If someone changes this interface alarm bells should
+// start ringing.
 func accumulateGlobalPermissions(acl *openapi.Acl, roleIDs []string, roles map[string]*unikornv1.Role) error {
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
@@ -347,14 +371,14 @@ func accumulateProjectPermissions(groups map[string]*unikornv1.Group, roles map[
 // accumulateOrganizationScopedProject looks at all groups linked to the project and accumulates
 // any endpoint permissions that apply.  If there are any permissions, then return the
 // scoped endpoints, otherwise nil.
-func accumulateOrganizationScopedProject(groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, project *unikornv1.Project) (*openapi.AclScopedEndpoints, error) {
+func accumulateOrganizationScopedProject(groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, project *unikornv1.Project) (*openapi.AclProject, error) {
 	endpoints, err := accumulateProjectPermissions(groups, roles, project)
 	if err != nil {
 		return nil, err
 	}
 
 	if endpoints != nil && len(*endpoints) > 0 {
-		acl := &openapi.AclScopedEndpoints{
+		acl := &openapi.AclProject{
 			Id:        project.Name,
 			Endpoints: *endpoints,
 		}
@@ -370,7 +394,7 @@ func accumulateOrganizationScopedProject(groups map[string]*unikornv1.Group, rol
 // accumulates any permissions that apply to each project.  If there are any permissions
 // then add them to the ACL.
 func accumulateOrganizationScopedProjects(acl *openapi.Acl, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, projects *unikornv1.ProjectList) error {
-	aclProjects := make([]openapi.AclScopedEndpoints, 0, len(projects.Items))
+	aclProjects := make(openapi.AclProjectList, 0, len(projects.Items))
 
 	for i := range projects.Items {
 		project := &projects.Items[i]
@@ -409,9 +433,9 @@ func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl 
 	}
 
 	if organizationEndpoints != nil {
-		acl.Organization = &openapi.AclScopedEndpoints{
+		acl.Organization = &openapi.AclOrganization{
 			Id:        organizationID,
-			Endpoints: *organizationEndpoints,
+			Endpoints: organizationEndpoints,
 		}
 	}
 
@@ -422,6 +446,89 @@ func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl 
 
 	if err := accumulateOrganizationScopedProjects(acl, groups, roles, projects); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// organizationToSubjectMap temporary mapping from an organization ID to a subject.
+// This will cease to exist when groups have a consistent idea of a subject.
+type organizationToSubjectMap map[string]string
+
+// accumulatePermissions accumulates unscoped permissions across all organizations that the
+// subject has access to.
+// TODO: when groups reference subjects, not explicit resource IDs, then we can just pass in
+// a subject and organization IDs to iterate over.
+//
+//nolint:cyclop
+func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, organizationMap organizationToSubjectMap, groupFilter groupSubjectFilterGetter) error {
+	roles, err := r.getRoles(ctx)
+	if err != nil {
+		return err
+	}
+
+	organizations := make([]openapi.AclOrganization, 0, len(organizationMap))
+
+	for organizationID, subjectID := range organizationMap {
+		var organization unikornv1.Organization
+
+		if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: organizationID}, &organization); err != nil {
+			return err
+		}
+
+		if organization.Status.Namespace == "" {
+			continue
+		}
+
+		groups, err := r.getGroups(ctx, organization.Status.Namespace, groupFilter(subjectID))
+		if err != nil {
+			return err
+		}
+
+		endpoints, err := accumulateOrganizationPermissions(groups, roles)
+		if err != nil {
+			return err
+		}
+
+		organizationACL := &openapi.AclOrganization{
+			Id:        organizationID,
+			Endpoints: endpoints,
+		}
+
+		projects, err := r.getProjects(ctx, organizationID)
+		if err != nil {
+			return err
+		}
+
+		aclProjects := make([]openapi.AclProject, 0, len(projects.Items))
+
+		for j := range projects.Items {
+			project := &projects.Items[j]
+
+			endpoints, err := accumulateProjectPermissions(groups, roles, project)
+			if err != nil {
+				return err
+			}
+
+			if endpoints == nil || len(*endpoints) == 0 {
+				continue
+			}
+
+			aclProjects = append(aclProjects, openapi.AclProject{
+				Id:        project.Name,
+				Endpoints: *endpoints,
+			})
+		}
+
+		if len(aclProjects) > 0 {
+			organizationACL.Projects = &aclProjects
+		}
+
+		organizations = append(organizations, *organizationACL)
+	}
+
+	if len(organizations) > 0 {
+		acl.Organizations = &organizations
 	}
 
 	return nil
@@ -491,11 +598,22 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 		}
 	}
 
+	// Unscoped ACL handling.
+	organizationSubjectMap := organizationToSubjectMap{
+		subjectOrganizationID: serviceAccount.Name,
+	}
+
+	if err := r.accumulatePermissions(ctx, acl, organizationSubjectMap, groupServiceAccountFilter); err != nil {
+		return nil, err
+	}
+
 	return acl, nil
 }
 
 // processUserAccountACL ensures the user exists and is active, looks up any groups it's
 // a member of and adds their permissions to the ACL.
+//
+//nolint:cyclop
 func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationID string) (*openapi.Acl, error) {
 	user, err := r.GetActiveUser(ctx, subject)
 	if err != nil {
@@ -539,6 +657,24 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID); err != nil {
 			return nil, err
 		}
+	}
+
+	// Unscoped ACL handling.
+	organizationUsers, err := r.GetActiveOrganizationUsers(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+
+	organizationSubjectMap := organizationToSubjectMap{}
+
+	for i := range organizationUsers.Items {
+		organizationUser := &organizationUsers.Items[i]
+
+		organizationSubjectMap[organizationUser.Labels[constants.OrganizationLabel]] = organizationUser.Name
+	}
+
+	if err := r.accumulatePermissions(ctx, acl, organizationSubjectMap, groupUserFilter); err != nil {
+		return nil, err
 	}
 
 	return acl, nil
