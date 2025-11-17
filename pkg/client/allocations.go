@@ -185,6 +185,10 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 	}
 
 	if response.StatusCode() != http.StatusAccepted {
+		if response.StatusCode() == http.StatusNotFound {
+			return nil
+		}
+
 		return api.ExtractError(response.StatusCode(), response)
 	}
 
