@@ -22,6 +22,7 @@ import (
 	"slices"
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -42,11 +43,9 @@ func New(client client.Client, namespace string) *Client {
 }
 
 func convert(in unikornv1.Role) openapi.RoleRead {
-	out := openapi.RoleRead{
+	return openapi.RoleRead{
 		Metadata: conversion.ResourceReadMetadata(&in, in.Spec.Tags),
 	}
-
-	return out
 }
 
 func convertList(in unikornv1.RoleList) openapi.Roles {
@@ -67,6 +66,10 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Roles
 	var result unikornv1.RoleList
 
 	if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve roles: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 

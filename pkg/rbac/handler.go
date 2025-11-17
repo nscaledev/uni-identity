@@ -23,13 +23,19 @@ import (
 	"github.com/spjmurray/go-util/pkg/set"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
 )
+
+func operationNotAllowedError(operation openapi.AclOperation, endpoint string) error {
+	return errorsv2.NewInsufficientScopeError().
+		WithSimpleCausef("%s %s is not allowed by RBAC", operation, endpoint).
+		Prefixed()
+}
 
 // operationAllowedByEndpoints iterates through all endpoints and tries to match the required name and
 // operation.
@@ -46,7 +52,7 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 		return nil
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching endpoint)")
+	return operationNotAllowedError(operation, endpoint)
 }
 
 // AllowGlobalScope tries to allow the requested operation at the global scope.
@@ -54,7 +60,7 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 	acl := FromContext(ctx)
 
 	if acl.Global == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no global endpoints)")
+		return operationNotAllowedError(operation, endpoint)
 	}
 
 	return operationAllowedByEndpoints(*acl.Global, endpoint, operation)
@@ -70,7 +76,7 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 	acl := FromContext(ctx)
 
 	if acl.Organizations == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no organizations defined)")
+		return operationNotAllowedError(operation, endpoint)
 	}
 
 	for _, organization := range *acl.Organizations {
@@ -79,13 +85,13 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 		}
 
 		if organization.Endpoints == nil {
-			return errors.HTTPForbidden("operation is not allowed by rbac (no organizations endpoints)")
+			return operationNotAllowedError(operation, endpoint)
 		}
 
 		return operationAllowedByEndpoints(*organization.Endpoints, endpoint, operation)
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching organization endpoint)")
+	return operationNotAllowedError(operation, endpoint)
 }
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
@@ -98,7 +104,7 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 	acl := FromContext(ctx)
 
 	if acl.Organizations == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no organizations defined)")
+		return operationNotAllowedError(operation, endpoint)
 	}
 
 	for _, organization := range *acl.Organizations {
@@ -123,7 +129,7 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 		}
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching project endpoints)")
+	return operationNotAllowedError(operation, endpoint)
 }
 
 // AllowRole determines whether your ACL contains the same or higher privileges than
@@ -252,6 +258,19 @@ func AddQuery(selector labels.Selector, label string, vals []string) (labels.Sel
 // be listed to those available in the ACL and optionally constrained to those in the
 // request query using a boolean intersection.
 func AddOrganizationIDQuery(ctx context.Context, selector labels.Selector, query []string) (labels.Selector, error) {
+	selector, err := addOrganizationIDQuery(ctx, selector, query)
+	if err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to add organization label selector: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return selector, nil
+}
+
+func addOrganizationIDQuery(ctx context.Context, selector labels.Selector, query []string) (labels.Selector, error) {
 	// NOTE: super-admin accounts and system accounts will not have any organizations
 	// defined in the ACL, so we let this slide, and trust they will add a query to limit
 	// the scope.  It should not be possible for a user to get here without being a
@@ -272,6 +291,19 @@ func AddOrganizationIDQuery(ctx context.Context, selector labels.Selector, query
 // explicit and has access to), then selects all projects that can be accessed.  If en explicit
 // project query has been provided, then constrain the accessible project set.
 func AddOrganizationAndProjectIDQuery(ctx context.Context, selector labels.Selector, organizationQuery []string, projectQuery []string) (labels.Selector, error) {
+	selector, err := addOrganizationAndProjectIDQuery(ctx, selector, organizationQuery, projectQuery)
+	if err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to add organization and project label selectors: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return selector, nil
+}
+
+func addOrganizationAndProjectIDQuery(ctx context.Context, selector labels.Selector, organizationQuery []string, projectQuery []string) (labels.Selector, error) {
 	// NOTE: super-admin accounts and system accounts will not have any organizations
 	// defined in the ACL, so we let this slide, and trust they will add a query to limit
 	// the scope.  It should not be possible for a user to get here without being a

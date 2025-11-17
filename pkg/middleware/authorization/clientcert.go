@@ -28,9 +28,7 @@ import (
 
 type clientCertKeyType int
 
-const (
-	clientCertKey clientCertKeyType = iota
-)
+const clientCertKey clientCertKeyType = iota
 
 // NewContextWithClientCert is used to propagate the client certificate to other clients.
 // The client certificate parameter is passed verbatim from the TLS termination header, so
@@ -49,9 +47,7 @@ func ClientCertFromContext(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("%w: client certificate is not defined", errors.ErrInvalidContext)
 }
 
-const (
-	clientCertificateHeader = "Unikorn-Client-Certificate"
-)
+const clientCertificateHeader = "Unikorn-Client-Certificate"
 
 // ExtractClientCert is called from the API to either propagate an existing
 // certificate to the context, or to extract one from headers injected by TLS termination.

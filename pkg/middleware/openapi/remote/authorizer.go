@@ -29,7 +29,8 @@ import (
 	"golang.org/x/oauth2"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
@@ -69,12 +70,22 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return "", "", errors.OAuth2InvalidRequest("authorization header missing")
+		err := errorsv2.NewInvalidRequestError().
+			WithSimpleCause("missing Authorization header").
+			WithErrorDescription("Missing Authorization header.").
+			Prefixed()
+
+		return "", "", err
 	}
 
 	parts := strings.Split(header, " ")
 	if len(parts) != 2 {
-		return "", "", errors.OAuth2InvalidRequest("authorization header malformed")
+		err := errorsv2.NewInvalidRequestError().
+			WithSimpleCause("malformed Authorization header").
+			WithErrorDescription("The Authorization header is malformed.").
+			Prefixed()
+
+		return "", "", err
 	}
 
 	return parts[0], parts[1], nil
@@ -126,6 +137,10 @@ func (a *Authorizer) getIdentityHTTPClient(ctx context.Context) (*http.Client, e
 
 	client, err := identity.HTTPClient(ctx)
 	if err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create identity client: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
@@ -166,13 +181,22 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	}
 
 	if !strings.EqualFold(authorizationScheme, "bearer") {
-		return nil, errors.OAuth2InvalidRequest("authorization scheme not allowed").WithValues("scheme", authorizationScheme)
+		err = errorsv2.NewInvalidRequestError().
+			WithSimpleCause("invalid authorization scheme").
+			WithErrorDescriptionf("The Authorization header is malformed. It must be provided using the Bearer scheme.").
+			Prefixed()
+
+		return nil, err
 	}
 
 	if value, ok := a.tokenCache.Get(rawToken); ok {
 		claims, ok := value.(*identityapi.Userinfo)
 		if !ok {
-			return nil, errors.OAuth2ServerError("invalid token cache data")
+			err = errorsv2.NewInternalError().
+				WithSimpleCausef("token cache returned invalid type: %T", value).
+				Prefixed()
+
+			return nil, err
 		}
 
 		info := &authorization.Info{
@@ -194,7 +218,11 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	// and also return some information about the user that we can use for audit logging.
 	provider, err := oidc.NewProvider(ctx, a.options.Host())
 	if err != nil {
-		return nil, errors.OAuth2ServerError("oidc service discovery failed").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create oidc provider: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	token := &oauth2.Token{
@@ -205,8 +233,17 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	ui, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
 	if err != nil {
 		if oidcErrorIsUnauthorized(err) {
-			return nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
+			err = errorsv2.NewAccessDeniedError().
+				WithCausef("access denied by oidc provider: %w", err).
+				WithErrorDescription("The operation was denied by the OpenID Connect provider.").
+				Prefixed()
+
+			return nil, err
 		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve user info: %w", err).
+			Prefixed()
 
 		return nil, err
 	}
@@ -214,11 +251,15 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	claims := &identityapi.Userinfo{}
 
 	if err := ui.Claims(claims); err != nil {
-		return nil, errors.OAuth2ServerError("failed to extrac user information").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to unmarshal user info claims into %T: %w", claims, err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
+	// rescinded, and we don't know about it, and long-lived tokens e.g. service accounts,
 	// could still be valid for months...
 	a.tokenCache.Add(rawToken, claims, time.Hour)
 
@@ -236,7 +277,11 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 		return a.authorizeOAuth2(authentication.RequestValidationInput.Request)
 	}
 
-	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
+	err := errorsv2.NewInvalidTokenError().
+		WithSimpleCause("unsupported security scheme").
+		Prefixed()
+
+	return nil, err
 }
 
 type Getter string
@@ -255,30 +300,34 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 
 	client, err := identityclient.New(a.client, a.options, a.clientOptions).APIClient(ctx, Getter(info.Token))
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to create identity client").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create identity client: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	if organizationID == "" {
 		response, err := client.GetApiV1AclWithResponse(ctx)
 		if err != nil {
-			return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
+			err = errorsv2.NewInternalError().
+				WithCausef("failed to retrieve ACL: %w", err).
+				Prefixed()
+
+			return nil, err
 		}
 
-		if response.StatusCode() != http.StatusOK {
-			return nil, errors.OAuth2ServerError("ACL get call didn't succeed")
-		}
-
-		return response.JSON200, nil
+		return coreapi.ParseJSONPointerResponse[identityapi.Acl](response.HTTPResponse.Header, response.Body, response.StatusCode(), http.StatusOK)
 	}
 
 	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, organizationID)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve ACL: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
-	if response.StatusCode() != http.StatusOK {
-		return nil, errors.OAuth2ServerError("ACL get call didn't succeed")
-	}
-
-	return response.JSON200, nil
+	return coreapi.ParseJSONPointerResponse[identityapi.Acl](response.HTTPResponse.Header, response.Body, response.StatusCode(), http.StatusOK)
 }

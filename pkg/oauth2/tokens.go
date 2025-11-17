@@ -20,28 +20,20 @@ package oauth2
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/uuid"
 
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-var (
-	// ErrKeyFormat is raised when something is wrong with the
-	// encryption keys.
-	ErrKeyFormat = errors.New("key format error")
-
-	// ErrTokenVerification is raised when token verification fails.
-	ErrTokenVerification = errors.New("failed to verify token")
 )
 
 type TokenType string
@@ -281,22 +273,30 @@ type VerifyInfo struct {
 func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, error) {
 	// The verification process is very expensive, so we add a cache in here to
 	// improve interactivity.  Once this is in place, then the network latency becomes
-	// the bottle neck, presumably this is the TLS handshake.  Similar code can be
+	// the bottleneck, presumably this is the TLS handshake.  Similar code can be
 	// in the remote client-side verification middleware.
 	if value, ok := a.tokenCache.Get(info.Token); ok {
 		claims, ok := value.(*Claims)
 		if !ok {
-			return nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
+			err := errorsv2.NewInternalError().
+				WithSimpleCausef("token cache returned invalid type: %T", value).
+				Prefixed()
+
+			return nil, err
 		}
 
 		return claims, nil
 	}
 
 	// Parse and verify the claims with the public key.
-	claims := &Claims{}
+	var claims Claims
+	if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, &claims, jose.TokenTypeAccessToken); err != nil {
+		err = errorsv2.NewInvalidTokenError().
+			WithCausef("failed to decode access token: %w", err).
+			WithErrorDescription("The provided access token is invalid.").
+			Prefixed()
 
-	if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
-		return nil, fmt.Errorf("failed to decrypt claims: %w", err)
+		return nil, err
 	}
 
 	// Verify the claims.
@@ -309,20 +309,27 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 	}
 
 	if err := claims.ValidateWithLeeway(expected, a.options.TokenVerificationLeeway); err != nil {
-		return nil, fmt.Errorf("failed to validate claims: %w", err)
+		if errors.Is(err, jwt.ErrExpired) {
+			err = errorsv2.NewTokenExpiredError().Prefixed()
+			return nil, err
+		}
+
+		err = errorsv2.NewInvalidTokenError().WithCause(err).Prefixed()
+
+		return nil, err
 	}
 
-	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
+	if err := a.verifyServiceAccount(ctx, info, &claims); err != nil {
 		return nil, err
 	}
 
 	// Ensure the access token is valid for the current user session...
-	if err := a.verifyUserSession(ctx, info, claims); err != nil {
+	if err := a.verifyUserSession(ctx, info, &claims); err != nil {
 		return nil, err
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
+	// rescinded, and we don't know about it, and long-lived tokens e.g. service accounts,
 	// could still be valid for months...
 	timeout := time.Hour
 
@@ -332,7 +339,7 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 
 	a.tokenCache.Add(info.Token, claims, timeout)
 
-	return claims, nil
+	return &claims, nil
 }
 
 func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyInfo, claims *Claims) error {
@@ -340,20 +347,34 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 		return nil
 	}
 
-	organization := &unikornv1.Organization{}
-
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
-		return err
+	organizationKey := client.ObjectKey{
+		Namespace: a.namespace,
+		Name:      claims.ServiceAccount.OrganizationID,
 	}
 
-	serviceAccount := &unikornv1.ServiceAccount{}
+	var organization unikornv1.Organization
+	if err := a.client.Get(ctx, organizationKey, &organization); err != nil {
+		return errorsv2.NewInternalError().
+			WithCausef("failed to get organization: %w", err).
+			Prefixed()
+	}
 
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: organization.Status.Namespace, Name: claims.Subject}, serviceAccount); err != nil {
-		return err
+	serviceAccountKey := client.ObjectKey{
+		Namespace: organization.Status.Namespace,
+		Name:      claims.Subject,
+	}
+
+	var serviceAccount unikornv1.ServiceAccount
+	if err := a.client.Get(ctx, serviceAccountKey, &serviceAccount); err != nil {
+		return errorsv2.NewInternalError().
+			WithCausef("failed to get service account: %w", err).
+			Prefixed()
 	}
 
 	if info.Token != serviceAccount.Spec.AccessToken {
-		return fmt.Errorf("%w: service account token invalid", ErrTokenVerification)
+		return errorsv2.NewInvalidTokenError().
+			WithSimpleCause("access token mismatch for service account").
+			Prefixed()
 	}
 
 	return nil
@@ -367,20 +388,32 @@ func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo,
 	// TODO: the subject should be the user ID anyway...
 	user, err := a.rbac.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
-		return err
+		if errors.Is(err, rbac.ErrUserNotFound) {
+			return errorsv2.NewInvalidTokenError().
+				WithSimpleCause("no user found").
+				Prefixed()
+		}
+
+		return errorsv2.NewInternalError().
+			WithCausef("failed to retrieve user: %w", err).
+			Prefixed()
 	}
 
-	lookupSession := func(session unikornv1.UserSession) bool {
+	isTargetUserSession := func(session unikornv1.UserSession) bool {
 		return session.ClientID == claims.Federated.ClientID
 	}
 
-	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
+	index := slices.IndexFunc(user.Spec.Sessions, isTargetUserSession)
 	if index < 0 {
-		return fmt.Errorf("%w: no active session for token", ErrTokenVerification)
+		return errorsv2.NewInvalidTokenError().
+			WithSimpleCause("no active session found for the user").
+			Prefixed()
 	}
 
 	if user.Spec.Sessions[index].AccessToken != info.Token {
-		return fmt.Errorf("%w: token invalid for active session", ErrTokenVerification)
+		return errorsv2.NewInvalidTokenError().
+			WithSimpleCause("access token mismatch for user session").
+			Prefixed()
 	}
 
 	return nil

@@ -18,12 +18,13 @@ package organizations
 
 import (
 	"context"
+	goerrors "errors"
 	"slices"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
@@ -125,64 +126,105 @@ func convertList(in *unikornv1.OrganizationList) openapi.Organizations {
 	return out
 }
 
-// get returns the implicit organization identified by the JWT claims.
 func (c *Client) get(ctx context.Context, organizationID string) (*unikornv1.Organization, error) {
-	result := &unikornv1.Organization{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, result); err != nil {
-		if kerrors.IsNotFound(err) {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
-
-		return nil, errors.OAuth2ServerError("failed to get organization").WithError(err)
+	key := client.ObjectKey{
+		Namespace: c.namespace,
+		Name:      organizationID,
 	}
 
-	return result, nil
-}
+	var organization unikornv1.Organization
+	if err := c.client.Get(ctx, key, &organization); err != nil {
+		if kerrors.IsNotFound(err) {
+			err = errorsv2.NewResourceMissingError("organization").
+				WithCause(err).
+				Prefixed()
 
-func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, error) {
-	result := &unikornv1.OrganizationList{}
+			return nil, err
+		}
 
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve organization: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
-	out := map[string]*unikornv1.Organization{}
-
-	for i := range result.Items {
-		out[result.Items[i].Name] = &result.Items[i]
-	}
-
-	return out, nil
+	return &organization, nil
 }
 
-func (c *Client) getUserbyEmail(ctx context.Context, rbacClient *rbac.RBAC, info *authorization.Info, email string) (*unikornv1.User, error) {
-	// If you aren't looking at yourself, then you need global read permissions, you cannot
-	// go probing for other users or organizations, massive data breach!
-	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
-		if err := rbac.AllowGlobalScope(ctx, "identity:users", openapi.Read); err != nil {
-			return nil, errors.HTTPForbidden("user not permitted to read users globally").WithError(err)
-		}
+func (c *Client) list(ctx context.Context) (*unikornv1.OrganizationList, error) {
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: c.namespace},
 	}
 
-	user, err := rbacClient.GetActiveUser(ctx, email)
+	var list unikornv1.OrganizationList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve organizations: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &list, nil
+}
+
+func (c *Client) getActiveUser(ctx context.Context, subject string, client *rbac.RBAC) (*unikornv1.User, error) {
+	user, err := client.GetActiveUser(ctx, subject)
 	if err != nil {
-		return nil, errors.HTTPNotFound().WithError(err)
+		if goerrors.Is(err, rbac.ErrUserNotFound) {
+			err = errorsv2.NewResourceMissingError("user").
+				WithCause(err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve user: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return user, nil
 }
 
+func (c *Client) getUserByEmail(ctx context.Context, rbacClient *rbac.RBAC, info *authorization.Info, email string) (*unikornv1.User, error) {
+	// If you aren't looking at yourself, then you need global read permissions, you cannot
+	// go probing for other users or organizations, massive data breach!
+	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
+		if err := rbac.AllowGlobalScope(ctx, "identity:users", openapi.Read); err != nil {
+			return nil, err
+		}
+	}
+
+	return c.getActiveUser(ctx, email, rbacClient)
+}
+
 func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, email *string) ([]string, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("userinfo is not set").WithError(err)
+		err = errorsv2.NewInternalError().WithCause(err).Prefixed()
+		return nil, err
 	}
 
 	if info.ServiceAccount {
 		account, err := rbacClient.GetServiceAccount(ctx, info.Userinfo.Sub)
 		if err != nil {
-			return nil, errors.HTTPForbidden("service account not found").WithError(err)
+			if goerrors.Is(err, rbac.ErrServiceAccountNotFound) {
+				err = errorsv2.NewResourceMissingError("service account").
+					WithCause(err).
+					Prefixed()
+
+				return nil, err
+			}
+
+			err = errorsv2.NewInternalError().
+				WithCausef("failed to retrieve service account: %w", err).
+				Prefixed()
+
+			return nil, err
 		}
 
 		return []string{account.Labels[constants.OrganizationLabel]}, nil
@@ -191,34 +233,39 @@ func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, ema
 	var user *unikornv1.User
 
 	if email != nil {
-		user, err = c.getUserbyEmail(ctx, rbacClient, info, *email)
-		if err != nil {
-			return nil, err
-		}
+		user, err = c.getUserByEmail(ctx, rbacClient, info, *email)
 	} else {
-		user, err = rbacClient.GetActiveUser(ctx, info.Userinfo.Sub)
-		if err != nil {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
+		user, err = c.getActiveUser(ctx, info.Userinfo.Sub, rbacClient)
 	}
 
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-
-	if err := c.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
+	if err != nil {
 		return nil, err
 	}
 
-	result := make([]string, len(organizationUsers.Items))
-
-	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
+	opts := []client.ListOption{
+		&client.ListOptions{
+			LabelSelector: labels.SelectorFromSet(labels.Set{
+				constants.UserLabel: user.Name,
+			}),
+		},
 	}
 
-	return result, nil
+	var list unikornv1.OrganizationUserList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve organization users: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	// REVIEW_ME: Is it possible to have duplicate IDs here, and do we need to de-duplicate them?
+	organizationIDs := make([]string, 0, len(list.Items))
+	for _, organizationUser := range list.Items {
+		organizationIDs = append(organizationIDs, organizationUser.Labels[constants.OrganizationLabel])
+	}
+
+	return organizationIDs, nil
 }
 
 func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string) (openapi.Organizations, error) {
@@ -227,18 +274,17 @@ func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string)
 	// If we don't have that then we need to use RBAC to get a list of organizations we are
 	// members of and return only them.
 	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read); err == nil && email == nil {
-		var result unikornv1.OrganizationList
-
-		if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		list, err := c.list(ctx)
+		if err != nil {
 			return nil, err
 		}
 
-		return convertList(&result), nil
+		return convertList(list), nil
 	}
 
-	organizations, err := c.list(ctx)
+	list, err := c.list(ctx)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to list organizations").WithError(err)
+		return nil, err
 	}
 
 	organizationIDs, err := c.organizationIDs(ctx, rbacClient, email)
@@ -246,20 +292,27 @@ func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string)
 		return nil, err
 	}
 
-	result := unikornv1.OrganizationList{
-		Items: make([]unikornv1.Organization, len(organizationIDs)),
+	memo := make(map[string]unikornv1.Organization, len(list.Items))
+	for _, organization := range list.Items {
+		memo[organization.Name] = organization
 	}
 
-	for i := range organizationIDs {
-		organization, ok := organizations[organizationIDs[i]]
+	list.Items = list.Items[:0]
+
+	for _, organizationID := range organizationIDs {
+		organization, ok := memo[organizationID]
 		if !ok {
-			return nil, errors.OAuth2ServerError("failed to find organization for user")
+			err = errorsv2.NewInternalError().
+				WithSimpleCausef("organization %s found in RBAC but missing in store", organizationID).
+				Prefixed()
+
+			return nil, err
 		}
 
-		result.Items[i] = *organization
+		list.Items = append(list.Items, organization)
 	}
 
-	return convertList(&result), nil
+	return convertList(list), nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID string) (*openapi.OrganizationRead, error) {
@@ -274,16 +327,13 @@ func (c *Client) Get(ctx context.Context, organizationID string) (*openapi.Organ
 func (c *Client) generate(ctx context.Context, in *openapi.OrganizationWrite) (*unikornv1.Organization, error) {
 	out := &unikornv1.Organization{
 		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, c.namespace).Get(),
+		Spec: unikornv1.OrganizationSpec{
+			Tags: conversion.GenerateTagList(in.Metadata.Tags),
+		},
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
-	}
-
-	out.Spec.Tags = conversion.GenerateTagList(in.Metadata.Tags)
-
-	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, err
 	}
 
 	if in.Spec.OrganizationType == openapi.Domain {
@@ -318,7 +368,7 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return err
 	}
 
 	updated := current.DeepCopy()
@@ -327,7 +377,9 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch organization").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to patch organization: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -340,7 +392,11 @@ func (c *Client) Create(ctx context.Context, request *openapi.OrganizationWrite)
 	}
 
 	if err := c.client.Create(ctx, org); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create organization").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create organization: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return convert(org), nil
@@ -356,10 +412,14 @@ func (c *Client) Delete(ctx context.Context, organizationID string) error {
 
 	if err := c.client.Delete(ctx, resource); err != nil {
 		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
+			return errorsv2.NewResourceMissingError("organization").
+				WithCause(err).
+				Prefixed()
 		}
 
-		return errors.OAuth2ServerError("failed to delete organization").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to delete organization: %w", err).
+			Prefixed()
 	}
 
 	return nil

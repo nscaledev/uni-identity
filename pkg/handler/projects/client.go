@@ -19,12 +19,11 @@ package projects
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -83,31 +82,50 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Proje
 		return nil, err
 	}
 
-	var result unikornv1.ProjectList
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: organization.Namespace},
+	}
 
-	if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
+	var list unikornv1.ProjectList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve projects: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
-	slices.SortStableFunc(result.Items, func(a, b unikornv1.Project) int {
+	slices.SortStableFunc(list.Items, func(a, b unikornv1.Project) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	return convertList(&result), nil
+	return convertList(&list), nil
 }
 
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, projectID string) (*unikornv1.Project, error) {
-	result := &unikornv1.Project{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: projectID}, result); err != nil {
-		if kerrors.IsNotFound(err) {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
-
-		return nil, errors.OAuth2ServerError("failed to get project").WithError(err)
+func (c *Client) get(ctx context.Context, namespace, name string) (*unikornv1.Project, error) {
+	key := client.ObjectKey{
+		Namespace: namespace,
+		Name:      name,
 	}
 
-	return result, nil
+	var project unikornv1.Project
+	if err := c.client.Get(ctx, key, &project); err != nil {
+		if kerrors.IsNotFound(err) {
+			err = errorsv2.NewResourceMissingError("project").
+				WithCause(err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve project: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &project, nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID, projectID string) (*openapi.ProjectRead, error) {
@@ -116,7 +134,7 @@ func (c *Client) Get(ctx context.Context, organizationID, projectID string) (*op
 		return nil, err
 	}
 
-	result, err := c.get(ctx, organization, projectID)
+	result, err := c.get(ctx, organization.Namespace, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -134,25 +152,38 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, err
 	}
 
 	for _, groupID := range in.Spec.GroupIDs {
-		var resource unikornv1.Group
+		key := client.ObjectKey{
+			Namespace: organization.Namespace,
+			Name:      groupID,
+		}
 
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, &resource); err != nil {
+		var group unikornv1.Group
+		if err := c.client.Get(ctx, key, &group); err != nil {
 			if kerrors.IsNotFound(err) {
-				return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("group ID %s does not exist", groupID)).WithError(err)
+				err = errorsv2.NewInvalidRequestError().
+					WithCausef("no group found: %w", err).
+					WithErrorDescription("One of the specified group IDs is invalid or cannot be resolved.").
+					Prefixed()
+
+				return nil, err
 			}
 
-			return nil, errors.OAuth2ServerError("failed to validate group ID").WithError(err)
+			err = errorsv2.NewInternalError().
+				WithCausef("failed to retrieve group: %w", err).
+				Prefixed()
+
+			return nil, err
 		}
 	}
 
 	return out, nil
 }
 
-// Create creates the implicit project indentified by the JTW claims.
+// Create creates the implicit project identified by the JTW claims.
 func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.ProjectWrite) (*openapi.ProjectRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
@@ -165,7 +196,11 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create project").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create project: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return convert(resource), nil
@@ -177,7 +212,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 		return err
 	}
 
-	current, err := c.get(ctx, organization, projectID)
+	current, err := c.get(ctx, organization.Namespace, projectID)
 	if err != nil {
 		return err
 	}
@@ -188,7 +223,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return err
 	}
 
 	updated := current.DeepCopy()
@@ -197,7 +232,9 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch project").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to patch project: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -219,10 +256,14 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 
 	if err := c.client.Delete(ctx, project); err != nil {
 		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
+			return errorsv2.NewResourceMissingError("group").
+				WithCause(err).
+				Prefixed()
 		}
 
-		return errors.OAuth2ServerError("failed to delete project").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to delete group: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -236,13 +277,16 @@ func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID,
 		return err
 	}
 
-	resource, err := c.get(ctx, organization, projectID)
+	resource, err := c.get(ctx, organization.Namespace, projectID)
 	if err != nil {
 		return err
 	}
 
 	if resource.DeletionTimestamp != nil {
-		return errors.OAuth2InvalidRequest("unable to add reference, resource is being deleted")
+		return errorsv2.NewConflictError().
+			WithSimpleCause("project is being deleted").
+			WithErrorDescription("The project is being deleted and cannot be modified.").
+			Prefixed()
 	}
 
 	if ok := controllerutil.AddFinalizer(resource, reference); !ok {
@@ -250,7 +294,9 @@ func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID,
 	}
 
 	if err := c.client.Update(ctx, resource); err != nil {
-		return errors.OAuth2ServerError("failed to update project").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to update project: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -263,7 +309,7 @@ func (c *Client) ReferenceDelete(ctx context.Context, organizationID, projectID,
 		return err
 	}
 
-	resource, err := c.get(ctx, organization, projectID)
+	resource, err := c.get(ctx, organization.Namespace, projectID)
 	if err != nil {
 		return err
 	}
@@ -273,7 +319,9 @@ func (c *Client) ReferenceDelete(ctx context.Context, organizationID, projectID,
 	}
 
 	if err := c.client.Update(ctx, resource); err != nil {
-		return errors.OAuth2ServerError("failed to update project").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to update project: %w", err).
+			Prefixed()
 	}
 
 	return nil

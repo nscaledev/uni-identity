@@ -32,7 +32,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
+	"github.com/unikorn-cloud/core/pkg/server/v2/httputil"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
@@ -219,23 +220,41 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			// "full" handler has too many dependencies that are irrelevant here.
 			header := r.Header.Get("Authorization")
 			if header == "" {
-				errors.HandleError(w, r, errors.OAuth2UnauthorizedClient("missing auth header"))
+				err := errorsv2.NewInvalidRequestError().
+					WithSimpleCause("missing Authorization header").
+					WithErrorDescription("Missing Authorization header.").
+					Prefixed()
+
+				httputil.WriteOAuth2ErrorResponse(w, r, err)
+
 				return
 			}
 
 			parts := strings.Split(header, " ")
 
 			if len(parts) != 2 {
-				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header malformed"))
+				err := errorsv2.NewInvalidRequestError().
+					WithSimpleCause("malformed Authorization header").
+					WithErrorDescription("The Authorization header is malformed.").
+					Prefixed()
+
+				httputil.WriteOAuth2ErrorResponse(w, r, err)
+
 				return
 			}
 
 			if !strings.EqualFold(parts[0], "bearer") {
-				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization scheme not allowed"))
+				err := errorsv2.NewInvalidRequestError().
+					WithSimpleCause("invalid authorization scheme").
+					WithErrorDescription("The Authorization header is malformed. It must be provided using the Bearer scheme.").
+					Prefixed()
+
+				httputil.WriteOAuth2ErrorResponse(w, r, err)
+
 				return
 			}
 
-			userinfo, _, err := authenticator.GetUserinfo(r.Context(), r, parts[1])
+			userinfo, _, err := authenticator.GetUserinfo(r.Context(), parts[1])
 			if err != nil {
 				w.WriteHeader(http.StatusUnauthorized)
 				return

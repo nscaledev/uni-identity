@@ -29,8 +29,9 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
+	"github.com/unikorn-cloud/core/pkg/server/v2/httputil"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -40,9 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-var (
-	ErrHeader = goerrors.New("header error")
-)
+var ErrNoPrincipalHeader = fmt.Errorf("missing %s header", principal.Header)
 
 // Validator provides Schema validation of request and response codes,
 // media, and schema validation of payloads to ensure we are meeting the
@@ -99,7 +98,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 		// identity client, and that requires a principal to be present.
 		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params)
 		if err != nil {
-			v.err = errors.OAuth2InvalidRequest("principal propagation failure for authentication").WithError(err)
+			v.err = err
 			return err
 		}
 
@@ -128,7 +127,12 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 	}
 
 	if err := openapi3filter.ValidateRequest(r.Context(), requestValidationInput); err != nil {
-		return nil, errors.OAuth2InvalidRequest("request body invalid").WithError(err)
+		err = errorsv2.NewInvalidRequestError().
+			WithCausef("failed to validate request: %w", err).
+			WithErrorDescription("The request is invalid and does not conform to the required schema.").
+			Prefixed()
+
+		return nil, err
 	}
 
 	responseValidationInput := &openapi3filter.ResponseValidationInput{
@@ -162,13 +166,13 @@ func (v *Validator) generatePrincipal(ctx context.Context, params map[string]str
 }
 
 // extractPrincipal makes available the identity information for the user
-// that actually insigated the request so it can be propagated to and used
+// that actually instigated the request so it can be propagated to and used
 // by any service.  This is called only by other system services as
 // identified by the use of mTLS.
 func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, error) {
 	data := r.Header.Get(principal.Header)
 	if data == "" {
-		return nil, fmt.Errorf("%w: principal header not present", ErrHeader)
+		return nil, ErrNoPrincipalHeader
 	}
 
 	// Use the certificate of the service that actually called us.
@@ -183,13 +187,12 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 		return nil, err
 	}
 
-	p := &principal.Principal{}
-
-	if err := client.VerifyAndDecode(p, data, certificate); err != nil {
+	var p principal.Principal
+	if err := client.VerifyAndDecode(&p, data, certificate); err != nil {
 		return nil, err
 	}
 
-	return principal.NewContext(ctx, p), nil
+	return principal.NewContext(ctx, &p), nil
 }
 
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
@@ -198,6 +201,20 @@ func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Requ
 	if util.HasClientCertificateHeader(r.Header) {
 		newCtx, err := extractPrincipal(ctx, r)
 		if err != nil {
+			if goerrors.Is(err, ErrNoPrincipalHeader) {
+				err = errorsv2.NewInvalidRequestError().
+					WithCause(err).
+					WithErrorDescriptionf("Missing %s header required for client authentication.", principal.Header).
+					Prefixed()
+
+				return nil, err
+			}
+
+			err = errorsv2.NewInvalidClientError().
+				WithCausef("failed to progagate principal for authorization: %w", err).
+				WithErrorDescription("Client authentication failed. If using an X-Principle header, please ensure it is valid.").
+				Prefixed()
+
 			return nil, err
 		}
 
@@ -221,7 +238,11 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	// wanted.
 	authorizationCtx, err := authorization.ExtractClientCert(ctx, r.Header)
 	if err != nil {
-		return nil, nil, errors.OAuth2ServerError("certificate propagation failure").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to extract client certificate from request: %w", err).
+			Prefixed()
+
+		return nil, nil, err
 	}
 
 	r = r.WithContext(authorizationCtx)
@@ -246,7 +267,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 	// that needs doing.
 	if v.info != nil {
 		// Propagate authentication/authorization info to the handlers
-		// for the pursposes of auditing and RBAC.
+		// for the purposes of auditing and RBAC.
 		ctx = authorization.NewContext(ctx, v.info)
 		ctx = rbac.NewContext(ctx, v.acl)
 
@@ -257,7 +278,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 
 		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params)
 		if err != nil {
-			return errors.OAuth2InvalidRequest("identity info propagation failure").WithError(err)
+			return err
 		}
 	}
 
@@ -274,18 +295,18 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 func (v *Validator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route, params, err := v.openapi.FindRoute(r)
 	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2ServerError("route lookup failure").WithError(err))
+		httputil.WriteErrorResponse(w, r, err)
 		return
 	}
 
 	validatedRequest, responseValidationInput, err := v.validateAndAuthorize(r.Context(), r, route, params)
 	if err != nil {
-		errors.HandleError(w, r, err)
+		httputil.WriteErrorResponse(w, r, err)
 		return
 	}
 
 	if err := v.handle(r.Context(), w, validatedRequest, responseValidationInput, params); err != nil {
-		errors.HandleError(w, r, err)
+		httputil.WriteErrorResponse(w, r, err)
 		return
 	}
 }

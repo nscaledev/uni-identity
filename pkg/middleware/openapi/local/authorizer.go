@@ -24,7 +24,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -51,12 +51,22 @@ func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Author
 func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return "", "", errors.OAuth2InvalidRequest("authorization header missing")
+		err := errorsv2.NewInvalidRequestError().
+			WithSimpleCause("missing Authorization header").
+			WithErrorDescription("Missing Authorization header.").
+			Prefixed()
+
+		return "", "", err
 	}
 
 	parts := strings.Split(header, " ")
 	if len(parts) != 2 {
-		return "", "", errors.OAuth2InvalidRequest("authorization header malformed")
+		err := errorsv2.NewInvalidRequestError().
+			WithSimpleCause("malformed Authorization header").
+			WithErrorDescription("The Authorization header is malformed.").
+			Prefixed()
+
+		return "", "", err
 	}
 
 	return parts[0], parts[1], nil
@@ -70,10 +80,15 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	}
 
 	if !strings.EqualFold(authorizationScheme, "bearer") {
-		return nil, errors.OAuth2InvalidRequest("authorization scheme not allowed").WithValues("scheme", authorizationScheme)
+		err = errorsv2.NewInvalidRequestError().
+			WithSimpleCause("invalid authorization scheme").
+			WithErrorDescription("The Authorization header is malformed. It must be provided using the Bearer scheme.").
+			Prefixed()
+
+		return nil, err
 	}
 
-	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
+	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), token)
 	if err != nil {
 		return nil, err
 	}
@@ -96,18 +111,33 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		// propagated here.
 		certPEM, err := authorization.ClientCertFromContext(r.Context())
 		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate not present for bound token").WithError(err)
+			err = errorsv2.NewInvalidClientError().
+				WithCause(err).
+				WithErrorDescription("The operation requires a client certificate for the associated token.").
+				Prefixed()
+
+			return nil, err
 		}
 
 		certificate, err := util.GetClientCertificate(certPEM)
 		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate parse error").WithError(err)
+			err = errorsv2.NewInvalidClientError().
+				WithCause(err).
+				WithErrorDescription("The client certificate presented could not be parsed.").
+				Prefixed()
+
+			return nil, err
 		}
 
 		thumbprint := util.GetClientCertifcateThumbprint(certificate)
 
 		if thumbprint != claims.Service.X509Thumbprint {
-			return nil, errors.OAuth2AccessDenied("client certificate mismatch for bound token")
+			err = errorsv2.NewInvalidClientError().
+				WithSimpleCause("client certificate does not match the token").
+				WithErrorDescription("The client certificate provided does not match the one associated with this token.").
+				Prefixed()
+
+			return nil, err
 		}
 
 		info.SystemAccount = true
@@ -122,11 +152,29 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 		return a.authorizeOAuth2(authentication.RequestValidationInput.Request)
 	}
 
-	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
+	err := errorsv2.NewInvalidTokenError().
+		WithSimpleCause("unsupported security scheme").
+		Prefixed()
+
+	return nil, err
 }
 
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
 func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
-	return a.rbac.GetACL(ctx, organizationID)
+	acl, err := a.rbac.GetACL(ctx, organizationID)
+	if err != nil {
+		if rbac.IsNotFoundError(err) {
+			err = errorsv2.NewInsufficientScopeError().WithCause(err).Prefixed()
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve ACL: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return acl, nil
 }

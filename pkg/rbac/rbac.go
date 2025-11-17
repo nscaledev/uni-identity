@@ -20,25 +20,33 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/spf13/pflag"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
-	"github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
-	ErrResourceReference = goerrors.New("resource reference error")
+	ErrUserNotFound             = goerrors.New("user not found")
+	ErrOrganizationUserNotFound = goerrors.New("organization user not found")
+	ErrServiceAccountNotFound   = goerrors.New("service account not found")
+	ErrInternal                 = goerrors.New("rbac")
 )
+
+func IsNotFoundError(err error) bool {
+	return goerrors.Is(err, ErrUserNotFound) ||
+		goerrors.Is(err, ErrOrganizationUserNotFound) ||
+		goerrors.Is(err, ErrServiceAccountNotFound)
+}
 
 type Options struct {
 	PlatformAdministratorRoleIDs  []string
@@ -69,21 +77,21 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 }
 
 func (r *RBAC) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
-	result := &unikornv1.UserList{}
-
-	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
+	var list unikornv1.UserList
+	if err := r.client.List(ctx, &list); err != nil {
 		return nil, err
 	}
 
-	index := slices.IndexFunc(result.Items, func(user unikornv1.User) bool {
+	isTargetUser := func(user unikornv1.User) bool {
 		return user.Spec.Subject == subject
-	})
-
-	if index < 0 {
-		return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)
 	}
 
-	return &result.Items[index], nil
+	index := slices.IndexFunc(list.Items, isTargetUser)
+	if index < 0 {
+		return nil, ErrUserNotFound
+	}
+
+	return &list.Items[index], nil
 }
 
 // GetActiveUser returns a user that match the subject and is active.
@@ -94,7 +102,7 @@ func (r *RBAC) GetActiveUser(ctx context.Context, subject string) (*unikornv1.Us
 	}
 
 	if user.Spec.State != unikornv1.UserStateActive {
-		return nil, fmt.Errorf("%w: user is not active", ErrResourceReference)
+		return nil, ErrUserNotFound
 	}
 
 	return user, nil
@@ -102,25 +110,32 @@ func (r *RBAC) GetActiveUser(ctx context.Context, subject string) (*unikornv1.Us
 
 // GetActiveOrganizationUser gets an organization user that references the actual user.
 func (r *RBAC) GetActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.OrganizationLabel: organizationID,
-		constants.UserLabel:         user.Name,
-	})
+	opts := []client.ListOption{
+		&client.ListOptions{
+			LabelSelector: labels.SelectorFromSet(labels.Set{
+				constants.OrganizationLabel: organizationID,
+				constants.UserLabel:         user.Name,
+			}),
+		},
+	}
 
-	result := &unikornv1.OrganizationUserList{}
-
-	if err := r.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
+	var list unikornv1.OrganizationUserList
+	if err := r.client.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 
-	if len(result.Items) != 1 {
-		return nil, fmt.Errorf("%w: user does not exist in organization or exists multiple times", errors.ErrConsistency)
+	if len(list.Items) == 0 {
+		return nil, ErrOrganizationUserNotFound
 	}
 
-	organizationUser := &result.Items[0]
+	if len(list.Items) > 1 {
+		err := fmt.Errorf("%w: expected 1 organization user but found multiple", ErrInternal)
+		return nil, err
+	}
 
+	organizationUser := &list.Items[0]
 	if organizationUser.Spec.State != unikornv1.UserStateActive {
-		return nil, fmt.Errorf("%w: user is not active", ErrResourceReference)
+		return nil, ErrOrganizationUserNotFound
 	}
 
 	return organizationUser, nil
@@ -147,20 +162,23 @@ func (r *RBAC) GetActiveOrganizationUsers(ctx context.Context, user *unikornv1.U
 
 // GetServiceAccount looks up a service account.
 func (r *RBAC) GetServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
-	result := &unikornv1.ServiceAccountList{}
-
-	if err := r.client.List(ctx, result, &client.ListOptions{}); err != nil {
+	var result unikornv1.ServiceAccountList
+	if err := r.client.List(ctx, &result); err != nil {
 		return nil, err
 	}
 
-	predicate := func(s unikornv1.ServiceAccount) bool {
+	isNotTargetServiceAccount := func(s unikornv1.ServiceAccount) bool {
 		return s.Name != id
 	}
 
-	result.Items = slices.DeleteFunc(result.Items, predicate)
+	result.Items = slices.DeleteFunc(result.Items, isNotTargetServiceAccount)
 
-	if len(result.Items) != 1 {
-		return nil, fmt.Errorf("%w: expected 1 instance of service account ID %s", errors.ErrConsistency, id)
+	if len(result.Items) == 0 {
+		return nil, ErrServiceAccountNotFound
+	}
+
+	if len(result.Items) > 1 {
+		return nil, fmt.Errorf("%w: expected 1 service account but found multiple", ErrInternal)
 	}
 
 	return &result.Items[0], nil
@@ -175,7 +193,7 @@ func groupUserFilter(id string) func(unikornv1.Group) bool {
 	}
 }
 
-// groupServiceAccountFilter checks if the group contains a service acccount ID.
+// groupServiceAccountFilter checks if the group contains a service account ID.
 func groupServiceAccountFilter(id string) func(unikornv1.Group) bool {
 	return func(group unikornv1.Group) bool {
 		return !slices.Contains(group.Spec.ServiceAccountIDs, id)
@@ -184,56 +202,60 @@ func groupServiceAccountFilter(id string) func(unikornv1.Group) bool {
 
 // getGroups returns a map of groups the user is a member of, indexed by ID.
 func (r *RBAC) getGroups(ctx context.Context, namespace string, filter func(unikornv1.Group) bool) (map[string]*unikornv1.Group, error) {
-	result := &unikornv1.GroupList{}
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: namespace},
+	}
 
-	if err := r.client.List(ctx, result, &client.ListOptions{Namespace: namespace}); err != nil {
+	var list unikornv1.GroupList
+	if err := r.client.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 
-	result.Items = slices.DeleteFunc(result.Items, filter)
+	list.Items = slices.DeleteFunc(list.Items, filter)
 
-	out := map[string]*unikornv1.Group{}
-
-	for i := range result.Items {
-		out[result.Items[i].Name] = &result.Items[i]
+	memo := make(map[string]*unikornv1.Group)
+	for _, group := range list.Items {
+		memo[group.Name] = &group
 	}
 
-	return out, nil
+	return memo, nil
 }
 
 // getRoles returns a map of roles in the system indexed by ID.
 func (r *RBAC) getRoles(ctx context.Context) (map[string]*unikornv1.Role, error) {
-	result := &unikornv1.RoleList{}
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: r.namespace},
+	}
 
-	if err := r.client.List(ctx, result, &client.ListOptions{Namespace: r.namespace}); err != nil {
+	var list unikornv1.RoleList
+	if err := r.client.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 
-	out := map[string]*unikornv1.Role{}
-
-	for i := range result.Items {
-		out[result.Items[i].Name] = &result.Items[i]
+	memo := make(map[string]*unikornv1.Role)
+	for _, role := range list.Items {
+		memo[role.Name] = &role
 	}
 
-	return out, nil
+	return memo, nil
 }
 
 // getProjects grabs all projects for an organization.
 func (r *RBAC) getProjects(ctx context.Context, organizationID string) (*unikornv1.ProjectList, error) {
-	requirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
-	if err != nil {
+	opts := []client.ListOption{
+		&client.ListOptions{
+			LabelSelector: labels.SelectorFromSet(labels.Set{
+				constants.OrganizationLabel: organizationID,
+			}),
+		},
+	}
+
+	var list unikornv1.ProjectList
+	if err := r.client.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 
-	selector := labels.NewSelector().Add(*requirement)
-
-	result := &unikornv1.ProjectList{}
-
-	if err := r.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
-		return nil, err
-	}
-
-	return result, nil
+	return &list, nil
 }
 
 func convertOperation(in unikornv1.Operation) openapi.AclOperation {
@@ -267,43 +289,42 @@ func convertOperationList(in []unikornv1.Operation) openapi.AclOperations {
 // This behavior is primarily to cater for OpenAPI's love of pointers to lists, and omitting
 // empty lists from the final output.
 func addScopesToEndpointList(e *openapi.AclEndpoints, scopes []unikornv1.RoleScope) *openapi.AclEndpoints {
-	var endpoints openapi.AclEndpoints
+	memo := make(map[string]map[openapi.AclOperation]struct{})
 
 	if e != nil {
-		endpoints = *e
+		for _, endpoint := range *e {
+			memorizeACL(memo, endpoint.Name, endpoint.Operations)
+		}
 	}
 
 	for _, scope := range scopes {
 		operations := convertOperationList(scope.Operations)
-
-		indexFunc := func(ep openapi.AclEndpoint) bool {
-			return ep.Name == scope.Name
-		}
-
-		// If an existing entry exists, create a union of operations.
-		if index := slices.IndexFunc(endpoints, indexFunc); index >= 0 {
-			endpoint := &endpoints[index]
-
-			endpoint.Operations = slices.Concat(endpoint.Operations, operations)
-			slices.Sort(endpoint.Operations)
-
-			endpoint.Operations = slices.Compact(endpoint.Operations)
-
-			continue
-		}
-
-		// If not add a new entry.
-		endpoints = append(endpoints, openapi.AclEndpoint{
-			Name:       scope.Name,
-			Operations: operations,
-		})
+		memorizeACL(memo, scope.Name, operations)
 	}
 
-	if len(endpoints) == 0 {
+	if len(memo) == 0 {
 		return nil
 	}
 
+	endpoints := make([]openapi.AclEndpoint, 0, len(memo))
+	for name, operationMemo := range memo {
+		endpoints = append(endpoints, openapi.AclEndpoint{
+			Name:       name,
+			Operations: slices.Collect(maps.Keys(operationMemo)),
+		})
+	}
+
 	return &endpoints
+}
+
+func memorizeACL(memo map[string]map[openapi.AclOperation]struct{}, name string, operations openapi.AclOperations) {
+	if _, ok := memo[name]; !ok {
+		memo[name] = make(map[openapi.AclOperation]struct{})
+	}
+
+	for _, operation := range operations {
+		memo[name][operation] = struct{}{}
+	}
 }
 
 // accumulateGlobalPermissions adds any global permissions referenced in roles by the
@@ -315,7 +336,7 @@ func accumulateGlobalPermissions(acl *openapi.Acl, roleIDs []string, roles map[s
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
 		if !ok {
-			return fmt.Errorf("%w: role %s referenced by global subject", errors.ErrConsistency, roleID)
+			return fmt.Errorf("%w: role %s found in global subject but missing in store", ErrInternal, roleID)
 		}
 
 		acl.Global = addScopesToEndpointList(acl.Global, role.Spec.Scopes.Global)
@@ -333,7 +354,8 @@ func accumulateOrganizationPermissions(groups map[string]*unikornv1.Group, roles
 		for _, roleID := range group.Spec.RoleIDs {
 			role, ok := roles[roleID]
 			if !ok {
-				return nil, fmt.Errorf("%w: role %s referenced by group %s does not exist", errors.ErrConsistency, roleID, groupID)
+				err := fmt.Errorf("%w: role %s found in group %s but missing in store", ErrInternal, roleID, groupID)
+				return nil, err
 			}
 
 			endpoints = addScopesToEndpointList(endpoints, role.Spec.Scopes.Organization)
@@ -358,7 +380,8 @@ func accumulateProjectPermissions(groups map[string]*unikornv1.Group, roles map[
 		for _, roleID := range group.Spec.RoleIDs {
 			role, ok := roles[roleID]
 			if !ok {
-				return nil, fmt.Errorf("%w: role %s referenced by group %s does not exist", errors.ErrConsistency, roleID, groupID)
+				err := fmt.Errorf("%w: role %s found in group %s but missing in store", ErrInternal, roleID, groupID)
+				return nil, err
 			}
 
 			endpoints = addScopesToEndpointList(endpoints, role.Spec.Scopes.Project)
@@ -541,7 +564,7 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 func (r *RBAC) processSystemAccountACL(ctx context.Context, subject string) (*openapi.Acl, error) {
 	roleID, ok := r.options.SystemAccountRoleIDs[subject]
 	if !ok {
-		return nil, fmt.Errorf("%w: system account '%s' not registered", errors.ErrConsistency, subject)
+		return nil, fmt.Errorf("%w: system account %s is not registered", ErrInternal, subject)
 	}
 
 	roles, err := r.getRoles(ctx)
@@ -549,13 +572,14 @@ func (r *RBAC) processSystemAccountACL(ctx context.Context, subject string) (*op
 		return nil, err
 	}
 
-	acl := &openapi.Acl{}
+	roleIDs := []string{roleID}
 
-	if err := accumulateGlobalPermissions(acl, []string{roleID}, roles); err != nil {
+	var acl openapi.Acl
+	if err := accumulateGlobalPermissions(&acl, roleIDs, roles); err != nil {
 		return nil, err
 	}
 
-	return acl, nil
+	return &acl, nil
 }
 
 // processServiceAccountACL looks up a service account, any groups it's a member of,
@@ -571,7 +595,7 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 
 	subjectOrganizationID, ok := serviceAccount.Labels[constants.OrganizationLabel]
 	if !ok {
-		return nil, fmt.Errorf("%w: organization missing from service account %s", errors.ErrConsistency, serviceAccount.Name)
+		return nil, fmt.Errorf("%w: service account %s has no organization label", ErrInternal, serviceAccount.Name)
 	}
 
 	groups, err := r.getGroups(ctx, serviceAccount.Namespace, groupFilterFunc)
@@ -579,11 +603,11 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 		return nil, err
 	}
 
-	acl := &openapi.Acl{}
+	var acl openapi.Acl
 
 	// Nothing to do.
 	if len(groups) == 0 {
-		return acl, nil
+		return &acl, nil
 	}
 
 	roles, err := r.getRoles(ctx)
@@ -593,7 +617,7 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 
 	// Scoped ACL handling.
 	if subjectOrganizationID == organizationID {
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID); err != nil {
+		if err := r.accumulateOrganizationScopedPermissions(ctx, &acl, groups, roles, organizationID); err != nil {
 			return nil, err
 		}
 	}
@@ -603,11 +627,11 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 		subjectOrganizationID: serviceAccount.Name,
 	}
 
-	if err := r.accumulatePermissions(ctx, acl, organizationSubjectMap, groupServiceAccountFilter); err != nil {
+	if err := r.accumulatePermissions(ctx, &acl, organizationSubjectMap, groupServiceAccountFilter); err != nil {
 		return nil, err
 	}
 
-	return acl, nil
+	return &acl, nil
 }
 
 // processUserAccountACL ensures the user exists and is active, looks up any groups it's
@@ -625,14 +649,14 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 		return nil, err
 	}
 
-	acl := &openapi.Acl{}
+	var acl openapi.Acl
 
 	if slices.Contains(r.options.PlatformAdministratorSubjects, user.Spec.Subject) {
-		if err := accumulateGlobalPermissions(acl, r.options.PlatformAdministratorRoleIDs, roles); err != nil {
+		if err := accumulateGlobalPermissions(&acl, r.options.PlatformAdministratorRoleIDs, roles); err != nil {
 			return nil, err
 		}
 
-		return acl, nil
+		return &acl, nil
 	}
 
 	if organizationID != "" {
@@ -650,11 +674,11 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 
 		// Nothing to do.
 		if len(groups) == 0 {
-			return acl, nil
+			return &acl, nil
 		}
 
 		// Scoped ACL handling.
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID); err != nil {
+		if err := r.accumulateOrganizationScopedPermissions(ctx, &acl, groups, roles, organizationID); err != nil {
 			return nil, err
 		}
 	}
@@ -673,11 +697,11 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 		organizationSubjectMap[organizationUser.Labels[constants.OrganizationLabel]] = organizationUser.Name
 	}
 
-	if err := r.accumulatePermissions(ctx, acl, organizationSubjectMap, groupUserFilter); err != nil {
+	if err := r.accumulatePermissions(ctx, &acl, organizationSubjectMap, groupUserFilter); err != nil {
 		return nil, err
 	}
 
-	return acl, nil
+	return &acl, nil
 }
 
 // GetACL returns a granular set of permissions for a user based on their scope.

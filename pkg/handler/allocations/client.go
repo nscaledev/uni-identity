@@ -18,13 +18,12 @@ package allocations
 
 import (
 	"context"
-	goerrors "errors"
 	"slices"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -34,13 +33,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-var (
-	ErrNamespace = goerrors.New("unable to resolve project namespace")
 )
 
 type Client struct {
@@ -58,13 +52,11 @@ func New(client client.Client, namespace string) *Client {
 }
 
 func convertAllocation(in *unikornv1.ResourceAllocation) *openapi.ResourceAllocation {
-	out := &openapi.ResourceAllocation{
+	return &openapi.ResourceAllocation{
 		Kind:      in.Kind,
 		Committed: int(in.Committed.Value()),
 		Reserved:  int(in.Reserved.Value()),
 	}
-
-	return out
 }
 
 func convertAllocationList(in []unikornv1.ResourceAllocation) openapi.ResourceAllocationList {
@@ -78,7 +70,7 @@ func convertAllocationList(in []unikornv1.ResourceAllocation) openapi.ResourceAl
 }
 
 func convert(in *unikornv1.Allocation) *openapi.AllocationRead {
-	out := &openapi.AllocationRead{
+	return &openapi.AllocationRead{
 		Metadata: conversion.ProjectScopedResourceReadMetadata(in, in.Spec.Tags),
 		Spec: openapi.AllocationSpec{
 			Kind:        in.Labels[constants.ReferencedResourceKindLabel],
@@ -86,8 +78,6 @@ func convert(in *unikornv1.Allocation) *openapi.AllocationRead {
 			Allocations: convertAllocationList(in.Spec.Allocations),
 		},
 	}
-
-	return out
 }
 
 func convertList(in *unikornv1.AllocationList) openapi.Allocations {
@@ -101,13 +91,11 @@ func convertList(in *unikornv1.AllocationList) openapi.Allocations {
 }
 
 func generateAllocation(in *openapi.ResourceAllocation) *unikornv1.ResourceAllocation {
-	out := &unikornv1.ResourceAllocation{
+	return &unikornv1.ResourceAllocation{
 		Kind:      in.Kind,
 		Committed: resource.NewQuantity(int64(in.Committed), resource.DecimalSI),
 		Reserved:  resource.NewQuantity(int64(in.Reserved), resource.DecimalSI),
 	}
-
-	return out
 }
 
 func generateAllocationList(in openapi.ResourceAllocationList) []unikornv1.ResourceAllocation {
@@ -130,47 +118,61 @@ func generate(ctx context.Context, namespace *corev1.Namespace, organizationID, 
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, err
 	}
 
 	return out, nil
 }
 
-func (c *Client) get(ctx context.Context, namespace, allocationID string) (*unikornv1.Allocation, error) {
-	result := &unikornv1.Allocation{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: allocationID}, result); err != nil {
-		if kerrors.IsNotFound(err) {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
-
-		return nil, errors.OAuth2ServerError("failed to get allocation").WithError(err)
+func (c *Client) get(ctx context.Context, namespace, name string) (*unikornv1.Allocation, error) {
+	key := client.ObjectKey{
+		Namespace: namespace,
+		Name:      name,
 	}
 
-	return result, nil
+	var allocation unikornv1.Allocation
+	if err := c.client.Get(ctx, key, &allocation); err != nil {
+		if kerrors.IsNotFound(err) {
+			err = errorsv2.NewResourceMissingError("allocation").
+				WithCause(err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve allocation: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &allocation, nil
 }
 
 func (c *Client) List(ctx context.Context, organizationID string) (openapi.Allocations, error) {
-	result := &unikornv1.AllocationList{}
-
-	requirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
-	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to build label selector").WithError(err)
+	opts := []client.ListOption{
+		&client.ListOptions{
+			LabelSelector: labels.SelectorFromSet(labels.Set{
+				constants.OrganizationLabel: organizationID,
+			}),
+		},
 	}
 
-	options := &client.ListOptions{
-		LabelSelector: labels.NewSelector().Add(*requirement),
+	var list unikornv1.AllocationList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve allocations: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
-	if err := c.client.List(ctx, result, options); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list allocations").WithError(err)
-	}
-
-	slices.SortStableFunc(result.Items, func(a, b unikornv1.Allocation) int {
+	slices.SortStableFunc(list.Items, func(a, b unikornv1.Allocation) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	return convertList(result), nil
+	return convertList(&list), nil
 }
 
 func (c *Client) Create(ctx context.Context, organizationID, projectID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
@@ -180,18 +182,22 @@ func (c *Client) Create(ctx context.Context, organizationID, projectID string, r
 	}
 
 	// TODO: an allocation for the kind/ID must not already exist, you should be
-	// updaing the existing one.  Raise an error.
+	// updating the existing one.  Raise an error.
 	resource, err := generate(ctx, namespace, organizationID, projectID, request)
 	if err != nil {
 		return nil, err
 	}
 
 	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create allocation").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create allocation: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return convert(resource), nil
@@ -226,10 +232,14 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID, allocati
 
 	if err := c.client.Delete(ctx, controlPlane); err != nil {
 		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
+			return errorsv2.NewResourceMissingError("allocation").
+				WithCause(err).
+				Prefixed()
 		}
 
-		return errors.OAuth2ServerError("failed to delete allocation").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to delete allocation: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -254,7 +264,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID, allocati
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current); err != nil {
-		return nil, errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return nil, err
 	}
 
 	updated := current.DeepCopy()
@@ -263,11 +273,15 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID, allocati
 	updated.Spec = required.Spec
 
 	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch allocation").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to patch allocation: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return convert(updated), nil

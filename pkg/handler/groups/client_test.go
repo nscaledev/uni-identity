@@ -24,7 +24,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
-	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/groups"
@@ -209,7 +210,7 @@ func (f *groupTestFixture) createUserWithOrgMembership(t *testing.T, userID, sub
 // makeGroupUpdateRequest builds a group update request.
 func makeGroupUpdateRequest(subjects *[]openapi.Subject, userIDs *openapi.StringList) *openapi.GroupWrite {
 	return &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
+		Metadata: coreapi.ResourceWriteMetadata{
 			Name: groupTestID,
 		},
 		Spec: openapi.GroupSpec{
@@ -340,7 +341,11 @@ func TestUpdateGroupWithNonMemberSubject_ReturnsError(t *testing.T) {
 
 	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject is not a member of the organization")
-	assert.Contains(t, err.Error(), "not a member of", "Error should indicate the user is not a member")
+
+	var e *errorsv2.Error
+
+	require.ErrorAs(t, err, &e)
+	require.Equal(t, errorsv2.APIErrorCodeResourceMissing, e.APIErrorCode)
 }
 
 // TestUpdateGroupWithNonExistentSubject_ReturnsError tests that when a Subject with internal issuer
@@ -405,7 +410,11 @@ func TestUpdateGroupWithInvalidUserID_ReturnsError(t *testing.T) {
 
 	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
 	require.Error(t, err, "Should error when UserID is invalid")
-	assert.Contains(t, err.Error(), "organization member", "Error should indicate issue with organization member lookup")
+
+	var e *errorsv2.Error
+
+	require.ErrorAs(t, err, &e)
+	require.Equal(t, errorsv2.APIErrorCodeInvalidRequest, e.APIErrorCode)
 }
 
 // TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects tests that when multiple UserIDs
@@ -441,7 +450,7 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 	userIDs := openapi.StringList{orguserAliceID, orguserBobID}
 
 	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
+		Metadata: coreapi.ResourceWriteMetadata{
 			Name: groupTestID,
 		},
 		Spec: openapi.GroupSpec{
@@ -501,7 +510,7 @@ func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 	userIDs := openapi.StringList{orguserAliceID}
 
 	updateRequest := &openapi.GroupWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{
+		Metadata: coreapi.ResourceWriteMetadata{
 			Name: groupTestID,
 		},
 		Spec: openapi.GroupSpec{
@@ -514,5 +523,9 @@ func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 
 	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
 	require.Error(t, err, "Should error when both subjects and userIDs are provided")
-	assert.Contains(t, err.Error(), "cannot provide both", "Error should indicate both fields were provided")
+
+	var e *errorsv2.Error
+
+	require.ErrorAs(t, err, &e)
+	require.Equal(t, errorsv2.APIErrorCodeInvalidRequest, e.APIErrorCode)
 }

@@ -21,12 +21,13 @@ import (
 	"context"
 	"net/http"
 
-	chi "github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel/sdk/trace"
 
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/options"
+	corehandler "github.com/unikorn-cloud/core/pkg/server/handler"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
@@ -95,8 +96,8 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 	router.Use(timeout.Middleware(s.ServerOptions.RequestTimeout))
 	router.Use(opentelemetry.Middleware(constants.Application, constants.Version))
 	router.Use(cors.Middleware(schema, &s.CORSOptions))
-	router.NotFound(http.HandlerFunc(handler.NotFound))
-	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
+	router.NotFound(corehandler.NotFound)
+	router.MethodNotAllowed(corehandler.MethodNotAllowed)
 
 	// Setup authn/authz
 	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
@@ -114,7 +115,7 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 	// NOTE: these are applied in reverse order!!
 	chiServerOptions := openapi.ChiServerOptions{
 		BaseRouter:       router,
-		ErrorHandlerFunc: handler.HandleError,
+		ErrorHandlerFunc: corehandler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
 			audit.Middleware(schema, constants.Application, constants.Version),
 			openapimiddleware.Middleware(authorizer, schema),
