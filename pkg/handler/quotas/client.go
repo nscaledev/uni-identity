@@ -18,14 +18,13 @@ package quotas
 
 import (
 	"context"
-	goerrors "errors"
 	"slices"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
-	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -34,10 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-var (
-	ErrConsistency = goerrors.New("consistency error")
 )
 
 // Client is responsible for user management.
@@ -57,12 +52,10 @@ func New(client client.Client, namespace string) *Client {
 }
 
 func generateQuota(in *openapi.QuotaWrite) *unikornv1.ResourceQuota {
-	out := &unikornv1.ResourceQuota{
+	return &unikornv1.ResourceQuota{
 		Kind:     in.Kind,
 		Quantity: resource.NewQuantity(int64(in.Quantity), resource.DecimalSI),
 	}
-
-	return out
 }
 
 func generateQuotaList(in openapi.QuotaWriteList) []unikornv1.ResourceQuota {
@@ -76,7 +69,7 @@ func generateQuotaList(in openapi.QuotaWriteList) []unikornv1.ResourceQuota {
 }
 
 func generate(ctx context.Context, organization *organizations.Meta, in *openapi.QuotasWrite) (*unikornv1.Quota, error) {
-	metadata := &coreopenapi.ResourceWriteMetadata{
+	metadata := &coreapi.ResourceWriteMetadata{
 		Name: constants.UndefinedName,
 	}
 
@@ -88,21 +81,23 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, err
 	}
 
 	return out, nil
 }
 
-type allocation struct {
-	committed int64
-	reserved  int64
-}
-
 func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID string) (*openapi.QuotasRead, error) {
-	metadata := &unikornv1.QuotaMetadataList{}
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: c.namespace},
+	}
 
-	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	var list unikornv1.QuotaMetadataList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve quota metadata: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
@@ -112,7 +107,12 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 		return nil, err
 	}
 
-	allocated := map[string]allocation{}
+	type usage struct {
+		committed int64
+		reserved  int64
+	}
+
+	memo := make(map[string]usage)
 
 	for i := range allocations.Items {
 		allocation := &allocations.Items[i]
@@ -120,11 +120,11 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 		for j := range allocation.Spec.Allocations {
 			resource := &allocation.Spec.Allocations[j]
 
-			allocation := allocated[resource.Kind]
-			allocation.committed += resource.Committed.Value()
-			allocation.reserved += resource.Reserved.Value()
+			record := memo[resource.Kind]
+			record.committed += resource.Committed.Value()
+			record.reserved += resource.Reserved.Value()
 
-			allocated[resource.Kind] = allocation
+			memo[resource.Kind] = record
 		}
 	}
 
@@ -135,22 +135,25 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 	for i := range in.Spec.Quotas {
 		quota := &in.Spec.Quotas[i]
 
-		metaIndex := slices.IndexFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool {
-			return m.Name == quota.Kind
-		})
+		isTargetMetadata := func(metadata unikornv1.QuotaMetadata) bool {
+			return metadata.Name == quota.Kind
+		}
 
-		meta := &metadata.Items[metaIndex]
-
-		used := allocated[quota.Kind].committed + allocated[quota.Kind].reserved
-		free := quota.Quantity.Value() - used
+		var (
+			index  = slices.IndexFunc(list.Items, isTargetMetadata)
+			meta   = &list.Items[index]
+			record = memo[meta.Kind]
+			used   = record.committed + record.reserved
+			free   = quota.Quantity.Value() - used
+		)
 
 		out.Quotas[i] = openapi.QuotaRead{
 			Kind:        quota.Kind,
 			Quantity:    int(quota.Quantity.Value()),
 			Used:        int(used),
 			Free:        int(free),
-			Committed:   int(allocated[quota.Kind].committed),
-			Reserved:    int(allocated[quota.Kind].reserved),
+			Committed:   int(record.committed),
+			Reserved:    int(record.reserved),
 			DisplayName: meta.Spec.DisplayName,
 			Description: meta.Spec.Description,
 			Default:     int(meta.Spec.Default.Value()),
@@ -183,7 +186,7 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 
 	current, virtual, err := common.GetQuota(ctx, organizationID)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
+		return nil, err
 	}
 
 	required, err := generate(ctx, organization, request)
@@ -193,7 +196,11 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 
 	if virtual {
 		if err := c.client.Create(ctx, required); err != nil {
-			return nil, errors.OAuth2InvalidRequest("unnable to create quota").WithError(err)
+			err = errorsv2.NewInternalError().
+				WithCausef("failed to create quota: %w", err).
+				Prefixed()
+
+			return nil, err
 		}
 
 		return c.convert(ctx, required, organizationID)
@@ -205,11 +212,15 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 	updated.Spec = required.Spec
 
 	if err := common.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch quotas").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to patch quota: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return c.convert(ctx, updated, organizationID)

@@ -25,8 +25,8 @@ import (
 	"github.com/getkin/kin-openapi/routers"
 
 	"github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
+	"github.com/unikorn-cloud/core/pkg/server/v2/httputil"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -101,8 +101,7 @@ func getResource(w *middleware.Capture, r *http.Request, route *routers.Route, p
 func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route, params, err := l.openapi.FindRoute(r)
 	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2ServerError("route lookup failure").WithError(err))
-
+		httputil.WriteErrorResponse(w, r, err)
 		return
 	}
 

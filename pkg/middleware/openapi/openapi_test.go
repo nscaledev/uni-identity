@@ -24,12 +24,12 @@ import (
 	"net/url"
 	"testing"
 
-	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/mock"
@@ -87,16 +87,15 @@ func (w *responseWriter) WriteHeader(statusCode int) {
 }
 
 // validateError checks that the response body is an error and is as we expect.
-func (w *responseWriter) validateError(t *testing.T, errorType coreapi.ErrorError, errorDescription string) {
+func (w *responseWriter) validateError(t *testing.T, errorCode string) {
 	t.Helper()
 
 	require.NotNil(t, w.body)
 
-	oauthError := &coreapi.Error{}
-	require.NoError(t, json.Unmarshal(w.body, oauthError))
+	var response errorsv2.Error
 
-	require.Equal(t, errorType, oauthError.Error)
-	require.Equal(t, errorDescription, oauthError.ErrorDescription)
+	require.NoError(t, json.Unmarshal(w.body, &response))
+	require.Equal(t, errorCode, response.ErrorCode)
 }
 
 // addCertificateHeader adds a client certificate to the request, pretending to
@@ -232,7 +231,7 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.OAuth2AccessDenied(""))
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errorsv2.NewInvalidClientError())
 
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
@@ -296,7 +295,7 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 	v.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusInternalServerError, w.statusCode)
-	w.validateError(t, coreapi.ServerError, "certificate propagation failure")
+	w.validateError(t, string(errorsv2.APIErrorCodeInternal))
 }
 
 // TestServiceToServiceCertificateInvalid tests the response when a client certificate
@@ -322,7 +321,7 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 	v.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusInternalServerError, w.statusCode)
-	w.validateError(t, coreapi.ServerError, "certificate propagation failure")
+	w.validateError(t, string(errorsv2.APIErrorCodeInternal))
 }
 
 // TestServiceToServiceAuthenticationFailure tests the response when authentication fails.
@@ -333,7 +332,7 @@ func TestServiceToServiceAuthenticationFailure(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.OAuth2AccessDenied(""))
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errorsv2.NewInvalidClientError())
 
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
@@ -373,7 +372,7 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 	v.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusBadRequest, w.statusCode)
-	w.validateError(t, coreapi.InvalidRequest, "principal propagation failure for authentication")
+	w.validateError(t, string(errorsv2.APIErrorCodeInvalidRequest))
 }
 
 // TestServiceToServiceAuthenticationSuccess tests a full service to service authenticated

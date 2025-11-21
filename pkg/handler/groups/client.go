@@ -18,13 +18,12 @@ package groups
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -112,27 +111,46 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Group
 		return nil, err
 	}
 
-	result := &unikornv1.GroupList{}
-
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list groups").WithError(err)
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: organization.Namespace},
 	}
 
-	return convertList(result), nil
+	var list unikornv1.GroupList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve groups: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return convertList(&list), nil
 }
 
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, groupID string) (*unikornv1.Group, error) {
-	result := &unikornv1.Group{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, result); err != nil {
-		if kerrors.IsNotFound(err) {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
-
-		return nil, errors.OAuth2ServerError("failed to get group").WithError(err)
+func (c *Client) get(ctx context.Context, namespace, name string) (*unikornv1.Group, error) {
+	key := client.ObjectKey{
+		Namespace: namespace,
+		Name:      name,
 	}
 
-	return result, nil
+	var group unikornv1.Group
+	if err := c.client.Get(ctx, key, &group); err != nil {
+		if kerrors.IsNotFound(err) {
+			err = errorsv2.NewResourceMissingError("group").
+				WithCause(err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve group: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &group, nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*openapi.GroupRead, error) {
@@ -141,7 +159,7 @@ func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*open
 		return nil, err
 	}
 
-	result, err := c.get(ctx, organization, groupID)
+	result, err := c.get(ctx, organization.Namespace, groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -165,41 +183,71 @@ func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
 
 // findUserBySubject finds a User resource by subject field.
 func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikornv1.User, error) {
-	var users unikornv1.UserList
-	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list users").WithError(err)
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: c.namespace},
 	}
 
-	for i := range users.Items {
-		if users.Items[i].Spec.Subject == subject {
-			return &users.Items[i], nil
+	var list unikornv1.UserList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve users: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	for _, user := range list.Items {
+		if user.Spec.Subject == subject {
+			return &user, nil
 		}
 	}
 
-	return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s does not exist", subject))
+	err := errorsv2.NewInvalidRequestError().
+		WithSimpleCausef("no user found with subject %s", subject).
+		WithErrorDescription("One of the specified subjects is invalid or cannot be resolved.").
+		Prefixed()
+
+	return nil, err
 }
 
 // findOrgUserByUserID finds an OrganizationUser in an org by the user ID label.
-func (c *Client) findOrgUserByUserID(ctx context.Context, orgNamespace, userID string) (*unikornv1.OrganizationUser, error) {
-	var orgUsers unikornv1.OrganizationUserList
-
-	selector := labels.SelectorFromSet(labels.Set{constants.UserLabel: userID})
-	if err := c.client.List(ctx, &orgUsers, &client.ListOptions{Namespace: orgNamespace, LabelSelector: selector}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list organization users").WithError(err)
+func (c *Client) findOrgUserByUserID(ctx context.Context, namespace, userID string) (*unikornv1.OrganizationUser, error) {
+	opts := []client.ListOption{
+		&client.ListOptions{
+			Namespace: namespace,
+			LabelSelector: labels.SelectorFromSet(labels.Set{
+				constants.UserLabel: userID,
+			}),
+		},
 	}
 
-	switch len(orgUsers.Items) {
-	case 0:
-		return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with ID %s is not a member of this organization", userID))
-	case 1:
-		return &orgUsers.Items[0], nil
-	default:
-		return nil, errors.OAuth2ServerError(fmt.Sprintf("inconsistent number of organisation users for user with ID %s", userID))
+	var list unikornv1.OrganizationUserList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve organization users: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
+
+	if len(list.Items) == 0 {
+		err := errorsv2.NewResourceMissingError("organization user").Prefixed()
+		return nil, err
+	}
+
+	if len(list.Items) > 1 {
+		err := errorsv2.NewInternalError().
+			WithSimpleCause("multiple organization users found").
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &list.Items[0], nil
 }
 
 // subjectsToUserIDs converts internal subjects to UserIDs.
-func (c *Client) subjectsToUserIDs(ctx context.Context, subjects []unikornv1.GroupSubject, organization *organizations.Meta) ([]string, error) {
+func (c *Client) subjectsToUserIDs(ctx context.Context, namespace string, subjects []unikornv1.GroupSubject) ([]string, error) {
 	var userIDs []string //nolint:prealloc
 
 	for _, subject := range subjects {
@@ -212,7 +260,7 @@ func (c *Client) subjectsToUserIDs(ctx context.Context, subjects []unikornv1.Gro
 			return nil, err
 		}
 
-		orgUser, err := c.findOrgUserByUserID(ctx, organization.Namespace, user.Name)
+		orgUser, err := c.findOrgUserByUserID(ctx, namespace, user.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -224,20 +272,54 @@ func (c *Client) subjectsToUserIDs(ctx context.Context, subjects []unikornv1.Gro
 }
 
 // userIDsToSubjects converts UserIDs to subjects.
-func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organization *organizations.Meta) ([]unikornv1.GroupSubject, error) {
-	subjects := make([]unikornv1.GroupSubject, 0, len(userIDs))
+func (c *Client) userIDsToSubjects(ctx context.Context, namespace string, organizationUserIDs []string) ([]unikornv1.GroupSubject, error) {
+	subjects := make([]unikornv1.GroupSubject, 0, len(organizationUserIDs))
 
-	for _, orgUserID := range userIDs {
-		var orguser unikornv1.OrganizationUser
-		if err := c.client.Get(ctx, client.ObjectKey{Name: orgUserID, Namespace: organization.Namespace}, &orguser); err != nil {
-			return nil, errors.OAuth2ServerError("failed to get organization member record").WithError(err)
+	for _, organizationUserID := range organizationUserIDs {
+		organizationUserKey := client.ObjectKey{
+			Namespace: namespace,
+			Name:      organizationUserID,
 		}
 
-		userid := orguser.Labels[constants.UserLabel]
+		var organizationUser unikornv1.OrganizationUser
+		if err := c.client.Get(ctx, organizationUserKey, &organizationUser); err != nil {
+			if kerrors.IsNotFound(err) {
+				err = errorsv2.NewInvalidRequestError().
+					WithCausef("no organization user found: %w", err).
+					WithErrorDescription("One of the specified organization IDs is invalid or cannot be resolved.").
+					Prefixed()
+
+				return nil, err
+			}
+
+			err = errorsv2.NewInternalError().
+				WithCausef("failed to retrieve organization user: %w", err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		userKey := client.ObjectKey{
+			Namespace: c.namespace,
+			Name:      organizationUser.Labels[constants.UserLabel],
+		}
 
 		var user unikornv1.User
-		if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
-			return nil, errors.OAuth2ServerError("failed to get user record").WithError(err)
+		if err := c.client.Get(ctx, userKey, &user); err != nil {
+			if kerrors.IsNotFound(err) {
+				err = errorsv2.NewInvalidRequestError().
+					WithCausef("no user found: %w", err).
+					WithErrorDescription("One of the specified organization IDs is invalid or cannot be resolved.").
+					Prefixed()
+
+				return nil, err
+			}
+
+			err = errorsv2.NewInternalError().
+				WithCausef("failed to retrieve user: %w", err).
+				Prefixed()
+
+			return nil, err
 		}
 
 		subjects = append(subjects, unikornv1.GroupSubject{
@@ -266,20 +348,23 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 	)
 
 	if in.Spec.Subjects != nil && in.Spec.UserIDs != nil {
-		return errors.OAuth2InvalidRequest("cannot provide both subjects and userIDs")
+		return errorsv2.NewInvalidRequestError().
+			WithSimpleCause("both subjects and userIDs provided").
+			WithErrorDescription("The request must include either 'subjects' or 'userIDs', but not both.").
+			Prefixed()
 	}
 
 	if in.Spec.Subjects != nil {
 		subjects = generateSubjects(*in.Spec.Subjects)
 
-		userIDs, err = c.subjectsToUserIDs(ctx, subjects, organization)
+		userIDs, err = c.subjectsToUserIDs(ctx, organization.Namespace, subjects)
 		if err != nil {
 			return err
 		}
 	} else if in.Spec.UserIDs != nil {
 		userIDs = *in.Spec.UserIDs
 
-		subjects, err = c.userIDsToSubjects(ctx, userIDs, organization)
+		subjects, err = c.userIDsToSubjects(ctx, organization.Namespace, userIDs)
 		if err != nil {
 			return err
 		}
@@ -294,26 +379,49 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.GroupWrite) (*unikornv1.Group, error) {
 	// Validate roles exist.
 	for _, roleID := range in.Spec.RoleIDs {
-		var resource unikornv1.Role
-
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: roleID}, &resource); err != nil {
-			if kerrors.IsNotFound(err) {
-				return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("role ID %s does not exist", roleID)).WithError(err)
-			}
-
-			return nil, errors.OAuth2ServerError("failed to validate role ID").WithError(err)
+		key := client.ObjectKey{
+			Namespace: organization.Namespace,
+			Name:      roleID,
 		}
 
-		if resource.Spec.Protected {
-			return nil, errors.HTTPForbidden("requested role is protected")
+		var role unikornv1.Role
+		if err := c.client.Get(ctx, key, &role); err != nil {
+			if kerrors.IsNotFound(err) {
+				err = errorsv2.NewInvalidRequestError().
+					WithCausef("no role found: %w", err).
+					WithErrorDescription("One of the specified role IDs is invalid or cannot be resolved.").
+					Prefixed()
+
+				return nil, err
+			}
+
+			err = errorsv2.NewInternalError().
+				WithCausef("failed to retrieve role: %w", err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		if role.Spec.Protected {
+			err := errorsv2.NewInvalidRequestError().
+				WithSimpleCause("requested role is protected").
+				WithErrorDescription("One of the specified role IDs is invalid or cannot be resolved.").
+				Prefixed()
+
+			return nil, err
 		}
 
 		// Check that the user is allowed to grant the role, this closes a security
-		// hole where a user can cause privilige escalation by just knowing the
+		// hole where a user can cause privilege escalation by just knowing the
 		// elevated role ID.  As these are typically generated by hashing the name
 		// guessing them is pretty trivial.
-		if err := rbac.AllowRole(ctx, &resource, organization.ID); err != nil {
-			return nil, errors.HTTPForbidden("requested role cannot be granted").WithError(err)
+		if err := rbac.AllowRole(ctx, &role, organization.ID); err != nil {
+			err = errorsv2.NewInvalidRequestError().
+				WithCausef("requested role cannot be granted: %w", err).
+				WithErrorDescription("One of the specified role IDs is invalid or cannot be resolved.").
+				Prefixed()
+
+			return nil, err
 		}
 	}
 
@@ -332,7 +440,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, err
 	}
 
 	return out, nil
@@ -350,7 +458,11 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create group").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create group: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return convert(resource), nil
@@ -362,7 +474,7 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 		return err
 	}
 
-	current, err := c.get(ctx, organization, groupID)
+	current, err := c.get(ctx, organization.Namespace, groupID)
 	if err != nil {
 		return err
 	}
@@ -373,7 +485,7 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return err
 	}
 
 	updated := current.DeepCopy()
@@ -382,7 +494,9 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch group").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to patch group: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -394,28 +508,32 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 		return err
 	}
 
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: organization.Namespace},
+	}
+
 	// Projects have a "foreign key" into groups, so we need to remove that
 	// association with the group that's about to be deleted.  Failure to
 	// do so may cause RBAC problems otherwise.
-	var projects unikornv1.ProjectList
-
-	if err := c.client.List(ctx, &projects, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
-		}
-
-		return errors.OAuth2ServerError("failed to list projects").WithError(err)
+	var list unikornv1.ProjectList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		return errorsv2.NewInternalError().
+			WithCausef("failed to retrieve projects: %w", err).
+			Prefixed()
 	}
 
-	for i := range projects.Items {
-		project := &projects.Items[i]
+	for _, project := range list.Items {
+		index := slices.Index(project.Spec.GroupIDs, groupID)
+		if index < 0 {
+			continue
+		}
 
-		if index := slices.Index(project.Spec.GroupIDs, groupID); index >= 0 {
-			project.Spec.GroupIDs = slices.Delete(project.Spec.GroupIDs, index, index+1)
+		project.Spec.GroupIDs = slices.Delete(project.Spec.GroupIDs, index, index+1)
 
-			if err := c.client.Update(ctx, project); err != nil {
-				return errors.OAuth2ServerError("failed to update project").WithError(err)
-			}
+		if err := c.client.Update(ctx, &project); err != nil {
+			return errorsv2.NewInternalError().
+				WithCausef("failed to update project: %w", err).
+				Prefixed()
 		}
 	}
 
@@ -428,10 +546,14 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 
 	if err := c.client.Delete(ctx, resource); err != nil {
 		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
+			return errorsv2.NewResourceMissingError("group").
+				WithCause(err).
+				Prefixed()
 		}
 
-		return errors.OAuth2ServerError("failed to delete group").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to delete group: %w", err).
+			Prefixed()
 	}
 
 	return nil

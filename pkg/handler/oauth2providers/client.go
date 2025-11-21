@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -46,18 +46,30 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, providerID string) (*unikornv1.OAuth2Provider, error) {
-	result := &unikornv1.OAuth2Provider{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: providerID}, result); err != nil {
-		if kerrors.IsNotFound(err) {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
-
-		return nil, errors.OAuth2ServerError("failed to get oauth2 provider").WithError(err)
+func (c *Client) get(ctx context.Context, namespace, name string) (*unikornv1.OAuth2Provider, error) {
+	key := client.ObjectKey{
+		Namespace: namespace,
+		Name:      name,
 	}
 
-	return result, nil
+	var provider unikornv1.OAuth2Provider
+	if err := c.client.Get(ctx, key, &provider); err != nil {
+		if kerrors.IsNotFound(err) {
+			err = errorsv2.NewResourceMissingError("oauth2 provider").
+				WithCause(err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve oauth2 provider: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &provider, nil
 }
 
 func convert(in *unikornv1.OAuth2Provider) *openapi.Oauth2ProviderRead {
@@ -97,18 +109,30 @@ func convertList(in *unikornv1.OAuth2ProviderList) openapi.Oauth2Providers {
 	return out
 }
 
-func (c *Client) ListGlobal(ctx context.Context) (openapi.Oauth2Providers, error) {
-	options := &client.ListOptions{
-		Namespace: c.namespace,
-	}
+func (c *Client) list(ctx context.Context, opts ...client.ListOption) (*unikornv1.OAuth2ProviderList, error) {
+	var list unikornv1.OAuth2ProviderList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve oauth2 providers: %w", err).
+			Prefixed()
 
-	var result unikornv1.OAuth2ProviderList
-
-	if err := c.client.List(ctx, &result, options); err != nil {
 		return nil, err
 	}
 
-	return convertList(&result), nil
+	return &list, nil
+}
+
+func (c *Client) ListGlobal(ctx context.Context) (openapi.Oauth2Providers, error) {
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: c.namespace},
+	}
+
+	list, err := c.list(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return convertList(list), nil
 }
 
 func (c *Client) List(ctx context.Context, organizationID string) (openapi.Oauth2Providers, error) {
@@ -117,13 +141,16 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Oauth
 		return nil, err
 	}
 
-	result := &unikornv1.OAuth2ProviderList{}
-
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to get organization oauth2 provider").WithError(err)
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: organization.Namespace},
 	}
 
-	return convertList(result), nil
+	list, err := c.list(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return convertList(list), nil
 }
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.Oauth2ProviderWrite) (*unikornv1.OAuth2Provider, error) {
@@ -136,7 +163,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, err
 	}
 
 	// TODO: always require this to be written.
@@ -161,7 +188,11 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create oauth2 provider").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create oauth2 provider: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	return convert(resource), nil
@@ -173,7 +204,7 @@ func (c *Client) Update(ctx context.Context, organizationID, providerID string, 
 		return err
 	}
 
-	current, err := c.get(ctx, organization, providerID)
+	current, err := c.get(ctx, organization.Namespace, providerID)
 	if err != nil {
 		return err
 	}
@@ -184,7 +215,7 @@ func (c *Client) Update(ctx context.Context, organizationID, providerID string, 
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return err
 	}
 
 	updated := current.DeepCopy()
@@ -193,7 +224,9 @@ func (c *Client) Update(ctx context.Context, organizationID, providerID string, 
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch oauth2 provider").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to patch oauth2 provider: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -214,10 +247,14 @@ func (c *Client) Delete(ctx context.Context, organizationID, providerID string) 
 
 	if err := c.client.Delete(ctx, resource); err != nil {
 		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
+			return errorsv2.NewResourceMissingError("oauth2 provider").
+				WithCause(err).
+				Prefixed()
 		}
 
-		return errors.OAuth2ServerError("failed to delete oauth2 provider").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to delete oauth2 provider: %w", err).
+			Prefixed()
 	}
 
 	return nil

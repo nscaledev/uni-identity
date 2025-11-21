@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
-	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
@@ -123,7 +123,7 @@ func createUser(t *testing.T, c client.Client, id, subject string, groups []*uni
 	// order to set some Kubernetes object metadata.
 	ctx := newContext(t)
 	_, err := userclient.Create(ctx, testOrgID, &openapi.UserWrite{
-		Metadata: &coreopenapi.ResourceWriteMetadata{
+		Metadata: &coreapi.ResourceWriteMetadata{
 			Name: id,
 		},
 		Spec: openapi.UserSpec{
@@ -154,7 +154,7 @@ func createServiceAccount(t *testing.T, c client.Client, name, orgID, orgNamespa
 	// It would be better to use the API, but creating service accounts needs a token issuer,
 	// and that is a pain to set up. So: fake it by creating a record in Kubernetes the way
 	// the handler would, rather than going through the API.
-	meta := &coreopenapi.ResourceWriteMetadata{
+	meta := &coreapi.ResourceWriteMetadata{
 		Name: name,
 	}
 

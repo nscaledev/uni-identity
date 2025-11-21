@@ -40,7 +40,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	"github.com/unikorn-cloud/core/pkg/util/retry"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
@@ -57,6 +57,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/util"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/utils/ptr"
 
@@ -64,14 +65,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const (
-	SessionCookie = "unikorn-identity-session"
-)
+const SessionCookie = "unikorn-identity-session"
 
 var (
 	ErrUnsupportedProviderType = goerrors.New("unhandled provider type")
 	ErrReference               = goerrors.New("resource reference error")
 	ErrUserNotDomainMapped     = goerrors.New("user is not domain mapped to an organization")
+	ErrUserNotFound            = goerrors.New("user not found")
 )
 
 type Options struct {
@@ -296,13 +296,17 @@ func (e *redirector) raise(kind Error, description string) {
 
 // lookupClient returns the oauth2 client given its ID.
 func (a *Authenticator) lookupClient(ctx context.Context, id string) (*unikornv1.OAuth2Client, error) {
-	cli := &unikornv1.OAuth2Client{}
+	key := client.ObjectKey{
+		Namespace: a.namespace,
+		Name:      id,
+	}
 
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: id}, cli); err != nil {
+	var oauth2Client unikornv1.OAuth2Client
+	if err := a.client.Get(ctx, key, &oauth2Client); err != nil {
 		return nil, err
 	}
 
-	return cli, nil
+	return &oauth2Client, nil
 }
 
 // lookupOrganization maps from an email address to an organization, this handles
@@ -315,19 +319,18 @@ func (a *Authenticator) lookupOrganization(ctx context.Context, email string) (*
 	// TODO: error checking.
 	domain := parts[1]
 
-	var organizations unikornv1.OrganizationList
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: a.namespace},
+	}
 
-	if err := a.client.List(ctx, &organizations, &client.ListOptions{Namespace: a.namespace}); err != nil {
+	var list unikornv1.OrganizationList
+	if err := a.client.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 
-	for i := range organizations.Items {
-		if organizations.Items[i].Spec.Domain == nil {
-			continue
-		}
-
-		if *organizations.Items[i].Spec.Domain == domain {
-			return &organizations.Items[i], nil
+	for _, organization := range list.Items {
+		if organization.Spec.Domain != nil && *organization.Spec.Domain == domain {
+			return &organization, nil
 		}
 	}
 
@@ -336,13 +339,16 @@ func (a *Authenticator) lookupOrganization(ctx context.Context, email string) (*
 
 // getProviders lists all identity providers.
 func (a *Authenticator) getProviders(ctx context.Context) (*unikornv1.OAuth2ProviderList, error) {
-	resources := &unikornv1.OAuth2ProviderList{}
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: a.namespace},
+	}
 
-	if err := a.client.List(ctx, resources, &client.ListOptions{Namespace: a.namespace}); err != nil {
+	var list unikornv1.OAuth2ProviderList
+	if err := a.client.List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 
-	return resources, nil
+	return &list, nil
 }
 
 func (a *Authenticator) getProviderTypes(ctx context.Context) ([]string, error) {
@@ -380,29 +386,28 @@ func (a *Authenticator) lookupProviderByType(ctx context.Context, t unikornv1.Id
 
 // lookupProviderByID finds the provider based on ID.
 func (a *Authenticator) lookupProviderByID(ctx context.Context, id string, organization *unikornv1.Organization) (*unikornv1.OAuth2Provider, error) {
-	providers := &unikornv1.OAuth2ProviderList{}
-
-	if err := a.client.List(ctx, providers); err != nil {
+	var list unikornv1.OAuth2ProviderList
+	if err := a.client.List(ctx, &list); err != nil {
 		return nil, err
 	}
 
-	find := func(provider unikornv1.OAuth2Provider) bool {
+	isTargetOAuth2Provider := func(provider unikornv1.OAuth2Provider) bool {
 		return provider.Name == id
 	}
 
-	index := slices.IndexFunc(providers.Items, find)
+	index := slices.IndexFunc(list.Items, isTargetOAuth2Provider)
 	if index < 0 {
 		return nil, fmt.Errorf("%w: requested provider does not exist", ErrReference)
 	}
 
-	provider := &providers.Items[index]
+	provider := &list.Items[index]
 
 	// If the provider is neither global, nor scoped to the provided organization, reject.
 	// NOTE: when called by the authorization endpoint and an email is provided, that email
 	// maps to an organization, and the provider must be in that organization to avoid
 	// jailbreaking.  In later provider authorization and token exchanges we can trust the
-	// ID as it's already been checked and it has been cryptographically protected against
-	// tamering.
+	// ID as it's already been checked, and it has been cryptographically protected against
+	// tampering.
 	if provider.Namespace != a.namespace && (organization == nil || provider.Namespace != organization.Status.Namespace) {
 		return nil, fmt.Errorf("%w: requested provider not allowed", ErrReference)
 	}
@@ -410,32 +415,28 @@ func (a *Authenticator) lookupProviderByID(ctx context.Context, id string, organ
 	return provider, nil
 }
 
-// OAuth2AuthorizationValidateNonRedirecting checks authorization request parameters
+// authorizationValidateNonRedirecting checks authorization request parameters
 // are valid that directly control the ability to redirect, and returns some helpful
 // debug in HTML.
 func (a *Authenticator) authorizationValidateNonRedirecting(w http.ResponseWriter, r *http.Request, query url.Values) (*unikornv1.OAuth2Client, bool) {
 	if !query.Has("client_id") {
 		htmlError(w, r, http.StatusBadRequest, "client_id is not specified")
-
 		return nil, false
 	}
 
 	if !query.Has("redirect_uri") {
 		htmlError(w, r, http.StatusBadRequest, "redirect_uri is not specified")
-
 		return nil, false
 	}
 
 	client, err := a.lookupClient(r.Context(), query.Get("client_id"))
 	if err != nil {
 		htmlError(w, r, http.StatusBadRequest, "client_id does not exist")
-
 		return nil, false
 	}
 
 	if client.Spec.RedirectURI != query.Get("redirect_uri") {
 		htmlError(w, r, http.StatusBadRequest, "redirect_uri is invalid")
-
 		return nil, false
 	}
 
@@ -526,13 +527,21 @@ type LoginStateClaims struct {
 }
 
 func (a *Authenticator) getUser(ctx context.Context, id string) (*unikornv1.User, error) {
-	user := &unikornv1.User{}
+	key := client.ObjectKey{
+		Namespace: a.namespace,
+		Name:      id,
+	}
 
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: id}, user); err != nil {
+	var user unikornv1.User
+	if err := a.client.Get(ctx, key, &user); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, ErrUserNotFound
+		}
+
 		return nil, err
 	}
 
-	return user, nil
+	return &user, nil
 }
 
 //nolint:cyclop
@@ -546,9 +555,8 @@ func (a *Authenticator) authorizationSilent(r *http.Request, redirector *redirec
 		return false
 	}
 
-	code := &Code{}
-
-	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), cookie.Value, code, jose.TokenTypeAuthorizationCode); err != nil {
+	var code Code
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), cookie.Value, &code, jose.TokenTypeAuthorizationCode); err != nil {
 		return false
 	}
 
@@ -608,7 +616,7 @@ func (a *Authenticator) authorizationSilent(r *http.Request, redirector *redirec
 		return false
 	}
 
-	q := url.Values{}
+	q := make(url.Values)
 	q.Set("code", newCode)
 
 	if query.Has("state") {
@@ -648,6 +656,7 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 	query, err := getAuthorizationQuery(r)
 	if err != nil {
 		htmlError(w, r, http.StatusBadRequest, "failed to get authorization query")
+		return
 	}
 
 	// Get the client corresponding to the request, if this errors then we cannot
@@ -696,8 +705,7 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loginQuery := url.Values{}
-
+	loginQuery := make(url.Values)
 	loginQuery.Set("state", state)
 	loginQuery.Set("callback", "https://"+r.Host+"/oauth2/v2/login")
 	loginQuery.Set("providers", strings.Join(supportedTypes, " "))
@@ -736,9 +744,8 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state := &LoginStateClaims{}
-
-	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), r.Form.Get("state"), state, jose.TokenTypeLoginDialogState); err != nil {
+	var state LoginStateClaims
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), r.Form.Get("state"), &state, jose.TokenTypeLoginDialogState); err != nil {
 		htmlError(w, r, http.StatusBadRequest, "login state failed to decode")
 		return
 	}
@@ -789,7 +796,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 // providerAuthenticationRequest kicks off the authorization flow with the backend
 // provider.
 func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *http.Request, redirector *redirector, provider *unikornv1.OAuth2Provider, query url.Values, email string) {
-	// Try infer the email address if one was not specified.
+	// Try to infer the email address if one was not specified.
 	if email == "" && query.Has("login_hint") {
 		email = query.Get("login_hint")
 	}
@@ -807,9 +814,9 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 	// it's talking to the same client.
 	codeVerifier := oauth2.GenerateVerifier()
 
-	// Rather than cache any state we require after the oauth rediretion dance, which
+	// Rather than cache any state we require after the oauth redirection dance, which
 	// requires persistent state at the minimum, and a database in the case of multi-head
-	// deployments, just encrypt it and send with the authoriation request.
+	// deployments, just encrypt it and send with the authorization request.
 	oidcState := &State{
 		OAuth2Provider: provider.Name,
 		Nonce:          nonce,
@@ -853,7 +860,7 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
-// OIDCCallback is called by the authorization endpoint in order to return an
+// Callback is called by the authorization endpoint in order to return an
 // authorization back to us.  We then exchange the code for an ID token, and
 // refresh token.  Remember, as far as the client is concerned we're still doing
 // the code grant, so return errors in the redirect query.
@@ -869,10 +876,8 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract our state for the next part...
-	state := &State{}
-
-	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), query.Get("state"), state, jose.TokenTypeLoginState); err != nil {
+	var state State
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), query.Get("state"), &state, jose.TokenTypeLoginState); err != nil {
 		htmlError(w, r, http.StatusBadRequest, "oidc state failed to decode")
 		return
 	}
@@ -921,7 +926,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	// either deny entry or let them signup.
 	user, err := a.rbac.GetUser(r.Context(), idToken.Email.Email)
 	if err != nil {
-		if !goerrors.Is(err, rbac.ErrResourceReference) {
+		if !goerrors.Is(err, rbac.ErrUserNotFound) {
 			redirector.raise(ErrorServerError, "user lookup failure")
 		}
 
@@ -955,7 +960,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 
 		a.accountCreationCache.Add(state, nil, 10*time.Minute)
 
-		q := url.Values{}
+		q := make(url.Values)
 		q.Set("state", state)
 		q.Set("callback", "https://"+r.Host+"/oauth2/v2/onboard")
 		q.Set("email", idToken.Email.Email)
@@ -1002,7 +1007,7 @@ func (a *Authenticator) authorizationCodeRedirect(w http.ResponseWriter, r *http
 		return
 	}
 
-	q := url.Values{}
+	q := make(url.Values)
 	q.Set("code", codeCipher)
 
 	if clientQuery.Has("state") {
@@ -1039,7 +1044,7 @@ type OnboardWebhookData struct {
 	Email string `json:"email"`
 	// Username of the user.
 	Username string `json:"username"`
-	// Forname, if available, of the user.
+	// Forename, if available, of the user.
 	Forename string `json:"forename,omitempty"`
 	// Surname, if available, of the user.
 	Surname string `json:"surname,omitempty"`
@@ -1080,7 +1085,6 @@ func (a *Authenticator) validateOnboardState(ctx context.Context, w http.Respons
 	}
 
 	stateRaw := r.Form.Get("state")
-
 	if _, ok := a.accountCreationCache.Get(stateRaw); !ok {
 		htmlError(w, r, http.StatusBadRequest, "stale account creation state")
 		return nil, nil, false
@@ -1088,9 +1092,8 @@ func (a *Authenticator) validateOnboardState(ctx context.Context, w http.Respons
 
 	a.accountCreationCache.Remove(stateRaw)
 
-	state := &OnboardingState{}
-
-	if err := a.jwtIssuer.DecodeJWEToken(ctx, stateRaw, state, jose.TokenTypeOnboardState); err != nil {
+	var state OnboardingState
+	if err := a.jwtIssuer.DecodeJWEToken(ctx, stateRaw, &state, jose.TokenTypeOnboardState); err != nil {
 		htmlError(w, r, http.StatusBadRequest, "account creation state failed to decode")
 		return nil, nil, false
 	}
@@ -1101,7 +1104,7 @@ func (a *Authenticator) validateOnboardState(ctx context.Context, w http.Respons
 		return nil, nil, false
 	}
 
-	return state, query, true
+	return &state, query, true
 }
 
 // getInternalIssuer returns the conventional token issuer for tokens issued here.
@@ -1130,9 +1133,12 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 
 	// List all global roles available and filter based on whether they are usable
 	// and part of the requested set.
-	roles := &unikornv1.RoleList{}
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: a.namespace},
+	}
 
-	if err := a.client.List(ctx, roles, &client.ListOptions{Namespace: a.namespace}); err != nil {
+	var list unikornv1.RoleList
+	if err := a.client.List(ctx, &list, opts...); err != nil {
 		redirector.raise(ErrorServerError, "failed to list roles")
 		return
 	}
@@ -1143,17 +1149,17 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 		requestedRoles = strings.Split(r.Form.Get("roles"), " ")
 	}
 
-	roles.Items = slices.DeleteFunc(roles.Items, func(role unikornv1.Role) bool {
+	list.Items = slices.DeleteFunc(list.Items, func(role unikornv1.Role) bool {
 		return role.Spec.Protected || !slices.Contains(requestedRoles, role.Labels[constants.NameLabel])
 	})
 
-	roleIDs := make([]string, len(roles.Items))
+	roleIDs := make([]string, len(list.Items))
 
-	for i := range roles.Items {
-		roleIDs[i] = roles.Items[i].Name
+	for i := range list.Items {
+		roleIDs[i] = list.Items[i].Name
 	}
 
-	// Setup the context for auditing and RBAC.
+	// Set up the context for auditing and RBAC.
 	// NOTE: we could bypass the handler functions to avoid RBAC entirely, we
 	// are well within rights!
 	info := &authorization.Info{
@@ -1351,8 +1357,11 @@ func (a *Authenticator) notifyAccountCreation(ctx context.Context, redirector *r
 
 // tokenValidate does any request validation when issuing a token.
 func tokenValidate(r *http.Request) error {
-	if r.Form.Get("grant_type") != "authorization_code" {
-		return errors.OAuth2UnsupportedGrantType("grant_type must be 'authorization_code'")
+	if grantType := r.Form.Get("grant_type"); grantType != "authorization_code" {
+		return errorsv2.NewInvalidGrantError().
+			WithSimpleCausef("unsupported grant type: %s", grantType).
+			WithErrorDescription("The provided grant type is invalid.").
+			Prefixed()
 	}
 
 	required := []string{
@@ -1362,7 +1371,10 @@ func tokenValidate(r *http.Request) error {
 
 	for _, parameter := range required {
 		if !r.Form.Has(parameter) {
-			return errors.OAuth2InvalidRequest(parameter + " must be specified")
+			return errorsv2.NewInvalidRequestError().
+				WithSimpleCausef("missing required parameter: %s", parameter).
+				WithErrorDescriptionf("The required parameter '%s' is missing.", parameter).
+				Prefixed()
 		}
 	}
 
@@ -1372,20 +1384,28 @@ func tokenValidate(r *http.Request) error {
 // tokenValidateCode validates the request against the parsed code.
 func tokenValidateCode(r *http.Request, query url.Values) error {
 	if query.Get("redirect_uri") != r.Form.Get("redirect_uri") {
-		return errors.OAuth2InvalidGrant("redirect_uri mismatch")
+		return errorsv2.NewInvalidRequestError().
+			WithSimpleCause("redirect_uri mismatch with authorization code").
+			WithErrorDescription("The provided 'redirect_uri' does not match the registered URI for this client.").
+			Prefixed()
 	}
 
 	// PKCE is optional, but highly recommended!
 	if query.Has("code_challenge") {
+		challenge := query.Get("code_challenge")
+		verifier := r.Form.Get("code_verifier")
+
 		switch getCodeChallengeMethod(query) {
 		case openapi.Plain:
-			if query.Get("code_challenge") != r.Form.Get("code_verifier") {
-				return errors.OAuth2InvalidClient("code_verifier invalid")
-			}
 		case openapi.S256:
-			if query.Get("code_challenge") != oauth2.S256ChallengeFromVerifier(r.Form.Get("code_verifier")) {
-				return errors.OAuth2InvalidClient("code_verifier invalid")
-			}
+			verifier = oauth2.S256ChallengeFromVerifier(verifier)
+		}
+
+		if challenge != verifier {
+			return errorsv2.NewInvalidGrantError().
+				WithSimpleCause("code challenge and verifier mismatch").
+				WithErrorDescription("The code verifier does not match the code challenge associated with this authorization code.").
+				Prefixed()
 		}
 	}
 
@@ -1454,8 +1474,18 @@ func (a *Authenticator) oidcIDToken(r *http.Request, idToken *oidc.IDToken, quer
 func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) error {
 	clientID, clientSecret, ok := r.BasicAuth()
 	if !ok {
-		if !r.Form.Has("client_id") || !r.Form.Has("client_secret") {
-			return errors.OAuth2ServerError("client ID secret not set in request body")
+		if !r.Form.Has("client_id") {
+			return errorsv2.NewInvalidRequestError().
+				WithSimpleCause("missing required parameter: client_id").
+				WithErrorDescription("The required parameter 'client_id' is missing.").
+				Prefixed()
+		}
+
+		if !r.Form.Has("client_secret") {
+			return errorsv2.NewInvalidClientError().
+				WithSimpleCause("missing required parameter: client_secret").
+				WithErrorDescription("Client authentication failed because the client_secret is missing.").
+				Prefixed()
 		}
 
 		clientID = r.Form.Get("client_id")
@@ -1463,20 +1493,37 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 	}
 
 	if query.Get("client_id") != clientID {
-		return errors.OAuth2InvalidGrant("client_id mismatch")
+		return errorsv2.NewInvalidClientError().
+			WithSimpleCause("client_id mismatch with authorization code").
+			WithErrorDescription("The client_id in the request does not match the client identifier associated with this authorization code.").
+			Prefixed()
 	}
 
 	client, err := a.lookupClient(r.Context(), query.Get("client_id"))
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup client").WithError(err)
+		if kerrors.IsNotFound(err) {
+			return errorsv2.NewInvalidClientError().
+				WithSimpleCause("client_id valid but no oauth2 client found").
+				WithErrorDescription("The client could not be authenticated.").
+				Prefixed()
+		}
+
+		return errorsv2.NewInternalError().
+			WithCausef("failed to retrieve oauth2 client: %w", err).
+			Prefixed()
 	}
 
 	if client.Status.Secret == "" {
-		return errors.OAuth2ServerError("client secret not set")
+		return errorsv2.NewInternalError().
+			WithSimpleCause("client secret missing for oauth2 client").
+			Prefixed()
 	}
 
 	if client.Status.Secret != clientSecret {
-		return errors.OAuth2InvalidRequest("client secret invalid")
+		return errorsv2.NewInvalidClientError().
+			WithSimpleCause("client secret mismatch for oauth2 client").
+			WithErrorDescription("Client authentication failed due to invalid client credentials.").
+			Prefixed()
 	}
 
 	return nil
@@ -1486,14 +1533,23 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
 	user, err := a.rbac.GetActiveUser(ctx, subject)
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup user").WithError(err)
+		if goerrors.Is(err, rbac.ErrUserNotFound) {
+			// REVIEW_ME: Sessions are scoped to a user. If the user doesn't exist,
+			// there are no sessions to revoke, so this should return nil.
+			// return nil
+			_ = err // Temporary workaround to avoid lint error.
+		}
+
+		return errorsv2.NewInternalError().
+			WithCausef("failed to retrieve user: %w", err).
+			Prefixed()
 	}
 
-	lookupSession := func(session unikornv1.UserSession) bool {
+	isTargetUserSession := func(session unikornv1.UserSession) bool {
 		return session.ClientID == clientID && session.AuthorizationCodeID == codeID
 	}
 
-	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
+	index := slices.IndexFunc(user.Spec.Sessions, isTargetUserSession)
 	if index < 0 {
 		return nil
 	}
@@ -1505,7 +1561,9 @@ func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, sub
 	user.Spec.Sessions = append(user.Spec.Sessions[:index], user.Spec.Sessions[index+1:]...)
 
 	if err := a.client.Update(ctx, user); err != nil {
-		return errors.OAuth2ServerError("failed to revoke user session").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to update user during session revocation: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -1520,15 +1578,24 @@ func (a *Authenticator) TokenAuthorizationCode(w http.ResponseWriter, r *http.Re
 
 	codeRaw := r.Form.Get("code")
 
-	code := &Code{}
+	var code Code
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), codeRaw, &code, jose.TokenTypeAuthorizationCode); err != nil {
+		err = errorsv2.NewInvalidGrantError().
+			WithCausef("failed to decode authorization code: %w", err).
+			WithErrorDescription("The provided authorization code is invalid.").
+			Prefixed()
 
-	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), codeRaw, code, jose.TokenTypeAuthorizationCode); err != nil {
-		return nil, errors.OAuth2InvalidRequest("failed to parse code: " + err.Error())
+		return nil, err
 	}
 
 	clientQuery, err := url.ParseQuery(code.ClientQuery)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("failed to parse client query").WithError(err)
+		err = errorsv2.NewInvalidGrantError().
+			WithCausef("failed to parse client query from authorization code: %w", err).
+			WithErrorDescription("The provided authorization code is invalid.").
+			Prefixed()
+
+		return nil, err
 	}
 
 	clientID := clientQuery.Get("client_id")
@@ -1547,7 +1614,12 @@ func (a *Authenticator) TokenAuthorizationCode(w http.ResponseWriter, r *http.Re
 	if _, ok := a.codeCache.Get(codeRaw); !ok {
 		_ = a.revokeSession(r.Context(), clientID, code.ID, code.IDToken.Email.Email)
 
-		return nil, errors.OAuth2InvalidGrant("code is not present in cache")
+		err = errorsv2.NewInvalidGrantError().
+			WithSimpleCause("authorization code reuse detected").
+			WithErrorDescription("The provided authorization code has already been used.").
+			Prefixed()
+
+		return nil, err
 	}
 
 	a.codeCache.Remove(codeRaw)
@@ -1570,12 +1642,20 @@ func (a *Authenticator) TokenAuthorizationCode(w http.ResponseWriter, r *http.Re
 
 	tokens, err := a.Issue(r.Context(), info)
 	if err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to issue token: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
 	// Handle OIDC.
 	idToken, err := a.oidcIDToken(r, code.IDToken, clientQuery, a.options.AccessTokenDuration, oidcHash(tokens.AccessToken), tokens.LastAuthenticationTime)
 	if err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create oidc id token: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
@@ -1593,8 +1673,18 @@ func (a *Authenticator) TokenAuthorizationCode(w http.ResponseWriter, r *http.Re
 func (a *Authenticator) validateClientSecretRefresh(r *http.Request, claims *RefreshTokenClaims) error {
 	clientID, clientSecret, ok := r.BasicAuth()
 	if !ok {
-		if !r.Form.Has("client_id") || !r.Form.Has("client_secret") {
-			return errors.OAuth2ServerError("client ID secret not set in request body")
+		if !r.Form.Has("client_id") {
+			return errorsv2.NewInvalidRequestError().
+				WithSimpleCause("missing required parameter: client_id").
+				WithErrorDescription("The required parameter 'client_id' is missing.").
+				Prefixed()
+		}
+
+		if !r.Form.Has("client_secret") {
+			return errorsv2.NewInvalidClientError().
+				WithSimpleCause("missing required parameter: client_secret").
+				WithErrorDescription("Client authentication failed because the client_secret is missing.").
+				Prefixed()
 		}
 
 		clientID = r.Form.Get("client_id")
@@ -1602,20 +1692,37 @@ func (a *Authenticator) validateClientSecretRefresh(r *http.Request, claims *Ref
 	}
 
 	if claims.Federated.ClientID != clientID {
-		return errors.OAuth2InvalidGrant("client_id mismatch")
+		return errorsv2.NewInvalidClientError().
+			WithSimpleCause("client_id mismatch with authorization code").
+			WithErrorDescription("The client_id in the request does not match the client identifier associated with this authorization code.").
+			Prefixed()
 	}
 
 	client, err := a.lookupClient(r.Context(), claims.Federated.ClientID)
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup client").WithError(err)
+		if kerrors.IsNotFound(err) {
+			return errorsv2.NewInvalidClientError().
+				WithSimpleCause("client_id valid but no oauth2 client found").
+				WithErrorDescription("The client could not be authenticated.").
+				Prefixed()
+		}
+
+		return errorsv2.NewInternalError().
+			WithCausef("failed to retrieve oauth2 client: %w", err).
+			Prefixed()
 	}
 
 	if client.Status.Secret == "" {
-		return errors.OAuth2ServerError("client secret not set")
+		return errorsv2.NewInternalError().
+			WithSimpleCause("client secret missing for oauth2 client").
+			Prefixed()
 	}
 
 	if client.Status.Secret != clientSecret {
-		return errors.OAuth2InvalidRequest("client secret invalid")
+		return errorsv2.NewInvalidClientError().
+			WithSimpleCause("client secret mismatch for oauth2 client").
+			WithErrorDescription("Client authentication failed due to invalid client credentials.").
+			Prefixed()
 	}
 
 	return nil
@@ -1630,20 +1737,35 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 
 	user, err := a.rbac.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup user").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to retrieve user during refresh token validation: %w", err).
+			Prefixed()
 	}
 
-	lookupSession := func(session unikornv1.UserSession) bool {
+	isTargetUserSession := func(session unikornv1.UserSession) bool {
 		return session.ClientID == claims.Federated.ClientID
 	}
 
-	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
+	index := slices.IndexFunc(user.Spec.Sessions, isTargetUserSession)
 	if index < 0 {
-		return errors.OAuth2InvalidGrant("no active session for user found")
+		return errorsv2.NewInvalidGrantError().
+			WithSimpleCause("no active session found during refresh token validation").
+			WithErrorDescription("The provided refresh token is invalid.").
+			Prefixed()
+	}
+
+	if user.Spec.Sessions[index].RefreshToken == "" {
+		return errorsv2.NewInvalidGrantError().
+			WithSimpleCause("refresh token already used").
+			WithErrorDescription("The refresh token has already been used and cannot be used for issuing new access tokens.").
+			Prefixed()
 	}
 
 	if user.Spec.Sessions[index].RefreshToken != refreshToken {
-		return errors.OAuth2InvalidGrant("refresh token reuse")
+		return errorsv2.NewInvalidGrantError().
+			WithSimpleCause("refresh token mismatch during refresh token validation").
+			WithErrorDescription("The provided refresh token is invalid.").
+			Prefixed()
 	}
 
 	// Things can still go wrong between here and issuing the new token, so invalidate
@@ -1653,7 +1775,9 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 	user.Spec.Sessions[index].RefreshToken = ""
 
 	if err := a.client.Update(ctx, user); err != nil {
-		return errors.OAuth2ServerError("failed to revoke user session").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to update user during session revocation: %w", err).
+			Prefixed()
 	}
 
 	return nil
@@ -1664,13 +1788,17 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 	refreshTokenRaw := r.Form.Get("refresh_token")
 
 	// Validate the refresh token and extract the claims.
-	claims := &RefreshTokenClaims{}
+	var claims RefreshTokenClaims
+	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), refreshTokenRaw, &claims, jose.TokenTypeRefreshToken); err != nil {
+		err = errorsv2.NewInvalidGrantError().
+			WithCausef("failed to decode refresh token: %w", err).
+			WithErrorDescription("The provided refresh token is invalid.").
+			Prefixed()
 
-	if err := a.jwtIssuer.DecodeJWEToken(r.Context(), refreshTokenRaw, claims, jose.TokenTypeRefreshToken); err != nil {
-		return nil, errors.OAuth2InvalidGrant("refresh token is invalid or has expired").WithError(err)
+		return nil, err
 	}
 
-	if err := a.validateRefreshToken(r.Context(), r, refreshTokenRaw, claims); err != nil {
+	if err := a.validateRefreshToken(r.Context(), r, refreshTokenRaw, &claims); err != nil {
 		return nil, err
 	}
 
@@ -1684,6 +1812,10 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 
 	tokens, err := a.Issue(r.Context(), info)
 	if err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to issue token: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
@@ -1702,12 +1834,22 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
 	certPEM, err := util.GetClientCertificateHeader(r.Header)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("mTLS client verification failed").WithError(err)
+		err = errorsv2.NewInvalidRequestError().
+			WithCausef("failed to retrieve mTLS client certificate header from request: %w", err).
+			WithErrorDescription("Client authentication failed because the client certificate is missing from the request.").
+			Prefixed()
+
+		return nil, err
 	}
 
 	certificate, err := util.GetClientCertificate(certPEM)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("mTLS certificate validation failed").WithError(err)
+		err = errorsv2.NewInvalidRequestError().
+			WithCausef("failed to parse or validate mTLS client certificate: %w", err).
+			WithErrorDescription("Client authentication failed because the provided client certificate could not be validated.").
+			Prefixed()
+
+		return nil, err
 	}
 
 	thumbprint := util.GetClientCertifcateThumbprint(certificate)
@@ -1724,6 +1866,10 @@ func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Re
 
 	tokens, err := a.Issue(r.Context(), info)
 	if err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to issue token: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
@@ -1739,14 +1885,21 @@ func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Re
 // Token issues an OAuth2 access token from the provided authorization code.
 func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
 	if err := r.ParseForm(); err != nil {
-		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
+		err = errorsv2.NewInvalidRequestError().
+			WithCausef("failed to parse form data: %w", err).
+			WithErrorDescription("Failed to process the request. Ensure all required parameters are correctly formatted.").
+			Prefixed()
+
+		return nil, err
 	}
+
+	grantType := r.Form.Get("grant_type")
 
 	// We support 3 garnt types:
 	// * "authorization_code" is used by all humans in the system
 	// * "refresh_token" is used by anyone to get a new access token
 	// * "client_credentials" is used by other services for IPC
-	switch openapi.GrantType(r.Form.Get("grant_type")) {
+	switch openapi.GrantType(grantType) {
 	case openapi.AuthorizationCode:
 		return a.TokenAuthorizationCode(w, r)
 	case openapi.RefreshToken:
@@ -1755,11 +1908,16 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 		return a.TokenClientCredentials(w, r)
 	}
 
-	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")
+	err := errorsv2.NewUnsupportedGrantTypeError().
+		WithSimpleCausef("unsupported grant type received in token request: %s", grantType).
+		WithErrorDescription("The provided grant type is not supported.").
+		Prefixed()
+
+	return nil, err
 }
 
 // GetUserinfo does access token introspection.
-func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
+func (a *Authenticator) GetUserinfo(ctx context.Context, token string) (*openapi.Userinfo, *Claims, error) {
 	verifyInfo := &VerifyInfo{
 		Issuer:   a.getInternalIssuer(),
 		Audience: a.getAudience(),
@@ -1769,7 +1927,7 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 	// Check the token is from us, for us, and in date.
 	claims, err := a.Verify(ctx, verifyInfo)
 	if err != nil {
-		return nil, nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
+		return nil, nil, err
 	}
 
 	userinfo := &openapi.Userinfo{

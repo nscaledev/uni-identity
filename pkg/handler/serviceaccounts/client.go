@@ -18,6 +18,7 @@ package serviceaccounts
 
 import (
 	"context"
+	goerrors "errors"
 	"slices"
 	"strings"
 	"time"
@@ -25,7 +26,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	errorsv2 "github.com/unikorn-cloud/core/pkg/server/v2/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -142,7 +143,7 @@ func (c *Client) generateAccessToken(ctx context.Context, organization *organiza
 
 	tokens, err := c.oauth2.Issue(ctx, issueInfo)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("unable to issue access token").WithError(err)
+		return nil, err
 	}
 
 	return tokens, nil
@@ -159,12 +160,16 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, err
 	}
 
 	tokens, err := c.generateAccessToken(ctx, organization, out.Name)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("unable to issue access token").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to issue access token: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	out.Spec.Expiry = &metav1.Time{Time: tokens.Expiry}
@@ -174,29 +179,48 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 }
 
 // get retrieves the service account.
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, serviceAccountID string) (*unikornv1.ServiceAccount, error) {
-	result := &unikornv1.ServiceAccount{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: serviceAccountID}, result); err != nil {
-		if kerrors.IsNotFound(err) {
-			return nil, errors.HTTPNotFound().WithError(err)
-		}
-
-		return nil, errors.OAuth2ServerError("failed to get service account").WithError(err)
+func (c *Client) get(ctx context.Context, namespace, name string) (*unikornv1.ServiceAccount, error) {
+	key := client.ObjectKey{
+		Namespace: namespace,
+		Name:      name,
 	}
 
-	return result, nil
+	var serviceAccount unikornv1.ServiceAccount
+	if err := c.client.Get(ctx, key, &serviceAccount); err != nil {
+		if kerrors.IsNotFound(err) {
+			err = errorsv2.NewResourceMissingError("service account").
+				WithCause(err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve service account: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &serviceAccount, nil
 }
 
 // listGroups returns an exhaustive list of all groups a service account can be a member of.
-func (c *Client) listGroups(ctx context.Context, organization *organizations.Meta) (*unikornv1.GroupList, error) {
-	result := &unikornv1.GroupList{}
-
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list groups").WithError(err)
+func (c *Client) listGroups(ctx context.Context, namespace string) (*unikornv1.GroupList, error) {
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: namespace},
 	}
 
-	return result, nil
+	var list unikornv1.GroupList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to retrieve groups: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	return &list, nil
 }
 
 // updateGroups takes a user name and a requested list of groups and adds to
@@ -226,7 +250,9 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 		}
 
 		if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-			return errors.OAuth2ServerError("failed to patch group").WithError(err)
+			return errorsv2.NewInternalError().
+				WithCausef("failed to patch group: %w", err).
+				Prefixed()
 		}
 	}
 
@@ -242,14 +268,18 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 
 	resource, err := c.generate(ctx, organization, request)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to generate service account").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create service account").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to create service account: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
-	groups, err := c.listGroups(ctx, organization)
+	groups, err := c.listGroups(ctx, organization.Namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -268,12 +298,12 @@ func (c *Client) Get(ctx context.Context, organizationID, serviceAccountID strin
 		return nil, err
 	}
 
-	result, err := c.get(ctx, organization, serviceAccountID)
+	result, err := c.get(ctx, organization.Namespace, serviceAccountID)
 	if err != nil {
 		return nil, err
 	}
 
-	groups, err := c.listGroups(ctx, organization)
+	groups, err := c.listGroups(ctx, organization.Namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -288,18 +318,25 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Servi
 		return nil, err
 	}
 
-	result := &unikornv1.ServiceAccountList{}
-
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list service accounts").WithError(err)
+	opts := []client.ListOption{
+		&client.ListOptions{Namespace: organization.Namespace},
 	}
 
-	groups, err := c.listGroups(ctx, organization)
+	var list unikornv1.ServiceAccountList
+	if err := c.client.List(ctx, &list, opts...); err != nil {
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to list service accounts: %w", err).
+			Prefixed()
+
+		return nil, err
+	}
+
+	groups, err := c.listGroups(ctx, organization.Namespace)
 	if err != nil {
 		return nil, err
 	}
 
-	return convertList(result, groups), nil
+	return convertList(&list, groups), nil
 }
 
 // Update modifies any metadata for the service account if it exists.  If a matching account
@@ -310,7 +347,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 		return nil, err
 	}
 
-	current, err := c.get(ctx, organization, serviceAccountID)
+	current, err := c.get(ctx, organization.Namespace, serviceAccountID)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +358,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return nil, errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return nil, err
 	}
 
 	updated := current.DeepCopy()
@@ -334,10 +371,14 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.AccessToken = current.Spec.AccessToken
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch group").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to patch service account: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
-	groups, err := c.listGroups(ctx, organization)
+	groups, err := c.listGroups(ctx, organization.Namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -357,13 +398,25 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 		return nil, err
 	}
 
-	current, err := c.get(ctx, organization, serviceAccountID)
+	current, err := c.get(ctx, organization.Namespace, serviceAccountID)
 	if err != nil {
 		return nil, err
 	}
 
 	tokens, err := c.generateAccessToken(ctx, organization, serviceAccountID)
 	if err != nil {
+		if goerrors.Is(err, oauth2.ErrUserNotFound) {
+			err = errorsv2.NewResourceMissingError("service account").
+				WithCause(err).
+				Prefixed()
+
+			return nil, err
+		}
+
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to issue access token: %w", err).
+			Prefixed()
+
 		return nil, err
 	}
 
@@ -372,12 +425,16 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.AccessToken = tokens.AccessToken
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch group").WithError(err)
+		err = errorsv2.NewInternalError().
+			WithCausef("failed to patch service account: %w", err).
+			Prefixed()
+
+		return nil, err
 	}
 
 	c.oauth2.InvalidateToken(ctx, current.Spec.AccessToken)
 
-	groups, err := c.listGroups(ctx, organization)
+	groups, err := c.listGroups(ctx, organization.Namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -392,17 +449,13 @@ func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID st
 		return err
 	}
 
-	resource, err := c.get(ctx, organization, serviceAccountID)
+	resource, err := c.get(ctx, organization.Namespace, serviceAccountID)
 	if err != nil {
-		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
-		}
-
-		return errors.OAuth2ServerError("failed to get service account for delete").WithError(err)
+		return err
 	}
 
 	// Unlink the service account from any groups that reference it.
-	groups, err := c.listGroups(ctx, organization)
+	groups, err := c.listGroups(ctx, organization.Namespace)
 	if err != nil {
 		return err
 	}
@@ -413,10 +466,14 @@ func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID st
 
 	if err := c.client.Delete(ctx, resource); err != nil {
 		if kerrors.IsNotFound(err) {
-			return errors.HTTPNotFound().WithError(err)
+			return errorsv2.NewResourceMissingError("service account").
+				WithCause(err).
+				Prefixed()
 		}
 
-		return errors.OAuth2ServerError("failed to delete service account").WithError(err)
+		return errorsv2.NewInternalError().
+			WithCausef("failed to delete service account: %w", err).
+			Prefixed()
 	}
 
 	c.oauth2.InvalidateToken(ctx, resource.Spec.AccessToken)
