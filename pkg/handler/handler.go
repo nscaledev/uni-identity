@@ -27,7 +27,6 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/util"
-	"github.com/unikorn-cloud/identity/pkg/handler/allocations"
 	"github.com/unikorn-cloud/identity/pkg/handler/groups"
 	"github.com/unikorn-cloud/identity/pkg/handler/oauth2providers"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -950,104 +949,6 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWrite
 	}
 
 	result, err := h.quotasClient().Update(r.Context(), organizationID, request)
-	if err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) allocationsClient() *allocations.Client {
-	return allocations.New(h.client, h.namespace)
-}
-
-func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	ctx := r.Context()
-
-	result, err := h.allocationsClient().List(ctx, organizationID)
-	if err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result = slices.DeleteFunc(result, func(resource openapi.AllocationRead) bool {
-		return rbac.AllowProjectScope(ctx, "identity:allocations", openapi.Read, organizationID, resource.Metadata.ProjectId) != nil
-	})
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Create, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	request := &openapi.AllocationWrite{}
-
-	if err := util.ReadJSONBody(r, request); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result, err := h.allocationsClient().Create(r.Context(), organizationID, projectID, request)
-	if err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusCreated, result)
-}
-
-func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Delete, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	if err := h.allocationsClient().Delete(r.Context(), organizationID, projectID, allocationID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	h.setUncacheable(w)
-	w.WriteHeader(http.StatusAccepted)
-}
-
-func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Read, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result, err := h.allocationsClient().Get(r.Context(), organizationID, projectID, allocationID)
-	if err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Update, organizationID, projectID); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	request := &openapi.AllocationWrite{}
-
-	if err := util.ReadJSONBody(r, request); err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result, err := h.allocationsClient().Update(r.Context(), organizationID, projectID, allocationID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
