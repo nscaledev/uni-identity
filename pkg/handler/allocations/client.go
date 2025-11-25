@@ -21,6 +21,7 @@ import (
 	goerrors "errors"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
@@ -50,10 +51,24 @@ type Client struct {
 	namespace string
 }
 
+type SyncClient struct {
+	*Client
+	// mutex is for serialising allocation decisions; this is supplied
+	// when constructing the client, so it can be centralised.
+	mutex *sync.Mutex
+}
+
 func New(client client.Client, namespace string) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+	}
+}
+
+func NewSync(client client.Client, namespace string, mutex *sync.Mutex) *SyncClient {
+	return &SyncClient{
+		Client: New(client, namespace),
+		mutex:  mutex,
 	}
 }
 
@@ -173,7 +188,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Alloc
 	return convertList(result), nil
 }
 
-func (c *Client) Create(ctx context.Context, organizationID, projectID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+func (c *SyncClient) Create(ctx context.Context, organizationID, projectID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
 	namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
@@ -185,6 +200,10 @@ func (c *Client) Create(ctx context.Context, organizationID, projectID string, r
 	if err != nil {
 		return nil, err
 	}
+
+	// Lock around deciding if we can do this allocation
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
 		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
@@ -235,7 +254,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID, allocati
 	return nil
 }
 
-func (c *Client) Update(ctx context.Context, organizationID, projectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
 	common := common.New(c.client)
 
 	namespace, err := common.ProjectNamespace(ctx, organizationID, projectID)
@@ -261,6 +280,10 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID, allocati
 	updated.Labels = required.Labels
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
+
+	// Lock around deciding if we can do this allocation
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
 		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)

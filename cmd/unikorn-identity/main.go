@@ -33,6 +33,9 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/server"
 
+	"k8s.io/client-go/rest"
+
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -68,7 +71,23 @@ func start() {
 		return
 	}
 
-	server, err := s.GetServer(client)
+	clientconfig, err := rest.InClusterConfig()
+	if err != nil {
+		logger.Error(err, "failed to get client config")
+
+		return
+	}
+
+	directclient, err := ctrlclient.New(clientconfig, ctrlclient.Options{
+		Scheme: client.Scheme(),
+	})
+	if err != nil {
+		logger.Error(err, "failed to create direct Kubernetes client")
+
+		return
+	}
+
+	server, err := s.GetServer(client, directclient)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 

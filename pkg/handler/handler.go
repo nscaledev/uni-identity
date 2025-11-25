@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/util"
@@ -49,6 +50,11 @@ type Handler struct {
 	// client gives cached access to Kubernetes.
 	client client.Client
 
+	// directclient gives uncached access to Kubernetes; this is needed
+	// for e.g., allocations, where we need to have reads consistent with
+	// writes.
+	directclient client.Client
+
 	// namespace is the namespace we are running in.
 	namespace string
 
@@ -63,16 +69,20 @@ type Handler struct {
 
 	// options allows behaviour to be defined on the CLI.
 	options *Options
+
+	// allocationMutex serialises allocation decisions
+	allocationMutex sync.Mutex
 }
 
-func New(client client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, rbac *rbac.RBAC, options *Options) (*Handler, error) {
+func New(client client.Client, directclient client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, rbac *rbac.RBAC, options *Options) (*Handler, error) {
 	h := &Handler{
-		client:    client,
-		namespace: namespace,
-		issuer:    issuer,
-		oauth2:    oauth2,
-		rbac:      rbac,
-		options:   options,
+		client:       client,
+		directclient: directclient,
+		namespace:    namespace,
+		issuer:       issuer,
+		oauth2:       oauth2,
+		rbac:         rbac,
+		options:      options,
 	}
 
 	return h, nil

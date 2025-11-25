@@ -32,6 +32,10 @@ func (h *Handler) allocationsClient() *allocations.Client {
 	return allocations.New(h.client, h.namespace)
 }
 
+func (h *Handler) allocationsSyncClient() *allocations.SyncClient {
+	return allocations.NewSync(h.directclient, h.namespace, &h.allocationMutex)
+}
+
 func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
 	ctx := r.Context()
 
@@ -62,7 +66,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocatio
 		return
 	}
 
-	result, err := h.allocationsClient().Create(r.Context(), organizationID, projectID, request)
+	result, err := h.allocationsSyncClient().Create(r.Context(), organizationID, projectID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -116,7 +120,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	result, err := h.allocationsClient().Update(r.Context(), organizationID, projectID, allocationID, request)
+	result, err := h.allocationsSyncClient().Update(r.Context(), organizationID, projectID, allocationID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
