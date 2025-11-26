@@ -74,11 +74,11 @@ paths:
         '200':
           $ref: '#/components/responses/tokenResponse'
         '400':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+          $ref: '#/components/responses/oauth2BadRequestResponse'
         '401':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+          $ref: '#/components/responses/oauth2UnauthorizedResponse'
         '500':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+          $ref: '#/components/responses/oauth2ServerErrorResponse'
   /oauth2/v2/login:
     description: |-
       After the user initiates the authorization code flow, a dialog is presented to
@@ -1083,6 +1083,30 @@ components:
       schema:
         type: string
   schemas:
+    oauth2Error:
+      description: Generic error message, compatible with oauth2.
+      type: object
+      required:
+      - error
+      - error_description
+      properties:
+        error:
+          description: A terse error string expanding on the HTTP error code. Errors are based on the OAuth 2.02 specification, but are expanded with proprietary status codes for APIs other than those specified by OAuth 2.02.
+          type: string
+          enum:
+          - invalid_request
+          - unauthorized_client
+          - access_denied
+          - unsupported_response_type
+          - invalid_scope
+          - server_error 
+          - temporarily_unavailable
+          - invalid_client
+          - invalid_grant
+          - unsupported_grant_type
+        error_description:
+          description: Verbose message describing the error.
+          type: string
     openidConfiguration:
       description: OpenID configuration.
       type: object
@@ -2345,6 +2369,38 @@ components:
         A generic HTML error page.
       content:
         text/html: {}
+    oauth2BadRequestResponse:
+      description: |-
+        Request body failed schema validation, or the request does not contain
+        all the required fields.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/oauth2Error'
+          example:
+            error: invalid_request
+            error_description: request body invalid
+    oauth2UnauthorizedResponse:
+      description: |-
+        Authentication failed or the access token has expired.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/oauth2Error'
+          example:
+            error: access_denied
+            error_description: authentication failed
+    oauth2ServerErrorResponse:
+      description: |-
+        An unexpected or unhandled error occurred. This may be a transient error and
+        may succeed on a retry.  If this isn't the case, please report it as an issue.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/oauth2Error'
+          example:
+            error: server_error
+            error_description: failed to token claim
     openidConfigurationResponse:
       description: |-
         OpenID configuration used for auto-discovery of endpoints and supported
