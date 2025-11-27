@@ -39,6 +39,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
@@ -167,7 +168,7 @@ func (h *Handler) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 	result, err := h.oauth2.Token(w, r)
 	if err != nil {
-		errors.HandleError(w, r, err)
+		oauth2errors.HandleError(w, r, err)
 		return
 	}
 

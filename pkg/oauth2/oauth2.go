@@ -40,7 +40,6 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util/retry"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
@@ -50,6 +49,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/html"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/providers"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/types"
@@ -1455,7 +1455,7 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 	clientID, clientSecret, ok := r.BasicAuth()
 	if !ok {
 		if !r.Form.Has("client_id") || !r.Form.Has("client_secret") {
-			return errors.OAuth2ServerError("client ID secret not set in request body")
+			return errors.OAuth2InvalidRequest("client ID secret not set in request body")
 		}
 
 		clientID = r.Form.Get("client_id")
@@ -1468,15 +1468,15 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 
 	client, err := a.lookupClient(r.Context(), query.Get("client_id"))
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup client").WithError(err)
+		return errors.OAuth2AccessDenied("requested client id does not exist").WithError(err)
 	}
 
 	if client.Status.Secret == "" {
-		return errors.OAuth2ServerError("client secret not set")
+		return errors.OAuth2AccessDenied("client secret invalid")
 	}
 
 	if client.Status.Secret != clientSecret {
-		return errors.OAuth2InvalidRequest("client secret invalid")
+		return errors.OAuth2AccessDenied("client secret invalid")
 	}
 
 	return nil
@@ -1486,7 +1486,7 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
 	user, err := a.rbac.GetActiveUser(ctx, subject)
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup user").WithError(err)
+		return err
 	}
 
 	lookupSession := func(session unikornv1.UserSession) bool {
@@ -1505,7 +1505,7 @@ func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, sub
 	user.Spec.Sessions = append(user.Spec.Sessions[:index], user.Spec.Sessions[index+1:]...)
 
 	if err := a.client.Update(ctx, user); err != nil {
-		return errors.OAuth2ServerError("failed to revoke user session").WithError(err)
+		return err
 	}
 
 	return nil
@@ -1594,7 +1594,7 @@ func (a *Authenticator) validateClientSecretRefresh(r *http.Request, claims *Ref
 	clientID, clientSecret, ok := r.BasicAuth()
 	if !ok {
 		if !r.Form.Has("client_id") || !r.Form.Has("client_secret") {
-			return errors.OAuth2ServerError("client ID secret not set in request body")
+			return errors.OAuth2InvalidRequest("client ID secret not set in request body")
 		}
 
 		clientID = r.Form.Get("client_id")
@@ -1607,15 +1607,15 @@ func (a *Authenticator) validateClientSecretRefresh(r *http.Request, claims *Ref
 
 	client, err := a.lookupClient(r.Context(), claims.Federated.ClientID)
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup client").WithError(err)
+		return errors.OAuth2AccessDenied("failed to lookup client").WithError(err)
 	}
 
 	if client.Status.Secret == "" {
-		return errors.OAuth2ServerError("client secret not set")
+		return errors.OAuth2AccessDenied("client secret invalid")
 	}
 
 	if client.Status.Secret != clientSecret {
-		return errors.OAuth2InvalidRequest("client secret invalid")
+		return errors.OAuth2AccessDenied("client secret invalid")
 	}
 
 	return nil
@@ -1630,7 +1630,7 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 
 	user, err := a.rbac.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
-		return errors.OAuth2ServerError("failed to lookup user").WithError(err)
+		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
 	}
 
 	lookupSession := func(session unikornv1.UserSession) bool {
@@ -1653,7 +1653,7 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 	user.Spec.Sessions[index].RefreshToken = ""
 
 	if err := a.client.Update(ctx, user); err != nil {
-		return errors.OAuth2ServerError("failed to revoke user session").WithError(err)
+		return err
 	}
 
 	return nil
