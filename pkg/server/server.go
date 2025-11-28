@@ -84,7 +84,7 @@ func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
 	return s.CoreOptions.SetupOpenTelemetry(ctx, trace.WithSpanProcessor(&opentelemetry.LoggingSpanProcessor{}))
 }
 
-func (s *Server) GetServer(client client.Client) (*http.Server, error) {
+func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
 	schema, err := coreapi.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
@@ -121,7 +121,7 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		},
 	}
 
-	handlerInterface, err := handler.New(client, s.CoreOptions.Namespace, issuer, oauth2, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, rbac, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}
