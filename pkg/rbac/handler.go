@@ -18,6 +18,7 @@ package rbac
 
 import (
 	"context"
+	goerrors "errors"
 	"slices"
 
 	"github.com/spjmurray/go-util/pkg/set"
@@ -181,50 +182,6 @@ func OrganizationIDs(ctx context.Context) []string {
 	return organizationIDs
 }
 
-// ProjectIDs returns a list of all projects from a single organization in the ACL for
-// the purposes of limiting list type API operations.
-func ProjectIDs(ctx context.Context, organizationID string) []string {
-	acl := FromContext(ctx)
-
-	if acl.Organizations == nil {
-		return nil
-	}
-
-	organizations := *acl.Organizations
-
-	if len(organizations) == 0 {
-		return nil
-	}
-
-	index := slices.IndexFunc(organizations, func(o openapi.AclOrganization) bool {
-		return o.Id == organizationID
-	})
-
-	if index < 0 {
-		return nil
-	}
-
-	organization := organizations[index]
-
-	if organization.Projects == nil {
-		return nil
-	}
-
-	projects := *organization.Projects
-
-	if len(projects) == 0 {
-		return nil
-	}
-
-	projectIDs := make([]string, len(projects))
-
-	for i := range projects {
-		projectIDs[i] = projects[i].Id
-	}
-
-	return projectIDs
-}
-
 // AddQuery adds a set of query values to a label selector.
 func AddQuery(selector labels.Selector, label string, vals []string) (labels.Selector, error) {
 	if len(vals) == 0 {
@@ -248,70 +205,52 @@ func AddQuery(selector labels.Selector, label string, vals []string) (labels.Sel
 	return selector.Add(*req), nil
 }
 
+var (
+	ErrNoMatches = goerrors.New("selector would select nothing")
+)
+
+// HasNoMatches is a short cut when nothing would be matched e.g. the user has no matching
+// organization ID for the provided selector, and a list handler can just return an empty
+// array directly.
+func HasNoMatches(err error) bool {
+	return goerrors.Is(err, ErrNoMatches)
+}
+
 // AddOrganizationIDQuery adds an organizational query selector that limits resources to
 // be listed to those available in the ACL and optionally constrained to those in the
 // request query using a boolean intersection.
 func AddOrganizationIDQuery(ctx context.Context, selector labels.Selector, query []string) (labels.Selector, error) {
-	// NOTE: super-admin accounts and system accounts will not have any organizations
-	// defined in the ACL, so we let this slide, and trust they will add a query to limit
-	// the scope.  It should not be possible for a user to get here without being a
-	// member of an organization, but ReBAC will prevent any unintended reads.
+	// No organization IDs available, we cannot make any assumptions, this applies
+	// to system accounts and platform admins.
 	organizationIDs := OrganizationIDs(ctx)
 	if len(organizationIDs) == 0 {
 		return AddQuery(selector, constants.OrganizationLabel, query)
 	}
 
-	if len(query) > 0 {
-		organizationIDs = slices.Collect(set.New(organizationIDs...).Intersection(set.New(query...)).All())
+	// No scope provided, limit to organizations we have access to.
+	if len(query) == 0 {
+		return AddQuery(selector, constants.OrganizationLabel, organizationIDs)
+	}
+
+	// Where there is an explicit set of organizations, we can intersect with the query
+	// to only select those we have access to.
+	organizationIDs = slices.Collect(set.New(organizationIDs...).Intersection(set.New(query...)).All())
+	if len(organizationIDs) == 0 {
+		return nil, ErrNoMatches
 	}
 
 	return AddQuery(selector, constants.OrganizationLabel, organizationIDs)
 }
 
 // AddOrganizationAndProjectIDQuery gets all organizationIDs the user can access (or has requested
-// explicit and has access to), then selects all projects that can be accessed.  If en explicit
-// project query has been provided, then constrain the accessible project set.
+// explicit and has access to).
 func AddOrganizationAndProjectIDQuery(ctx context.Context, selector labels.Selector, organizationQuery []string, projectQuery []string) (labels.Selector, error) {
-	// NOTE: super-admin accounts and system accounts will not have any organizations
-	// defined in the ACL, so we let this slide, and trust they will add a query to limit
-	// the scope.  It should not be possible for a user to get here without being a
-	// member of an organization, but ReBAC will prevent any unintended reads.
-	organizationIDs := OrganizationIDs(ctx)
-	if len(organizationIDs) == 0 {
-		selector, err := AddQuery(selector, constants.OrganizationLabel, organizationQuery)
-		if err != nil {
-			return nil, err
-		}
-
-		return AddQuery(selector, constants.ProjectLabel, projectQuery)
-	}
-
-	if len(organizationQuery) > 0 {
-		organizationIDs = slices.Collect(set.New(organizationIDs...).Intersection(set.New(organizationQuery...)).All())
-	}
-
-	// Create a set of all projects that the user can access across the selected
-	// organizations.
-	projectIDSet := set.New[string]()
-
-	for _, organizationID := range organizationIDs {
-		projectIDSet = projectIDSet.Union(set.New(ProjectIDs(ctx, organizationID)...))
-	}
-
-	if len(projectQuery) > 0 {
-		projectIDSet = projectIDSet.Intersection(set.New(projectQuery...))
-	}
-
-	projectIDs := slices.Collect(projectIDSet.All())
-
-	var err error
-
-	selector, err = AddQuery(selector, constants.OrganizationLabel, organizationIDs)
+	selector, err := AddOrganizationIDQuery(ctx, selector, organizationQuery)
 	if err != nil {
 		return nil, err
 	}
 
-	selector, err = AddQuery(selector, constants.ProjectLabel, projectIDs)
+	selector, err = AddQuery(selector, constants.ProjectLabel, projectQuery)
 	if err != nil {
 		return nil, err
 	}
