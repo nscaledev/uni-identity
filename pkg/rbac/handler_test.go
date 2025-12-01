@@ -206,8 +206,21 @@ const (
 	projectID2_2    = "baz2"
 )
 
-func aclFilterFixtureAdmin() *openapi.Acl {
+func aclFilterFixturePlatformAdmin() *openapi.Acl {
 	return &openapi.Acl{}
+}
+
+func aclFilterFixtureAdmin() *openapi.Acl {
+	return &openapi.Acl{
+		Organizations: &openapi.AclOrganizationList{
+			{
+				Id: organizationID1,
+			},
+			{
+				Id: organizationID2,
+			},
+		},
+	}
 }
 
 func aclFilterFixtureUser() *openapi.Acl {
@@ -239,6 +252,17 @@ func aclFilterFixtureUser() *openapi.Acl {
 	}
 }
 
+func TestUnscopedACLFiltersAdmin(t *testing.T) {
+	t.Parallel()
+
+	acl := aclFilterFixtureAdmin()
+
+	organizationIDs := rbac.OrganizationIDs(rbac.NewContext(t.Context(), acl))
+	require.Len(t, organizationIDs, 2)
+	require.Equal(t, organizationID1, organizationIDs[0])
+	require.Equal(t, organizationID2, organizationIDs[1])
+}
+
 // TestUnscopedACLFiltersUser tests filtering e.g. limiting via label selection to reduce
 // the working set size before doing a full RBAC check.
 func TestUnscopedACLFiltersUser(t *testing.T) {
@@ -250,19 +274,6 @@ func TestUnscopedACLFiltersUser(t *testing.T) {
 	require.Len(t, organizationIDs, 2)
 	require.Equal(t, organizationID1, organizationIDs[0])
 	require.Equal(t, organizationID2, organizationIDs[1])
-
-	projectIDs := rbac.ProjectIDs(rbac.NewContext(t.Context(), acl), organizationID1)
-	require.Len(t, projectIDs, 2)
-	require.Equal(t, projectID1_1, projectIDs[0])
-	require.Equal(t, projectID1_2, projectIDs[1])
-
-	projectIDs = rbac.ProjectIDs(rbac.NewContext(t.Context(), acl), organizationID2)
-	require.Len(t, projectIDs, 2)
-	require.Equal(t, projectID2_1, projectIDs[0])
-	require.Equal(t, projectID2_2, projectIDs[1])
-
-	projectIDs = rbac.ProjectIDs(rbac.NewContext(t.Context(), acl), "wibble")
-	require.Nil(t, projectIDs)
 }
 
 func userOrganizationSelector(t *testing.T, query []string) labels.Selector {
@@ -278,6 +289,15 @@ func adminOrganizationSelector(t *testing.T, query []string) labels.Selector {
 	t.Helper()
 
 	selector, err := rbac.AddOrganizationIDQuery(rbac.NewContext(t.Context(), aclFilterFixtureAdmin()), labels.Everything(), query)
+	require.NoError(t, err)
+
+	return selector
+}
+
+func platformAdminOrganizationSelector(t *testing.T, query []string) labels.Selector {
+	t.Helper()
+
+	selector, err := rbac.AddOrganizationIDQuery(rbac.NewContext(t.Context(), aclFilterFixturePlatformAdmin()), labels.Everything(), query)
 	require.NoError(t, err)
 
 	return selector
@@ -301,6 +321,15 @@ func adminOrganizationAndProjectSelector(t *testing.T, organizationQuery, projec
 	return selector
 }
 
+func platformAdminOrganizationAndProjectSelector(t *testing.T, organizationQuery, projectQuery []string) labels.Selector {
+	t.Helper()
+
+	selector, err := rbac.AddOrganizationAndProjectIDQuery(rbac.NewContext(t.Context(), aclFilterFixturePlatformAdmin()), labels.Everything(), organizationQuery, projectQuery)
+	require.NoError(t, err)
+
+	return selector
+}
+
 // TestOrganizationSelection tests no organization query defaults to all
 // organizations in the ACL.
 func TestOrganizationSelection(t *testing.T) {
@@ -308,12 +337,14 @@ func TestOrganizationSelection(t *testing.T) {
 
 	userSelector := userOrganizationSelector(t, nil)
 	adminSelector := adminOrganizationSelector(t, nil)
+	platformAdminSelector := platformAdminOrganizationSelector(t, nil)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -321,8 +352,9 @@ func TestOrganizationSelection(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 1 and project 2",
@@ -330,8 +362,9 @@ func TestOrganizationSelection(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_2,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 2 and project 1",
@@ -339,8 +372,9 @@ func TestOrganizationSelection(t *testing.T) {
 				constants.OrganizationLabel: organizationID2,
 				constants.ProjectLabel:      projectID2_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in unknown organization",
@@ -348,7 +382,7 @@ func TestOrganizationSelection(t *testing.T) {
 				constants.OrganizationLabel: "wibble",
 				constants.ProjectLabel:      "wibble",
 			},
-			matchesAdmin: true,
+			matchesPlatformAdmin: true,
 		},
 	}
 
@@ -358,8 +392,23 @@ func TestOrganizationSelection(t *testing.T) {
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
+}
+
+// TestOrganizationSelectionMismatch tests what happens when a user submits a query where
+// they cannot match anything.
+func TestOrganizationSelectionNoMatches(t *testing.T) {
+	t.Parallel()
+
+	query := []string{
+		"wibble",
+	}
+
+	_, err := rbac.AddOrganizationIDQuery(rbac.NewContext(t.Context(), aclFilterFixtureUser()), labels.Everything(), query)
+	require.Error(t, err)
+	require.True(t, rbac.HasNoMatches(err))
 }
 
 // TestOrganizationSelectionWithSingleQuery tests a single organization query
@@ -373,12 +422,14 @@ func TestOrganizationSelectionWithSingleQuery(t *testing.T) {
 
 	userSelector := userOrganizationSelector(t, query)
 	adminSelector := adminOrganizationSelector(t, query)
+	platformAdminSelector := platformAdminOrganizationSelector(t, query)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -386,8 +437,9 @@ func TestOrganizationSelectionWithSingleQuery(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 1 and project 2",
@@ -395,8 +447,9 @@ func TestOrganizationSelectionWithSingleQuery(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_2,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 2",
@@ -420,6 +473,7 @@ func TestOrganizationSelectionWithSingleQuery(t *testing.T) {
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -437,12 +491,14 @@ func TestOrganizationSelectionWithMultipleQuery(t *testing.T) {
 
 	userSelector := userOrganizationSelector(t, query)
 	adminSelector := adminOrganizationSelector(t, query)
+	platformAdminSelector := platformAdminOrganizationSelector(t, query)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -450,8 +506,9 @@ func TestOrganizationSelectionWithMultipleQuery(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 1 and project 2",
@@ -459,8 +516,9 @@ func TestOrganizationSelectionWithMultipleQuery(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_2,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 2 and project 2",
@@ -468,8 +526,9 @@ func TestOrganizationSelectionWithMultipleQuery(t *testing.T) {
 				constants.OrganizationLabel: organizationID2,
 				constants.ProjectLabel:      projectID2_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in unknown organization",
@@ -477,7 +536,7 @@ func TestOrganizationSelectionWithMultipleQuery(t *testing.T) {
 				constants.OrganizationLabel: "wibble",
 				constants.ProjectLabel:      "wibble",
 			},
-			matchesAdmin: true,
+			matchesPlatformAdmin: true,
 		},
 	}
 
@@ -487,6 +546,7 @@ func TestOrganizationSelectionWithMultipleQuery(t *testing.T) {
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -498,12 +558,14 @@ func TestOrganizationAndProjectSelection(t *testing.T) {
 
 	userSelector := userOrganizationAndProjectSelector(t, nil, nil)
 	adminSelector := adminOrganizationAndProjectSelector(t, nil, nil)
+	platformAdminSelector := platformAdminOrganizationAndProjectSelector(t, nil, nil)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -511,8 +573,9 @@ func TestOrganizationAndProjectSelection(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 1 and project 2",
@@ -520,8 +583,9 @@ func TestOrganizationAndProjectSelection(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_2,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 2 and project 1",
@@ -529,8 +593,9 @@ func TestOrganizationAndProjectSelection(t *testing.T) {
 				constants.OrganizationLabel: organizationID2,
 				constants.ProjectLabel:      projectID2_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in unknown organization",
@@ -538,7 +603,7 @@ func TestOrganizationAndProjectSelection(t *testing.T) {
 				constants.OrganizationLabel: "wibble",
 				constants.ProjectLabel:      "wibble",
 			},
-			matchesAdmin: true,
+			matchesPlatformAdmin: true,
 		},
 	}
 
@@ -548,6 +613,7 @@ func TestOrganizationAndProjectSelection(t *testing.T) {
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -563,12 +629,14 @@ func TestOrganizationAndProjectSelectionWithOrganizationQuerySingle(t *testing.T
 
 	userSelector := userOrganizationAndProjectSelector(t, query, nil)
 	adminSelector := adminOrganizationAndProjectSelector(t, query, nil)
+	platformAdminSelector := platformAdminOrganizationAndProjectSelector(t, query, nil)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -576,8 +644,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationQuerySingle(t *testing.T
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 1 and project 2",
@@ -585,8 +654,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationQuerySingle(t *testing.T
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_2,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 2",
@@ -610,6 +680,7 @@ func TestOrganizationAndProjectSelectionWithOrganizationQuerySingle(t *testing.T
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -627,12 +698,14 @@ func TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple(t *testing
 
 	userSelector := userOrganizationAndProjectSelector(t, query, nil)
 	adminSelector := adminOrganizationAndProjectSelector(t, query, nil)
+	platformAdminSelector := platformAdminOrganizationAndProjectSelector(t, query, nil)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -640,8 +713,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple(t *testing
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 1 and project 2",
@@ -649,8 +723,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple(t *testing
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_2,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Matches resource in organization 2 and project 1",
@@ -658,8 +733,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple(t *testing
 				constants.OrganizationLabel: organizationID2,
 				constants.ProjectLabel:      projectID2_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in unknown organization",
@@ -667,7 +743,7 @@ func TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple(t *testing
 				constants.OrganizationLabel: "wibble",
 				constants.ProjectLabel:      "wibble",
 			},
-			matchesAdmin: true,
+			matchesPlatformAdmin: true,
 		},
 	}
 
@@ -677,6 +753,7 @@ func TestOrganizationAndProjectSelectionWithOrganizationQueryMultiple(t *testing
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -692,12 +769,14 @@ func TestOrganizationAndProjectSelectionWithProjectQuerySingle(t *testing.T) {
 
 	userSelector := userOrganizationAndProjectSelector(t, nil, query)
 	adminSelector := adminOrganizationAndProjectSelector(t, nil, query)
+	platformAdminSelector := platformAdminOrganizationAndProjectSelector(t, nil, query)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -705,8 +784,9 @@ func TestOrganizationAndProjectSelectionWithProjectQuerySingle(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 1 and project 2",
@@ -737,6 +817,7 @@ func TestOrganizationAndProjectSelectionWithProjectQuerySingle(t *testing.T) {
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -754,12 +835,14 @@ func TestOrganizationAndProjectSelectionWithProjectQueryMultiple(t *testing.T) {
 
 	userSelector := userOrganizationAndProjectSelector(t, nil, query)
 	adminSelector := adminOrganizationAndProjectSelector(t, nil, query)
+	platformAdminSelector := platformAdminOrganizationAndProjectSelector(t, nil, query)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -767,8 +850,9 @@ func TestOrganizationAndProjectSelectionWithProjectQueryMultiple(t *testing.T) {
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 1 and project 2",
@@ -783,8 +867,9 @@ func TestOrganizationAndProjectSelectionWithProjectQueryMultiple(t *testing.T) {
 				constants.OrganizationLabel: organizationID2,
 				constants.ProjectLabel:      projectID2_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 2 and project 2",
@@ -799,7 +884,7 @@ func TestOrganizationAndProjectSelectionWithProjectQueryMultiple(t *testing.T) {
 				constants.OrganizationLabel: "wibble",
 				constants.ProjectLabel:      "wibble",
 			},
-			matchesAdmin: true,
+			matchesPlatformAdmin: true,
 		},
 	}
 
@@ -809,6 +894,7 @@ func TestOrganizationAndProjectSelectionWithProjectQueryMultiple(t *testing.T) {
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -829,12 +915,14 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQuerySingle(t 
 
 	userSelector := userOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
 	adminSelector := adminOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
+	platformAdminSelector := platformAdminOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -842,8 +930,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQuerySingle(t 
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 1 and project 2",
@@ -874,6 +963,7 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQuerySingle(t 
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
@@ -898,12 +988,14 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple(
 
 	userSelector := userOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
 	adminSelector := adminOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
+	platformAdminSelector := platformAdminOrganizationAndProjectSelector(t, organizationQuery, projectQuery)
 
 	tests := []struct {
-		name         string
-		labels       labels.Labels
-		matchesUser  bool
-		matchesAdmin bool
+		name                 string
+		labels               labels.Labels
+		matchesUser          bool
+		matchesAdmin         bool
+		matchesPlatformAdmin bool
 	}{
 		{
 			name: "Matches resource in organization 1 and project 1",
@@ -911,8 +1003,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple(
 				constants.OrganizationLabel: organizationID1,
 				constants.ProjectLabel:      projectID1_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 1 and project 2",
@@ -927,8 +1020,9 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple(
 				constants.OrganizationLabel: organizationID2,
 				constants.ProjectLabel:      projectID2_1,
 			},
-			matchesUser:  true,
-			matchesAdmin: true,
+			matchesUser:          true,
+			matchesAdmin:         true,
+			matchesPlatformAdmin: true,
 		},
 		{
 			name: "Does not match resource in organization 2 and project 2",
@@ -943,7 +1037,7 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple(
 				constants.OrganizationLabel: "wibble",
 				constants.ProjectLabel:      "wibble",
 			},
-			matchesAdmin: true,
+			matchesPlatformAdmin: true,
 		},
 	}
 
@@ -953,6 +1047,7 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple(
 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
+			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
 		})
 	}
 }
