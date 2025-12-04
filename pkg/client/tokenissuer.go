@@ -25,6 +25,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"go.opentelemetry.io/otel"
@@ -64,6 +66,12 @@ type TokenIssuer struct {
 	clientOptions *coreclient.HTTPClientOptions
 	// serviceDescriptor defines application tracing information.
 	serviceDescriptor util.ServiceDescriptor
+	// lock for concurrent updates.
+	lock sync.Mutex
+	// token is the cached token.
+	token string
+	// expiry is when to refresh the token.
+	expiry time.Time
 }
 
 func NewTokenIssuer(client client.Client, identityOptions *Options, clientOptions *coreclient.HTTPClientOptions, serviceDescriptor util.ServiceDescriptor) *TokenIssuer {
@@ -75,21 +83,20 @@ func NewTokenIssuer(client client.Client, identityOptions *Options, clientOption
 	}
 }
 
-type StaticAccessTokenGetter struct {
-	accessToken string
-}
+// Get issues an access token for the non-user client/service.
+func (i *TokenIssuer) Get(ctx context.Context) (string, error) {
+	i.lock.Lock()
+	defer i.lock.Unlock()
 
-func (a *StaticAccessTokenGetter) Get() string {
-	return a.accessToken
-}
+	if time.Now().Before(i.expiry) {
+		return i.token, nil
+	}
 
-// Issue issues an access token for the non-user client/service.
-func (i *TokenIssuer) Issue(ctx context.Context) (*StaticAccessTokenGetter, error) {
 	identityClient := New(i.client, i.identityOptions, i.clientOptions)
 
 	identityHTTPClient, err := identityClient.HTTPClient(ctx)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	// Pass that to OIDC service discovery...
@@ -97,7 +104,7 @@ func (i *TokenIssuer) Issue(ctx context.Context) (*StaticAccessTokenGetter, erro
 
 	provider, err := oidc.NewProvider(ctx, i.identityOptions.Host())
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	endpoint := provider.Endpoint()
@@ -108,7 +115,7 @@ func (i *TokenIssuer) Issue(ctx context.Context) (*StaticAccessTokenGetter, erro
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.TokenURL, bytes.NewBufferString(form.Encode()))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -133,29 +140,28 @@ func (i *TokenIssuer) Issue(ctx context.Context) (*StaticAccessTokenGetter, erro
 
 	response, err := identityHTTPClient.Do(request)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("%w: status code %d", ErrResponse, response.StatusCode)
+		return "", fmt.Errorf("%w: status code %d", ErrResponse, response.StatusCode)
 	}
 
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	token := &identityapi.Token{}
 
 	if err := json.Unmarshal(body, &token); err != nil {
-		return nil, err
+		return "", err
 	}
 
-	getter := &StaticAccessTokenGetter{
-		accessToken: token.AccessToken,
-	}
+	i.token = token.AccessToken
+	i.expiry = time.Now().Add(time.Second*time.Duration(token.ExpiresIn) - time.Minute)
 
-	return getter, nil
+	return i.token, nil
 }

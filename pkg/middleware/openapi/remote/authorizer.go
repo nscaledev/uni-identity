@@ -34,6 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	"k8s.io/apimachinery/pkg/util/cache"
 
@@ -45,6 +46,7 @@ type Authorizer struct {
 	client        client.Client
 	options       *identityclient.Options
 	clientOptions *coreclient.HTTPClientOptions
+	httpClient    *http.Client
 	// tokenCache is used to enhance interaction as the validation is a
 	// very expensive operation.
 	tokenCache *cache.LRUExpireCache
@@ -53,8 +55,14 @@ type Authorizer struct {
 var _ openapi.Authorizer = &Authorizer{}
 
 // NewAuthorizer returns a new authorizer with required parameters.
-func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) *Authorizer {
-	return &Authorizer{
+func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*Authorizer, error) {
+	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	a := &Authorizer{
+		httpClient:    httpClient,
 		client:        client,
 		options:       options,
 		clientOptions: clientOptions,
@@ -62,6 +70,8 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		// authorizer to maintain consistency.
 		tokenCache: cache.NewLRUExpireCache(4096),
 	}
+
+	return a, nil
 }
 
 // getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
@@ -120,11 +130,13 @@ func (t *requestMutatingTransport) RoundTrip(req *http.Request) (*http.Response,
 
 // getIdentityHTTPClient returns a raw HTTP client for the identity service
 // that handles TLS, trace context and client certificate propagation.
-func (a *Authorizer) getIdentityHTTPClient(ctx context.Context) (*http.Client, error) {
-	// The identity client neatly wraps up TLS...
-	identity := identityclient.New(a.client, a.options, a.clientOptions)
+func getIdentityHTTPClient(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*http.Client, error) {
+	ctx := context.TODO()
 
-	client, err := identity.HTTPClient(ctx)
+	// The identity client neatly wraps up TLS...
+	identity := identityclient.New(client, options, clientOptions)
+
+	baseClient, err := identity.HTTPClient(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -133,11 +145,11 @@ func (a *Authorizer) getIdentityHTTPClient(ctx context.Context) (*http.Client, e
 	// client certificate propagation if it's a token bound to an X.509
 	// certificate.
 	mutator := func(req *http.Request) error {
-		if err := identityclient.TraceContextRequestMutator(ctx, req); err != nil {
+		if err := identityclient.TraceContextRequestMutator(req.Context(), req); err != nil {
 			return err
 		}
 
-		if err := identityclient.CertificateRequestMutator(ctx, req); err != nil {
+		if err := identityclient.CertificateRequestMutator(req.Context(), req); err != nil {
 			return err
 		}
 
@@ -146,14 +158,14 @@ func (a *Authorizer) getIdentityHTTPClient(ctx context.Context) (*http.Client, e
 
 	// But it doesn't do request mutation, so we have to slightly hack it by
 	// making a nested transport.
-	client = &http.Client{
+	httpClient := &http.Client{
 		Transport: &requestMutatingTransport{
-			base:    client.Transport,
+			base:    baseClient.Transport,
 			mutator: mutator,
 		},
 	}
 
-	return client, nil
+	return httpClient, nil
 }
 
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
@@ -183,12 +195,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return info, nil
 	}
 
-	client, err := a.getIdentityHTTPClient(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx = oidc.ClientContext(ctx, client)
+	ctx = oidc.ClientContext(ctx, a.httpClient)
 
 	// Perform userinfo call against the identity service that will validate the token
 	// and also return some information about the user that we can use for audit logging.
@@ -241,8 +248,8 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 
 type Getter string
 
-func (a Getter) Get() string {
-	return string(a)
+func (a Getter) Get(_ context.Context) (string, error) {
+	return string(a), nil
 }
 
 // GetACL retrieves access control information from the subject identified
@@ -253,7 +260,15 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		return nil, err
 	}
 
-	client, err := identityclient.New(a.client, a.options, a.clientOptions).APIClient(ctx, Getter(info.Token))
+	// Trace context and TLS are handled by the cached client.
+	// TODO: a nicer way to inject a token per call would be prefereable.
+	options := []identityapi.ClientOption{
+		identityapi.WithHTTPClient(a.httpClient),
+		identityapi.WithRequestEditorFn(identityclient.AccessTokenRequestMutator(Getter(info.Token))),
+		identityapi.WithRequestEditorFn(principal.Injector(a.client, a.clientOptions)),
+	}
+
+	client, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
 	if err != nil {
 		return nil, errors.OAuth2ServerError("failed to create identity client").WithError(err)
 	}
