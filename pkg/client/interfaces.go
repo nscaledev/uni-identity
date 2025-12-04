@@ -16,7 +16,11 @@ limitations under the License.
 
 package client
 
+import (
+	"context"
+)
+
 // AccessTokenGetter provides an interface to retrieve an access token.
 type AccessTokenGetter interface {
-	Get() string
+	Get(ctx context.Context) (string, error)
 }
