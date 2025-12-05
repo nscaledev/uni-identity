@@ -33,19 +33,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type APIClientGetter func(context.Context) (openapi.ClientWithResponsesInterface, error)
-
 // Allocations wraps up quota allocation management.  This is specific to API
 // handlers only.
 type Allocations struct {
-	client       client.Client
-	getAPIClient APIClientGetter
+	client client.Client
+	api    openapi.ClientWithResponsesInterface
 }
 
-func NewAllocations(client client.Client, getAPIClient APIClientGetter) *Allocations {
+func NewAllocations(client client.Client, api openapi.ClientWithResponsesInterface) *Allocations {
 	return &Allocations{
-		client:       client,
-		getAPIClient: getAPIClient,
+		client: client,
+		api:    api,
 	}
 }
 
@@ -100,17 +98,12 @@ func (r *Allocations) Create(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	apiClient, err := r.getAPIClient(ctx)
-	if err != nil {
-		return err
-	}
-
 	reference, err := manager.GenerateResourceReference(r.client, resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := apiClient.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, generateAllocation(reference, allocations))
+	response, err := r.api.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, generateAllocation(reference, allocations))
 	if err != nil {
 		return err
 	}
@@ -133,11 +126,6 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	apiClient, err := r.getAPIClient(ctx)
-	if err != nil {
-		return err
-	}
-
 	reference, err := manager.GenerateResourceReference(r.client, resource)
 	if err != nil {
 		return err
@@ -148,7 +136,7 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	response, err := apiClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID, generateAllocation(reference, allocations))
+	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID, generateAllocation(reference, allocations))
 	if err != nil {
 		return err
 	}
@@ -169,17 +157,12 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 		return err
 	}
 
-	apiClient, err := r.getAPIClient(ctx)
-	if err != nil {
-		return err
-	}
-
 	allocationID, err := getAllocationID(resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := apiClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID)
+	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID)
 	if err != nil {
 		return err
 	}
