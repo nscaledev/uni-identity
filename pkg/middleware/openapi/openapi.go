@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
@@ -38,6 +39,10 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	OperationIgnoreRequestBodyTag = "unikorn-cloud.org/ignore-request-body"
 )
 
 var (
@@ -115,9 +120,21 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 		return nil
 	}
 
+	ignoreRequestBody := slices.Contains(route.Operation.Tags, OperationIgnoreRequestBodyTag)
+	body := r.Body
+
+	if ignoreRequestBody {
+		// Setting the option ExcludeRequestBody below will make the filter skip schema validation
+		// of the request body. But it'll still unconditionally read the whole body in to pass to
+		// security validation. So, to be sure it can't read it, we set the request body to nil,
+		// and restore it afterward.
+		r.Body = nil
+	}
+
 	options := &openapi3filter.Options{
 		IncludeResponseStatus: true,
 		AuthenticationFunc:    authorizationFunc,
+		ExcludeRequestBody:    ignoreRequestBody,
 	}
 
 	requestValidationInput := &openapi3filter.RequestValidationInput{
@@ -129,6 +146,12 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 	if err := openapi3filter.ValidateRequest(r.Context(), requestValidationInput); err != nil {
 		return nil, errors.OAuth2InvalidRequest(err.Error())
+	}
+
+	// Only restore it if we took it away. The validation filter will read r.Body into
+	// with a buffer, so the likelihood is `body` would be exhausted if we left it there.
+	if ignoreRequestBody {
+		r.Body = body
 	}
 
 	responseValidationInput := &openapi3filter.ResponseValidationInput{
