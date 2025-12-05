@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -67,15 +68,31 @@ const toySchema = `
     "/protected": {
       "description": "Protected endpoint",
       "get": {
-        
         "security": [
           {"oauth2Authentication": []}
         ],
-	    "responses": {
+        "responses": {
           "200": {
            "$ref": "#/components/responses/okResponse"
           }
         }
+      }
+    },
+    "/upload": {
+      "description": "Endpoint for uploads, for which we don't want to examine the request body",
+      "post": {
+        "tags": ["unikorn-cloud.org/ignore-request-body"],
+        "security": [
+          {"oauth2Authentication": []}
+        ],
+        "requestBody": {
+          "$ref": "#/components/requestBodies/uploadRequest"
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/okResponse"
+          }
+        }	    
       }
     }
   },
@@ -84,6 +101,31 @@ const toySchema = `
       "oauth2Authentication": {
         "description": "Operation requires OAuth 2.0 bearer token authentication.",
         "type": "oauth2"
+      }
+    },
+    "requestBodies": {
+      "uploadRequest": {
+        "description": "A request to upload data",
+        "content": {
+          "multipart/form-data": {
+            "schema": {
+              "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+            },
+            "encoding": {
+              "file": { "contentType": "application/tar+gzip,application/gzip" }
+            }
+          },
+          "application/octet-stream": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
       }
     },
     "responses": {
@@ -417,4 +459,51 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 	h.validate(t, serviceActor)
+}
+
+type poisonReader struct{}
+
+var _ io.ReadCloser = poisonReader{}
+
+func (r poisonReader) Read([]byte) (int, error) {
+	return 0, errors.ErrRequest
+}
+
+func (r poisonReader) Close() error {
+	return nil
+}
+
+// TestValidateBodyBypass checks that you can tell the middleware to skip trying to validate the
+// request body, by putting a tag in the OpenAPI schema. It would fail without the bypass, because
+// the request body is defined in the schema, and the reader supplied here will throw an error when
+// it's invoked by validation.
+func TestValidateBodyBypass(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	v := mustNewValidator(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	requestBody := poisonReader{}
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "/upload", requestBody)
+	require.NoError(t, err)
+
+	// The validator would read the request even absent a reason to do so, but I'm going
+	// to provoke it further by saying this is a form, for which it has a specific schema.
+	r.Header.Set("Content-Type", "multipart/form-data")
+
+	addCertificateHeader(t, r, true)
+	addPrincipalHeader(t, r)
+
+	v.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 }
