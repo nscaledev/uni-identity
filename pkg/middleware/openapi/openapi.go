@@ -128,7 +128,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 	}
 
 	if err := openapi3filter.ValidateRequest(r.Context(), requestValidationInput); err != nil {
-		return nil, errors.OAuth2InvalidRequest("request body invalid").WithError(err)
+		return nil, errors.OAuth2InvalidRequest(err.Error())
 	}
 
 	responseValidationInput := &openapi3filter.ResponseValidationInput{
