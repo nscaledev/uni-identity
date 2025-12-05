@@ -21,9 +21,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -51,49 +53,58 @@ const (
 	// serviceCertificate is the matching self-signed certificate of the private key.
 	serviceCertificate = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURxakNDQXBLZ0F3SUJBZ0lVRDNERm5jZDNjNG9MNEYwUVd1UkpRRlI0UGRNd0RRWUpLb1pJaHZjTkFRRUwKQlFBd1JURVRNQkVHQTFVRUF3d0tiWGt0YzJWeWRtbGpaVEVMTUFrR0ExVUVCaE1DUjBJeEVEQU9CZ05WQkFnTQpCMFZ1WjJ4aGJtUXhEekFOQmdOVkJBY01Ca3h2Ym1SdmJqQWVGdzB5TlRBM01UWXhNekF3TXpoYUZ3MHlOakEzCk1UWXhNekF3TXpoYU1FVXhFekFSQmdOVkJBTU1DbTE1TFhObGNuWnBZMlV4Q3pBSkJnTlZCQVlUQWtkQ01SQXcKRGdZRFZRUUlEQWRGYm1kc1lXNWtNUTh3RFFZRFZRUUhEQVpNYjI1a2IyNHdnZ0VpTUEwR0NTcUdTSWIzRFFFQgpBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRRFJMWUVIbW9SWC90aGIrREdkTDQ1VUkzdHRjQ09MbXkvcm90WHF0SWVyCmNHZ3N1c2lUZW5sWERVL0hRQ0hjL2hBaGY1VTYxcFdVUS9vOUFCVGhqa2NJRVIydk9FSlJKeVhNU0tLMU1tR2QKTHZ0K0ZRK0xCbTJidjd4b1M0Y2pRSm9rVW9zeHlaZjFITEhBeDR3WlRPeE9GQW5uMFgrUGZ6SUhKWU0veTdDUgpVRjd4VlVjMlpvMS9hRkI5ZXE0Yk9JdjRld25xSzgycXV4Y25jNGlOK29GNkR2MDJCYlNJVVMrc3VQOWlaWFkxCkRFOHhUaUtKYkU2ZjNTOWpZUjFMSEZndWpTSUg1TWhVemNXNkYyTUVOSGF1WllsVDV0OUJBT25LeGZNU2F0bG8KVW5HdmxLb0VPbW40Y2xXdzkyamdzZ0hrM3VUWHRqZHNydUdOb3UvbncwNS9BZ01CQUFHamdaRXdnWTR3SFFZRApWUjBPQkJZRUZEa2NUUjM4ZEZTbFVuSkZ1VlFid3B6UVRCOUtNQjhHQTFVZEl3UVlNQmFBRkRrY1RSMzhkRlNsClVuSkZ1VlFid3B6UVRCOUtNQXNHQTFVZER3UUVBd0lIZ0RBVEJnTlZIU1VFRERBS0JnZ3JCZ0VGQlFjREFqQXEKQmdOVkhSRUVJekFoaGg5emNHbG1abVU2THk5dGVTMXdiR0YwWm05eWJTOXRlUzF6WlhKMmFXTmxNQTBHQ1NxRwpTSWIzRFFFQkN3VUFBNElCQVFBVitTTmIzNktzNTIxSW9LSjlCUzRxZzcwUWxkOEthWERsZ2taV1BFRytpem9SCk5ISXo3c0tjWGdMTU5uN3dLNHdsNkQ4cE9VcFhEZitnTkhIcWpJNHRBTXIwdFY1cEtlbHBIU0RQWUZvTGd3U2gKVnJ3QzZwaW0zYzNndms4WmxGQ3AzWG1oSGdCQ1Rab2x2VFpSbXZPR0h6YzA0dHdxbDUwaVVWUjk3aU02RCtNaQpPZTlQUjBSVUNyakt3bERjTnpPNUpaVENuZHhWQysvVUJjeTVTZUwrakZWbW1Ra1N6dEJqMGtvdE5kVDNEaHUwCnkzbTVrNWFzR0hRY3I1QmcxQUd3QUFBZjNSOFJJUlFmRDJtOVFWT3BsLytPdzRpZHJsVU5kMDJiay9Xd3FjMEwKcFBqZ0JJOThjVzg2enB0c3JHdEhEUXFZeHVLa1ZLT1gwcnh3Z3QrVAotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0t"
 	// authenticatedURL is an unscoped URL that requires authentication.
-	authenticatedURL = "https://localhost/api/v1/organizations"
+	authenticatedURL = "https://localhost/protected"
 )
 
-// responseWriter is a mock http.ResponseWriter fixture that stores
-// all details about any write calls.
-type responseWriter struct {
-	header     http.Header
-	body       []byte
-	statusCode int
+const toySchema = `
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Toy schema",
+    "description": "This is a toy schema used for testing."
+  },
+  "paths": {
+    "/protected": {
+      "description": "Protected endpoint",
+      "get": {
+        
+        "security": [
+          {"oauth2Authentication": []}
+        ],
+	    "responses": {
+          "200": {
+           "$ref": "#/components/responses/okResponse"
+          }
+        }
+      }
+    }
+  },
+  "components" : {
+    "securitySchemes": {
+      "oauth2Authentication": {
+        "description": "Operation requires OAuth 2.0 bearer token authentication.",
+        "type": "oauth2"
+      }
+    },
+    "responses": {
+      "okResponse": {
+        "content": {
+   	      "text/html": {}
+        }
+      }
+    }
+  }
 }
-
-func newResponseWriter() *responseWriter {
-	return &responseWriter{
-		header: http.Header{},
-	}
-}
-
-func (w *responseWriter) Header() http.Header {
-	return w.header
-}
-
-func (w *responseWriter) Write(body []byte) (int, error) {
-	if w.statusCode == 0 {
-		w.statusCode = http.StatusOK
-	}
-
-	w.body = body
-
-	return len(body), nil
-}
-
-func (w *responseWriter) WriteHeader(statusCode int) {
-	w.statusCode = statusCode
-}
+`
 
 // validateError checks that the response body is an error and is as we expect.
-func (w *responseWriter) validateError(t *testing.T, errorType coreapi.ErrorError, errorDescription string) {
+func validateError(t *testing.T, w *httptest.ResponseRecorder, errorType coreapi.ErrorError, errorDescription string) {
 	t.Helper()
 
-	require.NotNil(t, w.body)
+	require.NotNil(t, w.Body)
 
 	oauthError := &coreapi.Error{}
-	require.NoError(t, json.Unmarshal(w.body, oauthError))
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), oauthError))
 
 	require.Equal(t, errorType, oauthError.Error)
 	require.Equal(t, errorDescription, oauthError.ErrorDescription)
@@ -213,11 +224,14 @@ func (h *handler) validate(t *testing.T, actor string) {
 	require.Equal(t, userActor, h.principal.Actor)
 }
 
-// mustNewValidator creates an OpanAPI validator middleware, the thing we are testing.
+// mustNewValidator creates an OpenAPI validator middleware, the thing we are testing.
 func mustNewValidator(t *testing.T, authorizer openapi.Authorizer, handler http.Handler) *openapi.Validator {
 	t.Helper()
 
-	schema, err := coreapi.NewSchema(identityapi.GetSwagger)
+	schema, err := coreapi.NewSchema(coreapi.SchemaGetter(func() (*openapi3.T, error) {
+		loader := openapi3.NewLoader()
+		return loader.LoadFromData([]byte(toySchema))
+	}))
 	require.NoError(t, err)
 
 	return openapi.NewValidator(authorizer, handler, schema)
@@ -237,14 +251,14 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
 
-	w := newResponseWriter()
+	w := httptest.NewRecorder()
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
 
 	v.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusUnauthorized, w.statusCode)
+	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
 }
 
 // TestUserToServiceAuthenticationSuccess tests everything is in place when authentication
@@ -262,14 +276,14 @@ func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
 
-	w := newResponseWriter()
+	w := httptest.NewRecorder()
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
 
 	v.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusOK, w.statusCode)
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 	h.validate(t, userActor)
 }
 
@@ -286,7 +300,7 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
 
-	w := newResponseWriter()
+	w := httptest.NewRecorder()
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
@@ -295,8 +309,8 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 
 	v.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusInternalServerError, w.statusCode)
-	w.validateError(t, coreapi.ServerError, "certificate propagation failure")
+	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
+	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
 }
 
 // TestServiceToServiceCertificateInvalid tests the response when a client certificate
@@ -312,7 +326,7 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
 
-	w := newResponseWriter()
+	w := httptest.NewRecorder()
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
@@ -321,8 +335,8 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 
 	v.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusInternalServerError, w.statusCode)
-	w.validateError(t, coreapi.ServerError, "certificate propagation failure")
+	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
+	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
 }
 
 // TestServiceToServiceAuthenticationFailure tests the response when authentication fails.
@@ -338,7 +352,7 @@ func TestServiceToServiceAuthenticationFailure(t *testing.T) {
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
 
-	w := newResponseWriter()
+	w := httptest.NewRecorder()
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
@@ -347,7 +361,7 @@ func TestServiceToServiceAuthenticationFailure(t *testing.T) {
 
 	v.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusUnauthorized, w.statusCode)
+	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
 }
 
 // TestServiceToServicePrincipalMissing tests the response when a principal is missing.
@@ -363,7 +377,7 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
 
-	w := newResponseWriter()
+	w := httptest.NewRecorder()
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
@@ -372,8 +386,8 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 
 	v.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusBadRequest, w.statusCode)
-	w.validateError(t, coreapi.InvalidRequest, "principal propagation failure for authentication")
+	require.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+	validateError(t, w, coreapi.InvalidRequest, "principal propagation failure for authentication")
 }
 
 // TestServiceToServiceAuthenticationSuccess tests a full service to service authenticated
@@ -391,7 +405,7 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
 
-	w := newResponseWriter()
+	w := httptest.NewRecorder()
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
@@ -401,6 +415,6 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 
 	v.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusOK, w.statusCode)
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 	h.validate(t, serviceActor)
 }
