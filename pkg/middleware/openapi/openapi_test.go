@@ -18,6 +18,7 @@ package openapi_test
 
 import (
 	"crypto/tls"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -57,87 +58,8 @@ const (
 	authenticatedURL = "https://localhost/protected"
 )
 
-const toySchema = `
-{
-  "openapi": "3.0.3",
-  "info": {
-    "title": "Toy schema",
-    "description": "This is a toy schema used for testing."
-  },
-  "paths": {
-    "/protected": {
-      "description": "Protected endpoint",
-      "get": {
-        "security": [
-          {"oauth2Authentication": []}
-        ],
-        "responses": {
-          "200": {
-           "$ref": "#/components/responses/okResponse"
-          }
-        }
-      }
-    },
-    "/upload": {
-      "description": "Endpoint for uploads, for which we don't want to examine the request body",
-      "post": {
-        "tags": ["unikorn-cloud.org/ignore-request-body"],
-        "security": [
-          {"oauth2Authentication": []}
-        ],
-        "requestBody": {
-          "$ref": "#/components/requestBodies/uploadRequest"
-        },
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/okResponse"
-          }
-        }	    
-      }
-    }
-  },
-  "components" : {
-    "securitySchemes": {
-      "oauth2Authentication": {
-        "description": "Operation requires OAuth 2.0 bearer token authentication.",
-        "type": "oauth2"
-      }
-    },
-    "requestBodies": {
-      "uploadRequest": {
-        "description": "A request to upload data",
-        "content": {
-          "multipart/form-data": {
-            "schema": {
-              "type": "object",
-                "required": ["file"],
-                "properties": {
-                  "file": { "type": "string", "format": "binary" }
-                }
-            },
-            "encoding": {
-              "file": { "contentType": "application/tar+gzip,application/gzip" }
-            }
-          },
-          "application/octet-stream": {
-            "schema": {
-              "type": "string",
-              "format": "binary"
-            }
-          }
-        }
-      }
-    },
-    "responses": {
-      "okResponse": {
-        "content": {
-   	      "text/html": {}
-        }
-      }
-    }
-  }
-}
-`
+//go:embed "testdata/toyschema.yaml"
+var toySchema []byte
 
 // validateError checks that the response body is an error and is as we expect.
 func validateError(t *testing.T, w *httptest.ResponseRecorder, errorType coreapi.ErrorError, errorDescription string) {
@@ -272,7 +194,7 @@ func mustNewValidator(t *testing.T, authorizer openapi.Authorizer, handler http.
 
 	schema, err := coreapi.NewSchema(coreapi.SchemaGetter(func() (*openapi3.T, error) {
 		loader := openapi3.NewLoader()
-		return loader.LoadFromData([]byte(toySchema))
+		return loader.LoadFromData(toySchema)
 	}))
 	require.NoError(t, err)
 
