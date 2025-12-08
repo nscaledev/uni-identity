@@ -296,6 +296,10 @@ roles:
         application:applications: [read]
         application:applicationsets: [read]
 
+# Optional additional roles that can be injected alongside the defaults.
+# Shape matches the roles map below. Same names will raise an error.
+additionalRoles: {}
+
 # Quota metadata and defaults are defined here.  Quotas are extensible
 # so you can create 3rd party quota resources externally.
 quotas:
