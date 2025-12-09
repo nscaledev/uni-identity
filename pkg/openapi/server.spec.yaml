@@ -20,6 +20,7 @@ paths:
       description: |-
         Reads the OIDC discovery page identifying all the required endpoints, and
         supported algorithms.
+      summary: OIDC configuration
       responses:
         '200':
           $ref: '#/components/responses/openidConfigurationResponse'
@@ -31,6 +32,7 @@ paths:
         Provides authentication and authorization as per the OAuth 2.0 specification.
         You may specify the "openid" scope in order to have an OpenID Connect identity
         token returned during code exchange.
+      summary: OIDC authorization
       responses:
         '200':
           $ref: '#/components/responses/authorizationResponse'
@@ -45,6 +47,7 @@ paths:
         Provides authentication and authorization as per the OAuth 2.0 specification.
         You may specify the "openid" scope in order to have an OpenID Connect identity
         token returned during code exchange.
+      summary: OIDC authorization
       requestBody:
         $ref: '#/components/requestBodies/authorizationRequest'
       responses:
@@ -68,6 +71,7 @@ paths:
         re-authentication, and the "client_credentials" grant which is used by
         other services, in conjunction with X.509 client certificates, to authenticate
         and authorize their API access requirements.
+      summary: OIDC token exchange
       requestBody:
         $ref: '#/components/requestBodies/tokenRequest'
       responses:
@@ -86,6 +90,7 @@ paths:
       service via this address in order to perform email domain matching and
       delegate authorization to the correct identity provider.
     post:
+      x-hidden: true
       description: |-
         Returns the user's email address, or chosen OAuth 2.0 provider back to the
         identity service to initiate the backend authentication and token exchange.
@@ -99,6 +104,7 @@ paths:
       If a user doesn't exist, we can offer them the option of creating a
       new organization, this facilitates that flow.
     post:
+      x-hidden: true
       description: |-
         Returns the user's chosen organization name back to the identity service
         for creation of that organization, default user groups, and addition of
@@ -113,6 +119,7 @@ paths:
       Returns introspection information about an access token.
     get:
       description: Returns introspection information about an access token.
+      summary: OIDC user information
       responses:
         '200':
           $ref: '#/components/responses/userinfoResponse'
@@ -120,6 +127,7 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
     post:
       description: Returns introspection information about an access token.
+      summary: OIDC user information
       requestBody:
         $ref: '#/components/requestBodies/userinfoRequest'
       responses:
@@ -131,6 +139,7 @@ paths:
     description: |-
       Implements the OAuth 2.0 response code callback.
     get:
+      x-hidden: true
       description: |-
         The Identity Service OAuth 2.0 implementation does not provide any direct
         authentication.  It instead delegates to a 3rd party identity provider.
@@ -147,6 +156,7 @@ paths:
       description: |-
         Returns an array of public keys used to verify JWT ID tokens issued by
         this server.
+      summary: OIDC JSON webkey set
       responses:
         '200':
           $ref: '#/components/responses/jwksResponse'
@@ -158,6 +168,7 @@ paths:
       link a user calls in order to validate their one-time token and transition
       from a pending to active state.
     get:
+      x-hidden: true
       description: |-
         Complete the user signup process.
       responses:
@@ -171,6 +182,7 @@ paths:
       is typically registered with an identity provider who provides us a client
       identifier and a secret that we need to perform authentication with the provider.
     get:
+      x-hidden: true
       description: |-
         Lists system identity providers.
       security:
@@ -190,6 +202,7 @@ paths:
       This is used to perform basic RBAC on remote services and to control
       UX.
     get:
+      x-hidden: true
       description: |-
         Returns access control properties for the user.
       security:
@@ -214,6 +227,7 @@ paths:
         Returns a list of organizations that the user is a member of.  If an
         email address is provided in the query this allows a user with sufficient
         privilege to check if a given user is a member of any organizations.
+      summary: List organizations
       security:
       - oauth2Authentication: []
       parameters:
@@ -230,6 +244,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     post:
+      x-hidden: true
       description: |-
         Allows creation of a new organization.
       security:
@@ -260,6 +275,7 @@ paths:
     get:
       description: |-
         Get an organization.
+      summary: Get organization
       security:
       - oauth2Authentication: []
       responses:
@@ -274,6 +290,7 @@ paths:
     put:
       description: |-
         Update an organization.
+      summary: Update organization
       security:
       - oauth2Authentication: []
       requestBody:
@@ -288,6 +305,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     delete:
+      x-hidden: true
       description: |-
         Delete an organization, all of its users, groups, projects, and infrastructure.
       security:
@@ -311,6 +329,7 @@ paths:
     parameters:
     - $ref: '#/components/parameters/organizationIDParameter'
     get:
+      x-hidden: true
       description: |-
         Returns access control properties for the user.
       security:
@@ -333,6 +352,7 @@ paths:
     get:
       description: |-
         Lists all service accounts.
+      summary: List service accounts
       security:
       - oauth2Authentication: []
       responses:
@@ -348,6 +368,7 @@ paths:
       description: |-
         Creates a new service account and returns an access token,  The returned access
         token can only be read once.
+      summary: Create service account
       security:
       - oauth2Authentication: []
       requestBody:
@@ -373,6 +394,7 @@ paths:
     put:
       description: |-
         Updates a service account.
+      summary: Update service account
       security:
       - oauth2Authentication: []
       requestBody:
@@ -389,6 +411,7 @@ paths:
     delete:
       description: |-
         Removes a service account and revokes an access token.
+      summary: Delete service account
       security:
       - oauth2Authentication: []
       responses:
@@ -416,6 +439,7 @@ paths:
       description: |-
         Rotates a service account's access token. The returned access
         token can only be read once.
+      summary: Rotate service account token
       security:
       - oauth2Authentication: []
       responses:
@@ -435,6 +459,7 @@ paths:
     get:
       description: |-
         Lists all users.
+      summary: List users
       security:
       - oauth2Authentication: []
       responses:
@@ -449,6 +474,7 @@ paths:
     post:
       description: |-
         Creates a new user and associates with a set of groups.
+      summary: Create user
       security:
       - oauth2Authentication: []
       requestBody:
@@ -473,6 +499,7 @@ paths:
     put:
       description: |-
         Updates a user.
+      summary: Update user
       security:
       - oauth2Authentication: []
       requestBody:
@@ -489,6 +516,7 @@ paths:
     delete:
       description: |-
         Deletes a user and disassociates them with all groups they are a member of.
+      summary: Delete user
       security:
       - oauth2Authentication: []
       responses:
@@ -511,6 +539,7 @@ paths:
     get:
       description: |-
         Returns roles that can be used by the organization.
+      summary: List roles
       security:
       - oauth2Authentication: []
       responses:
@@ -532,6 +561,7 @@ paths:
     parameters:
     - $ref: '#/components/parameters/organizationIDParameter'
     get:
+      x-hidden: true
       description: |-
         Lists an organization's identity providers.
       security:
@@ -548,6 +578,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     post:
+      x-hidden: true
       description: |-
         Create an organization's identity provider.
       security:
@@ -576,6 +607,7 @@ paths:
     - $ref: '#/components/parameters/organizationIDParameter'
     - $ref: '#/components/parameters/oauth2ProvderIDParameter'
     put:
+      x-hidden: true
       description: |-
         Update an organization's identity provider.
       security:
@@ -594,6 +626,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     delete:
+      x-hidden: true
       description: |-
         Delete an organization's identity provider.
       security:
@@ -620,6 +653,7 @@ paths:
     get:
       description: |-
         Returns a list of groups that are defined for the organization.
+      summary: List groups
       security:
       - oauth2Authentication: []
       responses:
@@ -634,6 +668,7 @@ paths:
     post:
       description: |-
         Allows creation of a new group.
+      summary: Create group
       security:
       - oauth2Authentication: []
       requestBody:
@@ -661,6 +696,7 @@ paths:
     get:
       description: |-
         Allows a single group to be polled.
+      summary: Get group
       security:
       - oauth2Authentication: []
       responses:
@@ -675,6 +711,7 @@ paths:
     put:
       description: |-
         Allows a group to be updated.
+      summary: Update group
       security:
       - oauth2Authentication: []
       requestBody:
@@ -693,6 +730,7 @@ paths:
     delete:
       description: |-
         Allows the deletion of an existing group.
+      summary: Delete group
       security:
       - oauth2Authentication: []
       responses:
@@ -717,6 +755,7 @@ paths:
     get:
       description: |-
         List all projects for the organization.
+      summary: List projects
       security:
       - oauth2Authentication: []
       responses:
@@ -731,6 +770,7 @@ paths:
     post:
       description: |-
         Creates a new project resource for the user's organization.
+      summary: Create project
       security:
       - oauth2Authentication: []
       requestBody:
@@ -760,6 +800,7 @@ paths:
     get:
       description: |-
         Gets a project.
+      summary: Get project
       security:
       - oauth2Authentication: []
       responses:
@@ -778,6 +819,7 @@ paths:
     put:
       description: |-
         Updates a project.
+      summary: Update project
       security:
       - oauth2Authentication: []
       requestBody:
@@ -800,6 +842,7 @@ paths:
         Deletes the project associated with the authenticated user's scoped
         authorization token. This is a cascading operation and will delete all
         contained cluster managers and clusters.
+      summary: Delete project
       security:
       - oauth2Authentication: []
       responses:
@@ -825,6 +868,7 @@ paths:
     - $ref: '#/components/parameters/projectIDParameter'
     - $ref: '#/components/parameters/referenceParameter'
     put:
+      x-hidden: true
       x-no-body: true
       description: |
         Idempotent interface for adding external references to a resource.
@@ -844,6 +888,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     delete:
+      x-hidden: true
       description: |
         Idempotent interface for removing external references from a resource.
       security:
@@ -871,6 +916,7 @@ paths:
     get:
       description: |-
         Gets quotas for the organization.
+      summary: List quotas
       security:
       - oauth2Authentication: []
       responses:
@@ -883,6 +929,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     put:
+      x-hidden: true
       description: |-
         Sets quotas for the organization.
       security:
@@ -910,6 +957,7 @@ paths:
     parameters:
     - $ref: '#/components/parameters/organizationIDParameter'
     get:
+      x-hidden: true
       description: |-
         Lists all allocation.
       security:
@@ -936,6 +984,7 @@ paths:
     - $ref: '#/components/parameters/organizationIDParameter'
     - $ref: '#/components/parameters/projectIDParameter'
     post:
+      x-hidden: true
       description: |-
         Creates an allocation.
       security:
@@ -967,6 +1016,7 @@ paths:
     - $ref: '#/components/parameters/projectIDParameter'
     - $ref: '#/components/parameters/allocationIDParameter'
     get:
+      x-hidden: true
       description: |-
         Gets an allocation.
       security:
@@ -983,6 +1033,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     put:
+      x-hidden: true
       description: |-
         Updates an allocation.
       security:
@@ -1003,6 +1054,7 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     delete:
+      x-hidden: true
       description: |-
         Updates an allocation.
       security:
