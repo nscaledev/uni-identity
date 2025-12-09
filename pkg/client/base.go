@@ -70,7 +70,8 @@ func (c *BaseClient) HTTPClient(ctx context.Context) (*http.Client, error) {
 
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: tlsClientConfig,
+			TLSClientConfig:     tlsClientConfig,
+			MaxIdleConnsPerHost: 1000,
 		},
 	}
 
@@ -80,7 +81,17 @@ func (c *BaseClient) HTTPClient(ctx context.Context) (*http.Client, error) {
 // AccessTokenRequestMutator sets the authorization header for authenticated endpoints.
 func AccessTokenRequestMutator(accessToken AccessTokenGetter) func(context.Context, *http.Request) error {
 	return func(ctx context.Context, req *http.Request) error {
-		req.Header.Set("Authorization", "bearer "+accessToken.Get())
+		if accessToken == nil {
+			return nil
+		}
+
+		token, err := accessToken.Get(ctx)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Authorization", "bearer "+token)
+
 		return nil
 	}
 }

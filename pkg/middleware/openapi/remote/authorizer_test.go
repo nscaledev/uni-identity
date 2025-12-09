@@ -412,7 +412,10 @@ func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string
 	identityOptions := createIdentityOptions(t, issuer)
 	clientOptions := createCoreClientOptions(t)
 
-	return authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
+	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
+	require.NoError(t, err)
+
+	return a
 }
 
 func authInput(req *http.Request) *openapi3filter.AuthenticationInput {
