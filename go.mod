@@ -9,10 +9,10 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.1
 	github.com/google/uuid v1.6.0
 	github.com/oapi-codegen/runtime v1.1.1
-	github.com/spf13/pflag v1.0.6
+	github.com/spf13/pflag v1.0.10
 	github.com/spjmurray/go-util v0.1.3
-	github.com/stretchr/testify v1.10.0
-	github.com/unikorn-cloud/core v1.11.0
+	github.com/stretchr/testify v1.11.1
+	github.com/unikorn-cloud/core v1.11.1-0.20251209154055-f40c79722347
 	go.opentelemetry.io/otel v1.35.0
 	go.opentelemetry.io/otel/sdk v1.35.0
 	go.opentelemetry.io/otel/trace v1.35.0

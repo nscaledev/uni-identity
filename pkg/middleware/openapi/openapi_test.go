@@ -212,7 +212,7 @@ func mustNewValidator(t *testing.T, authorizer openapi.Authorizer, handler http.
 	}))
 	require.NoError(t, err)
 
-	return openapi.NewValidator(authorizer, handler, schema)
+	return openapi.NewValidator(&openapi.Options{}, authorizer, handler, schema)
 }
 
 // TestUserToServiceAuthenticationFailure tests we propagate the correct error when
@@ -432,7 +432,7 @@ type poisonReader struct{}
 var _ io.ReadCloser = poisonReader{}
 
 func (r poisonReader) Read([]byte) (int, error) {
-	return 0, errors.ErrRequest
+	return 0, errors.OAuth2AccessDenied("")
 }
 
 func (r poisonReader) Close() error {

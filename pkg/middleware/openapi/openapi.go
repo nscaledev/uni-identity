@@ -29,6 +29,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
+	"github.com/spf13/pflag"
 
 	"github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/openapi"
@@ -51,10 +52,31 @@ var (
 	ErrHeader = goerrors.New("header error")
 )
 
+type Options struct {
+	// runtimeSchemaValidation enables checking of (potentially large)
+	// response bodies, which does have a sizable impact on handler
+	// performance.  This is intended to be on during development
+	// (the default) and then disabled in production unless needed.
+	runtimeSchemaValidation bool
+
+	// runtimeSchemaValidationPanic is a more violent way of handling
+	// response validation errors to catch them in development rather than
+	// silently ignoring log output.
+	runtimeSchemaValidationPanic bool
+}
+
+func (o *Options) AddFlags(f *pflag.FlagSet) {
+	f.BoolVar(&o.runtimeSchemaValidation, "runtime-schema-validation", true, "Enables runtime OpenAPI schema response validation")
+	f.BoolVar(&o.runtimeSchemaValidationPanic, "runtime-schema-validation-panic", true, "Enables a panic on OpenAPI schema response validation error")
+}
+
 // Validator provides Schema validation of request and response codes,
 // media, and schema validation of payloads to ensure we are meeting the
 // specification.
 type Validator struct {
+	// options define any runtime options.
+	options *Options
+
 	// next defines the next HTTP handler in the chain.
 	next http.Handler
 
@@ -80,8 +102,9 @@ type Validator struct {
 var _ http.Handler = &Validator{}
 
 // NewValidator returns an initialized validator middleware.
-func NewValidator(authorizer Authorizer, next http.Handler, openapi *openapi.Schema) *Validator {
+func NewValidator(options *Options, authorizer Authorizer, next http.Handler, openapi *openapi.Schema) *Validator {
 	return &Validator{
+		options:    options,
 		authorizer: authorizer,
 		next:       next,
 		openapi:    openapi,
@@ -162,16 +185,6 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 	}
 
 	return responseValidationInput, nil
-}
-
-func (v *Validator) validateResponse(res *middleware.Capture, header http.Header, r *http.Request, responseValidationInput *openapi3filter.ResponseValidationInput) {
-	responseValidationInput.Status = res.StatusCode()
-	responseValidationInput.Header = header
-	responseValidationInput.Body = io.NopCloser(res.Body())
-
-	if err := openapi3filter.ValidateResponse(r.Context(), responseValidationInput); err != nil {
-		log.FromContext(r.Context()).Error(err, "response openapi schema validation failure")
-	}
 }
 
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
@@ -301,8 +314,23 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 	// Replace the authorization context with the handler context.
 	r = r.WithContext(ctx)
 
-	response := middleware.CaptureResponse(w, r, v.next)
-	v.validateResponse(response, w.Header(), r, responseValidationInput)
+	if v.options.runtimeSchemaValidation {
+		response := middleware.CaptureResponse(w, r, v.next)
+
+		responseValidationInput.Status = response.StatusCode()
+		responseValidationInput.Header = w.Header()
+		responseValidationInput.Body = io.NopCloser(response.Body())
+
+		if err := openapi3filter.ValidateResponse(ctx, responseValidationInput); err != nil {
+			if v.options.runtimeSchemaValidationPanic {
+				panic(err)
+			}
+
+			log.FromContext(ctx).Error(err, "response openapi schema validation failure")
+		}
+	} else {
+		v.next.ServeHTTP(w, r)
+	}
 
 	return nil
 }
@@ -329,8 +357,8 @@ func (v *Validator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Middleware returns a function that generates per-request
 // middleware functions.
-func Middleware(authorizer Authorizer, openapi *openapi.Schema) func(http.Handler) http.Handler {
+func Middleware(options *Options, authorizer Authorizer, openapi *openapi.Schema) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return NewValidator(authorizer, next, openapi)
+		return NewValidator(options, authorizer, next, openapi)
 	}
 }
