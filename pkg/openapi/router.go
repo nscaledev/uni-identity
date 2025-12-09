@@ -14,7 +14,7 @@ import (
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-
+	// OIDC configuration
 	// (GET /.well-known/openid-configuration)
 	GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request)
 
@@ -23,7 +23,7 @@ type ServerInterface interface {
 
 	// (GET /api/v1/oauth2providers)
 	GetApiV1Oauth2providers(w http.ResponseWriter, r *http.Request)
-
+	// List organizations
 	// (GET /api/v1/organizations)
 	GetApiV1Organizations(w http.ResponseWriter, r *http.Request, params GetApiV1OrganizationsParams)
 
@@ -32,10 +32,10 @@ type ServerInterface interface {
 
 	// (DELETE /api/v1/organizations/{organizationID})
 	DeleteApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Get organization
 	// (GET /api/v1/organizations/{organizationID})
 	GetApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Update organization
 	// (PUT /api/v1/organizations/{organizationID})
 	PutApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
 
@@ -44,19 +44,19 @@ type ServerInterface interface {
 
 	// (GET /api/v1/organizations/{organizationID}/allocations)
 	GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// List groups
 	// (GET /api/v1/organizations/{organizationID}/groups)
 	GetApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Create group
 	// (POST /api/v1/organizations/{organizationID}/groups)
 	PostApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Delete group
 	// (DELETE /api/v1/organizations/{organizationID}/groups/{groupid})
 	DeleteApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, groupid GroupidParameter)
-
+	// Get group
 	// (GET /api/v1/organizations/{organizationID}/groups/{groupid})
 	GetApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, groupid GroupidParameter)
-
+	// Update group
 	// (PUT /api/v1/organizations/{organizationID}/groups/{groupid})
 	PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, groupid GroupidParameter)
 
@@ -71,19 +71,19 @@ type ServerInterface interface {
 
 	// (PUT /api/v1/organizations/{organizationID}/oauth2providers/{providerID})
 	PutApiV1OrganizationsOrganizationIDOauth2providersProviderID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, providerID Oauth2ProvderIDParameter)
-
+	// List projects
 	// (GET /api/v1/organizations/{organizationID}/projects)
 	GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Create project
 	// (POST /api/v1/organizations/{organizationID}/projects)
 	PostApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Delete project
 	// (DELETE /api/v1/organizations/{organizationID}/projects/{projectID})
 	DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter)
-
+	// Get project
 	// (GET /api/v1/organizations/{organizationID}/projects/{projectID})
 	GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter)
-
+	// Update project
 	// (PUT /api/v1/organizations/{organizationID}/projects/{projectID})
 	PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter)
 
@@ -104,52 +104,52 @@ type ServerInterface interface {
 
 	// (PUT /api/v1/organizations/{organizationID}/projects/{projectID}/references/{reference})
 	PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter, reference ReferenceParameter)
-
+	// List quotas
 	// (GET /api/v1/organizations/{organizationID}/quotas)
 	GetApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
 
 	// (PUT /api/v1/organizations/{organizationID}/quotas)
 	PutApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// List roles
 	// (GET /api/v1/organizations/{organizationID}/roles)
 	GetApiV1OrganizationsOrganizationIDRoles(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// List service accounts
 	// (GET /api/v1/organizations/{organizationID}/serviceaccounts)
 	GetApiV1OrganizationsOrganizationIDServiceaccounts(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Create service account
 	// (POST /api/v1/organizations/{organizationID}/serviceaccounts)
 	PostApiV1OrganizationsOrganizationIDServiceaccounts(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Delete service account
 	// (DELETE /api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID})
 	DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, serviceAccountID ServiceAccountIDParameter)
-
+	// Update service account
 	// (PUT /api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID})
 	PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, serviceAccountID ServiceAccountIDParameter)
-
+	// Rotate service account token
 	// (POST /api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID}/rotate)
 	PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotate(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, serviceAccountID ServiceAccountIDParameter)
-
+	// List users
 	// (GET /api/v1/organizations/{organizationID}/users)
 	GetApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Create user
 	// (POST /api/v1/organizations/{organizationID}/users)
 	PostApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
+	// Delete user
 	// (DELETE /api/v1/organizations/{organizationID}/users/{userID})
 	DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter)
-
+	// Update user
 	// (PUT /api/v1/organizations/{organizationID}/users/{userID})
 	PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter)
 
 	// (GET /api/v1/signup)
 	GetApiV1Signup(w http.ResponseWriter, r *http.Request)
-
+	// OIDC authorization
 	// (GET /oauth2/v2/authorization)
 	GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request)
-
+	// OIDC authorization
 	// (POST /oauth2/v2/authorization)
 	PostOauth2V2Authorization(w http.ResponseWriter, r *http.Request)
-
+	// OIDC JSON webkey set
 	// (GET /oauth2/v2/jwks)
 	GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request)
 
@@ -158,13 +158,13 @@ type ServerInterface interface {
 
 	// (POST /oauth2/v2/onboard)
 	PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request)
-
+	// OIDC token exchange
 	// (POST /oauth2/v2/token)
 	PostOauth2V2Token(w http.ResponseWriter, r *http.Request)
-
+	// OIDC user information
 	// (GET /oauth2/v2/userinfo)
 	GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request)
-
+	// OIDC user information
 	// (POST /oauth2/v2/userinfo)
 	PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request)
 
@@ -176,6 +176,7 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
+// OIDC configuration
 // (GET /.well-known/openid-configuration)
 func (_ Unimplemented) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -191,6 +192,7 @@ func (_ Unimplemented) GetApiV1Oauth2providers(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List organizations
 // (GET /api/v1/organizations)
 func (_ Unimplemented) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, params GetApiV1OrganizationsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -206,11 +208,13 @@ func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationID(w http.ResponseWri
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Get organization
 // (GET /api/v1/organizations/{organizationID})
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Update organization
 // (PUT /api/v1/organizations/{organizationID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -226,26 +230,31 @@ func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDAllocations(w http.Res
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List groups
 // (GET /api/v1/organizations/{organizationID}/groups)
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Create group
 // (POST /api/v1/organizations/{organizationID}/groups)
 func (_ Unimplemented) PostApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Delete group
 // (DELETE /api/v1/organizations/{organizationID}/groups/{groupid})
 func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, groupid GroupidParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Get group
 // (GET /api/v1/organizations/{organizationID}/groups/{groupid})
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, groupid GroupidParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Update group
 // (PUT /api/v1/organizations/{organizationID}/groups/{groupid})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, groupid GroupidParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -271,26 +280,31 @@ func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDOauth2providersProvide
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List projects
 // (GET /api/v1/organizations/{organizationID}/projects)
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Create project
 // (POST /api/v1/organizations/{organizationID}/projects)
 func (_ Unimplemented) PostApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Delete project
 // (DELETE /api/v1/organizations/{organizationID}/projects/{projectID})
 func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Get project
 // (GET /api/v1/organizations/{organizationID}/projects/{projectID})
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Update project
 // (PUT /api/v1/organizations/{organizationID}/projects/{projectID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, projectID ProjectIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -326,6 +340,7 @@ func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDProjectsProjectIDRefer
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List quotas
 // (GET /api/v1/organizations/{organizationID}/quotas)
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -336,51 +351,61 @@ func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDQuotas(w http.Response
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List roles
 // (GET /api/v1/organizations/{organizationID}/roles)
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDRoles(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List service accounts
 // (GET /api/v1/organizations/{organizationID}/serviceaccounts)
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDServiceaccounts(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Create service account
 // (POST /api/v1/organizations/{organizationID}/serviceaccounts)
 func (_ Unimplemented) PostApiV1OrganizationsOrganizationIDServiceaccounts(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Delete service account
 // (DELETE /api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID})
 func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, serviceAccountID ServiceAccountIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Update service account
 // (PUT /api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, serviceAccountID ServiceAccountIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Rotate service account token
 // (POST /api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID}/rotate)
 func (_ Unimplemented) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotate(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, serviceAccountID ServiceAccountIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List users
 // (GET /api/v1/organizations/{organizationID}/users)
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Create user
 // (POST /api/v1/organizations/{organizationID}/users)
 func (_ Unimplemented) PostApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Delete user
 // (DELETE /api/v1/organizations/{organizationID}/users/{userID})
 func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Update user
 // (PUT /api/v1/organizations/{organizationID}/users/{userID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -391,16 +416,19 @@ func (_ Unimplemented) GetApiV1Signup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// OIDC authorization
 // (GET /oauth2/v2/authorization)
 func (_ Unimplemented) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// OIDC authorization
 // (POST /oauth2/v2/authorization)
 func (_ Unimplemented) PostOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// OIDC JSON webkey set
 // (GET /oauth2/v2/jwks)
 func (_ Unimplemented) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -416,16 +444,19 @@ func (_ Unimplemented) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// OIDC token exchange
 // (POST /oauth2/v2/token)
 func (_ Unimplemented) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// OIDC user information
 // (GET /oauth2/v2/userinfo)
 func (_ Unimplemented) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// OIDC user information
 // (POST /oauth2/v2/userinfo)
 func (_ Unimplemented) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
