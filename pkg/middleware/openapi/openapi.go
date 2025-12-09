@@ -19,6 +19,8 @@ package openapi
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	goerrors "errors"
 	"fmt"
 	"io"
@@ -189,26 +191,38 @@ func (v *Validator) generatePrincipal(ctx context.Context, params map[string]str
 // by any service.  This is called only by other system services as
 // identified by the use of mTLS.
 func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, error) {
-	data := r.Header.Get(principal.Header)
-	if data == "" {
+	header := r.Header.Get(principal.Header)
+	if header == "" {
 		return nil, fmt.Errorf("%w: principal header not present", ErrHeader)
 	}
 
-	// Use the certificate of the service that actually called us.
-	// The one in the context is used to propagate token binding information.
-	certRaw, err := util.GetClientCertificateHeader(r.Header)
+	data, err := base64.RawURLEncoding.DecodeString(header)
 	if err != nil {
-		return nil, err
-	}
+		// TODO: fallback, delete me... I am VERY slow.
+		// Use the certificate of the service that actually called us.
+		// The one in the context is used to propagate token binding information.
+		certRaw, err := util.GetClientCertificateHeader(r.Header)
+		if err != nil {
+			return nil, err
+		}
 
-	certificate, err := util.GetClientCertificate(certRaw)
-	if err != nil {
-		return nil, err
+		certificate, err := util.GetClientCertificate(certRaw)
+		if err != nil {
+			return nil, err
+		}
+
+		p := &principal.Principal{}
+
+		if err := client.VerifyAndDecode(p, header, certificate); err != nil {
+			return nil, err
+		}
+
+		return principal.NewContext(ctx, p), nil
 	}
 
 	p := &principal.Principal{}
 
-	if err := client.VerifyAndDecode(p, data, certificate); err != nil {
+	if err := json.Unmarshal(data, p); err != nil {
 		return nil, err
 	}
 
