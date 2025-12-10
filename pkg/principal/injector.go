@@ -18,6 +18,8 @@ package principal
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -39,12 +41,12 @@ func Injector(cli client.Client, options *coreclient.HTTPClientOptions) func(con
 			return err
 		}
 
-		value, err := options.EncodeAndSign(ctx, cli, principal)
+		data, err := json.Marshal(principal)
 		if err != nil {
 			return err
 		}
 
-		r.Header.Set(Header, value)
+		r.Header.Set(Header, base64.RawURLEncoding.EncodeToString(data))
 
 		return nil
 	}

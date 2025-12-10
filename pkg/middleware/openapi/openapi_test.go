@@ -89,8 +89,8 @@ func addCertificateHeader(t *testing.T, r *http.Request, verified bool) {
 	}
 }
 
-// addPrincipalHeader digitally signs a principal and adds to the request.
-func addPrincipalHeader(t *testing.T, r *http.Request) {
+// addPrincipalHeaderLegacy digitally signs a principal and adds to the request.
+func addPrincipalHeaderLegacy(t *testing.T, r *http.Request) {
 	t.Helper()
 
 	p := &principal.Principal{
@@ -126,6 +126,20 @@ func addPrincipalHeader(t *testing.T, r *http.Request) {
 	require.NoError(t, err)
 
 	r.Header.Set(principal.Header, value)
+}
+
+// addPrincipalHeader encodes principal and adds to the request.
+func addPrincipalHeader(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	p := &principal.Principal{
+		Actor: userActor,
+	}
+
+	dataJSON, err := json.Marshal(p)
+	require.NoError(t, err)
+
+	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(dataJSON))
 }
 
 // authInfoFixture creates a fixture to be returned from the Authorizer interface
@@ -354,8 +368,38 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 	validateError(t, w, coreapi.InvalidRequest, "principal propagation failure for authentication")
 }
 
-// TestServiceToServiceAuthenticationSuccess tests a full service to service authenticated
+// TestServiceToServiceAuthenticationSuccessLegacy tests a full service to service authenticated
 // API call.
+//
+//nolint:dupl
+func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	v := mustNewValidator(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	addCertificateHeader(t, r, true)
+	addPrincipalHeaderLegacy(t, r)
+
+	v.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	h.validate(t, serviceActor)
+}
+
+//nolint:dupl
 func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	t.Parallel()
 
