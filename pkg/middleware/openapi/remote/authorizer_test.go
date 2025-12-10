@@ -219,7 +219,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			// "full" handler has too many dependencies that are irrelevant here.
 			header := r.Header.Get("Authorization")
 			if header == "" {
-				errors.HandleError(w, r, errors.OAuth2UnauthorizedClient("missing auth header"))
+				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header missing"))
 				return
 			}
 

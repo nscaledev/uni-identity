@@ -64,6 +64,9 @@ type Server struct {
 
 	// RBACOptions are for RBAC related things.
 	RBACOptions rbac.Options
+
+	// OpenAPIOptions are for OpenAPI processing.
+	OpenAPIOptions openapimiddleware.Options
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -74,6 +77,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.OAuth2Options.AddFlags(flags)
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
+	s.OpenAPIOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
@@ -117,7 +121,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		ErrorHandlerFunc: handler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
 			audit.Middleware(schema, constants.Application, constants.Version),
-			openapimiddleware.Middleware(authorizer, schema),
+			openapimiddleware.Middleware(&s.OpenAPIOptions, authorizer, schema),
 		},
 	}
 
