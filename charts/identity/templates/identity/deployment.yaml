@@ -65,6 +65,9 @@ spec:
             {{- end }}
           {{- end }}
         {{- end }}
+        {{- range $i, $arg := .Values.server.extraFlags }}
+        - {{ $arg }}
+        {{- end }}
         ports:
         - name: http
           containerPort: 6080

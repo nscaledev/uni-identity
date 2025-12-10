@@ -14,6 +14,9 @@ imagePullSecret: ~
 
 # Allows override of the identity service configuration.
 server:
+  # An array of extra flags to append to the server configuration.
+  extraFlags: ~
+
   # Allows override of the image.
   image: ~
 
