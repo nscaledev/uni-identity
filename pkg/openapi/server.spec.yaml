@@ -17,10 +17,10 @@ paths:
     description: |-
       Implements OIDC service discovery.
     get:
+      x-hidden: true
       description: |-
         Reads the OIDC discovery page identifying all the required endpoints, and
         supported algorithms.
-      summary: OIDC configuration
       responses:
         '200':
           $ref: '#/components/responses/openidConfigurationResponse'
@@ -28,11 +28,11 @@ paths:
     description: |-
       Implements OAuth 2.0 authorization grants.
     get:
+      x-hidden: true
       description: |-
         Provides authentication and authorization as per the OAuth 2.0 specification.
         You may specify the "openid" scope in order to have an OpenID Connect identity
         token returned during code exchange.
-      summary: OIDC authorization
       responses:
         '200':
           $ref: '#/components/responses/authorizationResponse'
@@ -43,11 +43,11 @@ paths:
         '500':
           $ref: '#/components/responses/htmlErrorResponse'
     post:
+      x-hidden: true
       description: |-
         Provides authentication and authorization as per the OAuth 2.0 specification.
         You may specify the "openid" scope in order to have an OpenID Connect identity
         token returned during code exchange.
-      summary: OIDC authorization
       requestBody:
         $ref: '#/components/requestBodies/authorizationRequest'
       responses:
@@ -63,6 +63,7 @@ paths:
     description: |-
       Implements OAuth 2.0 code exchange.
     post:
+      x-hidden: true
       description: |-
         Provides authorization code to access token exchange as per the OAuth 2.0
         specification with the "authorization_code" grant. If requested during
@@ -71,7 +72,6 @@ paths:
         re-authentication, and the "client_credentials" grant which is used by
         other services, in conjunction with X.509 client certificates, to authenticate
         and authorize their API access requirements.
-      summary: OIDC token exchange
       requestBody:
         $ref: '#/components/requestBodies/tokenRequest'
       responses:
@@ -118,16 +118,16 @@ paths:
     description: |-
       Returns introspection information about an access token.
     get:
+      x-hidden: true
       description: Returns introspection information about an access token.
-      summary: OIDC user information
       responses:
         '200':
           $ref: '#/components/responses/userinfoResponse'
         '401':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
     post:
+      x-hidden: true
       description: Returns introspection information about an access token.
-      summary: OIDC user information
       requestBody:
         $ref: '#/components/requestBodies/userinfoRequest'
       responses:
@@ -153,10 +153,10 @@ paths:
   /oauth2/v2/jwks:
     description: JSON web key set endpoint.
     get:
+      x-hidden: true
       description: |-
         Returns an array of public keys used to verify JWT ID tokens issued by
         this server.
-      summary: OIDC JSON webkey set
       responses:
         '200':
           $ref: '#/components/responses/jwksResponse'
