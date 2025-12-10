@@ -14,7 +14,7 @@ import (
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// OIDC configuration
+
 	// (GET /.well-known/openid-configuration)
 	GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request)
 
@@ -143,13 +143,13 @@ type ServerInterface interface {
 
 	// (GET /api/v1/signup)
 	GetApiV1Signup(w http.ResponseWriter, r *http.Request)
-	// OIDC authorization
+
 	// (GET /oauth2/v2/authorization)
 	GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request)
-	// OIDC authorization
+
 	// (POST /oauth2/v2/authorization)
 	PostOauth2V2Authorization(w http.ResponseWriter, r *http.Request)
-	// OIDC JSON webkey set
+
 	// (GET /oauth2/v2/jwks)
 	GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request)
 
@@ -158,13 +158,13 @@ type ServerInterface interface {
 
 	// (POST /oauth2/v2/onboard)
 	PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request)
-	// OIDC token exchange
+
 	// (POST /oauth2/v2/token)
 	PostOauth2V2Token(w http.ResponseWriter, r *http.Request)
-	// OIDC user information
+
 	// (GET /oauth2/v2/userinfo)
 	GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request)
-	// OIDC user information
+
 	// (POST /oauth2/v2/userinfo)
 	PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request)
 
@@ -176,7 +176,6 @@ type ServerInterface interface {
 
 type Unimplemented struct{}
 
-// OIDC configuration
 // (GET /.well-known/openid-configuration)
 func (_ Unimplemented) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -416,19 +415,16 @@ func (_ Unimplemented) GetApiV1Signup(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// OIDC authorization
 // (GET /oauth2/v2/authorization)
 func (_ Unimplemented) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// OIDC authorization
 // (POST /oauth2/v2/authorization)
 func (_ Unimplemented) PostOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// OIDC JSON webkey set
 // (GET /oauth2/v2/jwks)
 func (_ Unimplemented) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -444,19 +440,16 @@ func (_ Unimplemented) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// OIDC token exchange
 // (POST /oauth2/v2/token)
 func (_ Unimplemented) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// OIDC user information
 // (GET /oauth2/v2/userinfo)
 func (_ Unimplemented) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// OIDC user information
 // (POST /oauth2/v2/userinfo)
 func (_ Unimplemented) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
