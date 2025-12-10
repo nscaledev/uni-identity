@@ -2,6 +2,10 @@
 
 This package provides an OIDC compliant server, that federates other OIDC and oauth2 compliant backends.
 
+## Developers
+
+[Developer Hub](https://github.com/nscaledev/uni/blob/main/DEVELOPER.md)
+
 ## Architecture
 
 ![Resource](./docs/images/resources.png)
