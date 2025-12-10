@@ -1,4 +1,13 @@
-{{- range $name, $spec := .Values.roles }}
+{{- $base := default (dict) .Values.roles }}
+{{- $additional := default (dict) .Values.additionalRoles }}
+{{- range $name, $_ := $additional }}
+{{- if hasKey $base $name }}
+{{- fail (printf "additionalRoles key %q conflicts with built-in role" $name) }}
+{{- end }}
+{{- end }}
+{{- $roles := merge (dict) $base }}
+{{- $roles = merge $roles $additional }}
+{{- range $name, $spec := $roles }}
 ---
 apiVersion: identity.unikorn-cloud.org/v1alpha1
 kind: Role
