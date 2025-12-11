@@ -228,6 +228,8 @@ paths:
         email address is provided in the query this allows a user with sufficient
         privilege to check if a given user is a member of any organizations.
       summary: List organizations
+      tags:
+      - Organizations
       security:
       - oauth2Authentication: []
       parameters:
@@ -276,6 +278,8 @@ paths:
       description: |-
         Get an organization.
       summary: Get organization
+      tags:
+      - Organizations
       security:
       - oauth2Authentication: []
       responses:
@@ -291,6 +295,8 @@ paths:
       description: |-
         Update an organization.
       summary: Update organization
+      tags:
+      - Organizations
       security:
       - oauth2Authentication: []
       requestBody:
@@ -353,6 +359,8 @@ paths:
       description: |-
         Lists all service accounts.
       summary: List service accounts
+      tags:
+      - Service accounts
       security:
       - oauth2Authentication: []
       responses:
@@ -369,6 +377,8 @@ paths:
         Creates a new service account and returns an access token,  The returned access
         token can only be read once.
       summary: Create service account
+      tags:
+      - Service accounts
       security:
       - oauth2Authentication: []
       requestBody:
@@ -395,6 +405,8 @@ paths:
       description: |-
         Updates a service account.
       summary: Update service account
+      tags:
+      - Service accounts
       security:
       - oauth2Authentication: []
       requestBody:
@@ -412,6 +424,8 @@ paths:
       description: |-
         Removes a service account and revokes an access token.
       summary: Delete service account
+      tags:
+      - Service accounts
       security:
       - oauth2Authentication: []
       responses:
@@ -440,6 +454,8 @@ paths:
         Rotates a service account's access token. The returned access
         token can only be read once.
       summary: Rotate service account token
+      tags:
+      - Service accounts
       security:
       - oauth2Authentication: []
       responses:
@@ -460,6 +476,8 @@ paths:
       description: |-
         Lists all users.
       summary: List users
+      tags:
+      - Users
       security:
       - oauth2Authentication: []
       responses:
@@ -475,6 +493,8 @@ paths:
       description: |-
         Creates a new user and associates with a set of groups.
       summary: Create user
+      tags:
+      - Users
       security:
       - oauth2Authentication: []
       requestBody:
@@ -500,6 +520,8 @@ paths:
       description: |-
         Updates a user.
       summary: Update user
+      tags:
+      - Users
       security:
       - oauth2Authentication: []
       requestBody:
@@ -517,6 +539,8 @@ paths:
       description: |-
         Deletes a user and disassociates them with all groups they are a member of.
       summary: Delete user
+      tags:
+      - Users
       security:
       - oauth2Authentication: []
       responses:
@@ -540,6 +564,8 @@ paths:
       description: |-
         Returns roles that can be used by the organization.
       summary: List roles
+      tags:
+      - Roles
       security:
       - oauth2Authentication: []
       responses:
@@ -654,6 +680,8 @@ paths:
       description: |-
         Returns a list of groups that are defined for the organization.
       summary: List groups
+      tags:
+      - Groups
       security:
       - oauth2Authentication: []
       responses:
@@ -669,6 +697,8 @@ paths:
       description: |-
         Allows creation of a new group.
       summary: Create group
+      tags:
+      - Groups
       security:
       - oauth2Authentication: []
       requestBody:
@@ -697,6 +727,8 @@ paths:
       description: |-
         Allows a single group to be polled.
       summary: Get group
+      tags:
+      - Groups
       security:
       - oauth2Authentication: []
       responses:
@@ -712,6 +744,8 @@ paths:
       description: |-
         Allows a group to be updated.
       summary: Update group
+      tags:
+      - Groups
       security:
       - oauth2Authentication: []
       requestBody:
@@ -731,6 +765,8 @@ paths:
       description: |-
         Allows the deletion of an existing group.
       summary: Delete group
+      tags:
+      - Groups
       security:
       - oauth2Authentication: []
       responses:
@@ -756,6 +792,8 @@ paths:
       description: |-
         List all projects for the organization.
       summary: List projects
+      tags:
+      - Projects
       security:
       - oauth2Authentication: []
       responses:
@@ -771,6 +809,8 @@ paths:
       description: |-
         Creates a new project resource for the user's organization.
       summary: Create project
+      tags:
+      - Projects
       security:
       - oauth2Authentication: []
       requestBody:
@@ -801,6 +841,8 @@ paths:
       description: |-
         Gets a project.
       summary: Get project
+      tags:
+      - Projects
       security:
       - oauth2Authentication: []
       responses:
@@ -820,6 +862,8 @@ paths:
       description: |-
         Updates a project.
       summary: Update project
+      tags:
+      - Projects
       security:
       - oauth2Authentication: []
       requestBody:
@@ -843,6 +887,8 @@ paths:
         authorization token. This is a cascading operation and will delete all
         contained cluster managers and clusters.
       summary: Delete project
+      tags:
+      - Projects
       security:
       - oauth2Authentication: []
       responses:
@@ -917,6 +963,8 @@ paths:
       description: |-
         Gets quotas for the organization.
       summary: List quotas
+      tags:
+      - Quotas
       security:
       - oauth2Authentication: []
       responses:
