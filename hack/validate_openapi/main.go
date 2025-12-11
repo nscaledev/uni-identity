@@ -50,9 +50,14 @@ func main() {
 		path := spec.Paths.Find(pathName)
 
 		for method, operation := range path.Operations() {
-			if operation.Summary == "" && operation.Extensions["x-hidden"] == nil {
-				report("no summary provided for ", method, pathName)
-				os.Exit(1)
+			if operation.Extensions["x-hidden"] == nil {
+				if operation.Summary == "" {
+					report("no summary provided for ", method, pathName)
+				}
+
+				if len(operation.Tags) == 0 {
+					report("no tag grouping provided for ", method, pathName)
+				}
 			}
 
 			//nolint:nestif
