@@ -187,30 +187,6 @@ type AclProject struct {
 // AclProjectList A list of projects the subject is a member of.
 type AclProjectList = []AclProject
 
-// AllocationCreate An allocation creation request.
-type AllocationCreate struct {
-	// Metadata Metadata required for all API resource reads and writes.
-	Metadata externalRef0.ResourceWriteMetadata `json:"metadata"`
-
-	// Spec Request parameters for creating an allocation.
-	Spec AllocationCreateSpec `json:"spec"`
-}
-
-// AllocationCreateSpec Request parameters for creating an allocation.
-type AllocationCreateSpec struct {
-	// Allocations A list of quotas.
-	Allocations ResourceAllocationList `json:"allocations"`
-
-	// Id The resource ID that owns this allocation.
-	Id string `json:"id"`
-
-	// Kind The resource kind that owns this allocation.
-	Kind string `json:"kind"`
-
-	// ProjectId The project ID that owns this allocation.
-	ProjectId string `json:"projectId"`
-}
-
 // AllocationRead An allocation of resources.
 type AllocationRead struct {
 	// Metadata Metadata required for resource reads that may be scoped to a project.
@@ -224,27 +200,6 @@ type AllocationRead struct {
 
 // AllocationSpec A set of resource allocations.
 type AllocationSpec struct {
-	// Allocations A list of quotas.
-	Allocations ResourceAllocationList `json:"allocations"`
-
-	// Id The resource ID that owns this allocation.
-	Id string `json:"id"`
-
-	// Kind The resource kind that owns this allocation.
-	Kind string `json:"kind"`
-}
-
-// AllocationUpdate An allocation update request.
-type AllocationUpdate struct {
-	// Metadata Metadata required for all API resource reads and writes.
-	Metadata externalRef0.ResourceWriteMetadata `json:"metadata"`
-
-	// Spec Request parameters for updating an allocation.
-	Spec AllocationUpdateSpec `json:"spec"`
-}
-
-// AllocationUpdateSpec Request parameters for updating an allocation.
-type AllocationUpdateSpec struct {
 	// Allocations A list of quotas.
 	Allocations ResourceAllocationList `json:"allocations"`
 
@@ -1002,14 +957,8 @@ type UserinfoResponse = Userinfo
 // UsersResponse A list of users.
 type UsersResponse = Users
 
-// AllocationCreateRequest An allocation creation request.
-type AllocationCreateRequest = AllocationCreate
-
 // AllocationRequest An allocation of resources.
 type AllocationRequest = AllocationWrite
-
-// AllocationUpdateRequest An allocation update request.
-type AllocationUpdateRequest = AllocationUpdate
 
 // CreateGroupRequest A group when created or updated.
 type CreateGroupRequest = GroupWrite
@@ -1054,10 +1003,10 @@ type PostApiV1OrganizationsJSONRequestBody = OrganizationWrite
 type PutApiV1OrganizationsOrganizationIDJSONRequestBody = OrganizationWrite
 
 // PostApiV1OrganizationsOrganizationIDAllocationsJSONRequestBody defines body for PostApiV1OrganizationsOrganizationIDAllocations for application/json ContentType.
-type PostApiV1OrganizationsOrganizationIDAllocationsJSONRequestBody = AllocationCreate
+type PostApiV1OrganizationsOrganizationIDAllocationsJSONRequestBody = AllocationWrite
 
 // PutApiV1OrganizationsOrganizationIDAllocationsAllocationIDJSONRequestBody defines body for PutApiV1OrganizationsOrganizationIDAllocationsAllocationID for application/json ContentType.
-type PutApiV1OrganizationsOrganizationIDAllocationsAllocationIDJSONRequestBody = AllocationUpdate
+type PutApiV1OrganizationsOrganizationIDAllocationsAllocationIDJSONRequestBody = AllocationWrite
 
 // PostApiV1OrganizationsOrganizationIDGroupsJSONRequestBody defines body for PostApiV1OrganizationsOrganizationIDGroups for application/json ContentType.
 type PostApiV1OrganizationsOrganizationIDGroupsJSONRequestBody = GroupWrite

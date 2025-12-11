@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -120,10 +121,6 @@ func setupAllocationTestFixture(t *testing.T) *allocationTestFixture {
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&unikornv1.Organization{}, &unikornv1.Project{}).
-		WithIndex(&unikornv1.Allocation{}, "metadata.name", func(object client.Object) []string {
-			allocation := object.(*unikornv1.Allocation)
-			return []string{allocation.Name}
-		}).
 		Build()
 
 	ctx := newContext(t)
@@ -248,39 +245,13 @@ func (f *allocationTestFixture) createQuota(t *testing.T, cpuLimit, memoryLimit 
 	require.NoError(t, f.client.Create(newContext(t), quota))
 }
 
-// makeAllocationCreateRequest creates a test allocation create request.
-func makeAllocationCreateRequest(name, resourceID string, cpuCommitted, memoryCommitted int) *openapi.AllocationCreateRequest {
-	return &openapi.AllocationCreateRequest{
+// makeAllocationRequest creates a test allocation request.
+func makeAllocationRequest(name, resourceID string, cpuCommitted, memoryCommitted int) *openapi.AllocationWrite {
+	return &openapi.AllocationWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{
 			Name: name,
 		},
-		Spec: openapi.AllocationCreateSpec{
-			ProjectId: testProjectID,
-			Kind:      allocationResourceKind,
-			Id:        resourceID,
-			Allocations: openapi.ResourceAllocationList{
-				{
-					Kind:      "cpu",
-					Committed: cpuCommitted,
-					Reserved:  0,
-				},
-				{
-					Kind:      "memory",
-					Committed: memoryCommitted,
-					Reserved:  0,
-				},
-			},
-		},
-	}
-}
-
-// makeAllocationUpdateRequest creates a test allocation update request.
-func makeAllocationUpdateRequest(name, resourceID string, cpuCommitted, memoryCommitted int) *openapi.AllocationUpdateRequest {
-	return &openapi.AllocationUpdateRequest{
-		Metadata: coreopenapi.ResourceWriteMetadata{
-			Name: name,
-		},
-		Spec: openapi.AllocationUpdateSpec{
+		Spec: openapi.AllocationSpec{
 			Kind: allocationResourceKind,
 			Id:   resourceID,
 			Allocations: openapi.ResourceAllocationList{
@@ -331,13 +302,13 @@ func TestConcurrentAllocations_SerializedByMutex(t *testing.T) {
 	// Run 20 concurrent allocations, each requesting 1 CPU
 	// Only 10 should succeed due to quota limits
 	errors := runConcurrent(20, func(idx int) error {
-		request := makeAllocationCreateRequest(
+		request := makeAllocationRequest(
 			fmt.Sprintf("allocation-%d", idx),
 			fmt.Sprintf("cluster-%d", idx),
 			1,           // 1 CPU
 			oneGigabyte, // 1GB
 		)
-		_, err := f.syncClient().Create(newContext(t), testOrgID, request)
+		_, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), request)
 
 		return err
 	})
@@ -374,14 +345,14 @@ func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
 	f.createQuota(t, 20, 20*oneGigabyte)
 
 	// Create an initial allocation with 1 CPU
-	initialRequest := makeAllocationCreateRequest(
+	initialRequest := makeAllocationRequest(
 		"test-allocation",
 		"test-cluster-1",
 		1,
 		oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, initialRequest)
+	result, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), initialRequest)
 
 	require.NoError(t, err)
 
@@ -390,13 +361,14 @@ func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
 	// Run 10 concurrent updates, each trying to increase allocation by 1 CPU
 	// All should succeed since we have quota of 20
 	errors := runConcurrent(10, func(idx int) error {
-		updateRequest := makeAllocationUpdateRequest(
+		updateRequest := makeAllocationRequest(
 			"test-allocation",
 			"test-cluster-1",
 			2+idx, // Increasing CPU request
 			oneGigabyte,
 		)
-		_, err := f.syncClient().Update(newContext(t), testOrgID, allocationID, updateRequest)
+
+		_, err := f.syncClient().Update(newContext(t), testOrgID, ptr.To(testProjectID), allocationID, updateRequest)
 
 		return err
 	})
@@ -426,14 +398,14 @@ func TestAllocationWithinQuota_Succeeds(t *testing.T) {
 	f := setupAllocationTestFixture(t)
 	f.createQuota(t, 10, 10*oneGigabyte)
 
-	request := makeAllocationCreateRequest(
+	request := makeAllocationRequest(
 		"test-allocation",
 		"test-cluster-1",
 		5, // 5 CPUs - within quota
 		5*oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, request)
+	result, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), request)
 	require.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "test-allocation", result.Metadata.Name)
@@ -450,14 +422,14 @@ func TestAllocationExceedingQuota_Fails(t *testing.T) {
 	f := setupAllocationTestFixture(t)
 	f.createQuota(t, 10, 10*oneGigabyte)
 
-	request := makeAllocationCreateRequest(
+	request := makeAllocationRequest(
 		"test-allocation",
 		"test-cluster-1",
 		15, // 15 CPUs - exceeds quota of 10
 		15*oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, request)
+	result, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), request)
 	require.Error(t, err, "Should fail when exceeding quota")
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "quota", "Error should mention quota")

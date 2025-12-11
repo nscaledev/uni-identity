@@ -18,8 +18,6 @@ package allocations
 
 import (
 	"context"
-	goerrors "errors"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -34,15 +32,9 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-var (
-	ErrAllocationNotFound       = goerrors.New("allocation not found")
-	ErrMultipleAllocationsFound = goerrors.New("multiple allocations found")
 )
 
 type Client struct {
@@ -176,26 +168,21 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Alloc
 	return convertList(&list), nil
 }
 
-func (c *SyncClient) Create(ctx context.Context, organizationID string, request *openapi.AllocationCreateRequest) (*openapi.AllocationRead, error) {
-	projectID := request.Spec.ProjectId
+func (c *SyncClient) Create(ctx context.Context, organizationID string, projectID *string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+	targetNamespace := c.namespace
 
-	namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, projectID)
-	if err != nil {
-		return nil, err
-	}
+	if projectID != nil {
+		namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, *projectID)
+		if err != nil {
+			return nil, err
+		}
 
-	allocationWrite := &openapi.AllocationWrite{
-		Metadata: request.Metadata,
-		Spec: openapi.AllocationSpec{
-			Allocations: request.Spec.Allocations,
-			Id:          request.Spec.Id,
-			Kind:        request.Spec.Kind,
-		},
+		targetNamespace = namespace.Name
 	}
 
 	// TODO: an allocation for the kind/ID must not already exist, you should be
 	// updating the existing one.  Raise an error.
-	allocation, err := generate(ctx, namespace.Name, organizationID, &projectID, allocationWrite)
+	allocation, err := generate(ctx, targetNamespace, organizationID, projectID, request)
 	if err != nil {
 		return nil, err
 	}
@@ -215,10 +202,10 @@ func (c *SyncClient) Create(ctx context.Context, organizationID string, request 
 	return convert(allocation), nil
 }
 
-func (c *Client) Get(ctx context.Context, organizationID, allocationID string) (*openapi.AllocationRead, error) {
-	allocation, err := c.get(ctx, organizationID, allocationID)
+func (c *Client) Get(ctx context.Context, organizationID string, projectID *string, allocationID string) (*openapi.AllocationRead, error) {
+	allocation, err := c.get(ctx, organizationID, projectID, allocationID)
 	if err != nil {
-		if goerrors.Is(err, ErrAllocationNotFound) {
+		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
@@ -228,67 +215,33 @@ func (c *Client) Get(ctx context.Context, organizationID, allocationID string) (
 	return convert(allocation), nil
 }
 
-func (c *Client) get(ctx context.Context, organizationID, allocationID string) (*unikornv1.Allocation, error) {
-	allocation, err := c.search(ctx, organizationID, allocationID)
-	if err == nil {
-		return allocation, nil
-	}
-
-	if !goerrors.Is(err, ErrAllocationNotFound) {
-		return nil, err
-	}
-
+func (c *Client) get(ctx context.Context, organizationID string, projectID *string, allocationID string) (*unikornv1.Allocation, error) {
 	objectKey := client.ObjectKey{
 		Namespace: c.namespace,
 		Name:      allocationID,
 	}
 
-	// For safety, we will pass an non-nil allocation pointer, although this might not actually be necessary.
-	allocation = &unikornv1.Allocation{}
-
-	if err := c.client.Get(ctx, objectKey, allocation); err != nil {
-		if kerrors.IsNotFound(err) {
-			err = fmt.Errorf("%w: %w", ErrAllocationNotFound, err)
+	if projectID != nil {
+		namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, *projectID)
+		if err != nil {
 			return nil, err
 		}
 
+		objectKey.Namespace = namespace.Name
+	}
+
+	var allocation unikornv1.Allocation
+	if err := c.client.Get(ctx, objectKey, &allocation); err != nil {
 		return nil, err
 	}
 
-	return allocation, nil
+	return &allocation, nil
 }
 
-func (c *Client) search(ctx context.Context, organizationID, allocationID string) (*unikornv1.Allocation, error) {
-	options := &client.ListOptions{
-		LabelSelector: labels.SelectorFromSet(labels.Set{
-			constants.OrganizationLabel: organizationID,
-		}),
-		FieldSelector: fields.SelectorFromSet(fields.Set{
-			"metadata.name": allocationID,
-		}),
-	}
-
-	var list unikornv1.AllocationList
-	if err := c.client.List(ctx, &list, options); err != nil {
-		fmt.Println(err)
-		return nil, err
-	}
-
-	if len(list.Items) == 0 {
-		return nil, ErrAllocationNotFound
-	}
-
-	if len(list.Items) > 1 {
-		return nil, ErrMultipleAllocationsFound
-	}
-
-	return &list.Items[0], nil
-}
-
-func (c *Client) Delete(ctx context.Context, organizationID, allocationID string) error {
-	source, err := c.get(ctx, organizationID, allocationID)
+func (c *Client) Delete(ctx context.Context, organizationID string, projectID *string, allocationID string) error {
+	source, err := c.get(ctx, organizationID, projectID, allocationID)
 	if err != nil {
-		if goerrors.Is(err, ErrAllocationNotFound) {
+		if kerrors.IsNotFound(err) {
 			return errors.HTTPNotFound().WithError(err)
 		}
 
@@ -313,31 +266,17 @@ func (c *Client) Delete(ctx context.Context, organizationID, allocationID string
 	return nil
 }
 
-func (c *SyncClient) Update(ctx context.Context, organizationID, allocationID string, request *openapi.AllocationUpdateRequest) (*openapi.AllocationRead, error) {
-	current, err := c.get(ctx, organizationID, allocationID)
+func (c *SyncClient) Update(ctx context.Context, organizationID string, projectID *string, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+	current, err := c.get(ctx, organizationID, projectID, allocationID)
 	if err != nil {
-		if goerrors.Is(err, ErrAllocationNotFound) {
+		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
 		return nil, errors.OAuth2ServerError("failed to update allocation").WithError(err)
 	}
 
-	var projectID *string
-	if temp, ok := current.Labels[constants.ProjectLabel]; ok {
-		projectID = &temp
-	}
-
-	allocationWrite := &openapi.AllocationWrite{
-		Metadata: request.Metadata,
-		Spec: openapi.AllocationSpec{
-			Allocations: request.Spec.Allocations,
-			Id:          request.Spec.Id,
-			Kind:        request.Spec.Kind,
-		},
-	}
-
-	required, err := generate(ctx, current.Namespace, organizationID, projectID, allocationWrite)
+	required, err := generate(ctx, current.Namespace, organizationID, projectID, request)
 	if err != nil {
 		return nil, err
 	}

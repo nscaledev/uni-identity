@@ -1024,11 +1024,11 @@ paths:
     post:
       x-hidden: true
       description: |-
-        Creates an allocation.
+        Creates an organization-scoped allocation.
       security:
       - oauth2Authentication: []
       requestBody:
-        $ref: '#/components/requestBodies/allocationCreateRequest'
+        $ref: '#/components/requestBodies/allocationRequest'
       responses:
         '201':
           $ref: '#/components/responses/allocationResponse'
@@ -1055,7 +1055,7 @@ paths:
     get:
       x-hidden: true
       description: |-
-        Gets an allocation.
+        Gets an organization-scoped allocation.
       security:
       - oauth2Authentication: []
       responses:
@@ -1072,11 +1072,11 @@ paths:
     put:
       x-hidden: true
       description: |-
-        Updates an allocation.
+        Updates an organization-scoped allocation.
       security:
       - oauth2Authentication: []
       requestBody:
-        $ref: '#/components/requestBodies/allocationUpdateRequest'
+        $ref: '#/components/requestBodies/allocationRequest'
       responses:
         '200':
           $ref: '#/components/responses/allocationResponse'
@@ -1093,7 +1093,7 @@ paths:
     delete:
       x-hidden: true
       description: |-
-        Deletes an allocation.
+        Deletes an organization-scoped allocation.
       security:
       - oauth2Authentication: []
       responses:
@@ -1120,7 +1120,7 @@ paths:
     post:
       x-hidden: true
       description: |-
-        Creates an allocation.
+        Creates an project-scoped allocation.
       security:
       - oauth2Authentication: []
       requestBody:
@@ -1152,7 +1152,7 @@ paths:
     get:
       x-hidden: true
       description: |-
-        Gets an allocation.
+        Gets an project-scoped allocation.
       security:
       - oauth2Authentication: []
       responses:
@@ -1169,7 +1169,7 @@ paths:
     put:
       x-hidden: true
       description: |-
-        Updates an allocation.
+        Updates an project-scoped allocation.
       security:
       - oauth2Authentication: []
       requestBody:
@@ -1190,7 +1190,7 @@ paths:
     delete:
       x-hidden: true
       description: |-
-        Updates an allocation.
+        Updates an project-scoped allocation.
       security:
       - oauth2Authentication: []
       responses:
@@ -2332,64 +2332,6 @@ components:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/schemas/resourceWriteMetadata'
         spec:
           $ref: '#/components/schemas/allocationSpec'
-    allocationCreateSpec:
-      description: Request parameters for creating an allocation.
-      type: object
-      required:
-      - projectId
-      - kind
-      - id
-      - allocations
-      properties:
-        projectId:
-          description: The project ID that owns this allocation.
-          type: string
-        kind:
-          description: The resource kind that owns this allocation.
-          type: string
-        id:
-          description: The resource ID that owns this allocation.
-          type: string
-        allocations:
-          $ref: '#/components/schemas/resourceAllocationList'
-    allocationCreate:
-      description: An allocation creation request.
-      type: object
-      required:
-      - metadata
-      - spec
-      properties:
-        metadata:
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/schemas/resourceWriteMetadata'
-        spec:
-          $ref: '#/components/schemas/allocationCreateSpec'
-    allocationUpdateSpec:
-      description: Request parameters for updating an allocation.
-      type: object
-      required:
-        - kind
-        - id
-        - allocations
-      properties:
-        kind:
-          description: The resource kind that owns this allocation.
-          type: string
-        id:
-          description: The resource ID that owns this allocation.
-          type: string
-        allocations:
-          $ref: '#/components/schemas/resourceAllocationList'
-    allocationUpdate:
-      description: An allocation update request.
-      type: object
-      required:
-      - metadata
-      - spec
-      properties:
-        metadata:
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/schemas/resourceWriteMetadata'
-        spec:
-          $ref: '#/components/schemas/allocationUpdateSpec'
   requestBodies:
     authorizationRequest:
       description: OIDC authentication request.
@@ -2594,47 +2536,6 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/allocationWrite'
-          example:
-            metadata:
-              name: undefined
-            spec:
-              kind: kubernetescluster
-              id: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
-              allocations:
-              - kind: clusters
-                committed: 1
-                reserved: 0
-              - kind: servers
-                committed: 3
-                reserved: 10
-    allocationCreateRequest:
-      description: Creates a resource allocation.
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/allocationCreate'
-          example:
-            metadata:
-              name: undefined
-            spec:
-              projectId: e36c058a-8eba-4f5b-91f4-f6ffb983795c
-              kind: kubernetescluster
-              id: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
-              allocations:
-              - kind: clusters
-                committed: 1
-                reserved: 0
-              - kind: servers
-                committed: 3
-                reserved: 10
-    allocationUpdateRequest:
-      description: Updates a resource allocation.
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/allocationUpdate'
           example:
             metadata:
               name: undefined
