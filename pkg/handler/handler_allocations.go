@@ -98,7 +98,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocat
 		return
 	}
 
-	if err := h.allocationsClient().Delete(ctx, organizationID, allocationID); err != nil {
+	if err := h.allocationsClient().Delete(ctx, organizationID, &projectID, allocationID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -115,7 +115,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	result, err := h.allocationsClient().Get(ctx, organizationID, allocationID)
+	result, err := h.allocationsClient().Get(ctx, organizationID, &projectID, allocationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -139,7 +139,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	result, err := h.allocationsSyncClient().Update(ctx, organizationID, allocationID, &request)
+	result, err := h.allocationsSyncClient().Update(ctx, organizationID, &projectID, allocationID, &request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -181,7 +181,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDAllocationsAllocationID(
 		return
 	}
 
-	if err := h.allocationsClient().Delete(ctx, organizationID, allocationID); err != nil {
+	if err := h.allocationsClient().Delete(ctx, organizationID, nil, allocationID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -198,7 +198,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocationsAllocationID(w h
 		return
 	}
 
-	result, err := h.allocationsClient().Get(ctx, organizationID, allocationID)
+	result, err := h.allocationsClient().Get(ctx, organizationID, nil, allocationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -222,7 +222,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDAllocationsAllocationID(w h
 		return
 	}
 
-	result, err := h.allocationsSyncClient().Update(ctx, organizationID, allocationID, &request)
+	result, err := h.allocationsSyncClient().Update(ctx, organizationID, nil, allocationID, &request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
