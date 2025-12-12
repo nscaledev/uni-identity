@@ -252,8 +252,33 @@ roles:
         compute:images: [read]
         compute:instances: [create,read,update,delete]
         compute:clusters: [create,read,update,delete]
-        application:applications: [read]
-        application:applicationsets: [create,read,update,delete]
+  auditor:
+    description: Organization auditor
+    scopes:
+      organization:
+        identity:organizations: [read]
+        identity:oauth2providers: [read]
+        identity:serviceaccounts: [read]
+        identity:users: [read]
+        identity:roles: [read]
+        identity:groups: [read]
+        identity:projects: [read]
+        identity:quotas: [read]
+        region:regions: [read]
+        region:networks:v2: [read]
+        region:filestorage:v2: [read]
+        region:filestorageclass:v2: [read]
+        region:securitygroups:v2: [read]
+        kubernetes:regions: [read]
+        kubernetes:flavors: [read]
+        kubernetes:images: [read]
+        kubernetes:clusters: [read]
+        kubernetes:virtualclusters: [read]
+        compute:regions: [read]
+        compute:flavors: [read]
+        compute:images: [read]
+        compute:instances: [read]
+        compute:clusters: [read]
   # A user can view projects they are a member of and
   # provision clusters.
   user:
