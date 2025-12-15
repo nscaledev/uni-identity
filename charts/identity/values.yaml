@@ -343,6 +343,10 @@ quotas:
     displayName: Networks
     description: Layer 3 networks.
     default: 5
+  images:
+    displayName: Images
+    description: VM images.
+    default: 0
   clusters:
     displayName: Clusters
     description: All cluster types e.g. Kubernetes, compute, etc.
