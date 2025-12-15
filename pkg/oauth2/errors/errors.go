@@ -159,5 +159,5 @@ func HandleError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 
-	oAuth2ServerError("an internal error has occurred, please contact support").Write(w, r)
+	oAuth2ServerError("an internal error has occurred, please contact support").WithError(err).Write(w, r)
 }
