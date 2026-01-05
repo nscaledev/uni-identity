@@ -67,7 +67,26 @@ func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	authorizationScheme, token, err := getHTTPAuthenticationScheme(r)
 	if err != nil {
-		return nil, err
+		// Fallback, if we don't supply a bearer token, then we must be using
+		// mTLS...
+		certPEM, err := authorization.ClientCertFromContext(r.Context())
+		if err != nil {
+			return nil, err
+		}
+
+		certificate, err := util.GetClientCertificate(certPEM)
+		if err != nil {
+			return nil, err
+		}
+
+		info := &authorization.Info{
+			SystemAccount: true,
+			Userinfo: &openapi.Userinfo{
+				Sub: certificate.Subject.CommonName,
+			},
+		}
+
+		return info, nil
 	}
 
 	if !strings.EqualFold(authorizationScheme, "bearer") {
@@ -89,29 +108,6 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		info.ClientID = claims.Federated.ClientID
 	case oauth2.TokenTypeServiceAccount:
 		info.ServiceAccount = true
-	case oauth2.TokenTypeService:
-		// All API requests will ultimately end up here as service call back
-		// into the identity service to validate the token presented to the API.
-		// If the token is bound to a certificate, we also expect the client
-		// certificate to be presented by the first client in the chain and
-		// propagated here.
-		certPEM, err := authorization.ClientCertFromContext(r.Context())
-		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate not present for bound token").WithError(err)
-		}
-
-		certificate, err := util.GetClientCertificate(certPEM)
-		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate parse error").WithError(err)
-		}
-
-		thumbprint := util.GetClientCertifcateThumbprint(certificate)
-
-		if thumbprint != claims.Service.X509Thumbprint {
-			return nil, errors.OAuth2AccessDenied("client certificate mismatch for bound token")
-		}
-
-		info.SystemAccount = true
 	}
 
 	return info, nil

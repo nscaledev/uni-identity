@@ -69,9 +69,7 @@ paths:
         specification with the "authorization_code" grant. If requested during
         authentication, an OpenID Connect identity token will also be returned.  
         This endpoint also supports the "refresh_token" grant for transparent
-        re-authentication, and the "client_credentials" grant which is used by
-        other services, in conjunction with X.509 client certificates, to authenticate
-        and authorize their API access requirements.
+        re-authentication.
       requestBody:
         $ref: '#/components/requestBodies/tokenRequest'
       responses:
@@ -1349,7 +1347,6 @@ components:
       type: string
       enum:
       - authorization_code
-      - client_credentials
       - refresh_token
     signingAlgorithm:
       description: Supported signing algorithms.
@@ -1481,7 +1478,7 @@ components:
       - grant_type
       properties:
         grant_type:
-          description: Supported grant type.  Must be either "code", "refresh_token" or "client_credentials".
+          description: Supported grant type.  Must be either "code" or "refresh_token".
           type: string
         code:
           description: Authorization code. Required with the "code" grant type.

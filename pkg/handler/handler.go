@@ -144,7 +144,6 @@ func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http
 		},
 		GrantTypesSupported: []openapi.GrantType{
 			openapi.AuthorizationCode,
-			openapi.ClientCredentials,
 			openapi.RefreshToken,
 		},
 		IdTokenSigningAlgValuesSupported: []openapi.SigningAlgorithm{

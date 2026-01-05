@@ -18,9 +18,7 @@ limitations under the License.
 package util
 
 import (
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -87,12 +85,4 @@ func GetClientCertificate(in string) (*x509.Certificate, error) {
 	}
 
 	return certificate, nil
-}
-
-// GetClientCertifcateThumbprint returns the client certificate thumbprint as defined
-// by RFC8705.
-func GetClientCertifcateThumbprint(certificate *x509.Certificate) string {
-	sum := sha256.Sum256(certificate.Raw)
-
-	return base64.URLEncoding.EncodeToString(sum[:])
 }
