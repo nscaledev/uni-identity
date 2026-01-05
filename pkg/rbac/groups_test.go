@@ -393,89 +393,11 @@ func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi
 
 	ctx := authorization.NewContext(t.Context(), info)
 
-	acl, err := rbacClient.GetACL(ctx, testOrgID)
+	acl, err := rbacClient.GetACL(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, acl)
 
 	return acl
-}
-
-// TestGroupACLContentOrganizationScoped verifies the actual ACL content is correct.
-//
-//nolint:cyclop
-func TestGroupACLContentOrganizationScoped(t *testing.T) {
-	t.Parallel()
-
-	f := setupTestEnvironment(t)
-
-	// Test Alice (Admin) - should have organization permissions.
-	aclAlice := getACLForUser(t, f.rbac, userAliceSubject)
-	assert.Nil(t, aclAlice.Global, "Alice should not have global permissions")
-	assert.NotNil(t, aclAlice.Organization, "Alice should have organization permissions")
-	assert.Nil(t, aclAlice.Projects, "Alice should not have project-specific permissions")
-
-	// Test Bob (Developer) - should have organization read and project permissions.
-	aclBob := getACLForUser(t, f.rbac, userBobSubject)
-	assert.Nil(t, aclBob.Global, "Bob should not have global permissions")
-	assert.NotNil(t, aclBob.Organization, "Bob should have organization permissions")
-	assert.NotNil(t, aclBob.Organization.Endpoints, "Bob should have organization endpoints")
-	assert.NotNil(t, aclBob.Projects, "Bob should have project permissions")
-	assert.Len(t, *aclBob.Projects, 2, "Bob should have access to 2 projects (alpha and beta)")
-
-	// Verify Bob has org:read
-	hasOrgRead := false
-
-	for _, endpoint := range *aclBob.Organization.Endpoints {
-		if endpoint.Name == "org:read" {
-			hasOrgRead = true
-
-			require.Contains(t, endpoint.Operations, openapi.Read)
-		}
-	}
-
-	assert.True(t, hasOrgRead, "Bob should have org:read permission")
-
-	// Test Charlie (Developer + Reader) - should have merged permissions.
-	aclCharlie := getACLForUser(t, f.rbac, userCharlieSubject)
-	assert.Nil(t, aclCharlie.Global, "Charlie should not have global permissions")
-	assert.NotNil(t, aclCharlie.Organization, "Charlie should have organization permissions")
-	assert.NotNil(t, aclCharlie.Projects, "Charlie should have project permissions")
-	assert.Len(t, *aclCharlie.Projects, 2, "Charlie should have access to 2 projects")
-
-	// Charlie should have both deploy and read permissions on projects (merged from two groups).
-	for _, project := range *aclCharlie.Projects {
-		if project.Id == projectAlphaID {
-			// Alpha: only developers group, so deploy but no read-specific.
-			hasProjectDeploy := false
-
-			for _, endpoint := range project.Endpoints {
-				if endpoint.Name == "project:deploy" {
-					hasProjectDeploy = true
-				}
-			}
-
-			require.True(t, hasProjectDeploy, "Charlie should have deploy on project-alpha")
-		}
-
-		if project.Id == projectBetaID {
-			// Beta: both groups, so should have both deploy and read.
-			hasProjectDeploy := false
-			hasProjectRead := false
-
-			for _, endpoint := range project.Endpoints {
-				if endpoint.Name == "project:deploy" {
-					hasProjectDeploy = true
-				}
-
-				if endpoint.Name == "project:read" {
-					hasProjectRead = true
-				}
-			}
-
-			assert.True(t, hasProjectDeploy, "Charlie should have deploy on project-beta")
-			assert.True(t, hasProjectRead, "Charlie should have read on project-beta")
-		}
-	}
 }
 
 // TestGroupACLContent verifies the actual ACL content is correct.
@@ -576,57 +498,11 @@ func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string
 
 	ctx := authorization.NewContext(t.Context(), info)
 
-	acl, err := rbacClient.GetACL(ctx, testOrgID)
+	acl, err := rbacClient.GetACL(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, acl)
 
 	return acl
-}
-
-// TestServiceAccountACLOrganizationScoped verifies that service accounts get correct permissions via groups.
-func TestServiceAccountACLOrganizationScoped(t *testing.T) {
-	t.Parallel()
-
-	f := setupTestEnvironment(t)
-
-	// Test service account that's a member of the services group
-	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID)
-	assert.Nil(t, aclAlpha.Global, "Service account should not have global permissions")
-	assert.NotNil(t, aclAlpha.Organization, "Service account should have organization permissions")
-	assert.NotNil(t, aclAlpha.Organization.Endpoints, "Service account should have organization endpoints")
-	assert.NotNil(t, aclAlpha.Projects, "Service account should have project permissions")
-
-	// Verify service account has org:read (from developer role)
-	hasOrgRead := false
-
-	for _, endpoint := range *aclAlpha.Organization.Endpoints {
-		if endpoint.Name == "org:read" {
-			hasOrgRead = true
-
-			require.Contains(t, endpoint.Operations, openapi.Read)
-		}
-	}
-
-	assert.True(t, hasOrgRead, "Service account should have org:read permission")
-
-	// Service account should have access to projects (from developer role)
-	assert.Len(t, *aclAlpha.Projects, 2, "Service account should have access to 2 projects")
-
-	// Test service account not in any group
-	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID)
-	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
-	assert.Nil(t, aclBeta.Organization, "Service account not in groups should not have organization permissions")
-	assert.Nil(t, aclBeta.Projects, "Service account not in groups should not have project permissions")
-}
-
-func TestServiceAccountOrganizationScoped_WrongOrganization(t *testing.T) {
-	t.Parallel()
-
-	f := setupTestEnvironment(t)
-
-	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID)
-	assert.Empty(t, aclAlpha.Organization, "Service account bound to org B should have no permissions in org A")
-	assert.Empty(t, aclAlpha.Projects, "Service account bound to org B should have no permissions in org A")
 }
 
 func TestServiceAccountACL(t *testing.T) {
@@ -659,26 +535,8 @@ func TestServiceAccountACL(t *testing.T) {
 
 	assert.True(t, hasOrgRead, "Service account should have org:read permission")
 
-	// Service account should have access to projects (from developer role)
-	assert.Len(t, *aclAlpha.Projects, 2, "Service account should have access to 2 projects")
-
 	// Test service account not in any group
 	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID)
 	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
 	assert.Nil(t, aclBeta.Organizations, "Service account not in groups should not have organization permissions")
-}
-
-func TestServiceAccount_WrongOrganization(t *testing.T) {
-	t.Parallel()
-
-	f := setupTestEnvironment(t)
-
-	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID)
-	require.NotNil(t, aclAlpha.Organizations, "Service account should have organization permissions")
-
-	alphaOrganizations := *aclAlpha.Organizations
-	require.Len(t, alphaOrganizations, 1, "Service account should have one organization")
-
-	alphaOrganization := &alphaOrganizations[0]
-	require.Equal(t, altOrgID, alphaOrganization.Id, "Service account should have permissions for the organization it's bound to")
 }

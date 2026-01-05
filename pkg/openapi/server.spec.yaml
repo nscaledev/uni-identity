@@ -1840,10 +1840,6 @@ components:
           $ref: '#/components/schemas/aclEndpoints'
         organizations:
           $ref: '#/components/schemas/aclOrganizationList'
-        organization:
-          $ref: '#/components/schemas/aclOrganization'
-        projects:
-          $ref: '#/components/schemas/aclProjectList'
     stringList:
       description: A list of strings.
       type: array
@@ -2661,8 +2657,8 @@ components:
           schema:
             $ref: '#/components/schemas/acl'
           example:
-            organization:
-              id: adb2e414-1aef-4589-b933-ad0613d2d78f
+            organizations:
+            - id: adb2e414-1aef-4589-b933-ad0613d2d78f
               endpoints:
               - name: groups
                 operations:
@@ -2670,12 +2666,12 @@ components:
                 - read
                 - update
                 - delete
-            project:
-            - id: a866ea05-2655-41bc-8135-d99b62ed4be6
-              endpoints:
-              - name: infrastructure
-                operations:
-                - create
+              projects:
+              - id: a866ea05-2655-41bc-8135-d99b62ed4be6
+                endpoints:
+                - name: infrastructure
+                  operations:
+                  - create
     rolesResponse:
       description: |-
         A set of roles within the organization.

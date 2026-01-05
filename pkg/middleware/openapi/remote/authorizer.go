@@ -36,6 +36,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"k8s.io/apimachinery/pkg/util/cache"
 
@@ -170,12 +171,33 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 }
 
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
+//
+//nolint:cyclop
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	ctx := r.Context()
 
 	authorizationScheme, rawToken, err := getHTTPAuthenticationScheme(r)
 	if err != nil {
-		return nil, err
+		// Fallback, if we don't supply a bearer token, then we must be using
+		// mTLS...
+		certPEM, err := authorization.ClientCertFromContext(r.Context())
+		if err != nil {
+			return nil, err
+		}
+
+		certificate, err := util.GetClientCertificate(certPEM)
+		if err != nil {
+			return nil, err
+		}
+
+		info := &authorization.Info{
+			SystemAccount: true,
+			Userinfo: &identityapi.Userinfo{
+				Sub: certificate.Subject.CommonName,
+			},
+		}
+
+		return info, nil
 	}
 
 	if !strings.EqualFold(authorizationScheme, "bearer") {
@@ -255,7 +277,7 @@ func (a Getter) Get(_ context.Context) (string, error) {
 
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
-func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
+func (a *Authorizer) GetACL(ctx context.Context) (*identityapi.Acl, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -274,20 +296,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		return nil, errors.OAuth2ServerError("failed to create identity client").WithError(err)
 	}
 
-	if organizationID == "" {
-		response, err := client.GetApiV1AclWithResponse(ctx)
-		if err != nil {
-			return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
-		}
-
-		if response.StatusCode() != http.StatusOK {
-			return nil, errors.OAuth2ServerError("ACL get call didn't succeed")
-		}
-
-		return response.JSON200, nil
-	}
-
-	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, organizationID)
+	response, err := client.GetApiV1AclWithResponse(ctx)
 	if err != nil {
 		return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
 	}
