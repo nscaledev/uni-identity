@@ -53,6 +53,7 @@ const (
 	// TokenTypeServiceAccount is used for service accounts.
 	TokenTypeServiceAccount TokenType = "sa"
 	// TokenTypeService is used by services acting on behalf of users.
+	// TODO: delete me, services should use mTLS alone.
 	TokenTypeService TokenType = "svc"
 )
 

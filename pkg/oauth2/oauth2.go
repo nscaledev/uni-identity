@@ -1700,6 +1700,7 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 
 // TokenClientCredentials issues a token if the client credentials are valid.  We only support
 // mTLS based authentication.
+// TODO: delete me, services should use mTLS alone.
 func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
 	certPEM, err := util.GetClientCertificateHeader(r.Header)
 	if err != nil {
