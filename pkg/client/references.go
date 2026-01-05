@@ -67,9 +67,7 @@ func NewReferences(serviceDescriptor util.ServiceDescriptor, serverOptions *core
 }
 
 func (r *References) httpClient(ctx context.Context, client client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error) {
-	issuer := NewTokenIssuer(client, r.serverOptions, r.clientOptions, r.serviceDescriptor)
-
-	return New(client, r.serverOptions, r.clientOptions).ControllerClient(ctx, issuer, resource)
+	return New(client, r.serverOptions, r.clientOptions).ControllerClient(ctx, resource)
 }
 
 func (r *References) AddReferenceToProject(ctx context.Context, resource client.Object) error {

@@ -56,12 +56,12 @@ func (c *Client) HTTPClient(ctx context.Context) (*http.Client, error) {
 
 // APIClient returns a new OpenAPI client that can be used to access the Identity API
 // from another service provider's API.
-func (c *Client) APIClient(ctx context.Context, accessToken AccessTokenGetter) (*openapi.ClientWithResponses, error) {
-	return APIClient(ctx, c.base, openapi.NewBuilder(), accessToken)
+func (c *Client) APIClient(ctx context.Context) (*openapi.ClientWithResponses, error) {
+	return APIClient(ctx, c.base, openapi.NewBuilder())
 }
 
 // ControllerClient returns a new OpenAPI client that can be used to access the API from another
 // controller.  It requires a resource that stores the identity principal information.
-func (c *Client) ControllerClient(ctx context.Context, accessToken AccessTokenGetter, resource metav1.Object) (*openapi.ClientWithResponses, error) {
-	return ControllerClient(ctx, c.base, openapi.NewBuilder(), accessToken, resource)
+func (c *Client) ControllerClient(ctx context.Context, resource metav1.Object) (*openapi.ClientWithResponses, error) {
+	return ControllerClient(ctx, c.base, openapi.NewBuilder(), resource)
 }

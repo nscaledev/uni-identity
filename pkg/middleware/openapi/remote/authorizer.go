@@ -36,6 +36,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"k8s.io/apimachinery/pkg/util/cache"
 
@@ -170,12 +171,33 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 }
 
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
+//
+//nolint:cyclop
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	ctx := r.Context()
 
 	authorizationScheme, rawToken, err := getHTTPAuthenticationScheme(r)
 	if err != nil {
-		return nil, err
+		// Fallback, if we don't supply a bearer token, then we must be using
+		// mTLS...
+		certPEM, err := authorization.ClientCertFromContext(r.Context())
+		if err != nil {
+			return nil, err
+		}
+
+		certificate, err := util.GetClientCertificate(certPEM)
+		if err != nil {
+			return nil, err
+		}
+
+		info := &authorization.Info{
+			SystemAccount: true,
+			Userinfo: &identityapi.Userinfo{
+				Sub: certificate.Subject.CommonName,
+			},
+		}
+
+		return info, nil
 	}
 
 	if !strings.EqualFold(authorizationScheme, "bearer") {
