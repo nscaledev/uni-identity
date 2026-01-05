@@ -52,9 +52,6 @@ const (
 	TokenTypeFederated TokenType = "fed"
 	// TokenTypeServiceAccount is used for service accounts.
 	TokenTypeServiceAccount TokenType = "sa"
-	// TokenTypeService is used by services acting on behalf of users.
-	// TODO: delete me, services should use mTLS alone.
-	TokenTypeService TokenType = "svc"
 )
 
 type FederatedClaims struct {
@@ -75,11 +72,6 @@ type ServiceAccountClaims struct {
 	OrganizationID string `json:"oid"`
 }
 
-type ServiceClaims struct {
-	//nolint: tagliatelle
-	X509Thumbprint string `json:"x5t@S256,omitempty"`
-}
-
 // Claims is an application specific set of claims.
 // TODO: this technically isn't conformant to oauth2 in that we don't specify
 // the client_id claim, and there are probably others.
@@ -91,8 +83,6 @@ type Claims struct {
 	Federated *FederatedClaims `json:"fed,omitempty"`
 	// ServiceAccount is set when the type is a service account.
 	ServiceAccount *ServiceAccountClaims `json:"sa,omitempty"`
-	// Service is set when the type is a service.
-	Service *ServiceClaims `json:"svc,omitempty"`
 }
 
 // RefreshTokenClaims is a basic set of JWT claims, plus a wrapper for the
@@ -126,8 +116,6 @@ type IssueInfo struct {
 	Federated *FederatedClaims `json:"fed,omitempty"`
 	// ServiceAccount is set when the type is a service account.
 	ServiceAccount *ServiceAccountClaims `json:"sa,omitempty"`
-	// Service is set when the type is a service.
-	Service *ServiceClaims `json:"svc,omitempty"`
 	// Duration is the token lifetime.  Please note this should only be used for
 	// service account tokens that by definition need to be long lived.
 	Duration *time.Duration
@@ -220,7 +208,6 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 		Type:           info.Type,
 		Federated:      info.Federated,
 		ServiceAccount: info.ServiceAccount,
-		Service:        info.Service,
 	}
 
 	at, err := a.jwtIssuer.EncodeJWEToken(ctx, atClaims, jose.TokenTypeAccessToken)

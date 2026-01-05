@@ -53,7 +53,6 @@ const (
 // Defines values for GrantType.
 const (
 	AuthorizationCode GrantType = "authorization_code"
-	ClientCredentials GrantType = "client_credentials"
 	RefreshToken      GrantType = "refresh_token"
 )
 
@@ -733,7 +732,7 @@ type TokenRequestOptions struct {
 	// CodeVerifier Client code verifier.
 	CodeVerifier *string `json:"code_verifier"`
 
-	// GrantType Supported grant type.  Must be either "code", "refresh_token" or "client_credentials".
+	// GrantType Supported grant type.  Must be either "code" or "refresh_token".
 	GrantType string `json:"grant_type"`
 
 	// RedirectUri Client redirect URI. Required with the "code" grant type.

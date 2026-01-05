@@ -56,7 +56,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/types"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/utils/ptr"
@@ -1698,46 +1697,6 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 	return result, nil
 }
 
-// TokenClientCredentials issues a token if the client credentials are valid.  We only support
-// mTLS based authentication.
-// TODO: delete me, services should use mTLS alone.
-func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
-	certPEM, err := util.GetClientCertificateHeader(r.Header)
-	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("mTLS client verification failed").WithError(err)
-	}
-
-	certificate, err := util.GetClientCertificate(certPEM)
-	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("mTLS certificate validation failed").WithError(err)
-	}
-
-	thumbprint := util.GetClientCertifcateThumbprint(certificate)
-
-	info := &IssueInfo{
-		Issuer:   a.getInternalIssuer(),
-		Audience: a.getAudience(),
-		Subject:  certificate.Subject.CommonName,
-		Type:     TokenTypeService,
-		Service: &ServiceClaims{
-			X509Thumbprint: thumbprint,
-		},
-	}
-
-	tokens, err := a.Issue(r.Context(), info)
-	if err != nil {
-		return nil, err
-	}
-
-	result := &openapi.Token{
-		TokenType:   "Bearer",
-		AccessToken: tokens.AccessToken,
-		ExpiresIn:   int(time.Until(tokens.Expiry).Seconds()),
-	}
-
-	return result, nil
-}
-
 // Token issues an OAuth2 access token from the provided authorization code.
 func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
 	if err := r.ParseForm(); err != nil {
@@ -1753,8 +1712,6 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 		return a.TokenAuthorizationCode(w, r)
 	case openapi.RefreshToken:
 		return a.TokenRefreshToken(w, r)
-	case openapi.ClientCredentials:
-		return a.TokenClientCredentials(w, r)
 	}
 
 	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")
