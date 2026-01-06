@@ -20,8 +20,6 @@ package allocations
 import (
 	"context"
 	goerrors "errors"
-	"slices"
-	"strings"
 	"sync"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
@@ -35,8 +33,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -106,16 +102,6 @@ func convert(in *unikornv1.Allocation) *openapi.AllocationRead {
 	return out
 }
 
-func convertList(in *unikornv1.AllocationList) openapi.Allocations {
-	out := make(openapi.Allocations, len(in.Items))
-
-	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
-	}
-
-	return out
-}
-
 func generateAllocation(in *openapi.ResourceAllocation) *unikornv1.ResourceAllocation {
 	out := &unikornv1.ResourceAllocation{
 		Kind:      in.Kind,
@@ -164,29 +150,6 @@ func (c *Client) get(ctx context.Context, namespace, allocationID string) (*unik
 	}
 
 	return result, nil
-}
-
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Allocations, error) {
-	result := &unikornv1.AllocationList{}
-
-	requirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
-	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to build label selector").WithError(err)
-	}
-
-	options := &client.ListOptions{
-		LabelSelector: labels.NewSelector().Add(*requirement),
-	}
-
-	if err := c.client.List(ctx, result, options); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list allocations").WithError(err)
-	}
-
-	slices.SortStableFunc(result.Items, func(a, b unikornv1.Allocation) int {
-		return strings.Compare(a.Name, b.Name)
-	})
-
-	return convertList(result), nil
 }
 
 func (c *SyncClient) Create(ctx context.Context, organizationID, projectID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {

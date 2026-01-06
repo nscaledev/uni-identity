@@ -100,9 +100,3 @@ func (e *Endpoints) GetQuotas(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/quotas",
 		url.PathEscape(orgID))
 }
-
-// ListAllocations returns the endpoint for listing allocations in an organization.
-func (e *Endpoints) ListAllocations(orgID string) string {
-	return fmt.Sprintf("/api/v1/organizations/%s/allocations",
-		url.PathEscape(orgID))
-}
