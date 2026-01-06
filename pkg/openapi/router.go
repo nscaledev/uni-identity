@@ -41,9 +41,6 @@ type ServerInterface interface {
 
 	// (GET /api/v1/organizations/{organizationID}/acl)
 	GetApiV1OrganizationsOrganizationIDAcl(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
-
-	// (GET /api/v1/organizations/{organizationID}/allocations)
-	GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
 	// List groups
 	// (GET /api/v1/organizations/{organizationID}/groups)
 	GetApiV1OrganizationsOrganizationIDGroups(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter)
@@ -221,11 +218,6 @@ func (_ Unimplemented) PutApiV1OrganizationsOrganizationID(w http.ResponseWriter
 
 // (GET /api/v1/organizations/{organizationID}/acl)
 func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDAcl(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// (GET /api/v1/organizations/{organizationID}/allocations)
-func (_ Unimplemented) GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -691,37 +683,6 @@ func (siw *ServerInterfaceWrapper) GetApiV1OrganizationsOrganizationIDAcl(w http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetApiV1OrganizationsOrganizationIDAcl(w, r, organizationID)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// GetApiV1OrganizationsOrganizationIDAllocations operation middleware
-func (siw *ServerInterfaceWrapper) GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-
-	// ------------- Path parameter "organizationID" -------------
-	var organizationID OrganizationIDParameter
-
-	err = runtime.BindStyledParameterWithOptions("simple", "organizationID", chi.URLParam(r, "organizationID"), &organizationID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "organizationID", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, Oauth2AuthenticationScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetApiV1OrganizationsOrganizationIDAllocations(w, r, organizationID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2218,9 +2179,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/organizations/{organizationID}/acl", wrapper.GetApiV1OrganizationsOrganizationIDAcl)
-	})
-	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/api/v1/organizations/{organizationID}/allocations", wrapper.GetApiV1OrganizationsOrganizationIDAllocations)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/organizations/{organizationID}/groups", wrapper.GetApiV1OrganizationsOrganizationIDGroups)
