@@ -19,12 +19,11 @@ package client
 
 import (
 	"context"
-	"fmt"
+	goerrors "errors"
 	"net/http"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
-	"github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/manager"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/util/api"
@@ -32,6 +31,11 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var (
+	ErrInvalidResourceReference = goerrors.New("invalid resource reference format")
+	ErrNoAllocationAnnotation   = goerrors.New("resource has no allocation annotation")
 )
 
 // Allocations wraps up quota allocation management.  This is specific to API
@@ -48,28 +52,42 @@ func NewAllocations(client client.Client, api openapi.ClientWithResponsesInterfa
 	}
 }
 
-func generateAllocation(reference string, allocations openapi.ResourceAllocationList) openapi.AllocationWrite {
+func computeResourceKindAndID(reference string) (string, string, error) {
 	parts := strings.Split(reference, "/")
+	if len(parts) != 2 {
+		return "", "", ErrInvalidResourceReference
+	}
 
-	return openapi.AllocationWrite{
+	return parts[0], parts[1], nil
+}
+
+func generateAllocation(reference string, allocations openapi.ResourceAllocationList) (openapi.AllocationWrite, error) {
+	resourceKind, resourceID, err := computeResourceKindAndID(reference)
+	if err != nil {
+		return openapi.AllocationWrite{}, err
+	}
+
+	allocation := openapi.AllocationWrite{
 		Metadata: coreapi.ResourceWriteMetadata{
 			Name: "undefined",
 		},
 		Spec: openapi.AllocationSpec{
-			Kind:        parts[0],
-			Id:          parts[1],
+			Kind:        resourceKind,
+			Id:          resourceID,
 			Allocations: allocations,
 		},
 	}
+
+	return allocation, nil
 }
 
-func setAllocationID(resource client.Object, allocation *openapi.AllocationRead) {
+func setAllocationID(resource client.Object, id string) {
 	annotations := resource.GetAnnotations()
 	if annotations == nil {
 		annotations = map[string]string{}
 	}
 
-	annotations[constants.AllocationAnnotation] = allocation.Metadata.Id
+	annotations[constants.AllocationAnnotation] = id
 
 	resource.SetAnnotations(annotations)
 }
@@ -77,22 +95,61 @@ func setAllocationID(resource client.Object, allocation *openapi.AllocationRead)
 func getAllocationID(resource client.Object) (string, error) {
 	annotations := resource.GetAnnotations()
 	if annotations == nil {
-		return "", fmt.Errorf("%w: resource has no annotations", errors.ErrConsistency)
+		return "", ErrNoAllocationAnnotation
 	}
 
 	id, ok := annotations[constants.AllocationAnnotation]
 	if !ok {
-		return "", fmt.Errorf("%w: resource has no allocation annotations", errors.ErrConsistency)
+		return "", ErrNoAllocationAnnotation
 	}
 
 	return id, nil
 }
 
-// Create accepts a resource kind, creates an allocation for it with the requested
-// set of resources, and patches the allocation ID into the resource for tracking.
-// TODO: could we not just use the resource reference as eky, rather than messing with IDs?
-func (r *Allocations) Create(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
-	// On creation the principal is always directly avaialable from the API,
+// OrganizationScopedCreateRaw creates a new allocation at organisation scope and returns the allocation ID.
+// The reference must be in the format "<resource-kind>/<resource-id>".
+func (r *Allocations) OrganizationScopedCreateRaw(ctx context.Context, organizationID, reference string, allocations openapi.ResourceAllocationList) (string, error) {
+	params, err := generateAllocation(reference, allocations)
+	if err != nil {
+		return "", err
+	}
+
+	response, err := r.api.PostApiV1OrganizationsOrganizationIDAllocationsWithResponse(ctx, organizationID, params)
+	if err != nil {
+		return "", err
+	}
+
+	if code := response.StatusCode(); code != http.StatusCreated {
+		return "", api.ExtractError(code, response)
+	}
+
+	return response.JSON201.Metadata.Id, nil
+}
+
+// ProjectScopedCreateRaw creates a new allocation at project scope and returns the allocation ID.
+// The reference must be in the format "<resource-kind>/<resource-id>".
+func (r *Allocations) ProjectScopedCreateRaw(ctx context.Context, organizationID, projectID, reference string, allocations openapi.ResourceAllocationList) (string, error) {
+	params, err := generateAllocation(reference, allocations)
+	if err != nil {
+		return "", err
+	}
+
+	response, err := r.api.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, organizationID, projectID, params)
+	if err != nil {
+		return "", err
+	}
+
+	if code := response.StatusCode(); code != http.StatusCreated {
+		return "", api.ExtractError(code, response)
+	}
+
+	return response.JSON201.Metadata.Id, nil
+}
+
+// OrganizationScopedCreate creates a new allocation at organisation scope by reading the required
+// information from the resource annotations and persisting the allocation ID back to the annotations.
+func (r *Allocations) OrganizationScopedCreate(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
+	// On creation the principal is always directly available from the API,
 	// this is to whom the allocation will be charged.
 	userPrincipal, err := principal.GetPrincipal(ctx)
 	if err != nil {
@@ -104,22 +161,93 @@ func (r *Allocations) Create(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	response, err := r.api.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, generateAllocation(reference, allocations))
+	allocationID, err := r.OrganizationScopedCreateRaw(ctx, userPrincipal.OrganizationID, reference, allocations)
 	if err != nil {
 		return err
 	}
 
-	if response.StatusCode() != http.StatusCreated {
-		return api.ExtractError(response.StatusCode(), response)
-	}
-
-	setAllocationID(resource, response.JSON201)
+	setAllocationID(resource, allocationID)
 
 	return nil
 }
 
-// Update updates an existing allocation, typically for scaling operations.
-func (r *Allocations) Update(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
+// ProjectScopedCreate creates a new allocation at project scope by reading the required
+// information from the resource annotations and persisting the allocation ID back to the annotations.
+// TODO: could we not just use the resource reference as key, rather than messing with IDs?
+func (r *Allocations) ProjectScopedCreate(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
+	// On creation the principal is always directly available from the API,
+	// this is to whom the allocation will be charged.
+	userPrincipal, err := principal.GetPrincipal(ctx)
+	if err != nil {
+		return err
+	}
+
+	reference, err := manager.GenerateResourceReference(r.client, resource)
+	if err != nil {
+		return err
+	}
+
+	allocationID, err := r.ProjectScopedCreateRaw(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, reference, allocations)
+	if err != nil {
+		return err
+	}
+
+	setAllocationID(resource, allocationID)
+
+	return nil
+}
+
+// Create creates a new allocation at project scope by reading the required
+// information from the resource annotations and persisting the allocation ID
+// back to the annotations.
+// Deprecated: use ProjectScopedCreate instead.
+func (r *Allocations) Create(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
+	return r.ProjectScopedCreate(ctx, resource, allocations)
+}
+
+// OrganizationScopedUpdateRaw updates an existing allocation at organisation scope.
+// The reference must be in the format "<resource-kind>/<resource-id>".
+func (r *Allocations) OrganizationScopedUpdateRaw(ctx context.Context, organizationID, id, reference string, allocations openapi.ResourceAllocationList) error {
+	params, err := generateAllocation(reference, allocations)
+	if err != nil {
+		return err
+	}
+
+	response, err := r.api.PutApiV1OrganizationsOrganizationIDAllocationsAllocationIDWithResponse(ctx, organizationID, id, params)
+	if err != nil {
+		return err
+	}
+
+	if code := response.StatusCode(); code != http.StatusOK {
+		return api.ExtractError(code, response)
+	}
+
+	return nil
+}
+
+// ProjectScopedUpdateRaw updates an existing allocation at project scope.
+// The reference must be in the format "<resource-kind>/<resource-id>".
+func (r *Allocations) ProjectScopedUpdateRaw(ctx context.Context, organizationID, projectID, id, reference string, allocations openapi.ResourceAllocationList) error {
+	params, err := generateAllocation(reference, allocations)
+	if err != nil {
+		return err
+	}
+
+	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, organizationID, projectID, id, params)
+	if err != nil {
+		return err
+	}
+
+	if code := response.StatusCode(); code != http.StatusOK {
+		return api.ExtractError(code, response)
+	}
+
+	return nil
+}
+
+// OrganizationScopedUpdate updates an existing allocation at organisation scope by reading the required
+// information from the resource annotations.
+func (r *Allocations) OrganizationScopedUpdate(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
 	// On update the principal will come from the object itself, as we cannot guarantee
 	// the user who is modifying the resource is the same as who initially created it.
 	userPrincipal, err := principal.FromResource(resource)
@@ -137,20 +265,78 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID, generateAllocation(reference, allocations))
+	return r.OrganizationScopedUpdateRaw(ctx, userPrincipal.OrganizationID, allocationID, reference, allocations)
+}
+
+// ProjectScopedUpdate updates an existing allocation at project scope by reading the required
+// information from the resource annotations.
+func (r *Allocations) ProjectScopedUpdate(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
+	// On update the principal will come from the object itself, as we cannot guarantee
+	// the user who is modifying the resource is the same as who initially created it.
+	userPrincipal, err := principal.FromResource(resource)
 	if err != nil {
 		return err
 	}
 
-	if response.StatusCode() != http.StatusOK {
-		return api.ExtractError(response.StatusCode(), response)
+	reference, err := manager.GenerateResourceReference(r.client, resource)
+	if err != nil {
+		return err
+	}
+
+	allocationID, err := getAllocationID(resource)
+	if err != nil {
+		return err
+	}
+
+	return r.ProjectScopedUpdateRaw(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID, reference, allocations)
+}
+
+// Update updates an existing allocation at project scope by reading the required
+// information from the resource annotations.
+// Deprecated: use ProjectScopedUpdate instead.
+func (r *Allocations) Update(ctx context.Context, resource client.Object, allocations openapi.ResourceAllocationList) error {
+	return r.ProjectScopedUpdate(ctx, resource, allocations)
+}
+
+// OrganizationScopedDeleteRaw deletes an existing allocation at organisation scope.
+func (r *Allocations) OrganizationScopedDeleteRaw(ctx context.Context, organizationID, id string) error {
+	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDAllocationsAllocationIDWithResponse(ctx, organizationID, id)
+	if err != nil {
+		return err
+	}
+
+	if code := response.StatusCode(); code != http.StatusAccepted {
+		if code == http.StatusNotFound {
+			return nil
+		}
+
+		return api.ExtractError(code, response)
 	}
 
 	return nil
 }
 
-// Delete deletes the allocation.
-func (r *Allocations) Delete(ctx context.Context, resource client.Object) error {
+// ProjectScopedDeleteRaw deletes an existing allocation at project scope.
+func (r *Allocations) ProjectScopedDeleteRaw(ctx context.Context, organizationID, projectID, id string) error {
+	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, organizationID, projectID, id)
+	if err != nil {
+		return err
+	}
+
+	if code := response.StatusCode(); code != http.StatusAccepted {
+		if code == http.StatusNotFound {
+			return nil
+		}
+
+		return api.ExtractError(code, response)
+	}
+
+	return nil
+}
+
+// OrganizationScopedDelete deletes an existing allocation at organisation scope by reading the required
+// information from the resource annotations.
+func (r *Allocations) OrganizationScopedDelete(ctx context.Context, resource client.Object) error {
 	// On delete the principal will come from the object itself, as we cannot guarantee
 	// the user who is deleting the resource is the same as who initially created it.
 	userPrincipal, err := principal.FromResource(resource)
@@ -163,18 +349,30 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 		return err
 	}
 
-	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID)
+	return r.OrganizationScopedDeleteRaw(ctx, userPrincipal.OrganizationID, allocationID)
+}
+
+// ProjectScopedDelete deletes an existing allocation at project scope by reading the required
+// information from the resource annotations.
+func (r *Allocations) ProjectScopedDelete(ctx context.Context, resource client.Object) error {
+	// On delete the principal will come from the object itself, as we cannot guarantee
+	// the user who is deleting the resource is the same as who initially created it.
+	userPrincipal, err := principal.FromResource(resource)
 	if err != nil {
 		return err
 	}
 
-	if response.StatusCode() != http.StatusAccepted {
-		if response.StatusCode() == http.StatusNotFound {
-			return nil
-		}
-
-		return api.ExtractError(response.StatusCode(), response)
+	allocationID, err := getAllocationID(resource)
+	if err != nil {
+		return err
 	}
 
-	return nil
+	return r.ProjectScopedDeleteRaw(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID)
+}
+
+// Delete deletes an existing allocation at project scope by reading the required
+// information from the resource annotations.
+// Deprecated: use ProjectScopedDelete instead.
+func (r *Allocations) Delete(ctx context.Context, resource client.Object) error {
+	return r.ProjectScopedDelete(ctx, resource)
 }

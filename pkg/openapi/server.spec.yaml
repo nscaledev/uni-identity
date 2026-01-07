@@ -1012,7 +1012,93 @@ paths:
       - oauth2Authentication: []
       responses:
         '200':
-          $ref: '#/components/responses/allocationsResponse'
+          $ref: '#/components/responses/allocationListResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+    post:
+      x-hidden: true
+      description: |-
+        Creates an organization-scoped allocation.
+      security:
+      - oauth2Authentication: []
+      requestBody:
+        $ref: '#/components/requestBodies/allocationRequest'
+      responses:
+        '201':
+          $ref: '#/components/responses/allocationResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '409':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/conflictResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+  /api/v1/organizations/{organizationID}/allocations/{allocationID}:
+    description: |-
+      Management of allocations.  Allocations form slices of quotas and in total never
+      exceed the quotas in the scope the quota is defined for.  Individual services will
+      create allocations when a request for infrastructure is received to check that
+      request can be fulfilled, then release those resources when the infrastructure is
+      deleted.
+    parameters:
+    - $ref: '#/components/parameters/organizationIDParameter'
+    - $ref: '#/components/parameters/allocationIDParameter'
+    get:
+      x-hidden: true
+      description: |-
+        Gets an organization-scoped allocation.
+      security:
+      - oauth2Authentication: []
+      responses:
+        '200':
+          $ref: '#/components/responses/allocationResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+    put:
+      x-hidden: true
+      description: |-
+        Updates an organization-scoped allocation.
+      security:
+      - oauth2Authentication: []
+      requestBody:
+        $ref: '#/components/requestBodies/allocationRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/allocationResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+    delete:
+      x-hidden: true
+      description: |-
+        Deletes an organization-scoped allocation.
+      security:
+      - oauth2Authentication: []
+      responses:
+        '202':
+          description: Allocation successfully deleted.
         '401':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
@@ -1034,7 +1120,7 @@ paths:
     post:
       x-hidden: true
       description: |-
-        Creates an allocation.
+        Creates an project-scoped allocation.
       security:
       - oauth2Authentication: []
       requestBody:
@@ -1066,7 +1152,7 @@ paths:
     get:
       x-hidden: true
       description: |-
-        Gets an allocation.
+        Gets an project-scoped allocation.
       security:
       - oauth2Authentication: []
       responses:
@@ -1083,7 +1169,7 @@ paths:
     put:
       x-hidden: true
       description: |-
-        Updates an allocation.
+        Updates an project-scoped allocation.
       security:
       - oauth2Authentication: []
       requestBody:
@@ -1104,7 +1190,7 @@ paths:
     delete:
       x-hidden: true
       description: |-
-        Updates an allocation.
+        Updates an project-scoped allocation.
       security:
       - oauth2Authentication: []
       responses:
@@ -2181,6 +2267,18 @@ components:
       properties:
         quotas:
           $ref: '#/components/schemas/quotaWriteList'
+    # This `allOf` relies on the config.yaml having the option `old-merge-behavior` set, which embedded fields
+    # for refs, rather than inlining the referenced type's fields. See
+    #     https://github.com/oapi-codegen/oapi-codegen/blob/main/pkg/codegen/configuration.go#L175
+    allocationResourceMetadata:
+      description: Resource metadata for an allocation, which can be org- or project-scoped
+      allOf:
+      - $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/schemas/organizationScopedResourceReadMetadata'
+      - type: object
+        properties:
+          projectId:
+            description: The project identifier the resource belongs to.
+            type: string
     resourceAllocation:
       description: A single quota but taking into account dynamic allocation.
       type: object
@@ -2227,10 +2325,10 @@ components:
       - spec
       properties:
         metadata:
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/schemas/projectScopedResourceReadMetadata'
+          $ref: '#/components/schemas/allocationResourceMetadata'
         spec:
           $ref: '#/components/schemas/allocationSpec'
-    allocations:
+    allocationListRead:
       description: A list of allocations.
       type: array
       items:
@@ -2886,12 +2984,12 @@ components:
               displayName: Clusters
               description: All cluster types e.g. Kubernetes, compute, etc.
               default: 5
-    allocationsResponse:
+    allocationListResponse:
       description: A list of allocations.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/allocations'
+            $ref: '#/components/schemas/allocationListRead'
           example:
           - metadata:
               id: ee45f34b-9685-40d8-8724-23c31252ca46

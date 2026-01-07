@@ -19,6 +19,7 @@ limitations under the License.
 package handler
 
 import (
+	"context"
 	"net/http"
 	"slices"
 
@@ -37,6 +38,16 @@ func (h *Handler) allocationsSyncClient() *allocations.SyncClient {
 	return allocations.NewSync(h.directclient, h.namespace, &h.allocationMutex)
 }
 
+func (h *Handler) hasAllocationAccess(ctx context.Context, operation openapi.AclOperation, organizationID string, projectID *string) error {
+	const endpoint = "identity:allocations"
+
+	if projectID != nil {
+		return rbac.AllowProjectScope(ctx, endpoint, operation, organizationID, *projectID)
+	}
+
+	return rbac.AllowOrganizationScope(ctx, endpoint, operation, organizationID)
+}
+
 func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
 	ctx := r.Context()
 
@@ -47,27 +58,111 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.Response
 	}
 
 	result = slices.DeleteFunc(result, func(resource openapi.AllocationRead) bool {
-		return rbac.AllowProjectScope(ctx, "identity:allocations", openapi.Read, organizationID, resource.Metadata.ProjectId) != nil
+		return h.hasAllocationAccess(ctx, openapi.Read, organizationID, resource.Metadata.ProjectId) != nil
 	})
 
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
+func (h *Handler) PostApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Create, organizationID, nil); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	var request openapi.AllocationWrite
+	if err := util.ReadJSONBody(r, &request); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	result, err := h.allocationsSyncClient().Create(ctx, organizationID, nil, &request)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	util.WriteJSONResponse(w, r, http.StatusCreated, result)
+}
+
+func (h *Handler) DeleteApiV1OrganizationsOrganizationIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, allocationID openapi.AllocationIDParameter) {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Delete, organizationID, nil); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	if err := h.allocationsClient().Delete(ctx, organizationID, nil, allocationID); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, allocationID openapi.AllocationIDParameter) {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Read, organizationID, nil); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	result, err := h.allocationsClient().Get(ctx, organizationID, nil, allocationID)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	util.WriteJSONResponse(w, r, http.StatusOK, result)
+}
+
+func (h *Handler) PutApiV1OrganizationsOrganizationIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, allocationID openapi.AllocationIDParameter) {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Update, organizationID, nil); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	var request openapi.AllocationWrite
+	if err := util.ReadJSONBody(r, &request); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	result, err := h.allocationsSyncClient().Update(ctx, organizationID, nil, allocationID, &request)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	util.WriteJSONResponse(w, r, http.StatusOK, result)
+}
+
 func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Create, organizationID, projectID); err != nil {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Create, organizationID, &projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	request := &openapi.AllocationWrite{}
-
-	if err := util.ReadJSONBody(r, request); err != nil {
+	var request openapi.AllocationWrite
+	if err := util.ReadJSONBody(r, &request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	result, err := h.allocationsSyncClient().Create(r.Context(), organizationID, projectID, request)
+	result, err := h.allocationsSyncClient().Create(ctx, organizationID, &projectID, &request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -78,12 +173,14 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocatio
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Delete, organizationID, projectID); err != nil {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Delete, organizationID, &projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	if err := h.allocationsClient().Delete(r.Context(), organizationID, projectID, allocationID); err != nil {
+	if err := h.allocationsClient().Delete(ctx, organizationID, &projectID, allocationID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -93,12 +190,14 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocat
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Read, organizationID, projectID); err != nil {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Read, organizationID, &projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	result, err := h.allocationsClient().Get(r.Context(), organizationID, projectID, allocationID)
+	result, err := h.allocationsClient().Get(ctx, organizationID, &projectID, allocationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -109,19 +208,20 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Update, organizationID, projectID); err != nil {
+	ctx := r.Context()
+
+	if err := h.hasAllocationAccess(ctx, openapi.Update, organizationID, &projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	request := &openapi.AllocationWrite{}
-
-	if err := util.ReadJSONBody(r, request); err != nil {
+	var request openapi.AllocationWrite
+	if err := util.ReadJSONBody(r, &request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	result, err := h.allocationsSyncClient().Update(r.Context(), organizationID, projectID, allocationID, request)
+	result, err := h.allocationsSyncClient().Update(ctx, organizationID, &projectID, allocationID, &request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return

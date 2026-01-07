@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -308,7 +309,7 @@ func TestConcurrentAllocations_SerializedByMutex(t *testing.T) {
 			1,           // 1 CPU
 			oneGigabyte, // 1GB
 		)
-		_, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, request)
+		_, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), request)
 
 		return err
 	})
@@ -352,7 +353,7 @@ func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
 		oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, initialRequest)
+	result, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), initialRequest)
 
 	require.NoError(t, err)
 
@@ -367,7 +368,8 @@ func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
 			2+idx, // Increasing CPU request
 			oneGigabyte,
 		)
-		_, err := f.syncClient().Update(newContext(t), testOrgID, testProjectID, allocationID, updateRequest)
+
+		_, err := f.syncClient().Update(newContext(t), testOrgID, ptr.To(testProjectID), allocationID, updateRequest)
 
 		return err
 	})
@@ -404,7 +406,7 @@ func TestAllocationWithinQuota_Succeeds(t *testing.T) {
 		5*oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, request)
+	result, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), request)
 	require.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "test-allocation", result.Metadata.Name)
@@ -428,7 +430,7 @@ func TestAllocationExceedingQuota_Fails(t *testing.T) {
 		15*oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, request)
+	result, err := f.syncClient().Create(newContext(t), testOrgID, ptr.To(testProjectID), request)
 	require.Error(t, err, "Should fail when exceeding quota")
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "quota", "Error should mention quota")

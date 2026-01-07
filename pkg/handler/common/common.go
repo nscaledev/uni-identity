@@ -31,7 +31,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -49,56 +48,36 @@ func New(client client.Client) *Client {
 	}
 }
 
-func organizationSelector(organizationID string) (labels.Selector, error) {
-	organizationIDRequirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
-	if err != nil {
-		return labels.Nothing(), err
-	}
-
-	return labels.NewSelector().Add(*organizationIDRequirement), nil
+func organizationSelector(organizationID string) labels.Selector {
+	return labels.SelectorFromSet(labels.Set{
+		constants.OrganizationLabel: organizationID,
+	})
 }
 
-func projectSelector(organizationID, projectID string) (labels.Selector, error) {
-	kindRequirement, err := labels.NewRequirement(constants.KindLabel, selection.Equals, []string{constants.KindLabelValueProject})
-	if err != nil {
-		return labels.Nothing(), err
-	}
-
-	organizationIDRequirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
-	if err != nil {
-		return labels.Nothing(), err
-	}
-
-	projectIDRequirement, err := labels.NewRequirement(constants.ProjectLabel, selection.Equals, []string{projectID})
-	if err != nil {
-		return labels.Nothing(), err
-	}
-
-	return labels.NewSelector().Add(*kindRequirement, *organizationIDRequirement, *projectIDRequirement), nil
+func projectSelector(organizationID, projectID string) labels.Selector {
+	return labels.SelectorFromSet(labels.Set{
+		constants.KindLabel:         constants.KindLabelValueProject,
+		constants.OrganizationLabel: organizationID,
+		constants.ProjectLabel:      projectID,
+	})
 }
 
 // ProjectNamespace is shared by higher order services.
 func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, projectID string) (*corev1.Namespace, error) {
-	selector, err := projectSelector(organizationID, projectID)
-	if err != nil {
-		return nil, err
-	}
-
 	options := &client.ListOptions{
-		LabelSelector: selector,
+		LabelSelector: projectSelector(organizationID, projectID),
 	}
 
-	var resources corev1.NamespaceList
-
-	if err := cli.List(ctx, &resources, options); err != nil {
+	var list corev1.NamespaceList
+	if err := cli.List(ctx, &list, options); err != nil {
 		return nil, err
 	}
 
-	if len(resources.Items) != 1 {
+	if len(list.Items) != 1 {
 		return nil, fmt.Errorf("%w: expected to find 1 project namespace", coreerrors.ErrConsistency)
 	}
 
-	return &resources.Items[0], nil
+	return &list.Items[0], nil
 }
 
 func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
@@ -106,22 +85,16 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID
 }
 
 func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv1.Quota, bool, error) {
-	selector, err := organizationSelector(organizationID)
-	if err != nil {
-		return nil, false, err
-	}
-
 	options := &client.ListOptions{
-		LabelSelector: selector,
+		LabelSelector: organizationSelector(organizationID),
 	}
 
-	var resources unikornv1.QuotaList
-
-	if err := c.client.List(ctx, &resources, options); err != nil {
+	var quotaList unikornv1.QuotaList
+	if err := c.client.List(ctx, &quotaList, options); err != nil {
 		return nil, false, err
 	}
 
-	if len(resources.Items) > 1 {
+	if len(quotaList.Items) > 1 {
 		return nil, false, fmt.Errorf("%w: expected to find 1 organization quota", coreerrors.ErrConsistency)
 	}
 
@@ -131,68 +104,60 @@ func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv
 
 	var virtual bool
 
-	if len(resources.Items) == 0 {
+	if len(quotaList.Items) == 0 {
 		quota = &unikornv1.Quota{}
-
 		virtual = true
 	} else {
-		quota = &resources.Items[0]
+		quota = &quotaList.Items[0]
 	}
 
-	metadata := &unikornv1.QuotaMetadataList{}
-
-	if err := c.client.List(ctx, metadata, &client.ListOptions{}); err != nil {
+	var metadataList unikornv1.QuotaMetadataList
+	if err := c.client.List(ctx, &metadataList); err != nil {
 		return nil, false, err
 	}
 
-	names := make([]string, len(metadata.Items))
+	names := make([]string, len(metadataList.Items))
 
-	for i, meta := range metadata.Items {
-		names[i] = meta.Name
+	for i, metadata := range metadataList.Items {
+		names[i] = metadata.Name
 
-		findQuota := func(q unikornv1.ResourceQuota) bool {
-			return q.Kind == meta.Name
+		isTargetQuota := func(q unikornv1.ResourceQuota) bool {
+			return q.Kind == metadata.Name
 		}
 
-		if index := slices.IndexFunc(quota.Spec.Quotas, findQuota); index >= 0 {
+		if index := slices.IndexFunc(quota.Spec.Quotas, isTargetQuota); index >= 0 {
 			continue
 		}
 
 		quota.Spec.Quotas = append(quota.Spec.Quotas, unikornv1.ResourceQuota{
-			Kind:     meta.Name,
-			Quantity: meta.Spec.Default,
+			Kind:     metadata.Name,
+			Quantity: metadata.Spec.Default,
 		})
 	}
 
 	// And remove anything that's been retired.
-	quota.Spec.Quotas = slices.DeleteFunc(quota.Spec.Quotas, func(q unikornv1.ResourceQuota) bool {
-		return !slices.Contains(names, q.Kind)
+	quota.Spec.Quotas = slices.DeleteFunc(quota.Spec.Quotas, func(quota unikornv1.ResourceQuota) bool {
+		return !slices.Contains(names, quota.Kind)
 	})
 
 	return quota, virtual, nil
 }
 
 func (c *Client) GetAllocations(ctx context.Context, organizationID string) (*unikornv1.AllocationList, error) {
-	selector, err := organizationSelector(organizationID)
-	if err != nil {
-		return nil, err
-	}
-
 	options := &client.ListOptions{
-		LabelSelector: selector,
+		LabelSelector: organizationSelector(organizationID),
 	}
 
-	var resources unikornv1.AllocationList
-
-	if err := c.client.List(ctx, &resources, options); err != nil {
+	var list unikornv1.AllocationList
+	if err := c.client.List(ctx, &list, options); err != nil {
 		return nil, err
 	}
 
-	return &resources, nil
+	return &list, nil
 }
 
 // CheckQuotaConsistency by default loads up the organization's quota and all allocations and
-// checks that the total of alloocations does not exceed the quota.  If you pass in a quota
+// checks that the total of allocations does not exceed the quota.  If you pass in a quota
 // argument, i.e. when updating the quotas, this will override the read from the organization.
 // If you pass in an allocation, i.e. when creating or updating an allocation, this will be
 // unioned with the organization's allocations, overriding an existing one if it exists.
@@ -214,11 +179,11 @@ func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID strin
 
 	// Handle allocation union.
 	if allocation != nil {
-		find := func(a unikornv1.Allocation) bool {
+		isTargetAllocation := func(a unikornv1.Allocation) bool {
 			return a.Name == allocation.Name
 		}
 
-		index := slices.IndexFunc(allocations.Items, find)
+		index := slices.IndexFunc(allocations.Items, isTargetAllocation)
 		if index < 0 {
 			allocations.Items = append(allocations.Items, *allocation)
 		} else {
@@ -230,7 +195,7 @@ func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID strin
 }
 
 func checkQuotaConsistency(quota *unikornv1.Quota, allocations *unikornv1.AllocationList) error {
-	capacities := map[string]int64{}
+	capacities := make(map[string]int64)
 
 	for i := range quota.Spec.Quotas {
 		quota := &quota.Spec.Quotas[i]
@@ -238,7 +203,7 @@ func checkQuotaConsistency(quota *unikornv1.Quota, allocations *unikornv1.Alloca
 		capacities[quota.Kind] = quota.Quantity.Value()
 	}
 
-	totals := map[string]int64{}
+	totals := make(map[string]int64)
 
 	for i := range allocations.Items {
 		allocation := &allocations.Items[i]
