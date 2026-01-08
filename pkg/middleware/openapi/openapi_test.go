@@ -90,6 +90,15 @@ func addCertificateHeader(t *testing.T, r *http.Request, verified bool) {
 	}
 }
 
+func addRelayedCertificateHeader(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	certPEM, err := base64.RawURLEncoding.DecodeString(serviceCertificate)
+	require.NoError(t, err)
+
+	r.Header.Set("Unikorn-Client-Certificate", url.QueryEscape(string(certPEM)))
+}
+
 // addPrincipalHeaderLegacy digitally signs a principal and adds to the request.
 func addPrincipalHeaderLegacy(t *testing.T, r *http.Request) {
 	t.Helper()
@@ -141,6 +150,13 @@ func addPrincipalHeader(t *testing.T, r *http.Request) {
 	require.NoError(t, err)
 
 	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(dataJSON))
+}
+
+// addAuthorizationHeader adds a token to the request.
+func addAuthorizationHeader(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	r.Header.Set("Authorization", "bearer foo")
 }
 
 // authInfoFixture creates a fixture to be returned from the Authorizer interface
@@ -235,6 +251,8 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
 
+	addAuthorizationHeader(t, r)
+
 	v.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
@@ -259,6 +277,8 @@ func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
+
+	addAuthorizationHeader(t, r)
 
 	v.ServeHTTP(w, r)
 
@@ -318,15 +338,16 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
 }
 
-// TestServiceToServiceAuthenticationFailure tests the response when authentication fails.
-func TestServiceToServiceAuthenticationFailure(t *testing.T) {
+// TestServiceToServiceAuthenticationDenyEscalation stops a case where a user can supply
+// a relayed certificate, but do it without mTLS validation, thus allowing any system
+// account to be trivially spoofed.
+func TestServiceToServiceAuthenticationDenyEscalation(t *testing.T) {
 	t.Parallel()
 
 	c := gomock.NewController(t)
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.OAuth2AccessDenied(""))
 
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
@@ -336,7 +357,7 @@ func TestServiceToServiceAuthenticationFailure(t *testing.T) {
 	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
 	require.NoError(t, err)
 
-	addCertificateHeader(t, r, true)
+	addRelayedCertificateHeader(t, r)
 
 	v.ServeHTTP(w, r)
 
@@ -351,7 +372,6 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
 
 	h := &handler{}
 	v := mustNewValidator(t, authorizer, h)
@@ -371,8 +391,6 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 
 // TestServiceToServiceAuthenticationSuccessLegacy tests a full service to service authenticated
 // API call.
-//
-//nolint:dupl
 func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	t.Parallel()
 
@@ -380,7 +398,6 @@ func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
@@ -400,7 +417,6 @@ func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	h.validate(t, serviceActor)
 }
 
-//nolint:dupl
 func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -408,7 +424,6 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
@@ -451,7 +466,6 @@ func TestValidateBodyBypass(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(serviceActor), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}

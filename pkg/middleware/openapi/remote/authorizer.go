@@ -265,8 +265,15 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 	// TODO: a nicer way to inject a token per call would be prefereable.
 	options := []identityapi.ClientOption{
 		identityapi.WithHTTPClient(a.httpClient),
-		identityapi.WithRequestEditorFn(identityclient.AccessTokenRequestMutator(Getter(info.Token))),
 		identityapi.WithRequestEditorFn(principal.Injector(a.client, a.clientOptions)),
+	}
+
+	if info.Token != "" {
+		options = append(options, identityapi.WithRequestEditorFn(func(ctx context.Context, req *http.Request) error {
+			req.Header.Set("Authorization", "bearer "+info.Token)
+
+			return nil
+		}))
 	}
 
 	client, err := identityapi.NewClientWithResponses(a.options.Host(), options...)

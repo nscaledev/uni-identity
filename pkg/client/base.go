@@ -79,24 +79,6 @@ func (c *BaseClient) HTTPClient(ctx context.Context) (*http.Client, error) {
 	return client, nil
 }
 
-// AccessTokenRequestMutator sets the authorization header for authenticated endpoints.
-func AccessTokenRequestMutator(accessToken AccessTokenGetter) func(context.Context, *http.Request) error {
-	return func(ctx context.Context, req *http.Request) error {
-		if accessToken == nil {
-			return nil
-		}
-
-		token, err := accessToken.Get(ctx)
-		if err != nil {
-			return err
-		}
-
-		req.Header.Set("Authorization", "bearer "+token)
-
-		return nil
-	}
-}
-
 // TraceContextRequestMutator sets the w3c trace context header for distributed tracing.
 func TraceContextRequestMutator(ctx context.Context, req *http.Request) error {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
@@ -111,14 +93,13 @@ func CertificateRequestMutator(ctx context.Context, req *http.Request) error {
 }
 
 // APIClient returns a new OpenAPI client that can be used to access the API from another API.
-func APIClient[T any](ctx context.Context, base *BaseClient, builder Builder[T], accessToken AccessTokenGetter) (*T, error) {
+func APIClient[T any](ctx context.Context, base *BaseClient, builder Builder[T]) (*T, error) {
 	httpClient, err := base.HTTPClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	builder.WithHTTPClient(httpClient)
-	builder.WithRequestEditorFn(AccessTokenRequestMutator(accessToken))
 	builder.WithRequestEditorFn(TraceContextRequestMutator)
 	builder.WithRequestEditorFn(CertificateRequestMutator)
 	builder.WithRequestEditorFn(principal.Injector(base.client, base.clientOptions))
@@ -133,14 +114,13 @@ func APIClient[T any](ctx context.Context, base *BaseClient, builder Builder[T],
 
 // ControllerClient returns a new OpenAPI client that can be used to access the API from another
 // controller.  It requires a resource that stores the identity principal information.
-func ControllerClient[T any](ctx context.Context, base *BaseClient, builder Builder[T], accessToken AccessTokenGetter, resource metav1.Object) (*T, error) {
+func ControllerClient[T any](ctx context.Context, base *BaseClient, builder Builder[T], resource metav1.Object) (*T, error) {
 	httpClient, err := base.HTTPClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	builder.WithHTTPClient(httpClient)
-	builder.WithRequestEditorFn(AccessTokenRequestMutator(accessToken))
 	builder.WithRequestEditorFn(TraceContextRequestMutator)
 	builder.WithRequestEditorFn(CertificateRequestMutator)
 	builder.WithRequestEditorFn(principal.ControllerInjector(base.client, base.clientOptions, resource))

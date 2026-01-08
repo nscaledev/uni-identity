@@ -89,6 +89,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		info.ClientID = claims.Federated.ClientID
 	case oauth2.TokenTypeServiceAccount:
 		info.ServiceAccount = true
+	// TODO: delete me, services should use mTLS alone.
 	case oauth2.TokenTypeService:
 		// All API requests will ultimately end up here as service call back
 		// into the identity service to validate the token presented to the API.

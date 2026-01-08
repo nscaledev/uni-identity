@@ -112,13 +112,65 @@ func NewValidator(options *Options, authorizer Authorizer, next http.Handler, op
 	}
 }
 
+// hasHTTPAuthorization checks to see if an authorization header is present in
+// the request.
+func hasHTTPAuthorization(r *http.Request) bool {
+	return r.Header.Get("Authorization") != ""
+}
+
+// validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
+// and validating the bearer token provided by the client which is cryptographically secure.
+// However, rather than have to worry about multiple different server ports, different
+// middlewares and joining all that up across global rate limits (for now) we also multiplex
+// plain mTLS authentication across the same handler.
+func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3filter.AuthenticationInput) (*authorization.Info, error) {
+	request := input.RequestValidationInput.Request
+
+	// Handle mTLS.
+	// NOTE: Be VERY careful here, when service B is relaying service A's certificate to the
+	// identity service, it does so via a custom header, and this can be spoofed very easily
+	// by a mailicious actor.  We must ensure this was propagated over mTLS to establish trust
+	// with the relaying party, as the ingress controller will not allow those headers to
+	// be set by an end user.  Failure to do so will result in a privilege escalation.
+	if !hasHTTPAuthorization(request) {
+		// This ensures the connection is over MTLS.
+		if _, err := util.GetClientCertificateHeader(request.Header); err != nil {
+			return nil, errors.OAuth2AccessDenied("credentials must be provided").WithError(err)
+		}
+
+		// Grab the certificate that is actually making this request
+		// and set the authorization context's subject directly from the
+		// certificate's common name.
+		certPEM, err := authorization.ClientCertFromContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		certificate, err := util.GetClientCertificate(certPEM)
+		if err != nil {
+			return nil, err
+		}
+
+		info := &authorization.Info{
+			SystemAccount: true,
+			Userinfo: &identityapi.Userinfo{
+				Sub: certificate.Subject.CommonName,
+			},
+		}
+
+		return info, nil
+	}
+
+	return v.authorizer.Authorize(input)
+}
+
 func (v *Validator) validateRequest(r *http.Request, route *routers.Route, params map[string]string) (*openapi3filter.ResponseValidationInput, error) {
 	// This authorization callback is fired if the API endpoint is marked as
 	// requiring it.
 	authorizationFunc := func(ctx context.Context, input *openapi3filter.AuthenticationInput) error {
 		// This call performs an OIDC userinfo call to authenticate the token
 		// with identity and to extract auditing information.
-		info, err := v.authorizer.Authorize(input)
+		info, err := v.validateAuthentication(ctx, input)
 		if err != nil {
 			v.err = err
 			return err
