@@ -217,7 +217,7 @@ roles:
         region:identities: [create,read,delete] # TODO: V2 delete me, created by network
         region:regions: [read]
         region:flavors: [read]
-        region:images: [read]
+        region:images: [read,create]
         region:networks: [create,read,delete] # TODO: Create/delete V1 only
         region:networks:v2: [read]
         region:servers: [create,read,update,delete]
