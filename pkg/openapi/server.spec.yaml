@@ -17,6 +17,7 @@ paths:
     description: |-
       Implements OIDC service discovery.
     get:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Reads the OIDC discovery page identifying all the required endpoints, and
@@ -28,6 +29,7 @@ paths:
     description: |-
       Implements OAuth 2.0 authorization grants.
     get:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Provides authentication and authorization as per the OAuth 2.0 specification.
@@ -43,6 +45,7 @@ paths:
         '500':
           $ref: '#/components/responses/htmlErrorResponse'
     post:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Provides authentication and authorization as per the OAuth 2.0 specification.
@@ -63,6 +66,7 @@ paths:
     description: |-
       Implements OAuth 2.0 code exchange.
     post:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Provides authorization code to access token exchange as per the OAuth 2.0
@@ -90,6 +94,7 @@ paths:
       service via this address in order to perform email domain matching and
       delegate authorization to the correct identity provider.
     post:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Returns the user's email address, or chosen OAuth 2.0 provider back to the
@@ -104,6 +109,7 @@ paths:
       If a user doesn't exist, we can offer them the option of creating a
       new organization, this facilitates that flow.
     post:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Returns the user's chosen organization name back to the identity service
@@ -118,6 +124,7 @@ paths:
     description: |-
       Returns introspection information about an access token.
     get:
+      x-no-security-requirements: true
       x-hidden: true
       description: Returns introspection information about an access token.
       responses:
@@ -126,6 +133,7 @@ paths:
         '401':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
     post:
+      x-no-security-requirements: true
       x-hidden: true
       description: Returns introspection information about an access token.
       requestBody:
@@ -139,6 +147,7 @@ paths:
     description: |-
       Implements the OAuth 2.0 response code callback.
     get:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         The Identity Service OAuth 2.0 implementation does not provide any direct
@@ -153,6 +162,7 @@ paths:
   /oauth2/v2/jwks:
     description: JSON web key set endpoint.
     get:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Returns an array of public keys used to verify JWT ID tokens issued by
@@ -168,6 +178,7 @@ paths:
       link a user calls in order to validate their one-time token and transition
       from a pending to active state.
     get:
+      x-no-security-requirements: true
       x-hidden: true
       description: |-
         Complete the user signup process.
@@ -202,6 +213,7 @@ paths:
       This is used to perform basic RBAC on remote services and to control
       UX.
     get:
+      x-no-authorization: true
       x-hidden: true
       description: |-
         Returns access control properties for the user.
@@ -335,6 +347,7 @@ paths:
     parameters:
     - $ref: '#/components/parameters/organizationIDParameter'
     get:
+      x-no-authorization: true
       x-hidden: true
       description: |-
         Returns access control properties for the user.
@@ -418,6 +431,8 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     delete:
@@ -465,6 +480,8 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
   /api/v1/organizations/{organizationID}/users:
@@ -533,6 +550,8 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     delete:
@@ -738,6 +757,8 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     put:
