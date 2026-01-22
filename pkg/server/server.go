@@ -114,6 +114,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
+	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer, schema)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -122,7 +123,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		ErrorHandlerFunc: handler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
 			audit.Middleware(schema, constants.Application, constants.Version),
-			openapimiddleware.Middleware(&s.OpenAPIOptions, authorizer, schema),
+			validator.Middleware,
 		},
 	}
 
