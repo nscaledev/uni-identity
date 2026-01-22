@@ -6,3 +6,11 @@
 cover.out
 cover.html
 identity-render.yaml
+
+# Test artifacts
+test/.env
+test/.env.*
+!test/.env.example
+test/api/suites/test-results.json
+test/api/suites/junit.xml
+test/api/suites/suites.test

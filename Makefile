@@ -214,3 +214,41 @@ validate-docs: $(OPENAPI_FILES)
 .PHONY: license
 license:
 	go run github.com/unikorn-cloud/core/hack/check_license
+
+# API Integration Tests
+# Add Ginkgo integration test flags for generating JSON and JUnit reports
+GINKGO_INTEGRATION_TEST_FLAGS = --json-report=test-results.json --junit-report=junit.xml --tags=integration
+
+.PHONY: test-api
+test-api: test-api-setup
+	cd test/api/suites && ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-verbose
+test-api-verbose: test-api-setup
+	cd test/api/suites && ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-focus
+test-api-focus: test-api-setup
+	cd test/api/suites && LOG_REQUESTS=true LOG_RESPONSES=true ginkgo run -v --focus="$(FOCUS)" $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-suite
+test-api-suite: test-api-setup
+	cd test/api/suites && ginkgo run $(SUITE) $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-parallel
+test-api-parallel: test-api-setup
+	cd test/api/suites && ginkgo run --procs=4 $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-ci
+test-api-ci: test-api-setup
+	cd test/api/suites && ginkgo run --randomize-all --randomize-suites --race $(GINKGO_INTEGRATION_TEST_FLAGS) --output-interceptor-mode=none
+
+.PHONY: test-api-setup
+test-api-setup:
+	@go install github.com/onsi/ginkgo/v2/ginkgo@latest
+	@go install github.com/onsi/gomega/...@latest
+
+# Clean test artifacts
+.PHONY: test-api-clean
+test-api-clean:
+	@rm -f test/api/suites/test-results.json test/api/suites/junit.xml
