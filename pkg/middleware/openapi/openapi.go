@@ -33,6 +33,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/unikorn-cloud/core/pkg/client"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
@@ -71,22 +72,9 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.BoolVar(&o.runtimeSchemaValidationPanic, "runtime-schema-validation-panic", true, "Enables a panic on OpenAPI schema response validation error")
 }
 
-// Validator provides Schema validation of request and response codes,
-// media, and schema validation of payloads to ensure we are meeting the
-// specification.
-type Validator struct {
-	// options define any runtime options.
-	options *Options
-
-	// next defines the next HTTP handler in the chain.
-	next http.Handler
-
-	// authorizer provides security policy enforcement.
-	authorizer Authorizer
-
-	// openapi caches the Schema schema.
-	openapi *openapi.Schema
-
+// authorizationInfo is request local storage to propagate authorization
+// info from the OpenAPI validation.
+type authorizationInfo struct {
 	// info is the authorization info containing the token, any claims
 	// and other available metadata.  It is only set for APIs that
 	// are protected by oauth2.
@@ -99,16 +87,45 @@ type Validator struct {
 	err error
 }
 
-// Ensure this implements the required interfaces.
-var _ http.Handler = &Validator{}
+type authorizationInfoKeyType int
+
+const (
+	authorizationInfoKey authorizationInfoKeyType = iota
+)
+
+func newContextWithAuthorizationInfo(ctx context.Context, info *authorizationInfo) context.Context {
+	return context.WithValue(ctx, authorizationInfoKey, info)
+}
+
+func authorizationInfoFromContext(ctx context.Context) (*authorizationInfo, error) {
+	v, ok := ctx.Value(authorizationInfoKey).(*authorizationInfo)
+	if !ok {
+		return nil, fmt.Errorf("%w: authorization into not in context", coreerrors.ErrKey)
+	}
+
+	return v, nil
+}
+
+// Validator provides Schema validation of request and response codes,
+// media, and schema validation of payloads to ensure we are meeting the
+// specification.
+type Validator struct {
+	// options define any runtime options.
+	options *Options
+
+	// authorizer provides security policy enforcement.
+	authorizer Authorizer
+
+	// scheam caches the OpenAPI schema.
+	schema *openapi.Schema
+}
 
 // NewValidator returns an initialized validator middleware.
-func NewValidator(options *Options, authorizer Authorizer, next http.Handler, openapi *openapi.Schema) *Validator {
+func NewValidator(options *Options, authorizer Authorizer, schema *openapi.Schema) *Validator {
 	return &Validator{
 		options:    options,
 		authorizer: authorizer,
-		next:       next,
-		openapi:    openapi,
+		schema:     schema,
 	}
 }
 
@@ -168,32 +185,37 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 	// This authorization callback is fired if the API endpoint is marked as
 	// requiring it.
 	authorizationFunc := func(ctx context.Context, input *openapi3filter.AuthenticationInput) error {
+		authInfo, err := authorizationInfoFromContext(ctx)
+		if err != nil {
+			return err
+		}
+
 		// This call performs an OIDC userinfo call to authenticate the token
 		// with identity and to extract auditing information.
 		info, err := v.validateAuthentication(ctx, input)
 		if err != nil {
-			v.err = err
+			authInfo.err = err
 			return err
 		}
 
-		v.info = info
+		authInfo.info = info
 
 		// Add the principal to the context, the ACL call will use the internal
 		// identity client, and that requires a principal to be present.
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo.Sub)
 		if err != nil {
-			v.err = errors.OAuth2InvalidRequest("principal propagation failure for authentication").WithError(err)
+			authInfo.err = errors.OAuth2InvalidRequest("principal propagation failure for authentication").WithError(err)
 			return err
 		}
 
 		// Get the ACL associated with the actor.
 		acl, err := v.authorizer.GetACL(authorization.NewContext(ctx, info), params["organizationID"])
 		if err != nil {
-			v.err = err
+			authInfo.err = err
 			return err
 		}
 
-		v.acl = acl
+		authInfo.acl = acl
 
 		return nil
 	}
@@ -242,11 +264,11 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
 // principal information from the request itself.
-func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string) context.Context {
+func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, subject string) context.Context {
 	p := &principal.Principal{
 		OrganizationID: params["organizationID"],
 		ProjectID:      params["projectID"],
-		Actor:          v.info.Userinfo.Sub,
+		Actor:          subject,
 	}
 
 	return principal.NewContext(ctx, p)
@@ -297,7 +319,7 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
 // API calls, otherwise it generates it from the available information.
-func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string) (context.Context, error) {
+func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, subject string) (context.Context, error) {
 	if util.HasClientCertificateHeader(r.Header) {
 		newCtx, err := extractPrincipal(ctx, r)
 		if err != nil {
@@ -307,7 +329,7 @@ func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Requ
 		return newCtx, nil
 	}
 
-	return v.generatePrincipal(ctx, params), nil
+	return v.generatePrincipal(ctx, params, subject), nil
 }
 
 // validateAndAuthorize performs OpenAPI schema validation of the request, and also
@@ -331,11 +353,6 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 
 	responseValidationInput, err := v.validateRequest(r, route, params)
 	if err != nil {
-		// If the authenticator errored, override whatever openapi spits out.
-		if v.err != nil {
-			return nil, nil, v.err
-		}
-
 		return nil, nil, err
 	}
 
@@ -344,21 +361,26 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 
 // Handle builds up any expected contextual information for the handlers and dispatches
 // it.  Once complete this will also validate the OpenAPI response.
-func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.Request, responseValidationInput *openapi3filter.ResponseValidationInput, params map[string]string) error {
+func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.Request, responseValidationInput *openapi3filter.ResponseValidationInput, params map[string]string, next http.Handler) error {
+	authInfo, err := authorizationInfoFromContext(ctx)
+	if err != nil {
+		return err
+	}
+
 	// If any authentication was requested as part of the route, then update anything
 	// that needs doing.
-	if v.info != nil {
+	if authInfo.info != nil {
 		// Propagate authentication/authorization info to the handlers
 		// for the pursposes of auditing and RBAC.
-		ctx = authorization.NewContext(ctx, v.info)
-		ctx = rbac.NewContext(ctx, v.acl)
+		ctx = authorization.NewContext(ctx, authInfo.info)
+		ctx = rbac.NewContext(ctx, authInfo.acl)
 
 		// Trusted clients using mTLS must provide principal information in the headers.
 		// Other clients (UI/CLI) generate principal information from token introspection
 		// data.
 		var err error
 
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo.Sub)
 		if err != nil {
 			return errors.OAuth2InvalidRequest("identity info propagation failure").WithError(err)
 		}
@@ -368,7 +390,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 	r = r.WithContext(ctx)
 
 	if v.options.runtimeSchemaValidation {
-		response := middleware.CaptureResponse(w, r, v.next)
+		response := middleware.CaptureResponse(w, r, next)
 
 		responseValidationInput.Status = response.StatusCode()
 		responseValidationInput.Header = w.Header()
@@ -382,27 +404,36 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 			log.FromContext(ctx).Error(err, "response openapi schema validation failure")
 		}
 	} else {
-		v.next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	}
 
 	return nil
 }
 
-// ServeHTTP implements the http.Handler interface.
-func (v *Validator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	route, params, err := v.openapi.FindRoute(r)
-	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2ServerError("route lookup failure").WithError(err))
-		return
-	}
-
-	validatedRequest, responseValidationInput, err := v.validateAndAuthorize(r.Context(), r, route, params)
+// handler implements the http.Handler interface.
+func (v *Validator) handler(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	route, parameters, err := v.schema.FindRoute(r)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	if err := v.handle(r.Context(), w, validatedRequest, responseValidationInput, params); err != nil {
+	authInfo := &authorizationInfo{}
+
+	ctx := newContextWithAuthorizationInfo(r.Context(), authInfo)
+
+	validatedRequest, responseValidationInput, err := v.validateAndAuthorize(ctx, r, route, parameters)
+	if err != nil {
+		if authInfo.err != nil {
+			err = authInfo.err
+		}
+
+		errors.HandleError(w, r, err)
+
+		return
+	}
+
+	if err := v.handle(ctx, w, validatedRequest, responseValidationInput, parameters, next); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -410,8 +441,8 @@ func (v *Validator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // Middleware returns a function that generates per-request
 // middleware functions.
-func Middleware(options *Options, authorizer Authorizer, openapi *openapi.Schema) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return NewValidator(options, authorizer, next, openapi)
-	}
+func (v *Validator) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v.handler(w, r, next)
+	})
 }
