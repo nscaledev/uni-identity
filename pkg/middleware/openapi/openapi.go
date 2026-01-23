@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
@@ -37,6 +38,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
+	"github.com/unikorn-cloud/core/pkg/util/cache"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -65,11 +67,19 @@ type Options struct {
 	// response validation errors to catch them in development rather than
 	// silently ignoring log output.
 	runtimeSchemaValidationPanic bool
+
+	// ACLCacheSize defines the size of the ACL cache.
+	ACLCacheSize int
+
+	// ACLCacheTimeout defines how long to retain an ACL before refreshing.
+	ACLCacheTimeout time.Duration
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.BoolVar(&o.runtimeSchemaValidation, "runtime-schema-validation", true, "Enables runtime OpenAPI schema response validation")
 	f.BoolVar(&o.runtimeSchemaValidationPanic, "runtime-schema-validation-panic", true, "Enables a panic on OpenAPI schema response validation error")
+	f.IntVar(&o.ACLCacheSize, "acl-cache-size", 1<<16, "Size of the ACL cache")
+	f.DurationVar(&o.ACLCacheTimeout, "acl-cache-timeout", time.Minute, "Duration to cache ACLs for")
 }
 
 // authorizationInfo is request local storage to propagate authorization
@@ -118,6 +128,9 @@ type Validator struct {
 
 	// scheam caches the OpenAPI schema.
 	schema *openapi.Schema
+
+	// acls caches ACLs and ensures they time out peridically.
+	acls *cache.LRUExpireCache[string, *identityapi.Acl]
 }
 
 // NewValidator returns an initialized validator middleware.
@@ -126,6 +139,7 @@ func NewValidator(options *Options, authorizer Authorizer, schema *openapi.Schem
 		options:    options,
 		authorizer: authorizer,
 		schema:     schema,
+		acls:       cache.NewLRUExpireCache[string, *identityapi.Acl](options.ACLCacheSize),
 	}
 }
 
@@ -208,11 +222,17 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 			return err
 		}
 
-		// Get the ACL associated with the actor.
-		acl, err := v.authorizer.GetACL(authorization.NewContext(ctx, info), params["organizationID"])
-		if err != nil {
-			authInfo.err = err
-			return err
+		// This happens every call, so do some caching to improve throughput.
+		acl, ok := v.acls.Get(info.Userinfo.Sub)
+		if !ok {
+			// Get the ACL associated with the actor.
+			acl, err = v.authorizer.GetACL(authorization.NewContext(ctx, info), params["organizationID"])
+			if err != nil {
+				authInfo.err = err
+				return err
+			}
+
+			v.acls.Add(info.Userinfo.Sub, acl, v.options.ACLCacheTimeout)
 		}
 
 		authInfo.acl = acl

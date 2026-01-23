@@ -229,7 +229,11 @@ func mustNewValidator(t *testing.T, authorizer openapi.Authorizer) *openapi.Vali
 	}))
 	require.NoError(t, err)
 
-	return openapi.NewValidator(&openapi.Options{}, authorizer, schema)
+	options := &openapi.Options{
+		ACLCacheSize: 1,
+	}
+
+	return openapi.NewValidator(options, authorizer, schema)
 }
 
 // TestUserToServiceAuthenticationFailure tests we propagate the correct error when
