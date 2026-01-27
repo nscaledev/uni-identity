@@ -19,6 +19,7 @@ package serviceaccounts
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -143,7 +144,7 @@ func (c *Client) generateAccessToken(ctx context.Context, organization *organiza
 
 	tokens, err := c.oauth2.Issue(ctx, issueInfo)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("unable to issue access token").WithError(err)
+		return nil, fmt.Errorf("%w: unable to issue access token", err)
 	}
 
 	return tokens, nil
@@ -160,12 +161,12 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	tokens, err := c.generateAccessToken(ctx, organization, out.Name)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("unable to issue access token").WithError(err)
+		return nil, err
 	}
 
 	out.Spec.Expiry = &metav1.Time{Time: tokens.Expiry}
@@ -183,7 +184,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, serv
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get service account").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get service account", err)
 	}
 
 	return result, nil
@@ -194,7 +195,7 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	result := &unikornv1.GroupList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list groups").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list groups", err)
 	}
 
 	return result, nil
@@ -227,7 +228,7 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 		}
 
 		if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-			return errors.OAuth2ServerError("failed to patch group").WithError(err)
+			return fmt.Errorf("%w: failed to patch group", err)
 		}
 	}
 
@@ -243,11 +244,11 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 
 	resource, err := c.generate(ctx, organization, request)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to generate service account").WithError(err)
+		return nil, fmt.Errorf("%w: failed to generate service account", err)
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create service account").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create service account", err)
 	}
 
 	groups, err := c.listGroups(ctx, organization)
@@ -292,7 +293,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Servi
 	result := &unikornv1.ServiceAccountList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list service accounts").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list service accounts", err)
 	}
 
 	groups, err := c.listGroups(ctx, organization)
@@ -322,7 +323,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return nil, errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -335,7 +336,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.AccessToken = current.Spec.AccessToken
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch group").WithError(err)
+		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 
 	groups, err := c.listGroups(ctx, organization)
@@ -373,7 +374,7 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.AccessToken = tokens.AccessToken
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch group").WithError(err)
+		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 
 	c.oauth2.InvalidateToken(ctx, current.Spec.AccessToken)
@@ -399,7 +400,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID st
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to get service account for delete").WithError(err)
+		return fmt.Errorf("%w: failed to get service account for delete", err)
 	}
 
 	// Unlink the service account from any groups that reference it.
@@ -417,7 +418,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID st
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete service account").WithError(err)
+		return fmt.Errorf("%w: failed to delete service account", err)
 	}
 
 	c.oauth2.InvalidateToken(ctx, resource.Spec.AccessToken)
