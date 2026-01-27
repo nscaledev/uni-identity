@@ -105,7 +105,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, proj
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get project").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get project", err)
 	}
 
 	return result, nil
@@ -135,7 +135,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	for _, groupID := range in.Spec.GroupIDs {
@@ -143,10 +143,10 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 
 		if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, &resource); err != nil {
 			if kerrors.IsNotFound(err) {
-				return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("group ID %s does not exist", groupID)).WithError(err)
+				return nil, errors.OAuth2InvalidRequest("group ID", groupID, "does not exist")
 			}
 
-			return nil, errors.OAuth2ServerError("failed to validate group ID").WithError(err)
+			return nil, fmt.Errorf("%w: failed to validate group ID", err)
 		}
 	}
 
@@ -166,7 +166,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create project").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create project", err)
 	}
 
 	return convert(resource), nil
@@ -189,7 +189,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -198,7 +198,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch project").WithError(err)
+		return fmt.Errorf("%w: failed to patch project", err)
 	}
 
 	return nil
@@ -223,7 +223,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete project").WithError(err)
+		return fmt.Errorf("%w: failed to delete project", err)
 	}
 
 	return nil
@@ -251,7 +251,7 @@ func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID,
 	}
 
 	if err := c.client.Update(ctx, resource); err != nil {
-		return errors.OAuth2ServerError("failed to update project").WithError(err)
+		return fmt.Errorf("%w: failed to update project", err)
 	}
 
 	return nil
@@ -274,7 +274,7 @@ func (c *Client) ReferenceDelete(ctx context.Context, organizationID, projectID,
 	}
 
 	if err := c.client.Update(ctx, resource); err != nil {
-		return errors.OAuth2ServerError("failed to update project").WithError(err)
+		return fmt.Errorf("%w: failed to update project", err)
 	}
 
 	return nil
