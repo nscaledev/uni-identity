@@ -20,6 +20,7 @@ package allocations
 import (
 	"context"
 	goerrors "errors"
+	"fmt"
 	"sync"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
@@ -132,7 +133,7 @@ func generate(ctx context.Context, namespace *corev1.Namespace, organizationID, 
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	return out, nil
@@ -146,7 +147,7 @@ func (c *Client) get(ctx context.Context, namespace, allocationID string) (*unik
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get allocation").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get allocation", err)
 	}
 
 	return result, nil
@@ -170,11 +171,11 @@ func (c *SyncClient) Create(ctx context.Context, organizationID, projectID strin
 	defer c.mutex.Unlock()
 
 	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create allocation").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create allocation", err)
 	}
 
 	return convert(resource), nil
@@ -212,7 +213,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID, allocati
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete allocation").WithError(err)
+		return fmt.Errorf("%w: failed to delete allocation", err)
 	}
 
 	return nil
@@ -237,7 +238,7 @@ func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allo
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current); err != nil {
-		return nil, errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -250,11 +251,11 @@ func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allo
 	defer c.mutex.Unlock()
 
 	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch allocation").WithError(err)
+		return nil, fmt.Errorf("%w: failed to patch allocation", err)
 	}
 
 	return convert(updated), nil

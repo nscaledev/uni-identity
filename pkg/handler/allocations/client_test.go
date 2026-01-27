@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	"github.com/unikorn-cloud/core/pkg/server/errors"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/allocations"
@@ -430,6 +431,7 @@ func TestAllocationExceedingQuota_Fails(t *testing.T) {
 
 	result, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, request)
 	require.Error(t, err, "Should fail when exceeding quota")
+	require.True(t, errors.IsForbidden(err))
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "quota", "Error should mention quota")
 

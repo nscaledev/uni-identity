@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -116,7 +117,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Group
 	result := &unikornv1.GroupList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list groups").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list groups", err)
 	}
 
 	return convertList(result), nil
@@ -130,7 +131,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, grou
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get group").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get group", err)
 	}
 
 	return result, nil
@@ -168,7 +169,7 @@ func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
 func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikornv1.User, error) {
 	var users unikornv1.UserList
 	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list users").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
 	for i := range users.Items {
@@ -186,7 +187,7 @@ func (c *Client) findOrgUserByUserID(ctx context.Context, orgNamespace, userID s
 
 	selector := labels.SelectorFromSet(labels.Set{constants.UserLabel: userID})
 	if err := c.client.List(ctx, &orgUsers, &client.ListOptions{Namespace: orgNamespace, LabelSelector: selector}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list organization users").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list organization users", err)
 	}
 
 	switch len(orgUsers.Items) {
@@ -195,7 +196,7 @@ func (c *Client) findOrgUserByUserID(ctx context.Context, orgNamespace, userID s
 	case 1:
 		return &orgUsers.Items[0], nil
 	default:
-		return nil, errors.OAuth2ServerError(fmt.Sprintf("inconsistent number of organisation users for user with ID %s", userID))
+		return nil, fmt.Errorf("%w: inconsistent number of organisation users for user with ID %s", coreerrors.ErrConsistency, userID)
 	}
 }
 
@@ -231,14 +232,14 @@ func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organi
 	for _, orgUserID := range userIDs {
 		var orguser unikornv1.OrganizationUser
 		if err := c.client.Get(ctx, client.ObjectKey{Name: orgUserID, Namespace: organization.Namespace}, &orguser); err != nil {
-			return nil, errors.OAuth2ServerError("failed to get organization member record").WithError(err)
+			return nil, errors.OAuth2InvalidRequest("user", orgUserID, "does not exist").WithError(err)
 		}
 
 		userid := orguser.Labels[constants.UserLabel]
 
 		var user unikornv1.User
 		if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
-			return nil, errors.OAuth2ServerError("failed to get user record").WithError(err)
+			return nil, fmt.Errorf("%w: failed to get user record", err)
 		}
 
 		subjects = append(subjects, unikornv1.GroupSubject{
@@ -302,7 +303,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 				return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("role ID %s does not exist", roleID)).WithError(err)
 			}
 
-			return nil, errors.OAuth2ServerError("failed to validate role ID").WithError(err)
+			return nil, fmt.Errorf("%w: failed to validate role ID", err)
 		}
 
 		if resource.Spec.Protected {
@@ -333,7 +334,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	return out, nil
@@ -351,7 +352,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create group").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create group", err)
 	}
 
 	return convert(resource), nil
@@ -374,7 +375,7 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -383,7 +384,7 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch group").WithError(err)
+		return fmt.Errorf("%w: failed to patch group", err)
 	}
 
 	return nil
@@ -405,7 +406,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to list projects").WithError(err)
+		return fmt.Errorf("%w: failed to list projects", err)
 	}
 
 	for i := range projects.Items {
@@ -415,7 +416,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 			project.Spec.GroupIDs = slices.Delete(project.Spec.GroupIDs, index, index+1)
 
 			if err := c.client.Update(ctx, project); err != nil {
-				return errors.OAuth2ServerError("failed to update project").WithError(err)
+				return fmt.Errorf("%w: failed to update project", err)
 			}
 		}
 	}
@@ -432,7 +433,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete group").WithError(err)
+		return fmt.Errorf("%w: failed to delete group", err)
 	}
 
 	return nil
