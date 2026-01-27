@@ -24,13 +24,13 @@ import (
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
-	"go.opentelemetry.io/otel/sdk/trace"
 
-	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
-	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -86,20 +86,34 @@ func (s *Server) SetupLogging() {
 }
 
 func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
-	return s.CoreOptions.SetupOpenTelemetry(ctx, trace.WithSpanProcessor(&opentelemetry.LoggingSpanProcessor{}))
+	return s.CoreOptions.SetupOpenTelemetry(ctx)
 }
 
 func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
-	schema, err := coreapi.NewSchema(openapi.GetSwagger)
+	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
 	}
 
-	// Middleware specified here is applied to all requests pre-routing.
 	router := chi.NewRouter()
-	router.Use(timeout.Middleware(s.ServerOptions.RequestTimeout))
-	router.Use(opentelemetry.Middleware(constants.Application, constants.Version))
-	router.Use(cors.Middleware(schema, &s.CORSOptions))
+
+	// Middleware specified here is applied to all requests pre-routing.
+	// Ordering is important:
+	// * OpenTelemetry middleware optionally transmits spans over OTLP, but also
+	//   establishes a trace ID that is used to correlate logs with user issues.
+	// * Logging ensures at least all errors are captured by logging telemetry and we
+	//   can trigger alerts based on them.
+	// * Route resolver provides routing and OpenAPI information to child middlewares.
+	// * CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
+	opentelemetry := opentelemetry.New(constants.Application, constants.Version)
+	logging := logging.New()
+	routeresolver := routeresolver.New(schema)
+	cors := cors.New(&s.CORSOptions)
+
+	router.Use(opentelemetry.Middleware)
+	router.Use(logging.Middleware)
+	router.Use(routeresolver.Middleware)
+	router.Use(cors.Middleware)
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
 
@@ -114,7 +128,8 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
-	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer, schema)
+	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
+	audit := audit.New(constants.Application, constants.Version)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -122,7 +137,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		BaseRouter:       router,
 		ErrorHandlerFunc: handler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
-			audit.Middleware(schema, constants.Application, constants.Version),
+			audit.Middleware,
 			validator.Middleware,
 		},
 	}
