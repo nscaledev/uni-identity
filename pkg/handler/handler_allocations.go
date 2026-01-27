@@ -20,7 +20,6 @@ package handler
 
 import (
 	"net/http"
-	"slices"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/util"
@@ -35,23 +34,6 @@ func (h *Handler) allocationsClient() *allocations.Client {
 
 func (h *Handler) allocationsSyncClient() *allocations.SyncClient {
 	return allocations.NewSync(h.directclient, h.namespace, &h.allocationMutex)
-}
-
-func (h *Handler) GetApiV1OrganizationsOrganizationIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	ctx := r.Context()
-
-	result, err := h.allocationsClient().List(ctx, organizationID)
-	if err != nil {
-		errors.HandleError(w, r, err)
-		return
-	}
-
-	result = slices.DeleteFunc(result, func(resource openapi.AllocationRead) bool {
-		return rbac.AllowProjectScope(ctx, "identity:allocations", openapi.Read, organizationID, resource.Metadata.ProjectId) != nil
-	})
-
-	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
