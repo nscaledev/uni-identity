@@ -19,8 +19,7 @@ package principal
 
 import (
 	"context"
-
-	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"fmt"
 )
 
 // GetPrincipal returns the principal in a HTTP handler.  This is primarily
@@ -30,7 +29,7 @@ import (
 func GetPrincipal(ctx context.Context) (*Principal, error) {
 	p, err := FromContext(ctx)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("unable to get principal").WithError(err)
+		return nil, fmt.Errorf("%w: unable to get principal", err)
 	}
 
 	return p, nil

@@ -19,10 +19,12 @@ package organizations
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -135,7 +137,7 @@ func (c *Client) get(ctx context.Context, organizationID string) (*unikornv1.Org
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get organization").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get organization", err)
 	}
 
 	return result, nil
@@ -177,7 +179,7 @@ func (c *Client) getUserbyEmail(ctx context.Context, rbacClient *rbac.RBAC, info
 func (c *Client) organizationIDs(ctx context.Context, rbacClient *rbac.RBAC, email *string) ([]string, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("userinfo is not set").WithError(err)
+		return nil, fmt.Errorf("%w: userinfo is not set", err)
 	}
 
 	if info.ServiceAccount {
@@ -239,7 +241,7 @@ func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string)
 
 	organizations, err := c.list(ctx)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to list organizations").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list organizations", err)
 	}
 
 	organizationIDs, err := c.organizationIDs(ctx, rbacClient, email)
@@ -254,7 +256,7 @@ func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string)
 	for i := range organizationIDs {
 		organization, ok := organizations[organizationIDs[i]]
 		if !ok {
-			return nil, errors.OAuth2ServerError("failed to find organization for user")
+			return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
 		}
 
 		result.Items[i] = *organization
@@ -278,13 +280,13 @@ func (c *Client) generate(ctx context.Context, in *openapi.OrganizationWrite) (*
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	out.Spec.Tags = conversion.GenerateTagList(in.Metadata.Tags)
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	if in.Spec.OrganizationType == openapi.Domain {
@@ -319,7 +321,7 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -328,7 +330,7 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch organization").WithError(err)
+		return fmt.Errorf("%w: failed to patch organization", err)
 	}
 
 	return nil
@@ -341,7 +343,7 @@ func (c *Client) Create(ctx context.Context, request *openapi.OrganizationWrite)
 	}
 
 	if err := c.client.Create(ctx, org); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create organization").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create organization", err)
 	}
 
 	return convert(org), nil
@@ -360,7 +362,7 @@ func (c *Client) Delete(ctx context.Context, organizationID string) error {
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete organization").WithError(err)
+		return fmt.Errorf("%w: failed to delete organization", err)
 	}
 
 	return nil
