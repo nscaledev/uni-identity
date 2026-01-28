@@ -347,6 +347,64 @@ The recommended way to do this is:
   * Ensure the role is marked as protected to prevent it being exposed via the API, otherwise you may inadvertently end up allowing users to see into other organizations.
   * These can be granted to platform administrators via the `platformAdministrators.roles` list in the Identity Helm chart.
 
+## Contract Testing
+
+uni-identity acts as a provider for consumer services like uni-region. Contract tests verify that uni-identity satisfies the expectations defined by consumers.
+
+### Running Provider Verification Tests
+
+Provider verification tests check that uni-identity meets the contracts published by consumers (like uni-region) to the Pact Broker.
+
+Run verification against pacts from the Pact Broker:
+```bash
+make test-contracts-provider
+```
+
+Run verification against a local pact file:
+```bash
+make test-contracts-provider-local PACT_FILE=/path/to/pact.json
+```
+
+Run with verbose output:
+```bash
+make test-contracts-provider-verbose
+```
+
+### Provider Verification in CI
+
+Contract verification runs automatically in CI:
+- **Pull Requests**: Verifies contracts but doesn't publish results
+- **Merge to main**: Verifies contracts and publishes verification results to Pact Broker
+
+### Writing Provider Tests
+
+Provider tests are located in `test/contracts/provider/{consumer}/`. Each consumer has:
+- `verify_test.go` - Main test setup and verification
+- `states.go` - State handlers for setting up test data
+- `middleware.go` - Test-specific middleware (e.g., mock authentication)
+
+**State Handlers:**
+
+State handlers set up the required state for each test:
+```go
+func (sm *StateManager) HandleOrganizationWithGlobalPermission(ctx context.Context, setup bool, params map[string]interface{}) error {
+    orgID := getStringParam(params, "organizationID", "test-org-123")
+
+    if setup {
+        // Set up organization with global permissions
+        sm.organizationStates[orgID] = OrganizationState{
+            ID:        orgID,
+            HasGlobal: true,
+        }
+    } else {
+        // Clean up
+        delete(sm.organizationStates, orgID)
+    }
+
+    return nil
+}
+```
+
 ## What Next?
 
 As you've noted, objects are named based on UUIDs, therefore administration is somewhat counter intuitive, but it does allow names to be mutable.
