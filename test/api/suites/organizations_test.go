@@ -2,7 +2,6 @@
 // +build integration
 
 /*
-Copyright 2026 the Unikorn Authors.
 Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
