@@ -18,20 +18,31 @@ package region_test
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
+	chi "github.com/go-chi/chi/v5"
 	. "github.com/onsi/ginkgo/v2" //nolint:revive
 	. "github.com/onsi/gomega"    //nolint:revive
 	"github.com/pact-foundation/pact-go/v2/models"
 	"github.com/pact-foundation/pact-go/v2/provider"
+
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
+	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/handler"
+	"github.com/unikorn-cloud/identity/pkg/handler/common"
+	openapiMiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
+
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
@@ -52,6 +63,7 @@ var _ = Describe("Identity Provider Verification", func() {
 		serverURL      string
 		ctx            context.Context
 		cancel         context.CancelFunc
+		k8sClient      client.Client
 		stateManager   *StateManager
 		pactBrokerURL  string
 		brokerUsername string
@@ -75,7 +87,21 @@ var _ = Describe("Identity Provider Verification", func() {
 			brokerPassword = "pact"
 		}
 
-		stateManager = NewStateManager()
+		cfg, err := ctrl.GetConfig()
+		Expect(err).NotTo(HaveOccurred())
+
+		scheme, err := coreclient.NewScheme(unikornv1.AddToScheme)
+		Expect(err).NotTo(HaveOccurred())
+
+		k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
+		Expect(err).NotTo(HaveOccurred())
+
+		err = SetupBaseNamespace(ctx, k8sClient)
+		Expect(err).NotTo(HaveOccurred())
+
+		cleanupAllTestUserOrganizationUsers(ctx, k8sClient)
+
+		stateManager = NewStateManager(k8sClient, TestNamespace)
 
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		Expect(err).NotTo(HaveOccurred())
@@ -87,7 +113,7 @@ var _ = Describe("Identity Provider Verification", func() {
 
 		serverURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
-		testServer = startTestServer(ctx, stateManager, fmt.Sprintf("127.0.0.1:%d", port))
+		testServer = startTestServer(ctx, k8sClient, serverURL, fmt.Sprintf("127.0.0.1:%d", port))
 
 		Eventually(func() error {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
@@ -105,9 +131,7 @@ var _ = Describe("Identity Provider Verification", func() {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer shutdownCancel()
 
-			if err := testServer.Shutdown(shutdownCtx); err != nil {
-				fmt.Printf("failed to shutdown server: %v\n", err)
-			}
+			_ = testServer.Shutdown(shutdownCtx)
 		}
 		cancel()
 	})
@@ -116,6 +140,13 @@ var _ = Describe("Identity Provider Verification", func() {
 		It("should verify all consumer contracts", func() {
 			verifier := provider.NewVerifier()
 			stateHandlers := createStateHandlers(ctx, stateManager)
+
+			requestFilter := func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					r.Header.Add("Authorization", "Bearer test-token")
+					next.ServeHTTP(w, r)
+				})
+			}
 
 			err := verifier.VerifyProvider(testingT, provider.VerifyRequest{
 				ProviderBaseURL:            serverURL,
@@ -126,6 +157,7 @@ var _ = Describe("Identity Provider Verification", func() {
 				PublishVerificationResults: os.Getenv("CI") == "true" || os.Getenv("PUBLISH_VERIFICATION") == "true",
 				ProviderVersion:            getProviderVersion(),
 				StateHandlers:              stateHandlers,
+				RequestFilter:              requestFilter,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -143,11 +175,19 @@ var _ = Describe("Identity Provider Verification", func() {
 
 			stateHandlers := createStateHandlers(ctx, stateManager)
 
+			requestFilter := func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					r.Header.Add("Authorization", "Bearer test-token")
+					next.ServeHTTP(w, r)
+				})
+			}
+
 			err := verifier.VerifyProvider(testingT, provider.VerifyRequest{
 				ProviderBaseURL: serverURL,
 				Provider:        "uni-identity",
 				PactFiles:       []string{pactFile},
 				StateHandlers:   stateHandlers,
+				RequestFilter:   requestFilter,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -157,113 +197,79 @@ var _ = Describe("Identity Provider Verification", func() {
 
 func createStateHandlers(ctx context.Context, stateManager *StateManager) models.StateHandlers {
 	return models.StateHandlers{
-		"organization exists with global read permission": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
-			fmt.Printf("State: %s, Parameters: %+v\n", state.Name, state.Parameters)
-			return nil, stateManager.HandleOrganizationWithGlobalPermission(ctx, setup, state.Parameters)
+		"project exists": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleProjectExists(ctx, setup, state.Parameters)
 		},
-		"organization exists without global permission": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
-			fmt.Printf("State: %s, Parameters: %+v\n", state.Name, state.Parameters)
-			return nil, stateManager.HandleOrganizationWithoutGlobalPermission(ctx, setup, state.Parameters)
-		},
-		"organization exists with organization scope read permission": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
-			fmt.Printf("State: %s, Parameters: %+v\n", state.Name, state.Parameters)
-			return nil, stateManager.HandleOrganizationScopePermission(ctx, setup, state.Parameters)
-		},
-		"project exists with project scope read permission": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
-			fmt.Printf("State: %s, Parameters: %+v\n", state.Name, state.Parameters)
-			return nil, stateManager.HandleProjectScopePermission(ctx, setup, state.Parameters)
-		},
-		"organization does not exist": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
-			fmt.Printf("State: %s, Parameters: %+v\n", state.Name, state.Parameters)
-			return nil, stateManager.HandleNonExistentOrganization(ctx, setup, state.Parameters)
+		"allocation exists": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleAllocationExists(ctx, setup, state.Parameters)
 		},
 	}
 }
 
-func startTestServer(_ context.Context, stateManager *StateManager, listenAddr string) *http.Server {
-	mux := http.NewServeMux()
+func startTestServer(_ context.Context, k8sClient client.Client, serverURL, listenAddr string) *http.Server {
+	schema, err := helpers.NewSchema(openapi.GetSwagger)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create schema: %v", err))
+	}
 
-	mux.HandleFunc("/api/v1/organizations/", func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimPrefix(r.URL.Path, "/api/v1/organizations/")
-		parts := strings.Split(path, "/")
+	issuer := NewMockJWTIssuer()
+	oauth2 := NewMockOAuth2()
 
-		if len(parts) < 2 || parts[1] != "acl" {
-			http.NotFound(w, r)
+	rbacOptions := &rbac.Options{
+		PlatformAdministratorSubjects: []string{"admin-user"},
+		PlatformAdministratorRoleIDs:  []string{"global-role"},
+	}
+	rbacInstance := rbac.New(k8sClient, TestNamespace, rbacOptions)
 
-			return
-		}
+	handlerOptions := &handler.Options{
+		Issuer:      common.IssuerValue{URL: serverURL},
+		CacheMaxAge: 0,
+	}
 
-		organizationID := parts[0]
-		orgState, exists := stateManager.organizationStates[organizationID]
+	handlerInterface, err := handler.New(
+		k8sClient,
+		k8sClient,
+		TestNamespace,
+		issuer,
+		oauth2,
+		rbacInstance,
+		handlerOptions,
+	)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create handler: %v", err))
+	}
 
-		if !exists {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"message": "organization not found",
-			})
+	router := chi.NewRouter()
 
-			return
-		}
+	routeResolver := routeresolver.New(schema)
+	router.Use(routeResolver.Middleware)
 
-		response := make(map[string]interface{})
+	authorizer := NewTestAuthorizer(k8sClient, TestNamespace, rbacInstance)
+	validatorOptions := &openapiMiddleware.Options{
+		ACLCacheSize:    1,
+		ACLCacheTimeout: 0,
+	}
+	validator := openapiMiddleware.NewValidator(validatorOptions, authorizer)
+	router.Use(validator.Middleware)
 
-		if orgState.HasGlobal {
-			response["global"] = []map[string]interface{}{
-				{
-					"name":       "region:regions",
-					"operations": []string{"read"},
-				},
-			}
-		}
+	chiServerOptions := openapi.ChiServerOptions{
+		BaseRouter:       router,
+		ErrorHandlerFunc: handler.HandleError,
+		Middlewares:      []openapi.MiddlewareFunc{},
+	}
 
-		if orgState.HasOrganization {
-			response["organizations"] = []map[string]interface{}{
-				{
-					"id":   organizationID,
-					"name": "Test Organization",
-					"endpoints": []map[string]interface{}{
-						{
-							"name":       "region:networks",
-							"operations": []string{"read"},
-						},
-					},
-				},
-			}
-		}
-
-		if orgState.HasProject {
-			response["projects"] = []map[string]interface{}{
-				{
-					"id":   orgState.ProjectID,
-					"name": "Test Project",
-					"endpoints": []map[string]interface{}{
-						{
-							"name":       "region:servers:v2",
-							"operations": []string{"read"},
-						},
-					},
-				},
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(response)
-	})
+	openapi.HandlerWithOptions(handlerInterface, chiServerOptions)
 
 	httpServer := &http.Server{
 		Addr:              listenAddr,
-		Handler:           mux,
+		Handler:           router,
 		ReadTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 	}
 
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Printf("Server error: %v\n", err)
-		}
+		_ = httpServer.ListenAndServe()
 	}()
 
 	return httpServer
@@ -276,4 +282,17 @@ func getProviderVersion() string {
 	}
 
 	return version
+}
+
+func cleanupAllTestUserOrganizationUsers(ctx context.Context, k8sClient client.Client) {
+	for _, userName := range []string{"test-user", "admin-user"} {
+		orgUserList := &unikornv1.OrganizationUserList{}
+		_ = k8sClient.List(ctx, orgUserList, client.MatchingLabels{
+			"unikorn-cloud.org/user": userName,
+		})
+
+		for i := range orgUserList.Items {
+			_ = k8sClient.Delete(ctx, &orgUserList.Items[i])
+		}
+	}
 }
