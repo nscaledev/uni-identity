@@ -4,8 +4,19 @@ VERSION = 0.0.0
 # Base go module name.
 MODULE := $(shell cat go.mod | grep -m1 module | awk '{print $$2}')
 
-# Git revision.
+# Git revision and branch.
 REVISION := $(shell git rev-parse HEAD)
+# In GitHub Actions PRs, GITHUB_HEAD_REF contains the source branch name
+# For non-PR events, GITHUB_REF_NAME contains the branch name
+# Fall back to git command for local development
+BRANCH := $(shell \
+	if [ -n "$$GITHUB_HEAD_REF" ]; then \
+		echo "$$GITHUB_HEAD_REF"; \
+	elif [ -n "$$GITHUB_REF_NAME" ]; then \
+		echo "$$GITHUB_REF_NAME"; \
+	else \
+		git rev-parse --abbrev-ref HEAD; \
+	fi)
 
 # Commands to build, the first lot are architecture agnostic and will be built
 # for your host's architecture.  The latter are going to run in Kubernetes, so
@@ -270,6 +281,7 @@ PACT_BROKER_URL ?= http://localhost:9292
 PACT_BROKER_USERNAME ?= pact
 PACT_BROKER_PASSWORD ?= pact
 PROVIDER_VERSION ?= $(REVISION)
+PROVIDER_BRANCH ?= $(BRANCH)
 
 # Run provider contract verification tests
 .PHONY: test-contracts-provider
@@ -281,6 +293,7 @@ test-contracts-provider:
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	PROVIDER_BRANCH="$(PROVIDER_BRANCH)" \
 	PUBLISH_VERIFICATION=true \
 	go test ./test/contracts/provider/... -v -count=1
 
@@ -294,6 +307,7 @@ test-contracts-provider-verbose:
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	PROVIDER_BRANCH="$(PROVIDER_BRANCH)" \
 	PUBLISH_VERIFICATION=true \
 	VERBOSE=true \
 	go test ./test/contracts/provider/... -v -count=1
@@ -311,6 +325,7 @@ test-contracts-provider-local:
 	$(PACT_LIB_ENV) \
 	PACT_FILE="$(PACT_FILE)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	PROVIDER_BRANCH="$(PROVIDER_BRANCH)" \
 	go test ./test/contracts/provider/... -v -count=1
 
 # Run provider verification and publish results to Pact Broker (works on both macOS and Linux)
@@ -320,6 +335,7 @@ test-contracts-provider-local:
 test-contracts-provider-ci:
 	@echo "Running provider contract verification in CI mode..."
 	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Provider Branch: $(PROVIDER_BRANCH)"
 	@echo "Pact Broker URL: $(PACT_BROKER_URL)"
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
@@ -327,6 +343,7 @@ test-contracts-provider-ci:
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	PROVIDER_BRANCH="$(PROVIDER_BRANCH)" \
 	CI=true \
 	go test ./test/contracts/provider/... -v -count=1
 
