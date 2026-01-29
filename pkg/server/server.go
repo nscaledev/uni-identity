@@ -127,8 +127,8 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, rbac)
 
 	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
-	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
+	authorizer := local.NewAuthorizer(s.HandlerOptions.Issuer.Hostname, oauth2, rbac)
+	validator := openapimiddleware.NewValidator(s.HandlerOptions.Issuer.Hostname, &s.OpenAPIOptions, authorizer)
 	audit := audit.New(constants.Application, constants.Version)
 
 	// Middleware specified here is applied to all requests post-routing.

@@ -120,6 +120,10 @@ func authorizationInfoFromContext(ctx context.Context) (*authorizationInfo, erro
 // media, and schema validation of payloads to ensure we are meeting the
 // specification.
 type Validator struct {
+	// authorizationMetadataServer tells a client where to go if they don't
+	// provide or have valid credentials.
+	authorizationMetadataServer string
+
 	// options define any runtime options.
 	options *Options
 
@@ -131,14 +135,15 @@ type Validator struct {
 }
 
 // NewValidator returns an initialized validator middleware.
-func NewValidator(options *Options, authorizer Authorizer) *Validator {
+func NewValidator(authorizationMetadataServer string, options *Options, authorizer Authorizer) *Validator {
 	acls := cache.NewLRUExpireCache[string, *identityapi.Acl](options.ACLCacheSize)
 	acls.ZeroCopy()
 
 	return &Validator{
-		options:    options,
-		authorizer: authorizer,
-		acls:       acls,
+		authorizationMetadataServer: authorizationMetadataServer,
+		options:                     options,
+		authorizer:                  authorizer,
+		acls:                        acls,
 	}
 }
 
@@ -165,7 +170,7 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 	if !hasHTTPAuthorization(request) {
 		// This ensures the connection is over MTLS.
 		if _, err := util.GetClientCertificateHeader(request.Header); err != nil {
-			return nil, errors.OAuth2AccessDenied("credentials must be provided").WithError(err)
+			return nil, errors.AccessDenied(v.authorizationMetadataServer, "credentials must be provided").WithError(err)
 		}
 
 		// Grab the certificate that is actually making this request

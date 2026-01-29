@@ -20,18 +20,19 @@ package authorizer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/getkin/kin-openapi/openapi3filter"
-	"golang.org/x/oauth2"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
@@ -79,10 +80,10 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 
 // getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
 // Authorization header.
-func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
+func (a *Authorizer) getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return "", "", errors.OAuth2InvalidRequest("authorization header missing")
+		return "", "", errors.AccessDenied(a.options.Host(), "authorization header missing")
 	}
 
 	parts := strings.Split(header, " ")
@@ -91,31 +92,6 @@ func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	}
 
 	return parts[0], parts[1], nil
-}
-
-// oidcErrorIsUnauthorized tries to convert the error returned by the OIDC library
-// into a proper status code, as it doesn't wrap anything useful.
-// The error looks like "{code} {text code}: {body}".
-func oidcErrorIsUnauthorized(err error) bool {
-	// Does it look like it contains the colon?
-	fields := strings.Split(err.Error(), ":")
-	if len(fields) < 2 {
-		return false
-	}
-
-	// What about a number followed by a string?
-	fields = strings.Split(fields[0], " ")
-	if len(fields) < 2 {
-		return false
-	}
-
-	code, err := strconv.Atoi(fields[0])
-	if err != nil {
-		return false
-	}
-
-	// Is the number a 403?
-	return code == http.StatusUnauthorized
 }
 
 type requestMutatingTransport struct {
@@ -172,10 +148,12 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 }
 
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
+//
+//nolint:cyclop
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	ctx := r.Context()
 
-	authorizationScheme, rawToken, err := getHTTPAuthenticationScheme(r)
+	authorizationScheme, rawToken, err := a.getHTTPAuthenticationScheme(r)
 	if err != nil {
 		return nil, err
 	}
@@ -207,24 +185,41 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, fmt.Errorf("%w: oidc service discovery failed", err)
 	}
 
-	token := &oauth2.Token{
-		AccessToken: rawToken,
-		TokenType:   authorizationScheme,
+	// Do the call manually here to allow us to extract the correct error code and
+	// headers, returned by identity.
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, provider.UserInfoEndpoint(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to create userinfo request", err)
 	}
 
-	ui, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token))
+	request.Header.Set("Authorization", authorizationScheme+" "+rawToken)
+
+	response, err := a.httpClient.Do(request)
 	if err != nil {
-		if oidcErrorIsUnauthorized(err) {
-			return nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
+		return nil, fmt.Errorf("%w: failed to perform userinfo request", err)
+	}
+
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to read userinfo response body", err)
+	}
+
+	if response.StatusCode != http.StatusOK {
+		var err coreapi.Error
+
+		if err := json.Unmarshal(body, &err); err != nil {
+			return nil, fmt.Errorf("%w: failed to unmarshal userinfo error response", err)
 		}
 
-		return nil, err
+		return nil, errors.FromOpenAPIError(response.StatusCode, response.Header, &err)
 	}
 
 	claims := &identityapi.Userinfo{}
 
-	if err := ui.Claims(claims); err != nil {
-		return nil, fmt.Errorf("%w: failed to extrac user information", err)
+	if err := json.Unmarshal(body, claims); err != nil {
+		return nil, err
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights
@@ -290,7 +285,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		}
 
 		if response.StatusCode() != http.StatusOK {
-			return nil, errors.PropagateError(response.StatusCode(), response)
+			return nil, errors.PropagateError(response.HTTPResponse, response)
 		}
 
 		return response.JSON200, nil
@@ -302,7 +297,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 	}
 
 	if response.StatusCode() != http.StatusOK {
-		return nil, errors.PropagateError(response.StatusCode(), response)
+		return nil, errors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return response.JSON200, nil

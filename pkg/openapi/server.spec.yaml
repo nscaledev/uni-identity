@@ -25,6 +25,17 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/openidConfigurationResponse'
+  /.well-known/openid-protected-resource:
+    description: |-
+      Implements OIDC service discovery for MCP.
+    get:
+      x-no-security-requirements: true
+      x-hidden: true
+      description: |-
+        Reads the OIDC discovery page identifying authorization severs.
+      responses:
+        '200':
+          $ref: '#/components/responses/openidProtectedResourceResponse'
   /oauth2/v2/authorization:
     description: |-
       Implements OAuth 2.0 authorization grants.
@@ -1357,6 +1368,24 @@ components:
       enum:
       - S256
       - plain
+    authorizationServerList:
+      description: List of authorization servers that can grant access to the resource.
+      type: array
+      items:
+        description: An authorization server.
+        type: string
+    openidProtectedResource:
+      description: OpenID athentication server discovery configuration.
+      type: object
+      required:
+      - resource
+      - authorization_servers
+      properties:
+        resource:
+          description: The protected resource.
+          type: string
+        authorization_servers:
+          $ref: '#/components/schemas/authorizationServerList'
     loginRequestOptions:
       description: Login request options.
       type: object
@@ -2504,6 +2533,14 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/openidConfiguration'
+    openidProtectedResourceResponse:
+      description: |-
+        OpenID configuration used to discover authentication servers when hitting
+        a protected endpoint.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/openidProtectedResource'
     authorizationResponse:
       description: |-
         A login form to request federation data from the user.

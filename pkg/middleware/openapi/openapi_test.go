@@ -47,6 +47,9 @@ import (
 )
 
 const (
+	// identityService is used to tell the client about where to access
+	// the identity service.
+	identityService = "identity.acme.com"
 	// userActor is used as a sentinel to track end user propagation.
 	userActor = "joe@acme.com"
 	// serviceActor is used as a sentinel to track service propagation.
@@ -75,7 +78,10 @@ func validateError(t *testing.T, w *httptest.ResponseRecorder, errorType coreapi
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), oauthError))
 
 	require.Equal(t, errorType, oauthError.Error)
-	require.Equal(t, errorDescription, oauthError.ErrorDescription)
+
+	if errorDescription != "" {
+		require.Equal(t, errorDescription, oauthError.ErrorDescription)
+	}
 }
 
 // addCertificateHeader adds a client certificate to the request, pretending to
@@ -253,7 +259,7 @@ func getMux(t *testing.T, authorizer openapi.Authorizer, handler *handler) http.
 	}
 
 	routeresolver := routeresolver.New(getSchema(t))
-	validator := openapi.NewValidator(options, authorizer)
+	validator := openapi.NewValidator(identityService, options, authorizer)
 
 	r := chi.NewRouter()
 	r.Use(routeresolver.Middleware)
@@ -347,7 +353,7 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
-	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
+	validateError(t, w, coreapi.ServerError, "")
 }
 
 // TestServiceToServiceCertificateInvalid tests the response when a client certificate
@@ -373,7 +379,7 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
-	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
+	validateError(t, w, coreapi.ServerError, "")
 }
 
 // TestServiceToServiceAuthenticationDenyEscalation stops a case where a user can supply

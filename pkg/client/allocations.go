@@ -110,7 +110,7 @@ func (r *Allocations) Create(ctx context.Context, resource client.Object, alloca
 	}
 
 	if response.StatusCode() != http.StatusCreated {
-		return servererrors.PropagateError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	setAllocationID(resource, response.JSON201)
@@ -143,7 +143,7 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 	}
 
 	if response.StatusCode() != http.StatusOK {
-		return servererrors.PropagateError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil
@@ -173,7 +173,7 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 			return nil
 		}
 
-		return servererrors.PropagateError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil

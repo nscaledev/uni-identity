@@ -35,24 +35,28 @@ import (
 
 // Authorizer provides OpenAPI based authorization middleware.
 type Authorizer struct {
-	authenticator *oauth2.Authenticator
-	rbac          *rbac.RBAC
+	// authorizationMetadataServer tells a client where to go if they don't
+	// provide or have valid credentials.
+	authorizationMetadataServer string
+	authenticator               *oauth2.Authenticator
+	rbac                        *rbac.RBAC
 }
 
 // NewAuthorizer returns a new authorizer with required parameters.
-func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Authorizer {
+func NewAuthorizer(authorizationMetadataServer string, authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Authorizer {
 	return &Authorizer{
-		authenticator: authenticator,
-		rbac:          rbac,
+		authorizationMetadataServer: authorizationMetadataServer,
+		authenticator:               authenticator,
+		rbac:                        rbac,
 	}
 }
 
 // getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
 // Authorization header.
-func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
+func (a *Authorizer) getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return "", "", errors.OAuth2InvalidRequest("authorization header missing")
+		return "", "", errors.AccessDenied(a.authorizationMetadataServer, "authorization header missing")
 	}
 
 	parts := strings.Split(header, " ")
@@ -65,7 +69,7 @@ func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
-	authorizationScheme, token, err := getHTTPAuthenticationScheme(r)
+	authorizationScheme, token, err := a.getHTTPAuthenticationScheme(r)
 	if err != nil {
 		return nil, err
 	}
@@ -98,18 +102,18 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		// propagated here.
 		certPEM, err := authorization.ClientCertFromContext(r.Context())
 		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate not present for bound token").WithError(err)
+			return nil, errors.AccessDenied(a.authorizationMetadataServer, "client certificate not present for bound token").WithError(err)
 		}
 
 		certificate, err := util.GetClientCertificate(certPEM)
 		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate parse error").WithError(err)
+			return nil, errors.AccessDenied(a.authorizationMetadataServer, "client certificate parse error").WithError(err)
 		}
 
 		thumbprint := util.GetClientCertifcateThumbprint(certificate)
 
 		if thumbprint != claims.Service.X509Thumbprint {
-			return nil, errors.OAuth2AccessDenied("client certificate mismatch for bound token")
+			return nil, errors.AccessDenied(a.authorizationMetadataServer, "client certificate mismatch for bound token")
 		}
 
 		info.SystemAccount = true

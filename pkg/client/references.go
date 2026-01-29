@@ -98,7 +98,7 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 	}
 
 	if response.StatusCode() != http.StatusCreated {
-		return servererrors.PropagateError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil
@@ -131,7 +131,7 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 	}
 
 	if response.StatusCode() != http.StatusNoContent {
-		return servererrors.PropagateError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil

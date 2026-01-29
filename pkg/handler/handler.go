@@ -159,6 +159,17 @@ func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
+func (h *Handler) GetWellKnownOpenidProtectedResource(w http.ResponseWriter, r *http.Request) {
+	result := &openapi.OpenidProtectedResource{
+		Resource: r.Host,
+		AuthorizationServers: openapi.AuthorizationServerList{
+			r.Host,
+		},
+	}
+
+	util.WriteJSONResponse(w, r, http.StatusOK, result)
+}
+
 func (h *Handler) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 	h.oauth2.Authorization(w, r)
 }
@@ -208,7 +219,7 @@ func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 
 	userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
 	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
+		errors.HandleError(w, r, err)
 		return
 	}
 
@@ -232,7 +243,7 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 
 		userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
 		if err != nil {
-			errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
+			errors.HandleError(w, r, err)
 			return
 		}
 

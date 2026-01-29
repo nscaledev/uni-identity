@@ -262,6 +262,9 @@ type AuthorizationRequestOptions struct {
 	UiLocales *string `json:"ui_locales"`
 }
 
+// AuthorizationServerList List of authorization servers that can grant access to the resource.
+type AuthorizationServerList = []string
+
 // Claim Supported claims.
 type Claim string
 
@@ -452,6 +455,15 @@ type OpenidConfiguration struct {
 
 	// UserinfoEndpoint The OIDC endpoint used to get information about an access token's user.
 	UserinfoEndpoint string `json:"userinfo_endpoint"`
+}
+
+// OpenidProtectedResource OpenID athentication server discovery configuration.
+type OpenidProtectedResource struct {
+	// AuthorizationServers List of authorization servers that can grant access to the resource.
+	AuthorizationServers AuthorizationServerList `json:"authorization_servers"`
+
+	// Resource The protected resource.
+	Resource string `json:"resource"`
 }
 
 // OrganizationRead An organization when read.
@@ -906,6 +918,9 @@ type Oauth2UnauthorizedResponse = Oauth2Error
 
 // OpenidConfigurationResponse OpenID configuration.
 type OpenidConfigurationResponse = OpenidConfiguration
+
+// OpenidProtectedResourceResponse OpenID athentication server discovery configuration.
+type OpenidProtectedResourceResponse = OpenidProtectedResource
 
 // OrganizationResponse An organization when read.
 type OrganizationResponse = OrganizationRead
