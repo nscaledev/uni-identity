@@ -1,5 +1,4 @@
 /*
-Copyright 2026 the Unikorn Authors.
 Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -173,8 +172,12 @@ func (c *APIClient) GetGroup(ctx context.Context, orgID, groupID string) (*ident
 	path := c.endpoints.GetGroup(orgID, groupID)
 
 	//nolint:bodyclose // DoRequest handles response body closing internally
-	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	resp, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("group %s: %w", groupID, coreclient.ErrResourceNotFound)
+		}
+
 		return nil, fmt.Errorf("getting group: %w", err)
 	}
 
@@ -209,14 +212,41 @@ func (c *APIClient) CreateGroup(ctx context.Context, orgID string, group identit
 	return &created, nil
 }
 
+// UpdateGroup updates an existing group in an organization.
+// Returns nil on success. API returns 200 with empty body.
+func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) error {
+	path := c.endpoints.GetGroup(orgID, groupID)
+
+	body, err := json.Marshal(group)
+	if err != nil {
+		return fmt.Errorf("marshaling group: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodPut, path, bytes.NewReader(body), http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("group %s: %w", groupID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("updating group: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteGroup deletes a group from an organization.
 func (c *APIClient) DeleteGroup(ctx context.Context, orgID, groupID string) error {
 	path := c.endpoints.GetGroup(orgID, groupID)
 
 	//nolint:bodyclose // DoRequest handles response body closing internally
 	// API returns 200 for synchronous deletes
-	_, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
+	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("group %s: %w", groupID, coreclient.ErrResourceNotFound)
+		}
+
 		return fmt.Errorf("deleting group: %w", err)
 	}
 
