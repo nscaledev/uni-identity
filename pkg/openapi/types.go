@@ -217,9 +217,6 @@ type AllocationWrite struct {
 	Spec AllocationSpec `json:"spec"`
 }
 
-// Allocations A list of allocations.
-type Allocations = []AllocationRead
-
 // AuthMethod Supported authentication methods.
 type AuthMethod string
 
@@ -881,9 +878,6 @@ type AclResponse = Acl
 
 // AllocationResponse An allocation of resources.
 type AllocationResponse = AllocationRead
-
-// AllocationsResponse A list of allocations.
-type AllocationsResponse = Allocations
 
 // GroupResponse A group when read.
 type GroupResponse = GroupRead

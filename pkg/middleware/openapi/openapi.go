@@ -35,9 +35,9 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/client"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
-	"github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/core/pkg/util/cache"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
@@ -126,20 +126,19 @@ type Validator struct {
 	// authorizer provides security policy enforcement.
 	authorizer Authorizer
 
-	// scheam caches the OpenAPI schema.
-	schema *openapi.Schema
-
 	// acls caches ACLs and ensures they time out peridically.
 	acls *cache.LRUExpireCache[string, *identityapi.Acl]
 }
 
 // NewValidator returns an initialized validator middleware.
-func NewValidator(options *Options, authorizer Authorizer, schema *openapi.Schema) *Validator {
+func NewValidator(options *Options, authorizer Authorizer) *Validator {
+	acls := cache.NewLRUExpireCache[string, *identityapi.Acl](options.ACLCacheSize)
+	acls.ZeroCopy()
+
 	return &Validator{
 		options:    options,
 		authorizer: authorizer,
-		schema:     schema,
-		acls:       cache.NewLRUExpireCache[string, *identityapi.Acl](options.ACLCacheSize),
+		acls:       acls,
 	}
 }
 
@@ -432,7 +431,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 
 // handler implements the http.Handler interface.
 func (v *Validator) handler(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	route, parameters, err := v.schema.FindRoute(r)
+	route, err := routeresolver.FromContext(r.Context())
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -442,7 +441,7 @@ func (v *Validator) handler(w http.ResponseWriter, r *http.Request, next http.Ha
 
 	ctx := newContextWithAuthorizationInfo(r.Context(), authInfo)
 
-	validatedRequest, responseValidationInput, err := v.validateAndAuthorize(ctx, r, route, parameters)
+	validatedRequest, responseValidationInput, err := v.validateAndAuthorize(ctx, r, route.Route, route.Parameters)
 	if err != nil {
 		if authInfo.err != nil {
 			err = authInfo.err
@@ -453,7 +452,7 @@ func (v *Validator) handler(w http.ResponseWriter, r *http.Request, next http.Ha
 		return
 	}
 
-	if err := v.handle(ctx, w, validatedRequest, responseValidationInput, parameters, next); err != nil {
+	if err := v.handle(ctx, w, validatedRequest, responseValidationInput, route.Parameters, next); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}

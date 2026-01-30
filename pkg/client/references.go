@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/constants"
@@ -91,7 +92,7 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 		return err
 	}
 
-	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, reference)
+	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}
@@ -124,7 +125,7 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 		return err
 	}
 
-	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, reference)
+	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}

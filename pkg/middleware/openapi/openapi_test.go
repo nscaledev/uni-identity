@@ -29,12 +29,15 @@ import (
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/go-chi/chi/v5"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/mock"
@@ -219,21 +222,52 @@ func (h *handler) validate(t *testing.T, actor string) {
 	require.Equal(t, userActor, h.principal.Actor)
 }
 
-// mustNewValidator creates an OpenAPI validator middleware, the thing we are testing.
-func mustNewValidator(t *testing.T, authorizer openapi.Authorizer) *openapi.Validator {
+// getSchema loads and validates the test schema that is defined for this
+// test suite.
+func getSchema(t *testing.T) *helpers.Schema {
 	t.Helper()
 
-	schema, err := coreapi.NewSchema(coreapi.SchemaGetter(func() (*openapi3.T, error) {
-		loader := openapi3.NewLoader()
-		return loader.LoadFromData(toySchema)
-	}))
+	s, err := openapi3.NewLoader().LoadFromData(toySchema)
 	require.NoError(t, err)
+
+	getter := func() (*openapi3.T, error) {
+		return s, nil
+	}
+
+	schema, err := helpers.NewSchema(getter)
+	require.NoError(t, err)
+
+	return schema
+}
+
+// getMux returns a HTTP handler that is compatible with the test schema that
+// is defined for this test suite and installs the validation/authorization
+// middleware and any prerequisite. middleware that it depends upon.  Accepts a
+// hadnler that captures various things about the request if it makes it past
+// the middlweare stage so that it can be validated for correctness.
+func getMux(t *testing.T, authorizer openapi.Authorizer, handler *handler) http.Handler {
+	t.Helper()
 
 	options := &openapi.Options{
 		ACLCacheSize: 1,
 	}
 
-	return openapi.NewValidator(options, authorizer, schema)
+	routeresolver := routeresolver.New(getSchema(t))
+	validator := openapi.NewValidator(options, authorizer)
+
+	r := chi.NewRouter()
+	r.Use(routeresolver.Middleware)
+	r.Use(validator.Middleware)
+
+	r.Group(func(r chi.Router) {
+		r.Get("/protected", http.HandlerFunc(handler.ServeHTTP))
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Post("/upload", http.HandlerFunc(handler.ServeHTTP))
+	})
+
+	return r
 }
 
 // TestUserToServiceAuthenticationFailure tests we propagate the correct error when
@@ -248,7 +282,7 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.OAuth2AccessDenied(""))
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -257,7 +291,7 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 
 	addAuthorizationHeader(t, r)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
 }
@@ -275,7 +309,7 @@ func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -284,7 +318,7 @@ func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 
 	addAuthorizationHeader(t, r)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 	h.validate(t, userActor)
@@ -301,7 +335,7 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 	authorizer := mock.NewMockAuthorizer(c)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -310,7 +344,7 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 
 	r.Header.Set("Ssl-Client-Cert", "cat")
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
 	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
@@ -327,7 +361,7 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 	authorizer := mock.NewMockAuthorizer(c)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -336,7 +370,7 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 
 	addCertificateHeader(t, r, false)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
 	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
@@ -354,7 +388,7 @@ func TestServiceToServiceAuthenticationDenyEscalation(t *testing.T) {
 	authorizer := mock.NewMockAuthorizer(c)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -363,7 +397,7 @@ func TestServiceToServiceAuthenticationDenyEscalation(t *testing.T) {
 
 	addRelayedCertificateHeader(t, r)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
 }
@@ -378,7 +412,7 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 	authorizer := mock.NewMockAuthorizer(c)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -387,7 +421,7 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 
 	addCertificateHeader(t, r, true)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
 	validateError(t, w, coreapi.InvalidRequest, "principal propagation failure for authentication")
@@ -405,7 +439,7 @@ func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -415,7 +449,7 @@ func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	addCertificateHeader(t, r, true)
 	addPrincipalHeaderLegacy(t, r)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 	h.validate(t, serviceActor)
@@ -431,7 +465,7 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -441,7 +475,7 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	addCertificateHeader(t, r, true)
 	addPrincipalHeader(t, r)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 	h.validate(t, serviceActor)
@@ -473,7 +507,7 @@ func TestValidateBodyBypass(t *testing.T) {
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
-	v := mustNewValidator(t, authorizer)
+	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
@@ -488,7 +522,7 @@ func TestValidateBodyBypass(t *testing.T) {
 	addCertificateHeader(t, r, true)
 	addPrincipalHeader(t, r)
 
-	v.Middleware(h).ServeHTTP(w, r)
+	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
 }

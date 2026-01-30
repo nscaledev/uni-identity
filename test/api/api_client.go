@@ -354,19 +354,3 @@ func (c *APIClient) GetQuotas(ctx context.Context, orgID string) (*identityopena
 
 	return &quotas, nil
 }
-
-// ListAllocations lists all allocations in an organization.
-func (c *APIClient) ListAllocations(ctx context.Context, orgID string) (identityopenapi.Allocations, error) {
-	path := c.endpoints.ListAllocations(orgID)
-
-	return coreclient.ListResource[identityopenapi.AllocationRead](
-		ctx,
-		c.APIClient,
-		path,
-		coreclient.ResponseHandlerConfig{
-			ResourceType:   "allocations",
-			ResourceID:     orgID,
-			ResourceIDType: "organization",
-		},
-	)
-}

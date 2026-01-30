@@ -1,0 +1,8 @@
+# Pact verification logs
+*.log
+*.out
+*.test
+
+# Pact files (downloaded from broker)
+pacts/
+*.json

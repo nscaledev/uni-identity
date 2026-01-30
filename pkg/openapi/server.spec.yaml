@@ -1016,32 +1016,6 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
-  /api/v1/organizations/{organizationID}/allocations:
-    description: |-
-      Management of allocations.  Allocations form slices of quotas and in total never
-      exceed the quotas in the scope the quota is defined for.  Individual services will
-      create allocations when a request for infrastructure is received to check that
-      request can be fulfilled, then release those resources when the infrastructure is
-      deleted.
-    parameters:
-    - $ref: '#/components/parameters/organizationIDParameter'
-    get:
-      x-hidden: true
-      description: |-
-        Lists all allocation.
-      security:
-      - oauth2Authentication: []
-      responses:
-        '200':
-          $ref: '#/components/responses/allocationsResponse'
-        '401':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
-        '403':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
-        '404':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
-        '500':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
   /api/v1/organizations/{organizationID}/projects/{projectID}/allocations:
     description: |-
       Management of allocations.  Allocations form slices of quotas and in total never
@@ -2907,31 +2881,6 @@ components:
               displayName: Clusters
               description: All cluster types e.g. Kubernetes, compute, etc.
               default: 5
-    allocationsResponse:
-      description: A list of allocations.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/allocations'
-          example:
-          - metadata:
-              id: ee45f34b-9685-40d8-8724-23c31252ca46
-              name: undefined
-              organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
-              projectId: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
-              creationTime: 2024-05-31T14:11:00Z
-              provisioningStatus: provisioned
-              healthStatus: healthy
-            spec:
-              kind: kubernetescluster
-              id: e0b6a5d2-ef9b-4f61-8d84-033b81ad3f73
-              allocations:
-              - kind: clusters
-                committed: 1
-                reserved: 0
-              - kind: servers
-                committed: 3
-                reserved: 10
     allocationResponse:
       description: An allocation.
       content:
