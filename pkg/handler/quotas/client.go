@@ -20,6 +20,7 @@ package quotas
 import (
 	"context"
 	goerrors "errors"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -89,7 +90,7 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	return out, nil
@@ -206,11 +207,11 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 	updated.Spec = required.Spec
 
 	if err := common.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch quotas").WithError(err)
+		return nil, fmt.Errorf("%w: failed to patch quotas", err)
 	}
 
 	return c.convert(ctx, updated, organizationID)

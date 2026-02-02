@@ -166,8 +166,8 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 	info, err := auth.Authorize(authInput)
 
 	require.Error(t, err)
+	require.True(t, errors.IsBadRequest(err))
 	require.Nil(t, info)
-	require.Contains(t, err.Error(), "unsupported")
 }
 
 // ---- helpers
