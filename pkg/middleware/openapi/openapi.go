@@ -365,7 +365,7 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	// wanted.
 	authorizationCtx, err := authorization.ExtractClientCert(ctx, r.Header)
 	if err != nil {
-		return nil, nil, errors.OAuth2ServerError("certificate propagation failure").WithError(err)
+		return nil, nil, errors.OAuth2InvalidRequest("certificate propagation failure").WithError(err)
 	}
 
 	r = r.WithContext(authorizationCtx)

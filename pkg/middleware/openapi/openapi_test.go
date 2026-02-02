@@ -66,7 +66,7 @@ const (
 var toySchema []byte
 
 // validateError checks that the response body is an error and is as we expect.
-func validateError(t *testing.T, w *httptest.ResponseRecorder, errorType coreapi.ErrorError, errorDescription string) {
+func validateError(t *testing.T, w *httptest.ResponseRecorder, validator func(error) bool) {
 	t.Helper()
 
 	require.NotNil(t, w.Body)
@@ -74,8 +74,8 @@ func validateError(t *testing.T, w *httptest.ResponseRecorder, errorType coreapi
 	oauthError := &coreapi.Error{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), oauthError))
 
-	require.Equal(t, errorType, oauthError.Error)
-	require.Equal(t, errorDescription, oauthError.ErrorDescription)
+	err := errors.FromOpenAPIError(w.Code, w.Header(), oauthError)
+	require.True(t, validator(err))
 }
 
 // addCertificateHeader adds a client certificate to the request, pretending to
@@ -346,8 +346,7 @@ func TestServiceToServiceMalformedCertificate(t *testing.T) {
 
 	m.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
-	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
+	validateError(t, w, errors.IsBadRequest)
 }
 
 // TestServiceToServiceCertificateInvalid tests the response when a client certificate
@@ -372,8 +371,7 @@ func TestServiceToServiceCertificateInvalid(t *testing.T) {
 
 	m.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusInternalServerError, w.Result().StatusCode)
-	validateError(t, w, coreapi.ServerError, "certificate propagation failure")
+	validateError(t, w, errors.IsBadRequest)
 }
 
 // TestServiceToServiceAuthenticationDenyEscalation stops a case where a user can supply
@@ -423,8 +421,7 @@ func TestServiceToServicePrincipalMissing(t *testing.T) {
 
 	m.ServeHTTP(w, r)
 
-	require.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
-	validateError(t, w, coreapi.InvalidRequest, "principal propagation failure for authentication")
+	validateError(t, w, errors.IsBadRequest)
 }
 
 // TestServiceToServiceAuthenticationSuccessLegacy tests a full service to service authenticated

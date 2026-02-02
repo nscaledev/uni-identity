@@ -190,7 +190,7 @@ func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		errors.HandleError(w, r, errors.OAuth2ServerError("authorization header not set"))
+		errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header not set"))
 		return
 	}
 
@@ -260,7 +260,7 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {
 	result, _, err := h.issuer.GetJSONWebKeySet(r.Context())
 	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2ServerError("unable to generate json web key set").WithError(err))
+		errors.HandleError(w, r, fmt.Errorf("%w: unable to generate json web key set", err))
 		return
 	}
 
@@ -705,7 +705,7 @@ func (h *Handler) serviceAccountsClient() *serviceaccounts.Client {
 func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclOperation, organizationID, serviceAccountID string) error {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
-		return errors.OAuth2ServerError("unable to get authorization info").WithError(err)
+		return fmt.Errorf("%w: unable to get authorization info", err)
 	}
 
 	if info.ServiceAccount && (serviceAccountID == "" || info.Userinfo.Sub == serviceAccountID) {
@@ -727,7 +727,7 @@ func filterServiceAccounts(ctx context.Context, organizationID string, serviceAc
 	// to read itself in order to acquire its ID via introspection for rotation.
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
-		return errors.OAuth2ServerError("unable to get authorization info").WithError(err)
+		return fmt.Errorf("%w: unable to get authorization info", err)
 	}
 
 	if !info.ServiceAccount {
@@ -821,7 +821,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAc
 	}
 
 	h.setUncacheable(w)
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotate(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, serviceAccountID openapi.ServiceAccountIDParameter) {
@@ -900,7 +900,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.Respo
 	}
 
 	h.setUncacheable(w)
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, userID openapi.UserIDParameter) {

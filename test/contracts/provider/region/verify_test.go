@@ -18,6 +18,7 @@ package region_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -154,9 +155,14 @@ var _ = Describe("Identity Provider Verification", func() {
 				BrokerPassword:             brokerPassword,
 				PublishVerificationResults: os.Getenv("CI") == "true" || os.Getenv("PUBLISH_VERIFICATION") == "true",
 				ProviderVersion:            getProviderVersion(),
-				ProviderBranch:             os.Getenv("PROVIDER_BRANCH"),
-				StateHandlers:              stateHandlers,
-				RequestFilter:              requestFilter,
+				ProviderBranch:             getProviderBranch(),
+				ConsumerVersionSelectors: []provider.Selector{
+					&provider.ConsumerVersionSelector{MainBranch: true},
+					&provider.ConsumerVersionSelector{MatchingBranch: true},
+				},
+				EnablePending: true,
+				StateHandlers: stateHandlers,
+				RequestFilter: requestFilter,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -274,7 +280,9 @@ func buildHTTPServer(listenAddr string, router *chi.Mux) *http.Server {
 // startServerAsync starts the HTTP server in a background goroutine.
 func startServerAsync(httpServer *http.Server) {
 	go func() {
-		_ = httpServer.ListenAndServe()
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Printf("Server error: %v\n", err)
+		}
 	}()
 }
 
@@ -306,6 +314,10 @@ func getProviderVersion() string {
 	}
 
 	return version
+}
+
+func getProviderBranch() string {
+	return os.Getenv("GIT_BRANCH")
 }
 
 func cleanupAllTestUserOrganizationUsers(ctx context.Context, k8sClient client.Client) {

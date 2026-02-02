@@ -20,6 +20,7 @@ package authorizer
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +31,7 @@ import (
 	"golang.org/x/oauth2"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
@@ -185,7 +187,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	if value, ok := a.tokenCache.Get(rawToken); ok {
 		claims, ok := value.(*identityapi.Userinfo)
 		if !ok {
-			return nil, errors.OAuth2ServerError("invalid token cache data")
+			return nil, fmt.Errorf("%w: invalid token cache data", coreerrors.ErrConsistency)
 		}
 
 		info := &authorization.Info{
@@ -202,7 +204,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	// and also return some information about the user that we can use for audit logging.
 	provider, err := oidc.NewProvider(ctx, a.options.Host())
 	if err != nil {
-		return nil, errors.OAuth2ServerError("oidc service discovery failed").WithError(err)
+		return nil, fmt.Errorf("%w: oidc service discovery failed", err)
 	}
 
 	token := &oauth2.Token{
@@ -222,7 +224,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	claims := &identityapi.Userinfo{}
 
 	if err := ui.Claims(claims); err != nil {
-		return nil, errors.OAuth2ServerError("failed to extrac user information").WithError(err)
+		return nil, fmt.Errorf("%w: failed to extrac user information", err)
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights
@@ -278,17 +280,17 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 
 	client, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to create identity client").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create identity client", err)
 	}
 
 	if organizationID == "" {
 		response, err := client.GetApiV1AclWithResponse(ctx)
 		if err != nil {
-			return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
+			return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
 		}
 
 		if response.StatusCode() != http.StatusOK {
-			return nil, errors.OAuth2ServerError("ACL get call didn't succeed")
+			return nil, errors.PropagateError(response.HTTPResponse, response)
 		}
 
 		return response.JSON200, nil
@@ -296,11 +298,11 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 
 	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, organizationID)
 	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to perform ACL get call").WithError(err)
+		return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
 	}
 
 	if response.StatusCode() != http.StatusOK {
-		return nil, errors.OAuth2ServerError("ACL get call didn't succeed")
+		return nil, errors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return response.JSON200, nil

@@ -26,6 +26,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/groups"
@@ -341,7 +342,7 @@ func TestUpdateGroupWithNonMemberSubject_ReturnsError(t *testing.T) {
 
 	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject is not a member of the organization")
-	assert.Contains(t, err.Error(), "not a member of", "Error should indicate the user is not a member")
+	require.True(t, errors.IsBadRequest(err))
 }
 
 // TestUpdateGroupWithNonExistentSubject_ReturnsError tests that when a Subject with internal issuer
@@ -362,7 +363,7 @@ func TestUpdateGroupWithNonExistentSubject_ReturnsError(t *testing.T) {
 
 	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject does not exist")
-	assert.Contains(t, err.Error(), "user", "Error should indicate issue with user lookup")
+	require.True(t, errors.IsBadRequest(err))
 }
 
 // TestUpdateGroupWithUserIDs_PopulatesSubjects tests that when a group is updated with UserIDs
@@ -406,7 +407,7 @@ func TestUpdateGroupWithInvalidUserID_ReturnsError(t *testing.T) {
 
 	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
 	require.Error(t, err, "Should error when UserID is invalid")
-	assert.Contains(t, err.Error(), "organization member", "Error should indicate issue with organization member lookup")
+	require.True(t, errors.IsBadRequest(err))
 }
 
 // TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects tests that when multiple UserIDs
@@ -515,5 +516,5 @@ func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 
 	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
 	require.Error(t, err, "Should error when both subjects and userIDs are provided")
-	assert.Contains(t, err.Error(), "cannot provide both", "Error should indicate both fields were provided")
+	require.True(t, errors.IsBadRequest(err))
 }

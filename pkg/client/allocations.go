@@ -27,7 +27,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/manager"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/util/api"
+	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -110,7 +110,7 @@ func (r *Allocations) Create(ctx context.Context, resource client.Object, alloca
 	}
 
 	if response.StatusCode() != http.StatusCreated {
-		return api.ExtractError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	setAllocationID(resource, response.JSON201)
@@ -143,7 +143,7 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 	}
 
 	if response.StatusCode() != http.StatusOK {
-		return api.ExtractError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil
@@ -173,7 +173,7 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 			return nil
 		}
 
-		return api.ExtractError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil

@@ -27,8 +27,8 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/manager"
+	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util"
-	"github.com/unikorn-cloud/core/pkg/util/api"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -98,7 +98,7 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 	}
 
 	if response.StatusCode() != http.StatusCreated {
-		return api.ExtractError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil
@@ -131,7 +131,7 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 	}
 
 	if response.StatusCode() != http.StatusNoContent {
-		return api.ExtractError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil
