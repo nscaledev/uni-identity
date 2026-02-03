@@ -270,6 +270,8 @@ PACT_BROKER_URL ?= http://localhost:9292
 PACT_BROKER_USERNAME ?= pact
 PACT_BROKER_PASSWORD ?= pact
 PROVIDER_VERSION ?= $(REVISION)
+BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+GIT_BRANCH ?= $(BRANCH)
 
 # Run provider contract verification tests
 .PHONY: test-contracts-provider
@@ -327,6 +329,7 @@ test-contracts-provider-ci:
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
 	CI=true \
 	go test ./test/contracts/provider/... -v -count=1
 
