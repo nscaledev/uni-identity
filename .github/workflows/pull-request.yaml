@@ -93,4 +93,5 @@ jobs:
         PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
         PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
         PROVIDER_VERSION: ${{ github.sha }}
+        GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
       run: make test-contracts-provider-ci
