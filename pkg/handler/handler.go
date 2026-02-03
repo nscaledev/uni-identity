@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/util"
 	"github.com/unikorn-cloud/identity/pkg/handler/groups"
@@ -159,6 +160,25 @@ func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
+func (h *Handler) GetWellKnownOpenidProtectedResource(w http.ResponseWriter, r *http.Request) {
+	result := &coreapi.OpenidProtectedResource{
+		Resource: "https://" + r.Host,
+		AuthorizationServers: coreapi.AuthorizationServerList{
+			"https://" + r.Host,
+		},
+		ScopesSupported: coreapi.ScopeList{
+			"openapi",
+			"email",
+			"profile",
+		},
+		BearerMethodsSupported: coreapi.BearerMethodList{
+			coreapi.Header,
+		},
+	}
+
+	util.WriteJSONResponse(w, r, http.StatusOK, result)
+}
+
 func (h *Handler) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 	h.oauth2.Authorization(w, r)
 }
@@ -190,7 +210,7 @@ func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header not set"))
+		errors.HandleError(w, r, errors.AccessDenied(r, "authorization header not set"))
 		return
 	}
 
@@ -208,7 +228,7 @@ func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 
 	userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
 	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
+		errors.HandleError(w, r, err)
 		return
 	}
 
@@ -221,18 +241,18 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(header, " ")
 
 		if len(parts) != 2 {
-			errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header malformed"))
+			errors.HandleError(w, r, errors.AccessDenied(r, "authorization header malformed"))
 			return
 		}
 
 		if !strings.EqualFold(parts[0], "bearer") {
-			errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization scheme not allowed"))
+			errors.HandleError(w, r, errors.AccessDenied(r, "authorization scheme not allowed"))
 			return
 		}
 
 		userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
 		if err != nil {
-			errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
+			errors.HandleError(w, r, err)
 			return
 		}
 
@@ -243,13 +263,13 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil {
-		errors.HandleError(w, r, errors.OAuth2InvalidRequest("unable to parse form data").WithError(err))
+		errors.HandleError(w, r, errors.AccessDenied(r, "unable to parse form data").WithError(err))
 		return
 	}
 
 	userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, r.Form.Get("access_token"))
 	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2AccessDenied("access token is invalid").WithError(err))
+		errors.HandleError(w, r, errors.AccessDenied(r, "access token is invalid").WithError(err))
 		return
 	}
 

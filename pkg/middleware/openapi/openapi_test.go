@@ -278,22 +278,22 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 	c := gomock.NewController(t)
 	defer c.Finish()
 
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.OAuth2AccessDenied(""))
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(nil, errors.AccessDenied(r))
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
 
 	w := httptest.NewRecorder()
 
-	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
-	require.NoError(t, err)
-
 	addAuthorizationHeader(t, r)
 
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
+	require.NotEmpty(t, w.Header().Get(errors.AuthenticateHeader))
 }
 
 // TestUserToServiceAuthenticationSuccess tests everything is in place when authentication
@@ -483,7 +483,7 @@ type poisonReader struct{}
 var _ io.ReadCloser = poisonReader{}
 
 func (r poisonReader) Read([]byte) (int, error) {
-	return 0, errors.OAuth2AccessDenied("")
+	return 0, errors.HTTPUnprocessableContent()
 }
 
 func (r poisonReader) Close() error {

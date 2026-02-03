@@ -18,6 +18,9 @@ type ServerInterface interface {
 	// (GET /.well-known/openid-configuration)
 	GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request)
 
+	// (GET /.well-known/openid-protected-resource)
+	GetWellKnownOpenidProtectedResource(w http.ResponseWriter, r *http.Request)
+
 	// (GET /api/v1/acl)
 	GetApiV1Acl(w http.ResponseWriter, r *http.Request)
 
@@ -175,6 +178,11 @@ type Unimplemented struct{}
 
 // (GET /.well-known/openid-configuration)
 func (_ Unimplemented) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (GET /.well-known/openid-protected-resource)
+func (_ Unimplemented) GetWellKnownOpenidProtectedResource(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -466,6 +474,20 @@ func (siw *ServerInterfaceWrapper) GetWellKnownOpenidConfiguration(w http.Respon
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetWellKnownOpenidConfiguration(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetWellKnownOpenidProtectedResource operation middleware
+func (siw *ServerInterfaceWrapper) GetWellKnownOpenidProtectedResource(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetWellKnownOpenidProtectedResource(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2155,6 +2177,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/.well-known/openid-configuration", wrapper.GetWellKnownOpenidConfiguration)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/.well-known/openid-protected-resource", wrapper.GetWellKnownOpenidProtectedResource)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/v1/acl", wrapper.GetApiV1Acl)

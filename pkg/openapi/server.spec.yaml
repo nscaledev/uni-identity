@@ -25,6 +25,17 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/openidConfigurationResponse'
+  /.well-known/openid-protected-resource:
+    description: |-
+      Implements OIDC authorization service discovery.
+    get:
+      x-no-security-requirements: true
+      x-hidden: true
+      description: |-
+        Reads the OIDC discovery page identifying authorization severs.
+      responses:
+        '200':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/openidProtectedResourceResponse'
   /oauth2/v2/authorization:
     description: |-
       Implements OAuth 2.0 authorization grants.

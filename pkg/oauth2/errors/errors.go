@@ -77,6 +77,7 @@ func (e *Error) Write(w http.ResponseWriter, r *http.Request) {
 	// Emit the response to the client.
 	w.Header().Add("Cache-Control", "no-cache")
 	w.Header().Add("Content-Type", "application/json")
+
 	w.WriteHeader(e.status)
 
 	// Emit the response body.

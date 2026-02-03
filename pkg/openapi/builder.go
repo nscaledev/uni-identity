@@ -19,7 +19,11 @@ package openapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
+
+	"github.com/unikorn-cloud/core/pkg/errors"
 )
 
 type Builder struct {
@@ -40,4 +44,18 @@ func (b *Builder) WithRequestEditorFn(fn func(context.Context, *http.Request) er
 
 func (b *Builder) Client(hostname string) (*ClientWithResponses, error) {
 	return NewClientWithResponses(hostname, b.options...)
+}
+
+func Host(c ClientWithResponsesInterface) (string, error) {
+	clientWithResponses, ok := c.(*ClientWithResponses)
+	if !ok {
+		return "", fmt.Errorf("%w: unable to type assert openapi client with responses", errors.ErrTypeConversion)
+	}
+
+	client, ok := clientWithResponses.ClientInterface.(*Client)
+	if !ok {
+		return "", fmt.Errorf("%w: unable to type assert openapi client", errors.ErrTypeConversion)
+	}
+
+	return strings.TrimSuffix(client.Server, "/"), nil
 }

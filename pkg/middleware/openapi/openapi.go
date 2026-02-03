@@ -165,7 +165,7 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 	if !hasHTTPAuthorization(request) {
 		// This ensures the connection is over MTLS.
 		if _, err := util.GetClientCertificateHeader(request.Header); err != nil {
-			return nil, errors.OAuth2AccessDenied("credentials must be provided").WithError(err)
+			return nil, errors.AccessDenied(request, "authorization header missing").WithError(err)
 		}
 
 		// Grab the certificate that is actually making this request
