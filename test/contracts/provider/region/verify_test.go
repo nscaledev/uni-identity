@@ -140,13 +140,6 @@ var _ = Describe("Identity Provider Verification", func() {
 			verifier := provider.NewVerifier()
 			stateHandlers := createStateHandlers(ctx, stateManager)
 
-			requestFilter := func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					r.Header.Add("Authorization", "Bearer test-token")
-					next.ServeHTTP(w, r)
-				})
-			}
-
 			err := verifier.VerifyProvider(testingT, provider.VerifyRequest{
 				ProviderBaseURL:            serverURL,
 				Provider:                   "uni-identity",
@@ -162,7 +155,6 @@ var _ = Describe("Identity Provider Verification", func() {
 				},
 				EnablePending: true,
 				StateHandlers: stateHandlers,
-				RequestFilter: requestFilter,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -180,19 +172,11 @@ var _ = Describe("Identity Provider Verification", func() {
 
 			stateHandlers := createStateHandlers(ctx, stateManager)
 
-			requestFilter := func(next http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					r.Header.Add("Authorization", "Bearer test-token")
-					next.ServeHTTP(w, r)
-				})
-			}
-
 			err := verifier.VerifyProvider(testingT, provider.VerifyRequest{
 				ProviderBaseURL: serverURL,
 				Provider:        "uni-identity",
 				PactFiles:       []string{pactFile},
 				StateHandlers:   stateHandlers,
-				RequestFilter:   requestFilter,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
