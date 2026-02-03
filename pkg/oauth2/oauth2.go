@@ -41,6 +41,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
+	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util/retry"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
@@ -1771,7 +1772,7 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 	// Check the token is from us, for us, and in date.
 	claims, err := a.Verify(ctx, verifyInfo)
 	if err != nil {
-		return nil, nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
+		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
 	userinfo := &openapi.Userinfo{
