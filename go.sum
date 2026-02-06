@@ -172,8 +172,8 @@ github.com/subosito/gotenv v1.6.0 h1:9NlTDc1FTs4qu0DDq7AEtTPNw6SVm7uBMsUCUjABIf8
 github.com/subosito/gotenv v1.6.0/go.mod h1:Dk4QP5c2W3ibzajGcXpNraDfq2IrhjMIvMSWPKKo0FU=
 github.com/ugorji/go/codec v1.2.12 h1:9LC83zGrHhuUA9l16C9AHXAqEV/2wBQ4nkvumAE65EE=
 github.com/ugorji/go/codec v1.2.12/go.mod h1:UNopzCgEMSXjBc6AOMqYvWC1ktqTAfzJZUZgYf6w6lg=
-github.com/unikorn-cloud/core v1.14.0-rc3 h1:LyKLHttc8wpeSZPNkUtXywN5V4Tou1V108WxlYyyAkk=
-github.com/unikorn-cloud/core v1.14.0-rc3/go.mod h1:NBcUrdV7RKIPFBdootNeN74otIoNLQp14+KpVE5m1X0=
+github.com/unikorn-cloud/core v1.14.0-rc4 h1:OGh6HL5Ut+N0983nqdc1jzyTNeojRsQvERWLZ1w51oo=
+github.com/unikorn-cloud/core v1.14.0-rc4/go.mod h1:NBcUrdV7RKIPFBdootNeN74otIoNLQp14+KpVE5m1X0=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 github.com/yuin/goldmark v1.1.27/go.mod h1:3hX8gzYuyVAZsxl0MRgGTJEmQBFcNTphYh9decYSb74=
