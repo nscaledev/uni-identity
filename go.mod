@@ -15,7 +15,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spjmurray/go-util v0.1.3
 	github.com/stretchr/testify v1.11.1
-	github.com/unikorn-cloud/core v1.14.0-rc1
+	github.com/unikorn-cloud/core v1.13.1-0.20260204155707-56772237fd05
 	go.opentelemetry.io/otel v1.35.0
 	go.uber.org/mock v0.5.2
 	golang.org/x/oauth2 v0.30.0
