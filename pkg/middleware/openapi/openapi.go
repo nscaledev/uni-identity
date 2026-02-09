@@ -411,13 +411,18 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 	if v.options.runtimeSchemaValidation {
 		response := middleware.CaptureResponse(w, r, next)
 
+		// Save the full output string slice now so we can report this
+		// later.  bytes.Buffer doesn't allow its file pointer to be
+		// reset ala fseek. after the validation has occurred.
+		bodyString := response.Body().String()
+
 		responseValidationInput.Status = response.StatusCode()
 		responseValidationInput.Header = w.Header()
 		responseValidationInput.Body = io.NopCloser(response.Body())
 
 		if err := openapi3filter.ValidateResponse(ctx, responseValidationInput); err != nil {
 			if v.options.runtimeSchemaValidationPanic {
-				panic(err)
+				panic(fmt.Errorf("%w: status: %d, header: %v, body: %s", err, response.StatusCode(), w.Header(), bodyString))
 			}
 
 			log.FromContext(ctx).Error(err, "response openapi schema validation failure")
