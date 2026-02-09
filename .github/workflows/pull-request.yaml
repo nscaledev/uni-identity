@@ -87,6 +87,14 @@ jobs:
         sudo mkdir -p /usr/local/lib
         sudo mv libpact_ffi-linux-${PACT_ARCH}.so /usr/local/lib/libpact_ffi.so
         sudo ldconfig
+    - name: Setup kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: contract-testing
+    - name: Install CRDs
+      run: |
+        make charts/identity/crds
+        kubectl apply -f charts/identity/crds/
     - name: Run Provider Contract Verification
       env:
         PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
