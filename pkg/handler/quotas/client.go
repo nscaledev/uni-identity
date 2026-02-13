@@ -210,7 +210,7 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 		return nil, err
 	}
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		return nil, fmt.Errorf("%w: failed to patch quotas", err)
 	}
 

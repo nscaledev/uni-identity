@@ -190,7 +190,7 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 		}
 
 		if needsPatching {
-			if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+			if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 				return fmt.Errorf("%w: failed to patch group", err)
 			}
 		}
@@ -782,7 +782,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 
