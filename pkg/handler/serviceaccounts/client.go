@@ -227,7 +227,7 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 			})
 		}
 
-		if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+		if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 			return fmt.Errorf("%w: failed to patch group", err)
 		}
 	}
@@ -335,7 +335,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.Expiry = current.Spec.Expiry
 	updated.Spec.AccessToken = current.Spec.AccessToken
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 
@@ -373,7 +373,7 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.Expiry = &metav1.Time{Time: tokens.Expiry}
 	updated.Spec.AccessToken = tokens.AccessToken
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 

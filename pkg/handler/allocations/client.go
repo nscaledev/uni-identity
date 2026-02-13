@@ -227,6 +227,12 @@ func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allo
 		return nil, err
 	}
 
+	// Lock around deciding if we can do this allocation.
+	// Taking the lock here means that each operation will get the most recent revision and
+	// succeed at patching. Otherwise, first concurrent update here wins and the rest fail.
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	current, err := c.get(ctx, namespace.Name, allocationID)
 	if err != nil {
 		return nil, err
@@ -246,15 +252,11 @@ func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allo
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	// Lock around deciding if we can do this allocation
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
 	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
 		return nil, err
 	}
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		return nil, fmt.Errorf("%w: failed to patch allocation", err)
 	}
 
