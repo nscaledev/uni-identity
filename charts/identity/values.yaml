@@ -241,7 +241,7 @@ roles:
         region:networks:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
         region:filestorageclass:v2: [read]
-        region:images: [create,delete]
+        region:images: [read,create,delete]
         region:securitygroups:v2: [create,read,update,delete]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
