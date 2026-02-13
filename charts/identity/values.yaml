@@ -289,7 +289,7 @@ roles:
         identity:quotas: [read]
         region:regions: [read]
         region:filestorageclass:v2: [read]
-        region:images: [create,delete]
+        region:images: [read,create,delete]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
         kubernetes:images: [read]
