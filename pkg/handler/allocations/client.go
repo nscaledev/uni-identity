@@ -227,9 +227,9 @@ func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allo
 		return nil, err
 	}
 
-	// Lock around deciding if we can do this allocation
-	// The read/modify/write must be atomic so we get the correct resource version
-	// for conflict detection.
+	// Lock around deciding if we can do this allocation.
+	// Taking the lock here means that each operation will get the most recent revision and
+	// succeed at patching. Otherwise, first concurrent update here wins and the rest fail.
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
