@@ -269,7 +269,6 @@ endif
 PACT_BROKER_URL ?= http://localhost:9292
 PACT_BROKER_USERNAME ?= pact
 PACT_BROKER_PASSWORD ?= pact
-SERVICE_NAME ?= uni-identity
 PROVIDER_VERSION ?= $(REVISION)
 BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 GIT_BRANCH ?= $(BRANCH)
@@ -369,34 +368,4 @@ test-contracts-clean:
 	@rm -f test/contracts/provider/**/*.out
 	@rm -f test/contracts/provider/**/*.test
 	@rm -rf test/contracts/provider/**/pacts
-
-# Can-I-Deploy check
-.PHONY: can-i-deploy
-can-i-deploy:
-	@echo "Checking if $(SERVICE_NAME) version $(PROVIDER_VERSION) can be deployed to production..."
-	docker run --rm \
-		--network host \
-		pactfoundation/pact-cli:latest \
-		broker can-i-deploy \
-		--pacticipant="$(SERVICE_NAME)" \
-		--version="$(PROVIDER_VERSION)" \
-		--to-environment="production" \
-		--broker-base-url="$(PACT_BROKER_URL)" \
-		--broker-username="$(PACT_BROKER_USERNAME)" \
-		--broker-password="$(PACT_BROKER_PASSWORD)"
-
-# Record deployment
-.PHONY: record-deployment
-record-deployment:
-	@echo "Recording deployment of $(SERVICE_NAME) version $(PROVIDER_VERSION) to production..."
-	docker run --rm \
-		--network host \
-		pactfoundation/pact-cli:latest \
-		broker record-deployment \
-		--pacticipant="$(SERVICE_NAME)" \
-		--version="$(PROVIDER_VERSION)" \
-		--environment="production" \
-		--broker-base-url="$(PACT_BROKER_URL)" \
-		--broker-username="$(PACT_BROKER_USERNAME)" \
-		--broker-password="$(PACT_BROKER_PASSWORD)"
 
