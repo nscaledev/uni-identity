@@ -269,6 +269,7 @@ endif
 PACT_BROKER_URL ?= http://localhost:9292
 PACT_BROKER_USERNAME ?= pact
 PACT_BROKER_PASSWORD ?= pact
+SERVICE_NAME ?= uni-identity
 PROVIDER_VERSION ?= $(REVISION)
 BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 GIT_BRANCH ?= $(BRANCH)
@@ -332,7 +333,33 @@ test-contracts-provider-ci:
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
 	GIT_BRANCH="$(GIT_BRANCH)" \
+	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
 	CI=true \
+	go test ./test/contracts/provider/... -v -count=1
+
+# Simulate webhook-triggered provider verification
+# Usage: make test-contracts-provider-webhook CONSUMER_BRANCH=feature/my-branch
+.PHONY: test-contracts-provider-webhook
+test-contracts-provider-webhook:
+	@if [ -z "$(CONSUMER_BRANCH)" ]; then \
+		echo "Error: CONSUMER_BRANCH must be set"; \
+		echo "Usage: make test-contracts-provider-webhook CONSUMER_BRANCH=feature/my-branch"; \
+		exit 1; \
+	fi
+	@echo "Simulating webhook-triggered provider verification..."
+	@echo "Consumer Branch: $(CONSUMER_BRANCH)"
+	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Provider Branch: $(GIT_BRANCH)"
+	@echo "Publishing results to Pact Broker: $(PACT_BROKER_URL)"
+	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
+	$(PACT_LIB_ENV) \
+	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
+	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
+	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
+	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
+	PUBLISH_VERIFICATION=true \
 	go test ./test/contracts/provider/... -v -count=1
 
 # Clean contract test artifacts
@@ -342,4 +369,34 @@ test-contracts-clean:
 	@rm -f test/contracts/provider/**/*.out
 	@rm -f test/contracts/provider/**/*.test
 	@rm -rf test/contracts/provider/**/pacts
+
+# Can-I-Deploy check
+.PHONY: can-i-deploy
+can-i-deploy:
+	@echo "Checking if $(SERVICE_NAME) version $(PROVIDER_VERSION) can be deployed to production..."
+	docker run --rm \
+		--network host \
+		pactfoundation/pact-cli:latest \
+		broker can-i-deploy \
+		--pacticipant="$(SERVICE_NAME)" \
+		--version="$(PROVIDER_VERSION)" \
+		--to-environment="production" \
+		--broker-base-url="$(PACT_BROKER_URL)" \
+		--broker-username="$(PACT_BROKER_USERNAME)" \
+		--broker-password="$(PACT_BROKER_PASSWORD)"
+
+# Record deployment
+.PHONY: record-deployment
+record-deployment:
+	@echo "Recording deployment of $(SERVICE_NAME) version $(PROVIDER_VERSION) to production..."
+	docker run --rm \
+		--network host \
+		pactfoundation/pact-cli:latest \
+		broker record-deployment \
+		--pacticipant="$(SERVICE_NAME)" \
+		--version="$(PROVIDER_VERSION)" \
+		--environment="production" \
+		--broker-base-url="$(PACT_BROKER_URL)" \
+		--broker-username="$(PACT_BROKER_USERNAME)" \
+		--broker-password="$(PACT_BROKER_PASSWORD)"
 

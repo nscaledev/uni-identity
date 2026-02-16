@@ -29,3 +29,14 @@ jobs:
       uses: codecov/codecov-action@v5
       env:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  ContractDeployment:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Record Deployment
+      run: make record-deployment
+      env:
+        PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
+        PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
+        PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}

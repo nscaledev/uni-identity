@@ -1,0 +1,79 @@
+name: Pact Provider Verification
+
+# Triggered by webhook when consumer publishes new pacts
+on:
+  repository_dispatch:
+    types: [pact_verification]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-pacts:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Log webhook payload
+      run: |
+        echo "Triggered by consumer: ${{ github.event.client_payload.consumer_name }}"
+        echo "Pact URL: ${{ github.event.client_payload.pact_url }}"
+        echo "Provider version to verify: ${{ github.event.client_payload.provider_version }}"
+        echo "Provider branch: ${{ github.event.client_payload.provider_branch }}"
+
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        # Checkout the provider branch/version specified by the webhook
+        ref: ${{ github.event.client_payload.provider_branch || github.ref }}
+
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+
+    - name: Install Pact FFI Library
+      run: |
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+          PACT_ARCH="x86_64"
+        elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+          PACT_ARCH="aarch64"
+        else
+          echo "Unsupported architecture: $ARCH"
+          exit 1
+        fi
+        wget https://github.com/pact-foundation/pact-reference/releases/download/libpact_ffi-v0.4.22/libpact_ffi-linux-${PACT_ARCH}.so.gz
+        gunzip libpact_ffi-linux-${PACT_ARCH}.so.gz
+        sudo mkdir -p /usr/local/lib
+        sudo mv libpact_ffi-linux-${PACT_ARCH}.so /usr/local/lib/libpact_ffi.so
+        sudo ldconfig
+
+    - name: Setup kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: contract-testing
+
+    - name: Install CRDs
+      run: |
+        make charts/identity/crds
+        kubectl apply -f charts/identity/crds/
+
+    - name: Run Provider Contract Verification
+      env:
+        PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
+        PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
+        PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+        PROVIDER_VERSION: ${{ github.sha }}
+        CONSUMER_BRANCH: ${{ github.event.client_payload.consumer_branch }}
+        CGO_LDFLAGS: "-L/usr/local/lib"
+        LD_LIBRARY_PATH: "/usr/local/lib"
+      run: make test-contracts-provider-ci
+
+    - name: Report verification status
+      if: always()
+      run: |
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "Provider verification passed - contracts are compatible"
+        else
+          echo "Provider verification failed - breaking changes detected"
+          echo "Review the test output above for details"
+        fi
