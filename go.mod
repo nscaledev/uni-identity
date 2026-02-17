@@ -15,7 +15,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spjmurray/go-util v0.1.3
 	github.com/stretchr/testify v1.11.1
-	github.com/unikorn-cloud/core v1.13.1-0.20260203120458-932f9b7c24b4
+	github.com/unikorn-cloud/core v1.13.1-0.20260204155707-56772237fd05
 	go.opentelemetry.io/otel v1.35.0
 	go.uber.org/mock v0.5.2
 	golang.org/x/oauth2 v0.30.0
@@ -110,6 +110,7 @@ require (
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	k8s.io/apiextensions-apiserver v0.32.1 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250318190949-c8a335a9a2ff // indirect
 	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect

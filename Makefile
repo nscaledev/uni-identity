@@ -279,11 +279,11 @@ test-contracts-provider:
 	@echo "Running provider contract verification tests..."
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
+	KUBECONFIG="$(HOME)/.kube/config" \
 	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
-	PUBLISH_VERIFICATION=true \
 	go test ./test/contracts/provider/... -v -count=1
 
 # Run provider verification with verbose output
@@ -292,11 +292,11 @@ test-contracts-provider-verbose:
 	@echo "Running provider contract verification with verbose output..."
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
+	KUBECONFIG="$(HOME)/.kube/config" \
 	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
-	PUBLISH_VERIFICATION=true \
 	VERBOSE=true \
 	go test ./test/contracts/provider/... -v -count=1
 
@@ -311,6 +311,7 @@ test-contracts-provider-local:
 	fi
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
+	KUBECONFIG="$(HOME)/.kube/config" \
 	PACT_FILE="$(PACT_FILE)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
 	go test ./test/contracts/provider/... -v -count=1
@@ -322,6 +323,7 @@ test-contracts-provider-local:
 test-contracts-provider-ci:
 	@echo "Running provider contract verification in CI mode..."
 	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Provider Branch: $(GIT_BRANCH)"
 	@echo "Pact Broker URL: $(PACT_BROKER_URL)"
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
