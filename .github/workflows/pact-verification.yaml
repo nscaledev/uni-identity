@@ -4,7 +4,6 @@ name: Pact Provider Verification
 on:
   repository_dispatch:
     types: [pact_verification]
-  workflow_dispatch:  # Temporary: for testing from feature branch
 
 permissions:
   contents: read
