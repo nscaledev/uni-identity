@@ -4,6 +4,7 @@ name: Pact Provider Verification
 on:
   repository_dispatch:
     types: [pact_verification]
+  workflow_dispatch:  # Temporary: for testing from feature branch
 
 permissions:
   contents: read
@@ -23,7 +24,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         # Checkout the provider branch/version specified by the webhook
-        ref: ${{ github.event.client_payload.provider_branch || github.ref }}
+        ref: ${{ github.event.client_payload.provider_branch || 'main' }}
 
     - name: Setup Go
       uses: actions/setup-go@v6
