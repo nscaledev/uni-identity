@@ -134,6 +134,7 @@ systemAccounts:
   unikorn-region: region-service
   unikorn-kubernetes: kubernetes-service
   unikorn-compute: compute-service
+  uni-storage: storage-service
 
 # A static list of roles.
 # Any unscoped API resources are to be managed by the platform operator
@@ -224,6 +225,13 @@ roles:
         region:servers:v2: [create,read,update,delete]
         region:securitygroups: [create,read,update,delete]
         region:securitygroups:v2: [read]
+  storage-service:
+    decription: Storage service
+    protected: true
+    scopes:
+      global:
+        identity:allocations: [create,read,update,delete]
+        region:networks:v2/references: [create,read,update,delete]
   # An administrator can do anything within an organization.
   administrator:
     description: Organization administrator
