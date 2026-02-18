@@ -332,7 +332,33 @@ test-contracts-provider-ci:
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
 	GIT_BRANCH="$(GIT_BRANCH)" \
+	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
 	CI=true \
+	go test ./test/contracts/provider/... -v -count=1
+
+# Simulate webhook-triggered provider verification
+# Usage: make test-contracts-provider-webhook CONSUMER_BRANCH=feature/my-branch
+.PHONY: test-contracts-provider-webhook
+test-contracts-provider-webhook:
+	@if [ -z "$(CONSUMER_BRANCH)" ]; then \
+		echo "Error: CONSUMER_BRANCH must be set"; \
+		echo "Usage: make test-contracts-provider-webhook CONSUMER_BRANCH=feature/my-branch"; \
+		exit 1; \
+	fi
+	@echo "Simulating webhook-triggered provider verification..."
+	@echo "Consumer Branch: $(CONSUMER_BRANCH)"
+	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Provider Branch: $(GIT_BRANCH)"
+	@echo "Publishing results to Pact Broker: $(PACT_BROKER_URL)"
+	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
+	$(PACT_LIB_ENV) \
+	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
+	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
+	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
+	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
+	PUBLISH_VERIFICATION=true \
 	go test ./test/contracts/provider/... -v -count=1
 
 # Clean contract test artifacts

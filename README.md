@@ -373,8 +373,30 @@ make test-contracts-provider-verbose
 ### Provider Verification in CI
 
 Contract verification runs automatically in CI:
-- **Pull Requests**: Verifies contracts but doesn't publish results
-- **Merge to main**: Verifies contracts and publishes verification results to Pact Broker
+- **Pull Requests**: Verifies contracts and publishes verification results to Pact Broker
+
+### Automated Provider Verification (Webhook)
+
+The repository includes a webhook-triggered workflow (`.github/workflows/pact-verification.yaml`) that automatically verifies contracts when consumers publish new pacts.
+
+**How it works:**
+1. Consumer (e.g., uni-region) publishes a new pact to Pact Broker
+2. Pact Broker webhook triggers this repository's GitHub Actions workflow
+3. Provider verification runs automatically against the new contract
+4. Results are published back to Pact Broker
+5. Consumer's `can-i-deploy` check can now validate compatibility
+
+**Setup:**
+The webhook is configured in the Pact Broker by the consumer service. See the consumer's README for webhook setup instructions.
+
+**Workflow trigger:**
+```yaml
+on:
+  repository_dispatch:
+    types: [pact_verification]
+```
+
+This workflow receives metadata about which pact to verify and runs `make test-contracts-provider-ci` to verify and publish results.
 
 ### Writing Provider Tests
 
