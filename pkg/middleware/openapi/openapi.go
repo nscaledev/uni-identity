@@ -198,6 +198,9 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 			SystemAccount: true,
 			Userinfo: &identityapi.Userinfo{
 				Sub: certificate.Subject.CommonName,
+				HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
+					Acctype: identityapi.System,
+				},
 			},
 		}
 
