@@ -20,6 +20,7 @@ package rbac
 import (
 	"context"
 	goerrors "errors"
+	"net/http"
 	"slices"
 
 	"github.com/spjmurray/go-util/pkg/set"
@@ -126,6 +127,72 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 	}
 
 	return errors.HTTPForbidden("operation is not allowed by rbac (no matching project endpoints)")
+}
+
+// isAllowedByProjectACL checks only the project-level ACL entries for a specific project,
+// with no fallback to organization or global scope.  If the project is present in the ACL
+// it must have been fetched from storage when the ACL was built, so its existence is guaranteed.
+func isAllowedByProjectACL(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) bool {
+	acl := FromContext(ctx)
+
+	if acl.Organizations == nil {
+		return false
+	}
+
+	for _, organization := range *acl.Organizations {
+		if organization.Id != organizationID {
+			continue
+		}
+
+		if organization.Projects == nil {
+			return false
+		}
+
+		for _, project := range *organization.Projects {
+			if project.Id != projectID {
+				continue
+			}
+
+			return operationAllowedByEndpoints(project.Endpoints, endpoint, operation) == nil
+		}
+	}
+
+	return false
+}
+
+// AllowProjectScopeCreate is like AllowProjectScope but intended for v2 create operations
+// where the project ID is supplied in the request body rather than the URL path.  When
+// access is granted via a global or organization-scoped ACL the project ID is untrusted
+// user input, so this function additionally verifies the project exists via the identity
+// API before returning nil.
+func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	// If the project is explicitly present in the ACL it was fetched from storage
+	// when the ACL was built, so it must exist.
+	if isAllowedByProjectACL(ctx, endpoint, operation, organizationID, projectID) {
+		return nil
+	}
+
+	// Check whether a global or organization-scoped ACL grants access.
+	if err := AllowOrganizationScope(ctx, endpoint, operation, organizationID); err != nil {
+		return err
+	}
+
+	// Access is granted via elevated scope, but the project ID is untrusted — verify
+	// it exists via the identity API.
+	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, organizationID, projectID)
+	if err != nil {
+		return errors.OAuth2AccessDenied("failed to verify project exists").WithError(err)
+	}
+
+	if resp.StatusCode() == http.StatusNotFound {
+		return errors.HTTPNotFound()
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return errors.OAuth2AccessDenied("unexpected status verifying project exists")
+	}
+
+	return nil
 }
 
 // AllowRole determines whether your ACL contains the same or higher privileges than

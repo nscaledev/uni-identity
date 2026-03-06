@@ -17,6 +17,8 @@ limitations under the License.
 
 package openapi
 
+//go:generate mockgen -destination=mock/client.go -package mock github.com/unikorn-cloud/identity/pkg/openapi ClientWithResponsesInterface
+
 import (
 	"context"
 	"fmt"
