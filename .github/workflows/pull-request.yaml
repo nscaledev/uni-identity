@@ -103,3 +103,19 @@ jobs:
         PROVIDER_VERSION: ${{ github.event.pull_request.head.sha || github.sha }}
         GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
       run: make test-contracts-provider-ci
+  TagDeployable:
+    runs-on: ubuntu-latest
+    needs: ProviderContractVerification
+    steps:
+    - name: Tag as deployable
+      run: |
+        docker run --rm \
+          --network host \
+          pactfoundation/pact-cli:latest \
+          pact-broker create-version-tag \
+          --pacticipant="uni-identity" \
+          --version="${{ github.event.pull_request.head.sha || github.sha }}" \
+          --tag="deployable-to-dev" \
+          --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
+          --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
+          --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}"
