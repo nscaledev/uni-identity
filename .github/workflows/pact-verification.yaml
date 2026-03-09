@@ -41,7 +41,7 @@ jobs:
           echo "Unsupported architecture: $ARCH"
           exit 1
         fi
-        wget https://github.com/pact-foundation/pact-reference/releases/download/libpact_ffi-v0.4.22/libpact_ffi-linux-${PACT_ARCH}.so.gz
+        wget https://github.com/pact-foundation/pact-reference/releases/download/libpact_ffi-v0.4.28/libpact_ffi-linux-${PACT_ARCH}.so.gz
         gunzip libpact_ffi-linux-${PACT_ARCH}.so.gz
         sudo mkdir -p /usr/local/lib
         sudo mv libpact_ffi-linux-${PACT_ARCH}.so /usr/local/lib/libpact_ffi.so
