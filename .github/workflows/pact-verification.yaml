@@ -57,12 +57,37 @@ jobs:
         make charts/identity/crds
         kubectl apply -f charts/identity/crds/
 
+    - name: Get Deployed Provider Version
+      id: get_version
+      run: |
+        OUTPUT=$(docker run --rm \
+          --network host \
+          pactfoundation/pact-cli:latest \
+          pact-broker describe-version \
+          --pacticipant="uni-identity" \
+          --latest="deployable-to-dev" \
+          --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
+          --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
+          --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}" \
+          --output=json)
+
+        VERSION=$(echo "$OUTPUT" | grep -o '"number"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+
+        if [ -z "$VERSION" ]; then
+          echo "ERROR: Could not determine deployed provider version"
+          echo "Broker response: $OUTPUT"
+          exit 1
+        fi
+
+        echo "Deployed provider version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
     - name: Run Provider Contract Verification
       env:
         PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
         PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
         PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
-        PROVIDER_VERSION: ${{ github.sha }}
+        PROVIDER_VERSION: ${{ steps.get_version.outputs.version }}
         CONSUMER_BRANCH: ${{ github.event.client_payload.consumer_branch }}
         CGO_LDFLAGS: "-L/usr/local/lib"
         LD_LIBRARY_PATH: "/usr/local/lib"
