@@ -18,5 +18,6 @@ limitations under the License.
 package principal
 
 const (
-	Header = "X-Principal"
+	Header            = "X-Principal"
+	ImpersonateHeader = "X-Impersonate"
 )

@@ -148,6 +148,19 @@ func hasHTTPAuthorization(r *http.Request) bool {
 	return r.Header.Get("Authorization") != ""
 }
 
+// aclCacheKey returns the key to use when caching an ACL. For impersonated calls
+// the key is the end-user actor so that each user gets their own cache entry
+// rather than sharing the calling service's entry.
+func aclCacheKey(ctx context.Context, info *authorization.Info) string {
+	if principal.ImpersonateFromContext(ctx) {
+		if p, err := principal.FromContext(ctx); err == nil && p.Actor != "" {
+			return p.Actor
+		}
+	}
+
+	return info.Userinfo.Sub
+}
+
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
 // and validating the bearer token provided by the client which is cryptographically secure.
 // However, rather than have to worry about multiple different server ports, different
@@ -222,7 +235,9 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 		}
 
 		// This happens every call, so do some caching to improve throughput.
-		acl, ok := v.acls.Get(info.Userinfo.Sub)
+		cacheKey := aclCacheKey(ctx, info)
+
+		acl, ok := v.acls.Get(cacheKey)
 		if !ok {
 			// Get the ACL associated with the actor.
 			acl, err = v.authorizer.GetACL(authorization.NewContext(ctx, info), params["organizationID"])
@@ -231,7 +246,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 				return err
 			}
 
-			v.acls.Add(info.Userinfo.Sub, acl, v.options.ACLCacheTimeout)
+			v.acls.Add(cacheKey, acl, v.options.ACLCacheTimeout)
 		}
 
 		authInfo.acl = acl
@@ -333,7 +348,13 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 		return nil, err
 	}
 
-	return principal.NewContext(ctx, p), nil
+	ctx = principal.NewContext(ctx, p)
+
+	if r.Header.Get(principal.ImpersonateHeader) == "true" {
+		ctx = principal.NewImpersonateContext(ctx)
+	}
+
+	return ctx, nil
 }
 
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
