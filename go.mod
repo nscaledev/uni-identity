@@ -1,6 +1,6 @@
 module github.com/unikorn-cloud/identity
 
-go 1.24.2
+go 1.25.8
 
 require (
 	github.com/coreos/go-oidc/v3 v3.14.1
