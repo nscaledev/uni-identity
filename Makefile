@@ -266,6 +266,8 @@ else ifeq ($(UNAME_S),Darwin)
 endif
 
 # Pact Broker Configuration
+PACT_GOFLAGS="-tags=integration"
+SERVICE_NAME ?= uni-identity
 PACT_BROKER_URL ?= http://localhost:9292
 PACT_BROKER_USERNAME ?= pact
 PACT_BROKER_PASSWORD ?= pact
@@ -277,6 +279,9 @@ GIT_BRANCH ?= $(BRANCH)
 .PHONY: test-contracts-provider
 test-contracts-provider:
 	@echo "Running provider contract verification tests..."
+	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Provider Branch: $(GIT_BRANCH)"
+	@echo "Publishing results to Pact Broker: $(PACT_BROKER_URL)"
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
 	KUBECONFIG="$(HOME)/.kube/config" \
@@ -284,7 +289,10 @@ test-contracts-provider:
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
-	go test ./test/contracts/provider/... -v -count=1
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	PUBLISH_VERIFICATION=true \
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
 
 # Run provider verification with verbose output
 .PHONY: test-contracts-provider-verbose
@@ -297,8 +305,10 @@ test-contracts-provider-verbose:
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
 	VERBOSE=true \
-	go test ./test/contracts/provider/... -v -count=1
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
 
 # Run provider verification from local pact file
 .PHONY: test-contracts-provider-local
@@ -314,7 +324,9 @@ test-contracts-provider-local:
 	KUBECONFIG="$(HOME)/.kube/config" \
 	PACT_FILE="$(PACT_FILE)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
-	go test ./test/contracts/provider/... -v -count=1
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
 
 # Run provider verification and publish results to Pact Broker (works on both macOS and Linux)
 # Sets CI=true which triggers auto-publishing to Pact Broker
@@ -323,7 +335,6 @@ test-contracts-provider-local:
 test-contracts-provider-ci:
 	@echo "Running provider contract verification in CI mode..."
 	@echo "Provider Version: $(PROVIDER_VERSION)"
-	@echo "Provider Branch: $(GIT_BRANCH)"
 	@echo "Pact Broker URL: $(PACT_BROKER_URL)"
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
@@ -334,7 +345,8 @@ test-contracts-provider-ci:
 	GIT_BRANCH="$(GIT_BRANCH)" \
 	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
 	CI=true \
-	go test ./test/contracts/provider/... -v -count=1
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
 
 # Simulate webhook-triggered provider verification
 # Usage: make test-contracts-provider-webhook CONSUMER_BRANCH=feature/my-branch
@@ -359,7 +371,25 @@ test-contracts-provider-webhook:
 	GIT_BRANCH="$(GIT_BRANCH)" \
 	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
 	PUBLISH_VERIFICATION=true \
-	go test ./test/contracts/provider/... -v -count=1
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
+
+# Check if this provider version can be deployed to development
+# Verifies all consumers deployed in development have verified pacts with this provider version
+# Requires: PACT_BROKER_URL, PACT_BROKER_USERNAME, PACT_BROKER_PASSWORD, PROVIDER_VERSION env vars
+.PHONY: can-i-deploy
+can-i-deploy:
+	@echo "Running can-i-deploy check for $(SERVICE_NAME) version $(PROVIDER_VERSION)..."
+	docker run --rm \
+		--network host \
+		pactfoundation/pact-cli:latest \
+		pact-broker can-i-deploy \
+		--pacticipant="$(SERVICE_NAME)" \
+		--version="$(PROVIDER_VERSION)" \
+		--to-environment=development \
+		--broker-base-url="$(PACT_BROKER_URL)" \
+		--broker-username="$(PACT_BROKER_USERNAME)" \
+		--broker-password="$(PACT_BROKER_PASSWORD)"
 
 # Clean contract test artifacts
 .PHONY: test-contracts-clean

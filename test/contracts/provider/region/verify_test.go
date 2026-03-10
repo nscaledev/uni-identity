@@ -1,3 +1,5 @@
+//go:build integration
+
 /*
 Copyright 2026 Nscale.
 
@@ -23,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,6 +143,29 @@ var _ = Describe("Identity Provider Verification", func() {
 			verifier := provider.NewVerifier()
 			stateHandlers := createStateHandlers(ctx, stateManager)
 
+			// Build base selectors for normal CI verification
+			selectors := []provider.Selector{
+				&provider.ConsumerVersionSelector{Consumer: "uni-compute", MainBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "uni-compute", MatchingBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "uni-kubernetes", MainBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "uni-kubernetes", MatchingBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "uni-region", MainBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "uni-region", MatchingBranch: true},
+			}
+
+			// Add explicit branch selector only for webhook-triggered verification
+			consumerBranch := strings.TrimSpace(os.Getenv("CONSUMER_BRANCH"))
+			if consumerBranch != "" {
+				selectors = append(selectors,
+					&provider.ConsumerVersionSelector{Consumer: "uni-compute", Branch: consumerBranch},
+					&provider.ConsumerVersionSelector{Consumer: "uni-kubernetes", Branch: consumerBranch},
+					&provider.ConsumerVersionSelector{Consumer: "uni-region", Branch: consumerBranch},
+				)
+				fmt.Printf("Webhook mode: Including explicit branch selector for consumer branch '%s'\n", consumerBranch)
+			} else {
+				fmt.Printf("Normal mode: Using MainBranch and MatchingBranch selectors only\n")
+			}
+
 			err := verifier.VerifyProvider(testingT, provider.VerifyRequest{
 				ProviderBaseURL:            serverURL,
 				Provider:                   "uni-identity",
@@ -149,12 +175,9 @@ var _ = Describe("Identity Provider Verification", func() {
 				PublishVerificationResults: os.Getenv("CI") == "true" || os.Getenv("PUBLISH_VERIFICATION") == "true",
 				ProviderVersion:            getProviderVersion(),
 				ProviderBranch:             getProviderBranch(),
-				ConsumerVersionSelectors: []provider.Selector{
-					&provider.ConsumerVersionSelector{MainBranch: true},
-					&provider.ConsumerVersionSelector{MatchingBranch: true},
-				},
-				EnablePending: true,
-				StateHandlers: stateHandlers,
+				ConsumerVersionSelectors:   selectors,
+				EnablePending:              true,
+				StateHandlers:              stateHandlers,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
