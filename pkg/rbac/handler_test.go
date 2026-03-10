@@ -18,12 +18,16 @@ limitations under the License.
 package rbac_test
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -965,6 +969,207 @@ func TestOrganizationAndProjectSelectionWithOrganizationAndProjectQuerySingle(t 
 			require.Equal(t, test.matchesUser, userSelector.Matches(test.labels))
 			require.Equal(t, test.matchesAdmin, adminSelector.Matches(test.labels))
 			require.Equal(t, test.matchesPlatformAdmin, platformAdminSelector.Matches(test.labels))
+		})
+	}
+}
+
+// TestAllowProjectScopeCreate tests that AllowProjectScopeCreate enforces RBAC correctly
+// and additionally verifies project existence via the identity API when access is granted
+// by global or organization-scoped ACLs.
+func TestAllowProjectScopeCreate(t *testing.T) {
+	t.Parallel()
+
+	// aclWithProjectScope has the project explicitly listed under the organization's
+	// project ACL entries, so isAllowedByProjectACL will return true.
+	aclWithProjectScope := &openapi.Acl{
+		Organizations: &openapi.AclOrganizationList{
+			{
+				Id: organizationID,
+				Projects: &openapi.AclProjectList{
+					{
+						Id: projectID,
+						Endpoints: openapi.AclEndpoints{
+							{
+								Name:       resourceType1,
+								Operations: openapi.AclOperations{openapi.Create},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// aclWithOrgScope has the project listed as well but the relevant endpoint/operation
+	// lives at organization scope, not project scope.
+	aclWithOrgScope := &openapi.Acl{
+		Organizations: &openapi.AclOrganizationList{
+			{
+				Id: organizationID,
+				Endpoints: &openapi.AclEndpoints{
+					{
+						Name:       resourceType1,
+						Operations: openapi.AclOperations{openapi.Create},
+					},
+				},
+			},
+		},
+	}
+
+	// aclWithGlobalScope grants access at the global level.
+	aclWithGlobalScope := &openapi.Acl{
+		Global: &openapi.AclEndpoints{
+			{
+				Name:       resourceType1,
+				Operations: openapi.AclOperations{openapi.Create},
+			},
+		},
+	}
+
+	// aclWithNoAccess has no relevant permissions.
+	aclWithNoAccess := &openapi.Acl{}
+
+	projectOKResponse := &openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{
+		HTTPResponse: &http.Response{StatusCode: http.StatusOK},
+	}
+
+	projectNotFoundResponse := &openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{
+		HTTPResponse: &http.Response{StatusCode: http.StatusNotFound},
+	}
+
+	projectUnexpectedResponse := &openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{
+		HTTPResponse: &http.Response{StatusCode: http.StatusInternalServerError},
+	}
+
+	tests := []struct {
+		Name           string
+		ACL            *openapi.Acl
+		SetupMock      func(client *openapiMock.MockClientWithResponsesInterface)
+		OrganizationID string
+		ProjectID      string
+		Resource       string
+		Operation      openapi.AclOperation
+		ErrorChecker   func(error) bool
+	}{
+		{
+			Name:           "Accept: project in ACL, no API call needed",
+			ACL:            aclWithProjectScope,
+			OrganizationID: organizationID,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+		},
+		{
+			Name: "Accept: org scope grants access, project exists",
+			ACL:  aclWithOrgScope,
+			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
+				c.EXPECT().
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					Return(projectOKResponse, nil)
+			},
+			OrganizationID: organizationID,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+		},
+		{
+			Name: "Reject: org scope grants access, project does not exist",
+			ACL:  aclWithOrgScope,
+			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
+				c.EXPECT().
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					Return(projectNotFoundResponse, nil)
+			},
+			OrganizationID: organizationID,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+			ErrorChecker:   coreerrors.IsHTTPNotFound,
+		},
+		{
+			Name: "Reject: org scope grants access, identity API returns unexpected status",
+			ACL:  aclWithOrgScope,
+			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
+				c.EXPECT().
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					Return(projectUnexpectedResponse, nil)
+			},
+			OrganizationID: organizationID,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+			ErrorChecker:   coreerrors.IsAccessDenied,
+		},
+		{
+			Name: "Accept: global scope grants access, project exists",
+			ACL:  aclWithGlobalScope,
+			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
+				c.EXPECT().
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					Return(projectOKResponse, nil)
+			},
+			OrganizationID: organizationID,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+		},
+		{
+			Name: "Reject: global scope grants access, project does not exist",
+			ACL:  aclWithGlobalScope,
+			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
+				c.EXPECT().
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					Return(projectNotFoundResponse, nil)
+			},
+			OrganizationID: organizationID,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+			ErrorChecker:   coreerrors.IsHTTPNotFound,
+		},
+		{
+			Name:           "Reject: no scope grants access, no API call made",
+			ACL:            aclWithNoAccess,
+			OrganizationID: organizationID,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+			ErrorChecker:   coreerrors.IsForbidden,
+		},
+		{
+			Name:           "Reject: wrong organization, no API call made",
+			ACL:            aclWithOrgScope,
+			OrganizationID: "wibble",
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+			ErrorChecker:   coreerrors.IsForbidden,
+		},
+	}
+
+	for i := range tests {
+		test := &tests[i]
+
+		t.Run(test.Name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			mockClient := openapiMock.NewMockClientWithResponsesInterface(ctrl)
+
+			if test.SetupMock != nil {
+				test.SetupMock(mockClient)
+			}
+
+			ctx := rbac.NewContext(t.Context(), test.ACL)
+
+			err := rbac.AllowProjectScopeCreate(ctx, mockClient, test.Resource, test.Operation, test.OrganizationID, test.ProjectID)
+			if test.ErrorChecker != nil {
+				require.Error(t, err)
+				require.True(t, test.ErrorChecker(err))
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }
