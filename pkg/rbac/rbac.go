@@ -30,6 +30,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -693,6 +694,14 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	subject := info.Userinfo.Sub
 
 	if info.SystemAccount {
+		// If the calling service has explicitly signalled impersonation, derive the
+		// ACL from the end-user principal rather than the system account role.
+		if principal.ImpersonateFromContext(ctx) {
+			if p, err := principal.FromContext(ctx); err == nil && p.Actor != "" {
+				return r.processUserAccountACL(ctx, p.Actor, organizationID)
+			}
+		}
+
 		return r.processSystemAccountACL(ctx, subject)
 	}
 

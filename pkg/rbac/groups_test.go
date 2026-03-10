@@ -682,3 +682,87 @@ func TestServiceAccount_WrongOrganization(t *testing.T) {
 	alphaOrganization := &alphaOrganizations[0]
 	require.Equal(t, altOrgID, alphaOrganization.Id, "Service account should have permissions for the organization it's bound to")
 }
+
+// getACLForSystemAccount gets the ACL for a system account (mTLS-authenticated service), optionally
+// carrying an impersonated end-user principal. impersonate mirrors the X-Impersonate header —
+// when true the receiving service resolves RBAC against the principal's actor; when false the
+// principal is attribution-only and the system account role governs access.
+func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN string, p *principal.Principal, impersonate bool) (*openapi.Acl, error) {
+	t.Helper()
+
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: serviceCN,
+		},
+		SystemAccount: true,
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	if p != nil {
+		ctx = principal.NewContext(ctx, p)
+	}
+
+	if impersonate {
+		ctx = principal.NewImpersonateContext(ctx)
+	}
+
+	return rbacClient.GetACL(ctx, testOrgID)
+}
+
+// TestSystemAccountWithPrincipalUsesUserACL verifies that a system account carrying an
+// impersonated principal gets the end-user's ACL, not the system account's global role.
+func TestSystemAccountWithPrincipalUsesUserACL(t *testing.T) {
+	t.Parallel()
+
+	f := setupTestEnvironment(t)
+
+	for _, tc := range []struct {
+		name    string
+		subject string
+	}{
+		{"alice", userAliceSubject},
+		{"bob", userBobSubject},
+		{"charlie", userCharlieSubject},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			aclDirect := getACLForUser(t, f.rbac, tc.subject)
+
+			aclImpersonated, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
+				Actor: tc.subject,
+			}, true)
+			require.NoError(t, err)
+
+			assert.Equal(t, aclDirect, aclImpersonated, "impersonated ACL should match the user's direct ACL")
+		})
+	}
+}
+
+// TestSystemAccountWithoutPrincipalFallsBackToSystemACL verifies that a system account with
+// no principal in context falls through to processSystemAccountACL.
+func TestSystemAccountWithoutPrincipalFallsBackToSystemACL(t *testing.T) {
+	t.Parallel()
+
+	f := setupTestEnvironment(t)
+
+	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", nil, false)
+	// "compute-service" is not registered in SystemAccountRoleIDs, so this should fail.
+	require.Error(t, err)
+}
+
+// TestSystemAccountWithEmptyActorFallsBackToSystemACL verifies that a principal with an
+// empty actor (e.g. controller-injected principal before a user is known) does not trigger
+// impersonation.
+func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
+	t.Parallel()
+
+	f := setupTestEnvironment(t)
+
+	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
+		OrganizationID: testOrgID,
+		Actor:          "",
+	}, true)
+	require.Error(t, err)
+}
