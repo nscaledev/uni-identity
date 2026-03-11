@@ -682,6 +682,151 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 	return acl, nil
 }
 
+// filterEndpoints returns a filtered copy of endpoints keeping only (name, operation)
+// pairs that are permitted by serviceEndpoints. The bool return distinguishes two
+// empty cases: false means nothing survived (either the service grants no access at
+// all, or the intersection was empty), true means at least one operation was kept.
+// Callers use the bool to decide whether to drop the enclosing resource entirely,
+// rather than returning an ambiguous nil slice.
+func filterEndpoints(endpoints openapi.AclEndpoints, serviceEndpoints *openapi.AclEndpoints) (openapi.AclEndpoints, bool) {
+	if serviceEndpoints == nil {
+		return nil, false
+	}
+
+	result := make(openapi.AclEndpoints, 0, len(endpoints))
+
+	for _, ep := range endpoints {
+		ops := make(openapi.AclOperations, 0, len(ep.Operations))
+
+		for _, op := range ep.Operations {
+			if operationAllowedByEndpoints(*serviceEndpoints, ep.Name, op) == nil {
+				ops = append(ops, op)
+			}
+		}
+
+		if len(ops) > 0 {
+			result = append(result, openapi.AclEndpoint{Name: ep.Name, Operations: ops})
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, false
+	}
+
+	return result, true
+}
+
+// filterEndpointsPtr is a pointer-friendly wrapper around filterEndpoints that
+// returns nil when the input is nil or nothing survives the intersection.
+func filterEndpointsPtr(endpoints *openapi.AclEndpoints, serviceEndpoints *openapi.AclEndpoints) *openapi.AclEndpoints {
+	if endpoints == nil {
+		return nil
+	}
+
+	result, ok := filterEndpoints(*endpoints, serviceEndpoints)
+	if !ok {
+		return nil
+	}
+
+	return &result
+}
+
+// filterProjects filters a project list, dropping any project whose endpoints are
+// entirely outside the service allow set.
+func filterProjects(projects *openapi.AclProjectList, serviceEndpoints *openapi.AclEndpoints) *openapi.AclProjectList {
+	if projects == nil {
+		return nil
+	}
+
+	result := make(openapi.AclProjectList, 0, len(*projects))
+
+	for _, proj := range *projects {
+		endpoints, ok := filterEndpoints(proj.Endpoints, serviceEndpoints)
+		if ok {
+			result = append(result, openapi.AclProject{Id: proj.Id, Endpoints: endpoints})
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return &result
+}
+
+// intersectACL returns a copy of userACL filtered so that only (resource, operation)
+// tuples also permitted by serviceACL.Global are retained. Because system accounts
+// accumulate permissions exclusively at global scope, the service's global endpoints
+// act as the single allow-list for every scope level of the user's ACL — a service
+// with global read on a resource type implicitly permits a user's project-scoped read
+// on that same resource, but the reverse is not true.
+func intersectACL(userACL *openapi.Acl, serviceACL *openapi.Acl) *openapi.Acl {
+	svc := serviceACL.Global
+	result := &openapi.Acl{}
+
+	result.Global = filterEndpointsPtr(userACL.Global, svc)
+
+	if userACL.Organization != nil {
+		endpoints := filterEndpointsPtr(userACL.Organization.Endpoints, svc)
+		projects := filterProjects(userACL.Organization.Projects, svc)
+
+		if endpoints != nil || projects != nil {
+			result.Organization = &openapi.AclOrganization{
+				Id:        userACL.Organization.Id,
+				Endpoints: endpoints,
+				Projects:  projects,
+			}
+		}
+	}
+
+	if userACL.Organizations != nil {
+		orgs := make(openapi.AclOrganizationList, 0, len(*userACL.Organizations))
+
+		for _, org := range *userACL.Organizations {
+			endpoints := filterEndpointsPtr(org.Endpoints, svc)
+			projects := filterProjects(org.Projects, svc)
+
+			if endpoints != nil || projects != nil {
+				orgs = append(orgs, openapi.AclOrganization{
+					Id:        org.Id,
+					Endpoints: endpoints,
+					Projects:  projects,
+				})
+			}
+		}
+
+		if len(orgs) > 0 {
+			result.Organizations = &orgs
+		}
+	}
+
+	result.Projects = filterProjects(userACL.Projects, svc)
+
+	return result
+}
+
+// getSystemAccountACL returns the ACL for a system account, handling impersonation.
+// If the service has signalled impersonation, the ACL is the intersection of the
+// end-user's ACL and the service's own ACL (confused deputy prevention).
+func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID string) (*openapi.Acl, error) {
+	p, err := principal.FromContext(ctx)
+	if err != nil || !principal.ImpersonateFromContext(ctx) || p.Actor == "" {
+		return r.processSystemAccountACL(ctx, subject)
+	}
+
+	userACL, err := r.processUserAccountACL(ctx, p.Actor, organizationID)
+	if err != nil {
+		return nil, err
+	}
+
+	serviceACL, err := r.processSystemAccountACL(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+
+	return intersectACL(userACL, serviceACL), nil
+}
+
 // GetACL returns a granular set of permissions for a user based on their scope.
 // This is used for API level access control and UX.
 func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
@@ -694,15 +839,7 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	subject := info.Userinfo.Sub
 
 	if info.SystemAccount {
-		// If the calling service has explicitly signalled impersonation, derive the
-		// ACL from the end-user principal rather than the system account role.
-		if principal.ImpersonateFromContext(ctx) {
-			if p, err := principal.FromContext(ctx); err == nil && p.Actor != "" {
-				return r.processUserAccountACL(ctx, p.Actor, organizationID)
-			}
-		}
-
-		return r.processSystemAccountACL(ctx, subject)
+		return r.getSystemAccountACL(ctx, subject, organizationID)
 	}
 
 	if info.ServiceAccount {
