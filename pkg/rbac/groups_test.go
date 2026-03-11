@@ -173,7 +173,8 @@ func createServiceAccount(t *testing.T, c client.Client, name, orgID, orgNamespa
 }
 
 // setupTestEnvironment creates a comprehensive RBAC test environment with users, groups, roles, and projects.
-func setupTestEnvironment(t *testing.T) fixture {
+// It returns both the fixture and the underlying fake client so callers can add additional objects.
+func setupTestEnvironment(t *testing.T) (fixture, client.Client) {
 	t.Helper()
 
 	var f fixture
@@ -377,7 +378,7 @@ func setupTestEnvironment(t *testing.T) fixture {
 	rbacClient := rbac.New(c, testNamespace, &rbac.Options{})
 	f.rbac = rbacClient
 
-	return f
+	return f, c
 }
 
 // getACLForUser is a helper to get the ACL for a given user subject.
@@ -406,7 +407,7 @@ func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi
 func TestGroupACLContentOrganizationScoped(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	// Test Alice (Admin) - should have organization permissions.
 	aclAlice := getACLForUser(t, f.rbac, userAliceSubject)
@@ -484,7 +485,7 @@ func TestGroupACLContentOrganizationScoped(t *testing.T) {
 func TestGroupACLContent(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	// Test Alice (Admin) - should have organization permissions.
 	aclAlice := getACLForUser(t, f.rbac, userAliceSubject)
@@ -587,7 +588,7 @@ func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string
 func TestServiceAccountACLOrganizationScoped(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	// Test service account that's a member of the services group
 	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID)
@@ -622,7 +623,7 @@ func TestServiceAccountACLOrganizationScoped(t *testing.T) {
 func TestServiceAccountOrganizationScoped_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID)
 	assert.Empty(t, aclAlpha.Organization, "Service account bound to org B should have no permissions in org A")
@@ -632,7 +633,7 @@ func TestServiceAccountOrganizationScoped_WrongOrganization(t *testing.T) {
 func TestServiceAccountACL(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	// Test service account that's a member of the services group
 	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID)
@@ -671,7 +672,7 @@ func TestServiceAccountACL(t *testing.T) {
 func TestServiceAccount_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID)
 	require.NotNil(t, aclAlpha.Organizations, "Service account should have organization permissions")
@@ -712,10 +713,39 @@ func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN strin
 
 // TestSystemAccountWithPrincipalUsesUserACL verifies that a system account carrying an
 // impersonated principal gets the end-user's ACL, not the system account's global role.
+// TestSystemAccountWithPrincipalUsesUserACL verifies that a system account carrying an
+// impersonated principal gets an ACL derived from the user's identity. When the service
+// holds global permissions covering every resource the test users can access, the
+// intersection equals the user's direct ACL.
 func TestSystemAccountWithPrincipalUsesUserACL(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, c := setupTestEnvironment(t)
+
+	// Register a "super-service" role whose global endpoints cover every resource
+	// type present in the test fixture. With this role the intersection of the
+	// service ACL and any test user's ACL equals the user's ACL unchanged.
+	superServiceRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "role-super-service",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:manage", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+					{Name: "project:deploy", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Update}},
+					{Name: "project:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), superServiceRole))
+
+	f.rbac = rbac.New(c, testNamespace, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{"compute-service": "role-super-service"},
+	})
 
 	for _, tc := range []struct {
 		name    string
@@ -735,7 +765,7 @@ func TestSystemAccountWithPrincipalUsesUserACL(t *testing.T) {
 			}, true)
 			require.NoError(t, err)
 
-			assert.Equal(t, aclDirect, aclImpersonated, "impersonated ACL should match the user's direct ACL")
+			assert.Equal(t, aclDirect, aclImpersonated, "impersonated ACL should equal the user's direct ACL when the service has superset permissions")
 		})
 	}
 }
@@ -745,7 +775,7 @@ func TestSystemAccountWithPrincipalUsesUserACL(t *testing.T) {
 func TestSystemAccountWithoutPrincipalFallsBackToSystemACL(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", nil, false)
 	// "compute-service" is not registered in SystemAccountRoleIDs, so this should fail.
@@ -758,7 +788,7 @@ func TestSystemAccountWithoutPrincipalFallsBackToSystemACL(t *testing.T) {
 func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
 		OrganizationID: testOrgID,
