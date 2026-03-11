@@ -65,7 +65,7 @@ jobs:
           pactfoundation/pact-cli:latest \
           pact-broker describe-version \
           --pacticipant="uni-identity" \
-          --latest="deployable-to-dev" \
+          --latest="main" \
           --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
           --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
           --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}" \
