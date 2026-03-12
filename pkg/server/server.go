@@ -25,18 +25,23 @@ import (
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
 
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
+	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/common"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/hybrid"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
+	remoteauthorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -69,6 +74,12 @@ type Server struct {
 
 	// OpenAPIOptions are for OpenAPI processing.
 	OpenAPIOptions openapimiddleware.Options
+
+	// ClientOptions are for generic TLS client options e.g. certificates.
+	ClientOptions coreclient.HTTPClientOptions
+
+	// ExternalOIDCOptions specifies an external OIDC platform to use for authentication.
+	ExternalOIDCOptions *identityclient.Options
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -80,6 +91,13 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
+	s.ClientOptions.AddFlags(flags)
+
+	if s.ExternalOIDCOptions == nil {
+		s.ExternalOIDCOptions = identityclient.NewExternalOptions()
+	}
+
+	s.ExternalOIDCOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
@@ -129,7 +147,27 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
 
 	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
+	var authorizer openapimiddleware.Authorizer
+
+	if s.ExternalOIDCOptions.Host() == "" {
+		// Local-only authentication (no external OIDC configured)
+		authorizer = local.NewAuthorizer(oauth2, rbac)
+	} else {
+		// Hybrid authentication: route tokens to local or remote authenticator
+		remoteAuth, err := remoteauthorizer.NewAuthenticator(client, s.ExternalOIDCOptions, &s.ClientOptions)
+		if err != nil {
+			return nil, err
+		}
+
+		localAuth := local.NewAuthenticator(oauth2)
+		detector := &common.TokenDetector{
+			ExternalIssuer: s.ExternalOIDCOptions.Host(),
+			LocalIssuer:    s.HandlerOptions.Issuer.URL,
+		}
+
+		authorizer = hybrid.NewAuthorizer(localAuth, remoteAuth, detector, rbac)
+	}
+
 	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
 	audit := audit.New(constants.Application, constants.Version)
 

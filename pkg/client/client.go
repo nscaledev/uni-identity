@@ -36,6 +36,11 @@ func NewOptions() *Options {
 	return coreclient.NewHTTPOptions("identity")
 }
 
+// NewExternalOptions creates options for external OIDC providers.
+func NewExternalOptions() *Options {
+	return coreclient.NewHTTPOptions("external-oidc")
+}
+
 // Client wraps up the raw OpenAPI client with things to make it useable e.g.
 // authorization and TLS.
 type Client struct {

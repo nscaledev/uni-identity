@@ -24,6 +24,9 @@ spec:
         - --host=https://{{ include "unikorn.identity.host" . }}
         - --jose-tls-secret={{ .Release.Name }}-jose-tls
         - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
+        {{- with $oidchost := .Values.authentication.externalOIDCIssuer }}
+        - --external-oidc-host={{ $oidchost }}
+        {{- end }}
         {{- $adminRoles := list }}
         {{- range $index, $name := .Values.platformAdministrators.roles }}
           {{- $adminRoles = append $adminRoles (include "resource.id" $name) }}

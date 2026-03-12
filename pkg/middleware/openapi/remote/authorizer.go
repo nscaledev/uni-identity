@@ -20,78 +20,47 @@ package authorizer
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
-	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/getkin/kin-openapi/openapi3filter"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
-	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
-	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/common"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
-	"github.com/unikorn-cloud/identity/pkg/principal"
-
-	"k8s.io/apimachinery/pkg/util/cache"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+var _ openapi.Authorizer = &Authorizer{}
+
 // Authorizer provides OpenAPI based authorization middleware.
 type Authorizer struct {
-	client        client.Client
-	options       *identityclient.Options
-	clientOptions *coreclient.HTTPClientOptions
-	httpClient    *http.Client
-	// tokenCache is used to enhance interaction as the validation is a
-	// very expensive operation.
-	tokenCache *cache.LRUExpireCache
+	extractor     *common.BearerTokenExtractor
+	authenticator *Authenticator
+	acl           *ACL
 }
-
-var _ openapi.Authorizer = &Authorizer{}
 
 // NewAuthorizer returns a new authorizer with required parameters.
 func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*Authorizer, error) {
-	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
+	authenticator, err := NewAuthenticator(client, options, clientOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	a := &Authorizer{
-		httpClient:    httpClient,
-		client:        client,
-		options:       options,
-		clientOptions: clientOptions,
-		// TODO: make this configurable, possibly even a shared flag with the
-		// authorizer to maintain consistency.
-		tokenCache: cache.NewLRUExpireCache(4096),
+	acl, err := NewACL(client, options, clientOptions)
+	if err != nil {
+		return nil, err
 	}
 
-	return a, nil
-}
-
-// getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
-// Authorization header.
-func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return "", "", errors.AccessDenied(r, "authorization header missing")
-	}
-
-	parts := strings.Split(header, " ")
-	if len(parts) != 2 {
-		return "", "", errors.AccessDenied(r, "authorization header malformed")
-	}
-
-	return parts[0], parts[1], nil
+	return &Authorizer{
+		extractor:     &common.BearerTokenExtractor{},
+		authenticator: authenticator,
+		acl:           acl,
+	}, nil
 }
 
 type requestMutatingTransport struct {
@@ -120,7 +89,7 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 		return nil, err
 	}
 
-	// Whe need to mutate the request to do trace context propagation and
+	// We need to mutate the request to do trace context propagation and
 	// client certificate propagation if it's a token bound to an X.509
 	// certificate.
 	mutator := func(req *http.Request) error {
@@ -148,97 +117,13 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 }
 
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
-//
-//nolint:cyclop
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
-	ctx := r.Context()
-
-	authorizationScheme, rawToken, err := getHTTPAuthenticationScheme(r)
+	token, err := a.extractor.ExtractToken(r)
 	if err != nil {
 		return nil, err
 	}
 
-	if !strings.EqualFold(authorizationScheme, "bearer") {
-		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
-	}
-
-	if value, ok := a.tokenCache.Get(rawToken); ok {
-		claims, ok := value.(*identityapi.Userinfo)
-		if !ok {
-			return nil, fmt.Errorf("%w: invalid token cache data", coreerrors.ErrConsistency)
-		}
-
-		info := &authorization.Info{
-			Token:    rawToken,
-			Userinfo: claims,
-		}
-
-		return info, nil
-	}
-
-	ctx = oidc.ClientContext(ctx, a.httpClient)
-
-	// Perform userinfo call against the identity service that will validate the token
-	// and also return some information about the user that we can use for audit logging.
-	provider, err := oidc.NewProvider(ctx, a.options.Host())
-	if err != nil {
-		return nil, fmt.Errorf("%w: oidc service discovery failed", err)
-	}
-
-	// Do the call manually here to allow us to extract the correct error code and
-	// headers, returned by identity.
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, provider.UserInfoEndpoint(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to create userinfo request", err)
-	}
-
-	request.Header.Set("Authorization", authorizationScheme+" "+rawToken)
-
-	response, err := a.httpClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to perform userinfo request", err)
-	}
-
-	defer response.Body.Close()
-
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to read userinfo response body", err)
-	}
-
-	if response.StatusCode != http.StatusOK {
-		// No not propagate this error type, we need to set the WWW-Authenticate
-		// header to point at this service's OIDC protected resource metadata page.
-		if response.StatusCode == http.StatusUnauthorized {
-			return nil, errors.AccessDenied(r, "token is invalid or has expired")
-		}
-
-		var err coreapi.Error
-
-		if err := json.Unmarshal(body, &err); err != nil {
-			return nil, fmt.Errorf("%w: failed to unmarshal userinfo error response", err)
-		}
-
-		return nil, errors.FromOpenAPIError(response.StatusCode, response.Header, &err)
-	}
-
-	claims := &identityapi.Userinfo{}
-
-	if err := json.Unmarshal(body, claims); err != nil {
-		return nil, err
-	}
-
-	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
-	// could still be valid for months...
-	a.tokenCache.Add(rawToken, claims, time.Hour)
-
-	out := &authorization.Info{
-		Token:    rawToken,
-		Userinfo: claims,
-	}
-
-	return out, nil
+	return a.authenticator.Authenticate(r, token)
 }
 
 // Authorize checks the request against the OpenAPI security scheme.
@@ -250,61 +135,13 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
 }
 
-type Getter string
-
-func (a Getter) Get(_ context.Context) (string, error) {
-	return string(a), nil
+// Authenticate validates the token and returns user information.
+func (a *Authorizer) Authenticate(r *http.Request, token string) (*authorization.Info, error) {
+	return a.authenticator.Authenticate(r, token)
 }
 
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
 func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identityapi.Acl, error) {
-	info, err := authorization.FromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Trace context and TLS are handled by the cached client.
-	// TODO: a nicer way to inject a token per call would be prefereable.
-	options := []identityapi.ClientOption{
-		identityapi.WithHTTPClient(a.httpClient),
-		identityapi.WithRequestEditorFn(principal.Injector(a.client, a.clientOptions)),
-	}
-
-	if info.Token != "" {
-		options = append(options, identityapi.WithRequestEditorFn(func(ctx context.Context, req *http.Request) error {
-			req.Header.Set("Authorization", "bearer "+info.Token)
-
-			return nil
-		}))
-	}
-
-	client, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to create identity client", err)
-	}
-
-	if organizationID == "" {
-		response, err := client.GetApiV1AclWithResponse(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
-		}
-
-		if response.StatusCode() != http.StatusOK {
-			return nil, errors.PropagateError(response.HTTPResponse, response)
-		}
-
-		return response.JSON200, nil
-	}
-
-	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, organizationID)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
-	}
-
-	if response.StatusCode() != http.StatusOK {
-		return nil, errors.PropagateError(response.HTTPResponse, response)
-	}
-
-	return response.JSON200, nil
+	return a.acl.GetACL(ctx, organizationID)
 }
