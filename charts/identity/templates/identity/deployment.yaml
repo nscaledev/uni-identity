@@ -68,6 +68,7 @@ spec:
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}
+        - --auth0-migration-webhook-secret={{ .Values.server.auth0.migrationWebhookSecret }}
         ports:
         - name: http
           containerPort: 6080

@@ -26,6 +26,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/serviceaccounts"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/handler/webhooks"
 )
 
 // Options defines configurable handler options.
@@ -42,6 +43,8 @@ type Options struct {
 
 	// Users define any user tunables.
 	Users users.Options
+
+	Webhooks webhooks.Options
 }
 
 // AddFlags adds the options flags to the given flag set.
@@ -52,4 +55,5 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 
 	o.ServiceAccounts.AddFlags(f)
 	o.Users.AddFlags(f)
+	o.Webhooks.AddFlags(f)
 }

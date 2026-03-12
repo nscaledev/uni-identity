@@ -17,12 +17,21 @@ limitations under the License.
 package auth0
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
+	"time"
 
 	mgmtcore "github.com/auth0/go-auth0/v2/management/core"
 )
 
+var ErrInvalidUserID = errors.New("invalid user id")
+
 const (
+	LabelKeyAuth0OrganizationID = "auth0.com/organization-id"
+	LabelKeyAuth0UserProvider   = "auth0.com/user-provider"
+	LabelKeyAuth0UserProviderID = "auth0.com/user-provider-id"
+
 	MetadataKeyManagedBy = "managed_by"
 
 	MetadataKeyUniAuth0OrganizationNamespace = "uni_auth0_organization_namespace"
@@ -38,6 +47,44 @@ const (
 
 	MetadataKeyUniAccountTypeUser = "user"
 )
+
+type Event struct {
+	ID     string    `json:"id"`
+	Type   string    `json:"type"`
+	Source string    `json:"source"`
+	Time   time.Time `json:"time"`
+	Data   EventData `json:"data"`
+}
+
+type EventData struct {
+	Object json.RawMessage `json:"object"`
+}
+
+type Membership struct {
+	Organization MembershipOrganization `json:"organization"`
+	User         MembershipUser         `json:"user"`
+}
+
+type MembershipOrganization struct {
+	Name *string `json:"name,omitempty"`
+	ID   *string `json:"id,omitempty"`
+}
+
+//nolint:tagliatelle
+type MembershipUser struct {
+	UserID *string `json:"user_id,omitempty"`
+}
+
+// ParseUserID splits a user ID into its provider and provider-specific ID.
+//
+//nolint:nlreturn,wsl
+func ParseUserID(userID string) (string, string, error) {
+	parts := strings.Split(userID, "|")
+	if len(parts) != 2 {
+		return "", "", ErrInvalidUserID
+	}
+	return parts[0], parts[1], nil
+}
 
 //nolint:nlreturn,wsl
 func IsStatusCodeError(err error, statusCode int) bool {

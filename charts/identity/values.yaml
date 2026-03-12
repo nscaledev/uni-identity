@@ -14,6 +14,10 @@ imagePullSecret: ~
 
 # Allows override of the identity service configuration.
 server:
+  auth0:
+    # Shared secret used to verify requests sent by the Auth0 migration webhook.
+    migrationWebhookSecret: ~
+
   # An array of extra flags to append to the server configuration.
   extraFlags: ~
 

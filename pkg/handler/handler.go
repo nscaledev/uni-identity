@@ -38,6 +38,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/roles"
 	"github.com/unikorn-cloud/identity/pkg/handler/serviceaccounts"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/handler/webhooks"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -989,6 +990,16 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWrite
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
+func (h *Handler) webhooksClient() *webhooks.Client {
+	return webhooks.NewClient(h.client, &h.options.Webhooks)
+}
+
 func (h *Handler) PostWebhooksAuth0Migration(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
+	if err := h.webhooksClient().HandleAuth0MigrationWebhook(r); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	w.WriteHeader(http.StatusOK)
 }
