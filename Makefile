@@ -19,6 +19,7 @@ CONTROLLERS = \
   unikorn-organization-user-controller \
   unikorn-auth0-organization-controller \
   unikorn-auth0-user-controller \
+  unikorn-auth0-organization-member-controller \
   unikorn-oauth2client-controller \
   unikorn-project-controller
 

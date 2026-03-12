@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-auth0-organization-member-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-auth0-organization-member-controller
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-auth0-organization-member-controller
+    spec:
+      containers:
+      - name: {{ .Release.Name }}-auth0-organization-member-controller
+        image: {{ include "unikorn.auth0OrganizationMemberControllerImage" . }}
+        args:
+        {{- include "unikorn.core.flags" . | nindent 8 }}
+        {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        - --auth0-domain={{ .Values.auth0OrganizationMemberController.auth0.domain }}
+        - --auth0-client-id={{ .Values.auth0OrganizationMemberController.auth0.clientID }}
+        - --auth0-client-secret={{ .Values.auth0OrganizationMemberController.auth0.clientSecret }}
+        resources:
+          {{- .Values.auth0OrganizationMemberController.resources | toYaml | nindent 10 }}
+        securityContext:
+          readOnlyRootFilesystem: true
+      serviceAccountName: {{ .Release.Name }}-auth0-organization-member-controller
+      securityContext:
+        runAsNonRoot: true
