@@ -11,8 +11,8 @@ rules:
   resources:
   - organizations
   verbs:
-  - list
   - get
+  - list
   - watch
   - update
   - patch
@@ -27,9 +27,19 @@ rules:
   resources:
   - namespaces
   verbs:
-  - create
   - get
   - list
   - watch
+  - create
   - delete
   - update
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - auth0organizations
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete

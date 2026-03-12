@@ -26,10 +26,10 @@ server:
       cpu: '1'
       memory: 1Gi
 
-# Organization controller specifc configuration.
+# Organization controller specific configuration.
 organizationController:
   # Allows override of the image.
-  image:
+  image: ~
 
   # Allows resource limits to be set.
   resources:
@@ -40,7 +40,7 @@ organizationController:
 # Oauth2 client controller specific configuration.
 oauth2clientController:
   # Allows override of the image.
-  image:
+  image: ~
 
   # Allows resource limits to be set.
   resources:
@@ -51,7 +51,7 @@ oauth2clientController:
 # Project controller specific configuration.
 projectController:
   # Allows override of the image.
-  image:
+  image: ~
 
   # Allows resource limits to be set.
   resources:
