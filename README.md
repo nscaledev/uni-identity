@@ -427,6 +427,31 @@ func (sm *StateManager) HandleOrganizationWithGlobalPermission(ctx context.Conte
 }
 ```
 
+### Emergency Escape Hatch
+
+In exceptional circumstances (e.g. a hotfix that must merge before contract tests can be updated), you can skip contract tests for a single PR using the `skip-contract-tests` label.
+
+**Behaviour:**
+
+| Scenario | `ProviderContractVerification` | `CanIDeploy` |
+|---|---|---|
+| Label absent | Runs normally | Runs if verification passes |
+| Label present | Skipped (neutral) | Skipped (neutral) |
+| Verification fails | Failed | Skipped |
+
+Skipped jobs are treated as neutral by GitHub branch protection, so required status checks remain satisfied.
+The label application is fully auditable in the PR timeline.
+
+**When to use:** Only when contract tests need updating but cannot block a hotfix. Remove the label once the pact is updated.
+
+**One-time setup** — create the label in GitHub → Settings → Labels:
+
+| Field | Value |
+|---|---|
+| Name | `skip-contract-tests` |
+| Description | `Use only when tests need updating but can't block a hotfix.` |
+| Color | Any distinctive colour (e.g. `#e4e669`) |
+
 ## What Next?
 
 As you've noted, objects are named based on UUIDs, therefore administration is somewhat counter intuitive, but it does allow names to be mutable.
