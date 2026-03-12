@@ -37,6 +37,17 @@ organizationController:
       cpu: 100m
       memory: 100Mi
 
+# User controller specific configuration.
+userController:
+  # Allows override of the image.
+  image: ~
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+
 # Oauth2 client controller specific configuration.
 oauth2clientController:
   # Allows override of the image.
