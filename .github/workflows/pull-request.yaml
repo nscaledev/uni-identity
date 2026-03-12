@@ -6,6 +6,7 @@ on:
     - synchronize
     - reopened
     - ready_for_review
+    - labeled
 permissions:
   contents: write
 jobs:
@@ -64,6 +65,7 @@ jobs:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
   ProviderContractVerification:
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-contract-tests') }}
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -106,6 +108,7 @@ jobs:
   CanIDeploy:
     needs: ProviderContractVerification
     runs-on: ubuntu-latest
+    if: needs.ProviderContractVerification.result == 'success'
     steps:
     - name: Checkout
       uses: actions/checkout@v4
