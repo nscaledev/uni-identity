@@ -29,7 +29,14 @@ const (
 	MetadataKeyUniAuth0OrganizationName      = "uni_auth0_organization_name"
 	MetadataKeyUniOrganizationID             = "uni_organization_id"
 
+	MetadataKeyUniAuth0UserNamespace = "uni_auth0_user_namespace"
+	MetadataKeyUniAuth0UserName      = "uni_auth0_user_name"
+	MetadataKeyUniAccountType        = "uni_account_type"
+	MetadataKeyUniAccountID          = "uni_account_id"
+
 	MetadataValueManagedByMigrationController = "migration_controller"
+
+	MetadataKeyUniAccountTypeUser = "user"
 )
 
 //nolint:nlreturn,wsl

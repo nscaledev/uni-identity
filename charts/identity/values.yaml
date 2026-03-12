@@ -77,6 +77,26 @@ auth0OrganizationController:
       cpu: 100m
       memory: 100Mi
 
+# Auth0 user controller specific configuration.
+auth0UserController:
+  # Auth0 Management API configuration used by the auth0 user controller.
+  # The configured Auth0 application must have permissions to manage Auth0 users.
+  auth0:
+    domain: ~
+    clientID: ~
+    clientSecret: ~
+    # Auth0 connection name used to store user credentials.
+    connectionName: ~
+
+  # Allows override of the image.
+  image: ~
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+
 # Oauth2 client controller specific configuration.
 oauth2clientController:
   # Allows override of the image.
