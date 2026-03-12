@@ -21,6 +21,10 @@ v{{ .Chart.Version }}
 {{- .Values.organizationUserController.image | default (printf "%s/unikorn-organization-user-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
 {{- end }}
 
+{{- define "unikorn.auth0OrganizationControllerImage" -}}
+{{- .Values.auth0OrganizationController.image | default (printf "%s/unikorn-auth0-organization-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
+{{- end }}
+
 {{- define "unikorn.oauth2clientControllerImage" -}}
 {{- .Values.oauth2clientController.image | default (printf "%s/unikorn-oauth2client-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
 {{- end }}

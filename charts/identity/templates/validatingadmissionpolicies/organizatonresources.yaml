@@ -18,6 +18,7 @@ spec:
       - organizationusers
       - projects
       - serviceaccounts
+      - auth0organizations
       operations:
       - CREATE
       - UPDATE
