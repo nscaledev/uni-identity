@@ -6,13 +6,15 @@ on:
         description: 'Docker image organization (e.g. ghcr.io/nscaledev or ghcr.io/nscaledev/daily)'
         required: false
         default: 'ghcr.io/nscaledev/daily'
-permissions:
-  contents: read
-  packages: write
 env:
   REGISTRY: ghcr.io
 jobs:
   build:
+
+    permissions:
+      contents: read
+      packages: write
+
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
