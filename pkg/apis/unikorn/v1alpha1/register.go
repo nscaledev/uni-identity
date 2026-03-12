@@ -61,6 +61,9 @@ func init() {
 	SchemeBuilder.Register(&QuotaMetadata{}, &QuotaMetadataList{})
 	SchemeBuilder.Register(&Quota{}, &QuotaList{})
 	SchemeBuilder.Register(&Allocation{}, &AllocationList{})
+	SchemeBuilder.Register(&Auth0Organization{}, &Auth0OrganizationList{})
+	SchemeBuilder.Register(&Auth0User{}, &Auth0UserList{})
+	SchemeBuilder.Register(&Auth0OrganizationMember{}, &Auth0OrganizationMemberList{})
 }
 
 // Resource maps a resource type to a group resource.
