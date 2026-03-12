@@ -67,6 +67,57 @@ spec:
             - state
             type: object
           status:
+            properties:
+              conditions:
+                description: Current service state of the resource.
+                items:
+                  description: |-
+                    Condition is a generic condition type for use across all resource types.
+                    It's generic so that the underlying controller-manager functionality can
+                    be shared across all resources.
+                  properties:
+                    lastTransitionTime:
+                      description: Last time the condition transitioned from one status
+                        to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Human-readable message indicating details about
+                        last transition.
+                      type: string
+                    reason:
+                      description: Unique, one-word, CamelCase reason for the condition's
+                        last transition.
+                      enum:
+                      - Provisioning
+                      - Provisioned
+                      - Cancelled
+                      - Errored
+                      - Deprovisioning
+                      - Deprovisioned
+                      - Unknown
+                      - Healthy
+                      - Degraded
+                      type: string
+                    status:
+                      description: |-
+                        Status is the status of the condition.
+                        Can be True, False, Unknown.
+                      type: string
+                    type:
+                      description: Type is the type of the condition.
+                      enum:
+                      - Available
+                      - Healthy
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
             type: object
         required:
         - spec

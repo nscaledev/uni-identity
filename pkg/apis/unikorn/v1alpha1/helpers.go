@@ -67,3 +67,53 @@ func (u *User) Session(clientID string) (*UserSession, error) {
 
 	return &u.Spec.Sessions[index], nil
 }
+
+// Paused implements the ReconcilePauser interface.
+func (u *User) Paused() bool {
+	return false
+}
+
+// StatusConditionRead scans the status conditions for an existing condition whose type
+// matches.
+func (u *User) StatusConditionRead(t unikornv1core.ConditionType) (*unikornv1core.Condition, error) {
+	return unikornv1core.GetCondition(u.Status.Conditions, t)
+}
+
+// StatusConditionWrite either adds or updates a condition in the cluster manager status.
+// If the condition, status and message match an existing condition the update is
+// ignored.
+func (u *User) StatusConditionWrite(t unikornv1core.ConditionType, status corev1.ConditionStatus, reason unikornv1core.ConditionReason, message string) {
+	unikornv1core.UpdateCondition(&u.Status.Conditions, t, status, reason, message)
+}
+
+// ResourceLabels generates a set of labels to uniquely identify the resource
+// if it were to be placed in a single global namespace.
+func (u *User) ResourceLabels() (labels.Set, error) {
+	//nolint:nilnil
+	return nil, nil
+}
+
+// Paused implements the ReconcilePauser interface.
+func (u *OrganizationUser) Paused() bool {
+	return false
+}
+
+// StatusConditionRead scans the status conditions for an existing condition whose type
+// matches.
+func (u *OrganizationUser) StatusConditionRead(t unikornv1core.ConditionType) (*unikornv1core.Condition, error) {
+	return unikornv1core.GetCondition(u.Status.Conditions, t)
+}
+
+// StatusConditionWrite either adds or updates a condition in the cluster manager status.
+// If the condition, status and message match an existing condition the update is
+// ignored.
+func (u *OrganizationUser) StatusConditionWrite(t unikornv1core.ConditionType, status corev1.ConditionStatus, reason unikornv1core.ConditionReason, message string) {
+	unikornv1core.UpdateCondition(&u.Status.Conditions, t, status, reason, message)
+}
+
+// ResourceLabels generates a set of labels to uniquely identify the resource
+// if it were to be placed in a single global namespace.
+func (u *OrganizationUser) ResourceLabels() (labels.Set, error) {
+	//nolint:nilnil
+	return nil, nil
+}
