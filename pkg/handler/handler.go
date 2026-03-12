@@ -988,3 +988,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDQuotas(w http.ResponseWrite
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
+
+func (h *Handler) PostWebhooksAuth0Migration(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}

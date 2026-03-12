@@ -170,6 +170,9 @@ type ServerInterface interface {
 
 	// (GET /oidc/callback)
 	GetOidcCallback(w http.ResponseWriter, r *http.Request)
+
+	// (POST /webhooks/auth0/migration)
+	PostWebhooksAuth0Migration(w http.ResponseWriter, r *http.Request)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -457,6 +460,11 @@ func (_ Unimplemented) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Reque
 
 // (GET /oidc/callback)
 func (_ Unimplemented) GetOidcCallback(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// (POST /webhooks/auth0/migration)
+func (_ Unimplemented) PostWebhooksAuth0Migration(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2062,6 +2070,20 @@ func (siw *ServerInterfaceWrapper) GetOidcCallback(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// PostWebhooksAuth0Migration operation middleware
+func (siw *ServerInterfaceWrapper) PostWebhooksAuth0Migration(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostWebhooksAuth0Migration(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -2330,6 +2352,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/oidc/callback", wrapper.GetOidcCallback)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/webhooks/auth0/migration", wrapper.PostWebhooksAuth0Migration)
 	})
 
 	return r

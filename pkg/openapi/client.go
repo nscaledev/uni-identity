@@ -285,6 +285,11 @@ type ClientInterface interface {
 
 	// GetOidcCallback request
 	GetOidcCallback(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostWebhooksAuth0MigrationWithBody request with any body
+	PostWebhooksAuth0MigrationWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostWebhooksAuth0Migration(ctx context.Context, body PostWebhooksAuth0MigrationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 func (c *Client) GetWellKnownOpenidConfiguration(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1141,6 +1146,30 @@ func (c *Client) PostOauth2V2UserinfoWithFormdataBody(ctx context.Context, body 
 
 func (c *Client) GetOidcCallback(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetOidcCallbackRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostWebhooksAuth0MigrationWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostWebhooksAuth0MigrationRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostWebhooksAuth0Migration(ctx context.Context, body PostWebhooksAuth0MigrationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostWebhooksAuth0MigrationRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3257,6 +3286,46 @@ func NewGetOidcCallbackRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewPostWebhooksAuth0MigrationRequest calls the generic PostWebhooksAuth0Migration builder with application/json body
+func NewPostWebhooksAuth0MigrationRequest(server string, body PostWebhooksAuth0MigrationJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostWebhooksAuth0MigrationRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostWebhooksAuth0MigrationRequestWithBody generates requests for PostWebhooksAuth0Migration with any type of body
+func NewPostWebhooksAuth0MigrationRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/webhooks/auth0/migration")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -3495,6 +3564,11 @@ type ClientWithResponsesInterface interface {
 
 	// GetOidcCallbackWithResponse request
 	GetOidcCallbackWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetOidcCallbackResponse, error)
+
+	// PostWebhooksAuth0MigrationWithBodyWithResponse request with any body
+	PostWebhooksAuth0MigrationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostWebhooksAuth0MigrationResponse, error)
+
+	PostWebhooksAuth0MigrationWithResponse(ctx context.Context, body PostWebhooksAuth0MigrationJSONRequestBody, reqEditors ...RequestEditorFn) (*PostWebhooksAuth0MigrationResponse, error)
 }
 
 type GetWellKnownOpenidConfigurationResponse struct {
@@ -4782,6 +4856,29 @@ func (r GetOidcCallbackResponse) StatusCode() int {
 	return 0
 }
 
+type PostWebhooksAuth0MigrationResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *externalRef0.BadRequestResponse
+	JSON500      *externalRef0.InternalServerErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PostWebhooksAuth0MigrationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostWebhooksAuth0MigrationResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 // GetWellKnownOpenidConfigurationWithResponse request returning *GetWellKnownOpenidConfigurationResponse
 func (c *ClientWithResponses) GetWellKnownOpenidConfigurationWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetWellKnownOpenidConfigurationResponse, error) {
 	rsp, err := c.GetWellKnownOpenidConfiguration(ctx, reqEditors...)
@@ -5408,6 +5505,23 @@ func (c *ClientWithResponses) GetOidcCallbackWithResponse(ctx context.Context, r
 		return nil, err
 	}
 	return ParseGetOidcCallbackResponse(rsp)
+}
+
+// PostWebhooksAuth0MigrationWithBodyWithResponse request with arbitrary body returning *PostWebhooksAuth0MigrationResponse
+func (c *ClientWithResponses) PostWebhooksAuth0MigrationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostWebhooksAuth0MigrationResponse, error) {
+	rsp, err := c.PostWebhooksAuth0MigrationWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostWebhooksAuth0MigrationResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostWebhooksAuth0MigrationWithResponse(ctx context.Context, body PostWebhooksAuth0MigrationJSONRequestBody, reqEditors ...RequestEditorFn) (*PostWebhooksAuth0MigrationResponse, error) {
+	rsp, err := c.PostWebhooksAuth0Migration(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostWebhooksAuth0MigrationResponse(rsp)
 }
 
 // ParseGetWellKnownOpenidConfigurationResponse parses an HTTP response from a GetWellKnownOpenidConfigurationWithResponse call
@@ -7722,6 +7836,39 @@ func ParseGetOidcCallbackResponse(rsp *http.Response) (*GetOidcCallbackResponse,
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest externalRef0.InternalServerErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostWebhooksAuth0MigrationResponse parses an HTTP response from a PostWebhooksAuth0MigrationWithResponse call
+func ParsePostWebhooksAuth0MigrationResponse(rsp *http.Response) (*PostWebhooksAuth0MigrationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostWebhooksAuth0MigrationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest externalRef0.BadRequestResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
