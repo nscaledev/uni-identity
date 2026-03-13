@@ -12,6 +12,8 @@ spec:
       - '*'
       resources:
       - organizationusers
+      - auth0users
+      - auth0organizationmembers
       operations:
       - CREATE
       - UPDATE

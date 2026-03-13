@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-auth0-user-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-auth0-user-controller
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-auth0-user-controller
+    spec:
+      containers:
+      - name: {{ .Release.Name }}-auth0-user-controller
+        image: {{ include "unikorn.auth0UserControllerImage" . }}
+        args:
+        {{- include "unikorn.core.flags" . | nindent 8 }}
+        {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        - --auth0-domain={{ .Values.auth0UserController.auth0.domain }}
+        - --auth0-client-id={{ .Values.auth0UserController.auth0.clientID }}
+        - --auth0-client-secret={{ .Values.auth0UserController.auth0.clientSecret }}
+        - --auth0-connection-name={{ .Values.auth0UserController.auth0.connectionName }}
+        resources:
+          {{- .Values.auth0UserController.resources | toYaml | nindent 10 }}
+        securityContext:
+          readOnlyRootFilesystem: true
+      serviceAccountName: {{ .Release.Name }}-auth0-user-controller
+      securityContext:
+        runAsNonRoot: true

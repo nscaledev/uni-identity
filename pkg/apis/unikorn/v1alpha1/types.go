@@ -332,6 +332,8 @@ type UserSession struct {
 }
 
 type UserStatus struct {
+	// Current service state of the resource.
+	Conditions []unikornv1core.Condition `json:"conditions,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -361,6 +363,8 @@ type OrganizationUserSpec struct {
 }
 
 type OrganizationUserStatus struct {
+	// Current service state of the resource.
+	Conditions []unikornv1core.Condition `json:"conditions,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

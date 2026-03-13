@@ -988,6 +988,9 @@ type GetApiV1OrganizationsParams struct {
 	Email *UserEmailParameter `form:"email,omitempty" json:"email,omitempty"`
 }
 
+// PostWebhooksAuth0MigrationJSONBody defines parameters for PostWebhooksAuth0Migration.
+type PostWebhooksAuth0MigrationJSONBody map[string]interface{}
+
 // PostApiV1OrganizationsJSONRequestBody defines body for PostApiV1Organizations for application/json ContentType.
 type PostApiV1OrganizationsJSONRequestBody = OrganizationWrite
 
@@ -1047,3 +1050,6 @@ type PostOauth2V2TokenFormdataRequestBody = TokenRequestOptions
 
 // PostOauth2V2UserinfoFormdataRequestBody defines body for PostOauth2V2Userinfo for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2UserinfoFormdataRequestBody = UserinfoRequestOptions
+
+// PostWebhooksAuth0MigrationJSONRequestBody defines body for PostWebhooksAuth0Migration for application/json ContentType.
+type PostWebhooksAuth0MigrationJSONRequestBody PostWebhooksAuth0MigrationJSONBody

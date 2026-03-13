@@ -19,6 +19,9 @@ rules:
   - serviceaccounts
   - users
   - organizationusers
+  - auth0organizations
+  - auth0users
+  - auth0organizationmembers
   verbs:
   - list
   - watch
@@ -26,6 +29,15 @@ rules:
   - patch
   - create
   - delete
+# These are for the Auth0 migration webhooks.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - auth0organizations/status
+  - auth0users/status
+  - auth0organizationmembers/status
+  verbs:
+  - patch
 # These are special, hopefully temporarily...
 - apiGroups:
   - identity.unikorn-cloud.org

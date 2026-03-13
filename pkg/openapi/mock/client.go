@@ -1140,6 +1140,46 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2UserinfoWith
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostOauth2V2UserinfoWithFormdataBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostOauth2V2UserinfoWithFormdataBodyWithResponse), varargs...)
 }
 
+// PostWebhooksAuth0MigrationWithBodyWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) PostWebhooksAuth0MigrationWithBodyWithResponse(arg0 context.Context, arg1 string, arg2 io.Reader, arg3 ...openapi.RequestEditorFn) (*openapi.PostWebhooksAuth0MigrationResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1, arg2}
+	for _, a := range arg3 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "PostWebhooksAuth0MigrationWithBodyWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.PostWebhooksAuth0MigrationResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PostWebhooksAuth0MigrationWithBodyWithResponse indicates an expected call of PostWebhooksAuth0MigrationWithBodyWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) PostWebhooksAuth0MigrationWithBodyWithResponse(arg0, arg1, arg2 any, arg3 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1, arg2}, arg3...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostWebhooksAuth0MigrationWithBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostWebhooksAuth0MigrationWithBodyWithResponse), varargs...)
+}
+
+// PostWebhooksAuth0MigrationWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) PostWebhooksAuth0MigrationWithResponse(arg0 context.Context, arg1 openapi.PostWebhooksAuth0MigrationJSONRequestBody, arg2 ...openapi.RequestEditorFn) (*openapi.PostWebhooksAuth0MigrationResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1}
+	for _, a := range arg2 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "PostWebhooksAuth0MigrationWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.PostWebhooksAuth0MigrationResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PostWebhooksAuth0MigrationWithResponse indicates an expected call of PostWebhooksAuth0MigrationWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) PostWebhooksAuth0MigrationWithResponse(arg0, arg1 any, arg2 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1}, arg2...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostWebhooksAuth0MigrationWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostWebhooksAuth0MigrationWithResponse), varargs...)
+}
+
 // PutApiV1OrganizationsOrganizationIDGroupsGroupidWithBodyWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDGroupsGroupidWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
 	m.ctrl.T.Helper()

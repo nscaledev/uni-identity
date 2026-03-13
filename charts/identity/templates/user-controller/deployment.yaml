@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-user-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-user-controller
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-user-controller
+    spec:
+      containers:
+      - name: {{ .Release.Name }}-user-controller
+        image: {{ include "unikorn.userControllerImage" . }}
+        args:
+        {{- include "unikorn.core.flags" . | nindent 8 }}
+        {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        resources:
+          {{- .Values.userController.resources | toYaml | nindent 10 }}
+        securityContext:
+          readOnlyRootFilesystem: true
+      serviceAccountName: {{ .Release.Name }}-user-controller
+      securityContext:
+        runAsNonRoot: true

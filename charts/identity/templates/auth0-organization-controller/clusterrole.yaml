@@ -1,0 +1,31 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-auth0-organization-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - auth0organizations
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - auth0organizations/status
+  verbs:
+  - update
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - organizations
+  verbs:
+  - get
+  - list
+  - watch
