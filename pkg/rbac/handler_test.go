@@ -1101,31 +1101,12 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 			ErrorChecker:   coreerrors.IsAccessDenied,
 		},
 		{
-			Name: "Accept: global scope grants access, project exists",
-			ACL:  aclWithGlobalScope,
-			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
-				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
-					Return(projectOKResponse, nil)
-			},
+			Name:           "Accept: global scope grants access, no API call made",
+			ACL:            aclWithGlobalScope,
 			OrganizationID: organizationID,
 			ProjectID:      projectID,
 			Resource:       resourceType1,
 			Operation:      openapi.Create,
-		},
-		{
-			Name: "Reject: global scope grants access, project does not exist",
-			ACL:  aclWithGlobalScope,
-			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
-				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
-					Return(projectNotFoundResponse, nil)
-			},
-			OrganizationID: organizationID,
-			ProjectID:      projectID,
-			Resource:       resourceType1,
-			Operation:      openapi.Create,
-			ErrorChecker:   coreerrors.IsHTTPNotFound,
 		},
 		{
 			Name:           "Reject: no scope grants access, no API call made",

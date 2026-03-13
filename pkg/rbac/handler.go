@@ -162,9 +162,10 @@ func isAllowedByProjectACL(ctx context.Context, endpoint string, operation opena
 
 // AllowProjectScopeCreate is like AllowProjectScope but intended for v2 create operations
 // where the project ID is supplied in the request body rather than the URL path.  When
-// access is granted via a global or organization-scoped ACL the project ID is untrusted
-// user input, so this function additionally verifies the project exists via the identity
-// API before returning nil.
+// access is granted via an organization-scoped ACL the project ID is untrusted user input,
+// so this function additionally verifies the project exists via the identity API before
+// returning nil.  Global-scope callers (platform administrators) are exempt from this
+// check and their supplied project ID is trusted directly.
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
@@ -177,8 +178,15 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 		return err
 	}
 
-	// Access is granted via elevated scope, but the project ID is untrusted — verify
-	// it exists via the identity API.
+	// Global-scope callers are platform administrators with unconditional trust.
+	// Skip the identity API call: the compute service account may not hold
+	// identity:projects/Read, and global admins are already fully trusted.
+	if AllowGlobalScope(ctx, endpoint, operation) == nil {
+		return nil
+	}
+
+	// Access is granted via organization-scoped ACL, but the project ID is untrusted —
+	// verify it exists via the identity API.
 	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, organizationID, projectID)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to verify project exists").WithError(err)
