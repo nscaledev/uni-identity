@@ -193,12 +193,14 @@ roles:
     scopes:
       global:
         identity:allocations: [create,read,update,delete]
+        identity:projects: [read]
         identity:projects/references: [create,delete]
   kubernetes-service:
     description: Kubernetes service
     protected: true
     scopes:
       global:
+        identity:projects: [read]
         identity:projects/references: [create,delete]
         identity:allocations: [create,read,update,delete]
         region:identities: [create,read,delete] # TODO: Create/delete V1 only
@@ -214,6 +216,7 @@ roles:
     protected: true
     scopes:
       global:
+        identity:projects: [read]
         identity:allocations: [create,read,update,delete]
         region:identities: [create,read,delete] # TODO: V2 delete me, created by network
         region:regions: [read]
@@ -249,6 +252,7 @@ roles:
         region:networks:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
         region:filestorageclass:v2: [read]
+        region:flavors: [read]
         region:images: [read,create,delete]
         region:securitygroups:v2: [create,read,update,delete]
         kubernetes:regions: [read]
@@ -277,6 +281,7 @@ roles:
         region:networks:v2: [read]
         region:filestorage:v2: [read]
         region:filestorageclass:v2: [read]
+        region:flavors: [read]
         region:images: [read]
         region:securitygroups:v2: [read]
         kubernetes:regions: [read]
@@ -298,6 +303,7 @@ roles:
         identity:quotas: [read]
         region:regions: [read]
         region:filestorageclass:v2: [read]
+        region:flavors: [read]
         region:images: [read,create,delete]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
@@ -325,6 +331,7 @@ roles:
         identity:quotas: [read]
         region:regions: [read]
         region:filestorageclass:v2: [read]
+        region:flavors: [read]
         region:images: [read]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
