@@ -33,6 +33,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -211,6 +212,10 @@ func (c *Client) Update(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return nil, errors.HTTPConflict().WithError(err)
+		}
+
 		return nil, fmt.Errorf("%w: failed to patch quotas", err)
 	}
 

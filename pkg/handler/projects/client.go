@@ -198,6 +198,10 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 	updated.Spec = required.Spec
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
 		return fmt.Errorf("%w: failed to patch project", err)
 	}
 
@@ -251,6 +255,10 @@ func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID,
 	}
 
 	if err := c.client.Update(ctx, resource); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
 		return fmt.Errorf("%w: failed to update project", err)
 	}
 
