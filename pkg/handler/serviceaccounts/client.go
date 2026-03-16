@@ -228,6 +228,10 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 		}
 
 		if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+			if kerrors.IsConflict(err) {
+				return errors.HTTPConflict().WithError(err)
+			}
+
 			return fmt.Errorf("%w: failed to patch group", err)
 		}
 	}
@@ -336,6 +340,10 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.AccessToken = current.Spec.AccessToken
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return nil, errors.HTTPConflict().WithError(err)
+		}
+
 		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 
@@ -374,7 +382,11 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 	updated.Spec.AccessToken = tokens.AccessToken
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
-		return nil, fmt.Errorf("%w: failed to patch group", err)
+		if kerrors.IsConflict(err) {
+			return nil, errors.HTTPConflict().WithError(err)
+		}
+
+		return nil, fmt.Errorf("%w: failed to patch service account", err)
 	}
 
 	c.oauth2.InvalidateToken(ctx, current.Spec.AccessToken)
