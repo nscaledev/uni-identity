@@ -20,6 +20,7 @@ package rbac
 import (
 	"context"
 	goerrors "errors"
+	"fmt"
 	"net/http"
 	"slices"
 
@@ -49,7 +50,7 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 		return nil
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching endpoint)")
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' is not permitted", operation, endpoint))
 }
 
 // AllowGlobalScope tries to allow the requested operation at the global scope.
@@ -57,7 +58,7 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 	acl := FromContext(ctx)
 
 	if acl.Global == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no global endpoints)")
+		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — no global-scope permissions are granted to this principal", operation, endpoint))
 	}
 
 	return operationAllowedByEndpoints(*acl.Global, endpoint, operation)
@@ -73,7 +74,7 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 	acl := FromContext(ctx)
 
 	if acl.Organizations == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no organizations defined)")
+		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — this principal has no organization-scope permissions", operation, endpoint))
 	}
 
 	for _, organization := range *acl.Organizations {
@@ -82,13 +83,13 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 		}
 
 		if organization.Endpoints == nil {
-			return errors.HTTPForbidden("operation is not allowed by rbac (no organizations endpoints)")
+			return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — no endpoints are granted at organization scope", operation, endpoint))
 		}
 
 		return operationAllowedByEndpoints(*organization.Endpoints, endpoint, operation)
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching organization endpoint)")
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — organization is not in this principal's accessible set", operation, endpoint))
 }
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
@@ -101,7 +102,7 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 	acl := FromContext(ctx)
 
 	if acl.Organizations == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no organizations defined)")
+		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — this principal has no organization-scope permissions", operation, endpoint))
 	}
 
 	for _, organization := range *acl.Organizations {
@@ -126,7 +127,7 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 		}
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching project endpoints)")
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — project is not in this principal's accessible set", operation, endpoint))
 }
 
 // isAllowedByProjectACL checks only the project-level ACL entries for a specific project,
