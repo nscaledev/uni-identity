@@ -191,6 +191,10 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 
 		if needsPatching {
 			if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+				if kerrors.IsConflict(err) {
+					return errors.HTTPConflict().WithError(err)
+				}
+
 				return fmt.Errorf("%w: failed to patch group", err)
 			}
 		}
@@ -750,6 +754,18 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users
 	return convertList(result, users, groups)
 }
 
+func (c *Client) patchOrganizationUser(ctx context.Context, updated, current *unikornv1.OrganizationUser) error {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to patch user", err)
+	}
+
+	return nil
+}
+
 // Update modifies any metadata for the user if it exists.  If a matching account
 // doesn't exist it raises an error.
 func (c *Client) Update(ctx context.Context, organizationID, userID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
@@ -782,8 +798,8 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
-		return nil, fmt.Errorf("%w: failed to patch group", err)
+	if err := c.patchOrganizationUser(ctx, updated, current); err != nil {
+		return nil, err
 	}
 
 	groups, err := c.listGroups(ctx, organization)

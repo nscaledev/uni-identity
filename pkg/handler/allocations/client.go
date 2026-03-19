@@ -257,6 +257,10 @@ func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allo
 	}
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return nil, errors.HTTPConflict().WithError(err)
+		}
+
 		return nil, fmt.Errorf("%w: failed to patch allocation", err)
 	}
 

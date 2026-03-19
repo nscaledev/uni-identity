@@ -57,18 +57,25 @@ type References struct {
 	serviceDescriptor util.ServiceDescriptor
 	serverOptions     *coreclient.HTTPOptions
 	clientOptions     *coreclient.HTTPClientOptions
+	clientFactory     func(ctx context.Context, c client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error)
 }
 
 func NewReferences(serviceDescriptor util.ServiceDescriptor, serverOptions *coreclient.HTTPOptions, clientOptions *coreclient.HTTPClientOptions) *References {
-	return &References{
+	r := &References{
 		serviceDescriptor: serviceDescriptor,
 		serverOptions:     serverOptions,
 		clientOptions:     clientOptions,
 	}
+
+	r.clientFactory = func(ctx context.Context, c client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error) {
+		return New(c, r.serverOptions, r.clientOptions).ControllerClient(ctx, resource)
+	}
+
+	return r
 }
 
-func (r *References) httpClient(ctx context.Context, client client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error) {
-	return New(client, r.serverOptions, r.clientOptions).ControllerClient(ctx, resource)
+func (r *References) httpClient(ctx context.Context, c client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error) {
+	return r.clientFactory(ctx, c, resource)
 }
 
 func (r *References) AddReferenceToProject(ctx context.Context, resource client.Object) error {
@@ -130,9 +137,10 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 		return err
 	}
 
-	if response.StatusCode() != http.StatusNoContent {
+	switch response.StatusCode() {
+	case http.StatusNoContent, http.StatusNotFound:
+		return nil
+	default:
 		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
-
-	return nil
 }
