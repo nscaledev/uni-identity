@@ -1,0 +1,4 @@
+# Helm value overrides applied during integration testing.
+# Passed to hack/ci/install via --values.
+systemAccounts:
+  ci-fixtures: platform-administrator

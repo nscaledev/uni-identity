@@ -347,6 +347,25 @@ The recommended way to do this is:
   * Ensure the role is marked as protected to prevent it being exposed via the API, otherwise you may inadvertently end up allowing users to see into other organizations.
   * These can be granted to platform administrators via the `platformAdministrators.roles` list in the Identity Helm chart.
 
+## Integration Testing
+
+A KinD-based integration test suite validates the full deployment end-to-end: Helm chart
+correctness, RBAC enforcement via real HTTP requests, and controller reconciliation. It runs
+automatically on every pull request via `.github/workflows/integration.yaml`.
+
+To run locally before opening a PR:
+
+```sh
+# One-time cluster setup
+make kind-cluster integration-infra
+
+# Deploy, create fixtures, run tests
+make integration-install integration-fixtures test-api-ci
+```
+
+See [`docs/integration-testing.md`](docs/integration-testing.md) for the full local developer
+guide, including prerequisites, iterative workflows, and troubleshooting.
+
 ## Contract Testing
 
 uni-identity acts as a provider for consumer services like uni-region. Contract tests verify that uni-identity satisfies the expectations defined by consumers.

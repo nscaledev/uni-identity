@@ -25,8 +25,11 @@ import (
 // TestConfig extends the base config with Identity-specific fields.
 type TestConfig struct {
 	coreconfig.BaseConfig
-	OrgID     string
-	ProjectID string
+	AdminToken string
+	UserToken  string
+	OrgID      string
+	ProjectID  string
+	UserSAID   string
 }
 
 // LoadTestConfig loads configuration from environment variables and .env files using viper.
@@ -57,7 +60,7 @@ func LoadTestConfig() (*TestConfig, error) {
 	config := &TestConfig{
 		BaseConfig: coreconfig.BaseConfig{
 			BaseURL:         v.GetString("IDENTITY_BASE_URL"),
-			AuthToken:       v.GetString("API_AUTH_TOKEN"),
+			AuthToken:       firstNonEmpty(v.GetString("API_AUTH_TOKEN"), v.GetString("ADMIN_AUTH_TOKEN")),
 			RequestTimeout:  coreconfig.GetDurationFromViper(v, "REQUEST_TIMEOUT", 30*time.Second),
 			TestTimeout:     coreconfig.GetDurationFromViper(v, "TEST_TIMEOUT", 20*time.Minute),
 			SkipIntegration: v.GetBool("SKIP_INTEGRATION"),
@@ -65,8 +68,11 @@ func LoadTestConfig() (*TestConfig, error) {
 			LogRequests:     v.GetBool("LOG_REQUESTS"),
 			LogResponses:    v.GetBool("LOG_RESPONSES"),
 		},
-		OrgID:     v.GetString("TEST_ORG_ID"),
-		ProjectID: v.GetString("TEST_PROJECT_ID"),
+		AdminToken: firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN")),
+		UserToken:  v.GetString("USER_AUTH_TOKEN"),
+		OrgID:      v.GetString("TEST_ORG_ID"),
+		ProjectID:  v.GetString("TEST_PROJECT_ID"),
+		UserSAID:   v.GetString("TEST_USER_SA_ID"),
 	}
 
 	// Validate required fields
@@ -81,4 +87,14 @@ func LoadTestConfig() (*TestConfig, error) {
 	}
 
 	return config, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+
+	return ""
 }

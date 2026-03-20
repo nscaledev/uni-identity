@@ -31,9 +31,11 @@ import (
 )
 
 var (
-	client *api.APIClient
-	ctx    context.Context
-	config *api.TestConfig
+	client      *api.APIClient
+	adminClient *api.APIClient
+	userClient  *api.APIClient
+	ctx         context.Context
+	config      *api.TestConfig
 )
 
 var _ = BeforeEach(func() {
@@ -41,6 +43,21 @@ var _ = BeforeEach(func() {
 	config, err = api.LoadTestConfig()
 	Expect(err).NotTo(HaveOccurred(), "Failed to load test configuration")
 	client = api.NewAPIClientWithConfig(config)
+	adminClient = client
+	userClient = nil
+
+	if config.AdminToken != "" && config.AdminToken != config.AuthToken {
+		adminConfig := *config
+		adminConfig.AuthToken = config.AdminToken
+		adminClient = api.NewAPIClientWithConfig(&adminConfig)
+	}
+
+	if config.UserToken != "" {
+		userConfig := *config
+		userConfig.AuthToken = config.UserToken
+		userClient = api.NewAPIClientWithConfig(&userConfig)
+	}
+
 	ctx = context.Background()
 })
 

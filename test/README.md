@@ -1,76 +1,104 @@
-# Identity API Integration Tests
+# Identity Integration Tests
 
-The identity service includes API integration tests.
+Identity now has a single main integration suite: `test/api`.
 
-## Test Configuration
+The suite can run in two modes:
 
-Tests are configured via environment variables using a `.env` file in the `test/` directory.
+1. **Per-PR kind CI**: the GitHub Actions integration workflow creates a fresh KinD cluster,
+   deploys identity, creates fixtures, and runs `make test-api-ci`.
+2. **Manual / triggered mode**: provide `test/.env` yourself and run the same `test/api` suite
+   against an existing environment.
 
-### Setup
+This keeps one test suite and two execution modes, rather than maintaining separate `api` and
+`e2e` test trees.
 
-1. **Set up your environment configuration:**
+## Current Execution Modes
 
-   Copy the example config and update with your values:
-   ```bash
-   cp test/.env.example test/.env
-   ```
+### Per-PR kind CI
 
-   Or create environment-specific files (not tracked in git):
-   ```bash
-   # Create .env.dev with your dev credentials
-   cp test/.env.example test/.env.dev
-   # Edit test/.env.dev with dev values
+The integration workflow in
+[`../.github/workflows/integration.yaml`](../.github/workflows/integration.yaml)
+runs on every pull request and executes:
 
-   # Create .env.uat with your UAT credentials
-   cp test/.env.example test/.env.uat
-   # Edit test/.env.uat with UAT values
+```sh
+make kind-cluster
+make integration-infra
+make integration-install
+make integration-fixtures
+make test-api-ci
+```
 
-   # Use the appropriate environment
-   cp test/.env.dev test/.env    # For dev environment
-   cp test/.env.uat test/.env    # For UAT environment
-   ```
+In practice the workflow invokes the underlying scripts directly, but the behaviour is the same:
 
-2. **Configure the required values in `test/.env`:**
-   - `IDENTITY_BASE_URL` - Identity API server URL
-   - `API_AUTH_TOKEN` - Service token from console
-   - `TEST_ORG_ID`, `TEST_PROJECT_ID` - Test organization and project IDs
+- create an isolated KinD cluster
+- install cert-manager, ingress-nginx, and unikorn-core
+- deploy identity with a random namespace and release name
+- create fixtures via mTLS
+- write `test/.env`
+- run the main `test/api` suite
 
-**Note:** All `test/.env` and `test/.env.*` files are gitignored and contain sensitive credentials. They should never be committed to the repository.
+### Manual / triggered mode
 
-## Running Tests Locally
+This mode is for developers or manually triggered jobs that point at an existing environment.
 
-Run from project root:
+Create `test/.env` yourself and run:
 
-**Run all tests:**
-```bash
+```sh
 make test-api
 ```
 
-**Run tests with verbose output:**
-```bash
-make test-api-verbose
+Required variables:
+
+- `IDENTITY_BASE_URL`
+- `API_AUTH_TOKEN`
+- `TEST_ORG_ID`
+- `TEST_PROJECT_ID`
+
+Optional variables for richer coverage:
+
+- `ADMIN_AUTH_TOKEN`
+- `USER_AUTH_TOKEN`
+- `TEST_USER_SA_ID`
+- `IDENTITY_CA_CERT`
+
+Notes:
+
+- `API_AUTH_TOKEN` remains the backward-compatible input for the main suite.
+- `ADMIN_AUTH_TOKEN` is also accepted and is used by the KinD fixture flow.
+- When `IDENTITY_CA_CERT` is set, the Make targets export `SSL_CERT_FILE` so Go HTTP clients trust
+  the test CA issued by the KinD environment.
+
+## Local KinD Flow
+
+For local kind or Colima usage, use the guide in
+[`../docs/integration-testing.md`](../docs/integration-testing.md).
+
+The recommended local command sequence is:
+
+```sh
+make integration-install integration-fixtures test-api-ci
 ```
 
-**Run specific test suite using focus:**
-```bash
-# Example: Run only organization discovery tests
-make test-api-focus FOCUS="Organization Discovery"
+Or all at once on KinD:
+
+```sh
+make integration-test
 ```
 
-**Run specific test spec using focus:**
-```bash
-# Example: Run only the return all organizations test spec
-make test-api-focus FOCUS="should return all accessible organizations"
-```
+## Upgrade Path
 
-**Run tests in parallel:**
-```bash
-make test-api-parallel
-```
+The repository is in a transition from multiple test entry points toward one main way of running
+integration coverage.
 
-## Cleaning Up Test Artifacts
+Current state:
 
-Remove test artifacts:
-```bash
-make test-api-clean
-```
+- PR validation uses a fresh kind-backed deployment and runs `test/api`
+- manual and legacy jobs can still provide `test/.env` and run `test/api`
+- cluster creation remains `kind-cluster`; deployment and fixtures use neutral `integration-*` names
+
+Target state:
+
+- `test/api` is the only integration suite
+- local development, PR CI, and manually triggered jobs all execute the same suite
+- kind-backed deployment becomes the default execution model wherever practical
+- remaining legacy naming is removed once downstream jobs have migrated
