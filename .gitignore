@@ -13,4 +13,11 @@ test/.env.*
 !test/.env.example
 test/api/suites/test-results.json
 test/api/suites/junit.xml
-test/api/suites/suites.test
+test/e2e/junit.xml
+test/e2e/test-results.json
+test/**/*.test
+junit.xml
+test-results.json
+
+# CI infrastructure — generated per cluster run, not committed
+hack/ci/ca-bundle.pem

@@ -150,15 +150,22 @@ func hasHTTPAuthorization(r *http.Request) bool {
 
 // aclCacheKey returns the key to use when caching an ACL. For impersonated calls
 // the key is the end-user actor so that each user gets their own cache entry
-// rather than sharing the calling service's entry.
-func aclCacheKey(ctx context.Context, info *authorization.Info) string {
+// rather than sharing the calling service's entry. Organization scope must also
+// be part of the key, otherwise unscoped ACLs can be incorrectly reused for
+// /organizations/{id}/acl and other scoped routes.
+func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) string {
+	scope := organizationID
+	if scope == "" {
+		scope = "_global"
+	}
+
 	if principal.ImpersonateFromContext(ctx) {
 		if p, err := principal.FromContext(ctx); err == nil && p.Actor != "" {
-			return p.Actor
+			return p.Actor + "|" + scope
 		}
 	}
 
-	return info.Userinfo.Sub
+	return info.Userinfo.Sub + "|" + scope
 }
 
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
@@ -235,7 +242,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 		}
 
 		// This happens every call, so do some caching to improve throughput.
-		cacheKey := aclCacheKey(ctx, info)
+		cacheKey := aclCacheKey(ctx, info, params["organizationID"])
 
 		acl, ok := v.acls.Get(cacheKey)
 		if !ok {
