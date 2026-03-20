@@ -86,6 +86,8 @@ OPENAPI_FILES = \
         pkg/openapi/router.go
 
 MOCKGEN_VERSION=v0.3.0
+GINKGO_VERSION := $(shell awk '$$1 == "github.com/onsi/ginkgo/v2" { print $$2; exit }' go.mod)
+GOMEGA_VERSION := $(shell awk '$$1 == "github.com/onsi/gomega" { print $$2; exit }' go.mod)
 
 # This is the base directory to generate kubernetes API primitives from e.g.
 # clients and CRDs.
@@ -141,7 +143,7 @@ images-push: images
 
 .PHONY: images-kind-load
 images-kind-load: images
-	for image in ${CONTROLLERS}; do kind load docker-image ${DOCKER_ORG}/$${image}:${VERSION}; done
+	for image in ${CONTROLLERS}; do kind load docker-image --name $(KIND_CLUSTER) ${DOCKER_ORG}/$${image}:${VERSION}; done
 
 .PHONY: test
 test: test-unit
@@ -221,32 +223,44 @@ GINKGO_INTEGRATION_TEST_FLAGS = --json-report=test-results.json --junit-report=j
 
 .PHONY: test-api
 test-api: test-api-setup
-	cd test/api/suites && ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS)
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
 .PHONY: test-api-verbose
 test-api-verbose: test-api-setup
-	cd test/api/suites && ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS)
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
 .PHONY: test-api-focus
 test-api-focus: test-api-setup
-	cd test/api/suites && LOG_REQUESTS=true LOG_RESPONSES=true ginkgo run -v --focus="$(FOCUS)" $(GINKGO_INTEGRATION_TEST_FLAGS)
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	LOG_REQUESTS=true LOG_RESPONSES=true ginkgo run -v --focus="$(FOCUS)" $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
 .PHONY: test-api-suite
 test-api-suite: test-api-setup
-	cd test/api/suites && ginkgo run $(SUITE) $(GINKGO_INTEGRATION_TEST_FLAGS)
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run $(SUITE) $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
 .PHONY: test-api-parallel
 test-api-parallel: test-api-setup
-	cd test/api/suites && ginkgo run --procs=4 $(GINKGO_INTEGRATION_TEST_FLAGS)
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run --procs=4 $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
 .PHONY: test-api-ci
 test-api-ci: test-api-setup
-	cd test/api/suites && ginkgo run --randomize-all --randomize-suites --race $(GINKGO_INTEGRATION_TEST_FLAGS) --output-interceptor-mode=none
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run --randomize-all --randomize-suites --race $(GINKGO_INTEGRATION_TEST_FLAGS) --output-interceptor-mode=none ./test/api/suites/
 
 .PHONY: test-api-setup
 test-api-setup:
-	@go install github.com/onsi/ginkgo/v2/ginkgo@latest
-	@go install github.com/onsi/gomega/...@latest
+	@go install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
+	@go install github.com/onsi/gomega/...@$(GOMEGA_VERSION)
 
 # Clean test artifacts
 .PHONY: test-api-clean
@@ -399,3 +413,38 @@ test-contracts-clean:
 	@rm -f test/contracts/provider/**/*.test
 	@rm -rf test/contracts/provider/**/pacts
 
+# ── Integration testing ───────────────────────────────────────────────────────
+
+KIND_CLUSTER   ?= identity-test
+KIND_SUFFIX    ?= $(shell head /dev/urandom | tr -dc a-z0-9 | head -c 8 2>/dev/null || echo local)
+KIND_NAMESPACE ?= unikorn-identity-$(KIND_SUFFIX)
+KIND_RELEASE   ?= identity-$(KIND_SUFFIX)
+
+.PHONY: kind-cluster
+kind-cluster:  ## Create KinD cluster (skips if KIND_CLUSTER already exists)
+	kind get clusters | grep -q '^$(KIND_CLUSTER)$$' || \
+	  kind create cluster --name $(KIND_CLUSTER) --config hack/ci/kind-config.yaml
+
+.PHONY: integration-infra
+integration-infra:  ## Install cluster prerequisites (idempotent, context-aware)
+	hack/ci/setup-infra
+
+.PHONY: integration-install
+integration-install:  ## Deploy identity into the current cluster with random namespace/release name
+	hack/ci/install \
+	  --namespace $(KIND_NAMESPACE) \
+	  --release-name $(KIND_RELEASE) \
+	  --values hack/ci/test-values.yaml \
+	  > test/.env.install
+
+.PHONY: integration-fixtures
+integration-fixtures:  ## Create integration fixtures and write test/.env
+	. test/.env.install && \
+	go run ./hack/ci/fixtures/... \
+	  --base-url "$$IDENTITY_BASE_URL" \
+	  --namespace "$$IDENTITY_NAMESPACE" \
+	  --ca-cert "$$IDENTITY_CA_CERT" \
+	  > test/.env
+
+.PHONY: integration-test
+integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci  ## Full local integration run

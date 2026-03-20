@@ -98,8 +98,11 @@ var _ = Describe("Access Control Discovery", func() {
 
 	Context("When getting organization ACL", func() {
 		Describe("Given valid organization", func() {
-			It("should return organization-scoped ACL with detailed permissions", func() {
-				acl, err := client.GetOrganizationACL(ctx, config.OrgID)
+			It("should return organization-scoped ACL with endpoint permissions", func() {
+				// adminClient is used explicitly: org-ACL content reflects the caller's effective
+				// role within the organization.  An administrator token reliably produces a
+				// non-empty acl.Organization.Endpoints list.
+				acl, err := adminClient.GetOrganizationACL(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(acl).NotTo(BeNil())
@@ -135,20 +138,28 @@ var _ = Describe("Access Control Discovery", func() {
 		})
 
 		Describe("Given invalid organization ID", func() {
-			It("should return empty ACL for non-existent organization", func() {
-				acl, err := client.GetOrganizationACL(ctx, "00000000-0000-0000-0000-000000000000")
+			It("should fall back to global ACL content without scoped organization details", func() {
+				acl, err := adminClient.GetOrganizationACL(ctx, "00000000-0000-0000-0000-000000000000")
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(acl).NotTo(BeNil())
+				Expect(acl.Organization).To(BeNil(),
+					"Organization field should be absent when the requested organization is not in scope")
+				Expect(acl.Organizations).NotTo(BeNil(),
+					"Organizations ACL should still be present for the caller")
+				Expect(*acl.Organizations).NotTo(BeEmpty(),
+					"At least one organization should still be visible in the fallback ACL")
 
-				if acl.Organization != nil {
-					Expect(acl.Organization.Id).To(Equal("00000000-0000-0000-0000-000000000000"))
-					if acl.Organization.Endpoints != nil {
-						GinkgoWriter.Printf("Non-existent org ACL has %d endpoints\n", len(*acl.Organization.Endpoints))
+				found := false
+				for _, org := range *acl.Organizations {
+					if org.Id == config.OrgID {
+						found = true
+						break
 					}
 				}
 
-				GinkgoWriter.Printf("Non-existent organization returns valid (but likely empty) ACL\n")
+				Expect(found).To(BeTrue(),
+					"Fallback ACL should still include the caller's real organization %s", config.OrgID)
 			})
 		})
 	})

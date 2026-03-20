@@ -45,6 +45,11 @@ type APIClient struct {
 	endpoints *Endpoints
 }
 
+// GetEndpoints returns the endpoints helper for direct path access in tests.
+func (c *APIClient) GetEndpoints() *Endpoints {
+	return c.endpoints
+}
+
 // GetListOrganizationsPath returns the path for listing organizations.
 // This is useful for tests that need direct access to the endpoint path.
 func (c *APIClient) GetListOrganizationsPath() string {
