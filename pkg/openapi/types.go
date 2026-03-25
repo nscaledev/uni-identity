@@ -59,9 +59,10 @@ const (
 
 // Defines values for GrantType.
 const (
-	AuthorizationCode GrantType = "authorization_code"
-	ClientCredentials GrantType = "client_credentials"
-	RefreshToken      GrantType = "refresh_token"
+	AuthorizationCode                        GrantType = "authorization_code"
+	ClientCredentials                        GrantType = "client_credentials"
+	RefreshToken                             GrantType = "refresh_token"
+	UrnIetfParamsOauthGrantTypeTokenExchange GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Defines values for Oauth2ErrorError.
@@ -729,6 +730,9 @@ type Token struct {
 	// IdToken An OIDC ID token.
 	IdToken *string `json:"id_token,omitempty"`
 
+	// IssuedTokenType The type of the issued token (RFC 8693).
+	IssuedTokenType *string `json:"issued_token_type,omitempty"`
+
 	// RefreshToken The opaque refresh token.
 	RefreshToken *string `json:"refresh_token,omitempty"`
 
@@ -738,6 +742,9 @@ type Token struct {
 
 // TokenRequestOptions OAuth 2.0 token request.
 type TokenRequestOptions struct {
+	// Audience The target audience for the requested token.
+	Audience *string `json:"audience"`
+
 	// ClientId Client ID. Required with the "code" and "refresh_token" grant types.
 	ClientId *string `json:"client_id"`
 
@@ -750,7 +757,7 @@ type TokenRequestOptions struct {
 	// CodeVerifier Client code verifier.
 	CodeVerifier *string `json:"code_verifier"`
 
-	// GrantType Supported grant type.  Must be either "code", "refresh_token" or "client_credentials".
+	// GrantType Supported grant type.
 	GrantType string `json:"grant_type"`
 
 	// RedirectUri Client redirect URI. Required with the "code" grant type.
@@ -758,6 +765,15 @@ type TokenRequestOptions struct {
 
 	// RefreshToken A refresh token for the "refresh_token" grant type.
 	RefreshToken *string `json:"refresh_token"`
+
+	// RequestedTokenType The desired type of the issued token.
+	RequestedTokenType *string `json:"requested_token_type"`
+
+	// SubjectToken The subject token for the "urn:ietf:params:oauth:grant-type:token-exchange" grant type (RFC 8693).
+	SubjectToken *string `json:"subject_token"`
+
+	// SubjectTokenType The type of the subject token (e.g. "urn:ietf:params:oauth:token-type:access_token").
+	SubjectTokenType *string `json:"subject_token_type"`
 }
 
 // UserRead A user read object.
