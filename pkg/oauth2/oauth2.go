@@ -77,6 +77,12 @@ var (
 	ErrUserNotDomainMapped     = goerrors.New("user is not domain mapped to an organization")
 )
 
+// SubjectTokenValidator validates a subject token and returns authorization info.
+// This is used by the token exchange grant (RFC 8693) to verify external or local tokens.
+type SubjectTokenValidator interface {
+	Authenticate(r *http.Request, token string) (*authorization.Info, error)
+}
+
 type Options struct {
 	// AccessTokenDuration should be short to prevent long term use.
 	AccessTokenDuration time.Duration
@@ -164,6 +170,10 @@ type Authenticator struct {
 	// accountCreationCache is used to ensure an account creation token
 	// can only be used once.
 	accountCreationCache *cache.LRUExpireCache
+
+	// subjectTokenValidator validates subject tokens for the RFC 8693 token exchange grant.
+	// If nil, token exchange is not supported.
+	subjectTokenValidator SubjectTokenValidator
 }
 
 // New returns a new authenticator with required fields populated.
@@ -181,6 +191,12 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		codeCache:            cache.NewLRUExpireCache(options.CodeCacheSize),
 		accountCreationCache: cache.NewLRUExpireCache(options.AccountCreationCacheSize),
 	}
+}
+
+// SetSubjectTokenValidator configures the token exchange (RFC 8693) subject token
+// validator.  When set, the token endpoint accepts the token-exchange grant type.
+func (a *Authenticator) SetSubjectTokenValidator(v SubjectTokenValidator) {
+	a.subjectTokenValidator = v
 }
 
 type Error string
@@ -1705,6 +1721,103 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 	return result, nil
 }
 
+// validateClientSecretByID validates client credentials from Basic Auth or form params,
+// looking up the client by the provided client ID.
+func (a *Authenticator) validateClientSecretByID(r *http.Request) (string, error) {
+	clientID, clientSecret, ok := r.BasicAuth()
+	if !ok {
+		if !r.Form.Has("client_id") || !r.Form.Has("client_secret") {
+			return "", errors.OAuth2InvalidRequest("client credentials required")
+		}
+
+		clientID = r.Form.Get("client_id")
+		clientSecret = r.Form.Get("client_secret")
+	}
+
+	cli, err := a.lookupClient(r.Context(), clientID)
+	if err != nil {
+		return "", errors.OAuth2AccessDenied("client not found").WithError(err)
+	}
+
+	if cli.Status.Secret == "" || cli.Status.Secret != clientSecret {
+		return "", errors.OAuth2AccessDenied("client secret invalid")
+	}
+
+	return clientID, nil
+}
+
+// TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange.  It accepts an external
+// (or local) access token as subject_token, validates it, and issues an internal
+// platform token.
+func (a *Authenticator) TokenExchange(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
+	if a.subjectTokenValidator == nil {
+		return nil, errors.OAuth2InvalidRequest("token exchange is not configured")
+	}
+
+	subjectToken := r.Form.Get("subject_token")
+	if subjectToken == "" {
+		return nil, errors.OAuth2InvalidRequest("subject_token is required")
+	}
+
+	subjectTokenType := r.Form.Get("subject_token_type")
+	if subjectTokenType == "" {
+		return nil, errors.OAuth2InvalidRequest("subject_token_type is required")
+	}
+
+	if subjectTokenType != RFC8693TokenTypeAccessToken &&
+		subjectTokenType != RFC8693TokenTypeJWT {
+		return nil, errors.OAuth2InvalidRequest("unsupported subject_token_type")
+	}
+
+	// Validate client credentials.
+	clientID, err := a.validateClientSecretByID(r)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the subject token using the configured validator.
+	authInfo, err := a.subjectTokenValidator.Authenticate(r, subjectToken)
+	if err != nil {
+		return nil, errors.OAuth2InvalidGrant("subject token validation failed").WithError(err)
+	}
+
+	subject := authInfo.Userinfo.Sub
+
+	// Look up or create the user in the local database.
+	user, err := a.userdb.GetActiveUser(r.Context(), subject)
+	if err != nil {
+		return nil, errors.OAuth2AccessDenied("user not found or inactive").WithError(err)
+	}
+
+	info := &IssueInfo{
+		Issuer:   a.getInternalIssuer(),
+		Audience: a.getAudience(),
+		Subject:  subject,
+		Type:     TokenTypeFederated,
+		Federated: &FederatedClaims{
+			ClientID: clientID,
+			UserID:   user.Name,
+			Scope:    NewScope("openid email"),
+		},
+	}
+
+	tokens, err := a.Issue(r.Context(), info)
+	if err != nil {
+		return nil, err
+	}
+
+	issuedTokenType := RFC8693TokenTypeAccessToken
+
+	result := &openapi.Token{
+		TokenType:       "Bearer",
+		AccessToken:     tokens.AccessToken,
+		ExpiresIn:       int(time.Until(tokens.Expiry).Seconds()),
+		IssuedTokenType: &issuedTokenType,
+	}
+
+	return result, nil
+}
+
 // TokenClientCredentials issues a token if the client credentials are valid.  We only support
 // mTLS based authentication.
 // TODO: delete me, services should use mTLS alone.
@@ -1751,10 +1864,6 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
 	}
 
-	// We support 3 garnt types:
-	// * "authorization_code" is used by all humans in the system
-	// * "refresh_token" is used by anyone to get a new access token
-	// * "client_credentials" is used by other services for IPC
 	switch openapi.GrantType(r.Form.Get("grant_type")) {
 	case openapi.AuthorizationCode:
 		return a.TokenAuthorizationCode(w, r)
@@ -1762,6 +1871,8 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 		return a.TokenRefreshToken(w, r)
 	case openapi.ClientCredentials:
 		return a.TokenClientCredentials(w, r)
+	case openapi.UrnIetfParamsOauthGrantTypeTokenExchange:
+		return a.TokenExchange(w, r)
 	}
 
 	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")

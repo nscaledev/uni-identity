@@ -165,7 +165,12 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 			LocalIssuer:    s.HandlerOptions.Issuer.URL,
 		}
 
+		hybridAuth := hybrid.NewAuthenticator(localAuth, remoteAuth, detector)
 		authorizer = hybrid.NewAuthorizer(localAuth, remoteAuth, detector, rbac)
+
+		// Enable RFC 8693 token exchange using the hybrid authenticator to validate
+		// subject tokens from any supported provider.
+		oauth2.SetSubjectTokenValidator(hybridAuth)
 	}
 
 	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
