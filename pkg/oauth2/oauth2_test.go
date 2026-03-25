@@ -21,6 +21,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +34,7 @@ import (
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -357,4 +360,234 @@ func TestUserinfoCustomClaims(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeSubjectTokenValidator is a test implementation of SubjectTokenValidator that
+// returns a fixed subject for any token it receives.
+type fakeSubjectTokenValidator struct {
+	subject string
+	err     error
+}
+
+func (f *fakeSubjectTokenValidator) Authenticate(_ *http.Request, _ string) (*authorization.Info, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+
+	return &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: f.subject,
+		},
+	}, nil
+}
+
+func TestTokenExchange(t *testing.T) {
+	t.Parallel()
+
+	const (
+		testClientID     = "test-client"
+		testClientSecret = "super-secret"
+		testSubject      = "user@example.com"
+		testUserID       = "test-user"
+	)
+
+	objects := []client.Object{
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      testUserID,
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: testSubject,
+				State:   unikornv1.UserStateActive,
+			},
+		},
+		&unikornv1.OAuth2Client{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      testClientID,
+			},
+			Spec: unikornv1.OAuth2ClientSpec{
+				RedirectURI: "https://example.com/callback",
+			},
+			Status: unikornv1.OAuth2ClientStatus{
+				Secret: testClientSecret,
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(objects...).Build()
+
+	josetesting.RotateCertificate(t, k8sClient)
+
+	issuer := jose.NewJWTIssuer(k8sClient, josetesting.Namespace, &jose.Options{
+		IssuerSecretName: josetesting.KeySecretName,
+		RotationPeriod:   josetesting.RefreshPeriod,
+	})
+
+	ctx := t.Context()
+	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
+
+	userDatabase := userdb.NewUserDatabase(k8sClient, josetesting.Namespace)
+	rbacInstance := rbac.New(k8sClient, josetesting.Namespace, &rbac.Options{})
+
+	issuerVal := handlercommon.IssuerValue{
+		URL:      "https://test.com",
+		Hostname: "test.com",
+	}
+
+	authenticator := oauth2.New(&oauth2.Options{
+		AccessTokenDuration:      accessTokenDuration,
+		RefreshTokenDuration:     refreshTokenDuration,
+		TokenLeewayDuration:      accessTokenDuration,
+		TokenCacheSize:           1024,
+		CodeCacheSize:            1024,
+		AccountCreationCacheSize: 1024,
+	}, josetesting.Namespace, issuerVal, k8sClient, issuer, userDatabase, rbacInstance)
+
+	time.Sleep(2 * josetesting.RefreshPeriod)
+
+	t.Run("successful exchange", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator.SetSubjectTokenValidator(&fakeSubjectTokenValidator{subject: testSubject})
+
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token":      {"some-external-token"},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(testClientID, testClientSecret)
+
+		w := httptest.NewRecorder()
+
+		token, err := authenticator.Token(w, req)
+		require.NoError(t, err)
+		require.NotNil(t, token)
+
+		assert.Equal(t, "Bearer", token.TokenType)
+		assert.NotEmpty(t, token.AccessToken)
+		assert.GreaterOrEqual(t, token.ExpiresIn, 0)
+		assert.NotNil(t, token.IssuedTokenType)
+		assert.Equal(t, "urn:ietf:params:oauth:token-type:access_token", *token.IssuedTokenType)
+	})
+
+	t.Run("missing subject_token", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator.SetSubjectTokenValidator(&fakeSubjectTokenValidator{subject: testSubject})
+
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(testClientID, testClientSecret)
+
+		w := httptest.NewRecorder()
+
+		_, err := authenticator.Token(w, req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "subject_token")
+	})
+
+	t.Run("missing client credentials", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator.SetSubjectTokenValidator(&fakeSubjectTokenValidator{subject: testSubject})
+
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token":      {"some-external-token"},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		w := httptest.NewRecorder()
+
+		_, err := authenticator.Token(w, req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "client credentials")
+	})
+
+	t.Run("invalid client secret", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator.SetSubjectTokenValidator(&fakeSubjectTokenValidator{subject: testSubject})
+
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token":      {"some-external-token"},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(testClientID, "wrong-secret")
+
+		w := httptest.NewRecorder()
+
+		_, err := authenticator.Token(w, req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "client secret")
+	})
+
+	t.Run("unsupported subject_token_type", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator.SetSubjectTokenValidator(&fakeSubjectTokenValidator{subject: testSubject})
+
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token":      {"some-external-token"},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:saml2"},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(testClientID, testClientSecret)
+
+		w := httptest.NewRecorder()
+
+		_, err := authenticator.Token(w, req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported subject_token_type")
+	})
+
+	t.Run("token exchange not configured", func(t *testing.T) {
+		t.Parallel()
+
+		// Create a fresh authenticator without a validator.
+		noExchangeAuth := oauth2.New(&oauth2.Options{
+			AccessTokenDuration:      accessTokenDuration,
+			RefreshTokenDuration:     refreshTokenDuration,
+			TokenLeewayDuration:      accessTokenDuration,
+			TokenCacheSize:           1024,
+			CodeCacheSize:            1024,
+			AccountCreationCacheSize: 1024,
+		}, josetesting.Namespace, issuerVal, k8sClient, issuer, userDatabase, rbacInstance)
+
+		form := url.Values{
+			"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+			"subject_token":      {"some-external-token"},
+			"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(testClientID, testClientSecret)
+
+		w := httptest.NewRecorder()
+
+		_, err := noExchangeAuth.Token(w, req)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not configured")
+	})
 }
