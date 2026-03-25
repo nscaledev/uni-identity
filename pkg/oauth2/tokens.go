@@ -57,6 +57,14 @@ const (
 	TokenTypeService TokenType = "svc"
 )
 
+// RFC 8693 token type identifiers.
+//
+//nolint:gosec
+const (
+	RFC8693TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+	RFC8693TokenTypeJWT         = "urn:ietf:params:oauth:token-type:jwt"
+)
+
 type FederatedClaims struct {
 	// Provider is the backend identity provider.
 	Provider string `json:"idp"`

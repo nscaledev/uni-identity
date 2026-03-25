@@ -75,18 +75,20 @@ paths:
           $ref: '#/components/responses/htmlErrorResponse'
   /oauth2/v2/token:
     description: |-
-      Implements OAuth 2.0 code exchange.
+      Implements OAuth 2.0 token endpoint.
     post:
       x-no-security-requirements: true
       x-hidden: true
       description: |-
         Provides authorization code to access token exchange as per the OAuth 2.0
         specification with the "authorization_code" grant. If requested during
-        authentication, an OpenID Connect identity token will also be returned.  
+        authentication, an OpenID Connect identity token will also be returned.
         This endpoint also supports the "refresh_token" grant for transparent
-        re-authentication, and the "client_credentials" grant which is used by
+        re-authentication, the "client_credentials" grant which is used by
         other services, in conjunction with X.509 client certificates, to authenticate
-        and authorize their API access requirements.
+        and authorize their API access requirements, and the
+        "urn:ietf:params:oauth:grant-type:token-exchange" grant (RFC 8693)
+        which exchanges an external access token for an internal platform token.
       requestBody:
         $ref: '#/components/requestBodies/tokenRequest'
       responses:
@@ -1361,6 +1363,7 @@ components:
       - authorization_code
       - client_credentials
       - refresh_token
+      - urn:ietf:params:oauth:grant-type:token-exchange
     signingAlgorithm:
       description: Supported signing algorithms.
       type: string
@@ -1491,7 +1494,7 @@ components:
       - grant_type
       properties:
         grant_type:
-          description: Supported grant type.  Must be either "code", "refresh_token" or "client_credentials".
+          description: Supported grant type.
           type: string
         code:
           description: Authorization code. Required with the "code" grant type.
@@ -1515,6 +1518,22 @@ components:
           nullable: true
         refresh_token:
           description: A refresh token for the "refresh_token" grant type.
+          type: string
+          nullable: true
+        subject_token:
+          description: The subject token for the "urn:ietf:params:oauth:grant-type:token-exchange" grant type (RFC 8693).
+          type: string
+          nullable: true
+        subject_token_type:
+          description: The type of the subject token (e.g. "urn:ietf:params:oauth:token-type:access_token").
+          type: string
+          nullable: true
+        requested_token_type:
+          description: The desired type of the issued token.
+          type: string
+          nullable: true
+        audience:
+          description: The target audience for the requested token.
           type: string
           nullable: true
 # This broke with an update to kin-openapi. The correct fix for that was to
@@ -1558,6 +1577,9 @@ components:
           type: string
         id_token:
           description: An OIDC ID token.
+          type: string
+        issued_token_type:
+          description: The type of the issued token (RFC 8693).
           type: string
         expires_in:
           description: The time in seconds the token will last for.
