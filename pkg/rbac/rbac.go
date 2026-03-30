@@ -871,12 +871,3 @@ func (r *RBAC) NewSuperContext(ctx context.Context) (context.Context, error) {
 
 	return NewContext(ctx, acl), nil
 }
-
-func (r *RBAC) getOrganizationNamespace(ctx context.Context, orgID string) (string, error) {
-	var org unikornv1.Organization
-	if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: orgID}, &org); err != nil {
-		return "", err
-	}
-
-	return org.Status.Namespace, nil
-}

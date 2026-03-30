@@ -226,33 +226,6 @@ func (c *Client) subjectsToUserIDs(ctx context.Context, subjects []unikornv1.Gro
 	return userIDs, nil
 }
 
-// userIDsToSubjects converts UserIDs to subjects.
-func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organization *organizations.Meta) ([]unikornv1.GroupSubject, error) {
-	subjects := make([]unikornv1.GroupSubject, 0, len(userIDs))
-
-	for _, orgUserID := range userIDs {
-		var orguser unikornv1.OrganizationUser
-		if err := c.client.Get(ctx, client.ObjectKey{Name: orgUserID, Namespace: organization.Namespace}, &orguser); err != nil {
-			return nil, errors.OAuth2InvalidRequest("user", orgUserID, "does not exist").WithError(err)
-		}
-
-		userid := orguser.Labels[constants.UserLabel]
-
-		var user unikornv1.User
-		if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
-			return nil, fmt.Errorf("%w: failed to get user record", err)
-		}
-
-		subjects = append(subjects, unikornv1.GroupSubject{
-			ID:     user.Spec.Subject,
-			Email:  user.Spec.Subject,
-			Issuer: c.issuer.URL,
-		})
-	}
-
-	return subjects, nil
-}
-
 // populateSubjectsAndUserIDs takes the API request and populates the UserIDs and Subjects fields of a Group. This elides
 // between the old way of setting groups (userIDs pointing to OrganizationUser records), and the new way (Subjects pointing to
 // user records *somewhere*).
