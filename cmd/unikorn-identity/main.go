@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,6 +35,9 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/migration"
 	"github.com/unikorn-cloud/identity/pkg/server"
 
+	"k8s.io/client-go/rest"
+
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -76,13 +80,27 @@ func start() {
 
 	if err := migration.MigrateGroupsToSubjects(ctx, client, s.CoreOptions.Namespace, s.HandlerOptions.Issuer); err != nil {
 		logger.Error(err, "group migration failed - server will not start")
+	}
+
+	clientconfig, err := rest.InClusterConfig()
+	if err != nil {
+		logger.Error(err, "failed to get client config")
 
 		return
 	}
 
 	logger.Info("group migration completed successfully")
 
-	server, err := s.GetServer(client)
+	directclient, err := ctrlclient.New(clientconfig, ctrlclient.Options{
+		Scheme: client.Scheme(),
+	})
+	if err != nil {
+		logger.Error(err, "failed to create direct Kubernetes client")
+
+		return
+	}
+
+	server, err := s.GetServer(client, directclient)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 

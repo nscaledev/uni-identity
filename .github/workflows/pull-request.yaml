@@ -6,6 +6,7 @@ on:
     - synchronize
     - reopened
     - ready_for_review
+    - labeled
 permissions:
   contents: write
 jobs:
@@ -13,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     - name: Setup Go
       uses: actions/setup-go@v6
       with:
@@ -30,13 +31,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     - name: Setup Go
       uses: actions/setup-go@v6
       with:
         go-version-file: go.mod
     - name: Install Helm
-      uses: azure/setup-helm@v3
+      uses: azure/setup-helm@v4
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Touch
@@ -59,6 +60,75 @@ jobs:
         name: code-coverage
         path: cover.html
     - name: Run Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v5
       env:
-        token: ${{ secrets.CODECOV_TOKEN }}
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  ProviderContractVerification:
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-contract-tests') }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+    - name: Install Pact FFI Library
+      run: |
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+          PACT_ARCH="x86_64"
+        elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+          PACT_ARCH="aarch64"
+        else
+          echo "Unsupported architecture: $ARCH"
+          exit 1
+        fi
+        wget https://github.com/pact-foundation/pact-reference/releases/download/libpact_ffi-v0.4.28/libpact_ffi-linux-${PACT_ARCH}.so.gz
+        gunzip libpact_ffi-linux-${PACT_ARCH}.so.gz
+        sudo mkdir -p /usr/local/lib
+        sudo mv libpact_ffi-linux-${PACT_ARCH}.so /usr/local/lib/libpact_ffi.so
+        sudo ldconfig
+    - name: Setup kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: contract-testing
+    - name: Install CRDs
+      run: |
+        make charts/identity/crds
+        kubectl apply -f charts/identity/crds/
+    - name: Run Provider Contract Verification
+      env:
+        PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
+        PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
+        PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+        PROVIDER_VERSION: ${{ github.event.pull_request.head.sha || github.sha }}
+        GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
+      run: make test-contracts-provider-ci
+  CanIDeploy:
+    needs: ProviderContractVerification
+    runs-on: ubuntu-latest
+    if: needs.ProviderContractVerification.result == 'success'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Check if I can deploy
+      run: make can-i-deploy
+      env:
+        PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
+        PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
+        PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+        PROVIDER_VERSION: ${{ github.event.pull_request.head.sha || github.sha }}
+    - name: Tag as deployable
+      if: success()
+      run: |
+        docker run --rm \
+          --network host \
+          pactfoundation/pact-cli:latest \
+          pact-broker create-version-tag \
+          --pacticipant="uni-identity" \
+          --version="${{ github.event.pull_request.head.sha || github.sha }}" \
+          --tag="deployable-to-dev" \
+          --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
+          --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
+          --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}"

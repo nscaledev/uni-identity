@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,13 +24,13 @@ import (
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
-	"go.opentelemetry.io/otel/sdk/trace"
 
-	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
-	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -65,6 +66,9 @@ type Server struct {
 
 	// RBACOptions are for RBAC related things.
 	RBACOptions rbac.Options
+
+	// OpenAPIOptions are for OpenAPI processing.
+	OpenAPIOptions openapimiddleware.Options
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -75,6 +79,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.OAuth2Options.AddFlags(flags)
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
+	s.OpenAPIOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
@@ -82,20 +87,34 @@ func (s *Server) SetupLogging() {
 }
 
 func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
-	return s.CoreOptions.SetupOpenTelemetry(ctx, trace.WithSpanProcessor(&opentelemetry.LoggingSpanProcessor{}))
+	return s.CoreOptions.SetupOpenTelemetry(ctx)
 }
 
-func (s *Server) GetServer(client client.Client) (*http.Server, error) {
-	schema, err := coreapi.NewSchema(openapi.GetSwagger)
+func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
+	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
 	}
 
-	// Middleware specified here is applied to all requests pre-routing.
 	router := chi.NewRouter()
-	router.Use(timeout.Middleware(s.ServerOptions.RequestTimeout))
-	router.Use(opentelemetry.Middleware(constants.Application, constants.Version))
-	router.Use(cors.Middleware(schema, &s.CORSOptions))
+
+	// Middleware specified here is applied to all requests pre-routing.
+	// Ordering is important:
+	// * OpenTelemetry middleware optionally transmits spans over OTLP, but also
+	//   establishes a trace ID that is used to correlate logs with user issues.
+	// * Logging ensures at least all errors are captured by logging telemetry and we
+	//   can trigger alerts based on them.
+	// * Route resolver provides routing and OpenAPI information to child middlewares.
+	// * CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
+	ot := opentelemetry.New(constants.Application, constants.Version)
+	log := logging.New()
+	rr := routeresolver.New(schema)
+	corss := cors.New(&s.CORSOptions)
+
+	router.Use(ot.Middleware)
+	router.Use(log.Middleware)
+	router.Use(rr.Middleware)
+	router.Use(corss.Middleware)
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
 
@@ -105,12 +124,14 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		return nil, err
 	}
 
-	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
-	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
+	udb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
+	roles := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
+	auth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, udb, roles)
 
 	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
+	authorizer := local.NewAuthorizer(auth2, roles)
+	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
+	auditer := audit.New(constants.Application, constants.Version)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -118,12 +139,12 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		BaseRouter:       router,
 		ErrorHandlerFunc: handler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
-			audit.Middleware(schema, constants.Application, constants.Version),
-			openapimiddleware.Middleware(authorizer, schema),
+			auditer.Middleware,
+			validator.Middleware,
 		},
 	}
 
-	handlerInterface, err := handler.New(client, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, auth2, udb, roles, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}

@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,16 +24,19 @@ import (
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	autherrors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -114,7 +118,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Group
 	result := &unikornv1.GroupList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list groups").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list groups", err)
 	}
 
 	return convertList(result), nil
@@ -128,7 +132,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, grou
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get group").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get group", err)
 	}
 
 	return result, nil
@@ -162,23 +166,119 @@ func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
 	return subjects
 }
 
+// findUserBySubject finds a User resource by subject field.
+func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikornv1.User, error) {
+	var users unikornv1.UserList
+	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		return nil, fmt.Errorf("%w: failed to list users", err)
+	}
+
+	for i := range users.Items {
+		if users.Items[i].Spec.Subject == subject {
+			return &users.Items[i], nil
+		}
+	}
+
+	return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s does not exist", subject))
+}
+
+// findOrgUserByUserID finds an OrganizationUser in an org by the user ID label.
+func (c *Client) findOrgUserByUserID(ctx context.Context, orgNamespace, userID string) (*unikornv1.OrganizationUser, error) {
+	var orgUsers unikornv1.OrganizationUserList
+
+	selector := labels.SelectorFromSet(labels.Set{constants.UserLabel: userID})
+	if err := c.client.List(ctx, &orgUsers, &client.ListOptions{Namespace: orgNamespace, LabelSelector: selector}); err != nil {
+		return nil, fmt.Errorf("%w: failed to list organization users", err)
+	}
+
+	switch len(orgUsers.Items) {
+	case 0:
+		return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with ID %s is not a member of this organization", userID))
+	case 1:
+		return &orgUsers.Items[0], nil
+	default:
+		return nil, fmt.Errorf("%w: inconsistent number of organisation users for user with ID %s", coreerrors.ErrConsistency, userID)
+	}
+}
+
+// subjectsToUserIDs converts internal subjects to UserIDs.
+func (c *Client) subjectsToUserIDs(ctx context.Context, subjects []unikornv1.GroupSubject, organization *organizations.Meta) ([]string, error) {
+	var userIDs []string //nolint:prealloc
+
+	for _, subject := range subjects {
+		if subject.Issuer != c.issuer.URL {
+			continue // Skip external subjects
+		}
+
+		user, err := c.findUserBySubject(ctx, subject.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		orgUser, err := c.findOrgUserByUserID(ctx, organization.Namespace, user.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		userIDs = append(userIDs, orgUser.Name)
+	}
+
+	return userIDs, nil
+}
+
+// userIDsToSubjects converts UserIDs to subjects.
+func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organization *organizations.Meta) ([]unikornv1.GroupSubject, error) {
+	subjects := make([]unikornv1.GroupSubject, 0, len(userIDs))
+
+	for _, orgUserID := range userIDs {
+		var orguser unikornv1.OrganizationUser
+		if err := c.client.Get(ctx, client.ObjectKey{Name: orgUserID, Namespace: organization.Namespace}, &orguser); err != nil {
+			return nil, errors.OAuth2InvalidRequest("user", orgUserID, "does not exist").WithError(err)
+		}
+
+		userid := orguser.Labels[constants.UserLabel]
+
+		var user unikornv1.User
+		if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
+			return nil, fmt.Errorf("%w: failed to get user record", err)
+		}
+
+		subjects = append(subjects, unikornv1.GroupSubject{
+			ID:     user.Spec.Subject,
+			Email:  user.Spec.Subject,
+			Issuer: c.issuer.URL,
+		})
+	}
+
+	return subjects, nil
+}
+
 // populateSubjectsAndUserIDs takes the API request and populates the UserIDs and Subjects fields of a Group. This elides
 // between the old way of setting groups (userIDs pointing to OrganizationUser records), and the new way (Subjects pointing to
 // user records *somewhere*).
-// If you provide **subjects**, the func assumes clients have been ported to use
-// subjects: the subjects are used and the userIDs cleared.
+// If you provide **subjects**, the func converts subjects with the internal issuer to UserIDs as well, allowing
+// both old and new clients to coexist during migration.
 // If you provide **UserIDs**, this func assumes you are an old-style client: the given UserIDs are converted to subjects,
 // and both subjects and userIDs are stored.
+// Providing both Subjects and UserIDs is an error.
 func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.Group, organization *organizations.Meta, in *openapi.GroupWrite) error {
 	var (
 		subjects []unikornv1.GroupSubject
 		userIDs  []string
+		err      error
 	)
 
+	if in.Spec.Subjects != nil && in.Spec.UserIDs != nil {
+		return errors.OAuth2InvalidRequest("cannot provide both subjects and userIDs")
+	}
+
 	if in.Spec.Subjects != nil {
-		// On the assumption that the caller understands Subjects, just use the subjects. This is a one-way step, since
-		// we don't attempt to find OrganizationUser records and populate .UserIDs, so it'll be empty hereafter.
 		subjects = generateSubjects(*in.Spec.Subjects)
+
+		userIDs, err = c.subjectsToUserIDs(ctx, subjects, organization)
+		if err != nil {
+			return err
+		}
 	} else if in.Spec.UserIDs != nil {
 		// Assume that if UserIDs are used, we are still referring only to the UNI user database.
 		// Thus, we can fill in subjects by looking up the user records.
@@ -187,14 +287,14 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 
 			var orguser unikornv1.OrganizationUser
 			if err := c.client.Get(ctx, client.ObjectKey{Name: userorgid, Namespace: organization.Namespace}, &orguser); err != nil {
-				return errors.OAuth2ServerError("failed to get organization member record").WithError(err)
+				return errors.OAuth2InvalidRequest("user", userorgid, "does not exist").WithError(err)
 			}
 
 			userid := orguser.Labels[constants.UserLabel]
 
 			var user unikornv1.User
 			if err := c.client.Get(ctx, client.ObjectKey{Name: userid, Namespace: c.namespace}, &user); err != nil {
-				return errors.OAuth2ServerError("failed to get user record").WithError(err)
+				return autherrors.OAuth2ServerError("failed to get user record").WithError(err)
 			}
 
 			subjects = append(subjects, unikornv1.GroupSubject{
@@ -221,7 +321,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 				return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("role ID %s does not exist", roleID)).WithError(err)
 			}
 
-			return nil, errors.OAuth2ServerError("failed to validate role ID").WithError(err)
+			return nil, fmt.Errorf("%w: failed to validate role ID", err)
 		}
 
 		if resource.Spec.Protected {
@@ -252,7 +352,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	return out, nil
@@ -270,7 +370,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create group").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create group", err)
 	}
 
 	return convert(resource), nil
@@ -293,7 +393,7 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -301,8 +401,12 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch group").WithError(err)
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to patch group", err)
 	}
 
 	return nil
@@ -324,7 +428,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to list projects").WithError(err)
+		return fmt.Errorf("%w: failed to list projects", err)
 	}
 
 	for i := range projects.Items {
@@ -334,7 +438,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 			project.Spec.GroupIDs = slices.Delete(project.Spec.GroupIDs, index, index+1)
 
 			if err := c.client.Update(ctx, project); err != nil {
-				return errors.OAuth2ServerError("failed to update project").WithError(err)
+				return fmt.Errorf("%w: failed to update project", err)
 			}
 		}
 	}
@@ -351,7 +455,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete group").WithError(err)
+		return fmt.Errorf("%w: failed to delete group", err)
 	}
 
 	return nil

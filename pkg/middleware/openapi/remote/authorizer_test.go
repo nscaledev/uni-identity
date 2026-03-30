@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -166,8 +167,8 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 	info, err := auth.Authorize(authInput)
 
 	require.Error(t, err)
+	require.True(t, errors.IsBadRequest(err))
 	require.Nil(t, info)
-	require.Contains(t, err.Error(), "unsupported")
 }
 
 // ---- helpers
@@ -220,7 +221,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			// "full" handler has too many dependencies that are irrelevant here.
 			header := r.Header.Get("Authorization")
 			if header == "" {
-				errors.HandleError(w, r, errors.OAuth2UnauthorizedClient("missing auth header"))
+				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header missing"))
 				return
 			}
 
@@ -354,7 +355,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		URL:      mtlsServer.URL(),
 		Hostname: u.Host,
 	}
-
 	userdb := userdb.NewUserDatabase(fakeClient, testNamespace)
 
 	authenticator = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, userdb, rbacClient)
@@ -417,7 +417,10 @@ func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string
 	identityOptions := createIdentityOptions(t, issuer)
 	clientOptions := createCoreClientOptions(t)
 
-	return authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
+	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
+	require.NoError(t, err)
+
+	return a
 }
 
 func authInput(req *http.Request) *openapi3filter.AuthenticationInput {

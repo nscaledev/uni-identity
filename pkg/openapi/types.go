@@ -64,6 +64,20 @@ const (
 	RefreshToken      GrantType = "refresh_token"
 )
 
+// Defines values for Oauth2ErrorError.
+const (
+	AccessDenied            Oauth2ErrorError = "access_denied"
+	InvalidClient           Oauth2ErrorError = "invalid_client"
+	InvalidGrant            Oauth2ErrorError = "invalid_grant"
+	InvalidRequest          Oauth2ErrorError = "invalid_request"
+	InvalidScope            Oauth2ErrorError = "invalid_scope"
+	ServerError             Oauth2ErrorError = "server_error"
+	TemporarilyUnavailable  Oauth2ErrorError = "temporarily_unavailable"
+	UnauthorizedClient      Oauth2ErrorError = "unauthorized_client"
+	UnsupportedGrantType    Oauth2ErrorError = "unsupported_grant_type"
+	UnsupportedResponseType Oauth2ErrorError = "unsupported_response_type"
+)
+
 // Defines values for Oauth2ProviderType.
 const (
 	Github    Oauth2ProviderType = "github"
@@ -125,11 +139,14 @@ type Acl struct {
 	// Global A list of access control scopes.
 	Global *AclEndpoints `json:"global,omitempty"`
 
-	// Organization Resource scoped endpoint permissions.
-	Organization *AclScopedEndpoints `json:"organization,omitempty"`
+	// Organization An organization the subject is a member of.
+	Organization *AclOrganization `json:"organization,omitempty"`
 
-	// Projects A list of resource scoped endpoint permissions.
-	Projects *AclScopedEndpointsList `json:"projects,omitempty"`
+	// Organizations A list of organizations the subject is a member of.
+	Organizations *AclOrganizationList `json:"organizations,omitempty"`
+
+	// Projects A list of projects the subject is a member of.
+	Projects *AclProjectList `json:"projects,omitempty"`
 }
 
 // AclEndpoint A set of access control permissions for a resource type.
@@ -150,17 +167,32 @@ type AclOperation string
 // AclOperations A list of access control operations.
 type AclOperations = []AclOperation
 
-// AclScopedEndpoints Resource scoped endpoint permissions.
-type AclScopedEndpoints struct {
+// AclOrganization An organization the subject is a member of.
+type AclOrganization struct {
+	// Endpoints A list of access control scopes.
+	Endpoints *AclEndpoints `json:"endpoints,omitempty"`
+
+	// Id The organization ID.
+	Id string `json:"id"`
+
+	// Projects A list of projects the subject is a member of.
+	Projects *AclProjectList `json:"projects,omitempty"`
+}
+
+// AclOrganizationList A list of organizations the subject is a member of.
+type AclOrganizationList = []AclOrganization
+
+// AclProject A project the subject is a member of.
+type AclProject struct {
 	// Endpoints A list of access control scopes.
 	Endpoints AclEndpoints `json:"endpoints"`
 
-	// Id The resource ID this scope applies to.
+	// Id The project ID.
 	Id string `json:"id"`
 }
 
-// AclScopedEndpointsList A list of resource scoped endpoint permissions.
-type AclScopedEndpointsList = []AclScopedEndpoints
+// AclProjectList A list of projects the subject is a member of.
+type AclProjectList = []AclProject
 
 // AllocationRead An allocation of resources.
 type AllocationRead struct {
@@ -321,6 +353,18 @@ type LoginRequestOptions struct {
 	// State The state string supplied by the authorization endpoint.
 	State string `json:"state"`
 }
+
+// Oauth2Error Generic error message, compatible with oauth2.
+type Oauth2Error struct {
+	// Error A terse error string expanding on the HTTP error code. Errors are based on the OAuth 2.02 specification, but are expanded with proprietary status codes for APIs other than those specified by OAuth 2.02.
+	Error Oauth2ErrorError `json:"error"`
+
+	// ErrorDescription Verbose message describing the error.
+	ErrorDescription string `json:"error_description"`
+}
+
+// Oauth2ErrorError A terse error string expanding on the HTTP error code. Errors are based on the OAuth 2.02 specification, but are expanded with proprietary status codes for APIs other than those specified by OAuth 2.02.
+type Oauth2ErrorError string
 
 // Oauth2ProviderRead An OAuth 2.0 provider when read.
 type Oauth2ProviderRead struct {
@@ -861,9 +905,6 @@ type AclResponse = Acl
 // AllocationResponse An allocation of resources.
 type AllocationResponse = AllocationRead
 
-// AllocationsResponse A list of allocations.
-type AllocationsResponse = Allocations
-
 // GroupResponse A group when read.
 type GroupResponse = GroupRead
 
@@ -874,11 +915,20 @@ type GroupsResponse = Groups
 // committee. Consult the relevant documentation for further details.
 type JwksResponse = JsonWebKeySet
 
+// Oauth2BadRequestResponse Generic error message, compatible with oauth2.
+type Oauth2BadRequestResponse = Oauth2Error
+
 // Oauth2ProviderResponse An OAuth 2.0 provider when read.
 type Oauth2ProviderResponse = Oauth2ProviderRead
 
 // Oauth2ProvidersResponse A list of OAuth 2.0 providers.
 type Oauth2ProvidersResponse = Oauth2Providers
+
+// Oauth2ServerErrorResponse Generic error message, compatible with oauth2.
+type Oauth2ServerErrorResponse = Oauth2Error
+
+// Oauth2UnauthorizedResponse Generic error message, compatible with oauth2.
+type Oauth2UnauthorizedResponse = Oauth2Error
 
 // OpenidConfigurationResponse OpenID configuration.
 type OpenidConfigurationResponse = OpenidConfiguration

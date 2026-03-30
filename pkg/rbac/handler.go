@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,11 +19,20 @@ package rbac
 
 import (
 	"context"
+	goerrors "errors"
+	"fmt"
+	"net/http"
 	"slices"
 
+	"github.com/spjmurray/go-util/pkg/set"
+
+	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 )
 
 // operationAllowedByEndpoints iterates through all endpoints and tries to match the required name and
@@ -40,7 +50,7 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 		return nil
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching endpoint)")
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' is not permitted", operation, endpoint))
 }
 
 // AllowGlobalScope tries to allow the requested operation at the global scope.
@@ -48,7 +58,7 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 	acl := FromContext(ctx)
 
 	if acl.Global == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no global endpoints)")
+		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — no global-scope permissions are granted to this principal", operation, endpoint))
 	}
 
 	return operationAllowedByEndpoints(*acl.Global, endpoint, operation)
@@ -63,11 +73,23 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 
 	acl := FromContext(ctx)
 
-	if acl.Organization == nil || acl.Organization.Id != organizationID {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no matching organization endpoints)")
+	if acl.Organizations == nil {
+		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — this principal has no organization-scope permissions", operation, endpoint))
 	}
 
-	return operationAllowedByEndpoints(acl.Organization.Endpoints, endpoint, operation)
+	for _, organization := range *acl.Organizations {
+		if organization.Id != organizationID {
+			continue
+		}
+
+		if organization.Endpoints == nil {
+			return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — no endpoints are granted at organization scope", operation, endpoint))
+		}
+
+		return operationAllowedByEndpoints(*organization.Endpoints, endpoint, operation)
+	}
+
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — organization is not in this principal's accessible set", operation, endpoint))
 }
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
@@ -79,21 +101,107 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 
 	acl := FromContext(ctx)
 
-	if acl.Projects == nil {
-		return errors.HTTPForbidden("operation is not allowed by rbac (no project endpoints)")
+	if acl.Organizations == nil {
+		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — this principal has no organization-scope permissions", operation, endpoint))
 	}
 
-	for _, project := range *acl.Projects {
-		if project.Id != projectID {
+	for _, organization := range *acl.Organizations {
+		if organization.Id != organizationID {
 			continue
 		}
 
-		if err := operationAllowedByEndpoints(project.Endpoints, endpoint, operation); err == nil {
-			return nil
+		if organization.Endpoints != nil {
+			if operationAllowedByEndpoints(*organization.Endpoints, endpoint, operation) == nil {
+				return nil
+			}
+		}
+
+		if organization.Projects != nil {
+			for _, project := range *organization.Projects {
+				if project.Id != projectID {
+					continue
+				}
+
+				return operationAllowedByEndpoints(project.Endpoints, endpoint, operation)
+			}
 		}
 	}
 
-	return errors.HTTPForbidden("operation is not allowed by rbac (no matching project endpoints)")
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — project is not in this principal's accessible set", operation, endpoint))
+}
+
+// isAllowedByProjectACL checks only the project-level ACL entries for a specific project,
+// with no fallback to organization or global scope.  If the project is present in the ACL
+// it must have been fetched from storage when the ACL was built, so its existence is guaranteed.
+func isAllowedByProjectACL(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) bool {
+	acl := FromContext(ctx)
+
+	if acl.Organizations == nil {
+		return false
+	}
+
+	for _, organization := range *acl.Organizations {
+		if organization.Id != organizationID {
+			continue
+		}
+
+		if organization.Projects == nil {
+			return false
+		}
+
+		for _, project := range *organization.Projects {
+			if project.Id != projectID {
+				continue
+			}
+
+			return operationAllowedByEndpoints(project.Endpoints, endpoint, operation) == nil
+		}
+	}
+
+	return false
+}
+
+// AllowProjectScopeCreate is like AllowProjectScope but intended for v2 create operations
+// where the project ID is supplied in the request body rather than the URL path.  When
+// access is granted via an organization-scoped ACL the project ID is untrusted user input,
+// so this function additionally verifies the project exists via the identity API before
+// returning nil.  Global-scope callers (platform administrators) are exempt from this
+// check and their supplied project ID is trusted directly.
+func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	// If the project is explicitly present in the ACL it was fetched from storage
+	// when the ACL was built, so it must exist.
+	if isAllowedByProjectACL(ctx, endpoint, operation, organizationID, projectID) {
+		return nil
+	}
+
+	// Check whether a global or organization-scoped ACL grants access.
+	if err := AllowOrganizationScope(ctx, endpoint, operation, organizationID); err != nil {
+		return err
+	}
+
+	// Global-scope callers are platform administrators with unconditional trust.
+	// Skip the identity API call: the compute service account may not hold
+	// identity:projects/Read, and global admins are already fully trusted.
+	if AllowGlobalScope(ctx, endpoint, operation) == nil {
+		return nil
+	}
+
+	// Access is granted via organization-scoped ACL, but the project ID is untrusted —
+	// verify it exists via the identity API.
+	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, organizationID, projectID)
+	if err != nil {
+		return errors.OAuth2AccessDenied("failed to verify project exists").WithError(err)
+	}
+
+	if resp.StatusCode() == http.StatusNotFound {
+		return errors.HTTPNotFound()
+	}
+
+	if resp.StatusCode() != http.StatusOK {
+		return errors.OAuth2AccessDenied("unexpected status verifying project exists")
+	}
+
+	return nil
 }
 
 // AllowRole determines whether your ACL contains the same or higher privileges than
@@ -125,4 +233,104 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string)
 	}
 
 	return nil
+}
+
+// OrganizationIDs returns a list of all organization IDs from the ACL for the purposes
+// of limiting list type API operations.
+func OrganizationIDs(ctx context.Context) []string {
+	acl := FromContext(ctx)
+
+	if acl.Organizations == nil {
+		return nil
+	}
+
+	organizations := *acl.Organizations
+
+	if len(organizations) == 0 {
+		return nil
+	}
+
+	organizationIDs := make([]string, len(organizations))
+
+	for i := range organizations {
+		organizationIDs[i] = organizations[i].Id
+	}
+
+	return organizationIDs
+}
+
+// AddQuery adds a set of query values to a label selector.
+func AddQuery(selector labels.Selector, label string, vals []string) (labels.Selector, error) {
+	if len(vals) == 0 {
+		return selector, nil
+	}
+
+	if len(vals) == 1 {
+		req, err := labels.NewRequirement(label, selection.Equals, vals)
+		if err != nil {
+			return nil, err
+		}
+
+		return selector.Add(*req), nil
+	}
+
+	req, err := labels.NewRequirement(label, selection.In, vals)
+	if err != nil {
+		return nil, err
+	}
+
+	return selector.Add(*req), nil
+}
+
+var (
+	ErrNoMatches = goerrors.New("selector would select nothing")
+)
+
+// HasNoMatches is a short cut when nothing would be matched e.g. the user has no matching
+// organization ID for the provided selector, and a list handler can just return an empty
+// array directly.
+func HasNoMatches(err error) bool {
+	return goerrors.Is(err, ErrNoMatches)
+}
+
+// AddOrganizationIDQuery adds an organizational query selector that limits resources to
+// be listed to those available in the ACL and optionally constrained to those in the
+// request query using a boolean intersection.
+func AddOrganizationIDQuery(ctx context.Context, selector labels.Selector, query []string) (labels.Selector, error) {
+	// No organization IDs available, we cannot make any assumptions, this applies
+	// to system accounts and platform admins.
+	organizationIDs := OrganizationIDs(ctx)
+	if len(organizationIDs) == 0 {
+		return AddQuery(selector, constants.OrganizationLabel, query)
+	}
+
+	// No scope provided, limit to organizations we have access to.
+	if len(query) == 0 {
+		return AddQuery(selector, constants.OrganizationLabel, organizationIDs)
+	}
+
+	// Where there is an explicit set of organizations, we can intersect with the query
+	// to only select those we have access to.
+	organizationIDs = slices.Collect(set.New(organizationIDs...).Intersection(set.New(query...)).All())
+	if len(organizationIDs) == 0 {
+		return nil, ErrNoMatches
+	}
+
+	return AddQuery(selector, constants.OrganizationLabel, organizationIDs)
+}
+
+// AddOrganizationAndProjectIDQuery gets all organizationIDs the user can access (or has requested
+// explicit and has access to).
+func AddOrganizationAndProjectIDQuery(ctx context.Context, selector labels.Selector, organizationQuery []string, projectQuery []string) (labels.Selector, error) {
+	selector, err := AddOrganizationIDQuery(ctx, selector, organizationQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	selector, err = AddQuery(selector, constants.ProjectLabel, projectQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	return selector, nil
 }

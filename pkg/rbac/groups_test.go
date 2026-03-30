@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,12 +20,14 @@ package rbac_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
@@ -36,10 +39,20 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+type fixture struct {
+	// Because of the way service account creation works, we can't specify the ID
+	// for a service account when creating it; we have to create it then look at
+	// the ID it was given.
+	serviceAccountAlphaID, serviceAccountBetaID, serviceAccountAltAlphaID string
+
+	rbac *rbac.RBAC
+}
 
 const (
 	testNamespace = "test-namespace"
@@ -58,8 +71,8 @@ const (
 	userCharlieSubject = "charlie@example.com"
 	userCharlieID      = "user-charlie"
 
-	serviceAccountAlphaID = "sa-alpha"
-	serviceAccountBetaID  = "sa-beta"
+	serviceAccountAlphaName = "sa-alpha"
+	serviceAccountBetaName  = "sa-beta"
 
 	groupAdminsID   = "group-admins"
 	groupDevelopers = "group-developers"
@@ -136,9 +149,35 @@ func newOrganization(objectNamespace, name, orgNamespace string) *unikornv1.Orga
 	}
 }
 
-// setupTestEnvironment creates a comprehensive RBAC test environment with users, groups, roles, and projects.
-func setupTestEnvironment(t *testing.T) *rbac.RBAC {
+func createServiceAccount(t *testing.T, c client.Client, name, orgID, orgNamespace string) string {
 	t.Helper()
+
+	// It would be better to use the API, but creating service accounts needs a token issuer,
+	// and that is a pain to set up. So: fake it by creating a record in Kubernetes the way
+	// the handler would, rather than going through the API.
+	meta := &coreopenapi.ResourceWriteMetadata{
+		Name: name,
+	}
+
+	objectMeta := conversion.NewObjectMetadata(meta, orgNamespace).WithOrganization(orgID).Get()
+	sa := unikornv1.ServiceAccount{
+		ObjectMeta: objectMeta,
+		Spec: unikornv1.ServiceAccountSpec{
+			Expiry: ptr.To(metav1.NewTime(time.Now().Add(2 * time.Hour))),
+		},
+	}
+
+	require.NoError(t, c.Create(t.Context(), &sa))
+
+	return sa.Name // hereafter used as the service account ID
+}
+
+// setupTestEnvironment creates a comprehensive RBAC test environment with users, groups, roles, and projects.
+// It returns both the fixture and the underlying fake client so callers can add additional objects.
+func setupTestEnvironment(t *testing.T) (fixture, client.Client) {
+	t.Helper()
+
+	var f fixture
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -273,6 +312,10 @@ func setupTestEnvironment(t *testing.T) *rbac.RBAC {
 		},
 	}
 
+	f.serviceAccountAlphaID = createServiceAccount(t, c, serviceAccountAlphaName, testOrgID, testOrgNS)
+	f.serviceAccountBetaID = createServiceAccount(t, c, serviceAccountBetaName, testOrgID, testOrgNS)
+	f.serviceAccountAltAlphaID = createServiceAccount(t, c, serviceAccountAlphaName, altOrgID, altOrgNS)
+
 	// Group for service accounts
 	groupServicesObj := &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{
@@ -281,11 +324,24 @@ func setupTestEnvironment(t *testing.T) *rbac.RBAC {
 		},
 		Spec: unikornv1.GroupSpec{
 			RoleIDs:           []string{roleDeveloperID},
-			ServiceAccountIDs: []string{serviceAccountAlphaID},
+			ServiceAccountIDs: []string{f.serviceAccountAlphaID},
 		},
 	}
 
-	createObjects(groupAdminsObj, groupReadersObj, groupDevelopersObj, groupServicesObj)
+	// Group in alternate org for the service account there, to check the calculation for Org A does not
+	// include permissions from Org B.
+	groupAltServicesObj := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: altOrgNS,
+			Name:      groupServices,
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs:           []string{roleDeveloperID},
+			ServiceAccountIDs: []string{f.serviceAccountAltAlphaID},
+		},
+	}
+
+	createObjects(groupAdminsObj, groupReadersObj, groupDevelopersObj, groupServicesObj, groupAltServicesObj)
 
 	projectAlpha := &unikornv1.Project{
 		ObjectMeta: metav1.ObjectMeta{
@@ -320,8 +376,9 @@ func setupTestEnvironment(t *testing.T) *rbac.RBAC {
 	createUser(t, c, userCharlieID, userCharlieSubject, []*unikornv1.Group{groupReadersObj, groupDevelopersObj})
 
 	rbacClient := rbac.New(c, testNamespace, &rbac.Options{})
+	f.rbac = rbacClient
 
-	return rbacClient
+	return f, c
 }
 
 // getACLForUser is a helper to get the ACL for a given user subject.
@@ -348,47 +405,32 @@ func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi
 	return acl
 }
 
-// TestGroupMigrationACLContent verifies the actual ACL content is correct.
+// TestGroupACLContentOrganizationScoped verifies the actual ACL content is correct.
 //
 //nolint:cyclop
-func TestGroupACLContent(t *testing.T) {
+func TestGroupACLContentOrganizationScoped(t *testing.T) {
 	t.Parallel()
 
-	rbacClient := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
-	// Test Alice (Admin) - should have global and organization permissions.
-	aclAlice := getACLForUser(t, rbacClient, userAliceSubject)
-	assert.NotNil(t, aclAlice.Global, "Alice should have global permissions")
+	// Test Alice (Admin) - should have organization permissions.
+	aclAlice := getACLForUser(t, f.rbac, userAliceSubject)
+	assert.Nil(t, aclAlice.Global, "Alice should not have global permissions")
 	assert.NotNil(t, aclAlice.Organization, "Alice should have organization permissions")
 	assert.Nil(t, aclAlice.Projects, "Alice should not have project-specific permissions")
 
-	// Verify Alice has users:manage globally
-	hasUsersManage := false
-
-	for _, endpoint := range *aclAlice.Global {
-		if endpoint.Name == "users:manage" {
-			hasUsersManage = true
-
-			assert.Contains(t, endpoint.Operations, openapi.Create)
-			assert.Contains(t, endpoint.Operations, openapi.Read)
-			assert.Contains(t, endpoint.Operations, openapi.Update)
-			assert.Contains(t, endpoint.Operations, openapi.Delete)
-		}
-	}
-
-	assert.True(t, hasUsersManage, "Alice should have users:manage permission")
-
 	// Test Bob (Developer) - should have organization read and project permissions.
-	aclBob := getACLForUser(t, rbacClient, userBobSubject)
+	aclBob := getACLForUser(t, f.rbac, userBobSubject)
 	assert.Nil(t, aclBob.Global, "Bob should not have global permissions")
 	assert.NotNil(t, aclBob.Organization, "Bob should have organization permissions")
+	assert.NotNil(t, aclBob.Organization.Endpoints, "Bob should have organization endpoints")
 	assert.NotNil(t, aclBob.Projects, "Bob should have project permissions")
 	assert.Len(t, *aclBob.Projects, 2, "Bob should have access to 2 projects (alpha and beta)")
 
 	// Verify Bob has org:read
 	hasOrgRead := false
 
-	for _, endpoint := range aclBob.Organization.Endpoints {
+	for _, endpoint := range *aclBob.Organization.Endpoints {
 		if endpoint.Name == "org:read" {
 			hasOrgRead = true
 
@@ -399,7 +441,7 @@ func TestGroupACLContent(t *testing.T) {
 	assert.True(t, hasOrgRead, "Bob should have org:read permission")
 
 	// Test Charlie (Developer + Reader) - should have merged permissions.
-	aclCharlie := getACLForUser(t, rbacClient, userCharlieSubject)
+	aclCharlie := getACLForUser(t, f.rbac, userCharlieSubject)
 	assert.Nil(t, aclCharlie.Global, "Charlie should not have global permissions")
 	assert.NotNil(t, aclCharlie.Organization, "Charlie should have organization permissions")
 	assert.NotNil(t, aclCharlie.Projects, "Charlie should have project permissions")
@@ -441,19 +483,123 @@ func TestGroupACLContent(t *testing.T) {
 	}
 }
 
+// TestGroupACLContent verifies the actual ACL content is correct.
+//
+//nolint:cyclop
+func TestGroupACLContent(t *testing.T) {
+	t.Parallel()
+
+	f, _ := setupTestEnvironment(t)
+
+	// Test Alice (Admin) - should have organization permissions but not global
+	// (global permissions are reserved for platform admins and system accounts).
+	aclAlice := getACLForUser(t, f.rbac, userAliceSubject)
+	assert.Nil(t, aclAlice.Global, "Alice should not have global permissions")
+	require.NotNil(t, aclAlice.Organizations, "Alice should have organization permissions")
+	require.Len(t, *aclAlice.Organizations, 1, "Alice should be a member of one organization")
+	assert.Nil(t, aclAlice.Projects, "Alice should not have project-specific permissions")
+
+	// Verify Alice has org:manage at organization scope (from admin role)
+	aliceOrganization := &(*aclAlice.Organizations)[0]
+	require.Equal(t, testOrgID, aliceOrganization.Id, "Alice should have organization ID set")
+	require.NotNil(t, aliceOrganization.Endpoints, "Alice should have organization endpoints")
+
+	hasOrgManage := false
+
+	for _, endpoint := range *aliceOrganization.Endpoints {
+		if endpoint.Name == "org:manage" {
+			hasOrgManage = true
+
+			assert.Contains(t, endpoint.Operations, openapi.Create)
+			assert.Contains(t, endpoint.Operations, openapi.Read)
+			assert.Contains(t, endpoint.Operations, openapi.Update)
+			assert.Contains(t, endpoint.Operations, openapi.Delete)
+		}
+	}
+
+	assert.True(t, hasOrgManage, "Alice should have org:manage permission")
+
+	// Test Bob (Developer) - should have organization read and project permissions.
+	aclBob := getACLForUser(t, f.rbac, userBobSubject)
+	require.Nil(t, aclBob.Global, "Bob should not have global permissions")
+	require.NotNil(t, aclBob.Organizations, "Bob should have organization permissions")
+	require.Len(t, *aclBob.Organizations, 1, "Bob should be a member of one organization")
+
+	bobOrganization := &(*aclBob.Organizations)[0]
+	require.Equal(t, testOrgID, bobOrganization.Id, "Bob should have organization ID set")
+	require.NotNil(t, bobOrganization.Endpoints, "Bob should have organization permissions")
+	require.NotNil(t, bobOrganization.Projects, "Bob should have project permissions")
+	require.Len(t, *bobOrganization.Projects, 2, "Bob should have access to 2 projects (alpha and beta)")
+
+	// Verify Bob has org:read
+	hasOrgRead := false
+
+	for _, endpoint := range *bobOrganization.Endpoints {
+		if endpoint.Name == "org:read" {
+			hasOrgRead = true
+
+			require.Contains(t, endpoint.Operations, openapi.Read)
+		}
+	}
+
+	require.True(t, hasOrgRead, "Bob should have org:read permission")
+
+	// Test Charlie (Developer + Reader) - should have merged permissions.
+	aclCharlie := getACLForUser(t, f.rbac, userCharlieSubject)
+	require.Nil(t, aclCharlie.Global, "Charlie should not have global permissions")
+	require.NotNil(t, aclCharlie.Organizations, "Charlie should have organization permissions")
+	require.Len(t, *aclCharlie.Organizations, 1, "Charlie should be a member of one organization")
+
+	charlieOrganization := &(*aclCharlie.Organizations)[0]
+	assert.NotNil(t, charlieOrganization.Projects, "Charlie should have project permissions")
+	assert.Len(t, *charlieOrganization.Projects, 2, "Charlie should have access to 2 projects")
+
+	// Charlie should have both deploy and read permissions on projects (merged from two groups).
+	for _, project := range *charlieOrganization.Projects {
+		if project.Id == projectAlphaID {
+			// Alpha: only developers group, so deploy but no read-specific.
+			hasProjectDeploy := false
+
+			for _, endpoint := range project.Endpoints {
+				if endpoint.Name == "project:deploy" {
+					hasProjectDeploy = true
+				}
+			}
+
+			require.True(t, hasProjectDeploy, "Charlie should have deploy on project-alpha")
+		}
+
+		if project.Id == projectBetaID {
+			// Beta: both groups, so should have both deploy and read.
+			hasProjectDeploy := false
+			hasProjectRead := false
+
+			for _, endpoint := range project.Endpoints {
+				if endpoint.Name == "project:deploy" {
+					hasProjectDeploy = true
+				}
+
+				if endpoint.Name == "project:read" {
+					hasProjectRead = true
+				}
+			}
+
+			assert.True(t, hasProjectDeploy, "Charlie should have deploy on project-beta")
+			assert.True(t, hasProjectRead, "Charlie should have read on project-beta")
+		}
+	}
+}
+
 // getACLForServiceAccount is a helper to get the ACL for a given service account.
-func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string, orgIDs []string) *openapi.Acl {
+func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi.Acl {
 	t.Helper()
 
 	// Create authorization info for service account
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
 			Sub: subject,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.Service,
-				OrgIds:  orgIDs,
-			},
 		},
+		ServiceAccount: true,
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
@@ -465,22 +611,23 @@ func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string
 	return acl
 }
 
-// TestServiceAccountACL verifies that service accounts get correct permissions via groups.
-func TestServiceAccountACL(t *testing.T) {
+// TestServiceAccountACLOrganizationScoped verifies that service accounts get correct permissions via groups.
+func TestServiceAccountACLOrganizationScoped(t *testing.T) {
 	t.Parallel()
 
-	rbacClient := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	// Test service account that's a member of the services group
-	aclAlpha := getACLForServiceAccount(t, rbacClient, serviceAccountAlphaID, []string{testOrgID})
+	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID)
 	assert.Nil(t, aclAlpha.Global, "Service account should not have global permissions")
 	assert.NotNil(t, aclAlpha.Organization, "Service account should have organization permissions")
+	assert.NotNil(t, aclAlpha.Organization.Endpoints, "Service account should have organization endpoints")
 	assert.NotNil(t, aclAlpha.Projects, "Service account should have project permissions")
 
 	// Verify service account has org:read (from developer role)
 	hasOrgRead := false
 
-	for _, endpoint := range aclAlpha.Organization.Endpoints {
+	for _, endpoint := range *aclAlpha.Organization.Endpoints {
 		if endpoint.Name == "org:read" {
 			hasOrgRead = true
 
@@ -494,103 +641,185 @@ func TestServiceAccountACL(t *testing.T) {
 	assert.Len(t, *aclAlpha.Projects, 2, "Service account should have access to 2 projects")
 
 	// Test service account not in any group
-	aclBeta := getACLForServiceAccount(t, rbacClient, serviceAccountBetaID, []string{testOrgID})
+	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID)
 	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
 	assert.Nil(t, aclBeta.Organization, "Service account not in groups should not have organization permissions")
 	assert.Nil(t, aclBeta.Projects, "Service account not in groups should not have project permissions")
 }
 
-// TestServiceAccountWrongOrganization verifies that service accounts from different orgs fail.
-func TestServiceAccountMissingOrganization(t *testing.T) {
+func TestServiceAccountOrganizationScoped_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
-	rbacClient := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
-	// Service account claims to be from a different organization
-	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: serviceAccountAlphaID,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.Service,
-				OrgIds:  []string{"different-org"},
-			},
-		},
-	}
-
-	ctx := authorization.NewContext(t.Context(), info)
-
-	// This should fail because the organization doesn't exist
-	_, err := rbacClient.GetACL(ctx, testOrgID)
-	require.Error(t, err, "Should fail when service account's organization doesn't exist")
+	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID)
+	assert.Empty(t, aclAlpha.Organization, "Service account bound to org B should have no permissions in org A")
+	assert.Empty(t, aclAlpha.Projects, "Service account bound to org B should have no permissions in org A")
 }
 
-// TestServiceAccountMissingOrgIDs tests error handling when service account has no org IDs.
-func TestServiceAccountMissingOrgIDs(t *testing.T) {
+func TestServiceAccountACL(t *testing.T) {
 	t.Parallel()
 
-	rbacClient := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
-	// Service account with no org IDs
-	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: serviceAccountAlphaID,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.Service,
-				OrgIds:  []string{}, // Empty org IDs
-			},
-		},
+	// Test service account that's a member of the services group
+	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID)
+	require.Nil(t, aclAlpha.Global, "Service account should not have global permissions")
+	require.NotNil(t, aclAlpha.Organizations, "Service account should have organization permissions")
+
+	alphaOrganizations := *aclAlpha.Organizations
+	require.Len(t, alphaOrganizations, 1, "Service account should have one organization")
+
+	alphaOrganization := &alphaOrganizations[0]
+	assert.NotNil(t, alphaOrganization.Endpoints, "Service account should have organization endpoints")
+	assert.NotNil(t, alphaOrganization.Projects, "Service account should have project permissions")
+
+	// Verify service account has org:read (from developer role)
+	hasOrgRead := false
+
+	for _, endpoint := range *alphaOrganization.Endpoints {
+		if endpoint.Name == "org:read" {
+			hasOrgRead = true
+
+			require.Contains(t, endpoint.Operations, openapi.Read)
+		}
 	}
 
-	ctx := authorization.NewContext(t.Context(), info)
+	assert.True(t, hasOrgRead, "Service account should have org:read permission")
 
-	_, err := rbacClient.GetACL(ctx, testOrgID)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
-}
+	// Service account should have access to projects (from developer role)
+	assert.Len(t, *aclAlpha.Projects, 2, "Service account should have access to 2 projects")
 
-// TestServiceAccountMultipleOrgIDs tests error handling when service account has multiple org IDs.
-func TestServiceAccountMultipleOrgIDs(t *testing.T) {
-	t.Parallel()
-
-	rbacClient := setupTestEnvironment(t)
-
-	// Service account with multiple org IDs (should only have one)
-	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: serviceAccountAlphaID,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.Service,
-				OrgIds:  []string{testOrgID, "another-org"},
-			},
-		},
-	}
-
-	ctx := authorization.NewContext(t.Context(), info)
-
-	_, err := rbacClient.GetACL(ctx, testOrgID)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
+	// Test service account not in any group
+	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID)
+	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
+	assert.Nil(t, aclBeta.Organizations, "Service account not in groups should not have organization permissions")
 }
 
 func TestServiceAccount_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
-	rbacClient := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
-	// Service account with multiple org IDs (should only have one)
+	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAltAlphaID)
+	require.NotNil(t, aclAlpha.Organizations, "Service account should have organization permissions")
+
+	alphaOrganizations := *aclAlpha.Organizations
+	require.Len(t, alphaOrganizations, 1, "Service account should have one organization")
+
+	alphaOrganization := &alphaOrganizations[0]
+	require.Equal(t, altOrgID, alphaOrganization.Id, "Service account should have permissions for the organization it's bound to")
+}
+
+// getACLForSystemAccount gets the ACL for a system account (mTLS-authenticated service), optionally
+// carrying an impersonated end-user principal. impersonate mirrors the X-Impersonate header —
+// when true the receiving service resolves RBAC against the principal's actor; when false the
+// principal is attribution-only and the system account role governs access.
+func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN string, p *principal.Principal, impersonate bool) (*openapi.Acl, error) {
+	t.Helper()
+
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
-			Sub: serviceAccountAlphaID,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.Service,
-				OrgIds:  []string{testOrgID},
-			},
+			Sub: serviceCN,
 		},
+		SystemAccount: true,
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
 
-	_, err := rbacClient.GetACL(ctx, altOrgID) // <-- asking about **alternative org**
+	if p != nil {
+		ctx = principal.NewContext(ctx, p)
+	}
+
+	if impersonate {
+		ctx = principal.NewImpersonateContext(ctx)
+	}
+
+	return rbacClient.GetACL(ctx, testOrgID)
+}
+
+// TestSystemAccountWithPrincipalUsesUserACL verifies that a system account carrying an
+// impersonated principal gets the end-user's ACL, not the system account's global role.
+// TestSystemAccountWithPrincipalUsesUserACL verifies that a system account carrying an
+// impersonated principal gets an ACL derived from the user's identity. When the service
+// holds global permissions covering every resource the test users can access, the
+// intersection equals the user's direct ACL.
+func TestSystemAccountWithPrincipalUsesUserACL(t *testing.T) {
+	t.Parallel()
+
+	f, c := setupTestEnvironment(t)
+
+	// Register a "super-service" role whose global endpoints cover every resource
+	// type present in the test fixture. With this role the intersection of the
+	// service ACL and any test user's ACL equals the user's ACL unchanged.
+	superServiceRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "role-super-service",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:manage", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+					{Name: "project:deploy", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Update}},
+					{Name: "project:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), superServiceRole))
+
+	f.rbac = rbac.New(c, testNamespace, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{"compute-service": "role-super-service"},
+	})
+
+	for _, tc := range []struct {
+		name    string
+		subject string
+	}{
+		{"alice", userAliceSubject},
+		{"bob", userBobSubject},
+		{"charlie", userCharlieSubject},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			aclDirect := getACLForUser(t, f.rbac, tc.subject)
+
+			aclImpersonated, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
+				Actor: tc.subject,
+			}, true)
+			require.NoError(t, err)
+
+			assert.Equal(t, aclDirect, aclImpersonated, "impersonated ACL should equal the user's direct ACL when the service has superset permissions")
+		})
+	}
+}
+
+// TestSystemAccountWithoutPrincipalFallsBackToSystemACL verifies that a system account with
+// no principal in context falls through to processSystemAccountACL.
+func TestSystemAccountWithoutPrincipalFallsBackToSystemACL(t *testing.T) {
+	t.Parallel()
+
+	f, _ := setupTestEnvironment(t)
+
+	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", nil, false)
+	// "compute-service" is not registered in SystemAccountRoleIDs, so this should fail.
 	require.Error(t, err)
-	assert.ErrorIs(t, err, rbac.ErrNotInOrganization)
+}
+
+// TestSystemAccountWithEmptyActorFallsBackToSystemACL verifies that a principal with an
+// empty actor (e.g. controller-injected principal before a user is known) does not trigger
+// impersonation.
+func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
+	t.Parallel()
+
+	f, _ := setupTestEnvironment(t)
+
+	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
+		OrganizationID: testOrgID,
+		Actor:          "",
+	}, true)
+	require.Error(t, err)
 }

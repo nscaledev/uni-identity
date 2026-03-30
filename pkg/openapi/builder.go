@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,9 +17,15 @@ limitations under the License.
 
 package openapi
 
+//go:generate mockgen -destination=mock/client.go -package mock github.com/unikorn-cloud/identity/pkg/openapi ClientWithResponsesInterface
+
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
+
+	"github.com/unikorn-cloud/core/pkg/errors"
 )
 
 type Builder struct {
@@ -39,4 +46,18 @@ func (b *Builder) WithRequestEditorFn(fn func(context.Context, *http.Request) er
 
 func (b *Builder) Client(hostname string) (*ClientWithResponses, error) {
 	return NewClientWithResponses(hostname, b.options...)
+}
+
+func Host(c ClientWithResponsesInterface) (string, error) {
+	clientWithResponses, ok := c.(*ClientWithResponses)
+	if !ok {
+		return "", fmt.Errorf("%w: unable to type assert openapi client with responses", errors.ErrTypeConversion)
+	}
+
+	client, ok := clientWithResponses.ClientInterface.(*Client)
+	if !ok {
+		return "", fmt.Errorf("%w: unable to type assert openapi client", errors.ErrTypeConversion)
+	}
+
+	return strings.TrimSuffix(client.Server, "/"), nil
 }

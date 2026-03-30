@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,13 +21,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/manager"
+	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util"
-	"github.com/unikorn-cloud/core/pkg/util/api"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,23 +57,25 @@ type References struct {
 	serviceDescriptor util.ServiceDescriptor
 	serverOptions     *coreclient.HTTPOptions
 	clientOptions     *coreclient.HTTPClientOptions
+	clientFactory     func(ctx context.Context, c client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error)
 }
 
 func NewReferences(serviceDescriptor util.ServiceDescriptor, serverOptions *coreclient.HTTPOptions, clientOptions *coreclient.HTTPClientOptions) *References {
-	return &References{
+	r := &References{
 		serviceDescriptor: serviceDescriptor,
 		serverOptions:     serverOptions,
 		clientOptions:     clientOptions,
 	}
-}
 
-func (r *References) httpClient(ctx context.Context, client client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error) {
-	token, err := NewTokenIssuer(client, r.serverOptions, r.clientOptions, r.serviceDescriptor).Issue(ctx)
-	if err != nil {
-		return nil, err
+	r.clientFactory = func(ctx context.Context, c client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error) {
+		return New(c, r.serverOptions, r.clientOptions).ControllerClient(ctx, resource)
 	}
 
-	return New(client, r.serverOptions, r.clientOptions).ControllerClient(ctx, token, resource)
+	return r
+}
+
+func (r *References) httpClient(ctx context.Context, c client.Client, resource client.Object) (openapi.ClientWithResponsesInterface, error) {
+	return r.clientFactory(ctx, c, resource)
 }
 
 func (r *References) AddReferenceToProject(ctx context.Context, resource client.Object) error {
@@ -95,13 +99,13 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 		return err
 	}
 
-	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, reference)
+	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}
 
 	if response.StatusCode() != http.StatusCreated {
-		return api.ExtractError(response.StatusCode(), response)
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
 
 	return nil
@@ -128,14 +132,15 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 		return err
 	}
 
-	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, reference)
+	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}
 
-	if response.StatusCode() != http.StatusNoContent {
-		return api.ExtractError(response.StatusCode(), response)
+	switch response.StatusCode() {
+	case http.StatusNoContent, http.StatusNotFound:
+		return nil
+	default:
+		return servererrors.PropagateError(response.HTTPResponse, response)
 	}
-
-	return nil
 }

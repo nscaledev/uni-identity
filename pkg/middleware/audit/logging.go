@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,18 +28,13 @@ import (
 	"github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type Logger struct {
-	// next defines the next HTTP handler in the chain.
-	next http.Handler
-
-	// openapi caches the Schema schema.
-	openapi *openapi.Schema
-
 	// application is the application name.
 	application string
 
@@ -46,14 +42,9 @@ type Logger struct {
 	version string
 }
 
-// Ensure this implements the required interfaces.
-var _ http.Handler = &Logger{}
-
 // New returns an initialized middleware.
-func New(next http.Handler, openapi *openapi.Schema, application, version string) *Logger {
+func New(application, version string) *Logger {
 	return &Logger{
-		next:        next,
-		openapi:     openapi,
 		application: application,
 		version:     version,
 	}
@@ -98,15 +89,8 @@ func getResource(w *middleware.Capture, r *http.Request, route *routers.Route, p
 }
 
 // ServeHTTP implements the http.Handler interface.
-func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	route, params, err := l.openapi.FindRoute(r)
-	if err != nil {
-		errors.HandleError(w, r, errors.OAuth2ServerError("route lookup failure").WithError(err))
-
-		return
-	}
-
-	capture := middleware.CaptureResponse(w, r, l.next)
+func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	capture := middleware.CaptureResponse(w, r, next)
 
 	// Users and auditors care about things coming, going and changing, who did
 	// those things and when?  Certainly not periodic polling that is par for the
@@ -123,13 +107,19 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	route, err := routeresolver.FromContext(r.Context())
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
 	// If there's no scope, then discard also.
-	if len(params) == 0 {
+	if len(route.Parameters) == 0 {
 		return
 	}
 
 	// If you cannot derive the resource, then discard.
-	resource := getResource(capture, r, route, params)
+	resource := getResource(capture, r, route.Route, route.Parameters)
 	if resource == nil {
 		return
 	}
@@ -145,7 +135,7 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"operation", &Operation{
 			Verb: r.Method,
 		},
-		"scope", params,
+		"scope", route.Parameters,
 		"resource", resource,
 		"result", &Result{
 			Status: capture.StatusCode(),
@@ -155,8 +145,8 @@ func (l *Logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.FromContext(r.Context()).Info("audit", logParams...)
 }
 
-func Middleware(openapi *openapi.Schema, application, version string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return New(next, openapi, application, version)
-	}
+func (l *Logger) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		l.handle(w, r, next)
+	})
 }

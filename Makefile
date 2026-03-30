@@ -148,7 +148,7 @@ test: test-unit
 
 .PHONY: test-unit
 test-unit:
-	go test -coverpkg ./... -coverprofile cover.out ./...
+	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api -e /test/contracts)
 	go tool cover -html cover.out -o cover.html
 
 # Build a binary and install it.
@@ -202,7 +202,7 @@ lint: $(GENDIR)
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate
 validate: $(OPENAPI_FILES)
-	go run ./hack/validate_openapi
+	go run github.com/unikorn-cloud/core/hack/validate_openapi
 
 # Validate the docs can be generated without fail.
 .PHONY: validate-docs
@@ -214,3 +214,188 @@ validate-docs: $(OPENAPI_FILES)
 .PHONY: license
 license:
 	go run github.com/unikorn-cloud/core/hack/check_license
+
+# API Integration Tests
+# Add Ginkgo integration test flags for generating JSON and JUnit reports
+GINKGO_INTEGRATION_TEST_FLAGS = --json-report=test-results.json --junit-report=junit.xml --tags=integration
+
+.PHONY: test-api
+test-api: test-api-setup
+	cd test/api/suites && ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-verbose
+test-api-verbose: test-api-setup
+	cd test/api/suites && ginkgo run -v --show-node-events $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-focus
+test-api-focus: test-api-setup
+	cd test/api/suites && LOG_REQUESTS=true LOG_RESPONSES=true ginkgo run -v --focus="$(FOCUS)" $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-suite
+test-api-suite: test-api-setup
+	cd test/api/suites && ginkgo run $(SUITE) $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-parallel
+test-api-parallel: test-api-setup
+	cd test/api/suites && ginkgo run --procs=4 $(GINKGO_INTEGRATION_TEST_FLAGS)
+
+.PHONY: test-api-ci
+test-api-ci: test-api-setup
+	cd test/api/suites && ginkgo run --randomize-all --randomize-suites --race $(GINKGO_INTEGRATION_TEST_FLAGS) --output-interceptor-mode=none
+
+.PHONY: test-api-setup
+test-api-setup:
+	@go install github.com/onsi/ginkgo/v2/ginkgo@latest
+	@go install github.com/onsi/gomega/...@latest
+
+# Clean test artifacts
+.PHONY: test-api-clean
+test-api-clean:
+	@rm -f test/api/suites/test-results.json test/api/suites/junit.xml
+
+# Pact library path configuration (OS-specific defaults)
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    PACT_LIB_PATH ?= /usr/local/lib
+    PACT_LD_FLAGS = -L$(PACT_LIB_PATH)
+    PACT_LIB_ENV = LD_LIBRARY_PATH=$(PACT_LIB_PATH):$$LD_LIBRARY_PATH
+else ifeq ($(UNAME_S),Darwin)
+    PACT_LIB_PATH ?= $(HOME)/Library/pact
+    PACT_LD_FLAGS = -L$(PACT_LIB_PATH) -Wl,-rpath,$(PACT_LIB_PATH)
+    PACT_LIB_ENV = DYLD_LIBRARY_PATH=$(PACT_LIB_PATH):$$DYLD_LIBRARY_PATH
+endif
+
+# Pact Broker Configuration
+PACT_GOFLAGS="-tags=integration"
+SERVICE_NAME ?= uni-identity
+PACT_BROKER_URL ?= http://localhost:9292
+PACT_BROKER_USERNAME ?= pact
+PACT_BROKER_PASSWORD ?= pact
+PROVIDER_VERSION ?= $(REVISION)
+BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
+GIT_BRANCH ?= $(BRANCH)
+
+# Run provider contract verification tests
+.PHONY: test-contracts-provider
+test-contracts-provider:
+	@echo "Running provider contract verification tests..."
+	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Provider Branch: $(GIT_BRANCH)"
+	@echo "Publishing results to Pact Broker: $(PACT_BROKER_URL)"
+	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
+	$(PACT_LIB_ENV) \
+	KUBECONFIG="$(HOME)/.kube/config" \
+	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
+	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
+	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
+	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	PUBLISH_VERIFICATION=true \
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
+
+# Run provider verification with verbose output
+.PHONY: test-contracts-provider-verbose
+test-contracts-provider-verbose:
+	@echo "Running provider contract verification with verbose output..."
+	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
+	$(PACT_LIB_ENV) \
+	KUBECONFIG="$(HOME)/.kube/config" \
+	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
+	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
+	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
+	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	VERBOSE=true \
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
+
+# Run provider verification from local pact file
+.PHONY: test-contracts-provider-local
+test-contracts-provider-local:
+	@echo "Running provider verification from local pact file..."
+	@if [ -z "$(PACT_FILE)" ]; then \
+		echo "Error: PACT_FILE environment variable must be set"; \
+		echo "Usage: make test-contracts-provider-local PACT_FILE=/path/to/pact.json"; \
+		exit 1; \
+	fi
+	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
+	$(PACT_LIB_ENV) \
+	KUBECONFIG="$(HOME)/.kube/config" \
+	PACT_FILE="$(PACT_FILE)" \
+	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
+
+# Run provider verification and publish results to Pact Broker (works on both macOS and Linux)
+# Sets CI=true which triggers auto-publishing to Pact Broker
+# Requires: PACT_BROKER_URL, PACT_BROKER_USERNAME, PACT_BROKER_PASSWORD, PROVIDER_VERSION env vars
+.PHONY: test-contracts-provider-ci
+test-contracts-provider-ci:
+	@echo "Running provider contract verification in CI mode..."
+	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Pact Broker URL: $(PACT_BROKER_URL)"
+	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
+	$(PACT_LIB_ENV) \
+	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
+	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
+	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
+	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
+	CI=true \
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
+
+# Simulate webhook-triggered provider verification
+# Usage: make test-contracts-provider-webhook CONSUMER_BRANCH=feature/my-branch
+.PHONY: test-contracts-provider-webhook
+test-contracts-provider-webhook:
+	@if [ -z "$(CONSUMER_BRANCH)" ]; then \
+		echo "Error: CONSUMER_BRANCH must be set"; \
+		echo "Usage: make test-contracts-provider-webhook CONSUMER_BRANCH=feature/my-branch"; \
+		exit 1; \
+	fi
+	@echo "Simulating webhook-triggered provider verification..."
+	@echo "Consumer Branch: $(CONSUMER_BRANCH)"
+	@echo "Provider Version: $(PROVIDER_VERSION)"
+	@echo "Provider Branch: $(GIT_BRANCH)"
+	@echo "Publishing results to Pact Broker: $(PACT_BROKER_URL)"
+	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
+	$(PACT_LIB_ENV) \
+	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
+	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
+	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
+	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
+	GIT_BRANCH="$(GIT_BRANCH)" \
+	CONSUMER_BRANCH="$(CONSUMER_BRANCH)" \
+	PUBLISH_VERIFICATION=true \
+	GOFLAGS="$(PACT_GOFLAGS)" \
+	go test ./test/contracts/provider/... -v -count=1 -p 1
+
+# Check if this provider version can be deployed to development
+# Verifies all consumers deployed in development have verified pacts with this provider version
+# Requires: PACT_BROKER_URL, PACT_BROKER_USERNAME, PACT_BROKER_PASSWORD, PROVIDER_VERSION env vars
+.PHONY: can-i-deploy
+can-i-deploy:
+	@echo "Running can-i-deploy check for $(SERVICE_NAME) version $(PROVIDER_VERSION)..."
+	docker run --rm \
+		--network host \
+		pactfoundation/pact-cli:latest \
+		pact-broker can-i-deploy \
+		--pacticipant="$(SERVICE_NAME)" \
+		--version="$(PROVIDER_VERSION)" \
+		--to-environment=development \
+		--broker-base-url="$(PACT_BROKER_URL)" \
+		--broker-username="$(PACT_BROKER_USERNAME)" \
+		--broker-password="$(PACT_BROKER_PASSWORD)"
+
+# Clean contract test artifacts
+.PHONY: test-contracts-clean
+test-contracts-clean:
+	@rm -f test/contracts/provider/**/*.log
+	@rm -f test/contracts/provider/**/*.out
+	@rm -f test/contracts/provider/**/*.test
+	@rm -rf test/contracts/provider/**/pacts
+
