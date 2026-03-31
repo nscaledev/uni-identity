@@ -1,5 +1,5 @@
 /*
-Copyright 2026 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,19 +18,27 @@ package migration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
 	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	identityv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var (
+	ErrOrganizationUserNotFound = errors.New("organization user not found")
+	ErrOrganizationUserNoLabel  = errors.New("organization user has no user label")
+	ErrUserNotFound             = errors.New("user not found for organization user")
 )
 
 type Result struct {
 	GroupNamespace string  `json:"namespace"`
 	GroupName      string  `json:"name"`
 	Success        bool    `json:"success"`
-	ErrorMessage   *string `json:"error_message"`
+	ErrorMessage   *string `json:"errorMessage"`
 }
 
 type ResourceMemo struct {
@@ -83,13 +91,13 @@ func (m *GroupMigrationManager) Run(ctx context.Context) ([]Result, error) {
 		Users:             make(map[string]*identityv1.User, len(userList.Items)),
 	}
 
-	for i := 0; i < len(organizationUserList.Items); i++ {
+	for i := range organizationUserList.Items {
 		organizationUser := &organizationUserList.Items[i]
 		key := resourceKey(organizationUser.Namespace, organizationUser.Name)
 		resourceMemo.OrganizationUsers[key] = organizationUser
 	}
 
-	for i := 0; i < len(userList.Items); i++ {
+	for i := range userList.Items {
 		user := &userList.Items[i]
 		key := resourceKey(user.Namespace, user.Name)
 		resourceMemo.Users[key] = user
@@ -100,6 +108,7 @@ func (m *GroupMigrationManager) Run(ctx context.Context) ([]Result, error) {
 		groups = slices.DeleteFunc(groups, func(group identityv1.Group) bool {
 			key := resourceKey(group.Namespace, group.Name)
 			_, ok := m.selector[key]
+
 			return !ok
 		})
 	}
@@ -112,8 +121,9 @@ func (m *GroupMigrationManager) Run(ctx context.Context) ([]Result, error) {
 
 	go m.dispatch(ctx, groups, resourceMemo, semaphore, completed)
 
-	for i := 0; i < len(groups); i++ {
+	for range groups {
 		results = append(results, <-completed)
+
 		<-semaphore
 	}
 
@@ -121,7 +131,7 @@ func (m *GroupMigrationManager) Run(ctx context.Context) ([]Result, error) {
 }
 
 func (m *GroupMigrationManager) dispatch(ctx context.Context, groups []identityv1.Group, resourceMemo ResourceMemo, semaphore chan<- struct{}, completed chan<- Result) {
-	for i := 0; i < len(groups); i++ {
+	for i := range groups {
 		semaphore <- struct{}{}
 
 		go func(group *identityv1.Group) {
@@ -146,6 +156,7 @@ func (m *GroupMigrationManager) dispatch(ctx context.Context, groups []identityv
 
 func (m *GroupMigrationManager) migrate(ctx context.Context, group *identityv1.Group, resourceMemo ResourceMemo) error {
 	subjectMemo := make(map[string]struct{}, len(group.Spec.Subjects))
+
 	for _, subject := range group.Spec.Subjects {
 		key := subjectKey(subject.Issuer, subject.Email)
 		subjectMemo[key] = struct{}{}
@@ -158,19 +169,19 @@ func (m *GroupMigrationManager) migrate(ctx context.Context, group *identityv1.G
 
 		organizationUser, ok := resourceMemo.OrganizationUsers[organizationUserKey]
 		if !ok {
-			return fmt.Errorf("organization user %q not found", organizationUserKey)
+			return fmt.Errorf("%w: %s", ErrOrganizationUserNotFound, organizationUserKey)
 		}
 
 		userID, ok := organizationUser.Labels[coreconstants.UserLabel]
 		if !ok {
-			return fmt.Errorf("organization user %q has no user label", organizationUserKey)
+			return fmt.Errorf("%w: %s", ErrOrganizationUserNoLabel, organizationUserKey)
 		}
 
 		userKey := resourceKey(m.identityNamespace, userID)
 
 		user, ok := resourceMemo.Users[userKey]
 		if !ok {
-			return fmt.Errorf("user %q not found for organization user %q", userKey, organizationUserKey)
+			return fmt.Errorf("%w: %s (%s)", ErrUserNotFound, userKey, organizationUserKey)
 		}
 
 		subjectKey := subjectKey("", user.Spec.Subject)
