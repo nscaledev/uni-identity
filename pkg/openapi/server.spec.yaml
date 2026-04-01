@@ -1152,49 +1152,49 @@ components:
       description: An organization ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/organizationId'
     serviceAccountIDParameter:
       name: serviceAccountID
       in: path
       description: A service account ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/serviceAccountId'
     userIDParameter:
       name: userID
       in: path
       description: A user ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/userId'
     projectIDParameter:
       name: projectID
       in: path
       description: A project ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/projectId'
     groupidParameter:
       name: groupid
       in: path
       description: A unique group ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/groupId'
     oauth2ProvderIDParameter:
       name: providerID
       in: path
       description: An oauth2 provider ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/oauth2ProviderId'
     allocationIDParameter:
       name: allocationID
       in: path
       description: A resource allocation ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/allocationId'
     userEmailParameter:
       name: email
       in: query
@@ -1832,7 +1832,7 @@ components:
       properties:
         id:
           description: The project ID.
-          type: string
+          $ref: '#/components/schemas/projectId'
         endpoints:
           $ref: '#/components/schemas/aclEndpoints'
     aclProjectList:
@@ -1848,7 +1848,7 @@ components:
       properties:
         id:
           description: The organization ID.
-          type: string
+          $ref: '#/components/schemas/organizationId'
         endpoints:
           $ref: '#/components/schemas/aclEndpoints'
         projects:
@@ -1918,11 +1918,11 @@ components:
           items:
             $ref: '#/components/schemas/subject'
         userIDs:
-          $ref: '#/components/schemas/stringList'
+          $ref: '#/components/schemas/userIDs'
         serviceAccountIDs:
-          $ref: '#/components/schemas/stringList'
+          $ref: '#/components/schemas/serviceAccountIDs'
         roleIDs:
-          $ref: '#/components/schemas/stringList'
+          $ref: '#/components/schemas/roleIDs'
     groupRead:
       description: A group when read.
       type: object
@@ -1954,8 +1954,86 @@ components:
       description: A list of group IDs.
       type: array
       items:
-        description: A group ID.
-        type: string
+        $ref: '#/components/schemas/groupId'
+    roleIDs:
+      description: A list of role IDs.
+      type: array
+      items:
+        $ref: '#/components/schemas/roleId'
+    organizationId:
+      description: An organization ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.OrganizationID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    projectId:
+      description: A project ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.ProjectID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    serviceAccountId:
+      description: A service account ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.ServiceAccountID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    userId:
+      description: A user ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.UserID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    groupId:
+      description: A group ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.GroupID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    roleId:
+      description: A role ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.RoleID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    oauth2ProviderId:
+      description: An oauth2 provider ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.OAuth2ProviderID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    allocationId:
+      description: A resource allocation ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.AllocationID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    serviceAccountIDs:
+      description: A list of service account IDs.
+      type: array
+      items:
+        $ref: '#/components/schemas/serviceAccountId'
+    userIDs:
+      description: A list of user IDs.
+      type: array
+      items:
+        $ref: '#/components/schemas/userId'
     projectSpec:
       description: A project.
       type: object

@@ -18,10 +18,10 @@ limitations under the License.
 package rbac_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -29,8 +29,7 @@ import (
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
-	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
-	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -56,10 +55,10 @@ type fixture struct {
 
 const (
 	testNamespace = "test-namespace"
-	testOrgID     = "test-org"
+	testOrgID     = "00000000-0000-0000-0000-000000000001"
 	testOrgNS     = "test-org-ns"
 
-	altOrgID = "alt-org-id"
+	altOrgID = "00000000-0000-0000-0000-000000000002"
 	altOrgNS = "alt-namespace"
 
 	userAliceSubject = "alice@example.com"
@@ -83,57 +82,52 @@ const (
 	roleDeveloperID = "role-developer"
 	roleReaderID    = "role-reader"
 
-	projectAlphaID = "project-alpha"
-	projectBetaID  = "project-beta"
+	projectAlphaID = "00000000-0000-0000-0000-000000000031"
+	projectBetaID  = "00000000-0000-0000-0000-000000000032"
 )
-
-// The API handlers like to have things in the context, so they can label any resources they make.
-func newContext(t *testing.T) context.Context {
-	t.Helper()
-
-	ctx := authorization.NewContext(t.Context(), &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: "test-subject",
-		},
-	})
-
-	ctx = principal.NewContext(ctx, &principal.Principal{
-		Actor: "test-principal",
-	})
-
-	return ctx
-}
 
 func createUser(t *testing.T, c client.Client, id, subject string, groups []*unikornv1.Group) {
 	t.Helper()
 
-	groupids := make([]string, len(groups))
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      id,
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: subject,
+			State:   unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), user))
+
+	organizationUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      id,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+				constants.UserLabel:         id,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), organizationUser))
+
 	for i := range groups {
-		groupids[i] = groups[i].Name
-	}
+		group := &unikornv1.Group{}
+		key := client.ObjectKey{
+			Namespace: groups[i].Namespace,
+			Name:      groups[i].Name,
+		}
+		require.NoError(t, c.Get(t.Context(), key, group))
 
-	iss := handlercommon.IssuerValue{
-		URL:      "https://identity.unikorn-cloud.org",
-		Hostname: "identity.unikorn-cloud.org",
-	}
-	userclient := users.New(c, testNamespace, nil /* JWT issuer */, iss, &users.Options{
-		// luckily these are all to do with email verification, which we don't want to use.
-	})
+		group.Spec.UserIDs = append(group.Spec.UserIDs, organizationUser.Name)
 
-	// this is needed because deep in the bowels of request handling, it's consulted in
-	// order to set some Kubernetes object metadata.
-	ctx := newContext(t)
-	_, err := userclient.Create(ctx, testOrgID, &openapi.UserWrite{
-		Metadata: &coreopenapi.ResourceWriteMetadata{
-			Name: id,
-		},
-		Spec: openapi.UserSpec{
-			Subject:  subject,
-			State:    openapi.Active,
-			GroupIDs: groupids,
-		},
-	})
-	require.NoError(t, err)
+		require.NoError(t, c.Update(t.Context(), group))
+	}
 }
 
 func newOrganization(objectNamespace, name, orgNamespace string) *unikornv1.Organization {
@@ -159,7 +153,7 @@ func createServiceAccount(t *testing.T, c client.Client, name, orgID, orgNamespa
 		Name: name,
 	}
 
-	objectMeta := conversion.NewObjectMetadata(meta, orgNamespace).WithOrganization(orgID).Get()
+	objectMeta := conversion.NewObjectMetadata(meta, orgNamespace).WithOrganization(uuid.MustParse(orgID)).Get()
 	sa := unikornv1.ServiceAccount{
 		ObjectMeta: objectMeta,
 		Spec: unikornv1.ServiceAccountSpec{
@@ -445,7 +439,7 @@ func TestGroupACLContentOrganizationScoped(t *testing.T) {
 
 	// Charlie should have both deploy and read permissions on projects (merged from two groups).
 	for _, project := range *aclCharlie.Projects {
-		if project.Id == projectAlphaID {
+		if project.Id == ids.MustParseProjectID(projectAlphaID) {
 			// Alpha: only developers group, so deploy but no read-specific.
 			hasProjectDeploy := false
 
@@ -458,7 +452,7 @@ func TestGroupACLContentOrganizationScoped(t *testing.T) {
 			require.True(t, hasProjectDeploy, "Charlie should have deploy on project-alpha")
 		}
 
-		if project.Id == projectBetaID {
+		if project.Id == ids.MustParseProjectID(projectBetaID) {
 			// Beta: both groups, so should have both deploy and read.
 			hasProjectDeploy := false
 			hasProjectRead := false
@@ -499,7 +493,7 @@ func TestGroupACLContent(t *testing.T) {
 	require.Len(t, *aclBob.Organizations, 1, "Bob should be a member of one organization")
 
 	bobOrganization := &(*aclBob.Organizations)[0]
-	require.Equal(t, testOrgID, bobOrganization.Id, "Bob should have organization ID set")
+	require.Equal(t, ids.MustParseOrganizationID(testOrgID), bobOrganization.Id, "Bob should have organization ID set")
 	require.NotNil(t, bobOrganization.Endpoints, "Bob should have organization permissions")
 	require.NotNil(t, bobOrganization.Projects, "Bob should have project permissions")
 	require.Len(t, *bobOrganization.Projects, 2, "Bob should have access to 2 projects (alpha and beta)")
@@ -529,7 +523,7 @@ func TestGroupACLContent(t *testing.T) {
 
 	// Charlie should have both deploy and read permissions on projects (merged from two groups).
 	for _, project := range *charlieOrganization.Projects {
-		if project.Id == projectAlphaID {
+		if project.Id == ids.MustParseProjectID(projectAlphaID) {
 			// Alpha: only developers group, so deploy but no read-specific.
 			hasProjectDeploy := false
 
@@ -542,7 +536,7 @@ func TestGroupACLContent(t *testing.T) {
 			require.True(t, hasProjectDeploy, "Charlie should have deploy on project-alpha")
 		}
 
-		if project.Id == projectBetaID {
+		if project.Id == ids.MustParseProjectID(projectBetaID) {
 			// Beta: both groups, so should have both deploy and read.
 			hasProjectDeploy := false
 			hasProjectRead := false
@@ -681,7 +675,7 @@ func TestServiceAccount_WrongOrganization(t *testing.T) {
 	require.Len(t, alphaOrganizations, 1, "Service account should have one organization")
 
 	alphaOrganization := &alphaOrganizations[0]
-	require.Equal(t, altOrgID, alphaOrganization.Id, "Service account should have permissions for the organization it's bound to")
+	require.Equal(t, ids.MustParseOrganizationID(altOrgID), alphaOrganization.Id, "Service account should have permissions for the organization it's bound to")
 }
 
 // getACLForSystemAccount gets the ACL for a system account (mTLS-authenticated service), optionally
@@ -791,7 +785,7 @@ func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
 	f, _ := setupTestEnvironment(t)
 
 	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
-		OrganizationID: testOrgID,
+		OrganizationID: ids.MustParseOrganizationID(testOrgID),
 		Actor:          "",
 	}, true)
 	require.Error(t, err)

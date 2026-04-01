@@ -8,14 +8,14 @@ require (
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0
-	github.com/oapi-codegen/runtime v1.1.1
+	github.com/oapi-codegen/runtime v1.3.1
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
 	github.com/pact-foundation/pact-go/v2 v2.4.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spjmurray/go-util v0.1.3
 	github.com/stretchr/testify v1.11.1
-	github.com/unikorn-cloud/core v1.14.0-rc1.0.20260409152316-fa69a2543e80
+	github.com/unikorn-cloud/core v1.14.0-rc1.0.20260409152714-c74fef4e33f4
 	go.opentelemetry.io/otel v1.43.0
 	go.uber.org/mock v0.5.2
 	golang.org/x/oauth2 v0.35.0

@@ -28,6 +28,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/manager"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -69,7 +70,7 @@ func setAllocationID(resource client.Object, allocation *openapi.AllocationRead)
 		annotations = map[string]string{}
 	}
 
-	annotations[constants.AllocationAnnotation] = allocation.Metadata.Id
+	annotations[constants.AllocationAnnotation] = allocation.Metadata.Id.String()
 
 	resource.SetAnnotations(annotations)
 }
@@ -104,7 +105,12 @@ func (r *Allocations) Create(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	response, err := r.api.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, generateAllocation(reference, allocations))
+	organizationID, projectID, err := getPrincipalOrganizationAndProjectIDs(userPrincipal)
+	if err != nil {
+		return err
+	}
+
+	response, err := r.api.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, organizationID, projectID, generateAllocation(reference, allocations))
 	if err != nil {
 		return err
 	}
@@ -132,12 +138,17 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	allocationID, err := getAllocationID(resource)
+	allocationID, err := getAllocationUUID(resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID, generateAllocation(reference, allocations))
+	organizationID, projectID, err := getPrincipalOrganizationAndProjectIDs(userPrincipal)
+	if err != nil {
+		return err
+	}
+
+	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, organizationID, projectID, ids.AllocationIDFromUUID(allocationID), generateAllocation(reference, allocations))
 	if err != nil {
 		return err
 	}
@@ -158,12 +169,17 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 		return err
 	}
 
-	allocationID, err := getAllocationID(resource)
+	allocationID, err := getAllocationUUID(resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID)
+	organizationID, projectID, err := getPrincipalOrganizationAndProjectIDs(userPrincipal)
+	if err != nil {
+		return err
+	}
+
+	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, organizationID, projectID, ids.AllocationIDFromUUID(allocationID))
 	if err != nil {
 		return err
 	}

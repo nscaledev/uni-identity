@@ -26,6 +26,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -129,6 +130,10 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
-func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
-	return a.rbac.GetACL(ctx, organizationID)
+func (a *Authorizer) GetACL(ctx context.Context, organizationID *ids.OrganizationID) (*openapi.Acl, error) {
+	if organizationID == nil {
+		return a.rbac.GetACL(ctx, "")
+	}
+
+	return a.rbac.GetACL(ctx, organizationID.String())
 }

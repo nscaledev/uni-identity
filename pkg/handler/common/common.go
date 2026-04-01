@@ -22,10 +22,13 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/google/uuid"
+
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -59,6 +62,62 @@ func organizationSelector(organizationID string) (labels.Selector, error) {
 	return labels.NewSelector().Add(*organizationIDRequirement), nil
 }
 
+func organizationSelectorUUID(organizationID ids.OrganizationID) (labels.Selector, error) {
+	return organizationSelector(organizationID.String())
+}
+
+// UUIDStrings converts typed UUID identifiers to the string form used by Kubernetes resources.
+func UUIDStrings(ids []uuid.UUID) []string {
+	out := make([]string, len(ids))
+
+	for i := range ids {
+		out[i] = ids[i].String()
+	}
+
+	return out
+}
+
+// IDStrings converts typed identifiers with String methods to the string form used by Kubernetes resources.
+func IDStrings[T fmt.Stringer](ids []T) []string {
+	out := make([]string, len(ids))
+
+	for i := range ids {
+		out[i] = ids[i].String()
+	}
+
+	return out
+}
+
+// ParseUUIDStrings converts Kubernetes resource names or labels into typed UUIDs for the API boundary.
+func ParseUUIDStrings(ids []string) ([]uuid.UUID, error) {
+	out := make([]uuid.UUID, len(ids))
+
+	for i := range ids {
+		id, err := uuid.Parse(ids[i])
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid resource ID %q", coreerrors.ErrConsistency, ids[i])
+		}
+
+		out[i] = id
+	}
+
+	return out, nil
+}
+
+// ContainsUUIDString reports whether a string-form UUID is present in a typed UUID list.
+func ContainsUUIDString(ids []uuid.UUID, value string) bool {
+	return slices.ContainsFunc(ids, func(id uuid.UUID) bool {
+		return id.String() == value
+	})
+}
+
+// ContainsIDString reports whether a string-form identifier is present in a typed ID list.
+func ContainsIDString[T fmt.Stringer](ids []T, value string) bool {
+	return slices.ContainsFunc(ids, func(id T) bool {
+		return id.String() == value
+	})
+}
+
 func projectSelector(organizationID, projectID string) (labels.Selector, error) {
 	kindRequirement, err := labels.NewRequirement(constants.KindLabel, selection.Equals, []string{constants.KindLabelValueProject})
 	if err != nil {
@@ -78,9 +137,13 @@ func projectSelector(organizationID, projectID string) (labels.Selector, error) 
 	return labels.NewSelector().Add(*kindRequirement, *organizationIDRequirement, *projectIDRequirement), nil
 }
 
+func projectSelectorUUID(organizationID ids.OrganizationID, projectID ids.ProjectID) (labels.Selector, error) {
+	return projectSelector(organizationID.String(), projectID.String())
+}
+
 // ProjectNamespace is shared by higher order services.
-func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, projectID string) (*corev1.Namespace, error) {
-	selector, err := projectSelector(organizationID, projectID)
+func ProjectNamespace(ctx context.Context, cli client.Client, organizationID ids.OrganizationID, projectID ids.ProjectID) (*corev1.Namespace, error) {
+	selector, err := projectSelectorUUID(organizationID, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +165,12 @@ func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, pr
 	return &resources.Items[0], nil
 }
 
-func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
+func (c *Client) ProjectNamespace(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) (*corev1.Namespace, error) {
 	return ProjectNamespace(ctx, c.client, organizationID, projectID)
 }
 
-func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv1.Quota, bool, error) {
-	selector, err := organizationSelector(organizationID)
+func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Quota, bool, error) {
+	selector, err := organizationSelectorUUID(organizationID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -173,8 +236,8 @@ func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv
 	return quota, virtual, nil
 }
 
-func (c *Client) GetAllocations(ctx context.Context, organizationID string) (*unikornv1.AllocationList, error) {
-	selector, err := organizationSelector(organizationID)
+func (c *Client) GetAllocations(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.AllocationList, error) {
+	selector, err := organizationSelectorUUID(organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +260,7 @@ func (c *Client) GetAllocations(ctx context.Context, organizationID string) (*un
 // argument, i.e. when updating the quotas, this will override the read from the organization.
 // If you pass in an allocation, i.e. when creating or updating an allocation, this will be
 // unioned with the organization's allocations, overriding an existing one if it exists.
-func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID string, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
+func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID ids.OrganizationID, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
 	// Handle the default quota.
 	if quota == nil {
 		temp, _, err := c.GetQuota(ctx, organizationID)
@@ -283,20 +346,20 @@ func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 
 	meta.Annotations[constants.CreatorPrincipalAnnotation] = principal.Actor
 
-	if principal.OrganizationID != "" {
+	if principal.OrganizationID != (ids.OrganizationID{}) {
 		if meta.Labels == nil {
 			meta.Labels = map[string]string{}
 		}
 
-		meta.Labels[constants.OrganizationPrincipalLabel] = principal.OrganizationID
+		meta.Labels[constants.OrganizationPrincipalLabel] = principal.OrganizationID.String()
 	}
 
-	if principal.ProjectID != "" {
+	if principal.ProjectID != (ids.ProjectID{}) {
 		if meta.Labels == nil {
 			meta.Labels = map[string]string{}
 		}
 
-		meta.Labels[constants.ProjectPrincipalLabel] = principal.ProjectID
+		meta.Labels[constants.ProjectPrincipalLabel] = principal.ProjectID.String()
 	}
 
 	return nil

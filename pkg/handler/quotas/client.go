@@ -31,6 +31,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -84,7 +85,7 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	}
 
 	out := &unikornv1.Quota{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID.UUID()).Get(),
 		Spec: unikornv1.QuotaSpec{
 			Quotas: generateQuotaList(in.Quotas),
 		},
@@ -102,7 +103,7 @@ type allocation struct {
 	reserved  int64
 }
 
-func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID string) (*openapi.QuotasRead, error) {
+func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
 	metadata := &unikornv1.QuotaMetadataList{}
 
 	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
@@ -167,7 +168,7 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 	return out, nil
 }
 
-func (c *Client) Get(ctx context.Context, organizationID string) (*openapi.QuotasRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
 	result, _, err := common.New(c.client).GetQuota(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -176,7 +177,7 @@ func (c *Client) Get(ctx context.Context, organizationID string) (*openapi.Quota
 	return c.convert(ctx, result, organizationID)
 }
 
-func (c *Client) Update(ctx context.Context, organizationID string, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
 	common := common.New(c.client)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)

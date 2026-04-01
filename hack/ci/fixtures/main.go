@@ -44,6 +44,7 @@ import (
 	"time"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	corev1 "k8s.io/api/core/v1"
@@ -187,29 +188,29 @@ func newAPIClient(baseURL, caCertPath string, certPEM, keyPEM []byte) *openapi.C
 
 // findRole returns the ID of a named role within an organization.
 // platform-administrator and other protected roles are excluded from the API response.
-func findRole(roles *openapi.RolesResponse, name string) string {
+func findRole(roles *openapi.RolesResponse, name string) ids.RoleID {
 	if roles == nil {
-		return ""
+		return ids.RoleID{}
 	}
 
 	for _, r := range *roles {
 		if r.Metadata.Name == name {
-			return r.Metadata.Id
+			return ids.RoleIDFromUUID(r.Metadata.Id)
 		}
 	}
 
-	return ""
+	return ids.RoleID{}
 }
 
 // createGroup creates a group with the given role IDs assigned.
-func createGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, roleIDs []string) string {
+func createGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID ids.OrganizationID, name string, roleIDs openapi.RoleIDs) ids.GroupID {
 	logf("Creating group %q...", name)
 
 	resp, err := ac.PostApiV1OrganizationsOrganizationIDGroupsWithResponse(ctx, orgID, openapi.GroupWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
 		Spec: openapi.GroupSpec{
 			RoleIDs:           roleIDs,
-			ServiceAccountIDs: openapi.StringList{},
+			ServiceAccountIDs: openapi.ServiceAccountIDs{},
 		},
 	})
 	if err != nil {
@@ -220,14 +221,14 @@ func createGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, na
 		fatalf("create group %q returned %s", name, resp.Status())
 	}
 
-	id := resp.JSON201.Metadata.Id
+	id := ids.GroupIDFromUUID(resp.JSON201.Metadata.Id)
 	logf("  group %q ID: %s", name, id)
 
 	return id
 }
 
 // createProject creates a project with the given group memberships and returns its ID.
-func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) string {
+func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID ids.OrganizationID, name string, groupIDs openapi.GroupIDs) ids.ProjectID {
 	logf("Creating project %q...", name)
 
 	resp, err := ac.PostApiV1OrganizationsOrganizationIDProjectsWithResponse(ctx, orgID, openapi.ProjectWrite{
@@ -242,14 +243,14 @@ func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, 
 		fatalf("create project %q returned %s", name, resp.Status())
 	}
 
-	id := resp.JSON202.Metadata.Id
+	id := ids.ProjectIDFromUUID(resp.JSON202.Metadata.Id)
 	logf("  project %q ID: %s", name, id)
 
 	return id
 }
 
 // createServiceAccount creates a service account in the given groups and returns its ID and token.
-func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) (string, string) {
+func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, orgID ids.OrganizationID, name string, groupIDs openapi.GroupIDs) (ids.ServiceAccountID, string) {
 	logf("Creating service account %q...", name)
 
 	resp, err := ac.PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(ctx, orgID, openapi.ServiceAccountWrite{
@@ -264,7 +265,7 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 		fatalf("create service account %q returned %s", name, resp.Status())
 	}
 
-	id := resp.JSON201.Metadata.Id
+	id := ids.ServiceAccountIDFromUUID(resp.JSON201.Metadata.Id)
 	token := ""
 
 	if resp.JSON201.Status.AccessToken != nil {
@@ -277,7 +278,7 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 }
 
 // waitForOrgNamespace polls until the organization controller has provisioned the backing namespace.
-func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgID string) {
+func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace string, orgID ids.OrganizationID) {
 	logf("Waiting for Organization %s to be provisioned...", orgID)
 
 	if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 60*time.Second, true, func(ctx context.Context) (bool, error) {
@@ -288,7 +289,7 @@ func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgI
 			Kind:    "Organization",
 		})
 
-		if err := k8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: orgID}, org); err != nil {
+		if err := k8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: orgID.String()}, org); err != nil {
 			return false, nil //nolint:nilerr
 		}
 
@@ -301,7 +302,7 @@ func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgI
 }
 
 // resolveRoles lists the organization roles and returns the IDs for administrator and user.
-func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string) {
+func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID ids.OrganizationID) (ids.RoleID, ids.RoleID) {
 	logf("Resolving role IDs...")
 
 	rolesResp, err := ac.GetApiV1OrganizationsOrganizationIDRolesWithResponse(ctx, orgID)
@@ -314,12 +315,12 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 	}
 
 	administratorRoleID := findRole(rolesResp.JSON200, "administrator")
-	if administratorRoleID == "" {
+	if administratorRoleID.IsZero() {
 		fatalf("administrator role not found in org %s", orgID)
 	}
 
 	userRoleID := findRole(rolesResp.JSON200, "user")
-	if userRoleID == "" {
+	if userRoleID.IsZero() {
 		fatalf("user role not found in org %s", orgID)
 	}
 
@@ -384,7 +385,7 @@ func main() {
 		fatalf("create Organization returned %s", orgResp.Status())
 	}
 
-	orgID := orgResp.JSON202.Metadata.Id
+	orgID := ids.OrganizationIDFromUUID(orgResp.JSON202.Metadata.Id)
 	logf("  Organization ID: %s", orgID)
 
 	// Wait for the organization controller to provision the backing namespace.
@@ -397,29 +398,29 @@ func main() {
 
 	// ── Create Groups ─────────────────────────────────────────────────────────
 	// ci-admin-group: organization administrator — full identity CRUD at org scope.
-	adminGroupID := createGroup(ctx, ac, orgID, "ci-admin-group", []string{administratorRoleID})
+	adminGroupID := createGroup(ctx, ac, orgID, "ci-admin-group", openapi.RoleIDs{administratorRoleID})
 
 	// ci-user-group: project user — project-scoped access only.
-	userGroupID := createGroup(ctx, ac, orgID, "ci-user-group", []string{userRoleID})
+	userGroupID := createGroup(ctx, ac, orgID, "ci-user-group", openapi.RoleIDs{userRoleID})
 
 	// ── Create Project ────────────────────────────────────────────────────────
 	// Both groups are members so both service accounts can access project endpoints.
-	projectID := createProject(ctx, ac, orgID, "ci-test-project", []string{adminGroupID, userGroupID})
+	projectID := createProject(ctx, ac, orgID, "ci-test-project", openapi.GroupIDs{adminGroupID, userGroupID})
 
 	// ── Create ServiceAccounts ────────────────────────────────────────────────
-	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
-	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
+	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", openapi.GroupIDs{adminGroupID})
+	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", openapi.GroupIDs{userGroupID})
 
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
-	fmt.Printf("TEST_ORG_ID=%s\n", orgID)
-	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID)
+	fmt.Printf("TEST_ORG_ID=%s\n", orgID.String())
+	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID.String())
 	fmt.Printf("API_AUTH_TOKEN=%s\n", adminToken)
-	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID)
-	fmt.Printf("TEST_USER_GROUP_ID=%s\n", userGroupID)
-	fmt.Printf("TEST_ADMIN_SA_ID=%s\n", adminSAID)
-	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
+	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID.String())
+	fmt.Printf("TEST_USER_GROUP_ID=%s\n", userGroupID.String())
+	fmt.Printf("TEST_ADMIN_SA_ID=%s\n", adminSAID.String())
+	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID.String())
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("USER_AUTH_TOKEN=%s\n", userToken)
 }

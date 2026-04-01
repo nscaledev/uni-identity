@@ -24,6 +24,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 )
@@ -36,5 +37,5 @@ type Authorizer interface {
 
 	// GetACL retrieves access control information from the subject identified
 	// by the Authorize call.
-	GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error)
+	GetACL(ctx context.Context, organizationID *ids.OrganizationID) (*openapi.Acl, error)
 }

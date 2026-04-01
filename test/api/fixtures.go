@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
@@ -50,8 +51,8 @@ func NewGroupPayload() *GroupPayloadBuilder {
 				Name: uniqueName,
 			},
 			Spec: identityopenapi.GroupSpec{
-				RoleIDs:           []string{},
-				ServiceAccountIDs: []string{},
+				RoleIDs:           identityopenapi.RoleIDs{},
+				ServiceAccountIDs: identityopenapi.ServiceAccountIDs{},
 			},
 		},
 	}
@@ -65,13 +66,21 @@ func (b *GroupPayloadBuilder) WithName(name string) *GroupPayloadBuilder {
 
 // WithRoleIDs sets the role IDs for the group.
 func (b *GroupPayloadBuilder) WithRoleIDs(roleIDs []string) *GroupPayloadBuilder {
-	b.group.Spec.RoleIDs = roleIDs
+	b.group.Spec.RoleIDs = make(identityopenapi.RoleIDs, len(roleIDs))
+	for i := range roleIDs {
+		b.group.Spec.RoleIDs[i] = ids.MustParseRoleID(roleIDs[i])
+	}
+
 	return b
 }
 
 // WithServiceAccountIDs sets the service account IDs for the group.
 func (b *GroupPayloadBuilder) WithServiceAccountIDs(serviceAccountIDs []string) *GroupPayloadBuilder {
-	b.group.Spec.ServiceAccountIDs = serviceAccountIDs
+	b.group.Spec.ServiceAccountIDs = make(identityopenapi.ServiceAccountIDs, len(serviceAccountIDs))
+	for i := range serviceAccountIDs {
+		b.group.Spec.ServiceAccountIDs[i] = ids.MustParseServiceAccountID(serviceAccountIDs[i])
+	}
+
 	return b
 }
 
@@ -93,8 +102,8 @@ func findOrphanedGroupID(ctx context.Context, client *APIClient, config *TestCon
 
 	for _, group := range groups {
 		if group.Metadata.Name == groupName {
-			GinkgoWriter.Printf("Found orphaned group by name: %s (ID: %s)\n", groupName, group.Metadata.Id)
-			return group.Metadata.Id
+			GinkgoWriter.Printf("Found orphaned group by name: %s (ID: %s)\n", groupName, group.Metadata.Id.String())
+			return group.Metadata.Id.String()
 		}
 	}
 
@@ -134,7 +143,7 @@ func CreateGroupWithCleanup(client *APIClient, ctx context.Context, config *Test
 		Fail(fmt.Sprintf("Failed to create group: %v", err))
 	}
 
-	groupID = group.Metadata.Id
+	groupID = group.Metadata.Id.String()
 
 	GinkgoWriter.Printf("Created group with ID: %s\n", groupID)
 

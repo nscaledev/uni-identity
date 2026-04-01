@@ -19,13 +19,10 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
-	"github.com/unikorn-cloud/core/pkg/constants"
-	"github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/manager"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util"
@@ -33,23 +30,6 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-// getOrganizationAndProjectID extracts the organization and project IDs from a resource.
-func getOrganizationAndProjectID(resource client.Object) (string, string, error) {
-	labels := resource.GetLabels()
-
-	organizationID, ok := labels[constants.OrganizationLabel]
-	if !ok {
-		return "", "", fmt.Errorf("%w: resource missing organization ID label", errors.ErrConsistency)
-	}
-
-	projectID, ok := labels[constants.ProjectLabel]
-	if !ok {
-		return "", "", fmt.Errorf("%w: resource missing project ID label", errors.ErrConsistency)
-	}
-
-	return organizationID, projectID, nil
-}
 
 // References allows references to be added and removed on identity
 // resources from remote services.
@@ -94,7 +74,7 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 		return err
 	}
 
-	organizationID, projectID, err := getOrganizationAndProjectID(resource)
+	organizationID, projectID, err := getOrganizationAndProjectIDs(resource)
 	if err != nil {
 		return err
 	}
@@ -127,7 +107,7 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 		return err
 	}
 
-	organizationID, projectID, err := getOrganizationAndProjectID(resource)
+	organizationID, projectID, err := getOrganizationAndProjectIDs(resource)
 	if err != nil {
 		return err
 	}

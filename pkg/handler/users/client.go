@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/google/uuid"
 	"github.com/spf13/pflag"
 	gomail "gopkg.in/gomail.v2"
 
@@ -45,6 +46,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/html"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -183,7 +185,7 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 
 		var needsPatching bool
 
-		if slices.Contains(groupIDs, current.Name) {
+		if common.ContainsIDString(groupIDs, current.Name) {
 			needsPatching = addToGroup(subject, orgUserID, updated)
 		} else {
 			needsPatching = removeFromGroup(subject, orgUserID, updated)
@@ -203,10 +205,10 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 	return nil
 }
 
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, userID string) (*unikornv1.OrganizationUser, error) {
+func (c *Client) get(ctx context.Context, organization *organizations.Meta, userID ids.UserID) (*unikornv1.OrganizationUser, error) {
 	result := &unikornv1.OrganizationUser{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: userID}, result); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: userID.String()}, result); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
@@ -260,7 +262,7 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	out := &unikornv1.OrganizationUser{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID).WithLabel(constants.UserLabel, userID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID.UUID()).WithLabel(constants.UserLabel, userID).Get(),
 		Spec: unikornv1.OrganizationUserSpec{
 			State: generateUserState(in.Spec.State),
 		},
@@ -286,9 +288,14 @@ func convertUserState(in unikornv1.UserState) openapi.UserState {
 	return ""
 }
 
-func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *unikornv1.GroupList) *openapi.UserRead {
+func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *unikornv1.GroupList) (*openapi.UserRead, error) {
+	metadata, err := conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to convert user %s/%s", err, in.Namespace, in.Name)
+	}
+
 	out := &openapi.UserRead{
-		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
+		Metadata: metadata,
 		Spec: openapi.UserSpec{
 			Subject:  user.Spec.Subject,
 			State:    convertUserState(in.Spec.State),
@@ -319,11 +326,16 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 
 	for _, group := range groups.Items {
 		if slices.Contains(group.Spec.UserIDs, in.Name) {
-			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
+			groupID, err := uuid.Parse(group.Name)
+			if err != nil {
+				return nil, fmt.Errorf("%w: failed to convert group ID %s", err, group.Name)
+			}
+
+			out.Spec.GroupIDs = append(out.Spec.GroupIDs, ids.GroupIDFromUUID(groupID))
 		}
 	}
 
-	return out
+	return out, nil
 }
 
 func convertList(in *unikornv1.OrganizationUserList, users *unikornv1.UserList, groups *unikornv1.GroupList) (openapi.Users, error) {
@@ -338,7 +350,12 @@ func convertList(in *unikornv1.OrganizationUserList, users *unikornv1.UserList, 
 			return nil, fmt.Errorf("%w: failed to lookup user", coreerrors.ErrConsistency)
 		}
 
-		out[i] = *convert(&in.Items[i], &users.Items[index], groups)
+		item, err := convert(&in.Items[i], &users.Items[index], groups)
+		if err != nil {
+			return nil, err
+		}
+
+		out[i] = *item
 	}
 
 	slices.SortStableFunc(out, func(a, b openapi.UserRead) int {
@@ -688,7 +705,7 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 // Create makes a new user.  This creates a new user in an organization, but they
 // reference a unique user resource, so we need to get or create the underlying record
 // first, then add to the organization.
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	// Any accounts that aren't email based must use kubectl-unikorn to create them,
 	// e.g. users for unikorn services.
 	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
@@ -724,11 +741,11 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, err
 	}
 
-	return convert(resource, user, groups), nil
+	return convert(resource, user, groups)
 }
 
 // List retrieves information about all users in the organization.
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Users, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -768,7 +785,7 @@ func (c *Client) patchOrganizationUser(ctx context.Context, updated, current *un
 
 // Update modifies any metadata for the user if it exists.  If a matching account
 // doesn't exist it raises an error.
-func (c *Client) Update(ctx context.Context, organizationID, userID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, userID ids.UserID, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -807,7 +824,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Name, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Name, userID.String(), request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -816,11 +833,11 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 		return nil, err
 	}
 
-	return convert(updated, user, groups), nil
+	return convert(updated, user, groups)
 }
 
 // Delete removes the user and revokes the access token.
-func (c *Client) Delete(ctx context.Context, organizationID, userID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, userID ids.UserID) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -840,7 +857,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, userID string) erro
 		return err
 	}
 
-	if err := c.updateGroups(ctx, resource.Labels[constants.UserLabel], userID, nil, groups); err != nil {
+	if err := c.updateGroups(ctx, resource.Labels[constants.UserLabel], userID.String(), nil, groups); err != nil {
 		return err
 	}
 

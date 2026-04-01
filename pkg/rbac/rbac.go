@@ -23,11 +23,13 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/google/uuid"
 	"github.com/spf13/pflag"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -380,8 +382,13 @@ func accumulateOrganizationScopedProject(groups map[string]*unikornv1.Group, rol
 	}
 
 	if endpoints != nil && len(*endpoints) > 0 {
+		projectID, err := uuid.Parse(project.Name)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid project ID %q", errors.ErrConsistency, project.Name)
+		}
+
 		acl := &openapi.AclProject{
-			Id:        project.Name,
+			Id:        ids.ProjectIDFromUUID(projectID),
 			Endpoints: *endpoints,
 		}
 
@@ -429,6 +436,11 @@ func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl 
 		return nil
 	}
 
+	organizationUUID, err := uuid.Parse(organizationID)
+	if err != nil {
+		return fmt.Errorf("%w: invalid organization ID %q", errors.ErrConsistency, organizationID)
+	}
+
 	organizationEndpoints, err := accumulateOrganizationPermissions(groups, roles)
 	if err != nil {
 		return err
@@ -436,7 +448,7 @@ func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl 
 
 	if organizationEndpoints != nil {
 		acl.Organization = &openapi.AclOrganization{
-			Id:        organizationID,
+			Id:        ids.OrganizationIDFromUUID(organizationUUID),
 			Endpoints: organizationEndpoints,
 		}
 	}
@@ -472,6 +484,11 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 	organizations := make([]openapi.AclOrganization, 0, len(organizationMap))
 
 	for organizationID, subjectID := range organizationMap {
+		organizationUUID, err := uuid.Parse(organizationID)
+		if err != nil {
+			return fmt.Errorf("%w: invalid organization ID %q", errors.ErrConsistency, organizationID)
+		}
+
 		var organization unikornv1.Organization
 
 		if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: organizationID}, &organization); err != nil {
@@ -493,7 +510,7 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 		}
 
 		organizationACL := &openapi.AclOrganization{
-			Id:        organizationID,
+			Id:        ids.OrganizationIDFromUUID(organizationUUID),
 			Endpoints: endpoints,
 		}
 
@@ -516,8 +533,13 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 				continue
 			}
 
+			projectUUID, err := uuid.Parse(project.Name)
+			if err != nil {
+				return fmt.Errorf("%w: invalid project ID %q", errors.ErrConsistency, project.Name)
+			}
+
 			aclProjects = append(aclProjects, openapi.AclProject{
-				Id:        project.Name,
+				Id:        ids.ProjectIDFromUUID(projectUUID),
 				Endpoints: *endpoints,
 			})
 		}

@@ -13,6 +13,7 @@ import (
 	io "io"
 	reflect "reflect"
 
+	ids "github.com/unikorn-cloud/identity/pkg/ids"
 	openapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -41,7 +42,7 @@ func (m *MockClientWithResponsesInterface) EXPECT() *MockClientWithResponsesInte
 }
 
 // DeleteApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.GroupID, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -61,7 +62,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 }
 
 // DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderIDResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.OAuth2ProviderID, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -81,7 +82,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 }
 
 // DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 ids.AllocationID, arg4 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -101,7 +102,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 }
 
 // DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 string, arg4 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -121,7 +122,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 }
 
 // DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -141,7 +142,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 }
 
 // DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ServiceAccountID, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -161,7 +162,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 }
 
 // DeleteApiV1OrganizationsOrganizationIDUsersUserIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDUsersUserIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDUsersUserIDResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDUsersUserIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.UserID, arg3 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDUsersUserIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -181,7 +182,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 }
 
 // DeleteApiV1OrganizationsOrganizationIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) DeleteApiV1OrganizationsOrganizationIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1OrganizationsOrganizationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -241,7 +242,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1Oauth2providersW
 }
 
 // GetApiV1OrganizationsOrganizationIDAclWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDAclWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDAclResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDAclWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDAclResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -261,7 +262,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.GroupID, arg3 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -281,7 +282,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDGroupsWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDGroupsWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDGroupsResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDGroupsWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDGroupsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -301,7 +302,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDOauth2providersWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDOauth2providersWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDOauth2providersResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDOauth2providersWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDOauth2providersResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -321,7 +322,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 ids.AllocationID, arg4 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -341,7 +342,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -361,7 +362,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDProjectsWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDProjectsWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDProjectsResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDProjectsWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDProjectsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -381,7 +382,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDQuotasWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDQuotasWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDQuotasResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDQuotasWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDQuotasResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -401,7 +402,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDRolesWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDRolesWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDRolesResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDRolesWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDRolesResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -421,7 +422,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDServiceaccountsWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDServiceaccountsResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDServiceaccountsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -441,7 +442,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDUsersWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDUsersWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDUsersResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDUsersWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDUsersResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -461,7 +462,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrg
 }
 
 // GetApiV1OrganizationsOrganizationIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1}
 	for _, a := range arg2 {
@@ -641,7 +642,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetWellKnownOpenidProtec
 }
 
 // PostApiV1OrganizationsOrganizationIDGroupsWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDGroupsWithBodyWithResponse(arg0 context.Context, arg1, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDGroupsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDGroupsWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDGroupsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -661,7 +662,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDGroupsWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDGroupsWithResponse(arg0 context.Context, arg1 string, arg2 openapi.GroupWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDGroupsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDGroupsWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 openapi.GroupWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDGroupsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -681,7 +682,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDOauth2providersWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDOauth2providersWithBodyWithResponse(arg0 context.Context, arg1, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDOauth2providersResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDOauth2providersWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDOauth2providersResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -701,7 +702,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDOauth2providersWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDOauth2providersWithResponse(arg0 context.Context, arg1 string, arg2 openapi.Oauth2ProviderWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDOauth2providersResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDOauth2providersWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 openapi.Oauth2ProviderWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDOauth2providersResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -721,7 +722,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4}
 	for _, a := range arg5 {
@@ -741,7 +742,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(arg0 context.Context, arg1, arg2 string, arg3 openapi.AllocationWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 openapi.AllocationWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -761,7 +762,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDProjectsWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsWithBodyWithResponse(arg0 context.Context, arg1, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -781,7 +782,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDProjectsWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsWithResponse(arg0 context.Context, arg1 string, arg2 openapi.ProjectWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDProjectsWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 openapi.ProjectWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDProjectsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -801,7 +802,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotateWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotateWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotateResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotateWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ServiceAccountID, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotateResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -821,7 +822,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDServiceaccountsWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDServiceaccountsWithBodyWithResponse(arg0 context.Context, arg1, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDServiceaccountsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDServiceaccountsWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDServiceaccountsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -841,7 +842,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(arg0 context.Context, arg1 string, arg2 openapi.ServiceAccountWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDServiceaccountsResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 openapi.ServiceAccountWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDServiceaccountsResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -861,7 +862,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDUsersWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDUsersWithBodyWithResponse(arg0 context.Context, arg1, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDUsersResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDUsersWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDUsersResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -881,7 +882,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1OrganizationsOr
 }
 
 // PostApiV1OrganizationsOrganizationIDUsersWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDUsersWithResponse(arg0 context.Context, arg1 string, arg2 openapi.UserWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDUsersResponse, error) {
+func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDUsersWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 openapi.UserWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDUsersResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -1141,7 +1142,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2UserinfoWith
 }
 
 // PutApiV1OrganizationsOrganizationIDGroupsGroupidWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDGroupsGroupidWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDGroupsGroupidWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.GroupID, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4}
 	for _, a := range arg5 {
@@ -1161,7 +1162,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(arg0 context.Context, arg1, arg2 string, arg3 openapi.GroupWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.GroupID, arg3 openapi.GroupWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1181,7 +1182,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.OAuth2ProviderID, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4}
 	for _, a := range arg5 {
@@ -1201,7 +1202,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 openapi.Oauth2ProviderWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.OAuth2ProviderID, arg3 openapi.Oauth2ProviderWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDOauth2providersProviderIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1221,7 +1222,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3, arg4 string, arg5 io.Reader, arg6 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 ids.AllocationID, arg4 string, arg5 io.Reader, arg6 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4, arg5}
 	for _, a := range arg6 {
@@ -1241,7 +1242,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 openapi.AllocationWrite, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 ids.AllocationID, arg4 openapi.AllocationWrite, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4}
 	for _, a := range arg5 {
@@ -1261,7 +1262,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 string, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1281,7 +1282,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDProjectsProjectIDWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4}
 	for _, a := range arg5 {
@@ -1301,7 +1302,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 openapi.ProjectWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ProjectID, arg3 openapi.ProjectWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1321,7 +1322,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDQuotasWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDQuotasWithBodyWithResponse(arg0 context.Context, arg1, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDQuotasResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDQuotasWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDQuotasResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1341,7 +1342,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDQuotasWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDQuotasWithResponse(arg0 context.Context, arg1 string, arg2 openapi.QuotasWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDQuotasResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDQuotasWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 openapi.QuotasWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDQuotasResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {
@@ -1361,7 +1362,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ServiceAccountID, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4}
 	for _, a := range arg5 {
@@ -1381,7 +1382,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 openapi.ServiceAccountWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.ServiceAccountID, arg3 openapi.ServiceAccountWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1401,7 +1402,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDUsersUserIDWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDUsersUserIDWithBodyWithResponse(arg0 context.Context, arg1, arg2, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDUsersUserIDWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.UserID, arg3 string, arg4 io.Reader, arg5 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3, arg4}
 	for _, a := range arg5 {
@@ -1421,7 +1422,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDUsersUserIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDUsersUserIDWithResponse(arg0 context.Context, arg1, arg2 string, arg3 openapi.UserWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDUsersUserIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 ids.UserID, arg3 openapi.UserWrite, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1441,7 +1442,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDWithBodyWithResponse(arg0 context.Context, arg1, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -1461,7 +1462,7 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PutApiV1OrganizationsOrg
 }
 
 // PutApiV1OrganizationsOrganizationIDWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDWithResponse(arg0 context.Context, arg1 string, arg2 openapi.OrganizationWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDResponse, error) {
+func (m *MockClientWithResponsesInterface) PutApiV1OrganizationsOrganizationIDWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 openapi.OrganizationWrite, arg3 ...openapi.RequestEditorFn) (*openapi.PutApiV1OrganizationsOrganizationIDResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0, arg1, arg2}
 	for _, a := range arg3 {

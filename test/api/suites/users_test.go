@@ -42,7 +42,7 @@ var _ = Describe("User Management", func() {
 				for _, user := range users {
 					Expect(user.Metadata).NotTo(BeNil(), "User metadata should not be nil")
 					Expect(user.Metadata.Id).NotTo(BeEmpty(), "User ID should not be empty")
-					Expect(user.Metadata.OrganizationId).To(Equal(config.OrgID),
+					Expect(user.Metadata.OrganizationId.String()).To(Equal(config.OrgID),
 						"User organization ID should match requested organization")
 
 					Expect(user.Spec).NotTo(BeNil(), "User spec should not be nil")

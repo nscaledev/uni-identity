@@ -43,7 +43,7 @@ var _ = Describe("Service Account Management", func() {
 					Expect(sa.Metadata).NotTo(BeNil(), "Service account metadata should not be nil")
 					Expect(sa.Metadata.Id).NotTo(BeEmpty(), "Service account ID should not be empty")
 					Expect(sa.Metadata.Name).NotTo(BeEmpty(), "Service account name should not be empty")
-					Expect(sa.Metadata.OrganizationId).To(Equal(config.OrgID),
+					Expect(sa.Metadata.OrganizationId.String()).To(Equal(config.OrgID),
 						"Service account organization ID should match requested organization")
 
 					Expect(sa.Spec).NotTo(BeNil(), "Service account spec should not be nil")

@@ -30,6 +30,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
@@ -55,22 +56,84 @@ func New(client client.Client, namespace string, internalIssuer common.IssuerVal
 	}
 }
 
-func convert(in *unikornv1.Group) *openapi.GroupRead {
-	out := &openapi.GroupRead{
-		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
-		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
-			UserIDs:           &openapi.StringList{},
-			ServiceAccountIDs: openapi.StringList{},
-		},
+func parseServiceAccountIDs(in []string) (openapi.ServiceAccountIDs, error) {
+	out := make(openapi.ServiceAccountIDs, len(in))
+
+	for i := range in {
+		id, err := ids.ParseServiceAccountID(in[i])
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid service account ID %q", coreerrors.ErrConsistency, in[i])
+		}
+
+		out[i] = id
+	}
+
+	return out, nil
+}
+
+func parseRoleIDs(in []string) (openapi.RoleIDs, error) {
+	out := make(openapi.RoleIDs, len(in))
+
+	for i := range in {
+		id, err := ids.ParseRoleID(in[i])
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid role ID %q", coreerrors.ErrConsistency, in[i])
+		}
+
+		out[i] = id
+	}
+
+	return out, nil
+}
+
+func parseUserIDs(in []string) (openapi.UserIDs, error) {
+	out := make(openapi.UserIDs, len(in))
+
+	for i := range in {
+		id, err := ids.ParseUserID(in[i])
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid user ID %q", coreerrors.ErrConsistency, in[i])
+		}
+
+		out[i] = id
+	}
+
+	return out, nil
+}
+
+func serviceAccountIDStrings(in openapi.ServiceAccountIDs) []string {
+	out := make([]string, len(in))
+
+	for i := range in {
+		out[i] = in[i].String()
+	}
+
+	return out
+}
+
+func convertGroupSpec(in *unikornv1.Group) (*openapi.GroupSpec, error) {
+	out := &openapi.GroupSpec{
+		RoleIDs:           openapi.RoleIDs{},
+		UserIDs:           &openapi.UserIDs{},
+		ServiceAccountIDs: openapi.ServiceAccountIDs{},
 	}
 
 	if in.Spec.RoleIDs != nil {
-		out.Spec.RoleIDs = in.Spec.RoleIDs
+		roleIDs, err := parseRoleIDs(in.Spec.RoleIDs)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to convert role IDs", err)
+		}
+
+		out.RoleIDs = roleIDs
 	}
 
 	if in.Spec.UserIDs != nil {
-		out.Spec.UserIDs = &in.Spec.UserIDs
+		userIDs, err := parseUserIDs(in.Spec.UserIDs)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to convert user IDs", err)
+		}
+
+		out.UserIDs = &userIDs
 	}
 
 	if in.Spec.Subjects != nil {
@@ -84,17 +147,41 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 			}
 		}
 
-		out.Spec.Subjects = &subjects
+		out.Subjects = &subjects
 	}
 
 	if in.Spec.ServiceAccountIDs != nil {
-		out.Spec.ServiceAccountIDs = in.Spec.ServiceAccountIDs
+		serviceAccountIDs, err := parseServiceAccountIDs(in.Spec.ServiceAccountIDs)
+		if err != nil {
+			return nil, fmt.Errorf("%w: failed to convert service account IDs", err)
+		}
+
+		out.ServiceAccountIDs = serviceAccountIDs
 	}
 
-	return out
+	return out, nil
 }
 
-func convertList(in *unikornv1.GroupList) openapi.Groups {
+func convert(in *unikornv1.Group) (*openapi.GroupRead, error) {
+	metadata, err := conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to convert group %s/%s", err, in.Namespace, in.Name)
+	}
+
+	spec, err := convertGroupSpec(in)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &openapi.GroupRead{
+		Metadata: metadata,
+		Spec:     *spec,
+	}
+
+	return out, nil
+}
+
+func convertList(in *unikornv1.GroupList) (openapi.Groups, error) {
 	slices.SortStableFunc(in.Items, func(a, b unikornv1.Group) int {
 		return strings.Compare(a.Name, b.Name)
 	})
@@ -102,13 +189,18 @@ func convertList(in *unikornv1.GroupList) openapi.Groups {
 	out := make(openapi.Groups, len(in.Items))
 
 	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
+		item, err := convert(&in.Items[i])
+		if err != nil {
+			return nil, err
+		}
+
+		out[i] = *item
 	}
 
-	return out
+	return out, nil
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Groups, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Groups, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -120,13 +212,13 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Group
 		return nil, fmt.Errorf("%w: failed to list groups", err)
 	}
 
-	return convertList(result), nil
+	return convertList(result)
 }
 
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, groupID string) (*unikornv1.Group, error) {
+func (c *Client) get(ctx context.Context, organization *organizations.Meta, groupID ids.GroupID) (*unikornv1.Group, error) {
 	result := &unikornv1.Group{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, result); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID.String()}, result); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
@@ -137,7 +229,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, grou
 	return result, nil
 }
 
-func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*openapi.GroupRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, groupID ids.GroupID) (*openapi.GroupRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -148,7 +240,7 @@ func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*open
 		return nil, err
 	}
 
-	return convert(result), nil
+	return convert(result)
 }
 
 func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
@@ -279,7 +371,7 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.
 			return err
 		}
 	} else if in.Spec.UserIDs != nil {
-		userIDs = *in.Spec.UserIDs
+		userIDs = common.IDStrings(*in.Spec.UserIDs)
 
 		subjects, err = c.userIDsToSubjects(ctx, userIDs, organization)
 		if err != nil {
@@ -298,7 +390,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	for _, roleID := range in.Spec.RoleIDs {
 		var resource unikornv1.Role
 
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: roleID}, &resource); err != nil {
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: roleID.String()}, &resource); err != nil {
 			if kerrors.IsNotFound(err) {
 				return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("role ID %s does not exist", roleID)).WithError(err)
 			}
@@ -321,11 +413,11 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 
 	// TODO: validate user and service account existence.
 	out := &unikornv1.Group{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID.UUID()).Get(),
 		Spec: unikornv1.GroupSpec{
 			Tags:              conversion.GenerateTagList(in.Metadata.Tags),
-			RoleIDs:           in.Spec.RoleIDs,
-			ServiceAccountIDs: in.Spec.ServiceAccountIDs,
+			RoleIDs:           common.IDStrings(in.Spec.RoleIDs),
+			ServiceAccountIDs: serviceAccountIDStrings(in.Spec.ServiceAccountIDs),
 		},
 	}
 
@@ -340,7 +432,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	return out, nil
 }
 
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.GroupWrite) (*openapi.GroupRead, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.GroupWrite) (*openapi.GroupRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -355,10 +447,10 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, fmt.Errorf("%w: failed to create group", err)
 	}
 
-	return convert(resource), nil
+	return convert(resource)
 }
 
-func (c *Client) Update(ctx context.Context, organizationID, groupID string, request *openapi.GroupWrite) error {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, groupID ids.GroupID, request *openapi.GroupWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -394,7 +486,7 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	return nil
 }
 
-func (c *Client) Delete(ctx context.Context, organizationID, groupID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, groupID ids.GroupID) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -416,7 +508,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 	for i := range projects.Items {
 		project := &projects.Items[i]
 
-		if index := slices.Index(project.Spec.GroupIDs, groupID); index >= 0 {
+		if index := slices.Index(project.Spec.GroupIDs, groupID.String()); index >= 0 {
 			project.Spec.GroupIDs = slices.Delete(project.Spec.GroupIDs, index, index+1)
 
 			if err := c.client.Update(ctx, project); err != nil {
@@ -427,7 +519,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, groupID string) err
 
 	resource := &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      groupID,
+			Name:      groupID.String(),
 			Namespace: organization.Namespace,
 		},
 	}

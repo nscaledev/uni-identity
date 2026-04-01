@@ -42,7 +42,7 @@ var _ = Describe("RBAC Enforcement", func() {
 
 				for _, group := range groups {
 					Expect(group.Metadata.Id).NotTo(BeEmpty())
-					Expect(group.Metadata.OrganizationId).To(Equal(config.OrgID))
+					Expect(group.Metadata.OrganizationId.String()).To(Equal(config.OrgID))
 				}
 			})
 		})
@@ -71,7 +71,7 @@ var _ = Describe("RBAC Enforcement", func() {
 
 				for _, sa := range serviceAccounts {
 					Expect(sa.Metadata.Id).NotTo(BeEmpty())
-					Expect(sa.Metadata.OrganizationId).To(Equal(config.OrgID))
+					Expect(sa.Metadata.OrganizationId.String()).To(Equal(config.OrgID))
 				}
 			})
 		})
@@ -102,8 +102,8 @@ var _ = Describe("RBAC Enforcement", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(serviceAccounts).To(HaveLen(1))
-				Expect(serviceAccounts[0].Metadata.Id).To(Equal(config.UserSAID))
-				Expect(serviceAccounts[0].Metadata.OrganizationId).To(Equal(config.OrgID))
+				Expect(serviceAccounts[0].Metadata.Id.String()).To(Equal(config.UserSAID))
+				Expect(serviceAccounts[0].Metadata.OrganizationId.String()).To(Equal(config.OrgID))
 			})
 		})
 	})

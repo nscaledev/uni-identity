@@ -49,6 +49,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
 	"github.com/unikorn-cloud/identity/pkg/html"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
@@ -1149,10 +1150,10 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 		return role.Spec.Protected || !slices.Contains(requestedRoles, role.Labels[constants.NameLabel])
 	})
 
-	roleIDs := make([]string, len(roles.Items))
+	roleIDs := make(openapi.RoleIDs, len(roles.Items))
 
 	for i := range roles.Items {
-		roleIDs[i] = roles.Items[i].Name
+		roleIDs[i] = ids.MustParseRoleID(roles.Items[i].Name)
 	}
 
 	// Setup the context for auditing and RBAC.
@@ -1214,7 +1215,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	organizationReady := func() error {
-		meta, err := organizations.New(a.client, a.namespace).GetMetadata(ctx, organization.Metadata.Id)
+		meta, err := organizations.New(a.client, a.namespace).GetMetadata(ctx, ids.OrganizationIDFromUUID(organization.Metadata.Id))
 		if err != nil {
 			return err
 		}
@@ -1245,7 +1246,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 		groupRequest.Metadata.Description = ptr.To(r.Form.Get("group_description"))
 	}
 
-	group, err := groups.New(a.client, a.namespace, a.issuer).Create(ctx, organization.Metadata.Id, groupRequest)
+	group, err := groups.New(a.client, a.namespace, a.issuer).Create(ctx, ids.OrganizationIDFromUUID(organization.Metadata.Id), groupRequest)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to create group")
 		return
@@ -1257,12 +1258,12 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 			Subject: state.IDToken.Email.Email,
 			State:   openapi.Pending,
 			GroupIDs: openapi.GroupIDs{
-				group.Metadata.Id,
+				ids.GroupIDFromUUID(group.Metadata.Id),
 			},
 		},
 	}
 
-	user, err := users.New(a.client, a.namespace, a.jwtIssuer, a.issuer, &users.Options{}).Create(ctx, organization.Metadata.Id, userRequest)
+	user, err := users.New(a.client, a.namespace, a.jwtIssuer, a.issuer, &users.Options{}).Create(ctx, ids.OrganizationIDFromUUID(organization.Metadata.Id), userRequest)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to create user")
 		return
@@ -1275,7 +1276,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 	// Finally when the optional webhook is
 	userRequest.Spec.State = openapi.Active
 
-	if _, err := users.New(a.client, a.namespace, a.jwtIssuer, a.issuer, &users.Options{}).Update(ctx, organization.Metadata.Id, user.Metadata.Id, userRequest); err != nil {
+	if _, err := users.New(a.client, a.namespace, a.jwtIssuer, a.issuer, &users.Options{}).Update(ctx, ids.OrganizationIDFromUUID(organization.Metadata.Id), ids.UserIDFromUUID(user.Metadata.Id), userRequest); err != nil {
 		redirector.raise(ErrorServerError, "failed to create user")
 		return
 	}
@@ -1310,9 +1311,9 @@ func (a *Authenticator) notifyAccountCreation(ctx context.Context, redirector *r
 		Username:           idToken.Name,
 		Forename:           idToken.GivenName,
 		Surname:            idToken.FamilyName,
-		OrganizationID:     organization.Metadata.Id,
+		OrganizationID:     organization.Metadata.Id.String(),
 		OrganizationName:   organization.Metadata.Name,
-		OrganizationUserID: user.Metadata.Id,
+		OrganizationUserID: user.Metadata.Id.String(),
 	}
 
 	webhookBody, err := json.Marshal(webhookData)

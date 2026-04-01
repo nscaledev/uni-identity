@@ -13,6 +13,7 @@ import (
 	reflect "reflect"
 
 	openapi3filter "github.com/getkin/kin-openapi/openapi3filter"
+	ids "github.com/unikorn-cloud/identity/pkg/ids"
 	authorization "github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	openapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	gomock "go.uber.org/mock/gomock"
@@ -57,7 +58,7 @@ func (mr *MockAuthorizerMockRecorder) Authorize(authentication any) *gomock.Call
 }
 
 // GetACL mocks base method.
-func (m *MockAuthorizer) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
+func (m *MockAuthorizer) GetACL(ctx context.Context, organizationID *ids.OrganizationID) (*openapi.Acl, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetACL", ctx, organizationID)
 	ret0, _ := ret[0].(*openapi.Acl)
