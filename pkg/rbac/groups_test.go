@@ -567,6 +567,28 @@ func TestGroupACLContent(t *testing.T) {
 	}
 }
 
+func TestUser_WrongOrganization(t *testing.T) {
+	t.Parallel()
+
+	f, _ := setupTestEnvironment(t)
+
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: userAliceSubject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+				OrgIds:  []string{testOrgID},
+			},
+		},
+	}
+
+	ctx := authorization.NewContext(t.Context(), info)
+
+	_, err := f.rbac.GetACL(ctx, altOrgID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrNotInOrganization)
+}
+
 // getACLForServiceAccount is a helper to get the ACL for a given service account.
 func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string, organizationID string, organizationIDs []string) *openapi.Acl {
 	t.Helper()
@@ -737,13 +759,14 @@ func TestServiceAccountMultipleOrgIDs(t *testing.T) {
 	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
 }
 
-// TestServiceAccountWrongOrganization verifies that service accounts from different orgs fail.
+// TestServiceAccountWrongOrganization verifies that a service account querying with an
+// org ID it doesn't belong to gracefully falls back to an unscoped ACL without
+// org-scoped permissions.
 func TestServiceAccount_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
 	f, _ := setupTestEnvironment(t)
 
-	// Service account with multiple org IDs (should only have one)
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
 			Sub: f.serviceAccountAlphaID,
@@ -756,9 +779,10 @@ func TestServiceAccount_WrongOrganization(t *testing.T) {
 
 	ctx := authorization.NewContext(t.Context(), info)
 
-	_, err := f.rbac.GetACL(ctx, altOrgID) // <-- asking about **alternative org**
-	require.Error(t, err)
-	assert.ErrorIs(t, err, rbac.ErrNotInOrganization)
+	acl, err := f.rbac.GetACL(ctx, altOrgID) // <-- asking about **alternative org**
+	require.NoError(t, err)
+	assert.Nil(t, acl.Organization, "org-scoped section should be absent for mismatched org")
+	assert.NotNil(t, acl.Organizations, "unscoped organizations list should still be present")
 }
 
 // getACLForSystemAccount gets the ACL for a system account (mTLS-authenticated service), optionally
