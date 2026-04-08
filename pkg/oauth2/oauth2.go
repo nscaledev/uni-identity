@@ -865,8 +865,6 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 // authorization back to us.  We then exchange the code for an ID token, and
 // refresh token.  Remember, as far as the client is concerned we're still doing
 // the code grant, so return errors in the redirect query.
-//
-//nolint:cyclop,nestif
 func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
@@ -929,59 +927,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	// either deny entry or let them signup.
 	user, err := a.userdb.GetUser(r.Context(), idToken.Email.Email)
 	if err != nil {
-		if !goerrors.Is(err, rbac.ErrResourceReference) {
-			redirector.raise(ErrorServerError, "user lookup failure")
-		}
-
-		if !a.options.AccountCreationEnabled {
-			redirector.raise(ErrorServerError, "user signup is not permitted")
-			return
-		}
-
-		client, err := a.lookupClient(r.Context(), clientQuery.Get("client_id"))
-		if err != nil {
-			redirector.raise(ErrorServerError, "client_id lookup failed")
-			return
-		}
-
-		if client.Spec.OnboardingURI == nil {
-			redirector.raise(ErrorServerError, "onboarding API not implemented")
-			return
-		}
-
-		onboardingState := &OnboardingState{
-			OAuth2Provider: state.OAuth2Provider,
-			ClientQuery:    state.ClientQuery,
-			IDToken:        idToken,
-		}
-
-		state, err := a.jwtIssuer.EncodeJWEToken(r.Context(), onboardingState, jose.TokenTypeOnboardState)
-		if err != nil {
-			redirector.raise(ErrorServerError, "failed to encode onboarding state: "+err.Error())
-			return
-		}
-
-		a.accountCreationCache.Add(state, nil, 10*time.Minute)
-
-		q := url.Values{}
-		q.Set("state", state)
-		q.Set("callback", "https://"+r.Host+"/oauth2/v2/onboard")
-		q.Set("email", idToken.Email.Email)
-
-		if idToken.Name != "" {
-			q.Set("username", idToken.Name)
-		}
-
-		if idToken.GivenName != "" {
-			q.Set("forename", idToken.GivenName)
-		}
-
-		if idToken.FamilyName != "" {
-			q.Set("surname", idToken.FamilyName)
-		}
-
-		http.Redirect(w, r, *client.Spec.OnboardingURI+"?"+q.Encode(), http.StatusFound)
-
+		a.handleMissingUser(w, r, redirector, clientQuery, state, idToken, err)
 		return
 	}
 
@@ -1000,6 +946,62 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.authorizationCodeRedirect(w, r, redirector, clientQuery, code)
+}
+
+func (a *Authenticator) handleMissingUser(w http.ResponseWriter, r *http.Request, redirector *redirector, clientQuery url.Values, state *State, idToken *oidc.IDToken, err error) {
+	if !goerrors.Is(err, userdb.ErrResourceReference) {
+		redirector.raise(ErrorServerError, "user lookup failure")
+		return
+	}
+
+	if !a.options.AccountCreationEnabled {
+		redirector.raise(ErrorServerError, "user signup is not permitted")
+		return
+	}
+
+	client, err := a.lookupClient(r.Context(), clientQuery.Get("client_id"))
+	if err != nil {
+		redirector.raise(ErrorServerError, "client_id lookup failed")
+		return
+	}
+
+	if client.Spec.OnboardingURI == nil {
+		redirector.raise(ErrorServerError, "onboarding API not implemented")
+		return
+	}
+
+	onboardingState := &OnboardingState{
+		OAuth2Provider: state.OAuth2Provider,
+		ClientQuery:    state.ClientQuery,
+		IDToken:        idToken,
+	}
+
+	encodedState, err := a.jwtIssuer.EncodeJWEToken(r.Context(), onboardingState, jose.TokenTypeOnboardState)
+	if err != nil {
+		redirector.raise(ErrorServerError, "failed to encode onboarding state: "+err.Error())
+		return
+	}
+
+	a.accountCreationCache.Add(encodedState, nil, 10*time.Minute)
+
+	q := url.Values{}
+	q.Set("state", encodedState)
+	q.Set("callback", "https://"+r.Host+"/oauth2/v2/onboard")
+	q.Set("email", idToken.Email.Email)
+
+	if idToken.Name != "" {
+		q.Set("username", idToken.Name)
+	}
+
+	if idToken.GivenName != "" {
+		q.Set("forename", idToken.GivenName)
+	}
+
+	if idToken.FamilyName != "" {
+		q.Set("surname", idToken.FamilyName)
+	}
+
+	http.Redirect(w, r, *client.Spec.OnboardingURI+"?"+q.Encode(), http.StatusFound)
 }
 
 // authorizationCodeRedirect packages up an authorization code and redirects to the client.
