@@ -21,6 +21,8 @@ package principal
 type Principal struct {
 	// OrganizationID of the originating request (optional).
 	OrganizationID string `json:"organizationId,omitempty"`
+	// OrganizationIDs records the full set of organizations the actor can access.
+	OrganizationIDs []string `json:"organizationIds,omitempty"`
 	// ProjectID of the originating request (optional).
 	ProjectID string `json:"projectId,omitempty"`
 	// Actor of the originating request, this may be an email address

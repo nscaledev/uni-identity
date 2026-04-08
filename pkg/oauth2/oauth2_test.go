@@ -143,6 +143,8 @@ func TestTokens(t *testing.T) {
 }
 
 // TestUserinfoCustomClaims tests that tokens include correct custom authorization claims.
+//
+//nolint:maintidx
 func TestUserinfoCustomClaims(t *testing.T) {
 	t.Parallel()
 
@@ -204,6 +206,9 @@ func TestUserinfoCustomClaims(t *testing.T) {
 							constants.OrganizationLabel: "org1",
 						},
 					},
+					Spec: unikornv1.OrganizationUserSpec{
+						State: unikornv1.UserStateActive,
+					},
 				},
 				&unikornv1.OrganizationUser{
 					ObjectMeta: metav1.ObjectMeta{
@@ -213,6 +218,9 @@ func TestUserinfoCustomClaims(t *testing.T) {
 							constants.UserLabel:         "test-user",
 							constants.OrganizationLabel: "org2",
 						},
+					},
+					Spec: unikornv1.OrganizationUserSpec{
+						State: unikornv1.UserStateActive,
 					},
 				},
 			},
@@ -230,6 +238,60 @@ func TestUserinfoCustomClaims(t *testing.T) {
 			expectedEmail:  ptr.To("user@example.com"),
 			expectedType:   openapi.User,
 			expectedOrgIDs: []string{"org1", "org2"},
+		},
+		"federated user excludes suspended orgs": {
+			objects: []client.Object{
+				&unikornv1.User{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: josetesting.Namespace,
+						Name:      "test-user",
+					},
+					Spec: unikornv1.UserSpec{
+						Subject: "user@example.com",
+						State:   unikornv1.UserStateActive,
+					},
+				},
+				&unikornv1.OrganizationUser{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: josetesting.Namespace,
+						Name:      "org1-user",
+						Labels: map[string]string{
+							constants.UserLabel:         "test-user",
+							constants.OrganizationLabel: "org1",
+						},
+					},
+					Spec: unikornv1.OrganizationUserSpec{
+						State: unikornv1.UserStateActive,
+					},
+				},
+				&unikornv1.OrganizationUser{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: josetesting.Namespace,
+						Name:      "org2-user",
+						Labels: map[string]string{
+							constants.UserLabel:         "test-user",
+							constants.OrganizationLabel: "org2",
+						},
+					},
+					Spec: unikornv1.OrganizationUserSpec{
+						State: unikornv1.UserStateSuspended,
+					},
+				},
+			},
+			issueInfo: &oauth2.IssueInfo{
+				Issuer:   "https://test.com",
+				Audience: "test.com",
+				Subject:  "user@example.com",
+				Type:     oauth2.TokenTypeFederated,
+				Federated: &oauth2.FederatedClaims{
+					UserID: "test-user",
+					Scope:  oauth2.NewScope("openid email"),
+				},
+			},
+			expectedSub:    "user@example.com",
+			expectedEmail:  ptr.To("user@example.com"),
+			expectedType:   openapi.User,
+			expectedOrgIDs: []string{"org1"},
 		},
 		"service account": {
 			objects: []client.Object{

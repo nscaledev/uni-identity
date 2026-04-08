@@ -568,7 +568,7 @@ func TestGroupACLContent(t *testing.T) {
 }
 
 // getACLForServiceAccount is a helper to get the ACL for a given service account.
-func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string, organizationIDs []string) *openapi.Acl {
+func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string, organizationID string, organizationIDs []string) *openapi.Acl {
 	t.Helper()
 
 	// Create authorization info for service account
@@ -584,7 +584,7 @@ func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string
 
 	ctx := authorization.NewContext(t.Context(), info)
 
-	acl, err := rbacClient.GetACL(ctx, testOrgID)
+	acl, err := rbacClient.GetACL(ctx, organizationID)
 	require.NoError(t, err)
 	require.NotNil(t, acl)
 
@@ -598,7 +598,7 @@ func TestServiceAccountACLOrganizationScoped(t *testing.T) {
 	f, _ := setupTestEnvironment(t)
 
 	// Test service account that's a member of the services group
-	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID, []string{testOrgID})
+	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID, testOrgID, []string{testOrgID})
 	assert.Nil(t, aclAlpha.Global, "Service account should not have global permissions")
 	assert.NotNil(t, aclAlpha.Organization, "Service account should have organization permissions")
 	assert.NotNil(t, aclAlpha.Organization.Endpoints, "Service account should have organization endpoints")
@@ -621,7 +621,7 @@ func TestServiceAccountACLOrganizationScoped(t *testing.T) {
 	assert.Len(t, *aclAlpha.Projects, 2, "Service account should have access to 2 projects")
 
 	// Test service account not in any group
-	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID, []string{testOrgID})
+	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID, testOrgID, []string{testOrgID})
 	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
 	assert.Nil(t, aclBeta.Organization, "Service account not in groups should not have organization permissions")
 	assert.Nil(t, aclBeta.Projects, "Service account not in groups should not have project permissions")
@@ -633,10 +633,9 @@ func TestServiceAccountACL(t *testing.T) {
 	f, _ := setupTestEnvironment(t)
 
 	// Test service account that's a member of the services group
-	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID, []string{testOrgID})
+	aclAlpha := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID, "", []string{testOrgID})
 	require.Nil(t, aclAlpha.Global, "Service account should not have global permissions")
 	require.NotNil(t, aclAlpha.Organizations, "Service account should have organization permissions")
-	require.NotNil(t, aclAlpha.Projects, "Service account should have project permissions")
 
 	alphaOrganizations := *aclAlpha.Organizations
 	require.Len(t, alphaOrganizations, 1, "Service account should have one organization")
@@ -659,10 +658,10 @@ func TestServiceAccountACL(t *testing.T) {
 	assert.True(t, hasOrgRead, "Service account should have org:read permission")
 
 	// Service account should have access to projects (from developer role)
-	assert.Len(t, *aclAlpha.Projects, 2, "Service account should have access to 2 projects")
+	assert.Len(t, *alphaOrganization.Projects, 2, "Service account should have access to 2 projects")
 
 	// Test service account not in any group
-	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID, []string{testOrgID})
+	aclBeta := getACLForServiceAccount(t, f.rbac, f.serviceAccountBetaID, "", []string{testOrgID})
 	assert.Nil(t, aclBeta.Global, "Service account not in groups should not have global permissions")
 	assert.Nil(t, aclBeta.Organizations, "Service account not in groups should not have organization permissions")
 	assert.Nil(t, aclBeta.Projects, "Service account not in groups should not have project permissions")
@@ -672,7 +671,7 @@ func TestServiceAccountACL(t *testing.T) {
 func TestServiceAccountMissingOrganization(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	// Service account claims to be from a different organization
 	info := &authorization.Info{
@@ -696,7 +695,7 @@ func TestServiceAccountMissingOrganization(t *testing.T) {
 func TestServiceAccountMissingOrgIDs(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
@@ -719,7 +718,7 @@ func TestServiceAccountMissingOrgIDs(t *testing.T) {
 func TestServiceAccountMultipleOrgIDs(t *testing.T) {
 	t.Parallel()
 
-	f := setupTestEnvironment(t)
+	f, _ := setupTestEnvironment(t)
 
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
@@ -772,6 +771,9 @@ func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN strin
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
 			Sub: serviceCN,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.System,
+			},
 		},
 		SystemAccount: true,
 	}
@@ -839,7 +841,8 @@ func TestSystemAccountWithPrincipalUsesUserACL(t *testing.T) {
 			aclDirect := getACLForUser(t, f.rbac, tc.subject)
 
 			aclImpersonated, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
-				Actor: tc.subject,
+				Actor:           tc.subject,
+				OrganizationIDs: []string{testOrgID},
 			}, true)
 			require.NoError(t, err)
 
@@ -869,8 +872,9 @@ func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
 	f, _ := setupTestEnvironment(t)
 
 	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
-		OrganizationID: testOrgID,
-		Actor:          "",
+		OrganizationID:  testOrgID,
+		OrganizationIDs: []string{testOrgID},
+		Actor:           "",
 	}, true)
 	require.Error(t, err)
 }
