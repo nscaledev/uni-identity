@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -141,9 +142,14 @@ func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) (
 		return nil, err
 	}
 
-	result := make([]string, len(organizationUsers.Items))
+	result := make([]string, 0, len(organizationUsers.Items))
+
 	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
+		if organizationUsers.Items[i].Spec.State != unikornv1.UserStateActive {
+			continue
+		}
+
+		result = append(result, organizationUsers.Items[i].Labels[constants.OrganizationLabel])
 	}
 
 	return result, nil

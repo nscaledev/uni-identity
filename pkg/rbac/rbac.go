@@ -476,26 +476,35 @@ func (r *RBAC) processSystemAccountACL(ctx context.Context, subject string) (*op
 	return acl, nil
 }
 
-// processServiceAccountACL looks up a service account, any groups it's a member of,
-// then adds their permissions to the ACL.  As service accounts are bound to a specific
-// organization we must check the scoped organization matches that of the service account.
-func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+func (r *RBAC) getServiceAccountContext(ctx context.Context, organizationID string, authz *openapi.AuthClaims) (string, string, error) {
 	if authz == nil {
-		return nil, ErrNoAuthz
+		return "", "", ErrNoAuthz
 	}
 
 	if len(authz.OrgIds) != 1 {
-		return nil, ErrWrongOrganizationCount
+		return "", "", ErrWrongOrganizationCount
 	}
 
 	subjectOrganizationID := authz.OrgIds[0]
-	if subjectOrganizationID != organizationID {
-		return nil, ErrNotInOrganization
+	if organizationID != "" && subjectOrganizationID != organizationID {
+		return "", "", ErrNotInOrganization
 	}
 
 	organizationNamespace, err := r.getOrganizationNamespace(ctx, subjectOrganizationID)
 	if err != nil {
-		return nil, fmt.Errorf("%w, failed to get organization namespace %q", err, subjectOrganizationID)
+		return "", "", fmt.Errorf("%w, failed to get organization namespace %q", err, subjectOrganizationID)
+	}
+
+	return subjectOrganizationID, organizationNamespace, nil
+}
+
+// processServiceAccountACL looks up a service account, any groups it's a member of,
+// then adds their permissions to the ACL.  As service accounts are bound to a specific
+// organization we must check the scoped organization matches that of the service account.
+func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+	subjectOrganizationID, organizationNamespace, err := r.getServiceAccountContext(ctx, organizationID, authz)
+	if err != nil {
+		return nil, err
 	}
 
 	groups, err := r.getGroups(ctx, organizationNamespace, groupServiceAccountFilter(subject))
@@ -535,7 +544,7 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 // processUserAccountACL ensures the user exists and is active, looks up any groups it's
 // a member of and adds their permissions to the ACL.
 //
-//nolint:cyclop
+//nolint:cyclop,nestif
 func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	if authz == nil {
 		return nil, ErrNoAuthz
@@ -732,7 +741,15 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		return r.processSystemAccountACL(ctx, subject)
 	}
 
-	userACL, err := r.processUserAccountACL(ctx, p.Actor, organizationID)
+	organizationIDs := p.OrganizationIDs
+	if len(organizationIDs) == 0 && p.OrganizationID != "" {
+		organizationIDs = []string{p.OrganizationID}
+	}
+
+	userACL, err := r.processUserAccountACL(ctx, p.Actor, organizationID, &openapi.AuthClaims{
+		Acctype: openapi.User,
+		OrgIds:  organizationIDs,
+	})
 	if err != nil {
 		return nil, err
 	}
