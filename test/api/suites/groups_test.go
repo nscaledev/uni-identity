@@ -309,6 +309,57 @@ var _ = Describe("Group Management", func() {
 		})
 	})
 
+	Context("When a user is deleted after group membership was set via the groups API", func() {
+		Describe("Given a user whose subject was last written by userIDsToSubjects", func() {
+			It("should not leave a dangling subject in the group after the user is deleted", func() {
+				// Create a group with no users.
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, api.NewGroupPayload().Build())
+
+				// Create a user and add them to the group via the users API.
+				// updateGroups writes Issuer: "" onto the subject.
+				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
+					WithSubject(fmt.Sprintf("dangling-subject-test-%s@example.com", time.Now().Format("20060102150405"))).
+					WithState(identityopenapi.Active).
+					WithGroupIDs([]string{groupID}).
+					Build())
+
+				// Re-set group membership via the groups API using UserIDs.
+				// userIDsToSubjects writes Issuer: c.issuer.URL, overwriting the Issuer: "" entry.
+				Expect(client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
+					WithName(group.Metadata.Name).
+					WithUserIDs([]string{userID}).
+					Build())).NotTo(HaveOccurred())
+
+				// Delete the user via the users API.
+				// removeFromGroup constructs a subject with Issuer: "" and matches by both ID and Issuer.
+				// Because the stored subject now has Issuer: c.issuer.URL, the match fails and the
+				// subject is NOT removed — it remains as a dangling entry in the group.
+				//
+				// Note: CreateUserWithCleanup registered a DeferCleanup; deleting here first is fine
+				// because that cleanup handles 404 gracefully.
+				Expect(client.DeleteUser(ctx, config.OrgID, userID)).NotTo(HaveOccurred())
+
+				// The group subjects list must be empty after the user is deleted.
+				// This currently FAILS because the issuer mismatch between the two API paths
+				// prevents removeFromGroup from finding and removing the subject.
+				//
+				// Additionally, the dangling subject has Issuer: c.issuer.URL, so it is NOT
+				// skipped by the "continue // Skip external subjects" guard in subjectsToUserIDs.
+				// Any subsequent GET→PUT round-trip using the subjects API path will call
+				// findUserBySubject on the dangling entry and return an error, breaking group updates.
+				updatedGroup, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+
+				var subjectCount int
+				if updatedGroup.Spec.Subjects != nil {
+					subjectCount = len(*updatedGroup.Spec.Subjects)
+				}
+
+				Expect(subjectCount).To(Equal(0), "deleting a user must remove their subject from all groups; a dangling subject remains when the groups API last wrote membership because removeFromGroup matches by Issuer and the two API paths write different Issuer values")
+			})
+		})
+	})
+
 	Context("When deleting groups", func() {
 		Describe("Given existing group", func() {
 			It("should delete group successfully", func() {
