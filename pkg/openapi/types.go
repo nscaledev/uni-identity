@@ -7,6 +7,7 @@ import (
 	"time"
 
 	externalRef0 "github.com/unikorn-cloud/core/pkg/openapi"
+	identityids "github.com/unikorn-cloud/identity/pkg/ids"
 )
 
 const (
@@ -165,8 +166,8 @@ type AclOrganization struct {
 	// Endpoints A list of access control scopes.
 	Endpoints *AclEndpoints `json:"endpoints,omitempty"`
 
-	// Id The organization ID.
-	Id string `json:"id"`
+	// Id An organization ID.
+	Id OrganizationId `json:"id"`
 
 	// Projects A list of projects the subject is a member of.
 	Projects *AclProjectList `json:"projects,omitempty"`
@@ -180,12 +181,15 @@ type AclProject struct {
 	// Endpoints A list of access control scopes.
 	Endpoints AclEndpoints `json:"endpoints"`
 
-	// Id The project ID.
-	Id string `json:"id"`
+	// Id A project ID.
+	Id ProjectId `json:"id"`
 }
 
 // AclProjectList A list of projects the subject is a member of.
 type AclProjectList = []AclProject
+
+// AllocationId A resource allocation ID.
+type AllocationId = identityids.AllocationID
 
 // AllocationRead An allocation of resources.
 type AllocationRead struct {
@@ -272,7 +276,10 @@ type CodeChallengeMethod string
 type GrantType string
 
 // GroupIDs A list of group IDs.
-type GroupIDs = []string
+type GroupIDs = []GroupId
+
+// GroupId A group ID.
+type GroupId = identityids.GroupID
 
 // GroupRead A group when read.
 type GroupRead struct {
@@ -285,17 +292,17 @@ type GroupRead struct {
 
 // GroupSpec A group.
 type GroupSpec struct {
-	// RoleIDs A list of strings.
-	RoleIDs StringList `json:"roleIDs"`
+	// RoleIDs A list of role IDs.
+	RoleIDs RoleIDs `json:"roleIDs"`
 
-	// ServiceAccountIDs A list of strings.
-	ServiceAccountIDs StringList `json:"serviceAccountIDs"`
+	// ServiceAccountIDs A list of service account IDs.
+	ServiceAccountIDs ServiceAccountIDs `json:"serviceAccountIDs"`
 
 	// Subjects list of subjects that are assigned to this group
 	Subjects *[]Subject `json:"subjects,omitempty"`
 
-	// UserIDs A list of strings.
-	UserIDs *StringList `json:"userIDs,omitempty"`
+	// UserIDs A list of user IDs.
+	UserIDs *UserIDs `json:"userIDs,omitempty"`
 }
 
 // GroupWrite A group when created or updated.
@@ -342,6 +349,9 @@ type Oauth2Error struct {
 
 // Oauth2ErrorError A terse error string expanding on the HTTP error code. Errors are based on the OAuth 2.02 specification, but are expanded with proprietary status codes for APIs other than those specified by OAuth 2.02.
 type Oauth2ErrorError string
+
+// Oauth2ProviderId An oauth2 provider ID.
+type Oauth2ProviderId = identityids.OAuth2ProviderID
 
 // Oauth2ProviderRead An OAuth 2.0 provider when read.
 type Oauth2ProviderRead struct {
@@ -454,6 +464,9 @@ type OpenidConfiguration struct {
 	UserinfoEndpoint string `json:"userinfo_endpoint"`
 }
 
+// OrganizationId An organization ID.
+type OrganizationId = identityids.OrganizationID
+
 // OrganizationRead An organization when read.
 type OrganizationRead struct {
 	// Metadata Metadata required by all resource reads.
@@ -507,6 +520,9 @@ type OrganizationWrite struct {
 
 // Organizations A list of organizations.
 type Organizations = []OrganizationRead
+
+// ProjectId A project ID.
+type ProjectId = identityids.ProjectID
 
 // ProjectRead A project when read.
 type ProjectRead struct {
@@ -617,6 +633,12 @@ type ResponseMode string
 // ResponseType Supported response types.
 type ResponseType string
 
+// RoleIDs A list of role IDs.
+type RoleIDs = []RoleId
+
+// RoleId A role ID.
+type RoleId = identityids.RoleID
+
 // RoleRead A role.
 type RoleRead struct {
 	// Metadata Metadata required by all resource reads.
@@ -640,6 +662,12 @@ type ServiceAccountCreate struct {
 	// Status A service account status.
 	Status ServiceAccountStatus `json:"status"`
 }
+
+// ServiceAccountIDs A list of service account IDs.
+type ServiceAccountIDs = []ServiceAccountId
+
+// ServiceAccountId A service account ID.
+type ServiceAccountId = identityids.ServiceAccountID
 
 // ServiceAccountRead A service account.
 type ServiceAccountRead struct {
@@ -682,9 +710,6 @@ type ServiceAccounts = []ServiceAccountRead
 
 // SigningAlgorithm Supported signing algorithms.
 type SigningAlgorithm string
-
-// StringList A list of strings.
-type StringList = []string
 
 // Subject A user account, as described when member of a group.
 type Subject struct {
@@ -739,6 +764,12 @@ type TokenRequestOptions struct {
 	// RefreshToken A refresh token for the "refresh_token" grant type.
 	RefreshToken *string `json:"refresh_token"`
 }
+
+// UserIDs A list of user IDs.
+type UserIDs = []UserId
+
+// UserId A user ID.
+type UserId = identityids.UserID
 
 // UserRead A user read object.
 type UserRead struct {
@@ -846,32 +877,32 @@ type UserinfoRequestOptions struct {
 // Users A list of users.
 type Users = []UserRead
 
-// AllocationIDParameter defines model for allocationIDParameter.
-type AllocationIDParameter = string
+// AllocationIDParameter A resource allocation ID.
+type AllocationIDParameter = AllocationId
 
-// GroupidParameter defines model for groupidParameter.
-type GroupidParameter = string
+// GroupidParameter A group ID.
+type GroupidParameter = GroupId
 
-// Oauth2ProvderIDParameter defines model for oauth2ProvderIDParameter.
-type Oauth2ProvderIDParameter = string
+// Oauth2ProvderIDParameter An oauth2 provider ID.
+type Oauth2ProvderIDParameter = Oauth2ProviderId
 
-// OrganizationIDParameter defines model for organizationIDParameter.
-type OrganizationIDParameter = string
+// OrganizationIDParameter An organization ID.
+type OrganizationIDParameter = OrganizationId
 
-// ProjectIDParameter defines model for projectIDParameter.
-type ProjectIDParameter = string
+// ProjectIDParameter A project ID.
+type ProjectIDParameter = ProjectId
 
 // ReferenceParameter defines model for referenceParameter.
 type ReferenceParameter = string
 
-// ServiceAccountIDParameter defines model for serviceAccountIDParameter.
-type ServiceAccountIDParameter = string
+// ServiceAccountIDParameter A service account ID.
+type ServiceAccountIDParameter = ServiceAccountId
 
 // UserEmailParameter defines model for userEmailParameter.
 type UserEmailParameter = string
 
-// UserIDParameter defines model for userIDParameter.
-type UserIDParameter = string
+// UserIDParameter A user ID.
+type UserIDParameter = UserId
 
 // AclResponse A list of access control scopes and permissions.
 type AclResponse = Acl

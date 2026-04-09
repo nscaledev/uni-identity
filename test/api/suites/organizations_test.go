@@ -45,7 +45,7 @@ var _ = Describe("Organization Discovery", func() {
 					Expect(org.Metadata).NotTo(BeNil())
 					Expect(org.Metadata.Id).NotTo(BeEmpty())
 					Expect(org.Metadata.Name).NotTo(BeEmpty())
-					orgIDs[i] = org.Metadata.Id
+					orgIDs[i] = org.Metadata.Id.String()
 				}
 
 				Expect(orgIDs).To(ContainElement(config.OrgID), "Expected organization ID %s to be present in the list", config.OrgID)
@@ -76,7 +76,7 @@ var _ = Describe("Organization Discovery", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(org).NotTo(BeNil())
 				Expect(org.Metadata).NotTo(BeNil())
-				Expect(org.Metadata.Id).To(Equal(config.OrgID))
+				Expect(org.Metadata.Id.String()).To(Equal(config.OrgID))
 				Expect(org.Metadata.Name).NotTo(BeEmpty())
 
 				GinkgoWriter.Printf("Retrieved organization: %s (ID: %s)\n", org.Metadata.Name, org.Metadata.Id)
@@ -109,7 +109,7 @@ var _ = Describe("Project Discovery", func() {
 					Expect(project.Metadata).NotTo(BeNil())
 					Expect(project.Metadata.Id).NotTo(BeEmpty())
 					Expect(project.Metadata.Name).NotTo(BeEmpty())
-					projectIDs[i] = project.Metadata.Id
+					projectIDs[i] = project.Metadata.Id.String()
 				}
 
 				Expect(projectIDs).To(ContainElement(config.ProjectID), "Expected project ID %s to be present in the list", config.ProjectID)
@@ -135,7 +135,7 @@ var _ = Describe("Project Discovery", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(project).NotTo(BeNil())
 				Expect(project.Metadata).NotTo(BeNil())
-				Expect(project.Metadata.Id).To(Equal(config.ProjectID))
+				Expect(project.Metadata.Id.String()).To(Equal(config.ProjectID))
 				Expect(project.Metadata.Name).NotTo(BeEmpty())
 
 				GinkgoWriter.Printf("Retrieved project: %s (ID: %s)\n", project.Metadata.Name, project.Metadata.Id)

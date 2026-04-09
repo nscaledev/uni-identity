@@ -20,6 +20,7 @@ package fixtures
 import (
 	"context"
 
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -50,11 +51,11 @@ func HandlerContextFixture(ctx context.Context, flags int) context.Context {
 	}
 
 	if flags&(WithOrganization|WithProject) != 0 {
-		p.OrganizationID = PrincipalOrganizationID
+		p.OrganizationID = ids.MustParseOrganizationID(PrincipalOrganizationID)
 	}
 
 	if flags&WithProject != 0 {
-		p.ProjectID = PrincipalProjectID
+		p.ProjectID = ids.MustParseProjectID(PrincipalProjectID)
 	}
 
 	ctx = authorization.NewContext(ctx, info)

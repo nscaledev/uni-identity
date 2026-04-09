@@ -29,6 +29,8 @@ import (
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
+	"github.com/unikorn-cloud/identity/pkg/ids"
+	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
@@ -41,9 +43,9 @@ var _ = Describe("Group Management", func() {
 
 				Expect(groupID).NotTo(BeEmpty(), "Group ID should be returned")
 				Expect(group.Metadata).NotTo(BeNil())
-				Expect(group.Metadata.Id).To(Equal(groupID))
+				Expect(group.Metadata.Id.String()).To(Equal(groupID))
 				Expect(group.Metadata.Name).To(Equal(payload.Metadata.Name))
-				Expect(group.Metadata.OrganizationId).To(Equal(config.OrgID))
+				Expect(group.Metadata.OrganizationId.String()).To(Equal(config.OrgID))
 
 				Expect(group.Spec).NotTo(BeNil())
 				Expect(group.Spec.RoleIDs).To(Equal(payload.Spec.RoleIDs))
@@ -91,7 +93,7 @@ var _ = Describe("Group Management", func() {
 
 				found := false
 				for _, group := range groups {
-					if group.Metadata.Id == groupID {
+					if group.Metadata.Id.String() == groupID {
 						found = true
 						Expect(group.Metadata.Name).To(Equal(createdGroup.Metadata.Name))
 						GinkgoWriter.Printf("Found created group in list: %s\n", groupID)
@@ -130,7 +132,7 @@ var _ = Describe("Group Management", func() {
 					Expect(group.Metadata).NotTo(BeNil())
 					Expect(group.Metadata.Id).NotTo(BeEmpty())
 					Expect(group.Metadata.Name).NotTo(BeEmpty())
-					Expect(group.Metadata.OrganizationId).To(Equal(config.OrgID))
+					Expect(group.Metadata.OrganizationId.String()).To(Equal(config.OrgID))
 
 					Expect(group.Spec).NotTo(BeNil())
 
@@ -140,9 +142,9 @@ var _ = Describe("Group Management", func() {
 
 					Expect(group.Metadata.HealthStatus).NotTo(BeEmpty())
 					Expect(group.Metadata.HealthStatus).To(BeElementOf(
-					coreopenapi.ResourceHealthStatusHealthy,
-					coreopenapi.ResourceHealthStatusDegraded,
-					coreopenapi.ResourceHealthStatusError))
+						coreopenapi.ResourceHealthStatusHealthy,
+						coreopenapi.ResourceHealthStatusDegraded,
+						coreopenapi.ResourceHealthStatusError))
 
 					GinkgoWriter.Printf("  Group: %s (ID: %s)\n",
 						group.Metadata.Name, group.Metadata.Id)
@@ -193,7 +195,7 @@ var _ = Describe("Group Management", func() {
 				updatedGroup, err := client.GetGroup(ctx, config.OrgID, groupID)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(updatedGroup).NotTo(BeNil())
-				Expect(updatedGroup.Metadata.Id).To(Equal(groupID))
+				Expect(updatedGroup.Metadata.Id.String()).To(Equal(groupID))
 				Expect(updatedGroup.Metadata.Name).To(Equal(updatedPayload.Metadata.Name))
 				Expect(updatedGroup.Metadata.Name).NotTo(Equal(originalGroup.Metadata.Name))
 
@@ -213,7 +215,7 @@ var _ = Describe("Group Management", func() {
 				originalGroup, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
 				updatedPayload := payload
-				updatedPayload.Spec.RoleIDs = []string{roles[0].Metadata.Id}
+				updatedPayload.Spec.RoleIDs = identityopenapi.RoleIDs{ids.RoleIDFromUUID(roles[0].Metadata.Id)}
 
 				err = client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
@@ -223,7 +225,7 @@ var _ = Describe("Group Management", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(updatedGroup).NotTo(BeNil())
 				Expect(updatedGroup.Spec.RoleIDs).To(HaveLen(1))
-				Expect(updatedGroup.Spec.RoleIDs[0]).To(Equal(roles[0].Metadata.Id))
+				Expect(updatedGroup.Spec.RoleIDs[0].String()).To(Equal(roles[0].Metadata.Id.String()))
 
 				GinkgoWriter.Printf("Updated group '%s': added role %s\n",
 					originalGroup.Metadata.Name, roles[0].Metadata.Name)
@@ -254,13 +256,13 @@ var _ = Describe("Group Management", func() {
 						BuildTyped())
 
 				Expect(group.Metadata.Id).NotTo(BeEmpty())
-				Expect(group.Metadata.Id).To(Equal(groupID))
+				Expect(group.Metadata.Id.String()).To(Equal(groupID))
 				Expect(group.Metadata.Name).To(Equal("delete-test-group"))
 
 				retrievedGroup, err := client.GetGroup(ctx, config.OrgID, groupID)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(retrievedGroup).NotTo(BeNil())
-				Expect(retrievedGroup.Metadata.Id).To(Equal(groupID))
+				Expect(retrievedGroup.Metadata.Id.String()).To(Equal(groupID))
 				GinkgoWriter.Printf("Verified group exists: %s\n", groupID)
 
 				err = client.DeleteGroup(ctx, config.OrgID, groupID)

@@ -44,7 +44,7 @@ var _ = Describe("Access Control Discovery", func() {
 				Expect(*acl.Organizations).NotTo(BeEmpty(), "At least one organization should be present in ACL")
 
 				for _, org := range *acl.Organizations {
-					Expect(org.Id).NotTo(BeEmpty(), "Organization ID should not be empty")
+					Expect(org.Id.IsZero()).To(BeFalse(), "Organization ID should not be empty")
 
 					if org.Endpoints != nil {
 						Expect(*org.Endpoints).NotTo(BeEmpty(), "Organization should have at least one endpoint permission")
@@ -70,7 +70,7 @@ var _ = Describe("Access Control Discovery", func() {
 
 				found := false
 				for _, org := range *acl.Organizations {
-					if org.Id == config.OrgID {
+					if org.Id.String() == config.OrgID {
 						found = true
 						GinkgoWriter.Printf("Found test organization in ACL: %s\n", config.OrgID)
 						break
@@ -107,7 +107,7 @@ var _ = Describe("Access Control Discovery", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(acl).NotTo(BeNil())
 				Expect(acl.Organization).NotTo(BeNil(), "Organization field should be present in org ACL")
-				Expect(acl.Organization.Id).To(Equal(config.OrgID), "Organization ID should match request")
+				Expect(acl.Organization.Id.String()).To(Equal(config.OrgID), "Organization ID should match request")
 
 				if acl.Organization.Endpoints != nil {
 					Expect(*acl.Organization.Endpoints).NotTo(BeEmpty(),
@@ -152,7 +152,7 @@ var _ = Describe("Access Control Discovery", func() {
 
 				found := false
 				for _, org := range *acl.Organizations {
-					if org.Id == config.OrgID {
+					if org.Id.String() == config.OrgID {
 						found = true
 						break
 					}

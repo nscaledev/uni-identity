@@ -29,6 +29,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,32 +54,53 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func convert(in *unikornv1.Project) *openapi.ProjectRead {
+func convert(in *unikornv1.Project) (*openapi.ProjectRead, error) {
+	metadata, err := conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to convert project %s/%s", err, in.Namespace, in.Name)
+	}
+
 	out := &openapi.ProjectRead{
-		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
+		Metadata: metadata,
 		Spec: openapi.ProjectSpec{
 			GroupIDs: openapi.GroupIDs{},
 		},
 	}
 
 	if in.Spec.GroupIDs != nil {
-		out.Spec.GroupIDs = in.Spec.GroupIDs
+		groupIDs := make(openapi.GroupIDs, len(in.Spec.GroupIDs))
+
+		for i := range in.Spec.GroupIDs {
+			groupID, err := ids.ParseGroupID(in.Spec.GroupIDs[i])
+			if err != nil {
+				return nil, fmt.Errorf("%w: failed to convert group ID %q", err, in.Spec.GroupIDs[i])
+			}
+
+			groupIDs[i] = groupID
+		}
+
+		out.Spec.GroupIDs = groupIDs
 	}
 
-	return out
+	return out, nil
 }
 
-func convertList(in *unikornv1.ProjectList) openapi.Projects {
+func convertList(in *unikornv1.ProjectList) (openapi.Projects, error) {
 	out := make(openapi.Projects, len(in.Items))
 
 	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
+		item, err := convert(&in.Items[i])
+		if err != nil {
+			return nil, err
+		}
+
+		out[i] = *item
 	}
 
-	return out
+	return out, nil
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Projects, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Projects, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -94,13 +116,13 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Proje
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	return convertList(&result), nil
+	return convertList(&result)
 }
 
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, projectID string) (*unikornv1.Project, error) {
+func (c *Client) get(ctx context.Context, organization *organizations.Meta, projectID ids.ProjectID) (*unikornv1.Project, error) {
 	result := &unikornv1.Project{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: projectID}, result); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: projectID.String()}, result); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
@@ -111,7 +133,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, proj
 	return result, nil
 }
 
-func (c *Client) Get(ctx context.Context, organizationID, projectID string) (*openapi.ProjectRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) (*openapi.ProjectRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -122,15 +144,15 @@ func (c *Client) Get(ctx context.Context, organizationID, projectID string) (*op
 		return nil, err
 	}
 
-	return convert(result), nil
+	return convert(result)
 }
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ProjectWrite) (*unikornv1.Project, error) {
 	out := &unikornv1.Project{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID.UUID()).Get(),
 		Spec: unikornv1.ProjectSpec{
 			Tags:     conversion.GenerateTagList(in.Metadata.Tags),
-			GroupIDs: in.Spec.GroupIDs,
+			GroupIDs: common.IDStrings(in.Spec.GroupIDs),
 		},
 	}
 
@@ -141,7 +163,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	for _, groupID := range in.Spec.GroupIDs {
 		var resource unikornv1.Group
 
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, &resource); err != nil {
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID.String()}, &resource); err != nil {
 			if kerrors.IsNotFound(err) {
 				return nil, errors.OAuth2InvalidRequest("group ID", groupID, "does not exist")
 			}
@@ -154,7 +176,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 }
 
 // Create creates the implicit project indentified by the JTW claims.
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.ProjectWrite) (*openapi.ProjectRead, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.ProjectWrite) (*openapi.ProjectRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -169,10 +191,10 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, fmt.Errorf("%w: failed to create project", err)
 	}
 
-	return convert(resource), nil
+	return convert(resource)
 }
 
-func (c *Client) Update(ctx context.Context, organizationID, projectID string, request *openapi.ProjectWrite) error {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, request *openapi.ProjectWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -209,7 +231,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 }
 
 // Delete deletes the project.
-func (c *Client) Delete(ctx context.Context, organizationID, projectID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -217,7 +239,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 
 	project := &unikornv1.Project{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      projectID,
+			Name:      projectID.String(),
 			Namespace: organization.Namespace,
 		},
 	}
@@ -235,7 +257,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 
 // ReferenceCreate adds a external reference to the project that blocks deletion
 // until it has been removed.
-func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID, reference string) error {
+func (c *Client) ReferenceCreate(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, reference string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -266,7 +288,7 @@ func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID,
 }
 
 // ReferenceDelete removes an external reference from the project.
-func (c *Client) ReferenceDelete(ctx context.Context, organizationID, projectID, reference string) error {
+func (c *Client) ReferenceDelete(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, reference string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err

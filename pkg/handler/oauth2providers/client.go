@@ -28,6 +28,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,10 +49,10 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func (c *Client) get(ctx context.Context, organization *organizations.Meta, providerID string) (*unikornv1.OAuth2Provider, error) {
+func (c *Client) get(ctx context.Context, organization *organizations.Meta, providerID ids.OAuth2ProviderID) (*unikornv1.OAuth2Provider, error) {
 	result := &unikornv1.OAuth2Provider{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: providerID}, result); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: providerID.String()}, result); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
@@ -62,9 +63,14 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, prov
 	return result, nil
 }
 
-func convert(in *unikornv1.OAuth2Provider) *openapi.Oauth2ProviderRead {
+func convert(in *unikornv1.OAuth2Provider) (*openapi.Oauth2ProviderRead, error) {
+	metadata, err := conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to convert oauth2 provider %s/%s", err, in.Namespace, in.Name)
+	}
+
 	out := &openapi.Oauth2ProviderRead{
-		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
+		Metadata: metadata,
 		Spec: openapi.Oauth2ProviderSpec{
 			ClientID: in.Spec.ClientID,
 		},
@@ -82,10 +88,10 @@ func convert(in *unikornv1.OAuth2Provider) *openapi.Oauth2ProviderRead {
 		}
 	*/
 
-	return out
+	return out, nil
 }
 
-func convertList(in *unikornv1.OAuth2ProviderList) openapi.Oauth2Providers {
+func convertList(in *unikornv1.OAuth2ProviderList) (openapi.Oauth2Providers, error) {
 	slices.SortStableFunc(in.Items, func(a, b unikornv1.OAuth2Provider) int {
 		return strings.Compare(a.Name, b.Name)
 	})
@@ -93,10 +99,15 @@ func convertList(in *unikornv1.OAuth2ProviderList) openapi.Oauth2Providers {
 	out := make(openapi.Oauth2Providers, len(in.Items))
 
 	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
+		item, err := convert(&in.Items[i])
+		if err != nil {
+			return nil, err
+		}
+
+		out[i] = *item
 	}
 
-	return out
+	return out, nil
 }
 
 func (c *Client) ListGlobal(ctx context.Context) (openapi.Oauth2Providers, error) {
@@ -110,10 +121,10 @@ func (c *Client) ListGlobal(ctx context.Context) (openapi.Oauth2Providers, error
 		return nil, err
 	}
 
-	return convertList(&result), nil
+	return convertList(&result)
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Oauth2Providers, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Oauth2Providers, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -125,12 +136,12 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Oauth
 		return nil, fmt.Errorf("%w: failed to get organization oauth2 provider", err)
 	}
 
-	return convertList(result), nil
+	return convertList(result)
 }
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.Oauth2ProviderWrite) (*unikornv1.OAuth2Provider, error) {
 	out := &unikornv1.OAuth2Provider{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID.UUID()).Get(),
 		Spec: unikornv1.OAuth2ProviderSpec{
 			Issuer:   in.Spec.Issuer,
 			ClientID: in.Spec.ClientID,
@@ -151,7 +162,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	return out, nil
 }
 
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.Oauth2ProviderWrite) (*openapi.Oauth2ProviderRead, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.Oauth2ProviderWrite) (*openapi.Oauth2ProviderRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -166,10 +177,10 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, fmt.Errorf("%w: failed to create oauth2 provider", err)
 	}
 
-	return convert(resource), nil
+	return convert(resource)
 }
 
-func (c *Client) Update(ctx context.Context, organizationID, providerID string, request *openapi.Oauth2ProviderWrite) error {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, providerID ids.OAuth2ProviderID, request *openapi.Oauth2ProviderWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -205,7 +216,7 @@ func (c *Client) Update(ctx context.Context, organizationID, providerID string, 
 	return nil
 }
 
-func (c *Client) Delete(ctx context.Context, organizationID, providerID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, providerID ids.OAuth2ProviderID) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -213,7 +224,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, providerID string) 
 
 	resource := &unikornv1.OAuth2Provider{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      providerID,
+			Name:      providerID.String(),
 			Namespace: organization.Namespace,
 		},
 	}

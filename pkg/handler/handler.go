@@ -38,6 +38,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/roles"
 	"github.com/unikorn-cloud/identity/pkg/handler/serviceaccounts"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -602,7 +603,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWri
 
 	// Apply RBAC after listing as a filter.
 	result = slices.DeleteFunc(result, func(resource openapi.ProjectRead) bool {
-		return rbac.AllowProjectScope(ctx, "identity:projects", openapi.Read, organizationID, resource.Metadata.Id) != nil
+		return rbac.AllowProjectScope(ctx, "identity:projects", openapi.Read, organizationID, ids.ProjectIDFromUUID(resource.Metadata.Id)) != nil
 	})
 
 	h.setUncacheable(w)
@@ -722,13 +723,13 @@ func (h *Handler) serviceAccountsClient() *serviceaccounts.Client {
 // allowServiceAccountOrSelfAccess allows either access to a service account via the usual RBAC
 // interfaces, or allows the service account to access itself.  This allows for fully transparent
 // rotation without any end user interaction, think Let's Encrypt's automatic certificate issuing.
-func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclOperation, organizationID, serviceAccountID string) error {
+func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclOperation, organizationID openapi.OrganizationIDParameter, serviceAccountID *openapi.ServiceAccountIDParameter) error {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: unable to get authorization info", err)
 	}
 
-	if info.ServiceAccount && (serviceAccountID == "" || info.Userinfo.Sub == serviceAccountID) {
+	if info.ServiceAccount && (serviceAccountID == nil || info.Userinfo.Sub == serviceAccountID.String()) {
 		return nil
 	}
 
@@ -737,7 +738,7 @@ func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclO
 
 // filterServiceAccounts is used when reading service accounts to only return the service account
 // for a service accounts access token.
-func filterServiceAccounts(ctx context.Context, organizationID string, serviceAccounts *openapi.ServiceAccounts) error {
+func filterServiceAccounts(ctx context.Context, organizationID openapi.OrganizationIDParameter, serviceAccounts *openapi.ServiceAccounts) error {
 	// If the actor has full access don't modify.
 	if rbac.AllowOrganizationScope(ctx, "identity:serviceaccounts", openapi.Read, organizationID) == nil {
 		return nil
@@ -755,7 +756,7 @@ func filterServiceAccounts(ctx context.Context, organizationID string, serviceAc
 	}
 
 	*serviceAccounts = slices.DeleteFunc(*serviceAccounts, func(serviceAccount openapi.ServiceAccountRead) bool {
-		return serviceAccount.Metadata.Id != info.Userinfo.Sub
+		return serviceAccount.Metadata.Id.String() != info.Userinfo.Sub
 	})
 
 	return nil
@@ -763,7 +764,7 @@ func filterServiceAccounts(ctx context.Context, organizationID string, serviceAc
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDServiceaccounts(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
 	// NOTE: this allows regular RBAC based access or a service account to self discover its ID.
-	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Read, organizationID, ""); err != nil {
+	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Read, organizationID, nil); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -846,7 +847,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAc
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotate(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, serviceAccountID openapi.ServiceAccountIDParameter) {
 	// NOTE: this allows regular RBAC based access or a service account to self rotate.
-	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Update, organizationID, serviceAccountID); err != nil {
+	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Update, organizationID, &serviceAccountID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}

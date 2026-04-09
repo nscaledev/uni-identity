@@ -27,6 +27,7 @@ import (
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -64,6 +65,8 @@ func Injector(cli client.Client, options *coreclient.HTTPClientOptions) func(con
 }
 
 // FromResource loads the identity principal stored in the resource.
+//
+//nolint:cyclop
 func FromResource(resource metav1.Object) (*Principal, error) {
 	// Check the consistency of the resource, we should always have some
 	// labels and annotations.
@@ -82,18 +85,48 @@ func FromResource(resource metav1.Object) (*Principal, error) {
 	// TODO: we should ALWAYS have a principal available, except when transitioning
 	// from the old world to the new, and resources don't possess those labels.  We
 	// can either let nature take its course, or write an upgrade script.
-	organizationID := labels[constants.OrganizationLabel]
-	projectID := labels[constants.ProjectLabel]
-	actor := annotations[constants.CreatorAnnotation]
+	var (
+		organizationID ids.OrganizationID
+		projectID      ids.ProjectID
+		actor          = annotations[constants.CreatorAnnotation]
+	)
+
+	if value := labels[constants.OrganizationLabel]; value != "" {
+		id, err := ids.ParseOrganizationID(value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid organization ID label %q", errors.ErrConsistency, value)
+		}
+
+		organizationID = id
+	}
+
+	if value := labels[constants.ProjectLabel]; value != "" {
+		id, err := ids.ParseProjectID(value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid project ID label %q", errors.ErrConsistency, value)
+		}
+
+		projectID = id
+	}
 
 	// Override with princial information if set, this caters for when the resource
 	// was created on behalf of the principal.
 	if t, ok := labels[constants.OrganizationPrincipalLabel]; ok {
-		organizationID = t
+		id, err := ids.ParseOrganizationID(t)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid principal organization ID label %q", errors.ErrConsistency, t)
+		}
+
+		organizationID = id
 	}
 
 	if t, ok := labels[constants.ProjectPrincipalLabel]; ok {
-		projectID = t
+		id, err := ids.ParseProjectID(t)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid principal project ID label %q", errors.ErrConsistency, t)
+		}
+
+		projectID = id
 	}
 
 	if t, ok := annotations[constants.CreatorPrincipalAnnotation]; ok {

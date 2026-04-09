@@ -20,10 +20,12 @@ package roles
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
@@ -42,29 +44,39 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func convert(in unikornv1.Role) openapi.RoleRead {
-	out := openapi.RoleRead{
-		Metadata: conversion.ResourceReadMetadata(&in, in.Spec.Tags),
+func convert(in unikornv1.Role) (openapi.RoleRead, error) {
+	metadata, err := conversion.ResourceReadMetadata(&in, in.Spec.Tags)
+	if err != nil {
+		return openapi.RoleRead{}, fmt.Errorf("%w: failed to convert role %s/%s", err, in.Namespace, in.Name)
 	}
 
-	return out
+	out := openapi.RoleRead{
+		Metadata: metadata,
+	}
+
+	return out, nil
 }
 
-func convertList(in unikornv1.RoleList) openapi.Roles {
+func convertList(in unikornv1.RoleList) (openapi.Roles, error) {
 	var out openapi.Roles
 
 	for _, resource := range in.Items {
-		out = append(out, convert(resource))
+		item, err := convert(resource)
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, item)
 	}
 
 	slices.SortFunc(out, func(a, b openapi.RoleRead) int {
 		return cmp.Compare(a.Metadata.Name, b.Metadata.Name)
 	})
 
-	return out
+	return out, nil
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Roles, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Roles, error) {
 	var result unikornv1.RoleList
 
 	if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: c.namespace}); err != nil {
@@ -75,5 +87,5 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Roles
 		return role.Spec.Protected || rbac.AllowRole(ctx, &role, organizationID) != nil
 	})
 
-	return convertList(result), nil
+	return convertList(result)
 }

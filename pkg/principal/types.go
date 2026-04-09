@@ -17,12 +17,14 @@ limitations under the License.
 
 package principal
 
+import "github.com/unikorn-cloud/identity/pkg/ids"
+
 // Principal records information about what user insigated a request.
 type Principal struct {
 	// OrganizationID of the originating request (optional).
-	OrganizationID string `json:"organizationId,omitempty"`
+	OrganizationID ids.OrganizationID `json:"organizationId,omitempty"`
 	// ProjectID of the originating request (optional).
-	ProjectID string `json:"projectId,omitempty"`
+	ProjectID ids.ProjectID `json:"projectId,omitempty"`
 	// Actor of the originating request, this may be an email address
 	// for an end-user, a service identifier for a system service, or
 	// the service account name.

@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -66,7 +67,7 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 
 // AllowOrganizationScope tries to allow the requested operation at the global scope, then
 // the organization scope.
-func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
+func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
 	if AllowGlobalScope(ctx, endpoint, operation) == nil {
 		return nil
 	}
@@ -94,7 +95,7 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
 // the organization scope, and finally at the project scope.
-func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
 	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
 		return nil
 	}
@@ -133,7 +134,7 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 // isAllowedByProjectACL checks only the project-level ACL entries for a specific project,
 // with no fallback to organization or global scope.  If the project is present in the ACL
 // it must have been fetched from storage when the ACL was built, so its existence is guaranteed.
-func isAllowedByProjectACL(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) bool {
+func isAllowedByProjectACL(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) bool {
 	acl := FromContext(ctx)
 
 	if acl.Organizations == nil {
@@ -167,7 +168,7 @@ func isAllowedByProjectACL(ctx context.Context, endpoint string, operation opena
 // so this function additionally verifies the project exists via the identity API before
 // returning nil.  Global-scope callers (platform administrators) are exempt from this
 // check and their supplied project ID is trusted directly.
-func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
 	if isAllowedByProjectACL(ctx, endpoint, operation, organizationID, projectID) {
@@ -207,7 +208,7 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 // AllowRole determines whether your ACL contains the same or higher privileges than
 // the role, which is then used to determine role visibility and limit privilege
 // escalation.
-func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string) error {
+func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
 			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
@@ -253,7 +254,7 @@ func OrganizationIDs(ctx context.Context) []string {
 	organizationIDs := make([]string, len(organizations))
 
 	for i := range organizations {
-		organizationIDs[i] = organizations[i].Id
+		organizationIDs[i] = organizations[i].Id.String()
 	}
 
 	return organizationIDs

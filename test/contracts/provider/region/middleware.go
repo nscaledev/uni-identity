@@ -20,6 +20,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
+
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -46,15 +49,17 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 			// Extract organization ID from request path
 			// Pattern: /api/v1/organizations/{orgID}/...
 			orgID := extractOrganizationID(r.URL.Path)
-			if orgID == "" {
-				// Fallback to a default org if extraction fails
-				orgID = "test-org"
+
+			orgUUID := ids.MustParseOrganizationID("00000000-0000-0000-0000-000000000001")
+
+			if parsedUUID, err := uuid.Parse(orgID); err == nil {
+				orgUUID = ids.OrganizationIDFromUUID(parsedUUID)
 			}
 
 			// Create a single organization with the extracted/default ID
 			organizations := openapi.AclOrganizationList{
 				{
-					Id:        orgID,
+					Id:        orgUUID,
 					Endpoints: &endpoints,
 				},
 			}
@@ -77,7 +82,7 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 			// Inject mock principal info (required for SetIdentityMetadata)
 			principalInfo := &principal.Principal{
 				Actor:          "test-user",
-				OrganizationID: orgID,
+				OrganizationID: orgUUID,
 			}
 			ctx = principal.NewContext(ctx, principalInfo)
 

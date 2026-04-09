@@ -39,6 +39,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/core/pkg/util/cache"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -168,6 +169,43 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 	return info.Userinfo.Sub + "|" + scope
 }
 
+func optionalOrganizationID(pathParams map[string]string) (*identityapi.OrganizationId, bool, error) {
+	organizationID := pathParams["organizationID"]
+	if organizationID == "" {
+		return nil, false, nil
+	}
+
+	id, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return nil, false, errors.OAuth2InvalidRequest("organization ID is invalid").WithError(err)
+	}
+
+	return &id, true, nil
+}
+
+func (v *Validator) getACL(ctx context.Context, info *authorization.Info, params map[string]string) (*identityapi.Acl, error) {
+	cacheKey := aclCacheKey(ctx, info, params["organizationID"])
+
+	organizationID, _, err := optionalOrganizationID(params)
+	if err != nil {
+		return nil, err
+	}
+
+	acl, ok := v.acls.Get(cacheKey)
+	if ok {
+		return acl, nil
+	}
+
+	acl, err = v.authorizer.GetACL(authorization.NewContext(ctx, info), organizationID)
+	if err != nil {
+		return nil, err
+	}
+
+	v.acls.Add(cacheKey, acl, v.options.ACLCacheTimeout)
+
+	return acl, nil
+}
+
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
 // and validating the bearer token provided by the client which is cryptographically secure.
 // However, rather than have to worry about multiple different server ports, different
@@ -241,19 +279,10 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 			return err
 		}
 
-		// This happens every call, so do some caching to improve throughput.
-		cacheKey := aclCacheKey(ctx, info, params["organizationID"])
-
-		acl, ok := v.acls.Get(cacheKey)
-		if !ok {
-			// Get the ACL associated with the actor.
-			acl, err = v.authorizer.GetACL(authorization.NewContext(ctx, info), params["organizationID"])
-			if err != nil {
-				authInfo.err = err
-				return err
-			}
-
-			v.acls.Add(cacheKey, acl, v.options.ACLCacheTimeout)
+		acl, err := v.getACL(ctx, info, params)
+		if err != nil {
+			authInfo.err = err
+			return err
 		}
 
 		authInfo.acl = acl
@@ -306,10 +335,14 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
 // principal information from the request itself.
 func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, subject string) context.Context {
-	p := &principal.Principal{
-		OrganizationID: params["organizationID"],
-		ProjectID:      params["projectID"],
-		Actor:          subject,
+	p := &principal.Principal{Actor: subject}
+
+	if organizationID, ok := params["organizationID"]; ok && organizationID != "" {
+		p.OrganizationID = ids.MustParseOrganizationID(organizationID)
+	}
+
+	if projectID, ok := params["projectID"]; ok && projectID != "" {
+		p.ProjectID = ids.MustParseProjectID(projectID)
 	}
 
 	return principal.NewContext(ctx, p)

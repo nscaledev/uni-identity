@@ -24,6 +24,7 @@ import (
 
 	identityv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/projects"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,9 +37,9 @@ import (
 
 const (
 	namespace             = "base"
-	organizationID        = "foo"
+	organizationID        = "f18ccbbe-e61b-4fe9-bc00-2661f792f39e"
 	organizationNamespace = "bar"
-	projectID             = "baz"
+	projectID             = "00000000-0000-0000-0000-000000000002"
 	reference             = "cat"
 )
 
@@ -102,27 +103,27 @@ func TestReferences(t *testing.T) {
 	client := projects.New(cli, namespace)
 
 	// Create succeeds.
-	require.NoError(t, client.ReferenceCreate(t.Context(), organizationID, projectID, reference))
+	require.NoError(t, client.ReferenceCreate(t.Context(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), reference))
 
 	project := getProject(t, cli)
 	require.Len(t, project.Finalizers, 1)
 	require.True(t, controllerutil.ContainsFinalizer(project, reference))
 
 	// Create as second time succeeds.
-	require.NoError(t, client.ReferenceCreate(t.Context(), organizationID, projectID, reference))
+	require.NoError(t, client.ReferenceCreate(t.Context(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), reference))
 
 	project = getProject(t, cli)
 	require.Len(t, project.Finalizers, 1)
 	require.True(t, controllerutil.ContainsFinalizer(project, reference))
 
 	// Delete succeeds.
-	require.NoError(t, client.ReferenceDelete(t.Context(), organizationID, projectID, reference))
+	require.NoError(t, client.ReferenceDelete(t.Context(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), reference))
 
 	project = getProject(t, cli)
 	require.Empty(t, project.Finalizers)
 
 	// Delete a second time succeeds.
-	require.NoError(t, client.ReferenceDelete(t.Context(), organizationID, projectID, reference))
+	require.NoError(t, client.ReferenceDelete(t.Context(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), reference))
 
 	project = getProject(t, cli)
 	require.Empty(t, project.Finalizers)

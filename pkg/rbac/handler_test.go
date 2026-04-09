@@ -26,6 +26,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -34,17 +35,26 @@ import (
 )
 
 const (
-	organizationID = "foo"
-	projectID      = "bar"
-	resourceType1  = "candy"
-	resourceType2  = "cookie"
+	organizationID      = "00000000-0000-0000-0000-000000000001"
+	wrongOrganizationID = "00000000-0000-0000-0000-000000000003"
+	projectID           = "00000000-0000-0000-0000-000000000002"
+	resourceType1       = "candy"
+	resourceType2       = "cookie"
 )
+
+func oid(value string) ids.OrganizationID {
+	return ids.MustParseOrganizationID(value)
+}
+
+func pid(value string) ids.ProjectID {
+	return ids.MustParseProjectID(value)
+}
 
 func aclFixture() *openapi.Acl {
 	return &openapi.Acl{
 		Organizations: &openapi.AclOrganizationList{
 			{
-				Id: organizationID,
+				Id: oid(organizationID),
 				Endpoints: &openapi.AclEndpoints{
 					{
 						Name: resourceType1,
@@ -55,7 +65,7 @@ func aclFixture() *openapi.Acl {
 				},
 				Projects: &openapi.AclProjectList{
 					{
-						Id: projectID,
+						Id: pid(projectID),
 						Endpoints: openapi.AclEndpoints{
 							{
 								Name: resourceType2,
@@ -93,7 +103,7 @@ func TestUnscopedACL(t *testing.T) {
 		},
 		{
 			Name:           "Reject Organization Scoped Resource With Wrong Organization",
-			OrganizationID: "wibble",
+			OrganizationID: wrongOrganizationID,
 			Resource:       resourceType1,
 			Operation:      openapi.Create,
 			ShouldFail:     true,
@@ -121,7 +131,7 @@ func TestUnscopedACL(t *testing.T) {
 		},
 		{
 			Name:           "Reject Project Scoped Resource With Wrong Organization",
-			OrganizationID: "wibble",
+			OrganizationID: wrongOrganizationID,
 			ProjectID:      projectID,
 			Resource:       resourceType1,
 			Operation:      openapi.Read,
@@ -152,7 +162,7 @@ func TestUnscopedACL(t *testing.T) {
 		},
 		{
 			Name:           "Reject Project Scoped Resource With Wrong Organization",
-			OrganizationID: "wibble",
+			OrganizationID: wrongOrganizationID,
 			ProjectID:      projectID,
 			Resource:       resourceType2,
 			Operation:      openapi.Read,
@@ -184,14 +194,14 @@ func TestUnscopedACL(t *testing.T) {
 
 			//nolint:nestif
 			if test.ProjectID != "" {
-				err := rbac.AllowProjectScope(rbac.NewContext(t.Context(), acl), test.Resource, test.Operation, test.OrganizationID, test.ProjectID)
+				err := rbac.AllowProjectScope(rbac.NewContext(t.Context(), acl), test.Resource, test.Operation, oid(test.OrganizationID), pid(test.ProjectID))
 				if test.ShouldFail {
 					require.Error(t, err)
 				} else {
 					require.NoError(t, err)
 				}
 			} else {
-				err := rbac.AllowOrganizationScope(rbac.NewContext(t.Context(), acl), test.Resource, test.Operation, test.OrganizationID)
+				err := rbac.AllowOrganizationScope(rbac.NewContext(t.Context(), acl), test.Resource, test.Operation, oid(test.OrganizationID))
 				if test.ShouldFail {
 					require.Error(t, err)
 				} else {
@@ -203,12 +213,12 @@ func TestUnscopedACL(t *testing.T) {
 }
 
 const (
-	organizationID1 = "foo"
-	projectID1_1    = "bar"
-	projectID1_2    = "baz"
-	organizationID2 = "foo2"
-	projectID2_1    = "bar2"
-	projectID2_2    = "baz2"
+	organizationID1 = "00000000-0000-0000-0000-000000000011"
+	projectID1_1    = "00000000-0000-0000-0000-000000000012"
+	projectID1_2    = "00000000-0000-0000-0000-000000000013"
+	organizationID2 = "00000000-0000-0000-0000-000000000021"
+	projectID2_1    = "00000000-0000-0000-0000-000000000022"
+	projectID2_2    = "00000000-0000-0000-0000-000000000023"
 )
 
 func aclFilterFixturePlatformAdmin() *openapi.Acl {
@@ -219,10 +229,10 @@ func aclFilterFixtureAdmin() *openapi.Acl {
 	return &openapi.Acl{
 		Organizations: &openapi.AclOrganizationList{
 			{
-				Id: organizationID1,
+				Id: oid(organizationID1),
 			},
 			{
-				Id: organizationID2,
+				Id: oid(organizationID2),
 			},
 		},
 	}
@@ -232,24 +242,24 @@ func aclFilterFixtureUser() *openapi.Acl {
 	return &openapi.Acl{
 		Organizations: &openapi.AclOrganizationList{
 			{
-				Id: organizationID1,
+				Id: oid(organizationID1),
 				Projects: &openapi.AclProjectList{
 					{
-						Id: projectID1_1,
+						Id: pid(projectID1_1),
 					},
 					{
-						Id: projectID1_2,
+						Id: pid(projectID1_2),
 					},
 				},
 			},
 			{
-				Id: organizationID2,
+				Id: oid(organizationID2),
 				Projects: &openapi.AclProjectList{
 					{
-						Id: projectID2_1,
+						Id: pid(projectID2_1),
 					},
 					{
-						Id: projectID2_2,
+						Id: pid(projectID2_2),
 					},
 				},
 			},
@@ -984,10 +994,10 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 	aclWithProjectScope := &openapi.Acl{
 		Organizations: &openapi.AclOrganizationList{
 			{
-				Id: organizationID,
+				Id: oid(organizationID),
 				Projects: &openapi.AclProjectList{
 					{
-						Id: projectID,
+						Id: pid(projectID),
 						Endpoints: openapi.AclEndpoints{
 							{
 								Name:       resourceType1,
@@ -1005,7 +1015,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 	aclWithOrgScope := &openapi.Acl{
 		Organizations: &openapi.AclOrganizationList{
 			{
-				Id: organizationID,
+				Id: oid(organizationID),
 				Endpoints: &openapi.AclEndpoints{
 					{
 						Name:       resourceType1,
@@ -1064,7 +1074,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 			ACL:  aclWithOrgScope,
 			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
 				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), oid(organizationID), pid(projectID)).
 					Return(projectOKResponse, nil)
 			},
 			OrganizationID: organizationID,
@@ -1077,7 +1087,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 			ACL:  aclWithOrgScope,
 			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
 				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), oid(organizationID), pid(projectID)).
 					Return(projectNotFoundResponse, nil)
 			},
 			OrganizationID: organizationID,
@@ -1091,7 +1101,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 			ACL:  aclWithOrgScope,
 			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
 				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), oid(organizationID), pid(projectID)).
 					Return(projectUnexpectedResponse, nil)
 			},
 			OrganizationID: organizationID,
@@ -1120,7 +1130,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 		{
 			Name:           "Reject: wrong organization, no API call made",
 			ACL:            aclWithOrgScope,
-			OrganizationID: "wibble",
+			OrganizationID: wrongOrganizationID,
 			ProjectID:      projectID,
 			Resource:       resourceType1,
 			Operation:      openapi.Create,
@@ -1144,7 +1154,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 
 			ctx := rbac.NewContext(t.Context(), test.ACL)
 
-			err := rbac.AllowProjectScopeCreate(ctx, mockClient, test.Resource, test.Operation, test.OrganizationID, test.ProjectID)
+			err := rbac.AllowProjectScopeCreate(ctx, mockClient, test.Resource, test.Operation, oid(test.OrganizationID), pid(test.ProjectID))
 			if test.ErrorChecker != nil {
 				require.Error(t, err)
 				require.True(t, test.ErrorChecker(err))

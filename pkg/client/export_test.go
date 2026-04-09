@@ -20,7 +20,11 @@ package client
 import (
 	"context"
 
+	"github.com/google/uuid"
+
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	crClient "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -29,4 +33,19 @@ import (
 // inject a mock without going through the full Kubernetes service-discovery path.
 func (r *References) SetClientFactory(f func(ctx context.Context, c crClient.Client, resource crClient.Object) (openapi.ClientWithResponsesInterface, error)) {
 	r.clientFactory = f
+}
+
+// GetOrganizationAndProjectIDs exposes the internal ID extraction helper to black-box tests.
+func GetOrganizationAndProjectIDs(resource crClient.Object) (ids.OrganizationID, ids.ProjectID, error) {
+	return getOrganizationAndProjectIDs(resource)
+}
+
+// GetPrincipalOrganizationAndProjectIDs exposes the principal ID conversion helper to black-box tests.
+func GetPrincipalOrganizationAndProjectIDs(userPrincipal *principal.Principal) (ids.OrganizationID, ids.ProjectID, error) {
+	return getPrincipalOrganizationAndProjectIDs(userPrincipal)
+}
+
+// GetAllocationUUID exposes the allocation ID conversion helper to black-box tests.
+func GetAllocationUUID(resource crClient.Object) (uuid.UUID, error) {
+	return getAllocationUUID(resource)
 }

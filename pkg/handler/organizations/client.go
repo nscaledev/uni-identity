@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -55,9 +56,8 @@ func New(client client.Client, namespace string) *Client {
 
 // Meta describes the organization.
 type Meta struct {
-	// ID is the organization's Kubernetes name, so a higher level resource
-	// can reference it.
-	ID string
+	// ID is the organization's resource ID.
+	ID ids.OrganizationID
 
 	// Namespace is the namespace that is provisioned by the organization.
 	// Should be usable set when the organization is active.
@@ -67,7 +67,7 @@ type Meta struct {
 // GetMetadata retrieves the organization metadata.
 // Clients should consult at least the Active status before doing anything
 // with the organization.
-func (c *Client) GetMetadata(ctx context.Context, organizationID string) (*Meta, error) {
+func (c *Client) GetMetadata(ctx context.Context, organizationID ids.OrganizationID) (*Meta, error) {
 	result, err := c.get(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -89,9 +89,14 @@ func convertOrganizationType(in *unikornv1.Organization) openapi.OrganizationTyp
 	return openapi.Adhoc
 }
 
-func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
+func convert(in *unikornv1.Organization) (*openapi.OrganizationRead, error) {
+	metadata, err := conversion.ResourceReadMetadata(in, in.Spec.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to convert organization %s/%s", err, in.Namespace, in.Name)
+	}
+
 	out := &openapi.OrganizationRead{
-		Metadata: conversion.ResourceReadMetadata(in, in.Spec.Tags),
+		Metadata: metadata,
 		Spec: openapi.OrganizationSpec{
 			OrganizationType: convertOrganizationType(in),
 		},
@@ -111,10 +116,10 @@ func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 		}
 	}
 
-	return out
+	return out, nil
 }
 
-func convertList(in *unikornv1.OrganizationList) openapi.Organizations {
+func convertList(in *unikornv1.OrganizationList) (openapi.Organizations, error) {
 	slices.SortStableFunc(in.Items, func(a, b unikornv1.Organization) int {
 		return strings.Compare(a.Name, b.Name)
 	})
@@ -122,17 +127,22 @@ func convertList(in *unikornv1.OrganizationList) openapi.Organizations {
 	out := make(openapi.Organizations, len(in.Items))
 
 	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
+		item, err := convert(&in.Items[i])
+		if err != nil {
+			return nil, err
+		}
+
+		out[i] = *item
 	}
 
-	return out
+	return out, nil
 }
 
 // get returns the implicit organization identified by the JWT claims.
-func (c *Client) get(ctx context.Context, organizationID string) (*unikornv1.Organization, error) {
+func (c *Client) get(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Organization, error) {
 	result := &unikornv1.Organization{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, result); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID.String()}, result); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
@@ -236,7 +246,7 @@ func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string)
 			return nil, err
 		}
 
-		return convertList(&result), nil
+		return convertList(&result)
 	}
 
 	organizations, err := c.list(ctx)
@@ -262,16 +272,16 @@ func (c *Client) List(ctx context.Context, rbacClient *rbac.RBAC, email *string)
 		result.Items[i] = *organization
 	}
 
-	return convertList(&result), nil
+	return convertList(&result)
 }
 
-func (c *Client) Get(ctx context.Context, organizationID string) (*openapi.OrganizationRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.OrganizationRead, error) {
 	result, err := c.get(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	return convert(result), nil
+	return convert(result)
 }
 
 func (c *Client) generate(ctx context.Context, in *openapi.OrganizationWrite) (*unikornv1.Organization, error) {
@@ -309,7 +319,7 @@ func (c *Client) generate(ctx context.Context, in *openapi.OrganizationWrite) (*
 	return out, nil
 }
 
-func (c *Client) Update(ctx context.Context, organizationID string, request *openapi.OrganizationWrite) error {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.OrganizationWrite) error {
 	current, err := c.get(ctx, organizationID)
 	if err != nil {
 		return err
@@ -350,13 +360,13 @@ func (c *Client) Create(ctx context.Context, request *openapi.OrganizationWrite)
 		return nil, fmt.Errorf("%w: failed to create organization", err)
 	}
 
-	return convert(org), nil
+	return convert(org)
 }
 
-func (c *Client) Delete(ctx context.Context, organizationID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID) error {
 	resource := &unikornv1.Organization{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      organizationID,
+			Name:      organizationID.String(),
 			Namespace: c.namespace,
 		},
 	}

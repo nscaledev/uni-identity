@@ -28,6 +28,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	corev1 "k8s.io/api/core/v1"
@@ -90,9 +91,14 @@ func convertAllocationList(in []unikornv1.ResourceAllocation) openapi.ResourceAl
 	return out
 }
 
-func convert(in *unikornv1.Allocation) *openapi.AllocationRead {
+func convert(in *unikornv1.Allocation) (*openapi.AllocationRead, error) {
+	metadata, err := conversion.ProjectScopedResourceReadMetadata(in, in.Spec.Tags)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to convert allocation %s/%s", err, in.Namespace, in.Name)
+	}
+
 	out := &openapi.AllocationRead{
-		Metadata: conversion.ProjectScopedResourceReadMetadata(in, in.Spec.Tags),
+		Metadata: metadata,
 		Spec: openapi.AllocationSpec{
 			Kind:        in.Labels[constants.ReferencedResourceKindLabel],
 			Id:          in.Labels[constants.ReferencedResourceIDLabel],
@@ -100,7 +106,7 @@ func convert(in *unikornv1.Allocation) *openapi.AllocationRead {
 		},
 	}
 
-	return out
+	return out, nil
 }
 
 func generateAllocation(in *openapi.ResourceAllocation) *unikornv1.ResourceAllocation {
@@ -123,9 +129,9 @@ func generateAllocationList(in openapi.ResourceAllocationList) []unikornv1.Resou
 	return out
 }
 
-func generate(ctx context.Context, namespace *corev1.Namespace, organizationID, projectID string, in *openapi.AllocationWrite) (*unikornv1.Allocation, error) {
+func generate(ctx context.Context, namespace *corev1.Namespace, organizationID ids.OrganizationID, projectID ids.ProjectID, in *openapi.AllocationWrite) (*unikornv1.Allocation, error) {
 	out := &unikornv1.Allocation{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, namespace.Name).WithOrganization(organizationID).WithProject(projectID).WithLabel(constants.ReferencedResourceKindLabel, in.Spec.Kind).WithLabel(constants.ReferencedResourceIDLabel, in.Spec.Id).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, namespace.Name).WithOrganization(organizationID.UUID()).WithProject(projectID.UUID()).WithLabel(constants.ReferencedResourceKindLabel, in.Spec.Kind).WithLabel(constants.ReferencedResourceIDLabel, in.Spec.Id).Get(),
 		Spec: unikornv1.AllocationSpec{
 			Tags:        conversion.GenerateTagList(in.Metadata.Tags),
 			Allocations: generateAllocationList(in.Spec.Allocations),
@@ -139,10 +145,10 @@ func generate(ctx context.Context, namespace *corev1.Namespace, organizationID, 
 	return out, nil
 }
 
-func (c *Client) get(ctx context.Context, namespace, allocationID string) (*unikornv1.Allocation, error) {
+func (c *Client) get(ctx context.Context, namespace string, allocationID ids.AllocationID) (*unikornv1.Allocation, error) {
 	result := &unikornv1.Allocation{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: allocationID}, result); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: allocationID.String()}, result); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
@@ -153,7 +159,7 @@ func (c *Client) get(ctx context.Context, namespace, allocationID string) (*unik
 	return result, nil
 }
 
-func (c *SyncClient) Create(ctx context.Context, organizationID, projectID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+func (c *SyncClient) Create(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
 	namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
@@ -178,10 +184,10 @@ func (c *SyncClient) Create(ctx context.Context, organizationID, projectID strin
 		return nil, fmt.Errorf("%w: failed to create allocation", err)
 	}
 
-	return convert(resource), nil
+	return convert(resource)
 }
 
-func (c *Client) Get(ctx context.Context, organizationID, projectID, allocationID string) (*openapi.AllocationRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID ids.AllocationID) (*openapi.AllocationRead, error) {
 	namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
@@ -192,10 +198,10 @@ func (c *Client) Get(ctx context.Context, organizationID, projectID, allocationI
 		return nil, err
 	}
 
-	return convert(result), nil
+	return convert(result)
 }
 
-func (c *Client) Delete(ctx context.Context, organizationID, projectID, allocationID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID ids.AllocationID) error {
 	namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return err
@@ -203,7 +209,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID, allocati
 
 	controlPlane := &unikornv1.Allocation{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      allocationID,
+			Name:      allocationID.String(),
 			Namespace: namespace.Name,
 		},
 	}
@@ -219,7 +225,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID, allocati
 	return nil
 }
 
-func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+func (c *SyncClient) Update(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID ids.AllocationID, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
 	common := common.New(c.client)
 
 	namespace, err := common.ProjectNamespace(ctx, organizationID, projectID)
@@ -264,5 +270,5 @@ func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allo
 		return nil, fmt.Errorf("%w: failed to patch allocation", err)
 	}
 
-	return convert(updated), nil
+	return convert(updated)
 }

@@ -72,7 +72,7 @@ func getResource(w *middleware.Capture, r *http.Request, route *routers.Route, p
 
 		return &Resource{
 			Type: segments[len(segments)-1],
-			ID:   metadata.Metadata.Id,
+			ID:   metadata.Metadata.Id.String(),
 		}
 	}
 

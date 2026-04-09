@@ -30,6 +30,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/groups"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -45,17 +46,21 @@ import (
 
 const (
 	testNamespace  = "test-namespace"
-	testOrgID      = "test-org"
+	testOrgID      = "f18ccbbe-e61b-4fe9-bc00-2661f792f39e"
 	testOrgNS      = "test-org-ns"
 	testIssuerURL  = "https://identity.unikorn-cloud.org"
 	testIssuerHost = "identity.unikorn-cloud.org"
 
 	userAliceSubject = "alice@example.com"
 	userAliceID      = "user-alice"
-	orguserAliceID   = "orguser-alice"
+	orguserAliceID   = "00000000-0000-0000-0000-000000000101"
 
-	groupTestID = "group-test"
+	groupTestID = "00000000-0000-0000-0000-000000000003"
 )
+
+func organizationID() ids.OrganizationID {
+	return ids.MustParseOrganizationID(testOrgID)
+}
 
 // newContext creates a context with required authorization and principal info.
 func newContext(t *testing.T) context.Context {
@@ -209,16 +214,16 @@ func (f *groupTestFixture) createUserWithOrgMembership(t *testing.T, userID, sub
 }
 
 // makeGroupUpdateRequest builds a group update request.
-func makeGroupUpdateRequest(subjects *[]openapi.Subject, userIDs *openapi.StringList) *openapi.GroupWrite {
+func makeGroupUpdateRequest(subjects *[]openapi.Subject, userIDs *openapi.UserIDs) *openapi.GroupWrite {
 	return &openapi.GroupWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{
 			Name: groupTestID,
 		},
 		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
+			RoleIDs:           openapi.RoleIDs{},
 			Subjects:          subjects,
 			UserIDs:           userIDs,
-			ServiceAccountIDs: openapi.StringList{},
+			ServiceAccountIDs: openapi.ServiceAccountIDs{},
 		},
 	}
 }
@@ -240,7 +245,7 @@ func TestUpdateGroupWithSubjects_PopulatesUserIDs(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -273,7 +278,7 @@ func TestUpdateGroupWithExternalSubjects_DoesNotPopulateUserIDs(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -308,7 +313,7 @@ func TestUpdateGroupWithMixedSubjects_PopulatesOnlyInternalUserIDs(t *testing.T)
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -340,7 +345,7 @@ func TestUpdateGroupWithNonMemberSubject_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject is not a member of the organization")
 	require.True(t, errors.IsBadRequest(err))
 }
@@ -361,7 +366,7 @@ func TestUpdateGroupWithNonExistentSubject_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject does not exist")
 	require.True(t, errors.IsBadRequest(err))
 }
@@ -375,9 +380,9 @@ func TestUpdateGroupWithUserIDs_PopulatesSubjects(t *testing.T) {
 	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
 	f.createGroup(t)
 
-	userIDs := openapi.StringList{orguserAliceID}
+	userIDs := openapi.UserIDs{ids.MustParseUserID(orguserAliceID)}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), makeGroupUpdateRequest(nil, &userIDs))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -403,9 +408,9 @@ func TestUpdateGroupWithInvalidUserID_ReturnsError(t *testing.T) {
 	f := setupGroupTestFixture(t)
 	f.createGroup(t)
 
-	userIDs := openapi.StringList{"nonexistent-orguser"}
+	userIDs := openapi.UserIDs{ids.MustParseUserID("00000000-0000-0000-0000-000000000102")}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), makeGroupUpdateRequest(nil, &userIDs))
 	require.Error(t, err, "Should error when UserID is invalid")
 	require.True(t, errors.IsBadRequest(err))
 }
@@ -418,7 +423,7 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 	const (
 		userBobSubject = "bob@example.com"
 		userBobID      = "user-bob"
-		orguserBobID   = "orguser-bob"
+		orguserBobID   = "00000000-0000-0000-0000-000000000103"
 	)
 
 	// Create users and org users for Alice and Bob
@@ -440,20 +445,20 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 	f.createGroup(t)
 
 	// Update the group with multiple UserIDs
-	userIDs := openapi.StringList{orguserAliceID, orguserBobID}
+	userIDs := openapi.UserIDs{ids.MustParseUserID(orguserAliceID), ids.MustParseUserID(orguserBobID)}
 
 	updateRequest := &openapi.GroupWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{
 			Name: groupTestID,
 		},
 		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
+			RoleIDs:           openapi.RoleIDs{},
 			UserIDs:           &userIDs,
-			ServiceAccountIDs: openapi.StringList{},
+			ServiceAccountIDs: openapi.ServiceAccountIDs{},
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), updateRequest)
 	require.NoError(t, err)
 
 	// Fetch the updated group
@@ -500,21 +505,21 @@ func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 			Email:  ptr.To(userAliceSubject),
 		},
 	}
-	userIDs := openapi.StringList{orguserAliceID}
+	userIDs := openapi.UserIDs{ids.MustParseUserID(orguserAliceID)}
 
 	updateRequest := &openapi.GroupWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{
 			Name: groupTestID,
 		},
 		Spec: openapi.GroupSpec{
-			RoleIDs:           openapi.StringList{},
+			RoleIDs:           openapi.RoleIDs{},
 			Subjects:          &subjects,
 			UserIDs:           &userIDs,
-			ServiceAccountIDs: openapi.StringList{},
+			ServiceAccountIDs: openapi.ServiceAccountIDs{},
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), organizationID(), ids.MustParseGroupID(groupTestID), updateRequest)
 	require.Error(t, err, "Should error when both subjects and userIDs are provided")
 	require.True(t, errors.IsBadRequest(err))
 }
