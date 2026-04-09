@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Composable install unit for identity.
+# Detects cluster type and builds/loads images accordingly:
+#   KinD:   make images-kind-load (build + load into cluster)
+#   Colima: make images           (build only; images are immediately available)
+#   Cloud:  no build              (images pulled from registry)
+#
+# Outputs a .env fragment to stdout. Redirect to a file and source it to get
+# connection details for subsequent steps.
+#
+# Usage:
+#   hack/ci/install --namespace NS --release-name RNAME [--values FILE]...
+#   hack/ci/install --namespace NS --release-name RNAME > deployment.env
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+NAMESPACE=""
+RELEASE_NAME=""
+EXTRA_VALUES=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --namespace)
+      NAMESPACE="$2"
+      shift 2
+      ;;
+    --release-name)
+      RELEASE_NAME="$2"
+      shift 2
+      ;;
+    --values)
+      EXTRA_VALUES+=("-f" "$2")
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "${NAMESPACE}" || -z "${RELEASE_NAME}" ]]; then
+  echo "Usage: $0 --namespace NS --release-name RNAME [--values FILE]..." >&2
+  exit 1
+fi
+
+# Detect cluster type from kubectl context
+CONTEXT=$(kubectl config current-context)
+IS_KIND=false
+IS_COLIMA=false
+KIND_CLUSTER_NAME=""
+
+if [[ "${CONTEXT}" == kind-* ]]; then
+  IS_KIND=true
+  KIND_CLUSTER_NAME="${CONTEXT#kind-}"
+elif [[ "${CONTEXT}" == colima || "${CONTEXT}" == colima-* ]]; then
+  IS_COLIMA=true
+fi
+
+# Derive suffix from release name (e.g. "identity-abc123" → "abc123")
+SUFFIX="${RELEASE_NAME#identity-}"
+
+chart_version() {
+  awk '$1 == "version:" { print $2; exit }' "$1"
+}
+
+if [[ "${IS_KIND}" == true ]]; then
+  INGRESS_IP=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  if [[ -z "${INGRESS_IP}" ]]; then
+    echo "ERROR: ingress-nginx-controller has no LoadBalancer IP" >&2
+    exit 1
+  fi
+  INGRESS_HOST="identity-${SUFFIX}.${INGRESS_IP}.nip.io"
+else
+  INGRESS_HOST="identity-${SUFFIX}.test"
+fi
+
+echo "==> Installing identity: namespace=${NAMESPACE}, release=${RELEASE_NAME}, host=${INGRESS_HOST}" >&2
+echo "==> Cluster context: ${CONTEXT} (KinD: ${IS_KIND}, Colima: ${IS_COLIMA})" >&2
+
+# ── Build and/or load images ──────────────────────────────────────────────────
+VERSION="v$(chart_version "${REPO_ROOT}/charts/identity/Chart.yaml")"
+cd "${REPO_ROOT}"
+
+if [[ "${IS_KIND}" == true ]]; then
+  echo "==> Building and loading images into KinD cluster '${KIND_CLUSTER_NAME}'..." >&2
+  make images-kind-load VERSION="${VERSION}" KIND_CLUSTER="${KIND_CLUSTER_NAME}" >&2
+elif [[ "${IS_COLIMA}" == true ]]; then
+  echo "==> Building images for Colima..." >&2
+  make images VERSION="${VERSION}" >&2
+else
+  echo "==> Cloud cluster — using pre-built images from registry (tag: ${VERSION})" >&2
+fi
+
+# ── Uninstall any previous identity releases (cluster-scoped resources) ───────
+while IFS=$'\t' read -r rel ns; do
+  [[ -z "${rel}" ]] && continue
+  echo "==> Uninstalling previous release ${rel} from ${ns}..." >&2
+  helm uninstall "${rel}" -n "${ns}" >&2 || true
+done < <(helm list -A --filter '^identity-' -o json 2>/dev/null | \
+  jq -r '.[] | [.name, .namespace] | @tsv')
+
+# ── Apply CRDs ────────────────────────────────────────────────────────────────
+echo "==> Applying identity CRDs..." >&2
+kubectl apply -f "${REPO_ROOT}/charts/identity/crds/" >&2
+
+# ── Deploy via Helm ───────────────────────────────────────────────────────────
+echo "==> Deploying identity via Helm..." >&2
+helm dependency update "${REPO_ROOT}/charts/identity" > /dev/null 2>&1
+
+helm upgrade --install \
+  --namespace "${NAMESPACE}" \
+  --create-namespace \
+  --wait \
+  --timeout 300s \
+  --set "identity.host=${INGRESS_HOST}" \
+  --set "ingress.clusterIssuer=unikorn-issuer" \
+  --set "ingress.class=nginx" \
+  --set "tag=${VERSION}" \
+  "${EXTRA_VALUES[@]}" \
+  "${RELEASE_NAME}" \
+  "${REPO_ROOT}/charts/identity" >&2
+
+# ── Wait for ingress TLS cert to be issued ────────────────────────────────────
+echo "==> Waiting for ingress TLS certificate to be issued..." >&2
+kubectl wait --for=condition=Ready \
+  "certificate/${RELEASE_NAME}-ingress-tls" \
+  -n "${NAMESPACE}" --timeout=60s >&2
+
+# ── Wait for the JOSE signing key to be provisioned by the server ─────────────
+echo "==> Waiting for identity JOSE signing key..." >&2
+for i in $(seq 1 30); do
+  if kubectl get signingkey unikorn-identity-jose -n "${NAMESPACE}" > /dev/null 2>&1; then
+    echo "==> JOSE signing key is ready." >&2
+    break
+  fi
+  if [[ "${i}" -eq 30 ]]; then
+    echo "ERROR: JOSE signing key not created after 60s" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+# ── Wait for nginx to reload and serve the correct TLS cert ───────────────────
+echo "==> Waiting for nginx to serve correct TLS cert for ${INGRESS_HOST}..." >&2
+for i in $(seq 1 60); do
+  SERVED=$(echo | openssl s_client -servername "${INGRESS_HOST}" \
+    -connect "${INGRESS_HOST}:443" 2>/dev/null \
+    | openssl x509 -noout -text 2>/dev/null \
+    | grep -o "DNS:${INGRESS_HOST}" || true)
+  if [[ -n "${SERVED}" ]]; then
+    echo "==> nginx is serving the correct TLS cert." >&2
+    break
+  fi
+  if [[ "${i}" -eq 60 ]]; then
+    echo "ERROR: nginx did not serve correct TLS cert after 120s" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+echo "==> Identity installed successfully." >&2
+
+# ── Output .env fragment to stdout ───────────────────────────────────────────
+cat <<EOF
+IDENTITY_BASE_URL=https://${INGRESS_HOST}
+IDENTITY_INGRESS_IP=${INGRESS_IP:-}
+IDENTITY_NAMESPACE=${NAMESPACE}
+IDENTITY_RELEASE=${RELEASE_NAME}
+IDENTITY_CA_CERT=${SCRIPT_DIR}/ca-bundle.pem
+EOF
