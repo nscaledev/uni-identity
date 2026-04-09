@@ -6,6 +6,7 @@
 cover.out
 cover.html
 identity-render.yaml
+.codex
 
 # Test artifacts
 test/.env
