@@ -59,6 +59,13 @@ elif [[ "${CONTEXT}" == colima || "${CONTEXT}" == colima-* ]]; then
   IS_COLIMA=true
 fi
 
+IS_DOCKER_DESKTOP=false
+if [[ "${IS_KIND}" == true ]] && command -v docker &>/dev/null; then
+  if [[ "$(docker context show 2>/dev/null)" == "desktop-linux" ]]; then
+    IS_DOCKER_DESKTOP=true
+  fi
+fi
+
 # Derive suffix from release name (e.g. "identity-abc123" → "abc123")
 SUFFIX="${RELEASE_NAME#identity-}"
 
@@ -66,11 +73,20 @@ chart_version() {
   awk '$1 == "version:" { print $2; exit }' "$1"
 }
 
+# Port used for Docker Desktop hostPort ingress — must match hostPort in hack/ci/kind-config.yaml.
+DOCKER_DESKTOP_PORT="8443"
+
+INGRESS_PORT="443"
 if [[ "${IS_KIND}" == true ]]; then
-  INGRESS_IP=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-  if [[ -z "${INGRESS_IP}" ]]; then
-    echo "ERROR: ingress-nginx-controller has no LoadBalancer IP" >&2
-    exit 1
+  if [[ "${IS_DOCKER_DESKTOP}" == true ]]; then
+    INGRESS_IP="127.0.0.1"
+    INGRESS_PORT="${DOCKER_DESKTOP_PORT}"
+  else
+    INGRESS_IP=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    if [[ -z "${INGRESS_IP}" ]]; then
+      echo "ERROR: ingress-nginx-controller has no LoadBalancer IP" >&2
+      exit 1
+    fi
   fi
   INGRESS_HOST="identity-${SUFFIX}.${INGRESS_IP}.nip.io"
 else
@@ -147,7 +163,7 @@ done
 echo "==> Waiting for nginx to serve correct TLS cert for ${INGRESS_HOST}..." >&2
 for i in $(seq 1 60); do
   SERVED=$(echo | openssl s_client -servername "${INGRESS_HOST}" \
-    -connect "${INGRESS_HOST}:443" 2>/dev/null \
+    -connect "${INGRESS_HOST}:${INGRESS_PORT}" 2>/dev/null \
     | openssl x509 -noout -text 2>/dev/null \
     | grep -o "DNS:${INGRESS_HOST}" || true)
   if [[ -n "${SERVED}" ]]; then
@@ -164,8 +180,11 @@ done
 echo "==> Identity installed successfully." >&2
 
 # ── Output .env fragment to stdout ───────────────────────────────────────────
+BASE_URL="https://${INGRESS_HOST}"
+[[ "${INGRESS_PORT}" != "443" ]] && BASE_URL="${BASE_URL}:${INGRESS_PORT}"
+
 cat <<EOF
-IDENTITY_BASE_URL=https://${INGRESS_HOST}
+IDENTITY_BASE_URL=${BASE_URL}
 IDENTITY_INGRESS_IP=${INGRESS_IP:-}
 IDENTITY_NAMESPACE=${NAMESPACE}
 IDENTITY_RELEASE=${RELEASE_NAME}

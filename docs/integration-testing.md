@@ -40,10 +40,10 @@ auto-detect which one you are using and adjust accordingly.
 
 | | KinD | Colima |
 |---|---|---|
-| Platform | Linux, Mac | Mac |
+| Platform | Linux, Mac (Docker Desktop) | Mac |
 | Cluster create | `make kind-cluster` | `colima start --kubernetes` |
 | Image loading | `make images-kind-load` (auto) | `make images` (auto) |
-| Port exposure | via `extraPortMappings` | via Lima port forwarding |
+| Port exposure | `extraPortMappings` (443→8443) on Mac; MetalLB on Linux | Lima port forwarding |
 | Infra setup | `make integration-infra` | `make integration-infra` |
 
 ## Prerequisites

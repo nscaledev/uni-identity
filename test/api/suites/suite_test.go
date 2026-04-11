@@ -38,6 +38,10 @@ var (
 	config      *api.TestConfig
 )
 
+var _ = BeforeSuite(func() {
+	patchTLSTransport()
+})
+
 var _ = BeforeEach(func() {
 	var err error
 	config, err = api.LoadTestConfig()

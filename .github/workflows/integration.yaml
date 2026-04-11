@@ -34,7 +34,7 @@ jobs:
 
     - name: Generate random suffix
       id: rand
-      run: echo "suffix=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)" >> "$GITHUB_OUTPUT"
+      run: echo "suffix=$(openssl rand -hex 4)" >> "$GITHUB_OUTPUT"
 
     - name: Create KinD cluster
       uses: helm/kind-action@v1

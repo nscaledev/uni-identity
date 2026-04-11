@@ -8,3 +8,7 @@ nodes:
     nodeRegistration:
       kubeletExtraArgs:
         node-labels: "ingress-ready=true"
+  extraPortMappings:
+  - containerPort: 443
+    hostPort: 8443  # must match DOCKER_DESKTOP_PORT in hack/ci/install
+    protocol: TCP

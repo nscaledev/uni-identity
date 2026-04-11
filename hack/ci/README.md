@@ -17,7 +17,8 @@ higher-level services call it directly to deploy dependencies. Fix once, fix eve
 ### `install` stdout
 
 ```
-IDENTITY_BASE_URL=https://identity-<suffix>.127.0.0.1.nip.io
+IDENTITY_BASE_URL=https://identity-<suffix>.<metallb-ip>.nip.io      # Linux / MetalLB
+IDENTITY_BASE_URL=https://identity-<suffix>.127.0.0.1.nip.io:8443   # Docker Desktop
 IDENTITY_NAMESPACE=unikorn-identity-<suffix>
 IDENTITY_RELEASE=identity-<suffix>
 IDENTITY_CA_CERT=/path/to/hack/ci/ca-bundle.pem
@@ -28,7 +29,8 @@ Redirect to a file (`> test/.env.install`) and source it before running fixtures
 ### `fixtures` stdout
 
 ```
-IDENTITY_BASE_URL=https://identity-<suffix>.127.0.0.1.nip.io
+IDENTITY_BASE_URL=https://identity-<suffix>.<metallb-ip>.nip.io      # Linux / MetalLB
+IDENTITY_BASE_URL=https://identity-<suffix>.127.0.0.1.nip.io:8443   # Docker Desktop
 IDENTITY_CA_CERT=/absolute/path/to/hack/ci/ca-bundle.pem
 TEST_ORG_ID=<uuid>
 TEST_PROJECT_ID=<uuid>
@@ -46,7 +48,7 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 
 | File | Purpose |
 |------|---------|
-| `kind-config.yaml` | KinD cluster config (extraPortMappings for 80/443, ingress-ready label) |
+| `kind-config.yaml` | KinD cluster config (extraPortMappings 443→8443 for Docker Desktop, ingress-ready label) |
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 

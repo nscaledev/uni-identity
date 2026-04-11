@@ -16,6 +16,13 @@ if [[ "${CONTEXT}" == kind-* ]]; then
   KIND_CLUSTER_NAME="${CONTEXT#kind-}"
 fi
 
+IS_DOCKER_DESKTOP=false
+if [[ "${IS_KIND}" == true ]] && command -v docker &>/dev/null; then
+  if [[ "$(docker context show 2>/dev/null)" == "desktop-linux" ]]; then
+    IS_DOCKER_DESKTOP=true
+  fi
+fi
+
 echo "==> Cluster context: ${CONTEXT} (KinD: ${IS_KIND})"
 
 # ── cert-manager ──────────────────────────────────────────────────────────────
@@ -33,11 +40,20 @@ helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-u
 
 INGRESS_ARGS=()
 if [[ "${IS_KIND}" == true ]]; then
-  echo "==> Installing MetalLB for KinD..."
-  go run ./hack/install-metallb --cluster-name "${KIND_CLUSTER_NAME}"
-
+  if [[ "${IS_DOCKER_DESKTOP}" == true ]]; then
+    echo "==> Docker Desktop detected: using HostPort for ingress (no MetalLB)..."
+    INGRESS_ARGS+=(
+      --set "controller.service.type=ClusterIP"
+      --set "controller.hostPort.enabled=true"
+    )
+  else
+    echo "==> Installing MetalLB for KinD..."
+    go run ./hack/install-metallb --cluster-name "${KIND_CLUSTER_NAME}"
+    INGRESS_ARGS+=(
+      --set "controller.service.type=LoadBalancer"
+    )
+  fi
   INGRESS_ARGS+=(
-    --set "controller.service.type=LoadBalancer"
     --set-string "controller.nodeSelector.ingress-ready=true"
     --set "controller.tolerations[0].key=node-role.kubernetes.io/master"
     --set "controller.tolerations[0].operator=Equal"
@@ -54,7 +70,7 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --wait \
   "${INGRESS_ARGS[@]}"
 
-if [[ "${IS_KIND}" == true ]]; then
+if [[ "${IS_KIND}" == true && "${IS_DOCKER_DESKTOP}" == false ]]; then
   echo "==> Waiting for ingress-nginx LoadBalancer IP..."
   kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' service/ingress-nginx-controller \
     -n ingress-nginx --timeout=60s

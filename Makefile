@@ -173,25 +173,25 @@ $(GENDIR): $(APISRC)
 # Generate the server schema, types and router boilerplate.
 pkg/openapi/types.go: $(OPENAPI_SCHEMA)
 	@go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OPENAPI_CODEGEN_VERSION)
-	oapi-codegen -generate types $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
+	$(GOBIN)/oapi-codegen -generate types $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
 
 pkg/openapi/schema.go: $(OPENAPI_SCHEMA)
 	@go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OPENAPI_CODEGEN_VERSION)
-	oapi-codegen -generate spec $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
+	$(GOBIN)/oapi-codegen -generate spec $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
 
 pkg/openapi/client.go: $(OPENAPI_SCHEMA)
 	@go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OPENAPI_CODEGEN_VERSION)
-	oapi-codegen -generate client $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
+	$(GOBIN)/oapi-codegen -generate client $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
 
 pkg/openapi/router.go: $(OPENAPI_SCHEMA)
 	@go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OPENAPI_CODEGEN_VERSION)
-	oapi-codegen -generate chi-server $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
+	$(GOBIN)/oapi-codegen -generate chi-server $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
 
 # When checking out, the files timestamps are pretty much random, and make cause
 # spurious rebuilds of generated content.  Call this to prevent that.
 .PHONY: touch
 touch:
-	touch $(CRDDIR) $(GENDIR) pkg/apis/unikorn/v1alpha1/zz_generated.deepcopy.go
+	touch $(CRDDIR) $(GENDIR) pkg/apis/unikorn/v1alpha1/zz_generated.deepcopy.go $(OPENAPI_FILES)
 
 # Perform linting.
 # This must pass or you will be denied by CI.
@@ -416,7 +416,7 @@ test-contracts-clean:
 # ── Integration testing ───────────────────────────────────────────────────────
 
 KIND_CLUSTER   ?= identity-test
-KIND_SUFFIX    ?= $(shell head /dev/urandom | tr -dc a-z0-9 | head -c 8 2>/dev/null || echo local)
+KIND_SUFFIX    := $(or $(KIND_SUFFIX),$(shell openssl rand -hex 4 2>/dev/null || echo local))
 KIND_NAMESPACE ?= unikorn-identity-$(KIND_SUFFIX)
 KIND_RELEASE   ?= identity-$(KIND_SUFFIX)
 
