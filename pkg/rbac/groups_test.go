@@ -424,6 +424,7 @@ func TestGroupACLContentOrganizationScoped(t *testing.T) {
 	assert.Len(t, *aclBob.Projects, 2, "Bob should have access to 2 projects (alpha and beta)")
 
 	// Verify Bob has org:read
+
 	hasOrgRead := false
 
 	for _, endpoint := range *aclBob.Organization.Endpoints {
@@ -505,6 +506,7 @@ func TestGroupACLContent(t *testing.T) {
 	require.Len(t, *bobOrganization.Projects, 2, "Bob should have access to 2 projects (alpha and beta)")
 
 	// Verify Bob has org:read
+
 	hasOrgRead := false
 
 	for _, endpoint := range *bobOrganization.Endpoints {
@@ -598,6 +600,7 @@ func TestServiceAccountACLOrganizationScoped(t *testing.T) {
 	assert.NotNil(t, aclAlpha.Projects, "Service account should have project permissions")
 
 	// Verify service account has org:read (from developer role)
+
 	hasOrgRead := false
 
 	for _, endpoint := range *aclAlpha.Organization.Endpoints {
@@ -648,6 +651,7 @@ func TestServiceAccountACL(t *testing.T) {
 	assert.NotNil(t, alphaOrganization.Projects, "Service account should have project permissions")
 
 	// Verify service account has org:read (from developer role)
+
 	hasOrgRead := false
 
 	for _, endpoint := range *alphaOrganization.Endpoints {
@@ -795,4 +799,147 @@ func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
 		Actor:          "",
 	}, true)
 	require.Error(t, err)
+}
+
+// TestGroupUserFilterSubjectsFallback verifies that groupUserFilter matches
+// users via both Spec.Subjects (preferred) and the deprecated Spec.UserIDs
+// (legacy fallback), ensuring pre-migration groups are not silently dropped.
+func TestGroupUserFilterSubjectsFallback(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	organization := newOrganization(testNamespace, testOrgID, testOrgNS)
+	require.NoError(t, c.Create(t.Context(), organization))
+	require.NoError(t, c.Update(t.Context(), organization))
+
+	role := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      roleReaderID,
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Organization: []unikornv1.RoleScope{
+					{
+						Name:       "org:read",
+						Operations: []unikornv1.Operation{unikornv1.Read},
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), role))
+
+	const orgUserID = "org-user-dave"
+
+	// Group with only Subjects populated (post-migration).
+	groupSubjectsOnly := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      "group-subjects-only",
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{roleReaderID},
+			Subjects: []unikornv1.GroupSubject{
+				{ID: orgUserID, Issuer: "https://example.com", Email: "dave@example.com"},
+			},
+		},
+	}
+
+	// Group with only UserIDs populated (pre-migration / legacy).
+	groupUserIDsOnly := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      "group-userids-only",
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{roleReaderID},
+			UserIDs: []string{orgUserID},
+		},
+	}
+
+	// Group where the user appears in neither field.
+	groupNoMembership := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      "group-no-membership",
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{roleReaderID},
+			UserIDs: []string{"someone-else"},
+			Subjects: []unikornv1.GroupSubject{
+				{ID: "someone-else", Issuer: "https://example.com"},
+			},
+		},
+	}
+
+	require.NoError(t, c.Create(t.Context(), groupSubjectsOnly))
+	require.NoError(t, c.Create(t.Context(), groupUserIDsOnly))
+	require.NoError(t, c.Create(t.Context(), groupNoMembership))
+
+	rbacClient := rbac.New(c, testNamespace, &rbac.Options{})
+
+	// getGroups is unexported, so we exercise groupUserFilter indirectly via GetACL.
+	// Create the user and organization user records needed for GetACL to work.
+	ctx := newContext(t)
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "user-dave",
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: "dave@example.com",
+			State:   unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(ctx, user))
+
+	orgUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      orgUserID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+				constants.UserLabel:         user.Name,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	}
+	require.NoError(t, c.Create(ctx, orgUser))
+
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: "dave@example.com",
+		},
+	}
+	aclCtx := authorization.NewContext(t.Context(), info)
+
+	acl, err := rbacClient.GetACL(aclCtx, testOrgID)
+	require.NoError(t, err)
+	require.NotNil(t, acl)
+
+	// The user should be found in both groupSubjectsOnly (via Subjects) and
+	// groupUserIDsOnly (via UserIDs fallback), but NOT in groupNoMembership.
+	// Both matching groups grant org:read, so the scoped ACL should have
+	// organization endpoints.
+	require.NotNil(t, acl.Organization, "user should have organization permissions from both Subjects and legacy UserIDs groups")
+	require.NotNil(t, acl.Organization.Endpoints, "user should have organization endpoints")
+
+	hasOrgRead := false
+
+	for _, ep := range *acl.Organization.Endpoints {
+		if ep.Name == "org:read" {
+			hasOrgRead = true
+		}
+	}
+
+	assert.True(t, hasOrgRead, "user should have org:read from groups matched via both Subjects and UserIDs")
 }

@@ -21,6 +21,7 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/spf13/pflag"
@@ -170,10 +171,24 @@ func (r *RBAC) GetServiceAccount(ctx context.Context, id string) (*unikornv1.Ser
 
 type groupSubjectFilterGetter func(id string) func(unikornv1.Group) bool
 
-// groupUserFilter checks if the group contains the user.
+// groupUserFilter checks if the group contains the user by looking at
+// Spec.Subjects first, then falling back to the deprecated Spec.UserIDs
+// for pre-migration groups.
 func groupUserFilter(id string) func(unikornv1.Group) bool {
 	return func(group unikornv1.Group) bool {
-		return !slices.Contains(group.Spec.UserIDs, id)
+		if slices.ContainsFunc(group.Spec.Subjects, func(s unikornv1.GroupSubject) bool {
+			return s.ID == id
+		}) {
+			return false
+		}
+
+		if slices.Contains(group.Spec.UserIDs, id) {
+			slog.Warn("group uses deprecated UserIDs field, migrate to Subjects", "group", group.Name)
+
+			return false
+		}
+
+		return true
 	}
 }
 
