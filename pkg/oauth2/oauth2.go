@@ -1800,6 +1800,10 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 
 		orgs, err := a.userdb.GetOrganizationIDs(ctx, claims.Subject)
 		if err != nil {
+			if goerrors.Is(err, userdb.ErrResourceReference) {
+				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+			}
+
 			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
 		}
 
