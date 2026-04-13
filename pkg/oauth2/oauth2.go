@@ -1811,6 +1811,7 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		authz.OrgIds = []string{claims.ServiceAccount.OrganizationID}
 	case TokenTypeService:
 		authz.Acctype = openapi.System
+		authz.OrgIds = []string{}
 	}
 
 	return userinfo, claims, nil
