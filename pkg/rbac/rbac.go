@@ -21,6 +21,7 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	"github.com/spf13/pflag"
@@ -78,11 +79,24 @@ type groupSubjectFilterGetter func(id string) func(unikornv1.Group) bool
 // groupSubjectFilter checks if the group contains the user.
 func groupSubjectFilter(id string) func(unikornv1.Group) bool {
 	return func(group unikornv1.Group) bool {
-		return !slices.ContainsFunc(group.Spec.Subjects, func(s unikornv1.GroupSubject) bool {
+		if slices.ContainsFunc(group.Spec.Subjects, func(s unikornv1.GroupSubject) bool {
 			// The issuer is not validated here. All subjects are expected to have an empty issuer.
 			// See updateGroups in handler/users/client.go.
 			return s.ID == id
-		})
+		}) {
+			return false
+		}
+
+		// Deprecated: fall back to the legacy userIDs field for groups that have not
+		// been migrated to subjects yet. Log so operators can identify incomplete migrations.
+		if slices.Contains(group.Spec.UserIDs, id) {
+			slog.Warn("group matched via deprecated userIDs field, migration to subjects required",
+				"group", group.Name, "namespace", group.Namespace, "userID", id)
+
+			return false
+		}
+
+		return true
 	}
 }
 
