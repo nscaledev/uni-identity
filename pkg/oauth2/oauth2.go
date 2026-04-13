@@ -1775,6 +1775,19 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
+	// For federated (human) tokens, verify the user is still active.
+	// A suspended or deleted user whose cached token reaches this path
+	// should receive an access-denied response rather than a 500.
+	if claims.Type == TokenTypeFederated {
+		if _, err := a.rbac.GetActiveUser(ctx, claims.Subject); err != nil {
+			if goerrors.Is(err, rbac.ErrResourceReference) {
+				return nil, nil, coreerrors.AccessDenied(r, "user is not active").WithError(err)
+			}
+
+			return nil, nil, fmt.Errorf("%w: failed to query user status", err)
+		}
+	}
+
 	userinfo := &openapi.Userinfo{
 		Sub: claims.Subject,
 	}
