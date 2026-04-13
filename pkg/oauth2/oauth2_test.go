@@ -344,7 +344,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 			},
 			expectedSub:    "system-service",
 			expectedType:   openapi.System,
-			expectedOrgIDs: nil,
+			expectedOrgIDs: []string{},
 		},
 	}
 
