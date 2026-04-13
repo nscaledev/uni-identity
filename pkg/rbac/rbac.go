@@ -153,6 +153,10 @@ func (r *RBAC) getOrganizationNamespace(ctx context.Context, orgID string) (stri
 		return "", err
 	}
 
+	if org.Status.Namespace == "" {
+		return "", fmt.Errorf("%w: organization %q has no namespace", ErrResourceReference, orgID)
+	}
+
 	return org.Status.Namespace, nil
 }
 
