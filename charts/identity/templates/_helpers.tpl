@@ -20,3 +20,7 @@ v{{ .Chart.Version }}
 {{- define "unikorn.projectControllerImage" -}}
 {{- .Values.projectController.image | default (printf "%s/unikorn-project-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
 {{- end }}
+
+{{- define "unikorn.groupSubjectsMigrationManagerImage" -}}
+{{- .Values.groupSubjectsMigrationManager.image | default (printf "%s/unikorn-group-subjects-migration-manager:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
+{{- end }}

@@ -287,6 +287,9 @@ func (m *Manager) migrate(ctx context.Context, group *identityv1.Group, cc *Cach
 		return err
 	}
 
+	// Skip the patch if nothing changed: no subject issuers were backfilled and
+	// neither the UserIDs nor Subjects slices grew. Length comparison is sufficient
+	// because the compute functions only append. They never remove or reorder entries.
 	if !hasPatched && len(group.Spec.UserIDs) == len(patched.Spec.UserIDs) && len(group.Spec.Subjects) == len(patched.Spec.Subjects) {
 		return nil
 	}
