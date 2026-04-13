@@ -93,6 +93,24 @@ func groupServiceAccountFilter(id string) func(unikornv1.Group) bool {
 	}
 }
 
+// getOrganizationNamespace fetches the organization and returns its provisioned
+// namespace.  It returns an error when the namespace is unset so that callers
+// never accidentally pass an empty string to controller-runtime List (which
+// would cause a cluster-wide list instead of a scoped one).
+func (r *RBAC) getOrganizationNamespace(ctx context.Context, organizationID string) (string, error) {
+	var organization unikornv1.Organization
+
+	if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: organizationID}, &organization); err != nil {
+		return "", err
+	}
+
+	if organization.Status.Namespace == "" {
+		return "", fmt.Errorf("%w: organization %s has no namespace", ErrResourceReference, organizationID)
+	}
+
+	return organization.Status.Namespace, nil
+}
+
 // getGroups returns a map of groups the user is a member of, indexed by ID.
 func (r *RBAC) getGroups(ctx context.Context, namespace string, filter func(unikornv1.Group) bool) (map[string]*unikornv1.Group, error) {
 	result := &unikornv1.GroupList{}
@@ -145,15 +163,6 @@ func (r *RBAC) getProjects(ctx context.Context, organizationID string) (*unikorn
 	}
 
 	return result, nil
-}
-
-func (r *RBAC) getOrganizationNamespace(ctx context.Context, orgID string) (string, error) {
-	var org unikornv1.Organization
-	if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: orgID}, &org); err != nil {
-		return "", err
-	}
-
-	return org.Status.Namespace, nil
 }
 
 func convertOperation(in unikornv1.Operation) openapi.AclOperation {
@@ -388,17 +397,12 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 	organizations := make([]openapi.AclOrganization, 0, len(organizationMap))
 
 	for organizationID, subjectID := range organizationMap {
-		var organization unikornv1.Organization
-
-		if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: organizationID}, &organization); err != nil {
+		namespace, err := r.getOrganizationNamespace(ctx, organizationID)
+		if err != nil {
 			return err
 		}
 
-		if organization.Status.Namespace == "" {
-			continue
-		}
-
-		groups, err := r.getGroups(ctx, organization.Status.Namespace, groupFilter(subjectID))
+		groups, err := r.getGroups(ctx, namespace, groupFilter(subjectID))
 		if err != nil {
 			return err
 		}

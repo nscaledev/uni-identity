@@ -887,6 +887,45 @@ func TestSystemAccountWithoutPrincipalFallsBackToSystemACL(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestEmptyOrganizationNamespaceReturnsError verifies that when an organization has no
+// namespace set in its status, the ACL resolution returns an error rather than silently
+// listing groups across all namespaces.
+func TestEmptyOrganizationNamespaceReturnsError(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	// Create an organization with an empty namespace (not yet provisioned).
+	emptyNSOrg := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "org-no-ns",
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), emptyNSOrg))
+
+	rbacClient := rbac.New(c, testNamespace, &rbac.Options{})
+
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: "empty-ns-user@example.com",
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+				OrgIds:  []string{"org-no-ns"},
+			},
+		},
+	}
+	ctx := authorization.NewContext(t.Context(), info)
+
+	_, err := rbacClient.GetACL(ctx, "org-no-ns")
+	require.Error(t, err, "ACL resolution should fail when organization namespace is empty")
+	assert.ErrorIs(t, err, rbac.ErrResourceReference)
+}
+
 // TestSystemAccountWithEmptyActorFallsBackToSystemACL verifies that a principal with an
 // empty actor (e.g. controller-injected principal before a user is known) does not trigger
 // impersonation.
