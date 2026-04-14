@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-group-subjects-migration-manager
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-group-subjects-migration-manager
+    spec:
+      containers:
+      - name: {{ .Release.Name }}-group-subjects-migration-manager
+        image: {{ include "unikorn.groupSubjectsMigrationManagerImage" . }}
+        args:
+        {{- if .Values.groupSubjectsMigrationManager.concurrency }}
+        - --concurrency={{ .Values.groupSubjectsMigrationManager.concurrency }}
+        {{- end }}
+        - --identity-issuer={{ .Values.groupSubjectsMigrationManager.identityIssuer }}
+        resources:
+          {{- .Values.groupSubjectsMigrationManager.resources | toYaml | nindent 10 }}
+        securityContext:
+          readOnlyRootFilesystem: true
+      serviceAccountName: {{ .Release.Name }}-group-subjects-migration-manager
+      securityContext:
+        runAsNonRoot: true
+      restartPolicy: Never

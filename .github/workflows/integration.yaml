@@ -1,0 +1,72 @@
+name: Integration
+on:
+  pull_request:
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  Integration:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+
+    - name: Install yq
+      run: |
+        wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        chmod +x /usr/local/bin/yq
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Generate random suffix
+      id: rand
+      run: echo "suffix=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)" >> "$GITHUB_OUTPUT"
+
+    - name: Create KinD cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: identity-${{ github.run_id }}
+        config: hack/ci/kind-config.yaml
+
+    - name: Install cluster infrastructure
+      env:
+        KIND_CLUSTER: identity-${{ github.run_id }}
+      run: make integration-infra
+
+    - name: Install identity
+      env:
+        KIND_CLUSTER: identity-${{ github.run_id }}
+        KIND_SUFFIX: ${{ steps.rand.outputs.suffix }}
+      run: make integration-install
+
+    - name: Create test fixtures
+      env:
+        KIND_CLUSTER: identity-${{ github.run_id }}
+        KIND_SUFFIX: ${{ steps.rand.outputs.suffix }}
+      run: make integration-fixtures
+
+    - name: Run API integration tests
+      run: make test-api-ci
+
+    - name: Upload test artifacts
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-test-results
+        path: |
+          junit.xml
+          test-results.json

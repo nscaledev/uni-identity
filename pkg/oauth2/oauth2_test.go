@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -92,7 +94,12 @@ func TestTokens(t *testing.T) {
 		AccountCreationCacheSize: 1024,
 	}
 
-	authenticator := oauth2.New(options, josetesting.Namespace, client, issuer, rbac)
+	issuerVal := handlercommon.IssuerValue{
+		URL:      "https://foo.com",
+		Hostname: "foo.com",
+	}
+
+	authenticator := oauth2.New(options, josetesting.Namespace, issuerVal, client, issuer, rbac)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
 

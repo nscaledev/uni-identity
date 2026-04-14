@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +21,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"net/http"
 	"os"
 	"os/signal"
@@ -34,15 +34,17 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/server"
 
+	"k8s.io/client-go/rest"
+
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // start is the entry point to server.
 func start() {
 	s := &server.Server{}
-	s.AddFlags(flag.CommandLine, pflag.CommandLine)
+	s.AddFlags(pflag.CommandLine)
 
-	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 	pflag.Parse()
 
 	// Get logging going first, log sinks will expect JSON formatted output for everything.
@@ -70,7 +72,23 @@ func start() {
 		return
 	}
 
-	server, err := s.GetServer(client)
+	clientconfig, err := rest.InClusterConfig()
+	if err != nil {
+		logger.Error(err, "failed to get client config")
+
+		return
+	}
+
+	directclient, err := ctrlclient.New(clientconfig, ctrlclient.Options{
+		Scheme: client.Scheme(),
+	})
+	if err != nil {
+		logger.Error(err, "failed to create direct Kubernetes client")
+
+		return
+	}
+
+	server, err := s.GetServer(client, directclient)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 

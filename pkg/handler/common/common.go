@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,6 +24,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
+	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -58,6 +60,11 @@ func organizationSelector(organizationID string) (labels.Selector, error) {
 }
 
 func projectSelector(organizationID, projectID string) (labels.Selector, error) {
+	kindRequirement, err := labels.NewRequirement(constants.KindLabel, selection.Equals, []string{constants.KindLabelValueProject})
+	if err != nil {
+		return labels.Nothing(), err
+	}
+
 	organizationIDRequirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
 	if err != nil {
 		return labels.Nothing(), err
@@ -68,10 +75,11 @@ func projectSelector(organizationID, projectID string) (labels.Selector, error) 
 		return labels.Nothing(), err
 	}
 
-	return labels.NewSelector().Add(*organizationIDRequirement, *projectIDRequirement), nil
+	return labels.NewSelector().Add(*kindRequirement, *organizationIDRequirement, *projectIDRequirement), nil
 }
 
-func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
+// ProjectNamespace is shared by higher order services.
+func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, projectID string) (*corev1.Namespace, error) {
 	selector, err := projectSelector(organizationID, projectID)
 	if err != nil {
 		return nil, err
@@ -83,7 +91,7 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID
 
 	var resources corev1.NamespaceList
 
-	if err := c.client.List(ctx, &resources, options); err != nil {
+	if err := cli.List(ctx, &resources, options); err != nil {
 		return nil, err
 	}
 
@@ -92,6 +100,10 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID
 	}
 
 	return &resources.Items[0], nil
+}
+
+func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
+	return ProjectNamespace(ctx, c.client, organizationID, projectID)
 }
 
 func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv1.Quota, bool, error) {
@@ -241,7 +253,10 @@ func checkQuotaConsistency(quota *unikornv1.Quota, allocations *unikornv1.Alloca
 
 	for k, v := range totals {
 		if capacity, ok := capacities[k]; ok && v > capacity {
-			return fmt.Errorf("%w: total allocation of %d would exceed quota limit of %d", coreerrors.ErrConsistency, v, capacity)
+			// NOTE: AI has given the options as 403 (forbidden), 402 (payment required)
+			// and 507 (insufficient storage).  403 with a good error message is the
+			// most prevalent.
+			return servererrors.HTTPForbidden("total", k, "allocation of", v, "would exceed quota limit of", capacity)
 		}
 	}
 
@@ -255,6 +270,10 @@ func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 		return err
 	}
 
+	if meta.Annotations == nil {
+		meta.Annotations = map[string]string{}
+	}
+
 	meta.Annotations[constants.CreatorAnnotation] = info.Userinfo.Sub
 
 	principal, err := principal.FromContext(ctx)
@@ -265,10 +284,18 @@ func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 	meta.Annotations[constants.CreatorPrincipalAnnotation] = principal.Actor
 
 	if principal.OrganizationID != "" {
+		if meta.Labels == nil {
+			meta.Labels = map[string]string{}
+		}
+
 		meta.Labels[constants.OrganizationPrincipalLabel] = principal.OrganizationID
 	}
 
 	if principal.ProjectID != "" {
+		if meta.Labels == nil {
+			meta.Labels = map[string]string{}
+		}
+
 		meta.Labels[constants.ProjectPrincipalLabel] = principal.ProjectID
 	}
 

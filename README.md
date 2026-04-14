@@ -2,6 +2,10 @@
 
 This package provides an OIDC compliant server, that federates other OIDC and oauth2 compliant backends.
 
+## Developers
+
+[Developer Hub](https://github.com/nscaledev/uni/blob/main/DEVELOPER.md)
+
 ## Architecture
 
 ![Resource](./docs/images/resources.png)
@@ -342,6 +346,130 @@ The recommended way to do this is:
 * Create any platform-admin roles in your 3rd party Helm deployment as above...
   * Ensure the role is marked as protected to prevent it being exposed via the API, otherwise you may inadvertently end up allowing users to see into other organizations.
   * These can be granted to platform administrators via the `platformAdministrators.roles` list in the Identity Helm chart.
+
+## Integration Testing
+
+A KinD-based integration test suite validates the full deployment end-to-end: Helm chart
+correctness, RBAC enforcement via real HTTP requests, and controller reconciliation. It runs
+automatically on every pull request via `.github/workflows/integration.yaml`.
+
+To run locally before opening a PR:
+
+```sh
+# One-time cluster setup
+make kind-cluster integration-infra
+
+# Deploy, create fixtures, run tests
+make integration-install integration-fixtures test-api-ci
+```
+
+See [`docs/integration-testing.md`](docs/integration-testing.md) for the full local developer
+guide, including prerequisites, iterative workflows, and troubleshooting.
+
+## Contract Testing
+
+uni-identity acts as a provider for consumer services like uni-region. Contract tests verify that uni-identity satisfies the expectations defined by consumers.
+
+### Running Provider Verification Tests
+
+Provider verification tests check that uni-identity meets the contracts published by consumers (like uni-region) to the Pact Broker.
+
+Run verification against pacts from the Pact Broker:
+```bash
+make test-contracts-provider
+```
+
+Run verification against a local pact file:
+```bash
+make test-contracts-provider-local PACT_FILE=/path/to/pact.json
+```
+
+Run with verbose output:
+```bash
+make test-contracts-provider-verbose
+```
+
+### Provider Verification in CI
+
+Contract verification runs automatically in CI:
+- **Pull Requests**: Verifies contracts and publishes verification results to Pact Broker
+
+### Automated Provider Verification (Webhook)
+
+The repository includes a webhook-triggered workflow (`.github/workflows/pact-verification.yaml`) that automatically verifies contracts when consumers publish new pacts.
+
+**How it works:**
+1. Consumer (e.g., uni-region) publishes a new pact to Pact Broker
+2. Pact Broker webhook triggers this repository's GitHub Actions workflow
+3. Provider verification runs automatically against the new contract
+4. Results are published back to Pact Broker
+5. Consumer's `can-i-deploy` check can now validate compatibility
+
+**Setup:**
+The webhook is configured in the Pact Broker by the consumer service. See the consumer's README for webhook setup instructions.
+
+**Workflow trigger:**
+```yaml
+on:
+  repository_dispatch:
+    types: [pact_verification]
+```
+
+This workflow receives metadata about which pact to verify and runs `make test-contracts-provider-ci` to verify and publish results.
+
+### Writing Provider Tests
+
+Provider tests are located in `test/contracts/provider/{consumer}/`. Each consumer has:
+- `verify_test.go` - Main test setup and verification
+- `states.go` - State handlers for setting up test data
+- `middleware.go` - Test-specific middleware (e.g., mock authentication)
+
+**State Handlers:**
+
+State handlers set up the required state for each test:
+```go
+func (sm *StateManager) HandleOrganizationWithGlobalPermission(ctx context.Context, setup bool, params map[string]interface{}) error {
+    orgID := getStringParam(params, "organizationID", "test-org-123")
+
+    if setup {
+        // Set up organization with global permissions
+        sm.organizationStates[orgID] = OrganizationState{
+            ID:        orgID,
+            HasGlobal: true,
+        }
+    } else {
+        // Clean up
+        delete(sm.organizationStates, orgID)
+    }
+
+    return nil
+}
+```
+
+### Emergency Escape Hatch
+
+In exceptional circumstances (e.g. a hotfix that must merge before contract tests can be updated), you can skip contract tests for a single PR using the `skip-contract-tests` label.
+
+**Behaviour:**
+
+| Scenario | `ProviderContractVerification` | `CanIDeploy` |
+|---|---|---|
+| Label absent | Runs normally | Runs if verification passes |
+| Label present | Skipped (neutral) | Skipped (neutral) |
+| Verification fails | Failed | Skipped |
+
+Skipped jobs are treated as neutral by GitHub branch protection, so required status checks remain satisfied.
+The label application is fully auditable in the PR timeline.
+
+**When to use:** Only when contract tests need updating but cannot block a hotfix. Remove the label once the pact is updated.
+
+**One-time setup** — create the label in GitHub → Settings → Labels:
+
+| Field | Value |
+|---|---|
+| Name | `skip-contract-tests` |
+| Description | `Use only when tests need updating but can't block a hotfix.` |
+| Color | Any distinctive colour (e.g. `#e4e669`) |
 
 ## What Next?
 

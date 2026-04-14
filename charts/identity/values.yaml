@@ -14,6 +14,9 @@ imagePullSecret: ~
 
 # Allows override of the identity service configuration.
 server:
+  # An array of extra flags to append to the server configuration.
+  extraFlags: ~
+
   # Allows override of the image.
   image: ~
 
@@ -49,6 +52,23 @@ oauth2clientController:
 projectController:
   # Allows override of the image.
   image:
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+
+# Group subjects migration manager specific configuration.
+groupSubjectsMigrationManager:
+  # Allows override of the image.
+  image:
+
+  # Number of concurrent workers used to patch groups during migration.
+  concurrency:
+
+  # Name of the OIDC issuer used to backfill empty issuer fields on group subjects.
+  identityIssuer:
 
   # Allows resource limits to be set.
   resources:
@@ -128,8 +148,10 @@ platformAdministrators:
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:
-  unikorn-kubernetes: infra-manager-service
-  unikorn-compute: infra-manager-service
+  unikorn-region: region-service
+  unikorn-kubernetes: kubernetes-service
+  unikorn-compute: compute-service
+  uni-storage: storage-service
 
 # A static list of roles.
 # Any unscoped API resources are to be managed by the platform operator
@@ -150,6 +172,7 @@ roles:
         identity:users: [create,read,update,delete]
         identity:groups: [create,read,update,delete]
         identity:projects: [create,read,update,delete]
+        identity:projects/references: [create,read,update,delete]
         identity:quotas: [create,read,update,delete]
         identity:allocations: [create,read,update,delete]
         region:regions: [create,read,update,delete]
@@ -157,9 +180,18 @@ roles:
         region:images: [create,read,update,delete]
         region:externalnetworks: [create,read,update,delete]
         region:identities: [create,read,update,delete]
+        region:identities/references: [create,read,update,delete]
         region:networks: [create,read,update,delete]
+        region:networks/references: [create,read,update,delete]
+        region:networks:v2: [create,read,update,delete]
+        region:networks:v2/references: [create,read,update,delete]
         region:securitygroups: [create,read,update,delete]
+        region:securitygroups:v2: [create,read,update,delete]
         region:servers: [create,read,update,delete]
+        region:servers:v2: [create,read,update,delete]
+        region:filestorage:v2: [create,read,update,delete]
+        region:filestorageclass:v2: [create,read,update,delete]
+        region:sshcertificateauthorities:v2: [create,read,delete]
         kubernetes:regions: [create,read,update,delete]
         kubernetes:flavors: [create,read,update,delete]
         kubernetes:images: [create,read,update,delete]
@@ -169,35 +201,61 @@ roles:
         compute:regions: [create,read,update,delete]
         compute:flavors: [create,read,update,delete]
         compute:images: [create,read,update,delete]
+        compute:instances: [create,read,update,delete]
         compute:clusters: [create,read,update,delete]
+        storage:objectstorageclasses: [create,read,update,delete]
+        storage:objectstorageendpoints: [create,read,update,delete]
+        storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
         application:applications: [create,read,update,delete]
         application:applicationsets: [create,read,update,delete]
-  # An infrastructure manager service is a role primarily for Kubernetes like
-  # services that can manage identities and physical networks on behalf of a cluster.
-  infra-manager-service:
-    decription: Infrastructure manager service
+  region-service:
+    decription: Region service
     protected: true
     scopes:
       global:
         identity:allocations: [create,read,update,delete]
-        region:identities: [create,read,delete]
-        region:regions: [read]
-        region:regions/detail: [read]
-        region:flavors: [read]
-        region:images: [read]
-        region:externalnetworks: [read]
-        region:networks: [create,read,delete]
-        region:servers: [create,read,update,delete]
-        region:securitygroups: [create,read,update,delete]
-  # An application manager is a role primarily for the application service that
-  # needs to be able to see the Kubernetes clusters it's deploying applications
-  # on to.
-  application-manager-service:
-    description: Application manager service
+        identity:projects: [read]
+        identity:projects/references: [create,delete]
+  kubernetes-service:
+    description: Kubernetes service
     protected: true
     scopes:
       global:
-        kubernetes:clusters: [read]
+        identity:projects: [read]
+        identity:projects/references: [create,delete]
+        identity:allocations: [create,read,update,delete]
+        region:identities: [create,read,delete] # TODO: Create/delete V1 only
+        region:identities/references: [create,delete] # TODO: V1 only.
+        region:regions: [read]
+        region:regions/detail: [read] # Gets access to the Kubernetes config for Lite.
+        region:flavors: [read]
+        region:images: [read]
+        region:externalnetworks: [read]
+        region:networks: [create,read,delete] # TODO: Create/delete V1 only
+  compute-service:
+    decription: Compute service
+    protected: true
+    scopes:
+      global:
+        identity:projects: [read]
+        identity:allocations: [create,read,update,delete]
+        region:identities: [create,read,delete] # TODO: V2 delete me, created by network
+        region:regions: [read]
+        region:flavors: [read]
+        region:images: [read,create]
+        region:networks: [create,read,delete] # TODO: Create/delete V1 only
+        region:networks:v2: [read]
+        region:servers: [create,read,update,delete]
+        region:servers:v2: [create,read,update,delete]
+        region:securitygroups: [create,read,update,delete]
+        region:securitygroups:v2: [read]
+  storage-service:
+    decription: Storage service
+    protected: true
+    scopes:
+      global:
+        identity:allocations: [create,read,update,delete]
+        region:networks:v2/references: [create,read,update,delete]
   # An administrator can do anything within an organization.
   administrator:
     description: Organization administrator
@@ -212,6 +270,16 @@ roles:
         identity:projects: [create,read,update,delete]
         identity:quotas: [read]
         region:regions: [read]
+        region:networks:v2: [create,read,update,delete]
+        region:filestorage:v2: [create,read,update,delete]
+        region:filestorageclass:v2: [read]
+        storage:objectstorageclasses: [read]
+        storage:objectstorageendpoints: [create,read,update,delete]
+        storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
+        region:flavors: [read]
+        region:images: [read,create,delete]
+        region:securitygroups:v2: [create,read,update,delete]
+        region:sshcertificateauthorities:v2: [create,read,delete]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
         kubernetes:images: [read]
@@ -220,9 +288,41 @@ roles:
         compute:regions: [read]
         compute:flavors: [read]
         compute:images: [read]
+        compute:instances: [create,read,update,delete]
         compute:clusters: [create,read,update,delete]
-        application:applications: [read]
-        application:applicationsets: [create,read,update,delete]
+  auditor:
+    description: Organization auditor
+    scopes:
+      organization:
+        identity:organizations: [read]
+        identity:oauth2providers: [read]
+        identity:serviceaccounts: [read]
+        identity:users: [read]
+        identity:roles: [read]
+        identity:groups: [read]
+        identity:projects: [read]
+        identity:quotas: [read]
+        region:regions: [read]
+        region:networks:v2: [read]
+        region:filestorage:v2: [read]
+        region:filestorageclass:v2: [read]
+        storage:objectstorageclasses: [read]
+        storage:objectstorageendpoints: [read]
+        storage:objectstorageendpoints/accesskeys: [read]
+        region:flavors: [read]
+        region:images: [read]
+        region:securitygroups:v2: [read]
+        region:sshcertificateauthorities:v2: [read]
+        kubernetes:regions: [read]
+        kubernetes:flavors: [read]
+        kubernetes:images: [read]
+        kubernetes:clusters: [read]
+        kubernetes:virtualclusters: [read]
+        compute:regions: [read]
+        compute:flavors: [read]
+        compute:images: [read]
+        compute:instances: [read]
+        compute:clusters: [read]
   # A user can view projects they are a member of and
   # provision clusters.
   user:
@@ -231,6 +331,10 @@ roles:
       organization:
         identity:quotas: [read]
         region:regions: [read]
+        region:filestorageclass:v2: [read]
+        storage:objectstorageclasses: [read]
+        region:flavors: [read]
+        region:images: [read,create,delete]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
         kubernetes:images: [read]
@@ -239,8 +343,15 @@ roles:
         compute:images: [read]
       project:
         identity:projects: [read]
+        region:networks:v2: [create,read,update,delete]
+        region:securitygroups:v2: [create,read,update,delete]
+        region:filestorage:v2: [create,read,update,delete]
+        storage:objectstorageendpoints: [create,read,update,delete]
+        storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
+        region:sshcertificateauthorities:v2: [create,read,delete]
         kubernetes:clusters: [create,read,update,delete]
         kubernetes:virtualclusters: [create,read,update,delete]
+        compute:instances: [create,read,update,delete]
         compute:clusters: [create,read,update,delete]
         application:applications: [read]
         application:applicationsets: [create,read,update,delete]
@@ -252,6 +363,10 @@ roles:
       organization:
         identity:quotas: [read]
         region:regions: [read]
+        region:filestorageclass:v2: [read]
+        storage:objectstorageclasses: [read]
+        region:flavors: [read]
+        region:images: [read]
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
         kubernetes:images: [read]
@@ -260,15 +375,30 @@ roles:
         compute:images: [read]
       project:
         identity:projects: [read]
+        region:networks:v2: [read]
+        region:securitygroups:v2: [read]
+        region:filestorage:v2: [read]
+        storage:objectstorageendpoints: [read]
+        storage:objectstorageendpoints/accesskeys: [read]
+        region:sshcertificateauthorities:v2: [read]
         kubernetes:clusters: [read]
         kubernetes:virtualclusters: [read]
+        compute:instances: [read]
         compute:clusters: [read]
         application:applications: [read]
         application:applicationsets: [read]
 
+# Optional additional roles that can be injected alongside the defaults.
+# Shape matches the roles map below. Same names will raise an error.
+additionalRoles: {}
+
 # Quota metadata and defaults are defined here.  Quotas are extensible
 # so you can create 3rd party quota resources externally.
 quotas:
+  networks:
+    displayName: Networks
+    description: Layer 3 networks.
+    default: 5
   clusters:
     displayName: Clusters
     description: All cluster types e.g. Kubernetes, compute, etc.
@@ -281,6 +411,15 @@ quotas:
     displayName: GPUs
     description: General purpose GPUs for AI workloads.
     default: 40
+  publicips:
+    displayName: Public IPs
+    description: Public IP addresses.
+    default: 5
+  filestorage:
+    displayName: File Storage
+    description: Persistent network file storage.
+    default: 1Ti
+    format: binary
 
 ingress:
   # Sets the ingress class to use.

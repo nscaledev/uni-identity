@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +17,11 @@ limitations under the License.
 
 package client
 
+import (
+	"context"
+)
+
 // AccessTokenGetter provides an interface to retrieve an access token.
 type AccessTokenGetter interface {
-	Get() string
+	Get(ctx context.Context) (string, error)
 }

@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +19,7 @@ package oauth2providers
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -54,7 +56,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, prov
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get oauth2 provider").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get oauth2 provider", err)
 	}
 
 	return result, nil
@@ -120,7 +122,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Oauth
 	result := &unikornv1.OAuth2ProviderList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to get organization oauth2 provider").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get organization oauth2 provider", err)
 	}
 
 	return convertList(result), nil
@@ -136,7 +138,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	// TODO: always require this to be written.
@@ -161,7 +163,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create oauth2 provider").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create oauth2 provider", err)
 	}
 
 	return convert(resource), nil
@@ -184,7 +186,7 @@ func (c *Client) Update(ctx context.Context, organizationID, providerID string, 
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -192,8 +194,12 @@ func (c *Client) Update(ctx context.Context, organizationID, providerID string, 
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch oauth2 provider").WithError(err)
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to patch oauth2 provider", err)
 	}
 
 	return nil
@@ -217,7 +223,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, providerID string) 
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete oauth2 provider").WithError(err)
+		return fmt.Errorf("%w: failed to delete oauth2 provider", err)
 	}
 
 	return nil

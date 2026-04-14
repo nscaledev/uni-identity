@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,18 +20,17 @@ package server
 
 import (
 	"context"
-	"flag"
 	"net/http"
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
-	"go.opentelemetry.io/otel/sdk/trace"
 
-	"github.com/unikorn-cloud/core/pkg/manager/otel"
-	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
+	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
+	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
-	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -41,19 +41,15 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
-	klog "k8s.io/klog/v2"
-
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 type Server struct {
-	// Options are server specific options e.g. listener address etc.
-	Options Options
+	// CoreOptions are all common across everything e.g. namespace.
+	CoreOptions options.CoreOptions
 
-	// ZapOptions configure logging.
-	ZapOptions zap.Options
+	// ServerOptions are server specific options e.g. listener address etc.
+	ServerOptions options.ServerOptions
 
 	// HandlerOptions sets options for the HTTP handler.
 	HandlerOptions handler.Options
@@ -67,61 +63,73 @@ type Server struct {
 	// CORSOptions are for remote resource sharing.
 	CORSOptions cors.Options
 
-	// OTelOptions are for tracing.
-	OTelOptions otel.Options
-
 	// RBACOptions are for RBAC related things.
 	RBACOptions rbac.Options
+
+	// OpenAPIOptions are for OpenAPI processing.
+	OpenAPIOptions openapimiddleware.Options
 }
 
-func (s *Server) AddFlags(goflags *flag.FlagSet, flags *pflag.FlagSet) {
-	s.ZapOptions.BindFlags(goflags)
-
-	s.Options.AddFlags(flags)
+func (s *Server) AddFlags(flags *pflag.FlagSet) {
+	s.CoreOptions.AddFlags(flags)
+	s.ServerOptions.AddFlags(flags)
 	s.HandlerOptions.AddFlags(flags)
 	s.JoseOptions.AddFlags(flags)
 	s.OAuth2Options.AddFlags(flags)
 	s.CORSOptions.AddFlags(flags)
-	s.OTelOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
+	s.OpenAPIOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
-	logr := zap.New(zap.UseFlagOptions(&s.ZapOptions))
-
-	klog.SetLogger(logr)
-	log.SetLogger(logr)
+	s.CoreOptions.SetupLogging()
 }
 
 func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
-	return s.OTelOptions.Setup(ctx, trace.WithSpanProcessor(&opentelemetry.LoggingSpanProcessor{}))
+	return s.CoreOptions.SetupOpenTelemetry(ctx)
 }
 
-func (s *Server) GetServer(client client.Client) (*http.Server, error) {
-	schema, err := coreapi.NewSchema(openapi.GetSwagger)
+func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
+	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
 	}
 
-	// Middleware specified here is applied to all requests pre-routing.
 	router := chi.NewRouter()
-	router.Use(timeout.Middleware(s.Options.RequestTimeout))
-	router.Use(opentelemetry.Middleware(constants.Application, constants.Version))
-	router.Use(cors.Middleware(schema, &s.CORSOptions))
+
+	// Middleware specified here is applied to all requests pre-routing.
+	// Ordering is important:
+	// * OpenTelemetry middleware optionally transmits spans over OTLP, but also
+	//   establishes a trace ID that is used to correlate logs with user issues.
+	// * Logging ensures at least all errors are captured by logging telemetry and we
+	//   can trigger alerts based on them.
+	// * Route resolver provides routing and OpenAPI information to child middlewares.
+	// * CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
+	opentelemetry := opentelemetry.New(constants.Application, constants.Version)
+	logging := logging.New()
+	routeresolver := routeresolver.New(schema)
+	cors := cors.New(&s.CORSOptions)
+
+	router.Use(opentelemetry.Middleware)
+	router.Use(logging.Middleware)
+	router.Use(routeresolver.Middleware)
+	router.Use(cors.Middleware)
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
 
 	// Setup authn/authz
-	issuer := jose.NewJWTIssuer(client, s.Options.Namespace, &s.JoseOptions)
+	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
 	if err := issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{}); err != nil {
 		return nil, err
 	}
 
-	rbac := rbac.New(client, s.Options.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.Options.Namespace, client, issuer, rbac)
+	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
+	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, rbac)
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
+	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
+	audit := audit.New(constants.Application, constants.Version)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -129,21 +137,21 @@ func (s *Server) GetServer(client client.Client) (*http.Server, error) {
 		BaseRouter:       router,
 		ErrorHandlerFunc: handler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
-			audit.Middleware(schema, constants.Application, constants.Version),
-			openapimiddleware.Middleware(authorizer, schema),
+			audit.Middleware,
+			validator.Middleware,
 		},
 	}
 
-	handlerInterface, err := handler.New(client, s.Options.Namespace, issuer, oauth2, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, rbac, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}
 
 	server := &http.Server{
-		Addr:              s.Options.ListenAddress,
-		ReadTimeout:       s.Options.ReadTimeout,
-		ReadHeaderTimeout: s.Options.ReadHeaderTimeout,
-		WriteTimeout:      s.Options.WriteTimeout,
+		Addr:              s.ServerOptions.ListenAddress,
+		ReadTimeout:       s.ServerOptions.ReadTimeout,
+		ReadHeaderTimeout: s.ServerOptions.ReadHeaderTimeout,
+		WriteTimeout:      s.ServerOptions.WriteTimeout,
 		Handler:           openapi.HandlerWithOptions(handlerInterface, chiServerOptions),
 	}
 

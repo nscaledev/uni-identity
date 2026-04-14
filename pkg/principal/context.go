@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,6 +28,7 @@ type principalKeyType int
 
 const (
 	principalKey principalKeyType = iota
+	impersonateKey
 )
 
 func NewContext(ctx context.Context, principal *Principal) context.Context {
@@ -41,4 +43,17 @@ func FromContext(ctx context.Context) (*Principal, error) {
 	}
 
 	return nil, fmt.Errorf("%w: principal is not defined", errors.ErrInvalidContext)
+}
+
+// NewImpersonateContext marks the context as carrying an impersonated principal,
+// meaning downstream RBAC should be resolved against the principal's actor rather
+// than the calling service's system account role.
+func NewImpersonateContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, impersonateKey, true)
+}
+
+// ImpersonateFromContext reports whether the request carries an impersonation signal.
+func ImpersonateFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(impersonateKey).(bool)
+	return v
 }

@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,6 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // Client wraps up project related management handling.
@@ -103,7 +105,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, proj
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get project").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get project", err)
 	}
 
 	return result, nil
@@ -133,7 +135,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	for _, groupID := range in.Spec.GroupIDs {
@@ -141,10 +143,10 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 
 		if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, &resource); err != nil {
 			if kerrors.IsNotFound(err) {
-				return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("group ID %s does not exist", groupID)).WithError(err)
+				return nil, errors.OAuth2InvalidRequest("group ID", groupID, "does not exist")
 			}
 
-			return nil, errors.OAuth2ServerError("failed to validate group ID").WithError(err)
+			return nil, fmt.Errorf("%w: failed to validate group ID", err)
 		}
 	}
 
@@ -164,7 +166,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create project").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create project", err)
 	}
 
 	return convert(resource), nil
@@ -187,7 +189,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -195,8 +197,12 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return errors.OAuth2ServerError("failed to patch project").WithError(err)
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to patch project", err)
 	}
 
 	return nil
@@ -221,7 +227,62 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete project").WithError(err)
+		return fmt.Errorf("%w: failed to delete project", err)
+	}
+
+	return nil
+}
+
+// ReferenceCreate adds a external reference to the project that blocks deletion
+// until it has been removed.
+func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID, reference string) error {
+	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+
+	resource, err := c.get(ctx, organization, projectID)
+	if err != nil {
+		return err
+	}
+
+	if resource.DeletionTimestamp != nil {
+		return errors.OAuth2InvalidRequest("unable to add reference, resource is being deleted")
+	}
+
+	if ok := controllerutil.AddFinalizer(resource, reference); !ok {
+		return nil
+	}
+
+	if err := c.client.Update(ctx, resource); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to update project", err)
+	}
+
+	return nil
+}
+
+// ReferenceDelete removes an external reference from the project.
+func (c *Client) ReferenceDelete(ctx context.Context, organizationID, projectID, reference string) error {
+	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+
+	resource, err := c.get(ctx, organization, projectID)
+	if err != nil {
+		return err
+	}
+
+	if ok := controllerutil.RemoveFinalizer(resource, reference); !ok {
+		return nil
+	}
+
+	if err := c.client.Update(ctx, resource); err != nil {
+		return fmt.Errorf("%w: failed to update project", err)
 	}
 
 	return nil

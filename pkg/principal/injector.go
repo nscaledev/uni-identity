@@ -1,5 +1,6 @@
 /*
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +19,8 @@ package principal
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -30,8 +33,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Injector is used by internal clients and propagates the pincipal from the
-// context.
+// Injector is used by internal clients and propagates the principal from the
+// context. It always sets X-Principal for attribution. When the context carries
+// an impersonation signal (set via NewImpersonateContext), it also sets
+// X-Impersonate so that the receiving service resolves RBAC against the
+// end-user principal rather than the calling service's system account role.
+// Services acting autonomously on a user's behalf (e.g. controllers creating
+// allocations) should not set the impersonation flag — the principal is then
+// attribution-only and the system account role governs access.
 func Injector(cli client.Client, options *coreclient.HTTPClientOptions) func(context.Context, *http.Request) error {
 	return func(ctx context.Context, r *http.Request) error {
 		principal, err := FromContext(ctx)
@@ -39,12 +48,16 @@ func Injector(cli client.Client, options *coreclient.HTTPClientOptions) func(con
 			return err
 		}
 
-		value, err := options.EncodeAndSign(ctx, cli, principal)
+		data, err := json.Marshal(principal)
 		if err != nil {
 			return err
 		}
 
-		r.Header.Set(Header, value)
+		r.Header.Set(Header, base64.RawURLEncoding.EncodeToString(data))
+
+		if ImpersonateFromContext(ctx) {
+			r.Header.Set(ImpersonateHeader, "true")
+		}
 
 		return nil
 	}

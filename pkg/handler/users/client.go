@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,6 +37,7 @@ import (
 	gomail "gopkg.in/gomail.v2"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
@@ -86,25 +88,25 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 
 // Client is responsible for user management.
 type Client struct {
-	// host is the hostname of this service.
-	host string
+	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
+	issuer common.IssuerValue
 	// client is the Kubernetes client.
 	client client.Client
 	// namespace is the namespace the identity service is running in.
 	namespace string
-	// issuer for creating signup tokens.
-	issuer *jose.JWTIssuer
+	// jwtIssuer for creating signup tokens.
+	jwtIssuer *jose.JWTIssuer
 	// options are any options to be passed to the handler.
 	options *Options
 }
 
 // New creates a new user client.
-func New(host string, client client.Client, namespace string, issuer *jose.JWTIssuer, options *Options) *Client {
+func New(client client.Client, namespace string, jwtIssuer *jose.JWTIssuer, issuer common.IssuerValue, options *Options) *Client {
 	return &Client{
-		host:      host,
+		issuer:    issuer,
 		client:    client,
 		namespace: namespace,
-		issuer:    issuer,
+		jwtIssuer: jwtIssuer,
 		options:   options,
 	}
 }
@@ -114,40 +116,87 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	result := &unikornv1.GroupList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list groups").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list groups", err)
 	}
 
 	return result, nil
 }
 
+// removeFromGroup removes the UserID and subject records if they are present.
+func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
+	var needsPatching bool
+
+	userIDs := slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
+		return id == orgUserID
+	})
+	if len(userIDs) != len(updated.Spec.UserIDs) {
+		updated.Spec.UserIDs = userIDs
+		needsPatching = true
+	}
+
+	subjects := slices.DeleteFunc(updated.Spec.Subjects, func(sub unikornv1.GroupSubject) bool {
+		return sub.ID == subject.ID && sub.Issuer == subject.Issuer
+	})
+	if len(subjects) != len(updated.Spec.Subjects) {
+		updated.Spec.Subjects = subjects
+		needsPatching = true
+	}
+
+	return needsPatching
+}
+
+// addToGroup adds the Subject and userID if not present.
+func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
+	var needsPatching bool
+	// Add to a group where it should be a member but isn't.
+	if !slices.Contains(updated.Spec.UserIDs, orgUserID) {
+		updated.Spec.UserIDs = append(updated.Spec.UserIDs, orgUserID)
+		needsPatching = true
+	}
+
+	if !slices.Contains(updated.Spec.Subjects, subject) {
+		updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
+		needsPatching = true
+	}
+
+	return needsPatching
+}
+
 // updateGroups takes a user name and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, userID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// find the subject, so we can add/remove that as well
+	var user unikornv1.User
+	if err := c.client.Get(ctx, client.ObjectKey{Name: globalUserID, Namespace: c.namespace}, &user); err != nil {
+		return err
+	}
+
+	subject := unikornv1.GroupSubject{
+		ID:     user.Spec.Subject,
+		Email:  user.Spec.Subject,
+		Issuer: "", // Issuer empty for local users
+	}
+
 	for i := range groups.Items {
 		current := &groups.Items[i]
-
 		updated := current.DeepCopy()
 
+		var needsPatching bool
+
 		if slices.Contains(groupIDs, current.Name) {
-			// Add to a group where it should be a member but isn't.
-			if slices.Contains(current.Spec.UserIDs, userID) {
-				continue
-			}
-
-			updated.Spec.UserIDs = append(updated.Spec.UserIDs, userID)
+			needsPatching = addToGroup(subject, orgUserID, updated)
 		} else {
-			// Remove from any groups its a member of but shouldn't be.
-			if !slices.Contains(current.Spec.UserIDs, userID) {
-				continue
-			}
-
-			updated.Spec.UserIDs = slices.DeleteFunc(updated.Spec.UserIDs, func(id string) bool {
-				return id == userID
-			})
+			needsPatching = removeFromGroup(subject, orgUserID, updated)
 		}
 
-		if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-			return errors.OAuth2ServerError("failed to patch group").WithError(err)
+		if needsPatching {
+			if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+				if kerrors.IsConflict(err) {
+					return errors.HTTPConflict().WithError(err)
+				}
+
+				return fmt.Errorf("%w: failed to patch group", err)
+			}
 		}
 	}
 
@@ -162,7 +211,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, user
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get user").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get user", err)
 	}
 
 	return result, nil
@@ -195,7 +244,7 @@ func (c *Client) generateGlobalUser(ctx context.Context, in *openapi.UserWrite) 
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	if in.Metadata != nil {
@@ -218,7 +267,7 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	return out, nil
@@ -286,7 +335,7 @@ func convertList(in *unikornv1.OrganizationUserList, users *unikornv1.UserList, 
 		})
 
 		if index < 0 {
-			return nil, errors.OAuth2ServerError("failed to lookup user")
+			return nil, fmt.Errorf("%w: failed to lookup user", coreerrors.ErrConsistency)
 		}
 
 		out[i] = *convert(&in.Items[i], &users.Items[index], groups)
@@ -417,7 +466,7 @@ func (c *Client) notifyGlobalUserCreation(ctx context.Context, user *unikornv1.U
 		return err
 	}
 
-	verifyLink := fmt.Sprintf("https://%s/api/v1/signup?token=%s&clientID=%s", c.host, user.Spec.Signup.Token, info.ClientID)
+	verifyLink := fmt.Sprintf("%s/api/v1/signup?token=%s&clientID=%s", c.issuer.URL, user.Spec.Signup.Token, info.ClientID)
 
 	email, err := c.getEmailVerification(ctx, verifyLink)
 	if err != nil {
@@ -453,7 +502,7 @@ type SignupClaims struct {
 func (c *Client) issueSignupToken(ctx context.Context, user *unikornv1.User) (string, error) {
 	claims := &SignupClaims{
 		Claims: jwt.Claims{
-			Issuer:  "https://" + c.host,
+			Issuer:  c.issuer.URL,
 			Subject: user.Spec.Subject,
 			Audience: []string{
 				user.Spec.Subject,
@@ -464,7 +513,7 @@ func (c *Client) issueSignupToken(ctx context.Context, user *unikornv1.User) (st
 		UserID: user.Name,
 	}
 
-	token, err := c.issuer.EncodeJWEToken(ctx, claims, jose.TokenTypeUserSignupToken)
+	token, err := c.jwtIssuer.EncodeJWEToken(ctx, claims, jose.TokenTypeUserSignupToken)
 	if err != nil {
 		return "", err
 	}
@@ -534,7 +583,7 @@ func (c *Client) Signup(w http.ResponseWriter, r *http.Request) {
 
 	claims := &SignupClaims{}
 
-	if err := c.issuer.DecodeJWEToken(r.Context(), tokenRaw, claims, jose.TokenTypeUserSignupToken); err != nil {
+	if err := c.jwtIssuer.DecodeJWEToken(r.Context(), tokenRaw, claims, jose.TokenTypeUserSignupToken); err != nil {
 		// TODO: has it expired?  Issue a new one!
 		c.handleError(w, r, cli, "user signup failure", "error decoding token")
 		return
@@ -567,7 +616,7 @@ func (c *Client) getGlobalUserByID(ctx context.Context, id string) (*unikornv1.U
 	user := &unikornv1.User{}
 
 	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: id}, user); err != nil {
-		return nil, errors.OAuth2ServerError("failed to get user").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get user", err)
 	}
 
 	return user, nil
@@ -577,7 +626,7 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 	users := &unikornv1.UserList{}
 
 	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list users").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
 	index := slices.IndexFunc(users.Items, func(user unikornv1.User) bool {
@@ -600,7 +649,7 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 	}
 
 	if !goerrors.Is(err, ErrReference) {
-		return nil, errors.OAuth2ServerError("failed to create global user").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create global user", err)
 	}
 
 	resource, err := c.generateGlobalUser(ctx, request)
@@ -611,7 +660,7 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 	if c.options.emailVerification {
 		token, err := c.issueSignupToken(ctx, resource)
 		if err != nil {
-			return nil, errors.OAuth2ServerError("failed to create user sigup token").WithError(err)
+			return nil, fmt.Errorf("%w: failed to create user sigup token", err)
 		}
 
 		// Force new signups into a pending state.
@@ -623,7 +672,7 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create user").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create user", err)
 	}
 
 	if c.options.emailVerification {
@@ -663,7 +712,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create organization user").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create organization user", err)
 	}
 
 	groups, err := c.listGroups(ctx, organization)
@@ -671,7 +720,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Name, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -688,13 +737,13 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users
 	users := &unikornv1.UserList{}
 
 	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list users").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
 	result := &unikornv1.OrganizationUserList{}
 
 	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list users").WithError(err)
+		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
 	groups, err := c.listGroups(ctx, organization)
@@ -703,6 +752,18 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users
 	}
 
 	return convertList(result, users, groups)
+}
+
+func (c *Client) patchOrganizationUser(ctx context.Context, updated, current *unikornv1.OrganizationUser) error {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return errors.HTTPConflict().WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to patch user", err)
+	}
+
+	return nil
 }
 
 // Update modifies any metadata for the user if it exists.  If a matching account
@@ -729,7 +790,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 	}
 
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
-		return nil, errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -737,8 +798,8 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch group").WithError(err)
+	if err := c.patchOrganizationUser(ctx, updated, current); err != nil {
+		return nil, err
 	}
 
 	groups, err := c.listGroups(ctx, organization)
@@ -746,7 +807,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Name, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -771,7 +832,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, userID string) erro
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to get user for delete").WithError(err)
+		return fmt.Errorf("%w: failed to get user for delete", err)
 	}
 
 	groups, err := c.listGroups(ctx, organization)
@@ -779,7 +840,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, userID string) erro
 		return err
 	}
 
-	if err := c.updateGroups(ctx, userID, nil, groups); err != nil {
+	if err := c.updateGroups(ctx, resource.Labels[constants.UserLabel], userID, nil, groups); err != nil {
 		return err
 	}
 
@@ -788,7 +849,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, userID string) erro
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete user").WithError(err)
+		return fmt.Errorf("%w: failed to delete user", err)
 	}
 
 	return nil

@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -51,12 +52,12 @@ func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Author
 func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return "", "", errors.OAuth2InvalidRequest("authorization header missing")
+		return "", "", errors.AccessDenied(r, "authorization header missing")
 	}
 
 	parts := strings.Split(header, " ")
 	if len(parts) != 2 {
-		return "", "", errors.OAuth2InvalidRequest("authorization header malformed")
+		return "", "", errors.AccessDenied(r, "authorization header malformed")
 	}
 
 	return parts[0], parts[1], nil
@@ -70,7 +71,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	}
 
 	if !strings.EqualFold(authorizationScheme, "bearer") {
-		return nil, errors.OAuth2InvalidRequest("authorization scheme not allowed").WithValues("scheme", authorizationScheme)
+		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
 	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
@@ -88,6 +89,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		info.ClientID = claims.Federated.ClientID
 	case oauth2.TokenTypeServiceAccount:
 		info.ServiceAccount = true
+	// TODO: delete me, services should use mTLS alone.
 	case oauth2.TokenTypeService:
 		// All API requests will ultimately end up here as service call back
 		// into the identity service to validate the token presented to the API.
@@ -96,18 +98,18 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		// propagated here.
 		certPEM, err := authorization.ClientCertFromContext(r.Context())
 		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate not present for bound token").WithError(err)
+			return nil, errors.AccessDenied(r, "client certificate not present for bound token").WithError(err)
 		}
 
 		certificate, err := util.GetClientCertificate(certPEM)
 		if err != nil {
-			return nil, errors.OAuth2AccessDenied("client certificate parse error").WithError(err)
+			return nil, errors.AccessDenied(r, "client certificate parse error").WithError(err)
 		}
 
 		thumbprint := util.GetClientCertifcateThumbprint(certificate)
 
 		if thumbprint != claims.Service.X509Thumbprint {
-			return nil, errors.OAuth2AccessDenied("client certificate mismatch for bound token")
+			return nil, errors.AccessDenied(r, "client certificate mismatch for bound token")
 		}
 
 		info.SystemAccount = true

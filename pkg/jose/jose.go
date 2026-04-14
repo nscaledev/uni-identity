@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -574,11 +575,47 @@ func (i *JWTIssuer) EncodeJWEToken(ctx context.Context, claims any, tokenType To
 	return token, nil
 }
 
-func (i *JWTIssuer) DecodeJWEToken(ctx context.Context, tokenString string, claims any, tokenType TokenType) error {
-	nestedToken, err := jwt.ParseSignedAndEncrypted(tokenString, []jose.KeyAlgorithm{jose.A256GCMKW}, []jose.ContentEncryption{jose.A256GCM}, []jose.SignatureAlgorithm{jose.ES512})
+type NestedJSONWebToken struct {
+	enc                        *jose.JSONWebEncryption
+	Headers                    []jose.Header
+	allowedSignatureAlgorithms []jose.SignatureAlgorithm
+}
+
+func (t *NestedJSONWebToken) Decrypt(decryptionKey interface{}) (*jwt.JSONWebToken, error) {
+	b, err := t.enc.Decrypt(decryptionKey)
 	if err != nil {
-		return fmt.Errorf("failed to parse encrypted token: %w", err)
+		return nil, err
 	}
+
+	sig, err := jwt.ParseSigned(string(b), t.allowedSignatureAlgorithms)
+	if err != nil {
+		return nil, err
+	}
+
+	return sig, nil
+}
+
+//nolint:cyclop
+func (i *JWTIssuer) DecodeJWEToken(ctx context.Context, tokenString string, claims any, tokenType TokenType) error {
+	// NOTE: we do this to bypass the algorithm checks as ECDH_ES is not permitted usually
+	// due to any actor being able to encrypt their own token with the JWKS.  For now it's
+	// permitted to allow the transition from the old to the new.  Perfectly safe now as
+	// we enforce ES512 signatures.
+	enc, err := jose.ParseEncryptedCompact(tokenString, []jose.KeyAlgorithm{jose.A256GCMKW, jose.ECDH_ES}, []jose.ContentEncryption{jose.A256GCM})
+	if err != nil {
+		return fmt.Errorf("failed to parse jwe: %w", err)
+	}
+
+	nestedToken := &NestedJSONWebToken{
+		allowedSignatureAlgorithms: []jose.SignatureAlgorithm{jose.ES512},
+		enc:                        enc,
+		Headers:                    []jose.Header{enc.Header},
+	}
+
+	// nestedToken, err := jwt.ParseSignedAndEncrypted(tokenString, []jose.KeyAlgorithm{jose.A256GCMKW}, []jose.ContentEncryption{jose.A256GCM}, []jose.SignatureAlgorithm{jose.ES512})
+	// if err != nil {
+	// 	return fmt.Errorf("failed to parse encrypted token: %w", err)
+	// }
 
 	if len(nestedToken.Headers) != 1 {
 		return fmt.Errorf("%w: expected exactly one header", ErrTokenVerification)
@@ -605,9 +642,21 @@ func (i *JWTIssuer) DecodeJWEToken(ctx context.Context, tokenString string, clai
 		return err
 	}
 
-	key, err := getSymmetricKey(priv.Key)
-	if err != nil {
-		return err
+	// Key depends on the encryption type...
+	// TODO: delete ECDH when transitioned when we remove the above workaround.
+	var key any
+
+	//nolint:exhaustive
+	switch jose.KeyAlgorithm(nestedToken.Headers[0].Algorithm) {
+	case jose.A256GCMKW:
+		key, err = getSymmetricKey(priv.Key)
+		if err != nil {
+			return err
+		}
+	case jose.ECDH_ES:
+		key = priv
+	default:
+		return fmt.Errorf("%w: unusupported key encapsulation", ErrTokenVerification)
 	}
 
 	token, err := nestedToken.Decrypt(key)

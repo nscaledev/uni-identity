@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"path"
+
+	"github.com/unikorn-cloud/core/pkg/util"
 )
 
 var (
@@ -42,4 +45,12 @@ var (
 // call out ot other micro services.
 func VersionString() string {
 	return fmt.Sprintf("%s/%s (revision/%s)", Application, Version, Revision)
+}
+
+func ServiceDescriptor() util.ServiceDescriptor {
+	return util.ServiceDescriptor{
+		Name:     Application,
+		Version:  Version,
+		Revision: Revision,
+	}
 }

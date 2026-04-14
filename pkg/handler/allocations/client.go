@@ -1,5 +1,6 @@
 /*
 Copyright 2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +20,8 @@ package allocations
 import (
 	"context"
 	goerrors "errors"
-	"slices"
-	"strings"
+	"fmt"
+	"sync"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
@@ -33,8 +34,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -50,10 +49,24 @@ type Client struct {
 	namespace string
 }
 
+type SyncClient struct {
+	*Client
+	// mutex is for serialising allocation decisions; this is supplied
+	// when constructing the client, so it can be centralised.
+	mutex *sync.Mutex
+}
+
 func New(client client.Client, namespace string) *Client {
 	return &Client{
 		client:    client,
 		namespace: namespace,
+	}
+}
+
+func NewSync(client client.Client, namespace string, mutex *sync.Mutex) *SyncClient {
+	return &SyncClient{
+		Client: New(client, namespace),
+		mutex:  mutex,
 	}
 }
 
@@ -90,16 +103,6 @@ func convert(in *unikornv1.Allocation) *openapi.AllocationRead {
 	return out
 }
 
-func convertList(in *unikornv1.AllocationList) openapi.Allocations {
-	out := make(openapi.Allocations, len(in.Items))
-
-	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
-	}
-
-	return out
-}
-
 func generateAllocation(in *openapi.ResourceAllocation) *unikornv1.ResourceAllocation {
 	out := &unikornv1.ResourceAllocation{
 		Kind:      in.Kind,
@@ -130,7 +133,7 @@ func generate(ctx context.Context, namespace *corev1.Namespace, organizationID, 
 	}
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
-		return nil, errors.OAuth2ServerError("failed to set identity metadata").WithError(err)
+		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
 	return out, nil
@@ -144,36 +147,13 @@ func (c *Client) get(ctx context.Context, namespace, allocationID string) (*unik
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
 
-		return nil, errors.OAuth2ServerError("failed to get allocation").WithError(err)
+		return nil, fmt.Errorf("%w: failed to get allocation", err)
 	}
 
 	return result, nil
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Allocations, error) {
-	result := &unikornv1.AllocationList{}
-
-	requirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
-	if err != nil {
-		return nil, errors.OAuth2ServerError("failed to build label selector").WithError(err)
-	}
-
-	options := &client.ListOptions{
-		LabelSelector: labels.NewSelector().Add(*requirement),
-	}
-
-	if err := c.client.List(ctx, result, options); err != nil {
-		return nil, errors.OAuth2ServerError("failed to list allocations").WithError(err)
-	}
-
-	slices.SortStableFunc(result.Items, func(a, b unikornv1.Allocation) int {
-		return strings.Compare(a.Name, b.Name)
-	})
-
-	return convertList(result), nil
-}
-
-func (c *Client) Create(ctx context.Context, organizationID, projectID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+func (c *SyncClient) Create(ctx context.Context, organizationID, projectID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
 	namespace, err := common.New(c.client).ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
@@ -186,12 +166,16 @@ func (c *Client) Create(ctx context.Context, organizationID, projectID string, r
 		return nil, err
 	}
 
+	// Lock around deciding if we can do this allocation
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, errors.OAuth2ServerError("failed to create allocation").WithError(err)
+		return nil, fmt.Errorf("%w: failed to create allocation", err)
 	}
 
 	return convert(resource), nil
@@ -229,19 +213,25 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID, allocati
 			return errors.HTTPNotFound().WithError(err)
 		}
 
-		return errors.OAuth2ServerError("failed to delete allocation").WithError(err)
+		return fmt.Errorf("%w: failed to delete allocation", err)
 	}
 
 	return nil
 }
 
-func (c *Client) Update(ctx context.Context, organizationID, projectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
+func (c *SyncClient) Update(ctx context.Context, organizationID, projectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
 	common := common.New(c.client)
 
 	namespace, err := common.ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
 	}
+
+	// Lock around deciding if we can do this allocation.
+	// Taking the lock here means that each operation will get the most recent revision and
+	// succeed at patching. Otherwise, first concurrent update here wins and the rest fail.
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	current, err := c.get(ctx, namespace.Name, allocationID)
 	if err != nil {
@@ -253,8 +243,8 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID, allocati
 		return nil, err
 	}
 
-	if err := conversion.UpdateObjectMetadata(required, current, nil, nil); err != nil {
-		return nil, errors.OAuth2ServerError("failed to merge metadata").WithError(err)
+	if err := conversion.UpdateObjectMetadata(required, current); err != nil {
+		return nil, fmt.Errorf("%w: failed to merge metadata", err)
 	}
 
 	updated := current.DeepCopy()
@@ -263,11 +253,15 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID, allocati
 	updated.Spec = required.Spec
 
 	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
-		return nil, errors.OAuth2InvalidRequest("allocation exceeded quota").WithError(err)
+		return nil, err
 	}
 
-	if err := c.client.Patch(ctx, updated, client.MergeFrom(current)); err != nil {
-		return nil, errors.OAuth2ServerError("failed to patch allocation").WithError(err)
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+		if kerrors.IsConflict(err) {
+			return nil, errors.HTTPConflict().WithError(err)
+		}
+
+		return nil, fmt.Errorf("%w: failed to patch allocation", err)
 	}
 
 	return convert(updated), nil

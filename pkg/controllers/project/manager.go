@@ -1,6 +1,7 @@
 /*
 Copyright 2022-2024 EscherCloud.
 Copyright 2024-2025 the Unikorn Authors.
+Copyright 2026 Nscale.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,11 +22,11 @@ import (
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	coremanager "github.com/unikorn-cloud/core/pkg/manager"
 	"github.com/unikorn-cloud/core/pkg/manager/options"
+	"github.com/unikorn-cloud/core/pkg/util"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/provisioners/project"
 
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -40,8 +41,8 @@ type Factory struct{}
 var _ coremanager.ControllerFactory = &Factory{}
 
 // Metadata returns the application, version and revision.
-func (*Factory) Metadata() (string, string, string) {
-	return constants.Application, constants.Version, constants.Revision
+func (*Factory) Metadata() util.ServiceDescriptor {
+	return constants.ServiceDescriptor()
 }
 
 // Options returns any options to be added to the CLI flags and passed to the reconciler.
@@ -60,13 +61,6 @@ func (*Factory) RegisterWatches(manager manager.Manager, controller controller.C
 		return err
 	}
 
-	return nil
-}
-
-// Upgrade can perform metadata upgrades of all versioned resources on restart/upgrade
-// of the controller.  This must not affect the spec in any way as it causes split brain
-// and potential fail.
-func (*Factory) Upgrade(_ client.Client) error {
 	return nil
 }
 
