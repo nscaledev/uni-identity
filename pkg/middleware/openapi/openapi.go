@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -149,10 +150,10 @@ func hasHTTPAuthorization(r *http.Request) bool {
 }
 
 // aclCacheKey returns the key to use when caching an ACL. For impersonated calls
-// the key is the end-user actor so that each user gets their own cache entry
-// rather than sharing the calling service's entry. Organization scope must also
-// be part of the key, otherwise unscoped ACLs can be incorrectly reused for
-// /organizations/{id}/acl and other scoped routes.
+// the key includes the end-user actor and their organization IDs so that each
+// user gets their own cache entry and different org claim sets produce distinct
+// entries. Organization scope must also be part of the key, otherwise unscoped
+// ACLs can be incorrectly reused for /organizations/{id}/acl and other scoped routes.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) string {
 	scope := organizationID
 	if scope == "" {
@@ -161,7 +162,8 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 
 	if principal.ImpersonateFromContext(ctx) {
 		if p, err := principal.FromContext(ctx); err == nil && p.Actor != "" {
-			return p.Actor + "|" + scope
+			orgKey := strings.Join(p.OrganizationIDs, ",")
+			return p.Actor + "|" + scope + "|" + orgKey
 		}
 	}
 
