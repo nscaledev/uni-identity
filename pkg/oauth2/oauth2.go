@@ -57,6 +57,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/types"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"k8s.io/apimachinery/pkg/util/cache"
@@ -147,6 +148,10 @@ type Authenticator struct {
 	// jwtIssuer allows creation and validation of JWT bearer tokens.
 	jwtIssuer *jose.JWTIssuer
 
+	// userdb has all the operations needed for consulting the user database (User, OrganizationUser, ServiceAccount)
+	userdb *userdb.UserDatabase
+
+	// rbac is needed only for constructing a "superuser context"
 	rbac *rbac.RBAC
 
 	// tokenCache is used to enhance interaction as the validation is a
@@ -163,13 +168,14 @@ type Authenticator struct {
 
 // New returns a new authenticator with required fields populated.
 // You must call AddFlags after this.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, rbac *rbac.RBAC) *Authenticator {
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) *Authenticator {
 	return &Authenticator{
 		options:              options,
 		namespace:            namespace,
 		client:               client,
 		issuer:               issuer,
 		jwtIssuer:            jwtIssuer,
+		userdb:               userdb,
 		rbac:                 rbac,
 		tokenCache:           cache.NewLRUExpireCache(options.TokenCacheSize),
 		codeCache:            cache.NewLRUExpireCache(options.CodeCacheSize),
@@ -859,8 +865,6 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 // authorization back to us.  We then exchange the code for an ID token, and
 // refresh token.  Remember, as far as the client is concerned we're still doing
 // the code grant, so return errors in the redirect query.
-//
-//nolint:cyclop,nestif
 func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
@@ -921,61 +925,9 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	// Now we have done code exchange, we have access to the id_token and that
 	// allows us to see if the user actually exists.  If it doesn't then we
 	// either deny entry or let them signup.
-	user, err := a.rbac.GetUser(r.Context(), idToken.Email.Email)
+	user, err := a.userdb.GetUser(r.Context(), idToken.Email.Email)
 	if err != nil {
-		if !goerrors.Is(err, rbac.ErrResourceReference) {
-			redirector.raise(ErrorServerError, "user lookup failure")
-		}
-
-		if !a.options.AccountCreationEnabled {
-			redirector.raise(ErrorServerError, "user signup is not permitted")
-			return
-		}
-
-		client, err := a.lookupClient(r.Context(), clientQuery.Get("client_id"))
-		if err != nil {
-			redirector.raise(ErrorServerError, "client_id lookup failed")
-			return
-		}
-
-		if client.Spec.OnboardingURI == nil {
-			redirector.raise(ErrorServerError, "onboarding API not implemented")
-			return
-		}
-
-		onboardingState := &OnboardingState{
-			OAuth2Provider: state.OAuth2Provider,
-			ClientQuery:    state.ClientQuery,
-			IDToken:        idToken,
-		}
-
-		state, err := a.jwtIssuer.EncodeJWEToken(r.Context(), onboardingState, jose.TokenTypeOnboardState)
-		if err != nil {
-			redirector.raise(ErrorServerError, "failed to encode onboarding state: "+err.Error())
-			return
-		}
-
-		a.accountCreationCache.Add(state, nil, 10*time.Minute)
-
-		q := url.Values{}
-		q.Set("state", state)
-		q.Set("callback", "https://"+r.Host+"/oauth2/v2/onboard")
-		q.Set("email", idToken.Email.Email)
-
-		if idToken.Name != "" {
-			q.Set("username", idToken.Name)
-		}
-
-		if idToken.GivenName != "" {
-			q.Set("forename", idToken.GivenName)
-		}
-
-		if idToken.FamilyName != "" {
-			q.Set("surname", idToken.FamilyName)
-		}
-
-		http.Redirect(w, r, *client.Spec.OnboardingURI+"?"+q.Encode(), http.StatusFound)
-
+		a.handleMissingUser(w, r, redirector, clientQuery, state, idToken, err)
 		return
 	}
 
@@ -994,6 +946,62 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.authorizationCodeRedirect(w, r, redirector, clientQuery, code)
+}
+
+func (a *Authenticator) handleMissingUser(w http.ResponseWriter, r *http.Request, redirector *redirector, clientQuery url.Values, state *State, idToken *oidc.IDToken, err error) {
+	if !goerrors.Is(err, userdb.ErrResourceReference) {
+		redirector.raise(ErrorServerError, "user lookup failure")
+		return
+	}
+
+	if !a.options.AccountCreationEnabled {
+		redirector.raise(ErrorServerError, "user signup is not permitted")
+		return
+	}
+
+	client, err := a.lookupClient(r.Context(), clientQuery.Get("client_id"))
+	if err != nil {
+		redirector.raise(ErrorServerError, "client_id lookup failed")
+		return
+	}
+
+	if client.Spec.OnboardingURI == nil {
+		redirector.raise(ErrorServerError, "onboarding API not implemented")
+		return
+	}
+
+	onboardingState := &OnboardingState{
+		OAuth2Provider: state.OAuth2Provider,
+		ClientQuery:    state.ClientQuery,
+		IDToken:        idToken,
+	}
+
+	encodedState, err := a.jwtIssuer.EncodeJWEToken(r.Context(), onboardingState, jose.TokenTypeOnboardState)
+	if err != nil {
+		redirector.raise(ErrorServerError, "failed to encode onboarding state: "+err.Error())
+		return
+	}
+
+	a.accountCreationCache.Add(encodedState, nil, 10*time.Minute)
+
+	q := url.Values{}
+	q.Set("state", encodedState)
+	q.Set("callback", "https://"+r.Host+"/oauth2/v2/onboard")
+	q.Set("email", idToken.Email.Email)
+
+	if idToken.Name != "" {
+		q.Set("username", idToken.Name)
+	}
+
+	if idToken.GivenName != "" {
+		q.Set("forename", idToken.GivenName)
+	}
+
+	if idToken.FamilyName != "" {
+		q.Set("surname", idToken.FamilyName)
+	}
+
+	http.Redirect(w, r, *client.Spec.OnboardingURI+"?"+q.Encode(), http.StatusFound)
 }
 
 // authorizationCodeRedirect packages up an authorization code and redirects to the client.
@@ -1280,7 +1288,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shadowUser, err := a.rbac.GetUser(r.Context(), state.IDToken.Email.Email)
+	shadowUser, err := a.userdb.GetUser(r.Context(), state.IDToken.Email.Email)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to read shadow user")
 		return
@@ -1486,7 +1494,7 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 
 // revokeSession revokes all tokens for a clientID.
 func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
-	user, err := a.rbac.GetActiveUser(ctx, subject)
+	user, err := a.userdb.GetActiveUser(ctx, subject)
 	if err != nil {
 		return err
 	}
@@ -1630,7 +1638,7 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 		return err
 	}
 
-	user, err := a.rbac.GetActiveUser(ctx, claims.Subject)
+	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
 	}
@@ -1775,15 +1783,39 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
+	authz := &openapi.AuthClaims{}
 	userinfo := &openapi.Userinfo{
-		Sub: claims.Subject,
+		Sub:                       claims.Subject,
+		HttpsunikornCloudOrgauthz: authz,
 	}
 
-	if claims.Type == TokenTypeFederated {
+	switch claims.Type {
+	case TokenTypeFederated:
 		if slices.Contains(claims.Federated.Scope, "email") {
 			userinfo.Email = ptr.To(claims.Subject)
 			userinfo.EmailVerified = ptr.To(true)
 		}
+
+		authz.Acctype = openapi.User
+
+		orgs, err := a.userdb.GetOrganizationIDs(ctx, claims.Subject)
+		if err != nil {
+			if goerrors.Is(err, userdb.ErrResourceReference) {
+				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+			}
+
+			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
+		}
+
+		if orgs != nil {
+			authz.OrgIds = orgs
+		}
+	case TokenTypeServiceAccount:
+		authz.Acctype = openapi.Service
+		authz.OrgIds = []string{claims.ServiceAccount.OrganizationID}
+	case TokenTypeService:
+		authz.Acctype = openapi.System
+		authz.OrgIds = []string{}
 	}
 
 	return userinfo, claims, nil

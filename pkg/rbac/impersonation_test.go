@@ -70,7 +70,8 @@ func impersonate(t *testing.T, f fixture, userSubject string) *openapi.Acl {
 	t.Helper()
 
 	acl, err := getACLForSystemAccount(t, f.rbac, impersonationServiceCN, &principal.Principal{
-		Actor: userSubject,
+		Actor:           userSubject,
+		OrganizationIDs: []string{testOrgID},
 	}, true)
 	require.NoError(t, err)
 

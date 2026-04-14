@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -149,10 +150,10 @@ func hasHTTPAuthorization(r *http.Request) bool {
 }
 
 // aclCacheKey returns the key to use when caching an ACL. For impersonated calls
-// the key is the end-user actor so that each user gets their own cache entry
-// rather than sharing the calling service's entry. Organization scope must also
-// be part of the key, otherwise unscoped ACLs can be incorrectly reused for
-// /organizations/{id}/acl and other scoped routes.
+// the key includes the end-user actor and their organization IDs so that each
+// user gets their own cache entry and different org claim sets produce distinct
+// entries. Organization scope must also be part of the key, otherwise unscoped
+// ACLs can be incorrectly reused for /organizations/{id}/acl and other scoped routes.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) string {
 	scope := organizationID
 	if scope == "" {
@@ -161,7 +162,8 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 
 	if principal.ImpersonateFromContext(ctx) {
 		if p, err := principal.FromContext(ctx); err == nil && p.Actor != "" {
-			return p.Actor + "|" + scope
+			orgKey := strings.Join(p.OrganizationIDs, ",")
+			return p.Actor + "|" + scope + "|" + orgKey
 		}
 	}
 
@@ -205,6 +207,9 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 			SystemAccount: true,
 			Userinfo: &identityapi.Userinfo{
 				Sub: certificate.Subject.CommonName,
+				HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
+					Acctype: identityapi.System,
+				},
 			},
 		}
 
@@ -235,7 +240,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 		// Add the principal to the context, the ACL call will use the internal
 		// identity client, and that requires a principal to be present.
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo.Sub)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo)
 		if err != nil {
 			authInfo.err = errors.OAuth2InvalidRequest("principal propagation failure for authentication").WithError(err)
 			return err
@@ -305,11 +310,17 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
 // principal information from the request itself.
-func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, subject string) context.Context {
+func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, userinfo *identityapi.Userinfo) context.Context {
+	var organizationIDs []string
+	if userinfo.HttpsunikornCloudOrgauthz != nil {
+		organizationIDs = userinfo.HttpsunikornCloudOrgauthz.OrgIds
+	}
+
 	p := &principal.Principal{
-		OrganizationID: params["organizationID"],
-		ProjectID:      params["projectID"],
-		Actor:          subject,
+		OrganizationID:  params["organizationID"],
+		OrganizationIDs: organizationIDs,
+		ProjectID:       params["projectID"],
+		Actor:           userinfo.Sub,
 	}
 
 	return principal.NewContext(ctx, p)
@@ -366,7 +377,7 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
 // API calls, otherwise it generates it from the available information.
-func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, subject string) (context.Context, error) {
+func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, userinfo *identityapi.Userinfo) (context.Context, error) {
 	if util.HasClientCertificateHeader(r.Header) {
 		newCtx, err := extractPrincipal(ctx, r)
 		if err != nil {
@@ -376,7 +387,7 @@ func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Requ
 		return newCtx, nil
 	}
 
-	return v.generatePrincipal(ctx, params, subject), nil
+	return v.generatePrincipal(ctx, params, userinfo), nil
 }
 
 // validateAndAuthorize performs OpenAPI schema validation of the request, and also
@@ -427,7 +438,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 		// data.
 		var err error
 
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo.Sub)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo)
 		if err != nil {
 			return errors.OAuth2InvalidRequest("identity info propagation failure").WithError(err)
 		}
