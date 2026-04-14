@@ -567,6 +567,124 @@ func TestGroupACLContent(t *testing.T) {
 	}
 }
 
+// TestUser_UnmigratedGroupUserIDs verifies that a user still gets permissions
+// from a group that only has the deprecated UserIDs field populated (no Subjects).
+// This simulates a group created before the Subjects field existed — the
+// groupSubjectFilter fallback must match the user even though UserIDs contains
+// OrganizationUser resource names, not email subjects.
+func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	createObjects := func(objs ...client.Object) {
+		t.Helper()
+		for _, obj := range objs {
+			require.NoError(t, c.Create(t.Context(), obj))
+		}
+	}
+
+	org := newOrganization(testNamespace, testOrgID, testOrgNS)
+	createObjects(org)
+	require.NoError(t, c.Update(t.Context(), org))
+
+	role := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      roleReaderID,
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Organization: []unikornv1.RoleScope{
+					{
+						Name:       "org:read",
+						Operations: []unikornv1.Operation{unikornv1.Read},
+					},
+				},
+			},
+		},
+	}
+	createObjects(role)
+
+	// Create the User and OrganizationUser resources that exist in production.
+	// The fallback must resolve alice@example.com → User → OrganizationUser name.
+	const globalUserName = "user-alice-global"
+	const orgUserResourceName = "orguser-a1b2c3d4"
+
+	globalUser := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      globalUserName,
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: userAliceSubject,
+			State:   unikornv1.UserStateActive,
+		},
+	}
+
+	orgUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      orgUserResourceName,
+			Labels: map[string]string{
+				constants.UserLabel: globalUserName,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	}
+
+	createObjects(globalUser, orgUser)
+
+	// Simulate an unmigrated group: only UserIDs is populated, Subjects is empty.
+	// In production, UserIDs contains OrganizationUser resource names (UUIDs),
+	// not email addresses.
+	unmigratedGroup := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      "group-unmigrated",
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: []string{roleReaderID},
+			UserIDs: []string{orgUserResourceName},
+			// Subjects intentionally left empty — this group has not been migrated.
+		},
+	}
+	createObjects(unmigratedGroup)
+
+	// Build an ACL for userAliceSubject ("alice@example.com") who is a member
+	// of this group via the OrganizationUser resource name in UserIDs.
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: userAliceSubject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+				OrgIds:  []string{testOrgID},
+			},
+		},
+	}
+
+	rbacClient := rbac.New(c, testNamespace, &rbac.Options{})
+
+	ctx := authorization.NewContext(t.Context(), info)
+	acl, err := rbacClient.GetACL(ctx, testOrgID)
+	require.NoError(t, err)
+	require.NotNil(t, acl)
+
+	// The user should still get organization permissions from the unmigrated group.
+	// If the fallback is broken (comparing email against OrgUser resource names),
+	// the ACL will have no organization permissions.
+	assert.NotNil(t, acl.Organization, "user should get permissions from unmigrated group via UserIDs fallback")
+	if acl.Organization != nil {
+		assert.NotEmpty(t, *acl.Organization.Endpoints, "user should have org:read from unmigrated group")
+	}
+}
+
 func TestUser_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
