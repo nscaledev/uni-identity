@@ -77,23 +77,31 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 type groupSubjectFilterGetter func(id string) func(unikornv1.Group) bool
 
 // groupSubjectFilter checks if the group contains the user.
-func groupSubjectFilter(id string) func(unikornv1.Group) bool {
+// It first checks the new Subjects field. If no match is found and the group
+// still has the deprecated UserIDs field populated, it resolves the subject to
+// an OrganizationUser resource name and checks UserIDs.
+func (r *RBAC) groupSubjectFilter(ctx context.Context, subject string) func(unikornv1.Group) bool {
 	return func(group unikornv1.Group) bool {
 		if slices.ContainsFunc(group.Spec.Subjects, func(s unikornv1.GroupSubject) bool {
 			// The issuer is not validated here. All subjects are expected to have an empty issuer.
 			// See updateGroups in handler/users/client.go.
-			return s.ID == id
+			return s.ID == subject
 		}) {
 			return false
 		}
 
 		// Deprecated: fall back to the legacy userIDs field for groups that have not
-		// been migrated to subjects yet. Log so operators can identify incomplete migrations.
-		if slices.Contains(group.Spec.UserIDs, id) {
-			slog.Warn("group matched via deprecated userIDs field, migration to subjects required",
-				"group", group.Name, "namespace", group.Namespace, "userID", id)
+		// been migrated to subjects yet. UserIDs contain OrganizationUser resource
+		// names (not email subjects), so we must resolve the subject first.
+		if len(group.Spec.UserIDs) > 0 {
+			if orgUserName, err := r.resolveOrganizationUserName(ctx, group.Namespace, subject); err == nil {
+				if slices.Contains(group.Spec.UserIDs, orgUserName) {
+					slog.Warn("group matched via deprecated userIDs field, migration to subjects required",
+						"group", group.Name, "namespace", group.Namespace, "userID", orgUserName)
 
-			return false
+					return false
+				}
+			}
 		}
 
 		return true
@@ -172,6 +180,46 @@ func (r *RBAC) getOrganizationNamespace(ctx context.Context, orgID string) (stri
 	}
 
 	return org.Status.Namespace, nil
+}
+
+// resolveOrganizationUserName maps a user subject (email) to the OrganizationUser
+// resource name in the given namespace. This is only needed to support the
+// deprecated UserIDs field on groups during migration to the Subjects field.
+func (r *RBAC) resolveOrganizationUserName(ctx context.Context, namespace, subject string) (string, error) {
+	users := &unikornv1.UserList{}
+	if err := r.client.List(ctx, users); err != nil {
+		return "", err
+	}
+
+	idx := slices.IndexFunc(users.Items, func(u unikornv1.User) bool {
+		return u.Spec.Subject == subject
+	})
+
+	if idx < 0 {
+		return "", fmt.Errorf("%w: user not found for subject %q", ErrResourceReference, subject)
+	}
+
+	user := &users.Items[idx]
+
+	selector := labels.SelectorFromSet(map[string]string{
+		constants.UserLabel: user.Name,
+	})
+
+	orgUsers := &unikornv1.OrganizationUserList{}
+
+	if err := r.client.List(ctx, orgUsers, &client.ListOptions{
+		LabelSelector: selector,
+		Namespace:     namespace,
+	}); err != nil {
+		return "", err
+	}
+
+	if len(orgUsers.Items) != 1 {
+		return "", fmt.Errorf("%w: expected 1 organization user for subject %q in namespace %q, got %d",
+			ErrResourceReference, subject, namespace, len(orgUsers.Items))
+	}
+
+	return orgUsers.Items[0].Name, nil
 }
 
 func convertOperation(in unikornv1.Operation) openapi.AclOperation {
@@ -611,7 +659,7 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 			return nil, fmt.Errorf("%w, failed to get organization namespace %q", err, organizationID)
 		}
 
-		groups, err := r.getGroups(ctx, organizationNamespace, groupSubjectFilter(subject))
+		groups, err := r.getGroups(ctx, organizationNamespace, r.groupSubjectFilter(ctx, subject))
 		if err != nil {
 			return nil, err
 		}
@@ -638,7 +686,9 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 		organizationSubjectMap[organizationID] = subject
 	}
 
-	if err := r.accumulatePermissions(ctx, acl, organizationSubjectMap, groupSubjectFilter); err != nil {
+	if err := r.accumulatePermissions(ctx, acl, organizationSubjectMap, func(id string) func(unikornv1.Group) bool {
+		return r.groupSubjectFilter(ctx, id)
+	}); err != nil {
 		return nil, err
 	}
 
