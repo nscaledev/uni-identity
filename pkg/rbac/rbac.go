@@ -184,7 +184,7 @@ func (r *RBAC) getOrganizationNamespace(ctx context.Context, orgID string) (stri
 
 // resolveOrganizationUserName maps a user subject (email) to the OrganizationUser
 // resource name in the given namespace. This is only needed to support the
-// deprecated UserIDs field on groups during migration to the Subjects field.
+// legacy UserIDs field on groups during migration to the Subjects field.
 func (r *RBAC) resolveOrganizationUserName(ctx context.Context, namespace, subject string) (string, error) {
 	users := &unikornv1.UserList{}
 	if err := r.client.List(ctx, users); err != nil {

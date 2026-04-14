@@ -583,6 +583,7 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 
 	createObjects := func(objs ...client.Object) {
 		t.Helper()
+
 		for _, obj := range objs {
 			require.NoError(t, c.Create(t.Context(), obj))
 		}
@@ -612,8 +613,10 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 
 	// Create the User and OrganizationUser resources that exist in production.
 	// The fallback must resolve alice@example.com → User → OrganizationUser name.
-	const globalUserName = "user-alice-global"
-	const orgUserResourceName = "orguser-a1b2c3d4"
+	const (
+		globalUserName      = "user-alice-global"
+		orgUserResourceName = "orguser-a1b2c3d4"
+	)
 
 	globalUser := &unikornv1.User{
 		ObjectMeta: metav1.ObjectMeta{
@@ -680,6 +683,7 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 	// If the fallback is broken (comparing email against OrgUser resource names),
 	// the ACL will have no organization permissions.
 	assert.NotNil(t, acl.Organization, "user should get permissions from unmigrated group via UserIDs fallback")
+
 	if acl.Organization != nil {
 		assert.NotEmpty(t, *acl.Organization.Endpoints, "user should have org:read from unmigrated group")
 	}
