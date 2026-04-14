@@ -230,13 +230,14 @@ func buildHandlerOptions(serverURL string) *handler.Options {
 func createHandlerInterface(k8sClient client.Client, serverURL string) openapi.ServerInterface {
 	handlerOptions := buildHandlerOptions(serverURL)
 
-	// Pass nil for JWT issuer, OAuth2, and RBAC - not used due to MockACLMiddleware providing all auth context
+	// Pass nil for JWT issuer, OAuth2, UserDB, and RBAC - not used due to MockACLMiddleware providing all auth context
 	handlerInterface, err := handler.New(
 		k8sClient,
 		k8sClient,
 		TestNamespace,
 		nil, // JWT issuer not used in contract tests
 		nil, // OAuth2 not used in contract tests
+		nil, // UserDB not used in contract tests
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
 		handlerOptions,
 	)

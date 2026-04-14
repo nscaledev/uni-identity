@@ -144,6 +144,12 @@ func oAuth2ServerError(description string) *Error {
 	return newError(http.StatusInternalServerError, openapi.ServerError, description)
 }
 
+// OAuth2ServerError tells the client we are at fault, this should never be seen
+// in production.  If so then our testing needs to improve.
+func OAuth2ServerError(description string) *Error {
+	return newError(http.StatusInternalServerError, openapi.ServerError, description)
+}
+
 // toError is a handy unwrapper to get a HTTP error from a generic one.
 func toError(err error) *Error {
 	var httpErr *Error

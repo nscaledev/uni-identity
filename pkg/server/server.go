@@ -40,6 +40,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -105,15 +106,15 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	//   can trigger alerts based on them.
 	// * Route resolver provides routing and OpenAPI information to child middlewares.
 	// * CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
-	opentelemetry := opentelemetry.New(constants.Application, constants.Version)
-	logging := logging.New()
-	routeresolver := routeresolver.New(schema)
-	cors := cors.New(&s.CORSOptions)
+	ot := opentelemetry.New(constants.Application, constants.Version)
+	log := logging.New()
+	rr := routeresolver.New(schema)
+	corss := cors.New(&s.CORSOptions)
 
-	router.Use(opentelemetry.Middleware)
-	router.Use(logging.Middleware)
-	router.Use(routeresolver.Middleware)
-	router.Use(cors.Middleware)
+	router.Use(ot.Middleware)
+	router.Use(log.Middleware)
+	router.Use(rr.Middleware)
+	router.Use(corss.Middleware)
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
 
@@ -123,13 +124,14 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
-	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, rbac)
+	udb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
+	roles := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
+	auth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, udb, roles)
 
 	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
+	authorizer := local.NewAuthorizer(auth2, roles)
 	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
-	audit := audit.New(constants.Application, constants.Version)
+	auditer := audit.New(constants.Application, constants.Version)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -137,12 +139,12 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		BaseRouter:       router,
 		ErrorHandlerFunc: handler.HandleError,
 		Middlewares: []openapi.MiddlewareFunc{
-			audit.Middleware,
+			auditer.Middleware,
 			validator.Middleware,
 		},
 	}
 
-	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, auth2, udb, roles, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}

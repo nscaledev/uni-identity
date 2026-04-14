@@ -47,6 +47,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/html"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	autherrors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	corev1 "k8s.io/api/core/v1"
@@ -195,7 +196,7 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 					return errors.HTTPConflict().WithError(err)
 				}
 
-				return fmt.Errorf("%w: failed to patch group", err)
+				return autherrors.OAuth2ServerError("failed to patch group").WithError(err)
 			}
 		}
 	}
@@ -692,7 +693,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	// Any accounts that aren't email based must use kubectl-unikorn to create them,
 	// e.g. users for unikorn services.
 	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
-		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
+		return nil, autherrors.OAuth2InvalidRequest("subject address invalid").WithError(err)
 	}
 
 	user, err := c.getOrCreateGlobalUser(ctx, request)

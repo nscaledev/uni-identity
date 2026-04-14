@@ -389,6 +389,10 @@ func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
 			Sub: subject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+				OrgIds:  []string{testOrgID},
+			},
 		},
 	}
 
@@ -487,10 +491,33 @@ func TestGroupACLContent(t *testing.T) {
 
 	f, _ := setupTestEnvironment(t)
 
-	// Test Alice (Admin) - should have organization permissions.
+	// Test Alice (Admin) - should have organization permissions but not global
+	// (global permissions are reserved for platform admins and system accounts).
 	aclAlice := getACLForUser(t, f.rbac, userAliceSubject)
-	require.Nil(t, aclAlice.Global, "Alice should not have global permissions")
+	assert.Nil(t, aclAlice.Global, "Alice should not have global permissions")
 	require.NotNil(t, aclAlice.Organizations, "Alice should have organization permissions")
+	require.Len(t, *aclAlice.Organizations, 1, "Alice should be a member of one organization")
+	assert.Nil(t, aclAlice.Projects, "Alice should not have project-specific permissions")
+
+	// Verify Alice has org:manage at organization scope (from admin role)
+	aliceOrganization := &(*aclAlice.Organizations)[0]
+	require.Equal(t, testOrgID, aliceOrganization.Id, "Alice should have organization ID set")
+	require.NotNil(t, aliceOrganization.Endpoints, "Alice should have organization endpoints")
+
+	hasOrgManage := false
+
+	for _, endpoint := range *aliceOrganization.Endpoints {
+		if endpoint.Name == "org:manage" {
+			hasOrgManage = true
+
+			assert.Contains(t, endpoint.Operations, openapi.Create)
+			assert.Contains(t, endpoint.Operations, openapi.Read)
+			assert.Contains(t, endpoint.Operations, openapi.Update)
+			assert.Contains(t, endpoint.Operations, openapi.Delete)
+		}
+	}
+
+	assert.True(t, hasOrgManage, "Alice should have org:manage permission")
 
 	// Test Bob (Developer) - should have organization read and project permissions.
 	aclBob := getACLForUser(t, f.rbac, userBobSubject)
