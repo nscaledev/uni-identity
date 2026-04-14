@@ -18,6 +18,16 @@ fi
 
 echo "==> Cluster context: ${CONTEXT} (KinD: ${IS_KIND})"
 
+# ── cloud-provider-kind preflight ─────────────────────────────────────────────
+if [[ "${IS_KIND}" == true ]]; then
+  if ! pgrep -f cloud-provider-kind > /dev/null; then
+    echo "ERROR: cloud-provider-kind is not running." >&2
+    echo "       Start it with: sudo cloud-provider-kind" >&2
+    echo "       Install with:  go install sigs.k8s.io/cloud-provider-kind@latest" >&2
+    exit 1
+  fi
+fi
+
 # ── cert-manager ──────────────────────────────────────────────────────────────
 echo "==> Installing cert-manager..."
 helm repo add jetstack https://charts.jetstack.io --force-update > /dev/null 2>&1
@@ -33,9 +43,6 @@ helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx --force-u
 
 INGRESS_ARGS=()
 if [[ "${IS_KIND}" == true ]]; then
-  echo "==> Installing MetalLB for KinD..."
-  go run ./hack/install-metallb --cluster-name "${KIND_CLUSTER_NAME}"
-
   INGRESS_ARGS+=(
     --set "controller.service.type=LoadBalancer"
     --set-string "controller.nodeSelector.ingress-ready=true"
@@ -56,8 +63,10 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
 
 if [[ "${IS_KIND}" == true ]]; then
   echo "==> Waiting for ingress-nginx LoadBalancer IP..."
+  # cloud-provider-kind assigns the IP asynchronously after the pod is ready;
+  # 120s gives it enough headroom on slower machines.
   kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' service/ingress-nginx-controller \
-    -n ingress-nginx --timeout=60s
+    -n ingress-nginx --timeout=120s
 fi
 
 # ── unikorn-core (creates unikorn-issuer + unikorn-client-issuer) ─────────────

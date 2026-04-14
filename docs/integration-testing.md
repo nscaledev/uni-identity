@@ -43,8 +43,10 @@ auto-detect which one you are using and adjust accordingly.
 | Platform | Linux, Mac | Mac |
 | Cluster create | `make kind-cluster` | `colima start --kubernetes` |
 | Image loading | `make images-kind-load` (auto) | `make images` (auto) |
-| Port exposure | via `extraPortMappings` | via Lima port forwarding |
+| Port exposure | `cloud-provider-kind` LoadBalancer IPs (routable on host) | Lima port forwarding |
 | Infra setup | `make integration-infra` | `make integration-infra` |
+
+`cloud-provider-kind` must be running as a daemon before `make integration-infra`. See [hack/ci/README.md](../hack/ci/README.md#running-locally) for setup instructions.
 
 ## Prerequisites
 
