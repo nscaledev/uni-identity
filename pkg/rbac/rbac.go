@@ -777,6 +777,12 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		return r.processSystemAccountACL(ctx, subject)
 	}
 
+	// OrganizationIDs is populated by the identity middleware (generatePrincipal)
+	// from the userinfo claims and propagated through the X-Principal header by
+	// all current callers. The singular OrganizationID fallback is a defensive
+	// safety net: if a caller only sets OrganizationID (e.g. a future service
+	// that hasn't adopted the full principal propagation), the user still gets
+	// permissions for at least the scoped organization rather than an empty ACL.
 	organizationIDs := p.OrganizationIDs
 	if len(organizationIDs) == 0 && p.OrganizationID != "" {
 		organizationIDs = []string{p.OrganizationID}
