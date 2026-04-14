@@ -234,9 +234,14 @@ func (m *Manager) buildInMemoryCache(organizationUsers []identityv1.Organization
 
 		cc.OrganizationUserByID[organizationUser.Name] = organizationUser
 
-		namespacedUserID := namespacedID(organizationUser.Namespace, organizationUser.Name)
+		userID, ok := organizationUser.Labels[coreconstants.UserLabel]
+		if !ok {
+			return nil, fmt.Errorf("organization user %q in %q has no user label: %w", organizationUser.Name, organizationUser.Namespace, ErrInconsistentData)
+		}
 
-		if _, ok := cc.OrganizationUserByNamespacedUserID[namespacedUserID]; ok {
+		namespacedUserID := namespacedID(organizationUser.Namespace, userID)
+
+		if _, ok = cc.OrganizationUserByNamespacedUserID[namespacedUserID]; ok {
 			return nil, fmt.Errorf("multiple organization users found with the same namespaced user ID %q: %w", namespacedUserID, ErrInconsistentData)
 		}
 
