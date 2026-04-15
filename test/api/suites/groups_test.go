@@ -22,7 +22,6 @@ package suites
 
 import (
 	"errors"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -36,7 +35,7 @@ var _ = Describe("Group Management", func() {
 	Context("When creating groups", func() {
 		Describe("Given valid group data", func() {
 			It("should create a new group with complete metadata", func() {
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
 				Expect(groupID).NotTo(BeEmpty(), "Group ID should be returned")
@@ -66,7 +65,7 @@ var _ = Describe("Group Management", func() {
 			})
 
 			It("should create a group and retrieve it by ID", func() {
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 				createdGroup, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
 				retrievedGroup, err := client.GetGroup(ctx, config.OrgID, groupID)
@@ -81,7 +80,7 @@ var _ = Describe("Group Management", func() {
 			})
 
 			It("should create a group and find it in the organization list", func() {
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 				createdGroup, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
 				groups, err := client.ListGroups(ctx, config.OrgID)
@@ -101,11 +100,12 @@ var _ = Describe("Group Management", func() {
 
 				Expect(found).To(BeTrue(), "Created group should appear in organization group list")
 			})
+
 		})
 
 		Describe("Given invalid organization ID", func() {
 			It("should return error when creating group in non-existent organization", func() {
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 
 				_, err := client.CreateGroup(ctx, "invalid-org-id", payload)
 
@@ -113,18 +113,18 @@ var _ = Describe("Group Management", func() {
 				GinkgoWriter.Printf("Expected error for invalid organization ID: %v\n", err)
 			})
 		})
+
 	})
 
 	Context("When reading groups", func() {
 		Describe("Given valid organization", func() {
 			It("should return all groups in the organization with complete metadata", func() {
+				api.CreateGroupWithCleanup(client, ctx, config, api.NewGroupPayload().Build())
+
 				groups, err := client.ListGroups(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
-
-				if len(groups) == 0 {
-					Skip("Organization has no groups (valid state)")
-				}
+				Expect(groups).NotTo(BeEmpty())
 
 				for _, group := range groups {
 					Expect(group.Metadata).NotTo(BeNil())
@@ -134,9 +134,11 @@ var _ = Describe("Group Management", func() {
 
 					Expect(group.Spec).NotTo(BeNil())
 
-					Expect(group.Metadata.ProvisioningStatus).NotTo(BeEmpty())
-					Expect(string(group.Metadata.ProvisioningStatus)).To(BeElementOf(
-						"provisioning", "provisioned", "deprovisioning", "error"))
+					Expect(group.Metadata.ProvisioningStatus).To(BeElementOf(
+						coreopenapi.ResourceProvisioningStatusProvisioning,
+						coreopenapi.ResourceProvisioningStatusProvisioned,
+						coreopenapi.ResourceProvisioningStatusDeprovisioning,
+						coreopenapi.ResourceProvisioningStatusError))
 
 					Expect(group.Metadata.HealthStatus).NotTo(BeEmpty())
 					Expect(group.Metadata.HealthStatus).To(BeElementOf(
@@ -180,11 +182,12 @@ var _ = Describe("Group Management", func() {
 	Context("When updating groups", func() {
 		Describe("Given existing group", func() {
 			It("should update group name successfully", func() {
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 				originalGroup, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
-				updatedPayload := payload
-				updatedPayload.Metadata.Name = originalGroup.Metadata.Name + "-updated"
+				updatedPayload := api.NewGroupPayload().
+					WithName(originalGroup.Metadata.Name + "-updated").
+					Build()
 
 				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
@@ -209,7 +212,7 @@ var _ = Describe("Group Management", func() {
 					Skip("No roles available in organization to test role assignment")
 				}
 
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 				originalGroup, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
 				updatedPayload := payload
@@ -228,11 +231,12 @@ var _ = Describe("Group Management", func() {
 				GinkgoWriter.Printf("Updated group '%s': added role %s\n",
 					originalGroup.Metadata.Name, roles[0].Metadata.Name)
 			})
+
 		})
 
 		Describe("Given invalid group ID", func() {
 			It("should return error when updating non-existent group", func() {
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 
 				err := client.UpdateGroup(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
 
@@ -243,40 +247,22 @@ var _ = Describe("Group Management", func() {
 				GinkgoWriter.Printf("Expected error for updating non-existent group: %v\n", err)
 			})
 		})
+
+		Describe("Given invalid organization ID", func() {
+			It("should return error when updating group in non-existent organization", func() {
+				payload := api.NewGroupPayload().Build()
+
+				err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
+
+				Expect(err).To(HaveOccurred())
+			})
+		})
 	})
 
 	Context("When deleting groups", func() {
 		Describe("Given existing group", func() {
-			It("should successfully create and delete a test group with verification", func() {
-				group, groupID := api.CreateGroupWithCleanup(client, ctx, config,
-					api.NewGroupPayload().
-						WithName("delete-test-group").
-						BuildTyped())
-
-				Expect(group.Metadata.Id).NotTo(BeEmpty())
-				Expect(group.Metadata.Id).To(Equal(groupID))
-				Expect(group.Metadata.Name).To(Equal("delete-test-group"))
-
-				retrievedGroup, err := client.GetGroup(ctx, config.OrgID, groupID)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(retrievedGroup).NotTo(BeNil())
-				Expect(retrievedGroup.Metadata.Id).To(Equal(groupID))
-				GinkgoWriter.Printf("Verified group exists: %s\n", groupID)
-
-				err = client.DeleteGroup(ctx, config.OrgID, groupID)
-				Expect(err).NotTo(HaveOccurred())
-				GinkgoWriter.Printf("Deleted test group: %s\n", groupID)
-
-				Eventually(func() bool {
-					_, err := client.GetGroup(ctx, config.OrgID, groupID)
-					return errors.Is(err, coreclient.ErrResourceNotFound)
-				}).WithTimeout(config.TestTimeout).WithPolling(2 * time.Second).Should(BeTrue())
-
-				GinkgoWriter.Printf("Verified group deletion: %s\n", groupID)
-			})
-
 			It("should delete group successfully", func() {
-				payload := api.NewGroupPayload().BuildTyped()
+				payload := api.NewGroupPayload().Build()
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
 				err := client.DeleteGroup(ctx, config.OrgID, groupID)
@@ -301,6 +287,14 @@ var _ = Describe("Group Management", func() {
 					"Should return 404 not found error for non-existent group")
 
 				GinkgoWriter.Printf("Expected error for deleting non-existent group: %v\n", err)
+			})
+		})
+
+		Describe("Given invalid organization ID", func() {
+			It("should return error when deleting group in non-existent organization", func() {
+				err := client.DeleteGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000")
+
+				Expect(err).To(HaveOccurred())
 			})
 		})
 	})
