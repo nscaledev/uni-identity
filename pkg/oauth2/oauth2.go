@@ -54,6 +54,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/providers"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/types"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -1175,6 +1176,10 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 
 	ctx = authorization.NewContext(ctx, info)
 
+	ctx = principal.NewContext(ctx, &principal.Principal{
+		Actor: state.IDToken.Email.Email,
+	})
+
 	var err error
 
 	ctx, err = a.rbac.NewSuperContext(ctx)
@@ -1217,6 +1222,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 
 	organization, err := organizations.New(a.client, a.namespace).Create(ctx, organizationRequest)
 	if err != nil {
+		log.FromContext(ctx).Error(err, "onboard: failed to create organization")
 		redirector.raise(ErrorServerError, "failed to create organization")
 		return
 	}
@@ -1255,6 +1261,7 @@ func (a *Authenticator) Onboard(w http.ResponseWriter, r *http.Request) {
 
 	group, err := groups.New(a.client, a.namespace, a.issuer).Create(ctx, organization.Metadata.Id, groupRequest)
 	if err != nil {
+		log.FromContext(ctx).Error(err, "onboard: failed to create group", "organizationID", organization.Metadata.Id)
 		redirector.raise(ErrorServerError, "failed to create group")
 		return
 	}
