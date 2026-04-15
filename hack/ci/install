@@ -66,7 +66,7 @@ chart_version() {
   awk '$1 == "version:" { print $2; exit }' "$1"
 }
 
-if [[ "${IS_KIND}" == true ]]; then
+if [[ "${IS_KIND}" == true || "${IS_COLIMA}" == true ]]; then
   INGRESS_IP=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
   if [[ -z "${INGRESS_IP}" ]]; then
     echo "ERROR: ingress-nginx-controller has no LoadBalancer IP" >&2
@@ -75,6 +75,7 @@ if [[ "${IS_KIND}" == true ]]; then
   INGRESS_HOST="identity-${SUFFIX}.${INGRESS_IP}.nip.io"
 else
   INGRESS_HOST="identity-${SUFFIX}.test"
+  INGRESS_IP=""
 fi
 
 echo "==> Installing identity: namespace=${NAMESPACE}, release=${RELEASE_NAME}, host=${INGRESS_HOST}" >&2
@@ -147,7 +148,7 @@ done
 echo "==> Waiting for nginx to serve correct TLS cert for ${INGRESS_HOST}..." >&2
 for i in $(seq 1 60); do
   SERVED=$(echo | openssl s_client -servername "${INGRESS_HOST}" \
-    -connect "${INGRESS_HOST}:443" 2>/dev/null \
+    -connect "${INGRESS_IP:-${INGRESS_HOST}}:443" 2>/dev/null \
     | openssl x509 -noout -text 2>/dev/null \
     | grep -o "DNS:${INGRESS_HOST}" || true)
   if [[ -n "${SERVED}" ]]; then

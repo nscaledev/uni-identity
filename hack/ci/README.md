@@ -17,7 +17,7 @@ higher-level services call it directly to deploy dependencies. Fix once, fix eve
 ### `install` stdout
 
 ```
-IDENTITY_BASE_URL=https://identity-<suffix>.127.0.0.1.nip.io
+IDENTITY_BASE_URL=https://identity-<suffix>.<ingress-ip>.nip.io
 IDENTITY_NAMESPACE=unikorn-identity-<suffix>
 IDENTITY_RELEASE=identity-<suffix>
 IDENTITY_CA_CERT=/path/to/hack/ci/ca-bundle.pem
@@ -28,7 +28,7 @@ Redirect to a file (`> test/.env.install`) and source it before running fixtures
 ### `fixtures` stdout
 
 ```
-IDENTITY_BASE_URL=https://identity-<suffix>.127.0.0.1.nip.io
+IDENTITY_BASE_URL=https://identity-<suffix>.<ingress-ip>.nip.io
 IDENTITY_CA_CERT=/absolute/path/to/hack/ci/ca-bundle.pem
 TEST_ORG_ID=<uuid>
 TEST_PROJECT_ID=<uuid>
@@ -46,9 +46,47 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 
 | File | Purpose |
 |------|---------|
-| `kind-config.yaml` | KinD cluster config (extraPortMappings for 80/443, ingress-ready label) |
+| `kind-config.yaml` | KinD cluster config (ingress-ready node label) |
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
+
+## Running locally
+
+**Prerequisites:** `kind`, `kubectl`, `helm`, `jq`, `yq`, `openssl`, Go, Docker.  
+On macOS also install [Colima](https://github.com/abiosoft/colima) and start it with enough resources:
+
+```sh
+colima start --cpu 6 --memory 8 --disk 60
+```
+
+**One-time DNS fix (macOS only)** — your router won't forward nip.io queries:
+
+```sh
+sudo mkdir -p /etc/resolver && echo "nameserver 8.8.8.8" | sudo tee /etc/resolver/nip.io
+```
+
+**Cluster setup (first time):**
+
+```sh
+make kind-cluster       # creates the KinD cluster
+```
+
+Then in a separate terminal, start `cloud-provider-kind` and leave it running:
+
+```sh
+go install sigs.k8s.io/cloud-provider-kind@latest
+sudo $(go env GOPATH)/bin/cloud-provider-kind
+```
+
+```sh
+make integration-infra  # cert-manager, ingress-nginx, unikorn-core — idempotent
+```
+
+**Run the tests:**
+
+```sh
+make integration-test
+```
 
 ## Composability example
 
