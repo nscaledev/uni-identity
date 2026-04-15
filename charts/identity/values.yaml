@@ -59,23 +59,6 @@ projectController:
       cpu: 100m
       memory: 100Mi
 
-# Group subjects migration manager specific configuration.
-groupSubjectsMigrationManager:
-  # Allows override of the image.
-  image:
-
-  # Number of concurrent workers used to patch groups during migration.
-  concurrency:
-
-  # Name of the OIDC issuer used to backfill empty issuer fields on group subjects.
-  identityIssuer:
-
-  # Allows resource limits to be set.
-  resources:
-    limits:
-      cpu: 100m
-      memory: 100Mi
-
 # Sets the DNS hosts, X.509 certificate subject alternative names and
 # oauth2 issuer etc.
 identity:
