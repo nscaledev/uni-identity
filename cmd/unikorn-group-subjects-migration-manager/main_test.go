@@ -18,11 +18,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
-	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -67,7 +69,10 @@ func newTestManager(t *testing.T, objects ...client.Object) *Manager {
 		WithObjects(objects...).
 		Build()
 
-	return NewManager(1, testIssuer, kubeClient, logr.Discard())
+	manager, err := NewManager(1, testIssuer, kubeClient)
+	require.NoError(t, err)
+
+	return manager
 }
 
 func newTestUser(name, subject string) identityv1.User {
@@ -118,6 +123,212 @@ func newTestGroupSubject(id, issuer, email string) identityv1.GroupSubject {
 		Issuer: issuer,
 		Email:  email,
 	}
+}
+
+func writePreviousResults(t *testing.T, path string, results []Result) {
+	t.Helper()
+
+	data, err := json.Marshal(results)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0600))
+}
+
+func TestNewManager(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns an error when concurrency is zero", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewManager(0, testIssuer, nil)
+		require.ErrorIs(t, err, ErrInvalidConcurrency)
+	})
+
+	t.Run("returns an error when concurrency is negative", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewManager(-1, testIssuer, nil)
+		require.ErrorIs(t, err, ErrInvalidConcurrency)
+	})
+
+	t.Run("returns an error when identity issuer is empty", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewManager(1, "", nil)
+		require.ErrorIs(t, err, ErrEmptyIdentityIssuer)
+	})
+}
+
+func TestReadPreviousResults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns an empty slice when the results file does not exist", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager = newTestManager(t)
+			path    = filepath.Join(t.TempDir(), "results.json")
+		)
+
+		results, err := manager.readPreviousResults(path)
+		require.NoError(t, err)
+		assert.Empty(t, results)
+	})
+
+	t.Run("returns an error when the results file contains invalid JSON", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager = newTestManager(t)
+			path    = filepath.Join(t.TempDir(), "results.json")
+			data    = []byte("invalid json")
+		)
+
+		err := os.WriteFile(path, data, 0600)
+		require.NoError(t, err)
+
+		_, err = manager.readPreviousResults(path)
+		require.Error(t, err)
+	})
+
+	t.Run("decodes and returns results from an existing file", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager = newTestManager(t)
+			path    = filepath.Join(t.TempDir(), "results.json")
+		)
+
+		expected := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-2", Success: false},
+		}
+
+		writePreviousResults(t, path, expected)
+
+		results, err := manager.readPreviousResults(path)
+		require.NoError(t, err)
+		assert.Equal(t, expected, results)
+	})
+}
+
+func TestPrepareOutput(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns a DryRunResultsWriter when dry run is true", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager = newTestManager(t)
+			path    = filepath.Join(t.TempDir(), "results.json")
+		)
+
+		resultsWriter, err := manager.prepareOutput(path, true)
+		require.NoError(t, err)
+		defer resultsWriter.Close()
+
+		_, ok := resultsWriter.(DryRunResultsWriter)
+		assert.True(t, ok)
+	})
+
+	t.Run("returns a JSONResultsWriter when dry run is false", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager = newTestManager(t)
+			path    = filepath.Join(t.TempDir(), "results.json")
+		)
+
+		resultsWriter, err := manager.prepareOutput(path, false)
+		require.NoError(t, err)
+		defer resultsWriter.Close()
+
+		_, ok := resultsWriter.(*JSONResultsWriter)
+		assert.True(t, ok)
+	})
+
+	t.Run("backs up the previous results file when dry run is false", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager = newTestManager(t)
+			path    = filepath.Join(t.TempDir(), "results.json")
+			data    = []byte("[]")
+		)
+
+		err := os.WriteFile(path, data, 0600)
+		require.NoError(t, err)
+
+		resultsWriter, err := manager.prepareOutput(path, false)
+		require.NoError(t, err)
+		defer resultsWriter.Close()
+
+		_, err = os.Stat(fmt.Sprintf("%s.backup", path))
+		require.NoError(t, err, "backup file should exist")
+	})
+}
+
+func TestDryRunResultsWriter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns nil for a mix of successful and failed results", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			resultsWriter = NewDryRunResultsWriter()
+			errorMessage  = "something went wrong"
+		)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-2", Success: false, ErrorMessage: &errorMessage},
+		}
+
+		err := resultsWriter.Write(results)
+		require.NoError(t, err)
+	})
+
+	t.Run("does not panic when a failed result has a nil error message", func(t *testing.T) {
+		t.Parallel()
+
+		resultsWriter := NewDryRunResultsWriter()
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: false, ErrorMessage: nil},
+		}
+
+		err := resultsWriter.Write(results)
+		require.NoError(t, err)
+	})
+}
+
+func TestJSONResultsWriter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("encodes results as JSON to the underlying writer", func(t *testing.T) {
+		t.Parallel()
+
+		path := filepath.Join(t.TempDir(), "results.json")
+
+		file, err := os.Create(path)
+		require.NoError(t, err)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+		}
+
+		resultsWriter := NewJSONResultsWriter(file)
+		require.NoError(t, resultsWriter.Write(results))
+		require.NoError(t, resultsWriter.Close())
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+
+		var decoded []Result
+		err = json.Unmarshal(data, &decoded)
+		require.NoError(t, err)
+
+		assert.Equal(t, results, decoded)
+	})
 }
 
 func TestBuildInMemoryCache(t *testing.T) {
@@ -325,7 +536,7 @@ func TestComputeMissingUserIDs(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(nil, nil)
 		require.NoError(t, err)
 
-		err = manager.computeMissingUserIDs(&original, patched, cc, logr.Discard())
+		err = manager.computeMissingUserIDs(&original, patched, cc)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
 	})
@@ -346,7 +557,30 @@ func TestComputeMissingUserIDs(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(nil, users)
 		require.NoError(t, err)
 
-		err = manager.computeMissingUserIDs(&original, patched, cc, logr.Discard())
+		err = manager.computeMissingUserIDs(&original, patched, cc)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInconsistentData)
+	})
+
+	t.Run("returns inconsistent data error when the subject email does not match any user subject", func(t *testing.T) {
+		t.Parallel()
+
+		// UserBySubject is keyed by user.Spec.Subject. The lookup uses subject.Email.
+		// If the two fields differ, the user cannot be found.
+		var (
+			manager  = newTestManager(t)
+			user     = newTestUser(testUserNameAlice, testSubjectAlice) // Subject = testSubjectAlice
+			users    = []identityv1.User{user}
+			subject  = newTestGroupSubject(testSubjectAlice, testIssuer, "different-email@example.com") // Email ≠ Subject
+			subjects = []identityv1.GroupSubject{subject}
+			original = newTestGroup("group-1", nil, subjects)
+			patched  = original.DeepCopy()
+		)
+
+		cc, err := manager.buildInMemoryCache(nil, users)
+		require.NoError(t, err)
+
+		err = manager.computeMissingUserIDs(&original, patched, cc)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
 	})
@@ -364,7 +598,7 @@ func TestComputeMissingUserIDs(t *testing.T) {
 			cc       = cacheAlice(t, manager)
 		)
 
-		err := manager.computeMissingUserIDs(&original, patched, cc, logr.Discard())
+		err := manager.computeMissingUserIDs(&original, patched, cc)
 		require.NoError(t, err)
 		assert.Equal(t, []string{testOrganizationUserNameAlice}, patched.Spec.UserIDs, "existing userID should not be duplicated")
 	})
@@ -381,7 +615,7 @@ func TestComputeMissingUserIDs(t *testing.T) {
 			cc       = cacheAlice(t, manager)
 		)
 
-		err := manager.computeMissingUserIDs(&original, patched, cc, logr.Discard())
+		err := manager.computeMissingUserIDs(&original, patched, cc)
 		require.NoError(t, err)
 		assert.Equal(t, []string{testOrganizationUserNameAlice}, patched.Spec.UserIDs)
 	})
@@ -398,7 +632,7 @@ func TestComputeMissingUserIDs(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(nil, nil)
 		require.NoError(t, err)
 
-		err = manager.computeMissingUserIDs(&original, patched, cc, logr.Discard())
+		err = manager.computeMissingUserIDs(&original, patched, cc)
 		require.NoError(t, err)
 		assert.Empty(t, patched.Spec.UserIDs)
 	})
@@ -420,7 +654,7 @@ func TestComputeMissingSubjects(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(nil, nil)
 		require.NoError(t, err)
 
-		err = manager.computeMissingSubjects(&original, patched, cc, logr.Discard())
+		err = manager.computeMissingSubjects(&original, patched, cc)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
 	})
@@ -447,7 +681,7 @@ func TestComputeMissingSubjects(t *testing.T) {
 			UserBySubject:                      make(map[string]*identityv1.User),
 		}
 
-		err := manager.computeMissingSubjects(&original, patched, cc, logr.Discard())
+		err := manager.computeMissingSubjects(&original, patched, cc)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
 	})
@@ -467,7 +701,7 @@ func TestComputeMissingSubjects(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(organizationUsers, nil)
 		require.NoError(t, err)
 
-		err = manager.computeMissingSubjects(&original, patched, cc, logr.Discard())
+		err = manager.computeMissingSubjects(&original, patched, cc)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
 	})
@@ -485,9 +719,9 @@ func TestComputeMissingSubjects(t *testing.T) {
 			cc       = cacheAlice(t, manager)
 		)
 
-		err := manager.computeMissingSubjects(&original, patched, cc, logr.Discard())
+		err := manager.computeMissingSubjects(&original, patched, cc)
 		require.NoError(t, err)
-		assert.Equal(t, []identityv1.GroupSubject{subject}, patched.Spec.Subjects, "existing userID should not be duplicated")
+		assert.Equal(t, []identityv1.GroupSubject{subject}, patched.Spec.Subjects, "existing subject should not be duplicated")
 	})
 
 	t.Run("adds a subject entry when a matching organization user exists in the cache", func(t *testing.T) {
@@ -501,7 +735,7 @@ func TestComputeMissingSubjects(t *testing.T) {
 			cc       = cacheAlice(t, manager)
 		)
 
-		err := manager.computeMissingSubjects(&original, patched, cc, logr.Discard())
+		err := manager.computeMissingSubjects(&original, patched, cc)
 		require.NoError(t, err)
 
 		require.Len(t, patched.Spec.Subjects, 1)
@@ -522,7 +756,7 @@ func TestComputeMissingSubjects(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(nil, nil)
 		require.NoError(t, err)
 
-		err = manager.computeMissingSubjects(&original, patched, cc, logr.Discard())
+		err = manager.computeMissingSubjects(&original, patched, cc)
 		require.NoError(t, err)
 		assert.Empty(t, patched.Spec.Subjects)
 	})
@@ -544,7 +778,7 @@ func TestMigrate(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(nil, nil)
 		require.NoError(t, err)
 
-		err = manager.migrate(t.Context(), &group, cc)
+		err = manager.migrate(t.Context(), &group, cc, false)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
 	})
@@ -561,7 +795,7 @@ func TestMigrate(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(nil, nil)
 		require.NoError(t, err)
 
-		err = manager.migrate(t.Context(), &group, cc)
+		err = manager.migrate(t.Context(), &group, cc, false)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
 	})
@@ -585,7 +819,7 @@ func TestMigrate(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(organizationUsers, users)
 		require.NoError(t, err)
 
-		err = manager.migrate(t.Context(), &group, cc)
+		err = manager.migrate(t.Context(), &group, cc, false)
 		require.NoError(t, err)
 
 		objectKey := client.ObjectKey{
@@ -626,13 +860,46 @@ func TestMigrate(t *testing.T) {
 			}).
 			Build()
 
-		manager := NewManager(1, testIssuer, kubeClient, logr.Discard())
+		manager, err := NewManager(1, testIssuer, kubeClient)
+		require.NoError(t, err)
 
 		cc, err := manager.buildInMemoryCache(organizationUsers, users)
 		require.NoError(t, err)
 
-		err = manager.migrate(t.Context(), &group, cc)
+		err = manager.migrate(t.Context(), &group, cc, false)
 		require.Error(t, err)
+	})
+
+	t.Run("does not patch the group in dry-run mode even when changes are needed", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			organizationUser        = newTestOrganizationUser(testOrganizationUserNameAlice, testUserNameAlice)
+			organizationUsers       = []identityv1.OrganizationUser{organizationUser}
+			user                    = newTestUser(testUserNameAlice, testSubjectAlice)
+			users                   = []identityv1.User{user}
+			userIDs                 = []string{testOrganizationUserNameAlice}
+			group                   = newTestGroup("group-1", userIDs, nil) // needs migration: missing subjects
+			originalResourceVersion = group.ResourceVersion
+			manager                 = newTestManager(t, &organizationUser, &user, &group)
+		)
+
+		cc, err := manager.buildInMemoryCache(organizationUsers, users)
+		require.NoError(t, err)
+
+		err = manager.migrate(t.Context(), &group, cc, true)
+		require.NoError(t, err)
+
+		objectKey := client.ObjectKey{
+			Name:      "group-1",
+			Namespace: testNamespaceOrganizationOwned,
+		}
+
+		var updatedGroup identityv1.Group
+		err = manager.kubeClient.Get(t.Context(), objectKey, &updatedGroup)
+		require.NoError(t, err)
+
+		assert.Equal(t, originalResourceVersion, updatedGroup.ResourceVersion, "group should not be patched in dry-run mode")
 	})
 
 	t.Run("backfills the issuer on a subject that has an empty issuer", func(t *testing.T) {
@@ -653,7 +920,7 @@ func TestMigrate(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(organizationUsers, users)
 		require.NoError(t, err)
 
-		err = manager.migrate(t.Context(), &group, cc)
+		err = manager.migrate(t.Context(), &group, cc, false)
 		require.NoError(t, err)
 
 		objectKey := client.ObjectKey{
@@ -686,7 +953,7 @@ func TestMigrate(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(organizationUsers, users)
 		require.NoError(t, err)
 
-		err = manager.migrate(t.Context(), &group, cc)
+		err = manager.migrate(t.Context(), &group, cc, false)
 		require.NoError(t, err)
 
 		objectKey := client.ObjectKey{
@@ -718,7 +985,7 @@ func TestMigrate(t *testing.T) {
 		cc, err := manager.buildInMemoryCache(organizationUsers, users)
 		require.NoError(t, err)
 
-		err = manager.migrate(t.Context(), &group, cc)
+		err = manager.migrate(t.Context(), &group, cc, false)
 		require.NoError(t, err)
 
 		objectKey := client.ObjectKey{
@@ -737,9 +1004,145 @@ func TestMigrate(t *testing.T) {
 	})
 }
 
+func TestMergeResults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns an empty slice when both inputs are empty", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager    = newTestManager(t)
+			results    = make([]Result, 0)
+			resultMemo = make(map[string]*Result)
+		)
+
+		mergedResults := manager.mergeResults(results, resultMemo)
+		assert.Empty(t, mergedResults)
+	})
+
+	t.Run("adds new results to an empty memo", func(t *testing.T) {
+		t.Parallel()
+
+		manager := newTestManager(t)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+		}
+
+		resultMemo := make(map[string]*Result)
+
+		mergedResults := manager.mergeResults(results, resultMemo)
+		require.Len(t, mergedResults, 1)
+		assert.Equal(t, mergedResults[0], results[0])
+	})
+
+	t.Run("overwrites a previous failed result with a new successful result", func(t *testing.T) {
+		t.Parallel()
+
+		manager := newTestManager(t)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+		}
+
+		resultMemo := map[string]*Result{
+			namespacedID(testNamespaceOrganizationOwned, "group-1"): {
+				Namespace: testNamespaceOrganizationOwned,
+				Name:      "group-1",
+				Success:   false,
+			},
+		}
+
+		mergedResults := manager.mergeResults(results, resultMemo)
+		require.Len(t, mergedResults, 1)
+		assert.Equal(t, mergedResults[0], results[0])
+	})
+
+	t.Run("preserves results from the previous run for groups not in the current results", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager         = newTestManager(t)
+			previousResult  = Result{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true}
+			previousResults = []Result{previousResult}
+		)
+
+		resultMemo := map[string]*Result{
+			namespacedID(testNamespaceOrganizationOwned, "group-1"): &previousResult,
+		}
+
+		mergedResults := manager.mergeResults(nil, resultMemo)
+		assert.Equal(t, previousResults, mergedResults)
+	})
+}
+
+func TestCheckFailures(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns nil when there are no results", func(t *testing.T) {
+		t.Parallel()
+
+		manager := newTestManager(t)
+
+		err := manager.checkFailures(nil)
+		require.NoError(t, err)
+	})
+
+	t.Run("returns nil when all results are successful", func(t *testing.T) {
+		t.Parallel()
+
+		manager := newTestManager(t)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-2", Success: true},
+		}
+
+		err := manager.checkFailures(results)
+		require.NoError(t, err)
+	})
+
+	t.Run("returns a GroupsMigrationError with the correct counts when some results failed", func(t *testing.T) {
+		t.Parallel()
+
+		manager := newTestManager(t)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-2", Success: false},
+		}
+
+		err := manager.checkFailures(results)
+		require.Error(t, err)
+
+		var groupMigrationError *GroupsMigrationError
+		require.ErrorAs(t, err, &groupMigrationError) //nolint:wsl
+		assert.Equal(t, 1, groupMigrationError.Failed)
+		assert.Equal(t, 2, groupMigrationError.Total)
+	})
+}
+
+//nolint:maintidx
 func TestRun(t *testing.T) {
 	t.Parallel()
 
+	t.Run("returns an error when the previous results file contains invalid JSON", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			manager = newTestManager(t)
+			path    = filepath.Join(t.TempDir(), "results.json")
+			data    = []byte("invalid json")
+		)
+
+		err := os.WriteFile(path, data, 0600)
+		require.NoError(t, err)
+
+		err = manager.Run(t.Context(), path, false)
+		require.Error(t, err)
+	})
+
+	//nolint:dupl
 	t.Run("returns an error when listing groups fails", func(t *testing.T) {
 		t.Parallel()
 
@@ -760,12 +1163,16 @@ func TestRun(t *testing.T) {
 			}).
 			Build()
 
-		manager := NewManager(1, testIssuer, kubeClient, logr.Discard())
+		manager, err := NewManager(1, testIssuer, kubeClient)
+		require.NoError(t, err)
 
-		err := manager.Run(t.Context())
+		outputFilePath := filepath.Join(t.TempDir(), "results.json")
+
+		err = manager.Run(t.Context(), outputFilePath, false)
 		require.Error(t, err)
 	})
 
+	//nolint:dupl
 	t.Run("returns an error when listing organization users fails", func(t *testing.T) {
 		t.Parallel()
 
@@ -786,12 +1193,16 @@ func TestRun(t *testing.T) {
 			}).
 			Build()
 
-		manager := NewManager(1, testIssuer, kubeClient, logr.Discard())
+		manager, err := NewManager(1, testIssuer, kubeClient)
+		require.NoError(t, err)
 
-		err := manager.Run(t.Context())
+		outputFilePath := filepath.Join(t.TempDir(), "results.json")
+
+		err = manager.Run(t.Context(), outputFilePath, false)
 		require.Error(t, err)
 	})
 
+	//nolint:dupl
 	t.Run("returns an error when listing users fails", func(t *testing.T) {
 		t.Parallel()
 
@@ -812,9 +1223,12 @@ func TestRun(t *testing.T) {
 			}).
 			Build()
 
-		manager := NewManager(1, testIssuer, kubeClient, logr.Discard())
+		manager, err := NewManager(1, testIssuer, kubeClient)
+		require.NoError(t, err)
 
-		err := manager.Run(t.Context())
+		outputFilePath := filepath.Join(t.TempDir(), "results.json")
+
+		err = manager.Run(t.Context(), outputFilePath, false)
 		require.Error(t, err)
 	})
 
@@ -847,11 +1261,70 @@ func TestRun(t *testing.T) {
 			}).
 			Build()
 
-		manager := NewManager(1, testIssuer, kubeClient, logr.Discard())
+		manager, err := NewManager(1, testIssuer, kubeClient)
+		require.NoError(t, err)
 
-		err := manager.Run(t.Context())
+		outputFilePath := filepath.Join(t.TempDir(), "results.json")
+
+		err = manager.Run(t.Context(), outputFilePath, false)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInconsistentData)
+	})
+
+	t.Run("skips groups that were successfully migrated in a previous run", func(t *testing.T) {
+		t.Parallel()
+
+		// group-1 would fail migration (subject has no matching user), but it is marked
+		// as successful in the previous results file and should therefore be skipped.
+		var (
+			subject = newTestGroupSubject("missing@example.com", testIssuer, "missing@example.com")
+			group   = newTestGroup("group-1", nil, []identityv1.GroupSubject{subject})
+			manager = newTestManager(t, &group)
+			path    = filepath.Join(t.TempDir(), "results.json")
+		)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+		}
+
+		writePreviousResults(t, path, results)
+
+		err := manager.Run(t.Context(), path, false)
+		require.NoError(t, err)
+	})
+
+	t.Run("retries groups that failed in a previous run", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			organizationUser = newTestOrganizationUser(testOrganizationUserNameAlice, testUserNameAlice)
+			user             = newTestUser(testUserNameAlice, testSubjectAlice)
+			group            = newTestGroup("group-1", []string{testOrganizationUserNameAlice}, nil)
+			manager          = newTestManager(t, &organizationUser, &user, &group)
+			path             = filepath.Join(t.TempDir(), "results.json")
+			errorMessage     = "previous error"
+		)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: false, ErrorMessage: &errorMessage},
+		}
+
+		writePreviousResults(t, path, results)
+
+		err := manager.Run(t.Context(), path, false)
+		require.NoError(t, err)
+
+		objectKey := client.ObjectKey{
+			Name:      "group-1",
+			Namespace: testNamespaceOrganizationOwned,
+		}
+
+		var updatedGroup identityv1.Group
+		err = manager.kubeClient.Get(t.Context(), objectKey, &updatedGroup)
+		require.NoError(t, err)
+
+		subject := newTestGroupSubject(testSubjectAlice, testIssuer, testSubjectAlice)
+		assert.Equal(t, []identityv1.GroupSubject{subject}, updatedGroup.Spec.Subjects)
 	})
 
 	t.Run("returns a groups migration error when some groups fail to migrate", func(t *testing.T) {
@@ -875,7 +1348,9 @@ func TestRun(t *testing.T) {
 			manager = newTestManager(t, &organizationUser, &user, &group1, &group2)
 		)
 
-		err := manager.Run(t.Context())
+		outputFilePath := filepath.Join(t.TempDir(), "results.json")
+
+		err := manager.Run(t.Context(), outputFilePath, false)
 		require.Error(t, err)
 
 		var groupMigrationError *GroupsMigrationError
@@ -884,12 +1359,69 @@ func TestRun(t *testing.T) {
 		assert.Equal(t, 2, groupMigrationError.Total)
 	})
 
+	t.Run("does not patch any groups in dry-run mode", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			organizationUser        = newTestOrganizationUser(testOrganizationUserNameAlice, testUserNameAlice)
+			user                    = newTestUser(testUserNameAlice, testSubjectAlice)
+			group                   = newTestGroup("group-1", []string{testOrganizationUserNameAlice}, nil) // needs migration
+			originalResourceVersion = group.ResourceVersion
+			manager                 = newTestManager(t, &organizationUser, &user, &group)
+			path                    = filepath.Join(t.TempDir(), "results.json")
+		)
+
+		err := manager.Run(t.Context(), path, true)
+		require.NoError(t, err)
+
+		objectKey := client.ObjectKey{
+			Name:      "group-1",
+			Namespace: testNamespaceOrganizationOwned,
+		}
+
+		var updatedGroup identityv1.Group
+		err = manager.kubeClient.Get(t.Context(), objectKey, &updatedGroup)
+		require.NoError(t, err)
+
+		assert.Equal(t, originalResourceVersion, updatedGroup.ResourceVersion, "group should not be patched in dry-run mode")
+	})
+
+	t.Run("writes migration results to the output file", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			organizationUser = newTestOrganizationUser(testOrganizationUserNameAlice, testUserNameAlice)
+			user             = newTestUser(testUserNameAlice, testSubjectAlice)
+			group            = newTestGroup("group-1", []string{testOrganizationUserNameAlice}, nil)
+			manager          = newTestManager(t, &organizationUser, &user, &group)
+			path             = filepath.Join(t.TempDir(), "results.json")
+		)
+
+		err := manager.Run(t.Context(), path, false)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+
+		var decoded []Result
+		err = json.Unmarshal(data, &decoded)
+		require.NoError(t, err)
+
+		results := []Result{
+			{Namespace: testNamespaceOrganizationOwned, Name: "group-1", Success: true},
+		}
+
+		assert.Equal(t, results, decoded)
+	})
+
 	t.Run("succeeds when there are no groups to migrate", func(t *testing.T) {
 		t.Parallel()
 
 		manager := newTestManager(t)
 
-		err := manager.Run(t.Context())
+		outputFilePath := filepath.Join(t.TempDir(), "results.json")
+
+		err := manager.Run(t.Context(), outputFilePath, false)
 		require.NoError(t, err)
 	})
 
@@ -903,7 +1435,9 @@ func TestRun(t *testing.T) {
 			manager          = newTestManager(t, &organizationUser, &user, &group)
 		)
 
-		err := manager.Run(t.Context())
+		outputFilePath := filepath.Join(t.TempDir(), "results.json")
+
+		err := manager.Run(t.Context(), outputFilePath, false)
 		require.NoError(t, err)
 
 		objectKey := client.ObjectKey{
@@ -917,5 +1451,70 @@ func TestRun(t *testing.T) {
 
 		subject := newTestGroupSubject(testSubjectAlice, testIssuer, testSubjectAlice)
 		assert.Equal(t, []identityv1.GroupSubject{subject}, updatedGroup.Spec.Subjects)
+	})
+
+	t.Run("marks pending groups as failed when context is cancelled mid-run", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		// Both groups need migration (missing subjects). With concurrency=1, group-2
+		// will not have started when group-1's patch cancels the context.
+
+		var (
+			organizationUser = newTestOrganizationUser(testOrganizationUserNameAlice, testUserNameAlice)
+			user             = newTestUser(testUserNameAlice, testSubjectAlice)
+			group1           = newTestGroup("group-1", []string{testOrganizationUserNameAlice}, nil)
+			group2           = newTestGroup("group-2", []string{testOrganizationUserNameAlice}, nil)
+		)
+
+		kubeScheme := runtime.NewScheme()
+		require.NoError(t, unikorncorev1.AddToScheme(kubeScheme))
+		require.NoError(t, identityv1.AddToScheme(kubeScheme))
+
+		kubeClient := fake.NewClientBuilder().
+			WithScheme(kubeScheme).
+			WithObjects(&organizationUser, &user, &group1, &group2).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Patch: func(pctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					cancel()
+					return c.Patch(pctx, obj, patch, opts...)
+				},
+			}).
+			Build()
+
+		manager, err := NewManager(1, testIssuer, kubeClient)
+		require.NoError(t, err)
+
+		path := filepath.Join(t.TempDir(), "results.json")
+
+		err = manager.Run(ctx, path, false)
+		require.Error(t, err)
+
+		var groupMigrationError *GroupsMigrationError
+		require.ErrorAs(t, err, &groupMigrationError) //nolint:wsl
+		assert.Equal(t, 1, groupMigrationError.Failed)
+		assert.Equal(t, 2, groupMigrationError.Total)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+
+		var results []Result
+		err = json.Unmarshal(data, &results)
+		require.NoError(t, err)
+
+		resultsByName := make(map[string]Result, len(results))
+		for _, result := range results {
+			resultsByName[result.Name] = result
+		}
+
+		group1Result := resultsByName["group-1"]
+		assert.True(t, group1Result.Success, "group-1 should have been patched before cancellation")
+
+		group2Result := resultsByName["group-2"]
+		assert.False(t, group2Result.Success, "group-2 should be marked as failed due to context cancellation")
+		require.NotNil(t, group2Result.ErrorMessage)
+		assert.Contains(t, *group2Result.ErrorMessage, context.Canceled.Error())
 	})
 }
