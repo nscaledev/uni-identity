@@ -44,7 +44,6 @@ import (
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -70,9 +69,6 @@ type Handler struct {
 	// rbac gives access to low level rbac functionality.
 	rbac *rbac.RBAC
 
-	// userdb has the user database
-	userdb *userdb.UserDatabase
-
 	// options allows behaviour to be defined on the CLI.
 	options *Options
 
@@ -80,7 +76,7 @@ type Handler struct {
 	allocationMutex sync.Mutex
 }
 
-func New(client client.Client, directclient client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, options *Options) (*Handler, error) {
+func New(client client.Client, directclient client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, rbac *rbac.RBAC, options *Options) (*Handler, error) {
 	h := &Handler{
 		client:       client,
 		directclient: directclient,
@@ -88,7 +84,6 @@ func New(client client.Client, directclient client.Client, namespace string, iss
 		issuer:       issuer,
 		oauth2:       oauth2,
 		rbac:         rbac,
-		userdb:       userdb,
 		options:      options,
 	}
 
@@ -418,7 +413,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderI
 }
 
 func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, params openapi.GetApiV1OrganizationsParams) {
-	result, err := organizations.New(h.client, h.namespace).List(r.Context(), h.userdb, params.Email)
+	result, err := organizations.New(h.client, h.namespace).List(r.Context(), h.rbac, params.Email)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
