@@ -980,6 +980,46 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2Authorizatio
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostOauth2V2AuthorizationWithFormdataBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostOauth2V2AuthorizationWithFormdataBodyWithResponse), varargs...)
 }
 
+// PostOauth2V2ExchangeWithBodyWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) PostOauth2V2ExchangeWithBodyWithResponse(arg0 context.Context, arg1 string, arg2 io.Reader, arg3 ...openapi.RequestEditorFn) (*openapi.PostOauth2V2ExchangeResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1, arg2}
+	for _, a := range arg3 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "PostOauth2V2ExchangeWithBodyWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.PostOauth2V2ExchangeResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PostOauth2V2ExchangeWithBodyWithResponse indicates an expected call of PostOauth2V2ExchangeWithBodyWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2ExchangeWithBodyWithResponse(arg0, arg1, arg2 any, arg3 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1, arg2}, arg3...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostOauth2V2ExchangeWithBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostOauth2V2ExchangeWithBodyWithResponse), varargs...)
+}
+
+// PostOauth2V2ExchangeWithFormdataBodyWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) PostOauth2V2ExchangeWithFormdataBodyWithResponse(arg0 context.Context, arg1 openapi.ExchangeRequestOptions, arg2 ...openapi.RequestEditorFn) (*openapi.PostOauth2V2ExchangeResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1}
+	for _, a := range arg2 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "PostOauth2V2ExchangeWithFormdataBodyWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.PostOauth2V2ExchangeResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PostOauth2V2ExchangeWithFormdataBodyWithResponse indicates an expected call of PostOauth2V2ExchangeWithFormdataBodyWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2ExchangeWithFormdataBodyWithResponse(arg0, arg1 any, arg2 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1}, arg2...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostOauth2V2ExchangeWithFormdataBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostOauth2V2ExchangeWithFormdataBodyWithResponse), varargs...)
+}
+
 // PostOauth2V2LoginWithBodyWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) PostOauth2V2LoginWithBodyWithResponse(arg0 context.Context, arg1 string, arg2 io.Reader, arg3 ...openapi.RequestEditorFn) (*openapi.PostOauth2V2LoginResponse, error) {
 	m.ctrl.T.Helper()

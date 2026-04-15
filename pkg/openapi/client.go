@@ -257,6 +257,11 @@ type ClientInterface interface {
 
 	PostOauth2V2AuthorizationWithFormdataBody(ctx context.Context, body PostOauth2V2AuthorizationFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PostOauth2V2ExchangeWithBody request with any body
+	PostOauth2V2ExchangeWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostOauth2V2ExchangeWithFormdataBody(ctx context.Context, body PostOauth2V2ExchangeFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetOauth2V2Jwks request
 	GetOauth2V2Jwks(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1009,6 +1014,30 @@ func (c *Client) PostOauth2V2AuthorizationWithBody(ctx context.Context, contentT
 
 func (c *Client) PostOauth2V2AuthorizationWithFormdataBody(ctx context.Context, body PostOauth2V2AuthorizationFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostOauth2V2AuthorizationRequestWithFormdataBody(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostOauth2V2ExchangeWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostOauth2V2ExchangeRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostOauth2V2ExchangeWithFormdataBody(ctx context.Context, body PostOauth2V2ExchangeFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostOauth2V2ExchangeRequestWithFormdataBody(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3016,6 +3045,46 @@ func NewPostOauth2V2AuthorizationRequestWithBody(server string, contentType stri
 	return req, nil
 }
 
+// NewPostOauth2V2ExchangeRequestWithFormdataBody calls the generic PostOauth2V2Exchange builder with application/x-www-form-urlencoded body
+func NewPostOauth2V2ExchangeRequestWithFormdataBody(server string, body PostOauth2V2ExchangeFormdataRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	bodyStr, err := runtime.MarshalForm(body, nil)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = strings.NewReader(bodyStr.Encode())
+	return NewPostOauth2V2ExchangeRequestWithBody(server, "application/x-www-form-urlencoded", bodyReader)
+}
+
+// NewPostOauth2V2ExchangeRequestWithBody generates requests for PostOauth2V2Exchange with any type of body
+func NewPostOauth2V2ExchangeRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/oauth2/v2/exchange")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetOauth2V2JwksRequest generates requests for GetOauth2V2Jwks
 func NewGetOauth2V2JwksRequest(server string) (*http.Request, error) {
 	var err error
@@ -3466,6 +3535,11 @@ type ClientWithResponsesInterface interface {
 	PostOauth2V2AuthorizationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOauth2V2AuthorizationResponse, error)
 
 	PostOauth2V2AuthorizationWithFormdataBodyWithResponse(ctx context.Context, body PostOauth2V2AuthorizationFormdataRequestBody, reqEditors ...RequestEditorFn) (*PostOauth2V2AuthorizationResponse, error)
+
+	// PostOauth2V2ExchangeWithBodyWithResponse request with any body
+	PostOauth2V2ExchangeWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOauth2V2ExchangeResponse, error)
+
+	PostOauth2V2ExchangeWithFormdataBodyWithResponse(ctx context.Context, body PostOauth2V2ExchangeFormdataRequestBody, reqEditors ...RequestEditorFn) (*PostOauth2V2ExchangeResponse, error)
 
 	// GetOauth2V2JwksWithResponse request
 	GetOauth2V2JwksWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetOauth2V2JwksResponse, error)
@@ -4636,6 +4710,31 @@ func (r PostOauth2V2AuthorizationResponse) StatusCode() int {
 	return 0
 }
 
+type PostOauth2V2ExchangeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ExchangeResponse
+	JSON400      *Oauth2BadRequestResponse
+	JSON401      *Oauth2UnauthorizedResponse
+	JSON500      *Oauth2ServerErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PostOauth2V2ExchangeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostOauth2V2ExchangeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetOauth2V2JwksResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -5325,6 +5424,23 @@ func (c *ClientWithResponses) PostOauth2V2AuthorizationWithFormdataBodyWithRespo
 		return nil, err
 	}
 	return ParsePostOauth2V2AuthorizationResponse(rsp)
+}
+
+// PostOauth2V2ExchangeWithBodyWithResponse request with arbitrary body returning *PostOauth2V2ExchangeResponse
+func (c *ClientWithResponses) PostOauth2V2ExchangeWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOauth2V2ExchangeResponse, error) {
+	rsp, err := c.PostOauth2V2ExchangeWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostOauth2V2ExchangeResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostOauth2V2ExchangeWithFormdataBodyWithResponse(ctx context.Context, body PostOauth2V2ExchangeFormdataRequestBody, reqEditors ...RequestEditorFn) (*PostOauth2V2ExchangeResponse, error) {
+	rsp, err := c.PostOauth2V2ExchangeWithFormdataBody(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostOauth2V2ExchangeResponse(rsp)
 }
 
 // GetOauth2V2JwksWithResponse request returning *GetOauth2V2JwksResponse
@@ -7621,6 +7737,53 @@ func ParsePostOauth2V2AuthorizationResponse(rsp *http.Response) (*PostOauth2V2Au
 	response := &PostOauth2V2AuthorizationResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParsePostOauth2V2ExchangeResponse parses an HTTP response from a PostOauth2V2ExchangeWithResponse call
+func ParsePostOauth2V2ExchangeResponse(rsp *http.Response) (*PostOauth2V2ExchangeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostOauth2V2ExchangeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ExchangeResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Oauth2BadRequestResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Oauth2UnauthorizedResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Oauth2ServerErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
