@@ -891,18 +891,18 @@ func (r *RBAC) NewSuperContext(ctx context.Context) (context.Context, error) {
 		return nil, err
 	}
 
-	var globalACL openapi.AclEndpoints
+	var globalACL *openapi.AclEndpoints
 
 	for _, id := range r.options.PlatformAdministratorRoleIDs {
 		if role, ok := roles[id]; ok {
-			addScopesToEndpointList(&globalACL, role.Spec.Scopes.Global)
+			globalACL = addScopesToEndpointList(globalACL, role.Spec.Scopes.Global)
 		}
 	}
 
 	acl := &openapi.Acl{}
 
-	if len(globalACL) != 0 {
-		acl.Global = &globalACL
+	if globalACL != nil {
+		acl.Global = globalACL
 	}
 
 	return NewContext(ctx, acl), nil
