@@ -727,8 +727,6 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/groupsResponse'
-        '400':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
         '401':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
@@ -797,8 +795,6 @@ paths:
       responses:
         '200':
           description: Group successfully updated and returned.
-        '400':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
         '401':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
@@ -1582,35 +1578,12 @@ components:
         expires_in:
           description: The time in seconds the token will last for.
           type: integer
-    authClaims:
-      description: Custom claims for authorisation, specific to UNI
-      required:
-      - acctype
-      - orgIds
-      properties:
-        acctype:
-          description: Denotes the type of account represented. This is non-standard claim.
-          type: string
-          enum:
-          - system
-          - service
-          - user
-        orgIds:
-          description: |
-            The IDs of organisations of which the account is a member. This may be just the org for which
-            they are currently authenticated.
-          type: array
-          items:
-            description: An organisation ID.
-            type: string
     userinfo:
       description: Access token introspection data.
       type: object
       required:
       - sub
       properties:
-        "https://unikorn-cloud.org/authz":
-          $ref: "#/components/schemas/authClaims"
         sub:
           description: The access token's subject.
           type: string

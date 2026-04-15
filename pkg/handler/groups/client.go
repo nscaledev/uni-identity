@@ -61,7 +61,6 @@ func convert(in *unikornv1.Group) *openapi.GroupRead {
 		Spec: openapi.GroupSpec{
 			RoleIDs:           openapi.StringList{},
 			UserIDs:           &openapi.StringList{},
-			Subjects:          &[]openapi.Subject{},
 			ServiceAccountIDs: openapi.StringList{},
 		},
 	}
@@ -263,28 +262,23 @@ func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organi
 // Providing both Subjects and UserIDs is an error.
 func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, out *unikornv1.Group, organization *organizations.Meta, in *openapi.GroupWrite) error {
 	var (
-		hasSubjects = in.Spec.Subjects != nil && len(*in.Spec.Subjects) > 0
-		hasUserIDs  = in.Spec.UserIDs != nil && len(*in.Spec.UserIDs) > 0
-	)
-
-	if hasSubjects && hasUserIDs {
-		return errors.OAuth2InvalidRequest("cannot provide both subjects and userIDs")
-	}
-
-	var (
 		subjects []unikornv1.GroupSubject
 		userIDs  []string
 		err      error
 	)
 
-	if hasSubjects {
+	if in.Spec.Subjects != nil && in.Spec.UserIDs != nil {
+		return errors.OAuth2InvalidRequest("cannot provide both subjects and userIDs")
+	}
+
+	if in.Spec.Subjects != nil {
 		subjects = generateSubjects(*in.Spec.Subjects)
 
 		userIDs, err = c.subjectsToUserIDs(ctx, subjects, organization)
 		if err != nil {
 			return err
 		}
-	} else if hasUserIDs {
+	} else if in.Spec.UserIDs != nil {
 		userIDs = *in.Spec.UserIDs
 
 		subjects, err = c.userIDsToSubjects(ctx, userIDs, organization)
