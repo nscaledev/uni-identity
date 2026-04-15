@@ -1678,11 +1678,11 @@ components:
       description: Token exchange request options.
       type: object
       properties:
-        org_id:
+        organizationId:
           description: Optional organization context to scope the passport ACL to.
           type: string
           nullable: true
-        project_id:
+        projectId:
           description: Optional project context to include in the passport.
           type: string
           nullable: true
@@ -2479,7 +2479,7 @@ components:
           schema:
             $ref: '#/components/schemas/exchangeRequestOptions'
           example:
-            org_id: d4600d6e-e965-4b44-a808-84fb2fa36702
+            organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
     oauth2ProviderRequest:
       description: Body required to create an oauth2 provider.
       required: true
