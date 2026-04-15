@@ -18,12 +18,33 @@ fi
 
 echo "==> Cluster context: ${CONTEXT} (KinD: ${IS_KIND})"
 
-# ── cloud-provider-kind preflight ─────────────────────────────────────────────
+# ── cloud-provider-kind bootstrap ─────────────────────────────────────────────
 if [[ "${IS_KIND}" == true ]]; then
   if ! pgrep -f cloud-provider-kind > /dev/null; then
-    echo "ERROR: cloud-provider-kind is not running." >&2
-    echo "       Start it with: sudo cloud-provider-kind" >&2
-    echo "       Install with:  go install sigs.k8s.io/cloud-provider-kind@latest" >&2
+    echo "==> Installing cloud-provider-kind..."
+    GOBIN=$(go env GOBIN)
+    if [[ -z "${GOBIN}" ]]; then
+      GOBIN="$(go env GOPATH)/bin"
+    fi
+
+    go install sigs.k8s.io/cloud-provider-kind@latest
+
+    echo "==> Starting cloud-provider-kind..."
+    sudo "${GOBIN}/cloud-provider-kind" > /tmp/cloud-provider-kind.log 2>&1 &
+
+    for _ in $(seq 1 30); do
+      if pgrep -f cloud-provider-kind > /dev/null; then
+        break
+      fi
+
+      sleep 1
+    done
+  fi
+
+  if ! pgrep -f cloud-provider-kind > /dev/null; then
+    echo "ERROR: cloud-provider-kind failed to start." >&2
+    echo "       See /tmp/cloud-provider-kind.log for details." >&2
+    echo "       You can also start it manually with: sudo $(go env GOPATH)/bin/cloud-provider-kind" >&2
     exit 1
   fi
 fi
