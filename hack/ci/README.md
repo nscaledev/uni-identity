@@ -71,15 +71,9 @@ sudo mkdir -p /etc/resolver && echo "nameserver 8.8.8.8" | sudo tee /etc/resolve
 make kind-cluster       # creates the KinD cluster
 ```
 
-Then in a separate terminal, start `cloud-provider-kind` and leave it running:
-
 ```sh
-go install sigs.k8s.io/cloud-provider-kind@latest
-sudo $(go env GOPATH)/bin/cloud-provider-kind
-```
-
-```sh
-make integration-infra  # cert-manager, ingress-nginx, unikorn-core — idempotent
+make integration-infra  # bootstraps cloud-provider-kind if needed, then installs
+                        # cert-manager, ingress-nginx, unikorn-core — idempotent
 ```
 
 **Run the tests:**

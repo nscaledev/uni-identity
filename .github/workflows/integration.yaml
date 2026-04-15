@@ -42,11 +42,6 @@ jobs:
         cluster_name: identity-${{ github.run_id }}
         config: hack/ci/kind-config.yaml
 
-    - name: Start cloud-provider-kind
-      run: |
-        go install sigs.k8s.io/cloud-provider-kind@latest
-        sudo $(go env GOPATH)/bin/cloud-provider-kind &
-
     - name: Install cluster infrastructure
       env:
         KIND_CLUSTER: identity-${{ github.run_id }}

@@ -46,7 +46,7 @@ auto-detect which one you are using and adjust accordingly.
 | Port exposure | `cloud-provider-kind` LoadBalancer IPs (routable on host) | Lima port forwarding |
 | Infra setup | `make integration-infra` | `make integration-infra` |
 
-`cloud-provider-kind` must be running as a daemon before `make integration-infra`. See [hack/ci/README.md](../hack/ci/README.md#running-locally) for setup instructions.
+`make integration-infra` bootstraps `cloud-provider-kind` automatically when running against KinD. See [hack/ci/README.md](../hack/ci/README.md#running-locally) for local setup instructions.
 
 ## Prerequisites
 
