@@ -82,6 +82,12 @@ func (e *Endpoints) ListUsers(orgID string) string {
 		url.PathEscape(orgID))
 }
 
+// GetUser returns the endpoint for a specific user in an organization.
+func (e *Endpoints) GetUser(orgID, userID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/users/%s",
+		url.PathEscape(orgID), url.PathEscape(userID))
+}
+
 // ListRoles returns the endpoint for listing all roles in an organization.
 func (e *Endpoints) ListRoles(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/roles",

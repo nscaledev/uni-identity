@@ -310,6 +310,46 @@ func (c *APIClient) ListUsers(ctx context.Context, orgID string) (identityopenap
 	)
 }
 
+// CreateUser creates a new user in an organization.
+func (c *APIClient) CreateUser(ctx context.Context, orgID string, user identityopenapi.UserWrite) (*identityopenapi.UserRead, error) {
+	path := c.endpoints.ListUsers(orgID)
+
+	body, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling user: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusCreated)
+	if err != nil {
+		return nil, fmt.Errorf("creating user: %w", err)
+	}
+
+	var created identityopenapi.UserRead
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		return nil, fmt.Errorf("unmarshaling created user: %w", err)
+	}
+
+	return &created, nil
+}
+
+// DeleteUser removes a user from an organization.
+func (c *APIClient) DeleteUser(ctx context.Context, orgID, userID string) error {
+	path := c.endpoints.GetUser(orgID, userID)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("user %s: %w", userID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("deleting user: %w", err)
+	}
+
+	return nil
+}
+
 // ListRoles lists all roles in an organization.
 func (c *APIClient) ListRoles(ctx context.Context, orgID string) (identityopenapi.Roles, error) {
 	path := c.endpoints.ListRoles(orgID)

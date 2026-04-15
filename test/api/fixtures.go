@@ -75,6 +75,11 @@ func (b *GroupPayloadBuilder) WithServiceAccountIDs(serviceAccountIDs []string) 
 	return b
 }
 
+func (b *GroupPayloadBuilder) WithUserIDs(userIDs ...string) *GroupPayloadBuilder {
+	b.group.Spec.UserIDs = &userIDs
+	return b
+}
+
 // BuildTyped returns the typed group struct directly.
 func (b *GroupPayloadBuilder) BuildTyped() identityopenapi.GroupWrite {
 	return b.group
@@ -139,4 +144,83 @@ func CreateGroupWithCleanup(client *APIClient, ctx context.Context, config *Test
 	GinkgoWriter.Printf("Created group with ID: %s\n", groupID)
 
 	return *group, groupID
+}
+
+// UserPayloadBuilder builds user payloads for testing using type-safe OpenAPI structs.
+type UserPayloadBuilder struct {
+	user   identityopenapi.UserWrite
+	config *TestConfig
+}
+
+// NewUserPayload creates a new user payload builder with defaults from config.
+func NewUserPayload() *UserPayloadBuilder {
+	config, err := LoadTestConfig()
+	Expect(err).NotTo(HaveOccurred(), "Failed to load test configuration")
+
+	timestamp := time.Now().Format("20060102150405")
+	uniqueName := fmt.Sprintf("test-user-%s", timestamp)
+
+	return &UserPayloadBuilder{
+		config: config,
+		user: identityopenapi.UserWrite{
+			Metadata: &coreopenapi.ResourceWriteMetadata{
+				Name: uniqueName,
+			},
+			Spec: identityopenapi.UserSpec{},
+		},
+	}
+}
+
+// WithSubject sets the user subject.
+func (b *UserPayloadBuilder) WithSubject(subject string) *UserPayloadBuilder {
+	b.user.Spec.Subject = subject
+	return b
+}
+
+// WithGroupIDs sets the group IDs the user should belong to.
+func (b *UserPayloadBuilder) WithGroupIDs(groupIDs ...string) *UserPayloadBuilder {
+	b.user.Spec.GroupIDs = groupIDs
+	return b
+}
+
+// WithState sets the user state.
+func (b *UserPayloadBuilder) WithState(state identityopenapi.UserState) *UserPayloadBuilder {
+	b.user.Spec.State = state
+	return b
+}
+
+// BuildTyped returns the typed user struct directly.
+func (b *UserPayloadBuilder) BuildTyped() identityopenapi.UserWrite {
+	return b.user
+}
+
+// CreateUserWithCleanup creates a user in an organization and schedules automatic cleanup.
+func CreateUserWithCleanup(client *APIClient, ctx context.Context, config *TestConfig, payload identityopenapi.UserWrite) (identityopenapi.UserRead, string) {
+	var userID string
+
+	DeferCleanup(func() {
+		if userID == "" {
+			return
+		}
+
+		GinkgoWriter.Printf("Cleaning up user: %s\n", userID)
+
+		deleteErr := client.DeleteUser(ctx, config.OrgID, userID)
+		if deleteErr != nil {
+			GinkgoWriter.Printf("Warning: Failed to delete user %s: %v\n", userID, deleteErr)
+		} else {
+			GinkgoWriter.Printf("Successfully deleted user: %s\n", userID)
+		}
+	})
+
+	user, err := client.CreateUser(ctx, config.OrgID, payload)
+	if err != nil {
+		Fail(fmt.Sprintf("Failed to create user: %v", err))
+	}
+
+	userID = user.Metadata.Id
+
+	GinkgoWriter.Printf("Created user with ID: %s\n", userID)
+
+	return *user, userID
 }
