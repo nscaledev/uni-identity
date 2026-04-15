@@ -290,11 +290,11 @@ type CodeChallengeMethod string
 
 // ExchangeRequestOptions Token exchange request options.
 type ExchangeRequestOptions struct {
-	// OrgId Optional organization context to scope the passport ACL to.
-	OrgId *string `json:"org_id"`
+	// OrganizationId Optional organization context to scope the passport ACL to.
+	OrganizationId *string `json:"organizationId"`
 
 	// ProjectId Optional project context to include in the passport.
-	ProjectId *string `json:"project_id"`
+	ProjectId *string `json:"projectId"`
 }
 
 // ExchangeResult Token exchange result containing a signed passport JWT.
