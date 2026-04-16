@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"slices"
@@ -43,27 +42,28 @@ var (
 	ErrInconsistentData    = errors.New("inconsistent data")
 	ErrInvalidConcurrency  = errors.New("concurrency must be greater than 0")
 	ErrEmptyIdentityIssuer = errors.New("empty identity issuer")
+	ErrDryRunStateFile     = errors.New("state file was generated from a dry-run - delete it before running an actual migration")
 )
 
-type GroupsMigrationError struct {
+type MigrationError struct {
 	Failed int
 	Total  int
 }
 
-func NewGroupsMigrationError(failed, total int) error {
-	return &GroupsMigrationError{
+func NewMigrationError(failed, total int) error {
+	return &MigrationError{
 		Failed: failed,
 		Total:  total,
 	}
 }
 
-func (e *GroupsMigrationError) Error() string {
-	return fmt.Sprintf("%d/%d groups failed during migration, please check the output for details", e.Failed, e.Total)
+func (e *MigrationError) Error() string {
+	return fmt.Sprintf("%d/%d groups failed during migration, please check the state file for details", e.Failed, e.Total)
 }
 
 type Options struct {
-	outputFilePath string
-	dryRun         bool
+	stateFilePath string
+	dryRun        bool
 
 	kubeConfigPath string
 	kubeContext    string
@@ -73,7 +73,7 @@ type Options struct {
 }
 
 func (o *Options) BindFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.outputFilePath, "file", "group-subject-migration-results.json", "Path to the output file where the migration results will be stored")
+	fs.StringVar(&o.stateFilePath, "file", "group-subject-migration-state.json", "Path to the state file where the migration state will be stored")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "If true, the migration will not actually patch any groups")
 
 	fs.StringVar(&o.kubeConfigPath, "kubeconfig", "", "Path to the kubeconfig file to use for connecting to the Kubernetes cluster")
@@ -118,7 +118,7 @@ func run(options Options) error {
 		cancel()
 	}()
 
-	if err = manager.Run(ctx, options.outputFilePath, options.dryRun); err != nil {
+	if err = manager.Run(ctx, options.stateFilePath, options.dryRun); err != nil {
 		return fmt.Errorf("migration failed: %w", err)
 	}
 
@@ -159,59 +159,10 @@ type Result struct {
 	ErrorMessage *string `json:"error_message,omitempty"`
 }
 
-type ResultsWriter interface {
-	Write(results []Result) error
-	Close() error
-}
-
-type JSONResultsWriter struct {
-	w io.WriteCloser
-}
-
-func NewJSONResultsWriter(w io.WriteCloser) *JSONResultsWriter {
-	return &JSONResultsWriter{w: w}
-}
-
-func (w *JSONResultsWriter) Write(results []Result) error {
-	encoder := json.NewEncoder(w.w)
-	encoder.SetIndent("", "\t")
-	encoder.SetEscapeHTML(false)
-
-	return encoder.Encode(results)
-}
-
-func (w *JSONResultsWriter) Close() error {
-	return w.w.Close()
-}
-
-// DryRunResultsWriter writes migration results to stderr in dry-run mode.
-// Only failures are reported. Groups that would be successfully migrated are silently skipped.
-type DryRunResultsWriter struct{}
-
-func NewDryRunResultsWriter() DryRunResultsWriter {
-	return DryRunResultsWriter{}
-}
-
-func (w DryRunResultsWriter) Write(results []Result) error {
-	for i := range results {
-		result := &results[i]
-		if result.Success {
-			continue
-		}
-
-		message := "unknown error"
-		if result.ErrorMessage != nil {
-			message = *result.ErrorMessage
-		}
-
-		fmt.Fprintf(os.Stderr, "migration failed for group %q in namespace %q: %s\n", result.Name, result.Namespace, message)
-	}
-
-	return nil
-}
-
-func (w DryRunResultsWriter) Close() error {
-	return nil
+type State struct {
+	//nolint:tagliatelle
+	DryRun  bool     `json:"dry_run,omitempty"`
+	Results []Result `json:"results"`
 }
 
 type Cache struct {
@@ -249,17 +200,17 @@ func NewManager(concurrency int, identityIssuer string, kubeClient client.Client
 	return manager, nil
 }
 
-func (m *Manager) Run(ctx context.Context, outputFilePath string, dryRun bool) error {
-	previousResults, err := m.readPreviousResults(outputFilePath)
+func (m *Manager) Run(ctx context.Context, stateFilePath string, dryRun bool) error {
+	previousResults, err := m.readState(stateFilePath, dryRun)
 	if err != nil {
 		return err
 	}
 
-	resultsWriter, err := m.prepareOutput(outputFilePath, dryRun)
+	file, err := m.prepareStateFile(stateFilePath, dryRun)
 	if err != nil {
 		return err
 	}
-	defer resultsWriter.Close()
+	defer file.Close()
 
 	resultMemo := make(map[string]*Result)
 
@@ -286,47 +237,49 @@ func (m *Manager) Run(ctx context.Context, outputFilePath string, dryRun bool) e
 
 	mergedResults := m.mergeResults(results, resultMemo)
 
-	if err = resultsWriter.Write(mergedResults); err != nil {
-		return fmt.Errorf("failed to write migration results: %w", err)
+	if err = m.writeState(file, dryRun, mergedResults); err != nil {
+		return err
 	}
 
 	return m.checkFailures(mergedResults)
 }
 
-func (m *Manager) readPreviousResults(path string) ([]Result, error) {
+func (m *Manager) readState(path string, dryRun bool) ([]Result, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []Result{}, nil
 		}
 
-		return nil, fmt.Errorf("failed to open previous results file: %w", err)
+		return nil, fmt.Errorf("failed to open state file: %w", err)
 	}
 	defer file.Close()
 
-	var results []Result
-	if err = json.NewDecoder(file).Decode(&results); err != nil {
-		return nil, fmt.Errorf("failed to decode previous results file: %w", err)
+	var state State
+	if err = json.NewDecoder(file).Decode(&state); err != nil {
+		return nil, fmt.Errorf("failed to decode state file: %w", err)
 	}
 
-	return results, nil
+	if state.DryRun && !dryRun {
+		return nil, ErrDryRunStateFile
+	}
+
+	return state.Results, nil
 }
 
-func (m *Manager) prepareOutput(path string, dryRun bool) (ResultsWriter, error) {
-	if dryRun {
-		return NewDryRunResultsWriter(), nil
-	}
-
-	if err := os.Rename(path, fmt.Sprintf("%s.backup", path)); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to backup previous results file: %w", err)
+func (m *Manager) prepareStateFile(path string, dryRun bool) (*os.File, error) {
+	if !dryRun {
+		if err := os.Rename(path, fmt.Sprintf("%s.backup", path)); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to backup previous state file: %w", err)
+		}
 	}
 
 	file, err := os.Create(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create output file: %w", err)
+		return nil, fmt.Errorf("failed to create state file: %w", err)
 	}
 
-	return NewJSONResultsWriter(file), nil
+	return file, nil
 }
 
 func (m *Manager) loadResources(ctx context.Context) ([]identityv1.Group, *Cache, error) {
@@ -594,6 +547,20 @@ func (m *Manager) mergeResults(results []Result, resultMemo map[string]*Result) 
 	return mergedResults
 }
 
+func (m *Manager) writeState(file *os.File, dryRun bool, results []Result) error {
+	state := State{DryRun: dryRun, Results: results}
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "\t")
+	encoder.SetEscapeHTML(false)
+
+	if err := encoder.Encode(state); err != nil {
+		return fmt.Errorf("failed to encode state file: %w", err)
+	}
+
+	return nil
+}
+
 func (m *Manager) checkFailures(results []Result) error {
 	var failed int
 
@@ -605,7 +572,7 @@ func (m *Manager) checkFailures(results []Result) error {
 	}
 
 	if failed > 0 {
-		return NewGroupsMigrationError(failed, len(results))
+		return NewMigrationError(failed, len(results))
 	}
 
 	return nil
