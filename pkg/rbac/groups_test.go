@@ -711,6 +711,13 @@ func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN strin
 	return rbacClient.GetACL(ctx, testOrgID)
 }
 
+func impersonatedPrincipal(subject, principalType string) *principal.Principal {
+	return &principal.Principal{
+		Actor: subject,
+		Type:  principalType,
+	}
+}
+
 // TestSystemAccountWithPrincipalUsesUserACL verifies that a system account carrying an
 // impersonated principal gets the end-user's ACL, not the system account's global role.
 // TestSystemAccountWithPrincipalUsesUserACL verifies that a system account carrying an
@@ -760,9 +767,7 @@ func TestSystemAccountWithPrincipalUsesUserACL(t *testing.T) {
 
 			aclDirect := getACLForUser(t, f.rbac, tc.subject)
 
-			aclImpersonated, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
-				Actor: tc.subject,
-			}, true)
+			aclImpersonated, err := getACLForSystemAccount(t, f.rbac, "compute-service", impersonatedPrincipal(tc.subject, principal.UserType), true)
 			require.NoError(t, err)
 
 			assert.Equal(t, aclDirect, aclImpersonated, "impersonated ACL should equal the user's direct ACL when the service has superset permissions")
@@ -792,7 +797,72 @@ func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
 
 	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
 		OrganizationID: testOrgID,
+		Type:           principal.UserType,
 		Actor:          "",
 	}, true)
 	require.Error(t, err)
+}
+
+func TestSystemAccountWithServiceAccountPrincipalUsesServiceACL(t *testing.T) {
+	t.Parallel()
+
+	f, c := setupTestEnvironment(t)
+
+	superServiceRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "role-super-service",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+					{Name: "project:deploy", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Update}},
+					{Name: "project:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), superServiceRole))
+
+	f.rbac = rbac.New(c, testNamespace, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{"compute-service": "role-super-service"},
+	})
+
+	aclDirect := getACLForServiceAccount(t, f.rbac, f.serviceAccountAlphaID)
+	aclImpersonated, err := getACLForSystemAccount(t, f.rbac, "compute-service", impersonatedPrincipal(f.serviceAccountAlphaID, principal.ServiceType), true)
+	require.NoError(t, err)
+
+	assert.Equal(t, aclDirect, aclImpersonated)
+}
+
+func TestSystemAccountWithMissingPrincipalTypeFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	f, c := setupTestEnvironment(t)
+
+	superServiceRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "role-super-service",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), superServiceRole))
+
+	f.rbac = rbac.New(c, testNamespace, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{"compute-service": "role-super-service"},
+	})
+
+	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
+		Actor: f.serviceAccountAlphaID,
+	}, true)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrInvalidPrincipalType)
 }
