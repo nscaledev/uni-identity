@@ -173,6 +173,10 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 			Userinfo: claims,
 		}
 
+		if claims.Type != nil && *claims.Type == identityapi.Service {
+			info.ServiceAccount = true
+		}
+
 		return info, nil
 	}
 
@@ -236,6 +240,10 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	out := &authorization.Info{
 		Token:    rawToken,
 		Userinfo: claims,
+	}
+
+	if claims.Type != nil && *claims.Type == identityapi.Service {
+		out.ServiceAccount = true
 	}
 
 	return out, nil

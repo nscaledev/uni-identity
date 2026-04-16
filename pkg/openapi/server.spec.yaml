@@ -1587,6 +1587,12 @@ components:
         sub:
           description: The access token's subject.
           type: string
+        type:
+          description: The subject type derived from the access token.
+          type: string
+          enum:
+          - user
+          - service
         email:
           description: The user's email address.
           type: string

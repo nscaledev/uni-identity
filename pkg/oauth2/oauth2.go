@@ -1779,6 +1779,13 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		Sub: claims.Subject,
 	}
 
+	switch claims.Type {
+	case TokenTypeServiceAccount:
+		userinfo.Type = ptr.To(openapi.Service)
+	default:
+		userinfo.Type = ptr.To(openapi.User)
+	}
+
 	if claims.Type == TokenTypeFederated {
 		if slices.Contains(claims.Federated.Scope, "email") {
 			userinfo.Email = ptr.To(claims.Subject)
