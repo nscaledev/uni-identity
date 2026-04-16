@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/onsi/ginkgo/v2"
 
@@ -363,7 +364,6 @@ func (c *APIClient) GetQuotas(ctx context.Context, orgID string) (*identityopena
 
 	return &quotas, nil
 }
-
 // SetQuotas updates the quotas for an organization.
 func (c *APIClient) SetQuotas(ctx context.Context, orgID string, quotas identityopenapi.QuotasWrite) (*identityopenapi.QuotasRead, error) {
 	path := c.endpoints.GetQuotas(orgID)
@@ -508,7 +508,6 @@ func putResource[Req, R any](c *APIClient, ctx context.Context, path, resourceID
 
 	return &result, nil
 }
-
 // UpdateServiceAccount updates an existing service account.
 func (c *APIClient) UpdateServiceAccount(ctx context.Context, orgID, saID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.ServiceAccountRead, error) {
 	return putResource[identityopenapi.ServiceAccountWrite, identityopenapi.ServiceAccountRead](
