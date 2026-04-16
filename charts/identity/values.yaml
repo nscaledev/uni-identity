@@ -232,6 +232,7 @@ roles:
         region:servers:v2: [create,read,update,delete]
         region:securitygroups: [create,read,update,delete]
         region:securitygroups:v2: [read]
+        region:sshcertificateauthorities:v2: [read]
   storage-service:
     decription: Storage service
     protected: true
