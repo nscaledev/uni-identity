@@ -213,7 +213,14 @@ func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) PostOauth2V2Exchange(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
+	result, err := h.oauth2.Exchange(r.Context(), r)
+	if err != nil {
+		oauth2errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheableNoStore(w)
+	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {

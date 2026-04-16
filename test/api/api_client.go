@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/onsi/ginkgo/v2"
 
@@ -358,4 +359,61 @@ func (c *APIClient) GetQuotas(ctx context.Context, orgID string) (*identityopena
 	}
 
 	return &quotas, nil
+}
+
+// exchangePath builds the exchange endpoint path with optional query parameters.
+// Query parameters are used because the core DoRequest hardcodes Content-Type
+// to application/json for request bodies, but ParseForm reads query params
+// regardless of Content-Type.
+func (c *APIClient) exchangePath(options *identityopenapi.ExchangeRequestOptions) string {
+	path := c.endpoints.Exchange()
+
+	if options == nil {
+		return path
+	}
+
+	params := url.Values{}
+
+	if options.OrganizationId != nil {
+		params.Set("organizationId", *options.OrganizationId)
+	}
+
+	if options.ProjectId != nil {
+		params.Set("projectId", *options.ProjectId)
+	}
+
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	return path
+}
+
+// ExchangePassport exchanges an access token for a passport JWT.
+// The options parameter is optional; pass nil for an unscoped exchange.
+func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopenapi.ExchangeRequestOptions) (*identityopenapi.ExchangeResult, error) {
+	path := c.exchangePath(options)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("exchanging passport: %w", err)
+	}
+
+	var result identityopenapi.ExchangeResult
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshaling exchange result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// ExchangePassportRaw performs a raw exchange request returning the HTTP response
+// and body bytes. Use this for testing error scenarios where the response may not
+// be a valid ExchangeResult.
+func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int, options *identityopenapi.ExchangeRequestOptions) (*http.Response, []byte, error) {
+	path := c.exchangePath(options)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	return c.DoRequest(ctx, http.MethodPost, path, nil, expectedStatus)
 }

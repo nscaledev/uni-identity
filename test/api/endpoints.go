@@ -99,3 +99,8 @@ func (e *Endpoints) GetQuotas(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/quotas",
 		url.PathEscape(orgID))
 }
+
+// Exchange returns the endpoint for passport token exchange.
+func (e *Endpoints) Exchange() string {
+	return "/oauth2/v2/exchange"
+}
