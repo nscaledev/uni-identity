@@ -31,6 +31,55 @@ import (
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
+var _ = Describe("Organization Management", func() {
+	Context("When updating organizations", func() {
+		Describe("Given valid organization", func() {
+			It("should update the organization name and persist the change", func() {
+				original, err := client.GetOrganization(ctx, config.OrgID)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				restorePayload := api.NewOrganizationPayload().FromRead(*original).Build()
+				updatedPayload := api.NewOrganizationPayload().
+					FromRead(*original).
+					WithName(original.Metadata.Name + "-updated").
+					Build()
+
+				DeferCleanup(func() {
+					Expect(client.UpdateOrganization(ctx, config.OrgID, restorePayload)).To(Succeed(),
+						"failed to restore organization name — org may be left in a mutated state")
+				})
+
+				err = client.UpdateOrganization(ctx, config.OrgID, updatedPayload)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := client.GetOrganization(ctx, config.OrgID)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Metadata.Name).To(Equal(updatedPayload.Metadata.Name))
+				Expect(retrieved.Metadata.Name).NotTo(Equal(original.Metadata.Name))
+
+				GinkgoWriter.Printf("Updated organization name: %s -> %s\n",
+					original.Metadata.Name, retrieved.Metadata.Name)
+			})
+		})
+
+		Describe("Given invalid organization ID", func() {
+			It("should return error for non-existent organization", func() {
+				original, err := client.GetOrganization(ctx, config.OrgID)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				err = client.UpdateOrganization(ctx, "invalid-org-id",
+					api.NewOrganizationPayload().FromRead(*original).Build())
+
+				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+})
+
 var _ = Describe("Organization Discovery", func() {
 	Context("When listing organizations", func() {
 		Describe("Given valid authentication", func() {
@@ -95,61 +144,3 @@ var _ = Describe("Organization Discovery", func() {
 	})
 })
 
-var _ = Describe("Project Discovery", func() {
-	Context("When listing projects", func() {
-		Describe("Given valid organization", func() {
-			It("should return all projects in the organization", func() {
-				projects, err := client.ListProjects(ctx, config.OrgID)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(projects).NotTo(BeEmpty())
-
-				projectIDs := make([]string, len(projects))
-				for i, project := range projects {
-					Expect(project.Metadata).NotTo(BeNil())
-					Expect(project.Metadata.Id).NotTo(BeEmpty())
-					Expect(project.Metadata.Name).NotTo(BeEmpty())
-					projectIDs[i] = project.Metadata.Id
-				}
-
-				Expect(projectIDs).To(ContainElement(config.ProjectID), "Expected project ID %s to be present in the list", config.ProjectID)
-				GinkgoWriter.Printf("Found %d projects in organization %s (including test project: %s)\n", len(projects), config.OrgID, config.ProjectID)
-			})
-		})
-
-		Describe("Given invalid organization ID", func() {
-			It("should return error for non-existent organization", func() {
-				_, err := client.ListProjects(ctx, "invalid-org-id")
-
-				Expect(err).To(HaveOccurred())
-				GinkgoWriter.Printf("Expected error for invalid organization ID: %v\n", err)
-			})
-		})
-	})
-
-	Context("When getting project details", func() {
-		Describe("Given valid project ID", func() {
-			It("should return project details", func() {
-				project, err := client.GetProject(ctx, config.OrgID, config.ProjectID)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(project).NotTo(BeNil())
-				Expect(project.Metadata).NotTo(BeNil())
-				Expect(project.Metadata.Id).To(Equal(config.ProjectID))
-				Expect(project.Metadata.Name).NotTo(BeEmpty())
-
-				GinkgoWriter.Printf("Retrieved project: %s (ID: %s)\n", project.Metadata.Name, project.Metadata.Id)
-			})
-		})
-
-		Describe("Given invalid project ID", func() {
-			It("should return not found error", func() {
-				_, err := client.GetProject(ctx, config.OrgID, "invalid-project-id")
-
-				Expect(err).To(HaveOccurred())
-				Expect(errors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue())
-				GinkgoWriter.Printf("Expected error for invalid project ID: %v\n", err)
-			})
-		})
-	})
-})
