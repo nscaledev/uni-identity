@@ -127,6 +127,12 @@ const (
 	Suspended UserState = "suspended"
 )
 
+// Defines values for UserinfoType.
+const (
+	Service UserinfoType = "service"
+	User    UserinfoType = "user"
+)
+
 // Acl A list of access control scopes and permissions.
 type Acl struct {
 	// Global A list of access control scopes.
@@ -827,6 +833,9 @@ type Userinfo struct {
 	// Sub The access token's subject.
 	Sub string `json:"sub"`
 
+	// Type The subject type derived from the access token.
+	Type *UserinfoType `json:"type,omitempty"`
+
 	// UpdatedAt Then the user's profile was last updated.
 	UpdatedAt *string `json:"updated_at,omitempty"`
 
@@ -836,6 +845,9 @@ type Userinfo struct {
 	// Zoneinfo The user's IANA assigned timezone.
 	Zoneinfo *string `json:"zoneinfo,omitempty"`
 }
+
+// UserinfoType The subject type derived from the access token.
+type UserinfoType string
 
 // UserinfoRequestOptions A userinfo POST request.
 type UserinfoRequestOptions struct {
