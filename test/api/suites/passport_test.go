@@ -88,11 +88,13 @@ var _ = Describe("Passport Token Exchange", func() {
 				unauthClient := coreclient.NewAPIClient(config.BaseURL, "", config.RequestTimeout, &api.GinkgoLogger{})
 				path := client.GetEndpoints().Exchange()
 
-				_, _, err := unauthClient.DoRequest(ctx, http.MethodPost, path, nil, http.StatusOK)
+				_, respBody, err := unauthClient.DoRequest(ctx, http.MethodPost, path, nil, http.StatusOK)
 
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue(),
 					"Should return unexpected status code error for missing auth")
+				Expect(string(respBody)).To(ContainSubstring("access_denied"),
+					"Response body should contain access_denied error")
 
 				GinkgoWriter.Printf("Expected error for missing authentication: %v\n", err)
 			})

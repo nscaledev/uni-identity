@@ -212,6 +212,110 @@ func TestExchangeFederatedUser(t *testing.T) {
 func TestExchangeWithOrgScope(t *testing.T) {
 	t.Parallel()
 
+	orgNamespace := josetesting.Namespace + "-org1"
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1",
+			},
+			Status: unikornv1.OrganizationStatus{
+				Namespace: orgNamespace,
+			},
+		},
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+		&unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1-user",
+				Labels: map[string]string{
+					constants.UserLabel:         "test-user",
+					constants.OrganizationLabel: "org1",
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{
+				State: unikornv1.UserStateActive,
+			},
+		},
+		&unikornv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-role",
+			},
+			Spec: unikornv1.RoleSpec{
+				Scopes: unikornv1.RoleScopes{
+					Project: []unikornv1.RoleScope{
+						{Name: "compute", Operations: []unikornv1.Operation{unikornv1.Read}},
+					},
+				},
+			},
+		},
+		&unikornv1.Group{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: orgNamespace,
+				Name:      "test-group",
+			},
+			Spec: unikornv1.GroupSpec{
+				Subjects: []unikornv1.GroupSubject{
+					{ID: "user@example.com"},
+				},
+				RoleIDs: []string{"test-role"},
+			},
+		},
+		&unikornv1.Project{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: orgNamespace,
+				Name:      "project1",
+				Labels: map[string]string{
+					constants.OrganizationLabel: "org1",
+				},
+			},
+			Spec: unikornv1.ProjectSpec{
+				GroupIDs: []string{"test-group"},
+			},
+		},
+	)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	orgID := "org1"
+	projectID := "project1"
+	req := exchangeRequest(t, token, &openapi.ExchangeRequestOptions{
+		OrganizationId: &orgID,
+		ProjectId:      &projectID,
+	})
+
+	result, err := env.authenticator.Exchange(t.Context(), req)
+	require.NoError(t, err)
+
+	claims := parsePassport(t, env, result.Passport)
+
+	assert.Equal(t, "org1", claims.OrgID)
+	assert.Equal(t, "project1", claims.ProjectID)
+}
+
+func TestExchangeInvalidProjectID(t *testing.T) {
+	t.Parallel()
+
 	env := setupPassportTestEnv(t,
 		&unikornv1.Organization{
 			ObjectMeta: metav1.ObjectMeta{
@@ -259,19 +363,15 @@ func TestExchangeWithOrgScope(t *testing.T) {
 	})
 
 	orgID := "org1"
-	projectID := "project1"
+	bogusProject := "nonexistent-project"
 	req := exchangeRequest(t, token, &openapi.ExchangeRequestOptions{
 		OrganizationId: &orgID,
-		ProjectId:      &projectID,
+		ProjectId:      &bogusProject,
 	})
 
-	result, err := env.authenticator.Exchange(t.Context(), req)
-	require.NoError(t, err)
-
-	claims := parsePassport(t, env, result.Passport)
-
-	assert.Equal(t, "org1", claims.OrgID)
-	assert.Equal(t, "project1", claims.ProjectID)
+	_, err := env.authenticator.Exchange(t.Context(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project not in scope")
 }
 
 func TestExchangeServiceAccount(t *testing.T) {
