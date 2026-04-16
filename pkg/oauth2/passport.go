@@ -153,6 +153,10 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 	}
 
 	if options.ProjectId != nil {
+		if !projectInACL(*options.ProjectId, acl) {
+			return nil, errors.OAuth2AccessDenied("project not in scope")
+		}
+
 		claims.ProjectID = *options.ProjectId
 	}
 
@@ -218,4 +222,19 @@ func parseExchangeRequest(r *http.Request) (*openapi.ExchangeRequestOptions, err
 	}
 
 	return options, nil
+}
+
+// projectInACL returns true if projectID appears in the ACL's project list.
+func projectInACL(projectID string, acl *openapi.Acl) bool {
+	if acl == nil || acl.Projects == nil {
+		return false
+	}
+
+	for _, p := range *acl.Projects {
+		if p.Id == projectID {
+			return true
+		}
+	}
+
+	return false
 }
