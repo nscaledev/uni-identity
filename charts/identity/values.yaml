@@ -168,6 +168,7 @@ roles:
         region:networks/references: [create,read,update,delete]
         region:networks:v2: [create,read,update,delete]
         region:networks:v2/references: [create,read,update,delete]
+        region:loadbalancers:v2: [create,read,update,delete]
         region:securitygroups: [create,read,update,delete]
         region:securitygroups:v2: [create,read,update,delete]
         region:servers: [create,read,update,delete]
@@ -255,6 +256,7 @@ roles:
         identity:quotas: [read]
         region:regions: [read]
         region:networks:v2: [create,read,update,delete]
+        region:loadbalancers:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
         region:filestorageclass:v2: [read]
         storage:objectstorageclasses: [read]
@@ -288,6 +290,7 @@ roles:
         identity:quotas: [read]
         region:regions: [read]
         region:networks:v2: [read]
+        region:loadbalancers:v2: [read]
         region:filestorage:v2: [read]
         region:filestorageclass:v2: [read]
         storage:objectstorageclasses: [read]
@@ -328,6 +331,7 @@ roles:
       project:
         identity:projects: [read]
         region:networks:v2: [create,read,update,delete]
+        region:loadbalancers:v2: [create,read,update,delete]
         region:securitygroups:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
         storage:objectstorageendpoints: [create,read,update,delete]
@@ -360,6 +364,7 @@ roles:
       project:
         identity:projects: [read]
         region:networks:v2: [read]
+        region:loadbalancers:v2: [read]
         region:securitygroups:v2: [read]
         region:filestorage:v2: [read]
         storage:objectstorageendpoints: [read]
@@ -382,6 +387,10 @@ quotas:
   networks:
     displayName: Networks
     description: Layer 3 networks.
+    default: 5
+  loadbalancers:
+    displayName: Load Balancers
+    description: Layer 4 load balancers.
     default: 5
   clusters:
     displayName: Clusters
