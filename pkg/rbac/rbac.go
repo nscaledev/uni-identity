@@ -39,7 +39,8 @@ import (
 )
 
 var (
-	ErrResourceReference = goerrors.New("resource reference error")
+	ErrResourceReference    = goerrors.New("resource reference error")
+	ErrInvalidPrincipalType = goerrors.New("invalid impersonated principal type")
 )
 
 type Options struct {
@@ -814,7 +815,7 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		return r.processSystemAccountACL(ctx, subject)
 	}
 
-	userACL, err := r.processUserAccountACL(ctx, p.Actor, organizationID)
+	principalACL, err := r.processImpersonatedPrincipalACL(ctx, p, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -824,7 +825,18 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		return nil, err
 	}
 
-	return intersectACL(userACL, serviceACL), nil
+	return intersectACL(principalACL, serviceACL), nil
+}
+
+func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal.Principal, organizationID string) (*openapi.Acl, error) {
+	switch p.Type {
+	case principal.UserType:
+		return r.processUserAccountACL(ctx, p.Actor, organizationID)
+	case principal.ServiceType:
+		return r.processServiceAccountACL(ctx, p.Actor, organizationID)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrInvalidPrincipalType, p.Type)
+	}
 }
 
 // GetACL returns a granular set of permissions for a user based on their scope.

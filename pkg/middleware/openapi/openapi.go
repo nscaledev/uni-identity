@@ -235,7 +235,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 		// Add the principal to the context, the ACL call will use the internal
 		// identity client, and that requires a principal to be present.
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo.Sub)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info)
 		if err != nil {
 			authInfo.err = errors.OAuth2InvalidRequest("principal propagation failure for authentication").WithError(err)
 			return err
@@ -305,11 +305,17 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
 // principal information from the request itself.
-func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, subject string) context.Context {
+func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, info *authorization.Info) context.Context {
+	principalType := principal.UserType
+	if info.ServiceAccount {
+		principalType = principal.ServiceType
+	}
+
 	p := &principal.Principal{
 		OrganizationID: params["organizationID"],
 		ProjectID:      params["projectID"],
-		Actor:          subject,
+		Type:           principalType,
+		Actor:          info.Userinfo.Sub,
 	}
 
 	return principal.NewContext(ctx, p)
@@ -366,7 +372,7 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
 // API calls, otherwise it generates it from the available information.
-func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, subject string) (context.Context, error) {
+func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, info *authorization.Info) (context.Context, error) {
 	if util.HasClientCertificateHeader(r.Header) {
 		newCtx, err := extractPrincipal(ctx, r)
 		if err != nil {
@@ -376,7 +382,7 @@ func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Requ
 		return newCtx, nil
 	}
 
-	return v.generatePrincipal(ctx, params, subject), nil
+	return v.generatePrincipal(ctx, params, info), nil
 }
 
 // validateAndAuthorize performs OpenAPI schema validation of the request, and also
@@ -427,7 +433,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 		// data.
 		var err error
 
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo.Sub)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info)
 		if err != nil {
 			return errors.OAuth2InvalidRequest("identity info propagation failure").WithError(err)
 		}

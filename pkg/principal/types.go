@@ -17,12 +17,19 @@ limitations under the License.
 
 package principal
 
+const (
+	UserType    = "user"
+	ServiceType = "service"
+)
+
 // Principal records information about what user insigated a request.
 type Principal struct {
 	// OrganizationID of the originating request (optional).
 	OrganizationID string `json:"organizationId,omitempty"`
 	// ProjectID of the originating request (optional).
 	ProjectID string `json:"projectId,omitempty"`
+	// Type of the originating actor.
+	Type string `json:"type,omitempty"`
 	// Actor of the originating request, this may be an email address
 	// for an end-user, a service identifier for a system service, or
 	// the service account name.
