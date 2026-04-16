@@ -311,15 +311,24 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
 // principal information from the request itself.
 func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, userinfo *identityapi.Userinfo) context.Context {
-	var organizationIDs []string
+	var (
+		organizationIDs []string
+		principalType   = identityapi.User
+	)
+
 	if userinfo.HttpsunikornCloudOrgauthz != nil {
 		organizationIDs = userinfo.HttpsunikornCloudOrgauthz.OrgIds
+
+		if userinfo.HttpsunikornCloudOrgauthz.Acctype == identityapi.Service {
+			principalType = identityapi.Service
+		}
 	}
 
 	p := &principal.Principal{
 		OrganizationID:  params["organizationID"],
 		OrganizationIDs: organizationIDs,
 		ProjectID:       params["projectID"],
+		Type:            principalType,
 		Actor:           userinfo.Sub,
 	}
 
