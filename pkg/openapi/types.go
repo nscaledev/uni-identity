@@ -288,6 +288,24 @@ type Claim string
 // CodeChallengeMethod Supported code challenge methods.
 type CodeChallengeMethod string
 
+// ExchangeRequestOptions Token exchange request options.
+type ExchangeRequestOptions struct {
+	// OrganizationId Optional organization context to scope the passport ACL to.
+	OrganizationId *string `json:"organizationId"`
+
+	// ProjectId Optional project context to include in the passport.
+	ProjectId *string `json:"projectId"`
+}
+
+// ExchangeResult Token exchange result containing a signed passport JWT.
+type ExchangeResult struct {
+	// ExpiresIn The time in seconds until the passport expires.
+	ExpiresIn int `json:"expires_in"`
+
+	// Passport A signed passport JWT.
+	Passport string `json:"passport"`
+}
+
 // GrantType Supported grant type.
 type GrantType string
 
@@ -902,6 +920,9 @@ type AclResponse = Acl
 // AllocationResponse An allocation of resources.
 type AllocationResponse = AllocationRead
 
+// ExchangeResponse Token exchange result containing a signed passport JWT.
+type ExchangeResponse = ExchangeResult
+
 // GroupResponse A group when read.
 type GroupResponse = GroupRead
 
@@ -1058,6 +1079,9 @@ type PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody = UserWrite
 
 // PostOauth2V2AuthorizationFormdataRequestBody defines body for PostOauth2V2Authorization for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2AuthorizationFormdataRequestBody = AuthorizationRequestOptions
+
+// PostOauth2V2ExchangeFormdataRequestBody defines body for PostOauth2V2Exchange for application/x-www-form-urlencoded ContentType.
+type PostOauth2V2ExchangeFormdataRequestBody = ExchangeRequestOptions
 
 // PostOauth2V2LoginFormdataRequestBody defines body for PostOauth2V2Login for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2LoginFormdataRequestBody = LoginRequestOptions
