@@ -76,6 +76,7 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 
 			// Inject mock principal info (required for SetIdentityMetadata)
 			principalInfo := &principal.Principal{
+				Type:           openapi.User,
 				Actor:          "test-user",
 				OrganizationID: orgID,
 			}
