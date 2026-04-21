@@ -35,4 +35,8 @@ var (
 	// token is a confirmed passport. The remote authorizer cannot validate a
 	// passport — return a server error, not a credential error.
 	ErrJWKSUnavailable = errors.New("JWKS unavailable")
+
+	// ErrClaimsCacheEntryType is returned when a claims cache value has an
+	// unexpected type.
+	ErrClaimsCacheEntryType = errors.New("passport claims cache entry has invalid type")
 )

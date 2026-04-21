@@ -36,6 +36,8 @@ import (
 	identityoauth2 "github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 
+	"k8s.io/apimachinery/pkg/util/cache"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -44,6 +46,10 @@ const (
 	jwksDefaultTTL = 5 * time.Minute
 	// jwksHTTPTimeout is the timeout for JWKS fetch requests.
 	jwksHTTPTimeout = 5 * time.Second
+	// passportClaimsCacheSize is the default entry limit for cached passport claims.
+	passportClaimsCacheSize = 4096
+	// passportClaimsCacheDefaultTTL is used when claims do not include expiry.
+	passportClaimsCacheDefaultTTL = 5 * time.Minute
 )
 
 //nolint:gochecknoglobals
@@ -68,8 +74,9 @@ var (
 // Authorizer implements openapi.Authorizer. It verifies passport JWTs locally
 // and falls back to the remote authorizer for all other tokens.
 type Authorizer struct {
-	verifier *Verifier
-	remote   openapiinterfaces.Authorizer
+	verifier    *Verifier
+	remote      openapiinterfaces.Authorizer
+	claimsCache *cache.LRUExpireCache
 }
 
 var _ openapiinterfaces.Authorizer = &Authorizer{}
@@ -91,12 +98,48 @@ func NewAuthorizer(kubeClient client.Client, identityOptions *identityclient.Opt
 	baseClient.Timeout = jwksHTTPTimeout
 
 	var (
-		jwksURI  = strings.TrimRight(identityOptions.Host(), "/") + "/oauth2/v2/jwks"
-		cache    = NewJWKSCache(baseClient, jwksURI, jwksDefaultTTL)
-		verifier = NewVerifier(cache)
+		jwksURI   = strings.TrimRight(identityOptions.Host(), "/") + "/oauth2/v2/jwks"
+		jwksCache = NewJWKSCache(baseClient, jwksURI, jwksDefaultTTL)
+		verifier  = NewVerifier(jwksCache)
 	)
 
-	return &Authorizer{verifier: verifier, remote: remote}, nil
+	return &Authorizer{
+		verifier:    verifier,
+		remote:      remote,
+		claimsCache: cache.NewLRUExpireCache(passportClaimsCacheSize),
+	}, nil
+}
+
+// claimsTTL derives the cache TTL from verified token claims.
+func claimsTTL(claims *identityoauth2.PassportClaims) time.Duration {
+	if claims == nil || claims.Expiry == nil {
+		return passportClaimsCacheDefaultTTL
+	}
+
+	return time.Until(claims.Expiry.Time())
+}
+
+func (a *Authorizer) cacheClaims(rawToken string, claims *identityoauth2.PassportClaims) {
+	ttl := claimsTTL(claims)
+	if ttl <= 0 {
+		return
+	}
+
+	a.claimsCache.Add(rawToken, claims, ttl)
+}
+
+func (a *Authorizer) claimsFromCache(rawToken string) (*identityoauth2.PassportClaims, bool, error) {
+	value, ok := a.claimsCache.Get(rawToken)
+	if !ok {
+		return nil, false, nil
+	}
+
+	claims, ok := value.(*identityoauth2.PassportClaims)
+	if !ok {
+		return nil, false, ErrClaimsCacheEntryType
+	}
+
+	return claims, true, nil
 }
 
 // getBearerToken extracts the bearer token from the Authorization header.
@@ -160,6 +203,8 @@ func (a *Authorizer) Authorize(input *openapi3filter.AuthenticationInput) (*auth
 	passportVerificationTotal.WithLabelValues("success").Inc()
 	passportAuthorizerTotal.WithLabelValues("passport").Inc()
 
+	a.cacheClaims(rawToken, claims)
+
 	var email *string
 	if e := claims.Email; e != "" {
 		email = &e
@@ -189,16 +234,26 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		return nil, err
 	}
 
+	cachedClaims, ok, err := a.claimsFromCache(info.Token)
+	if err != nil {
+		return nil, err
+	}
+
+	if ok {
+		return cachedClaims.ACL, nil
+	}
+
 	if !isPassport(info.Token) {
 		return a.remote.GetACL(ctx, organizationID)
 	}
 
 	// Re-parse payload without signature verification — already verified in Authorize().
-	// Base64-decode + JSON unmarshal is microseconds; no caching needed.
-	var claims identityoauth2.PassportClaims
-	if err := parseJWTPayload(info.Token, &claims); err != nil {
+	var parsedClaims identityoauth2.PassportClaims
+	if err := parseJWTPayload(info.Token, &parsedClaims); err != nil {
 		return nil, fmt.Errorf("passport: failed to re-parse JWT payload: %w", err)
 	}
 
-	return claims.ACL, nil
+	a.cacheClaims(info.Token, &parsedClaims)
+
+	return parsedClaims.ACL, nil
 }
