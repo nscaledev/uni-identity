@@ -23,6 +23,7 @@ package suites
 import (
 	"encoding/json"
 	goerrors "errors"
+	"net/http"
 
 	gojose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -59,6 +60,14 @@ func decodePassportClaims(passport string) passportClaims {
 	Expect(parsed.UnsafeClaimsWithoutVerification(&claims)).To(Succeed())
 
 	return claims
+}
+
+func decodeExchangeOAuth2Error(respBody []byte) identityopenapi.Oauth2Error {
+	var oauthErr identityopenapi.Oauth2Error
+
+	Expect(json.Unmarshal(respBody, &oauthErr)).To(Succeed())
+
+	return oauthErr
 }
 
 var _ = Describe("Passport Token Exchange", func() {
@@ -129,6 +138,45 @@ var _ = Describe("Passport Token Exchange", func() {
 			})
 		})
 
+		Describe("Given an out-of-scope organization", func() {
+			It("should reject the exchange with an OAuth2 access_denied response", func() {
+				invalidOrgID := "00000000-0000-0000-0000-000000000000"
+				options := &identityopenapi.ExchangeRequestOptions{
+					OrganizationId: &invalidOrgID,
+				}
+
+				resp, respBody, err := client.ExchangePassportRaw(ctx, 0, options)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+
+				oauthErr := decodeExchangeOAuth2Error(respBody)
+				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
+				Expect(oauthErr.ErrorDescription).To(ContainSubstring("organization not in scope"))
+			})
+		})
+
+		Describe("Given an invalid project scope", func() {
+			It("should reject the exchange with an OAuth2 access_denied response", func() {
+				invalidProjectID := "00000000-0000-0000-0000-000000000000"
+				options := &identityopenapi.ExchangeRequestOptions{
+					OrganizationId: &config.OrgID,
+					ProjectId:      &invalidProjectID,
+				}
+
+				resp, respBody, err := client.ExchangePassportRaw(ctx, 0, options)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+
+				oauthErr := decodeExchangeOAuth2Error(respBody)
+				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
+				Expect(oauthErr.ErrorDescription).To(ContainSubstring("project not in scope"))
+			})
+		})
+
 		Describe("Given no authentication", func() {
 			It("should reject the exchange request", func() {
 				unauthConfig := *config
@@ -141,13 +189,46 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(goerrors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue(),
 					"Should return unexpected status code error for missing auth")
 
-				var oauthErr identityopenapi.Oauth2Error
-
-				Expect(json.Unmarshal(respBody, &oauthErr)).To(Succeed())
+				oauthErr := decodeExchangeOAuth2Error(respBody)
 				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("authorization header not set"))
 
 				GinkgoWriter.Printf("Expected error for missing authentication: %v\n", err)
+			})
+		})
+	})
+
+	Context("When exchanging a service account access token for a passport", func() {
+		Describe("Given a service account in the organization", func() {
+			It("should return a signed service passport with the expected claims", func() {
+				created, _ := api.CreateServiceAccountWithCleanup(client, ctx, config,
+					api.NewServiceAccountPayload().Build())
+
+				Expect(created.Status.AccessToken).NotTo(BeNil(), "Service account create should return a token")
+
+				serviceConfig := *config
+				serviceConfig.AuthToken = *created.Status.AccessToken
+				serviceClient := api.NewAPIClientWithConfig(&serviceConfig)
+
+				result, err := serviceClient.ExchangePassport(ctx, &identityopenapi.ExchangeRequestOptions{
+					OrganizationId: &config.OrgID,
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).NotTo(BeNil())
+				Expect(result.Passport).NotTo(BeEmpty())
+				Expect(result.ExpiresIn).To(Equal(120))
+
+				claims := decodePassportClaims(result.Passport)
+				Expect(claims.Type).To(Equal("passport"))
+				Expect(claims.Acctype).To(Equal(identityopenapi.Service))
+				Expect(claims.Source).To(Equal("uni"))
+				Expect(claims.Subject).NotTo(BeEmpty())
+				Expect(claims.Actor).To(Equal(claims.Subject))
+				Expect(claims.OrgIDs).To(ContainElement(config.OrgID))
+				Expect(claims.OrgID).To(Equal(config.OrgID))
+				Expect(claims.ProjectID).To(BeEmpty())
+				Expect(claims.ACL).NotTo(BeNil())
 			})
 		})
 	})
