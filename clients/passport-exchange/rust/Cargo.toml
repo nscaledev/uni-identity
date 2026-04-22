@@ -1,0 +1,19 @@
+[package]
+name = "passport-exchange-client"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust client for UNI passport token exchange"
+
+[dependencies]
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "time"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
