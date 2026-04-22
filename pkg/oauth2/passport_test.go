@@ -35,6 +35,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
@@ -374,6 +375,69 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "project not in scope")
 }
 
+func TestExchangeInvalidOrganizationID(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1",
+			},
+			Status: unikornv1.OrganizationStatus{
+				Namespace: josetesting.Namespace + "-org1",
+			},
+		},
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+		&unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1-user",
+				Labels: map[string]string{
+					constants.UserLabel:         "test-user",
+					constants.OrganizationLabel: "org1",
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{
+				State: unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	orgID := "org2"
+	req := exchangeRequest(t, token, &openapi.ExchangeRequestOptions{
+		OrganizationId: &orgID,
+	})
+
+	_, err := env.authenticator.Exchange(t.Context(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "organization not in scope")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+}
+
 func TestExchangeServiceAccount(t *testing.T) {
 	t.Parallel()
 
@@ -430,6 +494,64 @@ func TestExchangeServiceAccount(t *testing.T) {
 	assert.Equal(t, openapi.Service, claims.Acctype)
 	assert.Equal(t, "test-sa", claims.Subject)
 	assert.ElementsMatch(t, []string{"test-org"}, claims.OrgIDs)
+}
+
+func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-org",
+			},
+			Status: unikornv1.OrganizationStatus{
+				Namespace: josetesting.Namespace + "-org",
+			},
+		},
+		&unikornv1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace + "-org",
+				Name:      "test-sa",
+			},
+			Spec: unikornv1.ServiceAccountSpec{},
+		},
+	)
+
+	info := &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "test-sa",
+		Type:     oauth2.TokenTypeServiceAccount,
+		ServiceAccount: &oauth2.ServiceAccountClaims{
+			OrganizationID: "test-org",
+		},
+	}
+
+	tokens, err := env.authenticator.Issue(t.Context(), info)
+	require.NoError(t, err)
+
+	sa := &unikornv1.ServiceAccount{}
+	require.NoError(t, env.client.Get(t.Context(), client.ObjectKey{
+		Namespace: josetesting.Namespace + "-org",
+		Name:      "test-sa",
+	}, sa))
+
+	sa.Spec.AccessToken = tokens.AccessToken
+	require.NoError(t, env.client.Update(t.Context(), sa))
+
+	wrongOrgID := "other-org"
+	req := exchangeRequest(t, tokens.AccessToken, &openapi.ExchangeRequestOptions{
+		OrganizationId: &wrongOrgID,
+	})
+
+	_, err = env.authenticator.Exchange(t.Context(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "organization not in scope")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
 }
 
 func TestExchangeMissingAuthHeader(t *testing.T) {
