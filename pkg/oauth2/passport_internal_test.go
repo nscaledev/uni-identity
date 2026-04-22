@@ -17,6 +17,7 @@ limitations under the License.
 package oauth2
 
 import (
+	"context"
 	goerrors "errors"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const passportTestNamespace = "passport-test"
@@ -310,4 +312,77 @@ func TestValidateProjectScopeWithBroaderGrant(t *testing.T) {
 	err := authenticator.validateProjectScope(t.Context(), acl, "org-1", "project-2")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "project not in scope")
+}
+
+func TestValidateProjectScopeK8sFailure(t *testing.T) {
+	t.Parallel()
+
+	acl := &openapi.Acl{
+		Organization: &openapi.AclOrganization{
+			Id: "org-1",
+			Endpoints: &openapi.AclEndpoints{
+				{Name: "org:read", Operations: openapi.AclOperations{openapi.Read}},
+			},
+		},
+	}
+
+	testCases := []struct {
+		name    string
+		objects []client.Object
+		get     func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error
+	}{
+		{
+			name: "organization lookup fails",
+			get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*unikornv1.Organization); ok {
+					return errPassportInternalBoom
+				}
+
+				return inner.Get(ctx, key, obj, opts...)
+			},
+		},
+		{
+			name: "project lookup fails",
+			objects: []client.Object{
+				&unikornv1.Organization{
+					ObjectMeta: metav1.ObjectMeta{
+						Namespace: passportTestNamespace,
+						Name:      "org-1",
+					},
+					Status: unikornv1.OrganizationStatus{
+						Namespace: "org-1-ns",
+					},
+				},
+			},
+			get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*unikornv1.Project); ok {
+					return errPassportInternalBoom
+				}
+
+				return inner.Get(ctx, key, obj, opts...)
+			},
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cli := fake.NewClientBuilder().
+				WithScheme(getPassportInternalScheme(t)).
+				WithObjects(test.objects...).
+				WithInterceptorFuncs(interceptor.Funcs{Get: test.get}).
+				Build()
+
+			authenticator := &Authenticator{
+				client:    cli,
+				namespace: passportTestNamespace,
+			}
+
+			err := authenticator.validateProjectScope(t.Context(), acl, "org-1", "project-1")
+			require.Error(t, err)
+			require.ErrorIs(t, err, errPassportInternalBoom)
+			assert.Contains(t, err.Error(), "failed to verify project membership")
+		})
+	}
 }

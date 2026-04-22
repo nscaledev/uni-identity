@@ -195,6 +195,8 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 		return nil
 	}
 
+	// GetUserinfo normally populates authz for valid UNI tokens, but keep the
+	// nil guard so malformed or partially mocked callers still fail closed.
 	if authz == nil || !slices.Contains(authz.OrgIds, organizationID) {
 		return errors.OAuth2AccessDenied("organization not in scope")
 	}
