@@ -1,0 +1,30 @@
+{
+  "version": "v1",
+  "cases": [
+    {
+      "name": "happy_path",
+      "status": 200,
+      "expect_retry": false
+    },
+    {
+      "name": "unauthorized",
+      "status": 401,
+      "expect_retry": false
+    },
+    {
+      "name": "bad_request",
+      "status": 400,
+      "expect_retry": false
+    },
+    {
+      "name": "service_unavailable",
+      "status": 503,
+      "expect_retry": true
+    },
+    {
+      "name": "internal_server_error",
+      "status": 500,
+      "expect_retry": false
+    }
+  ]
+}

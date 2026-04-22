@@ -1,0 +1,70 @@
+openapi: 3.0.3
+info:
+  title: Passport Exchange Contract Snapshot
+  version: v1
+paths:
+  /oauth2/v2/exchange:
+    post:
+      summary: Exchange source token for passport token
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/ExchangeRequestOptions"
+      responses:
+        "200":
+          description: Token exchange succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExchangeResult"
+        "400":
+          description: Malformed request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuth2Error"
+        "401":
+          description: Invalid or expired source token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuth2Error"
+        "500":
+          description: Server-side exchange failure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OAuth2Error"
+components:
+  schemas:
+    ExchangeRequestOptions:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          nullable: true
+        projectId:
+          type: string
+          nullable: true
+    ExchangeResult:
+      type: object
+      required:
+        - passport
+        - expires_in
+      properties:
+        passport:
+          type: string
+        expires_in:
+          type: integer
+    OAuth2Error:
+      type: object
+      required:
+        - error
+        - error_description
+      properties:
+        error:
+          type: string
+        error_description:
+          type: string
