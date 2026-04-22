@@ -21,9 +21,11 @@ limitations under the License.
 package suites
 
 import (
-	"errors"
-	"net/http"
+	"encoding/json"
+	goerrors "errors"
 
+	gojose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -31,6 +33,33 @@ import (
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
+
+type passportClaims struct {
+	jwt.Claims `json:",inline"`
+
+	Type      string                            `json:"typ"`
+	Acctype   identityopenapi.AuthClaimsAcctype `json:"acctype"`
+	Source    string                            `json:"source"`
+	Email     string                            `json:"email,omitempty"`
+	OrgIDs    []string                          `json:"org_ids"`
+	OrgID     string                            `json:"org_id,omitempty"`
+	ProjectID string                            `json:"project_id,omitempty"`
+	Actor     string                            `json:"actor"`
+	ACL       *identityopenapi.Acl              `json:"acl"`
+}
+
+func decodePassportClaims(passport string) passportClaims {
+	parsed, err := jwt.ParseSigned(passport, []gojose.SignatureAlgorithm{gojose.ES512})
+	Expect(err).NotTo(HaveOccurred(), "Passport should be a valid ES512 JWS")
+	Expect(parsed.Headers).To(HaveLen(1))
+	Expect(parsed.Headers[0].Algorithm).To(Equal(string(gojose.ES512)))
+
+	var claims passportClaims
+
+	Expect(parsed.UnsafeClaimsWithoutVerification(&claims)).To(Succeed())
+
+	return claims
+}
 
 var _ = Describe("Passport Token Exchange", func() {
 	Context("When exchanging an access token for a passport", func() {
@@ -42,6 +71,13 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(result).NotTo(BeNil())
 				Expect(result.Passport).NotTo(BeEmpty(), "Passport JWT should not be empty")
 				Expect(result.ExpiresIn).To(Equal(120), "Passport TTL should be 120 seconds")
+
+				claims := decodePassportClaims(result.Passport)
+				Expect(claims.Type).To(Equal("passport"))
+				Expect(claims.Source).To(Equal("uni"))
+				Expect(claims.Subject).NotTo(BeEmpty())
+				Expect(claims.Actor).To(Equal(claims.Subject))
+				Expect(claims.ACL).NotTo(BeNil())
 
 				GinkgoWriter.Printf("Passport exchanged successfully, expires_in: %d\n", result.ExpiresIn)
 			})
@@ -59,6 +95,11 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(result).NotTo(BeNil())
 				Expect(result.Passport).NotTo(BeEmpty(), "Passport JWT should not be empty")
 				Expect(result.ExpiresIn).To(Equal(120), "Passport TTL should be 120 seconds")
+
+				claims := decodePassportClaims(result.Passport)
+				Expect(claims.OrgID).To(Equal(config.OrgID))
+				Expect(claims.ProjectID).To(BeEmpty())
+				Expect(claims.ACL).NotTo(BeNil())
 
 				GinkgoWriter.Printf("Org-scoped passport exchanged for org %s\n", config.OrgID)
 			})
@@ -78,6 +119,11 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(result.Passport).NotTo(BeEmpty(), "Passport JWT should not be empty")
 				Expect(result.ExpiresIn).To(Equal(120), "Passport TTL should be 120 seconds")
 
+				claims := decodePassportClaims(result.Passport)
+				Expect(claims.OrgID).To(Equal(config.OrgID))
+				Expect(claims.ProjectID).To(Equal(config.ProjectID))
+				Expect(claims.ACL).NotTo(BeNil())
+
 				GinkgoWriter.Printf("Org+project-scoped passport exchanged for org %s, project %s\n",
 					config.OrgID, config.ProjectID)
 			})
@@ -85,16 +131,21 @@ var _ = Describe("Passport Token Exchange", func() {
 
 		Describe("Given no authentication", func() {
 			It("should reject the exchange request", func() {
-				unauthClient := coreclient.NewAPIClient(config.BaseURL, "", config.RequestTimeout, &api.GinkgoLogger{})
-				path := client.GetEndpoints().Exchange()
+				unauthConfig := *config
+				unauthConfig.AuthToken = ""
+				unauthClient := api.NewAPIClientWithConfig(&unauthConfig)
 
-				_, respBody, err := unauthClient.DoRequest(ctx, http.MethodPost, path, nil, http.StatusOK)
+				_, respBody, err := unauthClient.ExchangePassportRaw(ctx, 200, nil)
 
 				Expect(err).To(HaveOccurred())
-				Expect(errors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue(),
+				Expect(goerrors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue(),
 					"Should return unexpected status code error for missing auth")
-				Expect(string(respBody)).To(ContainSubstring("access_denied"),
-					"Response body should contain access_denied error")
+
+				var oauthErr identityopenapi.Oauth2Error
+
+				Expect(json.Unmarshal(respBody, &oauthErr)).To(Succeed())
+				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
+				Expect(oauthErr.ErrorDescription).To(ContainSubstring("authorization header not set"))
 
 				GinkgoWriter.Printf("Expected error for missing authentication: %v\n", err)
 			})
