@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,20 +113,20 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 		Userinfo: userinfo,
 	})
 
-	var organizationID string
-	if options.OrganizationId != nil {
-		organizationID = *options.OrganizationId
-	}
+	organizationID, projectID := requestedScope(options)
 
-	var projectID string
-	if options.ProjectId != nil {
-		projectID = *options.ProjectId
+	if err := validateOrganizationScope(authz, organizationID); err != nil {
+		log.Info("passport exchange denied: organization not in scope",
+			"acctype", authz.Acctype,
+			"organizationID", organizationID,
+		)
+
+		return nil, err
 	}
 
 	acl, err := a.rbac.GetACL(authCtx, organizationID)
 	if err != nil {
 		log.Error(err, "passport exchange failed: ACL computation failed",
-			"subject", userinfo.Sub,
 			"acctype", authz.Acctype,
 			"organizationID", organizationID,
 		)
@@ -166,7 +167,6 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 	passport, err := a.jwtIssuer.EncodeJWT(ctx, claims)
 	if err != nil {
 		log.Error(err, "passport exchange failed: signing failed",
-			"subject", userinfo.Sub,
 			"passportID", passportID,
 		)
 
@@ -174,7 +174,6 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 	}
 
 	log.Info("passport exchanged",
-		"subject", userinfo.Sub,
 		"acctype", authz.Acctype,
 		"source", PassportSourceUNI,
 		"organizationID", organizationID,
@@ -187,6 +186,32 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 	}
 
 	return result, nil
+}
+
+func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string) error {
+	if organizationID == "" {
+		return nil
+	}
+
+	if authz == nil || !slices.Contains(authz.OrgIds, organizationID) {
+		return errors.OAuth2AccessDenied("organization not in scope")
+	}
+
+	return nil
+}
+
+func requestedScope(options *openapi.ExchangeRequestOptions) (string, string) {
+	var organizationID string
+	if options.OrganizationId != nil {
+		organizationID = *options.OrganizationId
+	}
+
+	var projectID string
+	if options.ProjectId != nil {
+		projectID = *options.ProjectId
+	}
+
+	return organizationID, projectID
 }
 
 // extractBearerToken extracts the Bearer token from the Authorization header.
