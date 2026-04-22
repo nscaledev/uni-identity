@@ -143,8 +143,12 @@ func (c *APIClient) GetProject(ctx context.Context, orgID, projectID string) (*i
 	path := c.endpoints.GetProject(orgID, projectID)
 
 	//nolint:bodyclose // DoRequest handles response body closing internally
-	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	resp, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("project %s: %w", projectID, coreclient.ErrResourceNotFound)
+		}
+
 		return nil, fmt.Errorf("getting project: %w", err)
 	}
 
@@ -358,4 +362,318 @@ func (c *APIClient) GetQuotas(ctx context.Context, orgID string) (*identityopena
 	}
 
 	return &quotas, nil
+}
+
+// SetQuotas updates the quotas for an organization.
+func (c *APIClient) SetQuotas(ctx context.Context, orgID string, quotas identityopenapi.QuotasWrite) (*identityopenapi.QuotasRead, error) {
+	path := c.endpoints.GetQuotas(orgID)
+
+	body, err := json.Marshal(quotas)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling quotas: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPut, path, bytes.NewReader(body), http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("setting quotas: %w", err)
+	}
+
+	var updated identityopenapi.QuotasRead
+	if err := json.Unmarshal(respBody, &updated); err != nil {
+		return nil, fmt.Errorf("unmarshaling updated quotas: %w", err)
+	}
+
+	return &updated, nil
+}
+
+// UpdateOrganization updates an organization.
+func (c *APIClient) UpdateOrganization(ctx context.Context, orgID string, org identityopenapi.OrganizationWrite) error {
+	return putResourceVoid(c, ctx, c.endpoints.GetOrganization(orgID), orgID, "organization", org)
+}
+
+// CreateProject creates a new project in an organization.
+func (c *APIClient) CreateProject(ctx context.Context, orgID string, project identityopenapi.ProjectWrite) (*identityopenapi.ProjectRead, error) {
+	path := c.endpoints.ListProjects(orgID)
+
+	body, err := json.Marshal(project)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling project: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusAccepted)
+	if err != nil {
+		return nil, fmt.Errorf("creating project: %w", err)
+	}
+
+	var created identityopenapi.ProjectRead
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		return nil, fmt.Errorf("unmarshaling created project: %w", err)
+	}
+
+	return &created, nil
+}
+
+// UpdateProject updates an existing project.
+func (c *APIClient) UpdateProject(ctx context.Context, orgID, projectID string, project identityopenapi.ProjectWrite) error {
+	return putResourceVoid(c, ctx, c.endpoints.GetProject(orgID, projectID), projectID, "project", project)
+}
+
+// DeleteProject deletes a project from an organization.
+func (c *APIClient) DeleteProject(ctx context.Context, orgID, projectID string) error {
+	path := c.endpoints.GetProject(orgID, projectID)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusAccepted)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("project %s: %w", projectID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("deleting project: %w", err)
+	}
+
+	return nil
+}
+
+// CreateServiceAccount creates a new service account in an organization.
+// The returned ServiceAccountCreate.Status.AccessToken is non-nil and contains
+// the one-time access token — it is only present on create and rotate responses.
+func (c *APIClient) CreateServiceAccount(ctx context.Context, orgID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.ServiceAccountCreate, error) {
+	path := c.endpoints.ListServiceAccounts(orgID)
+
+	body, err := json.Marshal(sa)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling service account: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusCreated)
+	if err != nil {
+		return nil, fmt.Errorf("creating service account: %w", err)
+	}
+
+	var created identityopenapi.ServiceAccountCreate
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		return nil, fmt.Errorf("unmarshaling created service account: %w", err)
+	}
+
+	return &created, nil
+}
+
+// putResourceVoid marshals req and PUTs it to path, discarding the response body.
+// It maps 404 responses to coreclient.ErrResourceNotFound.
+func putResourceVoid[Req any](c *APIClient, ctx context.Context, path, resourceID, resourceKind string, req Req) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshaling %s: %w", resourceKind, err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodPut, path, bytes.NewReader(body), http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("%s %s: %w", resourceKind, resourceID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("updating %s: %w", resourceKind, err)
+	}
+
+	return nil
+}
+
+// putResource marshals req, PUTs it to path, and unmarshals the response into R.
+// It maps 404 responses to coreclient.ErrResourceNotFound using resourceKind and resourceID in error messages.
+func putResource[Req, R any](c *APIClient, ctx context.Context, path, resourceID, resourceKind string, req Req) (*R, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling %s: %w", resourceKind, err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, respBody, err := c.DoRequest(ctx, http.MethodPut, path, bytes.NewReader(body), http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%s %s: %w", resourceKind, resourceID, coreclient.ErrResourceNotFound)
+		}
+
+		return nil, fmt.Errorf("updating %s: %w", resourceKind, err)
+	}
+
+	var result R
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshaling updated %s: %w", resourceKind, err)
+	}
+
+	return &result, nil
+}
+
+// UpdateServiceAccount updates an existing service account.
+func (c *APIClient) UpdateServiceAccount(ctx context.Context, orgID, saID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.ServiceAccountRead, error) {
+	return putResource[identityopenapi.ServiceAccountWrite, identityopenapi.ServiceAccountRead](
+		c, ctx, c.endpoints.GetServiceAccount(orgID, saID), saID, "service account", sa)
+}
+
+// DeleteServiceAccount deletes a service account from an organization.
+func (c *APIClient) DeleteServiceAccount(ctx context.Context, orgID, saID string) error {
+	path := c.endpoints.GetServiceAccount(orgID, saID)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("service account %s: %w", saID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("deleting service account: %w", err)
+	}
+
+	return nil
+}
+
+// RotateServiceAccount rotates the access token for a service account.
+// The returned ServiceAccountCreate.Status.AccessToken contains the new one-time token.
+func (c *APIClient) RotateServiceAccount(ctx context.Context, orgID, saID string) (*identityopenapi.ServiceAccountCreate, error) {
+	path := c.endpoints.RotateServiceAccount(orgID, saID)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, respBody, err := c.DoRequest(ctx, http.MethodPost, path, nil, http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("service account %s: %w", saID, coreclient.ErrResourceNotFound)
+		}
+
+		return nil, fmt.Errorf("rotating service account: %w", err)
+	}
+
+	var rotated identityopenapi.ServiceAccountCreate
+	if err := json.Unmarshal(respBody, &rotated); err != nil {
+		return nil, fmt.Errorf("unmarshaling rotated service account: %w", err)
+	}
+
+	return &rotated, nil
+}
+
+// CreateUser creates a new user in an organization.
+func (c *APIClient) CreateUser(ctx context.Context, orgID string, user identityopenapi.UserWrite) (*identityopenapi.UserRead, error) {
+	path := c.endpoints.ListUsers(orgID)
+
+	body, err := json.Marshal(user)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling user: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusCreated)
+	if err != nil {
+		return nil, fmt.Errorf("creating user: %w", err)
+	}
+
+	var created identityopenapi.UserRead
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		return nil, fmt.Errorf("unmarshaling created user: %w", err)
+	}
+
+	return &created, nil
+}
+
+// UpdateUser updates an existing user.
+func (c *APIClient) UpdateUser(ctx context.Context, orgID, userID string, user identityopenapi.UserWrite) (*identityopenapi.UserRead, error) {
+	return putResource[identityopenapi.UserWrite, identityopenapi.UserRead](
+		c, ctx, c.endpoints.GetUser(orgID, userID), userID, "user", user)
+}
+
+// DeleteUser deletes a user from an organization.
+func (c *APIClient) DeleteUser(ctx context.Context, orgID, userID string) error {
+	path := c.endpoints.GetUser(orgID, userID)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("user %s: %w", userID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("deleting user: %w", err)
+	}
+
+	return nil
+}
+
+// ListGlobalOauth2Providers lists platform-level OAuth2 providers (not scoped to an organization).
+func (c *APIClient) ListGlobalOauth2Providers(ctx context.Context) (identityopenapi.Oauth2Providers, error) {
+	path := c.endpoints.ListGlobalOauth2Providers()
+
+	return coreclient.ListResource[identityopenapi.Oauth2ProviderRead](
+		ctx,
+		c.APIClient,
+		path,
+		coreclient.ResponseHandlerConfig{
+			ResourceType:   "oauth2providers",
+			ResourceID:     "",
+			ResourceIDType: "",
+		},
+	)
+}
+
+// ListOauth2Providers lists all OAuth2 providers in an organization.
+func (c *APIClient) ListOauth2Providers(ctx context.Context, orgID string) (identityopenapi.Oauth2Providers, error) {
+	path := c.endpoints.ListOauth2Providers(orgID)
+
+	return coreclient.ListResource[identityopenapi.Oauth2ProviderRead](
+		ctx,
+		c.APIClient,
+		path,
+		coreclient.ResponseHandlerConfig{
+			ResourceType:   "oauth2providers",
+			ResourceID:     orgID,
+			ResourceIDType: "organization",
+		},
+	)
+}
+
+// CreateOauth2Provider creates a new OAuth2 provider in an organization.
+func (c *APIClient) CreateOauth2Provider(ctx context.Context, orgID string, provider identityopenapi.Oauth2ProviderWrite) (*identityopenapi.Oauth2ProviderRead, error) {
+	path := c.endpoints.ListOauth2Providers(orgID)
+
+	body, err := json.Marshal(provider)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling oauth2provider: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusCreated)
+	if err != nil {
+		return nil, fmt.Errorf("creating oauth2provider: %w", err)
+	}
+
+	var created identityopenapi.Oauth2ProviderRead
+	if err := json.Unmarshal(respBody, &created); err != nil {
+		return nil, fmt.Errorf("unmarshaling created oauth2provider: %w", err)
+	}
+
+	return &created, nil
+}
+
+// UpdateOauth2Provider updates an existing OAuth2 provider. Returns nil on success.
+func (c *APIClient) UpdateOauth2Provider(ctx context.Context, orgID, providerID string, provider identityopenapi.Oauth2ProviderWrite) error {
+	return putResourceVoid(c, ctx, c.endpoints.GetOauth2Provider(orgID, providerID), providerID, "oauth2provider", provider)
+}
+
+// DeleteOauth2Provider deletes an OAuth2 provider from an organization.
+func (c *APIClient) DeleteOauth2Provider(ctx context.Context, orgID, providerID string) error {
+	path := c.endpoints.GetOauth2Provider(orgID, providerID)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("oauth2provider %s: %w", providerID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("deleting oauth2provider: %w", err)
+	}
+
+	return nil
 }
