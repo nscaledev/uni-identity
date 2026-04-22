@@ -17,6 +17,7 @@ limitations under the License.
 package oauth2_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/handler"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
@@ -575,6 +577,39 @@ func TestExchangeInvalidToken(t *testing.T) {
 
 	_, err := env.authenticator.Exchange(t.Context(), req)
 	require.Error(t, err)
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Contains(t, err.Error(), "token validation failed")
+}
+
+func TestExchangeHandlerInvalidTokenReturnsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	require.NoError(t, err)
+
+	req := exchangeRequest(t, "invalid-token-value", nil)
+	recorder := httptest.NewRecorder()
+
+	h.PostOauth2V2Exchange(recorder, req)
+
+	resp := recorder.Result()
+
+	t.Cleanup(func() {
+		require.NoError(t, resp.Body.Close())
+	})
+
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+	var oauthResp openapi.Oauth2Error
+
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
+	assert.Equal(t, openapi.AccessDenied, oauthResp.Error)
+	assert.Contains(t, oauthResp.ErrorDescription, "token validation failed")
 }
 
 func TestExchangeMalformedBody(t *testing.T) {

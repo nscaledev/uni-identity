@@ -18,6 +18,7 @@ package oauth2
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -27,6 +28,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/uuid"
 
+	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
@@ -102,7 +104,7 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
-		return nil, err
+		return nil, normalizeExchangeUserinfoError(err)
 	}
 
 	authz := userinfo.HttpsunikornCloudOrgauthz
@@ -212,6 +214,19 @@ func requestedScope(options *openapi.ExchangeRequestOptions) (string, string) {
 	}
 
 	return organizationID, projectID
+}
+
+func normalizeExchangeUserinfoError(err error) error {
+	var oauthErr *errors.Error
+	if goerrors.As(err, &oauthErr) {
+		return err
+	}
+
+	if coreerrors.IsAccessDenied(err) {
+		return errors.OAuth2AccessDenied("token validation failed").WithError(err)
+	}
+
+	return err
 }
 
 // extractBearerToken extracts the Bearer token from the Authorization header.
