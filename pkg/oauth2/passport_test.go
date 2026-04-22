@@ -58,6 +58,12 @@ type passportTestEnv struct {
 func setupPassportTestEnv(t *testing.T, objects ...client.Object) *passportTestEnv {
 	t.Helper()
 
+	return setupPassportTestEnvWithRBACOptions(t, &rbac.Options{}, objects...)
+}
+
+func setupPassportTestEnvWithRBACOptions(t *testing.T, rbacOptions *rbac.Options, objects ...client.Object) *passportTestEnv {
+	t.Helper()
+
 	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
@@ -71,7 +77,12 @@ func setupPassportTestEnv(t *testing.T, objects ...client.Object) *passportTestE
 	require.NoError(t, jwtIssuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
 
 	userDatabase := userdb.NewUserDatabase(cli, josetesting.Namespace)
-	rbacInst := rbac.New(cli, josetesting.Namespace, &rbac.Options{})
+
+	if rbacOptions == nil {
+		rbacOptions = &rbac.Options{}
+	}
+
+	rbacInst := rbac.New(cli, josetesting.Namespace, rbacOptions)
 
 	issuerVal := handlercommon.IssuerValue{
 		URL:      "https://test.com",
@@ -103,6 +114,17 @@ func issueTestToken(t *testing.T, env *passportTestEnv, info *oauth2.IssueInfo) 
 	require.NoError(t, err)
 
 	return tokens.AccessToken
+}
+
+func issueSystemToken(t *testing.T, env *passportTestEnv, subject string) string {
+	t.Helper()
+
+	return issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  subject,
+		Type:     oauth2.TokenTypeService,
+	})
 }
 
 func exchangeRequest(t *testing.T, token string, body *openapi.ExchangeRequestOptions) *http.Request {
@@ -554,6 +576,67 @@ func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 	var oauthErr *oauth2errors.Error
 
 	require.ErrorAs(t, err, &oauthErr)
+}
+
+func TestExchangeSystemAccountWithOrganizationScope(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnvWithRBACOptions(t, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{
+			"system-service": "role-super-service",
+		},
+	}, &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "role-super-service",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+					{Name: "project:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	})
+
+	token := issueSystemToken(t, env, "system-service")
+
+	orgID := "target-org"
+	req := exchangeRequest(t, token, &openapi.ExchangeRequestOptions{
+		OrganizationId: &orgID,
+	})
+
+	result, err := env.authenticator.Exchange(t.Context(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	claims := parsePassport(t, env, result.Passport)
+
+	assert.Equal(t, openapi.System, claims.Acctype)
+	assert.Equal(t, "system-service", claims.Subject)
+	assert.Empty(t, claims.OrgIDs)
+	assert.Equal(t, orgID, claims.OrgID)
+	require.NotNil(t, claims.ACL)
+	require.NotNil(t, claims.ACL.Global)
+}
+
+func TestExchangeSystemAccountWithOrganizationScopeStillUsesRBAC(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	token := issueSystemToken(t, env, "system-service")
+
+	orgID := "target-org"
+	req := exchangeRequest(t, token, &openapi.ExchangeRequestOptions{
+		OrganizationId: &orgID,
+	})
+
+	_, err := env.authenticator.Exchange(t.Context(), req)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "organization not in scope")
+	assert.Contains(t, err.Error(), "system account 'system-service' not registered")
 }
 
 func TestExchangeMissingAuthHeader(t *testing.T) {
