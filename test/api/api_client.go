@@ -517,7 +517,6 @@ func (c *APIClient) UpdateServiceAccount(ctx context.Context, orgID, saID string
 // DeleteServiceAccount deletes a service account from an organization.
 func (c *APIClient) DeleteServiceAccount(ctx context.Context, orgID, saID string) error {
 	path := c.endpoints.GetServiceAccount(orgID, saID)
-
 	//nolint:bodyclose // DoRequest handles response body closing internally
 	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
 	if err != nil {
