@@ -414,6 +414,5 @@ func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopena
 func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int, options *identityopenapi.ExchangeRequestOptions) (*http.Response, []byte, error) {
 	path := c.exchangePath(options)
 
-	//nolint:bodyclose // DoRequest handles response body closing internally
 	return c.DoRequest(ctx, http.MethodPost, path, nil, expectedStatus)
 }
