@@ -26,10 +26,14 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/uuid"
 
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -113,6 +117,11 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 		organizationID = *options.OrganizationId
 	}
 
+	var projectID string
+	if options.ProjectId != nil {
+		projectID = *options.ProjectId
+	}
+
 	acl, err := a.rbac.GetACL(authCtx, organizationID)
 	if err != nil {
 		log.Error(err, "passport exchange failed: ACL computation failed",
@@ -122,6 +131,10 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 		)
 
 		return nil, fmt.Errorf("%w: failed to compute ACL", err)
+	}
+
+	if err := a.validateProjectScope(ctx, acl, organizationID, projectID); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
@@ -136,28 +149,18 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 			NotBefore: jwt.NewNumericDate(now),
 			Expiry:    jwt.NewNumericDate(now.Add(PassportTTL)),
 		},
-		Type:    PassportType,
-		Acctype: authz.Acctype,
-		Source:  PassportSourceUNI,
-		OrgIDs:  authz.OrgIds,
-		Actor:   userinfo.Sub,
-		ACL:     acl,
+		Type:      PassportType,
+		Acctype:   authz.Acctype,
+		Source:    PassportSourceUNI,
+		OrgIDs:    authz.OrgIds,
+		OrgID:     organizationID,
+		ProjectID: projectID,
+		Actor:     userinfo.Sub,
+		ACL:       acl,
 	}
 
 	if userinfo.Email != nil {
 		claims.Email = *userinfo.Email
-	}
-
-	if options.OrganizationId != nil {
-		claims.OrgID = *options.OrganizationId
-	}
-
-	if options.ProjectId != nil {
-		if !projectInACL(*options.ProjectId, acl) {
-			return nil, errors.OAuth2AccessDenied("project not in scope")
-		}
-
-		claims.ProjectID = *options.ProjectId
 	}
 
 	passport, err := a.jwtIssuer.EncodeJWT(ctx, claims)
@@ -237,4 +240,80 @@ func projectInACL(projectID string, acl *openapi.Acl) bool {
 	}
 
 	return false
+}
+
+// hasBroaderScope returns true if the ACL carries a global or organization-level
+// grant that, per the scope-confinement rule, implicitly covers project scope.
+func hasBroaderScope(acl *openapi.Acl, organizationID string) bool {
+	if acl == nil {
+		return false
+	}
+
+	if acl.Global != nil && len(*acl.Global) > 0 {
+		return true
+	}
+
+	if organizationID == "" || acl.Organization == nil || acl.Organization.Id != organizationID {
+		return false
+	}
+
+	return acl.Organization.Endpoints != nil && len(*acl.Organization.Endpoints) > 0
+}
+
+// validateProjectScope authorises the passport's requested project scope.
+// A request is accepted if the project is present in the subject's ACL, or
+// if a broader (global/organization) grant covers it — in which case the
+// project must be verified to belong to the requested organization to prevent
+// scope injection via untrusted request parameters.
+func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.Acl, organizationID, projectID string) error {
+	if projectID == "" {
+		return nil
+	}
+
+	if projectInACL(projectID, acl) {
+		return nil
+	}
+
+	if !hasBroaderScope(acl, organizationID) {
+		return errors.OAuth2AccessDenied("project not in scope")
+	}
+
+	ok, err := a.projectInOrganization(ctx, organizationID, projectID)
+	if err != nil {
+		return fmt.Errorf("failed to verify project membership: %w", err)
+	}
+
+	if !ok {
+		return errors.OAuth2AccessDenied("project not in scope")
+	}
+
+	return nil
+}
+
+// projectInOrganization reports whether a project with the given ID exists in
+// the organization's backing namespace.
+func (a *Authenticator) projectInOrganization(ctx context.Context, organizationID, projectID string) (bool, error) {
+	var org unikornv1.Organization
+	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: organizationID}, &org); err != nil {
+		if kerrors.IsNotFound(err) {
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	if org.Status.Namespace == "" {
+		return false, nil
+	}
+
+	var project unikornv1.Project
+	if err := a.client.Get(ctx, client.ObjectKey{Namespace: org.Status.Namespace, Name: projectID}, &project); err != nil {
+		if kerrors.IsNotFound(err) {
+			return false, nil
+		}
+
+		return false, err
+	}
+
+	return true, nil
 }
