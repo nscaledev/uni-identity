@@ -20,9 +20,6 @@ package openapi
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	goerrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -34,7 +31,6 @@ import (
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/spf13/pflag"
 
-	"github.com/unikorn-cloud/core/pkg/client"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
@@ -51,10 +47,6 @@ import (
 
 const (
 	OperationIgnoreRequestBodyTag = "unikorn-cloud.org/ignore-request-body"
-)
-
-var (
-	ErrHeader = goerrors.New("header error")
 )
 
 type Options struct {
@@ -326,60 +318,11 @@ func (v *Validator) generatePrincipal(ctx context.Context, params map[string]str
 	return principal.NewContext(ctx, p)
 }
 
-// extractPrincipal makes available the identity information for the user
-// that actually insigated the request so it can be propagated to and used
-// by any service.  This is called only by other system services as
-// identified by the use of mTLS.
-func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, error) {
-	header := r.Header.Get(principal.Header)
-	if header == "" {
-		return nil, fmt.Errorf("%w: principal header not present", ErrHeader)
-	}
-
-	data, err := base64.RawURLEncoding.DecodeString(header)
-	if err != nil {
-		// TODO: fallback, delete me... I am VERY slow.
-		// Use the certificate of the service that actually called us.
-		// The one in the context is used to propagate token binding information.
-		certRaw, err := util.GetClientCertificateHeader(r.Header)
-		if err != nil {
-			return nil, err
-		}
-
-		certificate, err := util.GetClientCertificate(certRaw)
-		if err != nil {
-			return nil, err
-		}
-
-		p := &principal.Principal{}
-
-		if err := client.VerifyAndDecode(p, header, certificate); err != nil {
-			return nil, err
-		}
-
-		return principal.NewContext(ctx, p), nil
-	}
-
-	p := &principal.Principal{}
-
-	if err := json.Unmarshal(data, p); err != nil {
-		return nil, err
-	}
-
-	ctx = principal.NewContext(ctx, p)
-
-	if r.Header.Get(principal.ImpersonateHeader) == "true" {
-		ctx = principal.NewImpersonateContext(ctx)
-	}
-
-	return ctx, nil
-}
-
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
 // API calls, otherwise it generates it from the available information.
 func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, userinfo *identityapi.Userinfo) (context.Context, error) {
 	if util.HasClientCertificateHeader(r.Header) {
-		newCtx, err := extractPrincipal(ctx, r)
+		newCtx, err := principal.ExtractFromRequest(ctx, r)
 		if err != nil {
 			return nil, err
 		}

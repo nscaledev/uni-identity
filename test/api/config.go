@@ -32,6 +32,18 @@ type TestConfig struct {
 	AdminGroupID string
 	UserGroupID  string
 	UserSAID     string
+
+	// Impersonation service account user — a pre-provisioned user in OrgID
+	// whose passport the mTLS client will impersonate during exchange tests.
+	ImpersonationUserID      string
+	ImpersonationUserSubject string
+
+	// mTLS impersonation client — identifies a CI service account (cert CN)
+	// that maps to a role in --system-account-roles-ids. Populated by the
+	// CI fixtures alongside the bearer-token service accounts.
+	ImpersonationCertPath string
+	ImpersonationKeyPath  string
+	CACertPath            string
 }
 
 // LoadTestConfig loads configuration from environment variables and .env files using viper.
@@ -70,13 +82,18 @@ func LoadTestConfig() (*TestConfig, error) {
 			LogRequests:     v.GetBool("LOG_REQUESTS"),
 			LogResponses:    v.GetBool("LOG_RESPONSES"),
 		},
-		AdminToken:   firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN")),
-		UserToken:    v.GetString("USER_AUTH_TOKEN"),
-		OrgID:        v.GetString("TEST_ORG_ID"),
-		ProjectID:    v.GetString("TEST_PROJECT_ID"),
-		AdminGroupID: v.GetString("TEST_ADMIN_GROUP_ID"),
-		UserGroupID:  v.GetString("TEST_USER_GROUP_ID"),
-		UserSAID:     v.GetString("TEST_USER_SA_ID"),
+		AdminToken:               firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN")),
+		UserToken:                v.GetString("USER_AUTH_TOKEN"),
+		OrgID:                    v.GetString("TEST_ORG_ID"),
+		ProjectID:                v.GetString("TEST_PROJECT_ID"),
+		AdminGroupID:             v.GetString("TEST_ADMIN_GROUP_ID"),
+		UserGroupID:              v.GetString("TEST_USER_GROUP_ID"),
+		UserSAID:                 v.GetString("TEST_USER_SA_ID"),
+		ImpersonationUserID:      v.GetString("TEST_IMPERSONATION_USER_ID"),
+		ImpersonationUserSubject: v.GetString("TEST_IMPERSONATION_USER_SUBJECT"),
+		ImpersonationCertPath:    v.GetString("IDENTITY_IMPERSONATE_CLIENT_CERT_PATH"),
+		ImpersonationKeyPath:     v.GetString("IDENTITY_IMPERSONATE_CLIENT_KEY_PATH"),
+		CACertPath:               v.GetString("IDENTITY_CA_CERT"),
 	}
 
 	// Validate required fields

@@ -565,7 +565,12 @@ func TestExchangeMissingAuthHeader(t *testing.T) {
 
 	_, err := env.authenticator.Exchange(t.Context(), req)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "authorization header not set")
+
+	// With no Authorization header and no mTLS cert, the request fails the
+	// mTLS branch: there is no credential to authenticate.
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
 }
 
 func TestExchangeInvalidToken(t *testing.T) {

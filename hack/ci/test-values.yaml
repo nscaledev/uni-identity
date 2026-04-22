@@ -2,3 +2,18 @@
 # Passed to hack/ci/install via --values.
 systemAccounts:
   ci-fixtures: platform-administrator
+  # CI-only mTLS system account used by the passport exchange
+  # integration suite. CN maps to a deliberately narrow role so the
+  # confused-deputy intersection is observable in tests.
+  ci-impersonator: ci-impersonator-role
+
+# Purpose-built CI role for the impersonation tests. Kept under
+# additionalRoles so it cannot collide with a shipped role of the same
+# name.
+additionalRoles:
+  ci-impersonator-role:
+    description: CI impersonation service (read-only projects)
+    protected: true
+    scopes:
+      global:
+        identity:projects: [read]

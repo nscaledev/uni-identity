@@ -248,6 +248,60 @@ func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, 
 	return id
 }
 
+// createUser creates a user in the given groups and returns its ID.
+func createUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, subject string, groupIDs []string) string {
+	logf("Creating user %q...", subject)
+
+	resp, err := ac.PostApiV1OrganizationsOrganizationIDUsersWithResponse(ctx, orgID, openapi.UserWrite{
+		Spec: openapi.UserSpec{
+			Subject:  subject,
+			State:    openapi.Active,
+			GroupIDs: groupIDs,
+		},
+	})
+	if err != nil {
+		fatalf("failed to create user %q: %v", subject, err)
+	}
+
+	if resp.JSON201 == nil {
+		fatalf("create user %q returned %s", subject, resp.Status())
+	}
+
+	id := resp.JSON201.Metadata.Id
+	logf("  user %q ID: %s", subject, id)
+
+	return id
+}
+
+// writeCertFiles writes the cert and key PEM to disk next to the CA bundle so
+// the integration suite can load them via IDENTITY_IMPERSONATE_CLIENT_*_PATH.
+// Paths are returned absolute.
+func writeCertFiles(caCertPath string, certPEM, keyPEM []byte) (string, string) {
+	dir := filepath.Dir(caCertPath)
+
+	certPath := filepath.Join(dir, "impersonator-cert.pem")
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		fatalf("failed to write impersonator cert: %v", err)
+	}
+
+	keyPath := filepath.Join(dir, "impersonator-key.pem")
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		fatalf("failed to write impersonator key: %v", err)
+	}
+
+	absCert, err := filepath.Abs(certPath)
+	if err != nil {
+		fatalf("failed to resolve impersonator cert path: %v", err)
+	}
+
+	absKey, err := filepath.Abs(keyPath)
+	if err != nil {
+		fatalf("failed to resolve impersonator key path: %v", err)
+	}
+
+	return absCert, absKey
+}
+
 // createServiceAccount creates a service account in the given groups and returns its ID and token.
 func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) (string, string) {
 	logf("Creating service account %q...", name)
@@ -410,6 +464,22 @@ func main() {
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
 
+	// ── Impersonation fixtures ────────────────────────────────────────────────
+	// Issue a second mTLS cert for the impersonation system account. Its CN
+	// (ci-impersonator) maps to ci-impersonator-role in test-values.yaml.
+	// The passport-exchange integration suite uses this cert to call
+	// /oauth2/v2/exchange with X-Impersonate: true.
+	logf("Issuing mTLS client certificate for ci-impersonator...")
+
+	imperCertPEM, imperKeyPEM := issueCert(ctx, k8s, *namespace, "ci-impersonator", "ci-impersonator")
+	imperCertPath, imperKeyPath := writeCertFiles(*caCertPath, imperCertPEM, imperKeyPEM)
+
+	// Pre-provision a user in the org to be impersonated. Membership in
+	// ci-user-group gives them a project-scoped ACL that will be intersected
+	// with ci-impersonator-role's global read-only scope at exchange time.
+	const impersonatedSubject = "ci-impersonated-user@example.com"
+	impersonatedUserID := createUser(ctx, ac, orgID, impersonatedSubject, []string{userGroupID})
+
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
@@ -422,4 +492,8 @@ func main() {
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("USER_AUTH_TOKEN=%s\n", userToken)
+	fmt.Printf("IDENTITY_IMPERSONATE_CLIENT_CERT_PATH=%s\n", imperCertPath)
+	fmt.Printf("IDENTITY_IMPERSONATE_CLIENT_KEY_PATH=%s\n", imperKeyPath)
+	fmt.Printf("TEST_IMPERSONATION_USER_ID=%s\n", impersonatedUserID)
+	fmt.Printf("TEST_IMPERSONATION_USER_SUBJECT=%s\n", impersonatedSubject)
 }

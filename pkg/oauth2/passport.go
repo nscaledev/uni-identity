@@ -33,6 +33,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/util"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -81,21 +83,47 @@ type PassportClaims struct {
 	ACL *openapi.Acl `json:"acl"`
 }
 
-// Exchange validates a source access token, resolves identity and ACL,
-// and returns a signed passport JWT.
+// Exchange validates a caller's credentials, resolves identity and ACL, and
+// returns a signed passport JWT. Two authentication modes are accepted:
+//
+//   - Bearer: an end-user access token in the Authorization header.
+//   - mTLS + impersonation: a service client cert plus an X-Impersonate: true
+//     header and an X-Principal header carrying the impersonated user. This
+//     mints a passport on the user's behalf with an ACL intersected against
+//     the calling service's own ACL (confused-deputy prevention).
+//
+// A service calling over mTLS WITHOUT the impersonation header is refused:
+// autonomous service-to-service traffic does not receive a passport.
 func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi.ExchangeResult, error) {
+	log := log.FromContext(ctx)
+
+	options, err := parseExchangeRequest(r)
+	if err != nil {
+		log.Info("passport exchange failed: malformed request body")
+
+		return nil, err
+	}
+
+	if !hasHTTPAuthorization(r) {
+		return a.exchangeImpersonated(ctx, r, options)
+	}
+
+	return a.exchangeBearer(ctx, r, options)
+}
+
+// hasHTTPAuthorization reports whether the request carries a bearer token.
+func hasHTTPAuthorization(r *http.Request) bool {
+	return r.Header.Get("Authorization") != ""
+}
+
+// exchangeBearer is the end-user path: the caller presents an access token
+// which is introspected to produce the passport.
+func (a *Authenticator) exchangeBearer(ctx context.Context, r *http.Request, options *openapi.ExchangeRequestOptions) (*openapi.ExchangeResult, error) {
 	log := log.FromContext(ctx)
 
 	token, err := extractBearerToken(r)
 	if err != nil {
 		log.Info("passport exchange failed: missing or invalid authorization header")
-
-		return nil, err
-	}
-
-	options, err := parseExchangeRequest(r)
-	if err != nil {
-		log.Info("passport exchange failed: malformed request body")
 
 		return nil, err
 	}
@@ -140,6 +168,161 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 		return nil, err
 	}
 
+	var email string
+	if userinfo.Email != nil {
+		email = *userinfo.Email
+	}
+
+	return a.mintPassport(ctx, passportIdentity{
+		subject: userinfo.Sub,
+		actor:   userinfo.Sub,
+		acctype: authz.Acctype,
+		email:   email,
+		orgIDs:  authz.OrgIds,
+	}, organizationID, projectID, acl)
+}
+
+// resolveImpersonation validates the mTLS client certificate and impersonation
+// headers, extracting the service identity and the impersonated principal. All
+// negative paths fail closed with the appropriate OAuth2 error.
+func resolveImpersonation(ctx context.Context, r *http.Request) (context.Context, string, *principal.Principal, error) {
+	log := log.FromContext(ctx)
+
+	certRaw, err := util.GetClientCertificateHeader(r.Header)
+	if err != nil {
+		log.Info("passport exchange failed: no bearer token and no client certificate")
+
+		return nil, "", nil, errors.OAuth2AccessDenied("authorization required").WithError(err)
+	}
+
+	cert, err := util.GetClientCertificate(certRaw)
+	if err != nil {
+		log.Info("passport exchange failed: invalid client certificate")
+
+		return nil, "", nil, errors.OAuth2AccessDenied("invalid client certificate").WithError(err)
+	}
+
+	serviceIdentity := cert.Subject.CommonName
+
+	if r.Header.Get(principal.ImpersonateHeader) != "true" {
+		log.Info("passport exchange denied: mTLS caller without impersonation flag",
+			"serviceIdentity", serviceIdentity,
+		)
+
+		return nil, serviceIdentity, nil, errors.OAuth2InvalidRequest("impersonation flag required for mTLS exchange")
+	}
+
+	impersonatedCtx, err := principal.ExtractFromRequest(ctx, r)
+	if err != nil {
+		log.Info("passport exchange denied: invalid principal header",
+			"serviceIdentity", serviceIdentity,
+			"error", err.Error(),
+		)
+
+		return nil, serviceIdentity, nil, errors.OAuth2AccessDenied("invalid principal header").WithError(err)
+	}
+
+	// Belt and braces: principal.ExtractFromRequest only propagates the
+	// impersonation flag when the header is present and literally "true".
+	if !principal.ImpersonateFromContext(impersonatedCtx) {
+		log.Info("passport exchange denied: impersonation context not established",
+			"serviceIdentity", serviceIdentity,
+		)
+
+		return nil, serviceIdentity, nil, errors.OAuth2AccessDenied("impersonation context not established")
+	}
+
+	p, err := principal.FromContext(impersonatedCtx)
+	if err != nil || p == nil || p.Actor == "" {
+		log.Info("passport exchange denied: impersonation principal missing actor",
+			"serviceIdentity", serviceIdentity,
+		)
+
+		return nil, serviceIdentity, nil, errors.OAuth2AccessDenied("principal actor required")
+	}
+
+	return impersonatedCtx, serviceIdentity, p, nil
+}
+
+// exchangeImpersonated is the service-to-user path: a system service presents
+// its mTLS client certificate plus the impersonated principal via headers.
+// Any ambiguity in the principal fails closed — the passport is only minted
+// when the impersonation signal is explicit and the actor unambiguous.
+func (a *Authenticator) exchangeImpersonated(ctx context.Context, r *http.Request, options *openapi.ExchangeRequestOptions) (*openapi.ExchangeResult, error) {
+	log := log.FromContext(ctx)
+
+	impersonatedCtx, serviceIdentity, p, err := resolveImpersonation(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+
+	// Present the CALLING SERVICE as the authenticated subject so rbac.GetACL
+	// takes the system-account + impersonation branch and returns the
+	// intersection of the user's and service's ACLs.
+	authCtx := authorization.NewContext(impersonatedCtx, &authorization.Info{
+		SystemAccount: true,
+		Userinfo: &openapi.Userinfo{
+			Sub: serviceIdentity,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.System,
+			},
+		},
+	})
+
+	organizationID, projectID := requestedScope(options)
+
+	if err := validateImpersonatedOrganizationScope(p, organizationID); err != nil {
+		log.Info("passport exchange denied: organization not in principal scope",
+			"serviceIdentity", serviceIdentity,
+			"actor", p.Actor,
+			"organizationID", organizationID,
+		)
+
+		return nil, err
+	}
+
+	acl, err := a.rbac.GetACL(authCtx, organizationID)
+	if err != nil {
+		log.Error(err, "passport exchange failed: intersected ACL computation failed",
+			"serviceIdentity", serviceIdentity,
+			"actor", p.Actor,
+			"organizationID", organizationID,
+		)
+
+		return nil, fmt.Errorf("%w: failed to compute ACL", err)
+	}
+
+	if err := a.validateProjectScope(ctx, acl, organizationID, projectID); err != nil {
+		return nil, err
+	}
+
+	return a.mintPassport(ctx, passportIdentity{
+		subject:         p.Actor,
+		actor:           p.Actor,
+		acctype:         openapi.User,
+		orgIDs:          p.OrganizationIDs,
+		impersonated:    true,
+		serviceIdentity: serviceIdentity,
+	}, organizationID, projectID, acl)
+}
+
+// passportIdentity bundles the subject details used to mint a passport, letting
+// the bearer and mTLS flows share a single signing helper.
+type passportIdentity struct {
+	subject         string
+	actor           string
+	acctype         openapi.AuthClaimsAcctype
+	email           string
+	orgIDs          []string
+	impersonated    bool
+	serviceIdentity string
+}
+
+// mintPassport builds the passport claims from the provided identity and the
+// authorised scope, signs the JWT, logs the issuance, and returns the result.
+func (a *Authenticator) mintPassport(ctx context.Context, id passportIdentity, organizationID, projectID string, acl *openapi.Acl) (*openapi.ExchangeResult, error) {
+	log := log.FromContext(ctx)
+
 	now := time.Now()
 	passportID := uuid.New().String()
 
@@ -147,23 +330,20 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 		Claims: jwt.Claims{
 			ID:        passportID,
 			Issuer:    PassportIssuer,
-			Subject:   userinfo.Sub,
+			Subject:   id.subject,
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
 			Expiry:    jwt.NewNumericDate(now.Add(PassportTTL)),
 		},
 		Type:      PassportType,
-		Acctype:   authz.Acctype,
+		Acctype:   id.acctype,
 		Source:    PassportSourceUNI,
-		OrgIDs:    authz.OrgIds,
+		Email:     id.email,
+		OrgIDs:    id.orgIDs,
 		OrgID:     organizationID,
 		ProjectID: projectID,
-		Actor:     userinfo.Sub,
+		Actor:     id.actor,
 		ACL:       acl,
-	}
-
-	if userinfo.Email != nil {
-		claims.Email = *userinfo.Email
 	}
 
 	passport, err := a.jwtIssuer.EncodeJWT(ctx, claims)
@@ -175,19 +355,42 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 		return nil, fmt.Errorf("failed to mint passport: %w", err)
 	}
 
-	log.Info("passport exchanged",
-		"acctype", authz.Acctype,
+	logKVs := []any{
+		"acctype", id.acctype,
 		"source", PassportSourceUNI,
 		"organizationID", organizationID,
 		"passportID", passportID,
-	)
-
-	result := &openapi.ExchangeResult{
-		Passport:  passport,
-		ExpiresIn: int(PassportTTL.Seconds()),
 	}
 
-	return result, nil
+	if id.impersonated {
+		logKVs = append(logKVs,
+			"impersonated", true,
+			"serviceIdentity", id.serviceIdentity,
+			"actor", id.actor,
+		)
+	}
+
+	log.Info("passport exchanged", logKVs...)
+
+	return &openapi.ExchangeResult{
+		Passport:  passport,
+		ExpiresIn: int(PassportTTL.Seconds()),
+	}, nil
+}
+
+// validateImpersonatedOrganizationScope rejects exchanges scoped to an
+// organization the impersonated principal does not belong to. Impersonation
+// can only narrow — it must not widen — access.
+func validateImpersonatedOrganizationScope(p *principal.Principal, organizationID string) error {
+	if organizationID == "" {
+		return nil
+	}
+
+	if !slices.Contains(p.OrganizationIDs, organizationID) {
+		return errors.OAuth2AccessDenied("organization not in scope")
+	}
+
+	return nil
 }
 
 func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string) error {
