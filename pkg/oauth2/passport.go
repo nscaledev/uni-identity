@@ -203,6 +203,10 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 }
 
 func requestedScope(options *openapi.ExchangeRequestOptions) (string, string) {
+	if options == nil {
+		return "", ""
+	}
+
 	var organizationID string
 	if options.OrganizationId != nil {
 		organizationID = *options.OrganizationId
@@ -310,10 +314,16 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 		return nil
 	}
 
+	// The narrowest and safest path is an explicit project grant already present
+	// in the computed ACL. In that case we can trust the scope immediately.
 	if projectInACL(projectID, acl) {
 		return nil
 	}
 
+	// A broader org/global grant may still legitimately embed a project-scoped
+	// passport, but only if the requested project actually belongs to the scoped
+	// organization. Without that membership check, callers could inject an
+	// arbitrary project ID into the passport claims.
 	if !hasBroaderScope(acl, organizationID) {
 		return errors.OAuth2AccessDenied("project not in scope")
 	}

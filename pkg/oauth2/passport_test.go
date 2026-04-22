@@ -568,6 +568,32 @@ func TestExchangeMissingAuthHeader(t *testing.T) {
 	assert.Contains(t, err.Error(), "authorization header not set")
 }
 
+func TestExchangeMalformedAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/exchange", nil)
+	req.Header.Set("Authorization", "Bearer invalid extra")
+
+	_, err := env.authenticator.Exchange(t.Context(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authorization header malformed")
+}
+
+func TestExchangeInvalidAuthScheme(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/exchange", nil)
+	req.Header.Set("Authorization", "Basic invalid-token-value")
+
+	_, err := env.authenticator.Exchange(t.Context(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authorization scheme not allowed")
+}
+
 func TestExchangeInvalidToken(t *testing.T) {
 	t.Parallel()
 
@@ -610,6 +636,57 @@ func TestExchangeHandlerInvalidTokenReturnsUnauthorized(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
 	assert.Equal(t, openapi.AccessDenied, oauthResp.Error)
 	assert.Contains(t, oauthResp.ErrorDescription, "token validation failed")
+}
+
+func TestExchangeHandlerSuccess(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	require.NoError(t, err)
+
+	req := exchangeRequest(t, token, nil)
+	recorder := httptest.NewRecorder()
+
+	h.PostOauth2V2Exchange(recorder, req)
+
+	resp := recorder.Result()
+
+	t.Cleanup(func() {
+		require.NoError(t, resp.Body.Close())
+	})
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Cache-Control"), "no-store")
+
+	var result openapi.ExchangeResult
+
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
+	assert.NotEmpty(t, result.Passport)
+	assert.Equal(t, 120, result.ExpiresIn)
 }
 
 func TestExchangeMalformedBody(t *testing.T) {
