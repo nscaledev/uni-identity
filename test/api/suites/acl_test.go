@@ -97,6 +97,38 @@ var _ = Describe("Access Control Discovery", func() {
 	})
 
 	Context("When getting organization ACL", func() {
+		// The user role (not administrator) has project-scoped endpoint permissions,
+		// so only the user token produces ACL entries under Organization.Projects.
+		Describe("Given the caller is a member of groups assigned to projects", func() {
+			BeforeEach(func() {
+				if userClient == nil {
+					Skip("USER_AUTH_TOKEN is required for ACL projection testing")
+				}
+			})
+
+			It("should no longer include a project in the ACL after it is deleted", func() {
+				if config.UserGroupID == "" {
+					Skip("TEST_USER_GROUP_ID is not configured")
+				}
+
+				_, projectID := api.CreateProjectWithCleanup(adminClient, ctx, config,
+					api.NewProjectPayload().
+						WithGroupIDs([]string{config.UserGroupID}).
+						Build())
+
+				api.WaitForProjectProvisioned(adminClient, ctx, config, projectID)
+
+				api.WaitForProjectInACL(userClient, ctx, config, projectID)
+
+				Expect(adminClient.DeleteProject(ctx, config.OrgID, projectID)).To(Succeed())
+
+				api.WaitForProjectRemovedFromACL(userClient, ctx, config, projectID)
+
+				GinkgoWriter.Printf("Verified project %s no longer appears in ACL after deletion\n", projectID)
+			})
+
+		})
+
 		Describe("Given valid organization", func() {
 			It("should return organization-scoped ACL with endpoint permissions", func() {
 				// adminClient is used explicitly: org-ACL content reflects the caller's effective

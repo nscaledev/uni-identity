@@ -23,6 +23,8 @@ package suites
 import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
 var _ = Describe("Quota Management", func() {
@@ -80,6 +82,29 @@ var _ = Describe("Quota Management", func() {
 
 				Expect(err).To(HaveOccurred())
 				GinkgoWriter.Printf("Expected error for invalid organization ID: %v\n", err)
+			})
+		})
+	})
+
+	// Quota update requires the platform-administrator role (global scope).
+	// The organization administrator role only has identity:quotas: [read].
+	Context("When updating organization quotas", func() {
+		Describe("Given an organization administrator", func() {
+			It("should be denied — quota update requires platform-administrator", func() {
+				current, err := client.GetQuotas(ctx, config.OrgID)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(current.Quotas).NotTo(BeEmpty())
+
+				writes := make(identityopenapi.QuotaWriteList, len(current.Quotas))
+				for i, q := range current.Quotas {
+					writes[i] = identityopenapi.QuotaWrite{Kind: q.Kind, Quantity: q.Quantity}
+				}
+
+				_, err = client.SetQuotas(ctx, config.OrgID, identityopenapi.QuotasWrite{Quotas: writes})
+
+				Expect(err).To(HaveOccurred(),
+					"quota update should be denied for the administrator role")
 			})
 		})
 	})

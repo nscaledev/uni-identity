@@ -94,6 +94,25 @@ func (e *Endpoints) ListServiceAccounts(orgID string) string {
 		url.PathEscape(orgID))
 }
 
+// GetServiceAccount returns the endpoint for a specific service account.
+func (e *Endpoints) GetServiceAccount(orgID, saID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/serviceaccounts/%s",
+		url.PathEscape(orgID), url.PathEscape(saID))
+}
+
+// RotateServiceAccount returns the endpoint for rotating a service account token.
+func (e *Endpoints) RotateServiceAccount(orgID, saID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/serviceaccounts/%s/rotate",
+		url.PathEscape(orgID), url.PathEscape(saID))
+}
+
+// GetUser returns the endpoint for a specific user.
+// Used for PUT and DELETE — the server does not expose a GET /users/{userID} route.
+func (e *Endpoints) GetUser(orgID, userID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/users/%s",
+		url.PathEscape(orgID), url.PathEscape(userID))
+}
+
 // GetQuotas returns the endpoint for getting quotas for an organization.
 func (e *Endpoints) GetQuotas(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/quotas",
@@ -103,4 +122,22 @@ func (e *Endpoints) GetQuotas(orgID string) string {
 // Exchange returns the endpoint for passport token exchange.
 func (e *Endpoints) Exchange() string {
 	return "/oauth2/v2/exchange"
+}
+
+// ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.
+func (e *Endpoints) ListGlobalOauth2Providers() string {
+	return "/api/v1/oauth2providers"
+}
+
+// ListOauth2Providers returns the endpoint for listing OAuth2 providers in an organization.
+func (e *Endpoints) ListOauth2Providers(orgID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/oauth2providers",
+		url.PathEscape(orgID))
+}
+
+// GetOauth2Provider returns the endpoint for a specific OAuth2 provider.
+// Used for PUT and DELETE — the server does not expose a GET /oauth2providers/{providerID} route.
+func (e *Endpoints) GetOauth2Provider(orgID, providerID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/oauth2providers/%s",
+		url.PathEscape(orgID), url.PathEscape(providerID))
 }
