@@ -111,6 +111,69 @@ func TestRequestedScope(t *testing.T) {
 	}
 }
 
+func TestValidateOrganizationScope(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		authz          *openapi.AuthClaims
+		organizationID string
+		expectError    string
+	}{
+		{
+			name:           "empty organization scope is always allowed",
+			authz:          nil,
+			organizationID: "",
+		},
+		{
+			name:           "nil authz fails closed",
+			authz:          nil,
+			organizationID: "org-1",
+			expectError:    "organization not in scope",
+		},
+		{
+			name: "user in organization succeeds",
+			authz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+				OrgIds:  []string{"org-1"},
+			},
+			organizationID: "org-1",
+		},
+		{
+			name: "user outside organization is denied",
+			authz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+				OrgIds:  []string{"org-2"},
+			},
+			organizationID: "org-1",
+			expectError:    "organization not in scope",
+		},
+		{
+			name: "system account defers organization authorization to rbac",
+			authz: &openapi.AuthClaims{
+				Acctype: openapi.System,
+			},
+			organizationID: "org-1",
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateOrganizationScope(test.authz, test.organizationID)
+
+			if test.expectError == "" {
+				require.NoError(t, err)
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.expectError)
+		})
+	}
+}
+
 func TestNormalizeExchangeUserinfoError(t *testing.T) {
 	t.Parallel()
 

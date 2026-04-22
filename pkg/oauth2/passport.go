@@ -197,7 +197,17 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 
 	// GetUserinfo normally populates authz for valid UNI tokens, but keep the
 	// nil guard so malformed or partially mocked callers still fail closed.
-	if authz == nil || !slices.Contains(authz.OrgIds, organizationID) {
+	if authz == nil {
+		return errors.OAuth2AccessDenied("organization not in scope")
+	}
+
+	// System principals do not carry explicit organization memberships in OrgIds.
+	// Their effective scope is derived from RBAC's system-account path instead.
+	if authz.Acctype == openapi.System {
+		return nil
+	}
+
+	if !slices.Contains(authz.OrgIds, organizationID) {
 		return errors.OAuth2AccessDenied("organization not in scope")
 	}
 
