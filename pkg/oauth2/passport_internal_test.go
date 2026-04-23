@@ -74,7 +74,7 @@ func TestRequestedScope(t *testing.T) {
 
 	testCases := []struct {
 		name         string
-		options      *openapi.ExchangeRequestOptions
+		options      *openapi.TokenRequestOptions
 		expectedOrg  string
 		expectedProj string
 	}{
@@ -84,14 +84,14 @@ func TestRequestedScope(t *testing.T) {
 		},
 		{
 			name: "organization only",
-			options: &openapi.ExchangeRequestOptions{
+			options: &openapi.TokenRequestOptions{
 				OrganizationId: &orgID,
 			},
 			expectedOrg: orgID,
 		},
 		{
 			name: "organization and project",
-			options: &openapi.ExchangeRequestOptions{
+			options: &openapi.TokenRequestOptions{
 				OrganizationId: &orgID,
 				ProjectId:      &projectID,
 			},
@@ -177,7 +177,7 @@ func TestValidateOrganizationScope(t *testing.T) {
 func TestNormalizeExchangeUserinfoError(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/oauth2/v2/exchange", nil)
+	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/oauth2/v2/token", nil)
 	oauthErr := oauth2errors.OAuth2AccessDenied("token validation failed")
 	coreErr := coreerrors.AccessDenied(req, "token validation failed")
 
