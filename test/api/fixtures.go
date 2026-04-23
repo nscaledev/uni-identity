@@ -123,6 +123,12 @@ func (b *GroupPayloadBuilder) WithUserIDs(userIDs []string) *GroupPayloadBuilder
 	return b
 }
 
+// WithSubjects sets the subjects for the group.
+func (b *GroupPayloadBuilder) WithSubjects(subjects []identityopenapi.Subject) *GroupPayloadBuilder {
+	b.group.Spec.Subjects = &subjects
+	return b
+}
+
 // Build returns the typed group struct directly.
 func (b *GroupPayloadBuilder) Build() identityopenapi.GroupWrite {
 	return b.group

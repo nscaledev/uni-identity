@@ -1,0 +1,985 @@
+go: warning: "github.com/onsi/gomega/..." matched only non-main packages
+Running Suite: Identity API Test Suites - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites
+=======================================================================================================
+Random Seed: [1m1776080802[0m
+
+Will run [1m45[0m of [1m45[0m specs
+[38;5;243m------------------------------[0m
+[0mAccess Control Discovery [38;5;243mWhen getting global ACL [0mGiven valid authentication [0m[1mshould return global ACL with organization permissions[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:38[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.721[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.722 (1ms)[0m
+  > Enter [1m[It][0m should return global ACL with organization permissions [38;5;243m@ 04/13/26 12:46:44.722[0m
+  [GET /api/v1/acl] status=200 duration=144.725ms traceparent=00-b4bb1e4529cceecc868f48f3a8450f1f-293ae819fba85357-01
+  [GET /api/v1/acl] response body: {"organizations":[{"endpoints":[{"name":"compute:clusters","operations":["create","read","update","delete"]},{"name":"compute:flavors","operations":["read"]},{"name":"compute:images","operations":["read"]},{"name":"compute:instances","operations":["create","read","update","delete"]},{"name":"compute:regions","operations":["read"]},{"name":"identity:groups","operations":["create","read","update","delete"]},{"name":"identity:oauth2providers","operations":["create","read","update","delete"]},{"name":"identity:organizations","operations":["read","update"]},{"name":"identity:projects","operations":["create","read","update","delete"]},{"name":"identity:quotas","operations":["read"]},{"name":"identity:roles","operations":["create","read","update","delete"]},{"name":"identity:serviceaccounts","operations":["create","read","update","delete"]},{"name":"identity:users","operations":["create","read","update","delete"]},{"name":"kubernetes:clusters","operations":["create","read","update","delete"]},{"name":"kubernetes:flavors","operations":["read"]},{"name":"kubernetes:images","operations":["read"]},{"name":"kubernetes:regions","operations":["read"]},{"name":"kubernetes:virtualclusters","operations":["create","read","update","delete"]},{"name":"region:filestorage:v2","operations":["create","read","update","delete"]},{"name":"region:filestorageclass:v2","operations":["read"]},{"name":"region:images","operations":["read","create","delete"]},{"name":"region:networks:v2","operations":["create","read","update","delete"]},{"name":"region:regions","operations":["read"]},{"name":"region:securitygroups:v2","operations":["create","read","update","delete"]}],"id":"ab6a2c69-efc9-11f0-a016-88f4dae84608"}]}
+    Endpoint: compute:clusters (operations: [create read update delete])
+    Endpoint: compute:flavors (operations: [read])
+    Endpoint: compute:images (operations: [read])
+    Endpoint: compute:instances (operations: [create read update delete])
+    Endpoint: compute:regions (operations: [read])
+    Endpoint: identity:groups (operations: [create read update delete])
+    Endpoint: identity:oauth2providers (operations: [create read update delete])
+    Endpoint: identity:organizations (operations: [read update])
+    Endpoint: identity:projects (operations: [create read update delete])
+    Endpoint: identity:quotas (operations: [read])
+    Endpoint: identity:roles (operations: [create read update delete])
+    Endpoint: identity:serviceaccounts (operations: [create read update delete])
+    Endpoint: identity:users (operations: [create read update delete])
+    Endpoint: kubernetes:clusters (operations: [create read update delete])
+    Endpoint: kubernetes:flavors (operations: [read])
+    Endpoint: kubernetes:images (operations: [read])
+    Endpoint: kubernetes:regions (operations: [read])
+    Endpoint: kubernetes:virtualclusters (operations: [create read update delete])
+    Endpoint: region:filestorage:v2 (operations: [create read update delete])
+    Endpoint: region:filestorageclass:v2 (operations: [read])
+    Endpoint: region:images (operations: [read create delete])
+    Endpoint: region:networks:v2 (operations: [create read update delete])
+    Endpoint: region:regions (operations: [read])
+    Endpoint: region:securitygroups:v2 (operations: [create read update delete])
+  Found test organization in ACL: ab6a2c69-efc9-11f0-a016-88f4dae84608
+  Global ACL retrieved with 1 organizations
+  < Exit [1m[It][0m should return global ACL with organization permissions [38;5;243m@ 04/13/26 12:46:44.867 (145ms)[0m
+[38;5;10m• [0.146 seconds][0m
+[38;5;243m------------------------------[0m
+[0mAccess Control Discovery [38;5;243mWhen getting global ACL [0mGiven invalid authentication [0m[1mshould reject requests without valid token[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:86[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.867[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.87 (3ms)[0m
+  > Enter [1m[It][0m should reject requests without valid token [38;5;243m@ 04/13/26 12:46:44.87[0m
+  [GET /api/v1/acl] UNEXPECTED STATUS expected=200 got=401 body={"error":"access_denied","error_description":"authorization header missing","trace_id":"2930d0c003ca547e3a37d3a92fa1f2fc"} traceID=2930d0c003ca547e3a37d3a92fa1f2fc spanID=e2c39e7e7356f5e4
+  TRACE CONTEXT: Use traceID=2930d0c003ca547e3a37d3a92fa1f2fc spanID=e2c39e7e7356f5e4 to search logs for this request
+  Expected error for missing authentication: expected 200, got 401, body: {"error":"access_denied","error_description":"authorization header missing","trace_id":"2930d0c003ca547e3a37d3a92fa1f2fc"} (traceID=2930d0c003ca547e3a37d3a92fa1f2fc spanID=e2c39e7e7356f5e4): unexpected status code
+  < Exit [1m[It][0m should reject requests without valid token [38;5;243m@ 04/13/26 12:46:44.902 (32ms)[0m
+[38;5;10m• [0.036 seconds][0m
+[38;5;243m------------------------------[0m
+[0mAccess Control Discovery [38;5;243mWhen getting organization ACL [0mGiven valid organization [0m[1mshould return organization-scoped ACL with endpoint permissions[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:101[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.903[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.904 (1ms)[0m
+  > Enter [1m[It][0m should return organization-scoped ACL with endpoint permissions [38;5;243m@ 04/13/26 12:46:44.904[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/acl] status=200 duration=33.64075ms traceparent=00-a2c85d9ea5ba94cb47e431baace7a2c3-dd5aefd24be72a63-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/acl] response body: {"organizations":[{"endpoints":[{"name":"compute:clusters","operations":["create","read","update","delete"]},{"name":"compute:flavors","operations":["read"]},{"name":"compute:images","operations":["read"]},{"name":"compute:instances","operations":["create","read","update","delete"]},{"name":"compute:regions","operations":["read"]},{"name":"identity:groups","operations":["create","read","update","delete"]},{"name":"identity:oauth2providers","operations":["create","read","update","delete"]},{"name":"identity:organizations","operations":["read","update"]},{"name":"identity:projects","operations":["create","read","update","delete"]},{"name":"identity:quotas","operations":["read"]},{"name":"identity:roles","operations":["create","read","update","delete"]},{"name":"identity:serviceaccounts","operations":["create","read","update","delete"]},{"name":"identity:users","operations":["create","read","update","delete"]},{"name":"kubernetes:clusters","operations":["create","read","update","delete"]},{"name":"kubernetes:flavors","operations":["read"]},{"name":"kubernetes:images","operations":["read"]},{"name":"kubernetes:regions","operations":["read"]},{"name":"kubernetes:virtualclusters","operations":["create","read","update","delete"]},{"name":"region:filestorage:v2","operations":["create","read","update","delete"]},{"name":"region:filestorageclass:v2","operations":["read"]},{"name":"region:images","operations":["read","create","delete"]},{"name":"region:networks:v2","operations":["create","read","update","delete"]},{"name":"region:regions","operations":["read"]},{"name":"region:securitygroups:v2","operations":["create","read","update","delete"]}],"id":"ab6a2c69-efc9-11f0-a016-88f4dae84608"}]}
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:109 [38;5;243m@ 04/13/26 12:46:44.939[0m
+  < Exit [1m[It][0m should return organization-scoped ACL with endpoint permissions [38;5;243m@ 04/13/26 12:46:44.939 (34ms)[0m
+[38;5;9m• [FAILED] [0.035 seconds][0m
+[0mAccess Control Discovery [38;5;243mWhen getting organization ACL [0mGiven valid organization [38;5;9m[1m[It] should return organization-scoped ACL with endpoint permissions[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:101[0m
+
+  [38;5;9m[FAILED] Organization field should be present in org ACL
+  Expected
+      <*openapi.AclOrganization | 0x0>: nil
+  not to be nil[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:109[0m [38;5;243m@ 04/13/26 12:46:44.939[0m
+[38;5;243m------------------------------[0m
+[0mAccess Control Discovery [38;5;243mWhen getting organization ACL [0mGiven invalid organization ID [0m[1mshould fall back to global ACL content without scoped organization details[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:141[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.939[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.941 (2ms)[0m
+  > Enter [1m[It][0m should fall back to global ACL content without scoped organization details [38;5;243m@ 04/13/26 12:46:44.941[0m
+  [GET /api/v1/organizations/00000000-0000-0000-0000-000000000000/acl] status=200 duration=34.28675ms traceparent=00-35707a998e4675b8b4a51a3477535114-742c67c17286a5db-01
+  [GET /api/v1/organizations/00000000-0000-0000-0000-000000000000/acl] response body: {"organizations":[{"endpoints":[{"name":"compute:clusters","operations":["create","read","update","delete"]},{"name":"compute:flavors","operations":["read"]},{"name":"compute:images","operations":["read"]},{"name":"compute:instances","operations":["create","read","update","delete"]},{"name":"compute:regions","operations":["read"]},{"name":"identity:groups","operations":["create","read","update","delete"]},{"name":"identity:oauth2providers","operations":["create","read","update","delete"]},{"name":"identity:organizations","operations":["read","update"]},{"name":"identity:projects","operations":["create","read","update","delete"]},{"name":"identity:quotas","operations":["read"]},{"name":"identity:roles","operations":["create","read","update","delete"]},{"name":"identity:serviceaccounts","operations":["create","read","update","delete"]},{"name":"identity:users","operations":["create","read","update","delete"]},{"name":"kubernetes:clusters","operations":["create","read","update","delete"]},{"name":"kubernetes:flavors","operations":["read"]},{"name":"kubernetes:images","operations":["read"]},{"name":"kubernetes:regions","operations":["read"]},{"name":"kubernetes:virtualclusters","operations":["create","read","update","delete"]},{"name":"region:filestorage:v2","operations":["create","read","update","delete"]},{"name":"region:filestorageclass:v2","operations":["read"]},{"name":"region:images","operations":["read","create","delete"]},{"name":"region:networks:v2","operations":["create","read","update","delete"]},{"name":"region:regions","operations":["read"]},{"name":"region:securitygroups:v2","operations":["create","read","update","delete"]}],"id":"ab6a2c69-efc9-11f0-a016-88f4dae84608"}]}
+  < Exit [1m[It][0m should fall back to global ACL content without scoped organization details [38;5;243m@ 04/13/26 12:46:44.976 (35ms)[0m
+[38;5;10m• [0.037 seconds][0m
+[38;5;243m------------------------------[0m
+[0mService Account Management [38;5;243mWhen listing service accounts [0mGiven valid organization [0m[1mshould return all service accounts in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/serviceaccounts_test.go:33[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.976[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:44.977 (2ms)[0m
+  > Enter [1m[It][0m should return all service accounts in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:44.978[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/serviceaccounts] status=200 duration=35.207792ms traceparent=00-0f83d752e0d1c9d756a8af02a2004123-02699cb561ec714e-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/serviceaccounts] response body: [{"metadata":{"createdBy":"qa-api-automation01@nscale.com","creationTime":"2026-03-23T12:53:16Z","healthStatus":"healthy","id":"ab91507d-ab13-4a23-825e-556a0e300e07","name":"auto-project-audit-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["b77473cb-9750-4263-866c-89ba91a126c4"]},"status":{"expiry":"2026-06-21T12:53:16Z"}},{"metadata":{"createdBy":"qa-ui-testaccount01@nscale.com","creationTime":"2026-03-30T12:22:00Z","healthStatus":"healthy","id":"b98b55ef-dfda-42cd-bfe1-9a4e658520fb","name":"auth0-project-public-admin-qa-ui-testacc01","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["a070dd51-5358-4968-be5c-7faaaa9b680c"]},"status":{"expiry":"2026-06-28T12:22:00Z"}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-02T10:13:31Z","healthStatus":"healthy","id":"c05bd633-3544-44fe-8197-b8a61b993189","name":"e2e-automation-tmp","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-05-31T10:13:31Z"}},{"metadata":{"createdBy":"e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","creationTime":"2026-02-28T12:49:25Z","healthStatus":"healthy","id":"df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","name":"temp-token","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-06-08T14:50:09Z"}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-02-28T12:49:25Z","healthStatus":"healthy","id":"e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","name":"e2e-automation-ui-token","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-05-31T10:24:44Z"}},{"metadata":{"createdBy":"qa-api-automation01@nscale.com","creationTime":"2026-03-23T12:52:04Z","healthStatus":"healthy","id":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","name":"auth0-projet-admin-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-06-21T12:52:04Z"}}]
+    Service Account: auto-project-audit-pre (ID: ab91507d-ab13-4a23-825e-556a0e300e07)
+      Groups: 1, Status: provisioned, Health: healthy
+      Expiry: 2026-06-21 12:53:16
+    Service Account: auth0-project-public-admin-qa-ui-testacc01 (ID: b98b55ef-dfda-42cd-bfe1-9a4e658520fb)
+      Groups: 1, Status: provisioned, Health: healthy
+      Expiry: 2026-06-28 12:22:00
+    Service Account: e2e-automation-tmp (ID: c05bd633-3544-44fe-8197-b8a61b993189)
+      Groups: 1, Status: provisioned, Health: healthy
+      Expiry: 2026-05-31 10:13:31
+    Service Account: temp-token (ID: df9ea1b2-8f94-40ec-9e9c-76f7c6641a23)
+      Groups: 1, Status: provisioned, Health: healthy
+      Expiry: 2026-06-08 14:50:09
+    Service Account: e2e-automation-ui-token (ID: e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71)
+      Groups: 1, Status: provisioned, Health: healthy
+      Expiry: 2026-05-31 10:24:44
+    Service Account: auth0-projet-admin-pre (ID: f5fd5d71-1a76-4c43-9a98-3e98e1802515)
+      Groups: 1, Status: provisioned, Health: healthy
+      Expiry: 2026-06-21 12:52:04
+  Found 6 service accounts in organization ab6a2c69-efc9-11f0-a016-88f4dae84608
+  < Exit [1m[It][0m should return all service accounts in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:45.013 (36ms)[0m
+[38;5;10m• [0.038 seconds][0m
+[38;5;243m------------------------------[0m
+[0mService Account Management [38;5;243mWhen listing service accounts [0mGiven invalid organization ID [0m[1mshould return error for non-existent organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/serviceaccounts_test.go:87[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.014[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.015 (1ms)[0m
+  > Enter [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:45.015[0m
+  [GET /api/v1/organizations/invalid-org-id/serviceaccounts] status=502 duration=37.2235ms traceparent=00-cbb204f5949285b016d2975a239122c1-8e02846554a30b38-01
+  [GET /api/v1/organizations/invalid-org-id/serviceaccounts] response body: <html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+
+  Expected error for invalid organization ID: status code 502: unexpected status code
+  < Exit [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:45.052 (37ms)[0m
+[38;5;10m• [0.039 seconds][0m
+[38;5;243m------------------------------[0m
+[0mQuota Management [38;5;243mWhen getting organization quotas [0mGiven valid organization [0m[1mshould return complete quota information for all resource types[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/quotas_test.go:31[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.052[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.053 (1ms)[0m
+  > Enter [1m[It][0m should return complete quota information for all resource types [38;5;243m@ 04/13/26 12:46:45.053[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/quotas] status=200 duration=34.038167ms traceparent=00-40a3bd37c3359b0aaab8b82d764b8e55-d4d4eb5361b30c33-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/quotas] response body: {"quotas":[{"committed":2,"default":5,"description":"All cluster types e.g. Kubernetes, compute, etc.","displayName":"Clusters","free":3,"kind":"clusters","quantity":5,"reserved":0,"used":2},{"committed":0,"default":1099511627776,"description":"Persistent network file storage.","displayName":"File Storage","free":1099511627776,"kind":"filestorage","quantity":1099511627776,"reserved":0,"used":0},{"committed":0,"default":40,"description":"General purpose GPUs for AI workloads.","displayName":"GPUs","free":40,"kind":"gpus","quantity":40,"reserved":0,"used":0},{"committed":1,"default":5,"description":"Layer 3 networks.","displayName":"Networks","free":4,"kind":"networks","quantity":5,"reserved":0,"used":1},{"committed":0,"default":5,"description":"Public IP addresses.","displayName":"Public IPs","free":5,"kind":"publicips","quantity":5,"reserved":0,"used":0},{"committed":4,"default":10,"description":"All physical and virtual machines.","displayName":"Servers","free":5,"kind":"servers","quantity":10,"reserved":1,"used":5}]}
+    Quota: Clusters (kind: clusters)
+      Total: 5, Used: 2, Free: 3, Committed: 2
+    Quota: File Storage (kind: filestorage)
+      Total: 1099511627776, Used: 0, Free: 1099511627776, Committed: 0
+    Quota: GPUs (kind: gpus)
+      Total: 40, Used: 0, Free: 40, Committed: 0
+    Quota: Networks (kind: networks)
+      Total: 5, Used: 1, Free: 4, Committed: 1
+    Quota: Public IPs (kind: publicips)
+      Total: 5, Used: 0, Free: 5, Committed: 0
+    Quota: Servers (kind: servers)
+      Total: 10, Used: 5, Free: 5, Committed: 4
+  Retrieved 6 quota types for organization ab6a2c69-efc9-11f0-a016-88f4dae84608
+  < Exit [1m[It][0m should return complete quota information for all resource types [38;5;243m@ 04/13/26 12:46:45.088 (35ms)[0m
+[38;5;10m• [0.036 seconds][0m
+[38;5;243m------------------------------[0m
+[0mQuota Management [38;5;243mWhen getting organization quotas [0mGiven invalid organization ID [0m[1mshould return error for non-existent organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/quotas_test.go:78[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.088[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.089 (1ms)[0m
+  > Enter [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:45.089[0m
+  [GET /api/v1/organizations/invalid-org-id/quotas] status=403 duration=114.836125ms traceparent=00-79eb47d43a6878804f6f96b0c9ee3cd7-c061b53bad8d2836-01
+  [GET /api/v1/organizations/invalid-org-id/quotas] response body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"79eb47d43a6878804f6f96b0c9ee3cd7"}
+  [GET /api/v1/organizations/invalid-org-id/quotas] UNEXPECTED STATUS expected=200 got=403 body={"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"79eb47d43a6878804f6f96b0c9ee3cd7"} traceID=79eb47d43a6878804f6f96b0c9ee3cd7 spanID=c061b53bad8d2836
+  TRACE CONTEXT: Use traceID=79eb47d43a6878804f6f96b0c9ee3cd7 spanID=c061b53bad8d2836 to search logs for this request
+  Expected error for invalid organization ID: getting quotas: expected 200, got 403, body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"79eb47d43a6878804f6f96b0c9ee3cd7"} (traceID=79eb47d43a6878804f6f96b0c9ee3cd7 spanID=c061b53bad8d2836): unexpected status code
+  < Exit [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:45.204 (115ms)[0m
+[38;5;10m• [0.116 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen creating groups [0mGiven valid group data [0m[1mshould create a new group with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:39[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.205[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.206 (1ms)[0m
+  > Enter [1m[It][0m should create a new group with complete metadata [38;5;243m@ 04/13/26 12:46:45.206[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=43.161666ms traceparent=00-106421c3fb80f331d6838a25910550ec-0dca28da52563191-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:45Z","healthStatus":"healthy","id":"a1cf4abb-1132-4238-a1ba-816d022e2645","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: a1cf4abb-1132-4238-a1ba-816d022e2645
+  Created group: test-group-20260413-124645 (ID: a1cf4abb-1132-4238-a1ba-816d022e2645)
+  < Exit [1m[It][0m should create a new group with complete metadata [38;5;243m@ 04/13/26 12:46:45.25 (45ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given valid group data [38;5;243m@ 04/13/26 12:46:45.25[0m
+  Cleaning up group: a1cf4abb-1132-4238-a1ba-816d022e2645
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/a1cf4abb-1132-4238-a1ba-816d022e2645] status=200 duration=45.516417ms traceparent=00-4eae981582492c9e76e14d274a5b1bc5-25e71fc26dfe7c42-01
+  Successfully deleted group: a1cf4abb-1132-4238-a1ba-816d022e2645
+  < Exit [1m[DeferCleanup (Each)][0m Given valid group data [38;5;243m@ 04/13/26 12:46:45.296 (46ms)[0m
+[38;5;10m• [0.092 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen creating groups [0mGiven valid group data [0m[1mshould create a group and retrieve it by ID[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:69[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.296[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.297 (1ms)[0m
+  > Enter [1m[It][0m should create a group and retrieve it by ID [38;5;243m@ 04/13/26 12:46:45.297[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=45.259791ms traceparent=00-d5007895656b814f8e54e9e6ad969efc-b0932db61ea14b70-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:45Z","healthStatus":"healthy","id":"dbe9d7df-58bc-4276-99bd-633d2d243e19","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: dbe9d7df-58bc-4276-99bd-633d2d243e19
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/dbe9d7df-58bc-4276-99bd-633d2d243e19] status=200 duration=30.364291ms traceparent=00-ae2bd744f884f74ae0c2945c44691ec0-63f13adb736fd683-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/dbe9d7df-58bc-4276-99bd-633d2d243e19] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:45Z","healthStatus":"healthy","id":"dbe9d7df-58bc-4276-99bd-633d2d243e19","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Retrieved group by ID: dbe9d7df-58bc-4276-99bd-633d2d243e19
+  < Exit [1m[It][0m should create a group and retrieve it by ID [38;5;243m@ 04/13/26 12:46:45.374 (77ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given valid group data [38;5;243m@ 04/13/26 12:46:45.374[0m
+  Cleaning up group: dbe9d7df-58bc-4276-99bd-633d2d243e19
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/dbe9d7df-58bc-4276-99bd-633d2d243e19] status=200 duration=42.0395ms traceparent=00-d01a504b947f15d5fbc08a67beef5882-40aa97486c523c8e-01
+  Successfully deleted group: dbe9d7df-58bc-4276-99bd-633d2d243e19
+  < Exit [1m[DeferCleanup (Each)][0m Given valid group data [38;5;243m@ 04/13/26 12:46:45.417 (43ms)[0m
+[38;5;10m• [0.121 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen creating groups [0mGiven valid group data [0m[1mshould create a group and find it in the organization list[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:84[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.417[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.418 (1ms)[0m
+  > Enter [1m[It][0m should create a group and find it in the organization list [38;5;243m@ 04/13/26 12:46:45.418[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=42.812708ms traceparent=00-3b44c834d42aeaf55fe82db2a1f9efc2-cf342604d949e72c-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:45Z","healthStatus":"healthy","id":"dbd49232-62ac-456c-89e9-36a1c9c41140","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: dbd49232-62ac-456c-89e9-36a1c9c41140
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=200 duration=33.778959ms traceparent=00-e3ab952d45b5fe0442e141cbb00ea481-2fdc5b95e05f1f72-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: [{"metadata":{"creationTime":"2026-02-28T12:49:15Z","healthStatus":"healthy","id":"8e7f766d-efca-11f0-94c8-88f4dae84608","name":"administrators","organizationId":"7ecc19a4-a980-4b1e-ae00-dd3495e20290","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":["e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","c05bd633-3544-44fe-8197-b8a61b993189","f5fd5d71-1a76-4c43-9a98-3e98e1802515"],"subjects":[{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":""}],"userIDs":["d709e3bc-5fcf-4f05-bdda-8fb9870834e4","e36b4004-55d2-4b92-a578-8654517b0444"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-30T11:21:16Z","healthStatus":"healthy","id":"a070dd51-5358-4968-be5c-7faaaa9b680c","name":"pub-admin","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f11eb118-6f96-4e1e-8e59-868bd863c544"],"serviceAccountIDs":["b98b55ef-dfda-42cd-bfe1-9a4e658520fb"],"subjects":[{"email":"qa-ui-testaccount01@nscale.com","id":"qa-ui-testaccount01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":[]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-05T16:20:22Z","healthStatus":"healthy","id":"b77473cb-9750-4263-866c-89ba91a126c4","modifiedBy":"qa-api-automation01@nscale.com","modifiedTime":"2026-03-24T14:03:59Z","name":"auditor","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f5a62ce3-fa7f-4d86-8f00-09389ccd8152"],"serviceAccountIDs":["ab91507d-ab13-4a23-825e-556a0e300e07"],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"sravan.medarapu@nscale.com","id":"sravan.medarapu@nscale.com","issuer":""}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","d61cc10c-f35e-4e8d-929e-e9dd7c3c534b"]}},{"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:45Z","healthStatus":"healthy","id":"dbd49232-62ac-456c-89e9-36a1c9c41140","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-23T12:51:04Z","healthStatus":"healthy","id":"e5a96f94-042f-4fc0-b52c-c9208e8e2999","name":"auth0-project-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":[],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","e36b4004-55d2-4b92-a578-8654517b0444"]}}]
+  Found created group in list: dbd49232-62ac-456c-89e9-36a1c9c41140
+  < Exit [1m[It][0m should create a group and find it in the organization list [38;5;243m@ 04/13/26 12:46:45.496 (78ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given valid group data [38;5;243m@ 04/13/26 12:46:45.496[0m
+  Cleaning up group: dbd49232-62ac-456c-89e9-36a1c9c41140
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/dbd49232-62ac-456c-89e9-36a1c9c41140] status=200 duration=46.683333ms traceparent=00-8801b86c68848000983530c9f0e53ff2-e51a6f3483916804-01
+  Successfully deleted group: dbd49232-62ac-456c-89e9-36a1c9c41140
+  < Exit [1m[DeferCleanup (Each)][0m Given valid group data [38;5;243m@ 04/13/26 12:46:45.543 (47ms)[0m
+[38;5;10m• [0.126 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen creating groups [0mGiven invalid organization ID [0m[1mshould return error when creating group in non-existent organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:108[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.543[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.545 (2ms)[0m
+  > Enter [1m[It][0m should return error when creating group in non-existent organization [38;5;243m@ 04/13/26 12:46:45.545[0m
+  [POST /api/v1/organizations/invalid-org-id/groups] status=403 duration=30.779292ms traceparent=00-0a42bf9dd8ae8d744f3837ddf12f1ba7-fe98ade333bce81b-01
+  [POST /api/v1/organizations/invalid-org-id/groups] response body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"0a42bf9dd8ae8d744f3837ddf12f1ba7"}
+  [POST /api/v1/organizations/invalid-org-id/groups] UNEXPECTED STATUS expected=201 got=403 body={"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"0a42bf9dd8ae8d744f3837ddf12f1ba7"} traceID=0a42bf9dd8ae8d744f3837ddf12f1ba7 spanID=fe98ade333bce81b
+  TRACE CONTEXT: Use traceID=0a42bf9dd8ae8d744f3837ddf12f1ba7 spanID=fe98ade333bce81b to search logs for this request
+  Expected error for invalid organization ID: creating group: expected 201, got 403, body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"0a42bf9dd8ae8d744f3837ddf12f1ba7"} (traceID=0a42bf9dd8ae8d744f3837ddf12f1ba7 spanID=fe98ade333bce81b): unexpected status code
+  < Exit [1m[It][0m should return error when creating group in non-existent organization [38;5;243m@ 04/13/26 12:46:45.577 (32ms)[0m
+[38;5;10m• [0.034 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen reading groups [0mGiven valid organization [0m[1mshould return all groups in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:121[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.577[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.579 (1ms)[0m
+  > Enter [1m[It][0m should return all groups in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:45.579[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=200 duration=32.081667ms traceparent=00-43786ff7eb0c9244e087edf45d15714b-b0b52959f47fd48c-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: [{"metadata":{"creationTime":"2026-02-28T12:49:15Z","healthStatus":"healthy","id":"8e7f766d-efca-11f0-94c8-88f4dae84608","name":"administrators","organizationId":"7ecc19a4-a980-4b1e-ae00-dd3495e20290","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":["e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","c05bd633-3544-44fe-8197-b8a61b993189","f5fd5d71-1a76-4c43-9a98-3e98e1802515"],"subjects":[{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":""}],"userIDs":["d709e3bc-5fcf-4f05-bdda-8fb9870834e4","e36b4004-55d2-4b92-a578-8654517b0444"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-30T11:21:16Z","healthStatus":"healthy","id":"a070dd51-5358-4968-be5c-7faaaa9b680c","name":"pub-admin","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f11eb118-6f96-4e1e-8e59-868bd863c544"],"serviceAccountIDs":["b98b55ef-dfda-42cd-bfe1-9a4e658520fb"],"subjects":[{"email":"qa-ui-testaccount01@nscale.com","id":"qa-ui-testaccount01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":[]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-05T16:20:22Z","healthStatus":"healthy","id":"b77473cb-9750-4263-866c-89ba91a126c4","modifiedBy":"qa-api-automation01@nscale.com","modifiedTime":"2026-03-24T14:03:59Z","name":"auditor","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f5a62ce3-fa7f-4d86-8f00-09389ccd8152"],"serviceAccountIDs":["ab91507d-ab13-4a23-825e-556a0e300e07"],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"sravan.medarapu@nscale.com","id":"sravan.medarapu@nscale.com","issuer":""}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","d61cc10c-f35e-4e8d-929e-e9dd7c3c534b"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-23T12:51:04Z","healthStatus":"healthy","id":"e5a96f94-042f-4fc0-b52c-c9208e8e2999","name":"auth0-project-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":[],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","e36b4004-55d2-4b92-a578-8654517b0444"]}}]
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:134 [38;5;243m@ 04/13/26 12:46:45.611[0m
+  < Exit [1m[It][0m should return all groups in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:45.611 (33ms)[0m
+[38;5;9m• [FAILED] [0.034 seconds][0m
+[0mGroup Management [38;5;243mWhen reading groups [0mGiven valid organization [38;5;9m[1m[It] should return all groups in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:121[0m
+
+  [38;5;9m[FAILED] Expected
+      <string>: 7ecc19a4-a980-4b1e-ae00-dd3495e20290
+  to equal
+      <string>: ab6a2c69-efc9-11f0-a016-88f4dae84608[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:134[0m [38;5;243m@ 04/13/26 12:46:45.611[0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen reading groups [0mGiven invalid group ID [0m[1mshould return error for non-existent group[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:160[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.611[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.612 (1ms)[0m
+  > Enter [1m[It][0m should return error for non-existent group [38;5;243m@ 04/13/26 12:46:45.612[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] status=404 duration=115.563ms traceparent=00-3a26b9501bf1630293aa5b548b1c0179-bc7c8cf3259c421a-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] response body: {"error":"not_found","error_description":"resource not found","trace_id":"3a26b9501bf1630293aa5b548b1c0179"}
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"3a26b9501bf1630293aa5b548b1c0179"} traceID=3a26b9501bf1630293aa5b548b1c0179 spanID=bc7c8cf3259c421a
+  TRACE CONTEXT: Use traceID=3a26b9501bf1630293aa5b548b1c0179 spanID=bc7c8cf3259c421a to search logs for this request
+  Expected error for non-existent group: group 00000000-0000-0000-0000-000000000000: resource not found
+  < Exit [1m[It][0m should return error for non-existent group [38;5;243m@ 04/13/26 12:46:45.728 (116ms)[0m
+[38;5;10m• [0.117 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen reading groups [0mGiven invalid organization ID [0m[1mshould return error for non-existent organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:172[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.728[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.729 (1ms)[0m
+  > Enter [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:45.729[0m
+  [GET /api/v1/organizations/invalid-org-id/groups] status=403 duration=32.070083ms traceparent=00-132e34b1aed9847cad2c496e8a62d96d-e4d7bc947b2fa6a5-01
+  [GET /api/v1/organizations/invalid-org-id/groups] response body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"132e34b1aed9847cad2c496e8a62d96d"}
+  Expected error for invalid organization ID: organization 'invalid-org-id' (status: 403): access denied
+  < Exit [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:45.761 (32ms)[0m
+[38;5;10m• [0.033 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen updating groups [0mGiven existing group [0m[1mshould update group name successfully[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:183[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.761[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.762 (1ms)[0m
+  > Enter [1m[It][0m should update group name successfully [38;5;243m@ 04/13/26 12:46:45.762[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=43.110167ms traceparent=00-1b2f95b1e836befce354e41eb01c3657-38392abc823e6341-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:45Z","healthStatus":"healthy","id":"ae9715df-6893-465b-a573-b86a3474d471","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: ae9715df-6893-465b-a573-b86a3474d471
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/ae9715df-6893-465b-a573-b86a3474d471] status=200 duration=46.506083ms traceparent=00-ed267c58b3aca5d3c0132637a8024892-95f8ef9c3a1a1b24-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/ae9715df-6893-465b-a573-b86a3474d471] status=200 duration=37.183542ms traceparent=00-69de7bce6eb082939337c6d2f1167435-ef45497234504408-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/ae9715df-6893-465b-a573-b86a3474d471] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:45Z","healthStatus":"healthy","id":"ae9715df-6893-465b-a573-b86a3474d471","modifiedBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","modifiedTime":"2026-04-13T11:46:45Z","name":"test-group-20260413-124645-updated","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Updated group name from 'test-group-20260413-124645' to 'test-group-20260413-124645-updated'
+  < Exit [1m[It][0m should update group name successfully [38;5;243m@ 04/13/26 12:46:45.89 (128ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:45.89[0m
+  Cleaning up group: ae9715df-6893-465b-a573-b86a3474d471
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/ae9715df-6893-465b-a573-b86a3474d471] status=200 duration=53.526541ms traceparent=00-d7ccaeda0107541e4514f1af7dc6ecd0-9c1558b5eb3f5cf0-01
+  Successfully deleted group: ae9715df-6893-465b-a573-b86a3474d471
+  < Exit [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:45.944 (54ms)[0m
+[38;5;10m• [0.183 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen updating groups [0mGiven existing group [0m[1mshould update group role assignments[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:205[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.944[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:45.947 (2ms)[0m
+  > Enter [1m[It][0m should update group role assignments [38;5;243m@ 04/13/26 12:46:45.947[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] status=200 duration=37.503791ms traceparent=00-71349d381ca7c4e61e0c882bd7a21faf-970c6c7cc47c7803-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] response body: [{"metadata":{"creationTime":"2026-02-28T10:55:54Z","description":"Organization administrator","healthStatus":"healthy","id":"f194d170-6ed1-4408-85e0-2d672777019f","name":"administrator","provisioningStatus":"provisioned"}},{"metadata":{"creationTime":"2026-02-28T10:55:54Z","description":"Organization auditor","healthStatus":"healthy","id":"f5a62ce3-fa7f-4d86-8f00-09389ccd8152","name":"auditor","provisioningStatus":"provisioned"}},{"metadata":{"creationTime":"2026-02-28T10:56:28Z","description":"Public administrator","healthStatus":"healthy","id":"f11eb118-6f96-4e1e-8e59-868bd863c544","name":"public-administrator","provisioningStatus":"provisioned"}}]
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=44.094958ms traceparent=00-2276b21925c350b398dad46bb7ee4411-b9e1ffdfdd6997fd-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:46Z","healthStatus":"healthy","id":"bc11be31-8712-4ee0-952a-ab07ec367323","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: bc11be31-8712-4ee0-952a-ab07ec367323
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/bc11be31-8712-4ee0-952a-ab07ec367323] status=200 duration=48.356834ms traceparent=00-add09fa4c4700516782b52a38861a65b-89becba37da34e8d-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/bc11be31-8712-4ee0-952a-ab07ec367323] status=200 duration=31.517584ms traceparent=00-74c04d3140e6c64f5a1beaf06ed7f90c-14a57ed345c2d4ef-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/bc11be31-8712-4ee0-952a-ab07ec367323] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:46Z","healthStatus":"healthy","id":"bc11be31-8712-4ee0-952a-ab07ec367323","modifiedBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","modifiedTime":"2026-04-13T11:46:46Z","name":"test-group-20260413-124645","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":[],"userIDs":[]}}
+  Updated group 'test-group-20260413-124645': added role administrator
+  < Exit [1m[It][0m should update group role assignments [38;5;243m@ 04/13/26 12:46:46.11 (163ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:46.11[0m
+  Cleaning up group: bc11be31-8712-4ee0-952a-ab07ec367323
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/bc11be31-8712-4ee0-952a-ab07ec367323] status=200 duration=45.226083ms traceparent=00-8070b09091aaafdd080e4cde372ac642-bb2bbb9fe48015e9-01
+  Successfully deleted group: bc11be31-8712-4ee0-952a-ab07ec367323
+  < Exit [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:46.156 (45ms)[0m
+[38;5;10m• [0.212 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen updating groups [0mGiven invalid group ID [0m[1mshould return error when updating non-existent group[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:235[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.156[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.157 (1ms)[0m
+  > Enter [1m[It][0m should return error when updating non-existent group [38;5;243m@ 04/13/26 12:46:46.157[0m
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] status=404 duration=95.687083ms traceparent=00-e4607952a36c71d8d64a519869379828-8cdac52e9dcb3bbf-01
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] response body: {"error":"not_found","error_description":"resource not found","trace_id":"e4607952a36c71d8d64a519869379828"}
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"e4607952a36c71d8d64a519869379828"} traceID=e4607952a36c71d8d64a519869379828 spanID=8cdac52e9dcb3bbf
+  TRACE CONTEXT: Use traceID=e4607952a36c71d8d64a519869379828 spanID=8cdac52e9dcb3bbf to search logs for this request
+  Expected error for updating non-existent group: group 00000000-0000-0000-0000-000000000000: resource not found
+  < Exit [1m[It][0m should return error when updating non-existent group [38;5;243m@ 04/13/26 12:46:46.254 (97ms)[0m
+[38;5;10m• [0.098 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen deleting groups [0mGiven existing group [0m[1mshould successfully create and delete a test group with verification[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:251[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.254[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.256 (2ms)[0m
+  > Enter [1m[It][0m should successfully create and delete a test group with verification [38;5;243m@ 04/13/26 12:46:46.256[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=44.137208ms traceparent=00-e0a52fea5236973ecd00a00c8a5c4ecc-0dfc7bf4cf9cc8aa-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:46Z","healthStatus":"healthy","id":"c3846353-2284-474e-b4c6-f84aeb805c9c","name":"delete-test-group","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: c3846353-2284-474e-b4c6-f84aeb805c9c
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] status=200 duration=32.403125ms traceparent=00-ee30a6eec116ea7cce9eee3c079e16c3-07d5dc0ecb9fdbea-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:46Z","healthStatus":"healthy","id":"c3846353-2284-474e-b4c6-f84aeb805c9c","name":"delete-test-group","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Verified group exists: c3846353-2284-474e-b4c6-f84aeb805c9c
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] status=200 duration=43.57375ms traceparent=00-b86751a3a88896be792e554cfc3a8cdd-bf1101757704816a-01
+  Deleted test group: c3846353-2284-474e-b4c6-f84aeb805c9c
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] status=404 duration=31.272041ms traceparent=00-173cbbd870f40f4b0684ee2e82220536-56e7b8c6d6866356-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] response body: {"error":"not_found","error_description":"resource not found","trace_id":"173cbbd870f40f4b0684ee2e82220536"}
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"173cbbd870f40f4b0684ee2e82220536"} traceID=173cbbd870f40f4b0684ee2e82220536 spanID=56e7b8c6d6866356
+  TRACE CONTEXT: Use traceID=173cbbd870f40f4b0684ee2e82220536 spanID=56e7b8c6d6866356 to search logs for this request
+  Verified group deletion: c3846353-2284-474e-b4c6-f84aeb805c9c
+  < Exit [1m[It][0m should successfully create and delete a test group with verification [38;5;243m@ 04/13/26 12:46:46.41 (154ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:46.41[0m
+  Cleaning up group: c3846353-2284-474e-b4c6-f84aeb805c9c
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] status=404 duration=40.207541ms traceparent=00-45615ff905eba129f71f089e88ccd8d7-506f666f77e2bccd-01
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] response body: {"error":"not_found","error_description":"resource not found","trace_id":"45615ff905eba129f71f089e88ccd8d7"}
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/c3846353-2284-474e-b4c6-f84aeb805c9c] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"45615ff905eba129f71f089e88ccd8d7"} traceID=45615ff905eba129f71f089e88ccd8d7 spanID=506f666f77e2bccd
+  TRACE CONTEXT: Use traceID=45615ff905eba129f71f089e88ccd8d7 spanID=506f666f77e2bccd to search logs for this request
+  Warning: Failed to delete group c3846353-2284-474e-b4c6-f84aeb805c9c: group c3846353-2284-474e-b4c6-f84aeb805c9c: resource not found
+  < Exit [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:46.45 (40ms)[0m
+[38;5;10m• [0.196 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen deleting groups [0mGiven existing group [0m[1mshould delete group successfully[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:279[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.45[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.451 (1ms)[0m
+  > Enter [1m[It][0m should delete group successfully [38;5;243m@ 04/13/26 12:46:46.451[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=47.09775ms traceparent=00-daa87987c0e91446ff55b90ef30efaa3-f76bd6a8393455bb-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:46Z","healthStatus":"healthy","id":"e68461ec-5699-4bec-a70d-681ee8f7bba6","name":"test-group-20260413-124646","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: e68461ec-5699-4bec-a70d-681ee8f7bba6
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/e68461ec-5699-4bec-a70d-681ee8f7bba6] status=200 duration=154.874667ms traceparent=00-eccbec60f65a00a79f0606ad81fa738c-8c27e35c5fc3d262-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/e68461ec-5699-4bec-a70d-681ee8f7bba6] status=404 duration=32.617458ms traceparent=00-3edf47ac418556ebaf87b905b0670d58-6f231bc103922829-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/e68461ec-5699-4bec-a70d-681ee8f7bba6] response body: {"error":"not_found","error_description":"resource not found","trace_id":"3edf47ac418556ebaf87b905b0670d58"}
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/e68461ec-5699-4bec-a70d-681ee8f7bba6] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"3edf47ac418556ebaf87b905b0670d58"} traceID=3edf47ac418556ebaf87b905b0670d58 spanID=6f231bc103922829
+  TRACE CONTEXT: Use traceID=3edf47ac418556ebaf87b905b0670d58 spanID=6f231bc103922829 to search logs for this request
+  Successfully deleted group: e68461ec-5699-4bec-a70d-681ee8f7bba6
+  < Exit [1m[It][0m should delete group successfully [38;5;243m@ 04/13/26 12:46:46.687 (236ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:46.687[0m
+  Cleaning up group: e68461ec-5699-4bec-a70d-681ee8f7bba6
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/e68461ec-5699-4bec-a70d-681ee8f7bba6] status=404 duration=159.580292ms traceparent=00-a6216f53977e886c0f96b70fb8944823-28f80b556cbd1d17-01
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/e68461ec-5699-4bec-a70d-681ee8f7bba6] response body: {"error":"not_found","error_description":"resource not found","trace_id":"a6216f53977e886c0f96b70fb8944823"}
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/e68461ec-5699-4bec-a70d-681ee8f7bba6] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"a6216f53977e886c0f96b70fb8944823"} traceID=a6216f53977e886c0f96b70fb8944823 spanID=28f80b556cbd1d17
+  TRACE CONTEXT: Use traceID=a6216f53977e886c0f96b70fb8944823 spanID=28f80b556cbd1d17 to search logs for this request
+  Warning: Failed to delete group e68461ec-5699-4bec-a70d-681ee8f7bba6: group e68461ec-5699-4bec-a70d-681ee8f7bba6: resource not found
+  < Exit [1m[DeferCleanup (Each)][0m Given existing group [38;5;243m@ 04/13/26 12:46:46.847 (160ms)[0m
+[38;5;10m• [0.396 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen deleting groups [0mGiven invalid group ID [0m[1mshould return error when deleting non-existent group[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:297[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.847[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:46.848 (1ms)[0m
+  > Enter [1m[It][0m should return error when deleting non-existent group [38;5;243m@ 04/13/26 12:46:46.848[0m
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] status=404 duration=201.163416ms traceparent=00-6a60d889087e52d4a4b03c20b35a3d2d-57e102813c06c707-01
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] response body: {"error":"not_found","error_description":"resource not found","trace_id":"6a60d889087e52d4a4b03c20b35a3d2d"}
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/00000000-0000-0000-0000-000000000000] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"6a60d889087e52d4a4b03c20b35a3d2d"} traceID=6a60d889087e52d4a4b03c20b35a3d2d spanID=57e102813c06c707
+  TRACE CONTEXT: Use traceID=6a60d889087e52d4a4b03c20b35a3d2d spanID=57e102813c06c707 to search logs for this request
+  Expected error for deleting non-existent group: group 00000000-0000-0000-0000-000000000000: resource not found
+  < Exit [1m[It][0m should return error when deleting non-existent group [38;5;243m@ 04/13/26 12:46:47.049 (201ms)[0m
+[38;5;10m• [0.203 seconds][0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen managing group subjects [0mGiven a group created with subjects [0m[1mshould persist subjects and return them on read[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:312[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.049[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.05 (1ms)[0m
+  > Enter [1m[It][0m should persist subjects and return them on read [38;5;243m@ 04/13/26 12:46:47.05[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=502 duration=31.147083ms traceparent=00-f30a49c1618acd78f652551cf1463d75-717603314f19b27f-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: <html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] UNEXPECTED STATUS expected=201 got=502 body=<html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+   traceID=f30a49c1618acd78f652551cf1463d75 spanID=717603314f19b27f
+  TRACE CONTEXT: Use traceID=f30a49c1618acd78f652551cf1463d75 spanID=717603314f19b27f to search logs for this request
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/fixtures.go:140 [38;5;243m@ 04/13/26 12:46:47.083[0m
+  < Exit [1m[It][0m should persist subjects and return them on read [38;5;243m@ 04/13/26 12:46:47.083 (32ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given a group created with subjects [38;5;243m@ 04/13/26 12:46:47.083[0m
+  No group ID available, attempting to find group by name: test-group-20260413-124647
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=200 duration=38.481209ms traceparent=00-22032c7ca6a46276c70e6db8e476a7b7-6761ea942ee44ddd-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: [{"metadata":{"creationTime":"2026-02-28T12:49:15Z","healthStatus":"healthy","id":"8e7f766d-efca-11f0-94c8-88f4dae84608","name":"administrators","organizationId":"7ecc19a4-a980-4b1e-ae00-dd3495e20290","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":["e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","c05bd633-3544-44fe-8197-b8a61b993189","f5fd5d71-1a76-4c43-9a98-3e98e1802515"],"subjects":[{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":""}],"userIDs":["d709e3bc-5fcf-4f05-bdda-8fb9870834e4","e36b4004-55d2-4b92-a578-8654517b0444"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-30T11:21:16Z","healthStatus":"healthy","id":"a070dd51-5358-4968-be5c-7faaaa9b680c","name":"pub-admin","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f11eb118-6f96-4e1e-8e59-868bd863c544"],"serviceAccountIDs":["b98b55ef-dfda-42cd-bfe1-9a4e658520fb"],"subjects":[{"email":"qa-ui-testaccount01@nscale.com","id":"qa-ui-testaccount01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":[]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-05T16:20:22Z","healthStatus":"healthy","id":"b77473cb-9750-4263-866c-89ba91a126c4","modifiedBy":"qa-api-automation01@nscale.com","modifiedTime":"2026-03-24T14:03:59Z","name":"auditor","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f5a62ce3-fa7f-4d86-8f00-09389ccd8152"],"serviceAccountIDs":["ab91507d-ab13-4a23-825e-556a0e300e07"],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"sravan.medarapu@nscale.com","id":"sravan.medarapu@nscale.com","issuer":""}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","d61cc10c-f35e-4e8d-929e-e9dd7c3c534b"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-23T12:51:04Z","healthStatus":"healthy","id":"e5a96f94-042f-4fc0-b52c-c9208e8e2999","name":"auth0-project-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":[],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","e36b4004-55d2-4b92-a578-8654517b0444"]}}]
+  Skipping cleanup: group not found by name
+  < Exit [1m[DeferCleanup (Each)][0m Given a group created with subjects [38;5;243m@ 04/13/26 12:46:47.121 (39ms)[0m
+[38;5;9m• [FAILED] [0.072 seconds][0m
+[0mGroup Management [38;5;243mWhen managing group subjects [0mGiven a group created with subjects [38;5;9m[1m[It] should persist subjects and return them on read[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:312[0m
+
+  [38;5;9m[FAILED] Failed to create group: creating group: expected 201, got 502, body: <html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+   (traceID=f30a49c1618acd78f652551cf1463d75 spanID=717603314f19b27f): unexpected status code[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/fixtures.go:140[0m [38;5;243m@ 04/13/26 12:46:47.083[0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen managing group subjects [0mGiven a group created with subjects [0m[1mshould update subjects on an existing group[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:333[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.122[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.122 (1ms)[0m
+  > Enter [1m[It][0m should update subjects on an existing group [38;5;243m@ 04/13/26 12:46:47.122[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=201 duration=178.14875ms traceparent=00-81cf60902ba62f12f58b4d1e8f429f0d-8689db5867d28dc1-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: {"metadata":{"createdBy":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","creationTime":"2026-04-13T11:46:47Z","healthStatus":"healthy","id":"cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0","name":"test-group-20260413-124647","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":[],"serviceAccountIDs":[],"userIDs":[]}}
+  Created group with ID: cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0] status=502 duration=44.721417ms traceparent=00-fb5b8135b4ff49d9e87da2f3a76b46ad-31cc4616828a7734-01
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0] response body: <html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+
+  [PUT /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0] UNEXPECTED STATUS expected=200 got=502 body=<html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+   traceID=fb5b8135b4ff49d9e87da2f3a76b46ad spanID=31cc4616828a7734
+  TRACE CONTEXT: Use traceID=fb5b8135b4ff49d9e87da2f3a76b46ad spanID=31cc4616828a7734 to search logs for this request
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:345 [38;5;243m@ 04/13/26 12:46:47.346[0m
+  < Exit [1m[It][0m should update subjects on an existing group [38;5;243m@ 04/13/26 12:46:47.347 (224ms)[0m
+  > Enter [1m[DeferCleanup (Each)][0m Given a group created with subjects [38;5;243m@ 04/13/26 12:46:47.347[0m
+  Cleaning up group: cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0
+  [DELETE /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups/cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0] status=200 duration=110.372583ms traceparent=00-54e078b8cbf1af5fdfb62362907f13ba-0aa6f4a24bc7a3a8-01
+  Successfully deleted group: cf6a620f-6925-4fb8-a4e4-f0a3e1bcc3e0
+  < Exit [1m[DeferCleanup (Each)][0m Given a group created with subjects [38;5;243m@ 04/13/26 12:46:47.457 (111ms)[0m
+[38;5;9m• [FAILED] [0.336 seconds][0m
+[0mGroup Management [38;5;243mWhen managing group subjects [0mGiven a group created with subjects [38;5;9m[1m[It] should update subjects on an existing group[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:333[0m
+
+  [38;5;9m[FAILED] Unexpected error:
+      <*fmt.wrapError | 0x140001fc900>: 
+      updating group: expected 200, got 502, body: <html>
+      <head><title>502 Bad Gateway</title></head>
+      <body>
+      <center><h1>502 Bad Gateway</h1></center>
+      <hr><center>nginx</center>
+      </body>
+      </html>
+       (traceID=fb5b8135b4ff49d9e87da2f3a76b46ad spanID=31cc4616828a7734): unexpected status code
+      {
+          msg: "updating group: expected 200, got 502, body: <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n (traceID=fb5b8135b4ff49d9e87da2f3a76b46ad spanID=31cc4616828a7734): unexpected status code",
+          err: <*fmt.wrapError | 0x140001fc8e0>{
+              msg: "expected 200, got 502, body: <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n (traceID=fb5b8135b4ff49d9e87da2f3a76b46ad spanID=31cc4616828a7734): unexpected status code",
+              err: <*errors.errorString | 0x100f56690>{
+                  s: "unexpected status code",
+              },
+          },
+      }
+  occurred[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:345[0m [38;5;243m@ 04/13/26 12:46:47.346[0m
+[38;5;243m------------------------------[0m
+[0mGroup Management [38;5;243mWhen managing group subjects [0mGiven a group payload with both subjects and userIDs set [0m[1mshould reject the request — subjects and userIDs are mutually exclusive[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:357[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.457[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.459 (2ms)[0m
+  > Enter [1m[It][0m should reject the request — subjects and userIDs are mutually exclusive [38;5;243m@ 04/13/26 12:46:47.459[0m
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=502 duration=35.834041ms traceparent=00-3965a9a1cc80d51d5982792d80eb2949-4c718b5d1ed85b1b-01
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: <html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+
+  [POST /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] UNEXPECTED STATUS expected=201 got=502 body=<html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+   traceID=3965a9a1cc80d51d5982792d80eb2949 spanID=4c718b5d1ed85b1b
+  TRACE CONTEXT: Use traceID=3965a9a1cc80d51d5982792d80eb2949 spanID=4c718b5d1ed85b1b to search logs for this request
+  Exclusive validation enforced: creating group: expected 201, got 502, body: <html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+   (traceID=3965a9a1cc80d51d5982792d80eb2949 spanID=4c718b5d1ed85b1b): unexpected status code
+  < Exit [1m[It][0m should reject the request — subjects and userIDs are mutually exclusive [38;5;243m@ 04/13/26 12:46:47.496 (37ms)[0m
+[38;5;10m• [0.039 seconds][0m
+[38;5;243m------------------------------[0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as an administrator [0mGiven a request to list groups [0m[1mshould return all groups in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:37[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.496[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.498 (1ms)[0m
+  > Enter [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.498[0m
+  < Exit [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.498 (0s)[0m
+  > Enter [1m[It][0m should return all groups in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.498[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=200 duration=34.816875ms traceparent=00-8ac6013e62cf165c8a0f9eb7e000ba49-33decb41d24e20a6-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: [{"metadata":{"creationTime":"2026-02-28T12:49:15Z","healthStatus":"healthy","id":"8e7f766d-efca-11f0-94c8-88f4dae84608","name":"administrators","organizationId":"7ecc19a4-a980-4b1e-ae00-dd3495e20290","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":["e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","c05bd633-3544-44fe-8197-b8a61b993189","f5fd5d71-1a76-4c43-9a98-3e98e1802515"],"subjects":[{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":""}],"userIDs":["d709e3bc-5fcf-4f05-bdda-8fb9870834e4","e36b4004-55d2-4b92-a578-8654517b0444"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-30T11:21:16Z","healthStatus":"healthy","id":"a070dd51-5358-4968-be5c-7faaaa9b680c","name":"pub-admin","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f11eb118-6f96-4e1e-8e59-868bd863c544"],"serviceAccountIDs":["b98b55ef-dfda-42cd-bfe1-9a4e658520fb"],"subjects":[{"email":"qa-ui-testaccount01@nscale.com","id":"qa-ui-testaccount01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":[]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-05T16:20:22Z","healthStatus":"healthy","id":"b77473cb-9750-4263-866c-89ba91a126c4","modifiedBy":"qa-api-automation01@nscale.com","modifiedTime":"2026-03-24T14:03:59Z","name":"auditor","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f5a62ce3-fa7f-4d86-8f00-09389ccd8152"],"serviceAccountIDs":["ab91507d-ab13-4a23-825e-556a0e300e07"],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"sravan.medarapu@nscale.com","id":"sravan.medarapu@nscale.com","issuer":""}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","d61cc10c-f35e-4e8d-929e-e9dd7c3c534b"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-23T12:51:04Z","healthStatus":"healthy","id":"e5a96f94-042f-4fc0-b52c-c9208e8e2999","name":"auth0-project-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":[],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","e36b4004-55d2-4b92-a578-8654517b0444"]}}]
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:45 [38;5;243m@ 04/13/26 12:46:47.533[0m
+  < Exit [1m[It][0m should return all groups in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.533 (35ms)[0m
+[38;5;9m• [FAILED] [0.037 seconds][0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as an administrator [0mGiven a request to list groups [38;5;9m[1m[It] should return all groups in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:37[0m
+
+  [38;5;9m[FAILED] Expected
+      <string>: 7ecc19a4-a980-4b1e-ae00-dd3495e20290
+  to equal
+      <string>: ab6a2c69-efc9-11f0-a016-88f4dae84608[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:45[0m [38;5;243m@ 04/13/26 12:46:47.533[0m
+[38;5;243m------------------------------[0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as an administrator [0mGiven a request to list roles [0m[1mshould return all roles in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:51[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.533[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.534 (1ms)[0m
+  > Enter [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.534[0m
+  < Exit [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.534 (0s)[0m
+  > Enter [1m[It][0m should return all roles in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.534[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] status=200 duration=33.331458ms traceparent=00-36b3c914fd9bb7dbf1b352cc8f9e7787-2f870ee53ecb3475-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] response body: [{"metadata":{"creationTime":"2026-02-28T10:55:54Z","description":"Organization administrator","healthStatus":"healthy","id":"f194d170-6ed1-4408-85e0-2d672777019f","name":"administrator","provisioningStatus":"provisioned"}},{"metadata":{"creationTime":"2026-02-28T10:55:54Z","description":"Organization auditor","healthStatus":"healthy","id":"f5a62ce3-fa7f-4d86-8f00-09389ccd8152","name":"auditor","provisioningStatus":"provisioned"}},{"metadata":{"creationTime":"2026-02-28T10:56:28Z","description":"Public administrator","healthStatus":"healthy","id":"f11eb118-6f96-4e1e-8e59-868bd863c544","name":"public-administrator","provisioningStatus":"provisioned"}}]
+  < Exit [1m[It][0m should return all roles in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.568 (33ms)[0m
+[38;5;10m• [0.035 seconds][0m
+[38;5;243m------------------------------[0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as an administrator [0mGiven a request to list service accounts [0m[1mshould return all service accounts in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:66[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.568[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.569 (1ms)[0m
+  > Enter [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.569[0m
+  < Exit [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.569 (0s)[0m
+  > Enter [1m[It][0m should return all service accounts in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.569[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/serviceaccounts] status=200 duration=35.454917ms traceparent=00-996b4afddf14b83548f476c7d372f0b3-9415a2f1bf4306d7-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/serviceaccounts] response body: [{"metadata":{"createdBy":"qa-api-automation01@nscale.com","creationTime":"2026-03-23T12:53:16Z","healthStatus":"healthy","id":"ab91507d-ab13-4a23-825e-556a0e300e07","name":"auto-project-audit-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["b77473cb-9750-4263-866c-89ba91a126c4"]},"status":{"expiry":"2026-06-21T12:53:16Z"}},{"metadata":{"createdBy":"qa-ui-testaccount01@nscale.com","creationTime":"2026-03-30T12:22:00Z","healthStatus":"healthy","id":"b98b55ef-dfda-42cd-bfe1-9a4e658520fb","name":"auth0-project-public-admin-qa-ui-testacc01","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["a070dd51-5358-4968-be5c-7faaaa9b680c"]},"status":{"expiry":"2026-06-28T12:22:00Z"}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-02T10:13:31Z","healthStatus":"healthy","id":"c05bd633-3544-44fe-8197-b8a61b993189","name":"e2e-automation-tmp","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-05-31T10:13:31Z"}},{"metadata":{"createdBy":"e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","creationTime":"2026-02-28T12:49:25Z","healthStatus":"healthy","id":"df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","name":"temp-token","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-06-08T14:50:09Z"}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-02-28T12:49:25Z","healthStatus":"healthy","id":"e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","name":"e2e-automation-ui-token","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-05-31T10:24:44Z"}},{"metadata":{"createdBy":"qa-api-automation01@nscale.com","creationTime":"2026-03-23T12:52:04Z","healthStatus":"healthy","id":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","name":"auth0-projet-admin-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-06-21T12:52:04Z"}}]
+  < Exit [1m[It][0m should return all service accounts in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.604 (36ms)[0m
+[38;5;10m• [0.036 seconds][0m
+[38;5;243m------------------------------[0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list groups [0m[1mshould be denied with a forbidden response[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:86[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.604[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.605 (1ms)[0m
+  > Enter [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.605[0m
+  < Exit [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.605 (0s)[0m
+  > Enter [1m[It][0m should be denied with a forbidden response [38;5;243m@ 04/13/26 12:46:47.605[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] status=200 duration=36.631834ms traceparent=00-26cbbecfafa71f68777b18239a1c604e-b2337fe4bd6be317-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/groups] response body: [{"metadata":{"creationTime":"2026-02-28T12:49:15Z","healthStatus":"healthy","id":"8e7f766d-efca-11f0-94c8-88f4dae84608","name":"administrators","organizationId":"7ecc19a4-a980-4b1e-ae00-dd3495e20290","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":["e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","c05bd633-3544-44fe-8197-b8a61b993189","f5fd5d71-1a76-4c43-9a98-3e98e1802515"],"subjects":[{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":""}],"userIDs":["d709e3bc-5fcf-4f05-bdda-8fb9870834e4","e36b4004-55d2-4b92-a578-8654517b0444"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-30T11:21:16Z","healthStatus":"healthy","id":"a070dd51-5358-4968-be5c-7faaaa9b680c","name":"pub-admin","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f11eb118-6f96-4e1e-8e59-868bd863c544"],"serviceAccountIDs":["b98b55ef-dfda-42cd-bfe1-9a4e658520fb"],"subjects":[{"email":"qa-ui-testaccount01@nscale.com","id":"qa-ui-testaccount01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":[]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-05T16:20:22Z","healthStatus":"healthy","id":"b77473cb-9750-4263-866c-89ba91a126c4","modifiedBy":"qa-api-automation01@nscale.com","modifiedTime":"2026-03-24T14:03:59Z","name":"auditor","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f5a62ce3-fa7f-4d86-8f00-09389ccd8152"],"serviceAccountIDs":["ab91507d-ab13-4a23-825e-556a0e300e07"],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"sravan.medarapu@nscale.com","id":"sravan.medarapu@nscale.com","issuer":""}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","d61cc10c-f35e-4e8d-929e-e9dd7c3c534b"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-23T12:51:04Z","healthStatus":"healthy","id":"e5a96f94-042f-4fc0-b52c-c9208e8e2999","name":"auth0-project-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"roleIDs":["f194d170-6ed1-4408-85e0-2d672777019f"],"serviceAccountIDs":[],"subjects":[{"email":"qa-api-automation01@nscale.com","id":"qa-api-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"},{"email":"qa-ui-automation01@nscale.com","id":"qa-ui-automation01@nscale.com","issuer":"https://identity.nks-dev.glo1.nscale.com"}],"userIDs":["ea91ead2-0bd4-4394-a6fb-595e5be33a1f","e36b4004-55d2-4b92-a578-8654517b0444"]}}]
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:88 [38;5;243m@ 04/13/26 12:46:47.643[0m
+  < Exit [1m[It][0m should be denied with a forbidden response [38;5;243m@ 04/13/26 12:46:47.643 (38ms)[0m
+[38;5;9m• [FAILED] [0.038 seconds][0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list groups [38;5;9m[1m[It] should be denied with a forbidden response[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:86[0m
+
+  [38;5;9m[FAILED] Expected an error to have occurred.  Got:
+      <nil>: nil[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:88[0m [38;5;243m@ 04/13/26 12:46:47.643[0m
+[38;5;243m------------------------------[0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list roles [0m[1mshould be denied with a forbidden response[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:93[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.643[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.644 (1ms)[0m
+  > Enter [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.644[0m
+  < Exit [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.644 (0s)[0m
+  > Enter [1m[It][0m should be denied with a forbidden response [38;5;243m@ 04/13/26 12:46:47.644[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] status=200 duration=33.270708ms traceparent=00-6cf1c43c7e191e8710b77a6a4fe6a581-82a608393c388511-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] response body: [{"metadata":{"creationTime":"2026-02-28T10:55:54Z","description":"Organization auditor","healthStatus":"healthy","id":"f5a62ce3-fa7f-4d86-8f00-09389ccd8152","name":"auditor","provisioningStatus":"provisioned"}}]
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:95 [38;5;243m@ 04/13/26 12:46:47.678[0m
+  < Exit [1m[It][0m should be denied with a forbidden response [38;5;243m@ 04/13/26 12:46:47.678 (34ms)[0m
+[38;5;9m• [FAILED] [0.035 seconds][0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list roles [38;5;9m[1m[It] should be denied with a forbidden response[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:93[0m
+
+  [38;5;9m[FAILED] Expected an error to have occurred.  Got:
+      <nil>: nil[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:95[0m [38;5;243m@ 04/13/26 12:46:47.678[0m
+[38;5;243m------------------------------[0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list service accounts [0m[1mshould return only the requesting principal's own service account[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:100[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.678[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.679 (1ms)[0m
+  > Enter [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.679[0m
+  < Exit [1m[BeforeEach][0m RBAC Enforcement [38;5;243m@ 04/13/26 12:46:47.679 (0s)[0m
+  > Enter [1m[It][0m should return only the requesting principal's own service account [38;5;243m@ 04/13/26 12:46:47.679[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/serviceaccounts] status=200 duration=33.777125ms traceparent=00-ba5f91c2d79a1a3741e3d30b98acbd62-b334fa8111e8e57b-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/serviceaccounts] response body: [{"metadata":{"createdBy":"qa-api-automation01@nscale.com","creationTime":"2026-03-23T12:53:16Z","healthStatus":"healthy","id":"ab91507d-ab13-4a23-825e-556a0e300e07","name":"auto-project-audit-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["b77473cb-9750-4263-866c-89ba91a126c4"]},"status":{"expiry":"2026-06-21T12:53:16Z"}},{"metadata":{"createdBy":"qa-ui-testaccount01@nscale.com","creationTime":"2026-03-30T12:22:00Z","healthStatus":"healthy","id":"b98b55ef-dfda-42cd-bfe1-9a4e658520fb","name":"auth0-project-public-admin-qa-ui-testacc01","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["a070dd51-5358-4968-be5c-7faaaa9b680c"]},"status":{"expiry":"2026-06-28T12:22:00Z"}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-02T10:13:31Z","healthStatus":"healthy","id":"c05bd633-3544-44fe-8197-b8a61b993189","name":"e2e-automation-tmp","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-05-31T10:13:31Z"}},{"metadata":{"createdBy":"e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","creationTime":"2026-02-28T12:49:25Z","healthStatus":"healthy","id":"df9ea1b2-8f94-40ec-9e9c-76f7c6641a23","name":"temp-token","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-06-08T14:50:09Z"}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-02-28T12:49:25Z","healthStatus":"healthy","id":"e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71","name":"e2e-automation-ui-token","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-05-31T10:24:44Z"}},{"metadata":{"createdBy":"qa-api-automation01@nscale.com","creationTime":"2026-03-23T12:52:04Z","healthStatus":"healthy","id":"f5fd5d71-1a76-4c43-9a98-3e98e1802515","name":"auth0-projet-admin-pre","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]},"status":{"expiry":"2026-06-21T12:52:04Z"}}]
+  [38;5;9m[FAILED][0m in [It] - /Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:104 [38;5;243m@ 04/13/26 12:46:47.713[0m
+  < Exit [1m[It][0m should return only the requesting principal's own service account [38;5;243m@ 04/13/26 12:46:47.714 (34ms)[0m
+[38;5;9m• [FAILED] [0.035 seconds][0m
+[0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list service accounts [38;5;9m[1m[It] should return only the requesting principal's own service account[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:100[0m
+
+  [38;5;9m[FAILED] Expected
+      <[]openapi.ServiceAccountRead | len:6, cap:8>: [
+          {
+              Metadata: {
+                  CreatedBy: "qa-api-automation01@nscale.com",
+                  CreationTime: 2026-03-23T12:53:16Z,
+                  DeletionTime: nil,
+                  Description: nil,
+                  HealthStatus: "healthy",
+                  Id: "ab91507d-ab13-4a23-825e-556a0e300e07",
+                  ModifiedBy: nil,
+                  ModifiedTime: nil,
+                  Name: "auto-project-audit-pre",
+                  OrganizationId: "ab6a2c69-efc9-11f0-a016-88f4dae84608",
+                  ProvisioningStatus: "provisioned",
+                  Tags: nil,
+              },
+              Spec: {
+                  GroupIDs: [
+                      "b77473cb-9750-4263-866c-89ba91a126c4",
+                  ],
+              },
+              Status: {
+                  AccessToken: nil,
+                  Expiry: 2026-06-21T12:53:16Z,
+              },
+          },
+          {
+              Metadata: {
+                  CreatedBy: "qa-ui-testaccount01@nscale.com",
+                  CreationTime: 2026-03-30T12:22:00Z,
+                  DeletionTime: nil,
+                  Description: nil,
+                  HealthStatus: "healthy",
+                  Id: "b98b55ef-dfda-42cd-bfe1-9a4e658520fb",
+                  ModifiedBy: nil,
+                  ModifiedTime: nil,
+                  Name: "auth0-project-public-admin-qa-ui-testacc01",
+                  OrganizationId: "ab6a2c69-efc9-11f0-a016-88f4dae84608",
+                  ProvisioningStatus: "provisioned",
+                  Tags: nil,
+              },
+              Spec: {
+                  GroupIDs: [
+                      "a070dd51-5358-4968-be5c-7faaaa9b680c",
+                  ],
+              },
+              Status: {
+                  AccessToken: nil,
+                  Expiry: 2026-06-28T12:22:00Z,
+              },
+          },
+          {
+              Metadata: {
+                  CreatedBy: "qa-ui-automation01@nscale.com",
+                  CreationTime: 2026-03-02T10:13:31Z,
+                  DeletionTime: nil,
+                  Description: nil,
+                  HealthStatus: "healthy",
+                  Id: "c05bd633-3544-44fe-8197-b8a61b993189",
+                  ModifiedBy: nil,
+                  ModifiedTime: nil,
+                  Name: "e2e-automation-tmp",
+                  OrganizationId: "ab6a2c69-efc9-11f0-a016-88f4dae84608",
+                  ProvisioningStatus: "provisioned",
+                  Tags: nil,
+              },
+              Spec: {
+                  GroupIDs: [
+                      "8e7f766d-efca-11f0-94c8-88f4dae84608",
+                  ],
+              },
+              Status: {
+                  AccessToken: nil,
+                  Expiry: 2026-05-31T10:13:31Z,
+              },
+          },
+          {
+              Metadata: {
+                  CreatedBy: "e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71",
+                  CreationTime: 2026-02-28T12:49:25Z,
+                  DeletionTime: nil,
+                  Description: nil,
+                  HealthStatus: "healthy",
+                  Id: "df9ea1b2-8f94-40ec-9e9c-76f7c6641a23",
+                  ModifiedBy: nil,
+                  ModifiedTime: nil,
+                  Name: "temp-token",
+                  OrganizationId: "ab6a2c69-efc9-11f0-a016-88f4dae84608",
+                  ProvisioningStatus: "provisioned",
+                  Tags: nil,
+              },
+              Spec: {
+                  GroupIDs: [
+                      "8e7f766d-efca-11f0-94c8-88f4dae84608",
+                  ],
+              },
+              Status: {
+                  AccessToken: nil,
+                  Expiry: 2026-06-08T14:50:09Z,
+              },
+          },
+          {
+              Metadata: {
+                  CreatedBy: "qa-ui-automation01@nscale.com",
+                  CreationTime: 2026-02-28T12:49:25Z,
+                  DeletionTime: nil,
+                  Description: nil,
+                  HealthStatus: "healthy",
+                  Id: "e5bc0ae2-d691-4c5d-9e46-cf3b852f0e71",
+                  ModifiedBy: nil,
+                  ModifiedTime: nil,
+                  Name: "e2e-automation-ui-token",
+                  OrganizationId: "ab6a2c69-efc9-11f0-a016-88f4dae84608",
+              ...
+
+  Gomega truncated this representation as it exceeds 'format.MaxLength'.
+  Consider having the object provide a custom 'GomegaStringer' representation
+  or adjust the parameters in Gomega's 'format' package.
+
+  Learn more here: https://onsi.github.io/gomega/#adjusting-output
+
+  to have length 1[0m
+  [38;5;9mIn [1m[It][0m[38;5;9m at: [1m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:104[0m [38;5;243m@ 04/13/26 12:46:47.713[0m
+[38;5;243m------------------------------[0m
+[0mUser Management [38;5;243mWhen listing users [0mGiven valid organization [0m[1mshould return all users in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/users_test.go:33[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.714[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.714 (1ms)[0m
+  > Enter [1m[It][0m should return all users in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.714[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/users] status=200 duration=113.204666ms traceparent=00-767c401bbb5b793f7baff03cf703d967-a80e1b16802ec979-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/users] response body: [{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-05T16:21:16Z","healthStatus":"healthy","id":"ea91ead2-0bd4-4394-a6fb-595e5be33a1f","name":"undefined","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["b77473cb-9750-4263-866c-89ba91a126c4","e5a96f94-042f-4fc0-b52c-c9208e8e2999"],"state":"active","subject":"qa-api-automation01@nscale.com"},"status":{"lastActive":"2026-03-30T11:33:28Z"}},{"metadata":{"createdBy":"joe.derbyshire@nscale.com","creationTime":"2026-02-28T12:49:19Z","healthStatus":"healthy","id":"e36b4004-55d2-4b92-a578-8654517b0444","name":"undefined","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608","e5a96f94-042f-4fc0-b52c-c9208e8e2999"],"state":"active","subject":"qa-ui-automation01@nscale.com"},"status":{"lastActive":"2026-04-10T10:40:05Z"}},{"metadata":{"createdBy":"qa-api-automation01@nscale.com","creationTime":"2026-03-24T14:05:13Z","healthStatus":"healthy","id":"d61cc10c-f35e-4e8d-929e-e9dd7c3c534b","name":"undefined","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["b77473cb-9750-4263-866c-89ba91a126c4"],"state":"active","subject":"sravan.medarapu@nscale.com"},"status":{"lastActive":"2026-04-09T11:53:07Z"}}]
+    User: ea91ead2-0bd4-4394-a6fb-595e5be33a1f (subject: qa-api-automation01@nscale.com, groups: 2)
+    User: e36b4004-55d2-4b92-a578-8654517b0444 (subject: qa-ui-automation01@nscale.com, groups: 2)
+    User: d61cc10c-f35e-4e8d-929e-e9dd7c3c534b (subject: sravan.medarapu@nscale.com, groups: 1)
+  Found 3 users in organization ab6a2c69-efc9-11f0-a016-88f4dae84608
+    Users in state 'active': 3
+  < Exit [1m[It][0m should return all users in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:47.828 (114ms)[0m
+[38;5;10m• [0.115 seconds][0m
+[38;5;243m------------------------------[0m
+[0mUser Management [38;5;243mWhen listing users [0mGiven invalid organization ID [0m[1mshould return error for non-existent organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/users_test.go:99[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.828[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.829 (1ms)[0m
+  > Enter [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:47.829[0m
+  [GET /api/v1/organizations/invalid-org-id/users] status=403 duration=33.511625ms traceparent=00-ec88e9877ce0c61598945bff5ffa3bfd-2d607650998376fb-01
+  [GET /api/v1/organizations/invalid-org-id/users] response body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"ec88e9877ce0c61598945bff5ffa3bfd"}
+  Expected error for invalid organization ID: organization 'invalid-org-id' (status: 403): access denied
+  < Exit [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:47.863 (34ms)[0m
+[38;5;10m• [0.035 seconds][0m
+[38;5;243m------------------------------[0m
+[0mUserinfo [38;5;243mWhen calling the userinfo endpoint [0mGiven valid authentication [0m[1mshould return claims including a non-empty sub[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/userinfo_test.go:37[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.863[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.864 (1ms)[0m
+  > Enter [1m[It][0m should return claims including a non-empty sub [38;5;243m@ 04/13/26 12:46:47.864[0m
+  [GET /oauth2/v2/userinfo] status=200 duration=33.869916ms traceparent=00-f384f4f96cf34094e12ab1ec777a1ec8-6d0040b708f20d8f-01
+  [GET /oauth2/v2/userinfo] response body: {"sub":"f5fd5d71-1a76-4c43-9a98-3e98e1802515"}
+  Userinfo sub: f5fd5d71-1a76-4c43-9a98-3e98e1802515
+  < Exit [1m[It][0m should return claims including a non-empty sub [38;5;243m@ 04/13/26 12:46:47.898 (34ms)[0m
+[38;5;10m• [0.035 seconds][0m
+[38;5;243m------------------------------[0m
+[0mUserinfo [38;5;243mWhen calling the userinfo endpoint [0mGiven valid authentication [0m[1mshould return consistent sub across repeated calls[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/userinfo_test.go:47[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.898[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.899 (1ms)[0m
+  > Enter [1m[It][0m should return consistent sub across repeated calls [38;5;243m@ 04/13/26 12:46:47.899[0m
+  [GET /oauth2/v2/userinfo] status=200 duration=30.918333ms traceparent=00-eada95bb96bd00c3c600821c36b674d9-4d89cc6d53d05848-01
+  [GET /oauth2/v2/userinfo] response body: {"sub":"f5fd5d71-1a76-4c43-9a98-3e98e1802515"}
+  [GET /oauth2/v2/userinfo] status=200 duration=32.078334ms traceparent=00-be9a38f43877d72ed8a5bc468de608c7-7d7318478741a556-01
+  [GET /oauth2/v2/userinfo] response body: {"sub":"f5fd5d71-1a76-4c43-9a98-3e98e1802515"}
+  < Exit [1m[It][0m should return consistent sub across repeated calls [38;5;243m@ 04/13/26 12:46:47.962 (63ms)[0m
+[38;5;10m• [0.064 seconds][0m
+[38;5;243m------------------------------[0m
+[0mUserinfo [38;5;243mWhen calling the userinfo endpoint [0mGiven no authentication [0m[1mshould reject the request[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/userinfo_test.go:60[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.962[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.963 (0s)[0m
+  > Enter [1m[It][0m should reject the request [38;5;243m@ 04/13/26 12:46:47.963[0m
+  [GET /oauth2/v2/userinfo] UNEXPECTED STATUS expected=200 got=401 body={"error":"access_denied","error_description":"authorization header not set","trace_id":"50bd3d166d0f82b725a59752d9ba53f5"} traceID=50bd3d166d0f82b725a59752d9ba53f5 spanID=6e14e7c62b1c05bc
+  TRACE CONTEXT: Use traceID=50bd3d166d0f82b725a59752d9ba53f5 spanID=6e14e7c62b1c05bc to search logs for this request
+  Unauthenticated userinfo rejected: expected 200, got 401, body: {"error":"access_denied","error_description":"authorization header not set","trace_id":"50bd3d166d0f82b725a59752d9ba53f5"} (traceID=50bd3d166d0f82b725a59752d9ba53f5 spanID=6e14e7c62b1c05bc): unexpected status code
+  < Exit [1m[It][0m should reject the request [38;5;243m@ 04/13/26 12:46:47.993 (31ms)[0m
+[38;5;10m• [0.031 seconds][0m
+[38;5;243m------------------------------[0m
+[0mProject Discovery [38;5;243mWhen listing projects [0mGiven valid organization [0m[1mshould return all projects in the organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:101[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.993[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:47.994 (0s)[0m
+  > Enter [1m[It][0m should return all projects in the organization [38;5;243m@ 04/13/26 12:46:47.994[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/projects] status=200 duration=31.781084ms traceparent=00-ba302de8174b926fcdf12b065399bcef-a51c7ca92493706e-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/projects] response body: [{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-24T13:12:41Z","description":"","healthStatus":"healthy","id":"abb62053-73d9-4f7f-bfd9-3a866b5259b2","name":"auth0-project","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["e5a96f94-042f-4fc0-b52c-c9208e8e2999"]}},{"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-02-28T12:45:47Z","description":"read only project","healthStatus":"healthy","id":"af7eb194-a8f4-4198-a718-85e7940d1039","name":"read-only-project","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["8e7f766d-efca-11f0-94c8-88f4dae84608"]}}]
+  Found 2 projects in organization ab6a2c69-efc9-11f0-a016-88f4dae84608 (including test project: abb62053-73d9-4f7f-bfd9-3a866b5259b2)
+  < Exit [1m[It][0m should return all projects in the organization [38;5;243m@ 04/13/26 12:46:48.026 (32ms)[0m
+[38;5;10m• [0.032 seconds][0m
+[38;5;243m------------------------------[0m
+[0mProject Discovery [38;5;243mWhen listing projects [0mGiven invalid organization ID [0m[1mshould return error for non-existent organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:121[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.026[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.027 (1ms)[0m
+  > Enter [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:48.027[0m
+  [GET /api/v1/organizations/invalid-org-id/projects] status=502 duration=36.244042ms traceparent=00-0fd9463d222338b86cdfd5f4f4fe42b1-ec9840940f627e40-01
+  [GET /api/v1/organizations/invalid-org-id/projects] response body: <html>
+  <head><title>502 Bad Gateway</title></head>
+  <body>
+  <center><h1>502 Bad Gateway</h1></center>
+  <hr><center>nginx</center>
+  </body>
+  </html>
+
+  Expected error for invalid organization ID: status code 502: unexpected status code
+  < Exit [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:48.063 (36ms)[0m
+[38;5;10m• [0.037 seconds][0m
+[38;5;243m------------------------------[0m
+[0mProject Discovery [38;5;243mWhen getting project details [0mGiven valid project ID [0m[1mshould return project details[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:132[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.063[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.064 (1ms)[0m
+  > Enter [1m[It][0m should return project details [38;5;243m@ 04/13/26 12:46:48.064[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/projects/abb62053-73d9-4f7f-bfd9-3a866b5259b2] status=200 duration=29.895167ms traceparent=00-c104f5aaa46c36c04520ff2f86cf369f-498bb453828e3947-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/projects/abb62053-73d9-4f7f-bfd9-3a866b5259b2] response body: {"metadata":{"createdBy":"qa-ui-automation01@nscale.com","creationTime":"2026-03-24T13:12:41Z","description":"","healthStatus":"healthy","id":"abb62053-73d9-4f7f-bfd9-3a866b5259b2","name":"auth0-project","organizationId":"ab6a2c69-efc9-11f0-a016-88f4dae84608","provisioningStatus":"provisioned"},"spec":{"groupIDs":["e5a96f94-042f-4fc0-b52c-c9208e8e2999"]}}
+  Retrieved project: auth0-project (ID: abb62053-73d9-4f7f-bfd9-3a866b5259b2)
+  < Exit [1m[It][0m should return project details [38;5;243m@ 04/13/26 12:46:48.094 (30ms)[0m
+[38;5;10m• [0.031 seconds][0m
+[38;5;243m------------------------------[0m
+[0mProject Discovery [38;5;243mWhen getting project details [0mGiven invalid project ID [0m[1mshould return not found error[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:146[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.094[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.095 (1ms)[0m
+  > Enter [1m[It][0m should return not found error [38;5;243m@ 04/13/26 12:46:48.095[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/projects/invalid-project-id] status=404 duration=30.991459ms traceparent=00-474f3506a0174497364a3bf48e31fec5-ec033699ba198f7b-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/projects/invalid-project-id] response body: {"error":"not_found","error_description":"resource not found","trace_id":"474f3506a0174497364a3bf48e31fec5"}
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/projects/invalid-project-id] UNEXPECTED STATUS expected=200 got=404 body={"error":"not_found","error_description":"resource not found","trace_id":"474f3506a0174497364a3bf48e31fec5"} traceID=474f3506a0174497364a3bf48e31fec5 spanID=ec033699ba198f7b
+  TRACE CONTEXT: Use traceID=474f3506a0174497364a3bf48e31fec5 spanID=ec033699ba198f7b to search logs for this request
+  Expected error for invalid project ID: getting project: expected 200, got 404, body: {"error":"not_found","error_description":"resource not found","trace_id":"474f3506a0174497364a3bf48e31fec5"} (traceID=474f3506a0174497364a3bf48e31fec5 spanID=ec033699ba198f7b): unexpected status code
+  < Exit [1m[It][0m should return not found error [38;5;243m@ 04/13/26 12:46:48.126 (31ms)[0m
+[38;5;10m• [0.032 seconds][0m
+[38;5;243m------------------------------[0m
+[0mOrganization Discovery [38;5;243mWhen listing organizations [0mGiven valid authentication [0m[1mshould return all accessible organizations[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:37[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.127[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.128 (1ms)[0m
+  > Enter [1m[It][0m should return all accessible organizations [38;5;243m@ 04/13/26 12:46:48.128[0m
+  [GET /api/v1/organizations] status=200 duration=37.753291ms traceparent=00-c8d90f41cb348787e22c8f1fe648630e-145d3ba1292cc7dd-01
+  [GET /api/v1/organizations] response body: [{"metadata":{"creationTime":"2026-02-28T10:57:33Z","healthStatus":"healthy","id":"ab6a2c69-efc9-11f0-a016-88f4dae84608","name":"QA-Private","provisioningStatus":"provisioned"},"spec":{"organizationType":"adhoc"}}]
+  Found 1 organizations (including test org: ab6a2c69-efc9-11f0-a016-88f4dae84608)
+  < Exit [1m[It][0m should return all accessible organizations [38;5;243m@ 04/13/26 12:46:48.167 (39ms)[0m
+[38;5;10m• [0.040 seconds][0m
+[38;5;243m------------------------------[0m
+[0mOrganization Discovery [38;5;243mWhen listing organizations [0mGiven invalid authentication [0m[1mshould reject requests without valid token[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:57[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.167[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.178 (11ms)[0m
+  > Enter [1m[It][0m should reject requests without valid token [38;5;243m@ 04/13/26 12:46:48.178[0m
+  [GET /api/v1/organizations] UNEXPECTED STATUS expected=200 got=401 body={"error":"access_denied","error_description":"authorization header missing","trace_id":"e11346cd7fad4665157476f203eef1cf"} traceID=e11346cd7fad4665157476f203eef1cf spanID=5975e14e826278b3
+  TRACE CONTEXT: Use traceID=e11346cd7fad4665157476f203eef1cf spanID=5975e14e826278b3 to search logs for this request
+  Expected error for missing authentication: expected 200, got 401, body: {"error":"access_denied","error_description":"authorization header missing","trace_id":"e11346cd7fad4665157476f203eef1cf"} (traceID=e11346cd7fad4665157476f203eef1cf spanID=5975e14e826278b3): unexpected status code
+  < Exit [1m[It][0m should reject requests without valid token [38;5;243m@ 04/13/26 12:46:48.209 (31ms)[0m
+[38;5;10m• [0.042 seconds][0m
+[38;5;243m------------------------------[0m
+[0mOrganization Discovery [38;5;243mWhen getting organization details [0mGiven valid organization ID [0m[1mshould return organization details[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:73[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.209[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.21 (1ms)[0m
+  > Enter [1m[It][0m should return organization details [38;5;243m@ 04/13/26 12:46:48.21[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608] status=200 duration=32.228458ms traceparent=00-28b2d92f57a2de3815f51e0cece4e402-a39ad7a10856b055-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608] response body: {"metadata":{"creationTime":"2026-02-28T10:57:33Z","healthStatus":"healthy","id":"ab6a2c69-efc9-11f0-a016-88f4dae84608","name":"QA-Private","provisioningStatus":"provisioned"},"spec":{"organizationType":"adhoc"}}
+  Retrieved organization: QA-Private (ID: ab6a2c69-efc9-11f0-a016-88f4dae84608)
+  < Exit [1m[It][0m should return organization details [38;5;243m@ 04/13/26 12:46:48.242 (32ms)[0m
+[38;5;10m• [0.033 seconds][0m
+[38;5;243m------------------------------[0m
+[0mOrganization Discovery [38;5;243mWhen getting organization details [0mGiven invalid organization ID [0m[1mshould return not found error[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/organizations_test.go:87[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.242[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.243 (1ms)[0m
+  > Enter [1m[It][0m should return not found error [38;5;243m@ 04/13/26 12:46:48.243[0m
+  [GET /api/v1/organizations/invalid-org-id] status=403 duration=106.511833ms traceparent=00-e53bc1bfbc27ce49cbc25343fc10f4c0-f67d230ebe561d42-01
+  [GET /api/v1/organizations/invalid-org-id] response body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"e53bc1bfbc27ce49cbc25343fc10f4c0"}
+  [GET /api/v1/organizations/invalid-org-id] UNEXPECTED STATUS expected=200 got=403 body={"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"e53bc1bfbc27ce49cbc25343fc10f4c0"} traceID=e53bc1bfbc27ce49cbc25343fc10f4c0 spanID=f67d230ebe561d42
+  TRACE CONTEXT: Use traceID=e53bc1bfbc27ce49cbc25343fc10f4c0 spanID=f67d230ebe561d42 to search logs for this request
+  Expected error for invalid organization ID: getting organization: expected 200, got 403, body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"e53bc1bfbc27ce49cbc25343fc10f4c0"} (traceID=e53bc1bfbc27ce49cbc25343fc10f4c0 spanID=f67d230ebe561d42): unexpected status code
+  < Exit [1m[It][0m should return not found error [38;5;243m@ 04/13/26 12:46:48.35 (107ms)[0m
+[38;5;10m• [0.108 seconds][0m
+[38;5;243m------------------------------[0m
+[0mRole Management [38;5;243mWhen listing roles [0mGiven valid organization [0m[1mshould return all roles in the organization with complete metadata[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/roles_test.go:33[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.35[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.351 (1ms)[0m
+  > Enter [1m[It][0m should return all roles in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:48.351[0m
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] status=200 duration=32.197375ms traceparent=00-9d91454c5b4efd8340c5e88cd55e3adf-eefeae2c5132d4fa-01
+  [GET /api/v1/organizations/ab6a2c69-efc9-11f0-a016-88f4dae84608/roles] response body: [{"metadata":{"creationTime":"2026-02-28T10:55:54Z","description":"Organization administrator","healthStatus":"healthy","id":"f194d170-6ed1-4408-85e0-2d672777019f","name":"administrator","provisioningStatus":"provisioned"}},{"metadata":{"creationTime":"2026-02-28T10:55:54Z","description":"Organization auditor","healthStatus":"healthy","id":"f5a62ce3-fa7f-4d86-8f00-09389ccd8152","name":"auditor","provisioningStatus":"provisioned"}},{"metadata":{"creationTime":"2026-02-28T10:56:28Z","description":"Public administrator","healthStatus":"healthy","id":"f11eb118-6f96-4e1e-8e59-868bd863c544","name":"public-administrator","provisioningStatus":"provisioned"}}]
+    Role: administrator (ID: f194d170-6ed1-4408-85e0-2d672777019f)
+      Description: Organization administrator
+      Status: provisioned, Health: healthy
+    Role: auditor (ID: f5a62ce3-fa7f-4d86-8f00-09389ccd8152)
+      Description: Organization auditor
+      Status: provisioned, Health: healthy
+    Role: public-administrator (ID: f11eb118-6f96-4e1e-8e59-868bd863c544)
+      Description: Public administrator
+      Status: provisioned, Health: healthy
+  Found 3 roles in organization ab6a2c69-efc9-11f0-a016-88f4dae84608
+    Found expected role: administrator
+  < Exit [1m[It][0m should return all roles in the organization with complete metadata [38;5;243m@ 04/13/26 12:46:48.383 (33ms)[0m
+[38;5;10m• [0.034 seconds][0m
+[38;5;243m------------------------------[0m
+[0mRole Management [38;5;243mWhen listing roles [0mGiven invalid organization ID [0m[1mshould return error for non-existent organization[0m
+[38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/roles_test.go:98[0m
+  > Enter [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.383[0m
+  < Exit [1m[BeforeEach][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.385 (1ms)[0m
+  > Enter [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:48.385[0m
+  [GET /api/v1/organizations/invalid-org-id/roles] status=403 duration=32.749167ms traceparent=00-7aec0f2f18dd74a39ca04abb6d7bcef1-10e7dbb225d7e49d-01
+  [GET /api/v1/organizations/invalid-org-id/roles] response body: {"error":"forbidden","error_description":"operation is not allowed by rbac (no matching organization endpoint)","trace_id":"7aec0f2f18dd74a39ca04abb6d7bcef1"}
+  Expected error for invalid organization ID: organization 'invalid-org-id' (status: 403): access denied
+  < Exit [1m[It][0m should return error for non-existent organization [38;5;243m@ 04/13/26 12:46:48.418 (33ms)[0m
+[38;5;10m• [0.034 seconds][0m
+[38;5;243m------------------------------[0m
+[0m[1m[ReportAfterSuite] Autogenerated ReportAfterSuite for --json-report --junit-report[0m
+[38;5;243mautogenerated by Ginkgo[0m
+  > Enter [1m[ReportAfterSuite][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.418[0m
+  < Exit [1m[ReportAfterSuite][0m TOP-LEVEL [38;5;243m@ 04/13/26 12:46:48.433 (15ms)[0m
+[38;5;10m[ReportAfterSuite] PASSED [0.015 seconds][0m
+[38;5;243m------------------------------[0m
+
+[38;5;9m[1mSummarizing 8 Failures:[0m
+  [38;5;9m[FAIL][0m [0mAccess Control Discovery [38;5;243mWhen getting organization ACL [0mGiven valid organization [38;5;9m[1m[It] should return organization-scoped ACL with endpoint permissions[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/acl_test.go:109[0m
+  [38;5;9m[FAIL][0m [0mGroup Management [38;5;243mWhen reading groups [0mGiven valid organization [38;5;9m[1m[It] should return all groups in the organization with complete metadata[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:134[0m
+  [38;5;9m[FAIL][0m [0mGroup Management [38;5;243mWhen managing group subjects [0mGiven a group created with subjects [38;5;9m[1m[It] should persist subjects and return them on read[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/fixtures.go:140[0m
+  [38;5;9m[FAIL][0m [0mGroup Management [38;5;243mWhen managing group subjects [0mGiven a group created with subjects [38;5;9m[1m[It] should update subjects on an existing group[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/groups_test.go:345[0m
+  [38;5;9m[FAIL][0m [0mRBAC Enforcement [38;5;243mWhen authenticated as an administrator [0mGiven a request to list groups [38;5;9m[1m[It] should return all groups in the organization with complete metadata[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:45[0m
+  [38;5;9m[FAIL][0m [0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list groups [38;5;9m[1m[It] should be denied with a forbidden response[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:88[0m
+  [38;5;9m[FAIL][0m [0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list roles [38;5;9m[1m[It] should be denied with a forbidden response[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:95[0m
+  [38;5;9m[FAIL][0m [0mRBAC Enforcement [38;5;243mWhen authenticated as a user [0mGiven a request to list service accounts [38;5;9m[1m[It] should return only the requesting principal's own service account[0m
+  [38;5;243m/Users/fqw4m72pvl/src/nscale/uni/uni-identity/test/api/suites/rbac_matrix_test.go:104[0m
+
+[38;5;9m[1mRan 45 of 45 Specs in 3.697 seconds[0m
+[38;5;9m[1mFAIL![0m -- [38;5;10m[1m37 Passed[0m | [38;5;9m[1m8 Failed[0m | [38;5;11m[1m0 Pending[0m | [38;5;14m[1m0 Skipped[0m
+--- FAIL: TestSuites (3.71s)
+FAIL
+
+Ginkgo ran 1 suite in 6.367282875s
+
+Test Suite Failed
+make: *** [test-api-verbose] Error 1

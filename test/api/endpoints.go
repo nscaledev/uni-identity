@@ -30,6 +30,11 @@ func NewEndpoints() *Endpoints {
 	return &Endpoints{}
 }
 
+// GetUserinfo returns the endpoint for the userinfo endpoint.
+func (e *Endpoints) GetUserinfo() string {
+	return "/oauth2/v2/userinfo"
+}
+
 // ListOrganizations returns the endpoint for listing all organizations.
 func (e *Endpoints) ListOrganizations() string {
 	return "/api/v1/organizations"

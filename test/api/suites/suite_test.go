@@ -31,11 +31,12 @@ import (
 )
 
 var (
-	client      *api.APIClient
-	adminClient *api.APIClient
-	userClient  *api.APIClient
-	ctx         context.Context
-	config      *api.TestConfig
+	client               *api.APIClient
+	adminClient          *api.APIClient
+	userClient           *api.APIClient
+	serviceAccountClient *api.APIClient
+	ctx                  context.Context
+	config               *api.TestConfig
 )
 
 var _ = BeforeSuite(func() {
@@ -60,6 +61,13 @@ var _ = BeforeEach(func() {
 		userConfig := *config
 		userConfig.AuthToken = config.UserToken
 		userClient = api.NewAPIClientWithConfig(&userConfig)
+	}
+
+	serviceAccountClient = nil
+	if config.ServiceAccountToken != "" {
+		saConfig := *config
+		saConfig.AuthToken = config.ServiceAccountToken
+		serviceAccountClient = api.NewAPIClientWithConfig(&saConfig)
 	}
 
 	ctx = context.Background()

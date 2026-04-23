@@ -22,12 +22,15 @@ package suites
 
 import (
 	"errors"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
+	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
@@ -189,7 +192,7 @@ var _ = Describe("Group Management", func() {
 					WithName(originalGroup.Metadata.Name + "-updated").
 					Build()
 
-				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -218,7 +221,7 @@ var _ = Describe("Group Management", func() {
 				updatedPayload := payload
 				updatedPayload.Spec.RoleIDs = []string{roles[0].Metadata.Id}
 
-				err = client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
+				_, err = client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -238,7 +241,7 @@ var _ = Describe("Group Management", func() {
 			It("should return error when updating non-existent group", func() {
 				payload := api.NewGroupPayload().Build()
 
-				err := client.UpdateGroup(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
+				_, err := client.UpdateGroup(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue(),
@@ -252,7 +255,7 @@ var _ = Describe("Group Management", func() {
 			It("should return error when updating group in non-existent organization", func() {
 				payload := api.NewGroupPayload().Build()
 
-				err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
+				_, err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
 			})
@@ -295,6 +298,203 @@ var _ = Describe("Group Management", func() {
 				err := client.DeleteGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000")
 
 				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+})
+
+// From nscale-auth0-tests: groups.spec.ts §5 — Subjects membership field
+var _ = Describe("Group Subjects", func() {
+	Context("When managing group subjects", func() {
+		// §5.1 Create with subjects field
+		Describe("Given a new group created with subjects", func() {
+			It("should create successfully with subjects populated and userIDs auto-populated", func() {
+				testEmail := fmt.Sprintf("qa-subject-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{testSubject}).Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(groupID).NotTo(BeEmpty())
+				Expect(group.Spec.Subjects).NotTo(BeNil(),
+					"subjects field must be populated after create")
+				Expect(*group.Spec.Subjects).To(HaveLen(1))
+				Expect((*group.Spec.Subjects)[0].Id).To(Equal(testEmail))
+
+				GinkgoWriter.Printf("Created group with subjects: %s (ID: %s)\n",
+					group.Metadata.Name, groupID)
+			})
+		})
+
+		// §5.2 Create with userIDs (legacy) — subjects auto-populated
+		Describe("Given a new group created with userIDs (legacy field)", func() {
+			It("should create successfully and subjects should be auto-populated", func() {
+				legacyEmail := fmt.Sprintf("qa-legacy-%d@example.com", time.Now().UnixNano())
+
+				payload := api.NewGroupPayload().WithUserIDs([]string{legacyEmail}).Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(groupID).NotTo(BeEmpty())
+				Expect(group.Spec.UserIDs).NotTo(BeNil(),
+					"userIDs must be present after create with legacy field")
+
+				GinkgoWriter.Printf("Created group with userIDs (legacy): %s (ID: %s)\n",
+					group.Metadata.Name, groupID)
+			})
+		})
+
+		// §5.3 Create with both subjects AND userIDs → rejected
+		Describe("Given a new group with both subjects and userIDs set", func() {
+			It("should be rejected with an error", func() {
+				testEmail := fmt.Sprintf("qa-both-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+				fakeUserID := fmt.Sprintf("fake-user-%d", time.Now().UnixNano())
+
+				payload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{testSubject}).
+					WithUserIDs([]string{fakeUserID}).
+					Build()
+
+				_, err := client.CreateGroup(ctx, config.OrgID, payload)
+
+				Expect(err).To(HaveOccurred(),
+					"creating a group with both subjects and userIDs must be rejected")
+
+				GinkgoWriter.Printf("Correctly rejected group with both subjects and userIDs: %v\n", err)
+			})
+		})
+
+		// §5.4 GET returns both subjects and userIDs fields
+		Describe("Given an existing group with subjects", func() {
+			It("should return both subjects and userIDs fields on GET", func() {
+				testEmail := fmt.Sprintf("qa-get-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{testSubject}).Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved).NotTo(BeNil())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil(),
+					"GET response must include subjects field")
+
+				GinkgoWriter.Printf("GET returned subjects field for group: %s\n", groupID)
+			})
+		})
+
+		// §5.5 Add a subject via PUT → subject appears in membership
+		// §5.5b PUT returns 200 with non-empty updated group body (Metadata.Id present)
+		Describe("Given an existing group, adding a subject via PUT", func() {
+			It("should reflect the new subject in the GET response and return updated group in PUT response", func() {
+				firstEmail := fmt.Sprintf("qa-add1-%d@example.com", time.Now().UnixNano())
+				firstEmailCopy := firstEmail
+				firstSubject := identityopenapi.Subject{Id: firstEmail, Email: &firstEmailCopy, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{firstSubject}).Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				secondEmail := fmt.Sprintf("qa-add2-%d@example.com", time.Now().UnixNano())
+				secondEmailCopy := secondEmail
+				secondSubject := identityopenapi.Subject{Id: secondEmail, Email: &secondEmailCopy, Issuer: ""}
+
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject, secondSubject}).
+					Build()
+
+				// §5.5b — PUT must return the updated group with Metadata.Id set
+				updated, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(updated).NotTo(BeNil(), "PUT must return the updated group body")
+				Expect(updated.Metadata.Id).NotTo(BeEmpty(),
+					"PUT response Metadata.Id must be present")
+
+				// §5.5 — verify via GET that the new subject is in the membership
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil())
+
+				var subjectIDs []string
+				for _, s := range *retrieved.Spec.Subjects {
+					subjectIDs = append(subjectIDs, s.Id)
+				}
+
+				Expect(subjectIDs).To(ContainElement(secondEmail),
+					"second subject must appear in group membership after PUT")
+
+				GinkgoWriter.Printf("Added subject %s to group %s\n", secondEmail, groupID)
+			})
+		})
+
+		// §5.6 Remove a subject via PUT → subject no longer in membership
+		Describe("Given an existing group with two subjects, removing one via PUT", func() {
+			It("should no longer return the removed subject in the GET response", func() {
+				firstEmail := fmt.Sprintf("qa-rem1-%d@example.com", time.Now().UnixNano())
+				firstEmailCopy := firstEmail
+				firstSubject := identityopenapi.Subject{Id: firstEmail, Email: &firstEmailCopy, Issuer: ""}
+
+				secondEmail := fmt.Sprintf("qa-rem2-%d@example.com", time.Now().UnixNano())
+				secondEmailCopy := secondEmail
+				secondSubject := identityopenapi.Subject{Id: secondEmail, Email: &secondEmailCopy, Issuer: ""}
+
+				payload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject, secondSubject}).
+					Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				// Remove secondSubject by PUTting only firstSubject
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject}).
+					Build()
+
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil())
+
+				var subjectIDs []string
+				for _, s := range *retrieved.Spec.Subjects {
+					subjectIDs = append(subjectIDs, s.Id)
+				}
+
+				Expect(subjectIDs).NotTo(ContainElement(secondEmail),
+					"removed subject must not appear in group membership after PUT")
+				Expect(subjectIDs).To(ContainElement(firstEmail),
+					"retained subject must still appear in group membership")
+
+				GinkgoWriter.Printf("Removed subject %s from group %s\n", secondEmail, groupID)
+			})
+		})
+
+		// §5.7 PUT with both subjects and userIDs → rejected
+		Describe("Given a PUT with both subjects and userIDs set", func() {
+			It("should be rejected with an error", func() {
+				payload := api.NewGroupPayload().Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				testEmail := fmt.Sprintf("qa-both-put-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+				fakeUserID := fmt.Sprintf("fake-user-put-%d", time.Now().UnixNano())
+
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{testSubject}).
+					WithUserIDs([]string{fakeUserID}).
+					Build()
+
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+
+				Expect(err).To(HaveOccurred(),
+					"updating a group with both subjects and userIDs must be rejected")
+
+				GinkgoWriter.Printf("Correctly rejected PUT with both subjects and userIDs: %v\n", err)
 			})
 		})
 	})

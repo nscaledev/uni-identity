@@ -190,7 +190,7 @@ var _ = Describe("RBAC Enforcement", func() {
 				_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 					api.NewGroupPayload().Build())
 
-				err := userClient.UpdateGroup(ctx, config.OrgID, groupID,
+				_, err := userClient.UpdateGroup(ctx, config.OrgID, groupID,
 					api.NewGroupPayload().Build())
 
 				Expect(err).To(HaveOccurred())
