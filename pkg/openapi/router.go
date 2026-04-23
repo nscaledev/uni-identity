@@ -150,9 +150,6 @@ type ServerInterface interface {
 	// (POST /oauth2/v2/authorization)
 	PostOauth2V2Authorization(w http.ResponseWriter, r *http.Request)
 
-	// (POST /oauth2/v2/exchange)
-	PostOauth2V2Exchange(w http.ResponseWriter, r *http.Request)
-
 	// (GET /oauth2/v2/jwks)
 	GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request)
 
@@ -425,11 +422,6 @@ func (_ Unimplemented) GetOauth2V2Authorization(w http.ResponseWriter, r *http.R
 
 // (POST /oauth2/v2/authorization)
 func (_ Unimplemented) PostOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// (POST /oauth2/v2/exchange)
-func (_ Unimplemented) PostOauth2V2Exchange(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1972,20 +1964,6 @@ func (siw *ServerInterfaceWrapper) PostOauth2V2Authorization(w http.ResponseWrit
 	handler.ServeHTTP(w, r)
 }
 
-// PostOauth2V2Exchange operation middleware
-func (siw *ServerInterfaceWrapper) PostOauth2V2Exchange(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PostOauth2V2Exchange(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetOauth2V2Jwks operation middleware
 func (siw *ServerInterfaceWrapper) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {
 
@@ -2331,9 +2309,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/oauth2/v2/authorization", wrapper.PostOauth2V2Authorization)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/oauth2/v2/exchange", wrapper.PostOauth2V2Exchange)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/oauth2/v2/jwks", wrapper.GetOauth2V2Jwks)
