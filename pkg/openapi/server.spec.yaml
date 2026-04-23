@@ -75,45 +75,23 @@ paths:
           $ref: '#/components/responses/htmlErrorResponse'
   /oauth2/v2/token:
     description: |-
-      Implements OAuth 2.0 code exchange.
+      Implements OAuth 2.0 token issuance.
     post:
       x-no-security-requirements: true
       x-hidden: true
       description: |-
-        Provides authorization code to access token exchange as per the OAuth 2.0
-        specification with the "authorization_code" grant. If requested during
-        authentication, an OpenID Connect identity token will also be returned.  
-        This endpoint also supports the "refresh_token" grant for transparent
-        re-authentication, and the "client_credentials" grant which is used by
-        other services, in conjunction with X.509 client certificates, to authenticate
-        and authorize their API access requirements.
+        Issues tokens according to the OAuth 2.0 specification. Supports the
+        "authorization_code" grant for code-to-token exchange (optionally returning
+        an OpenID Connect identity token), the "refresh_token" grant for transparent
+        re-authentication, the "client_credentials" grant used by services in
+        conjunction with X.509 client certificates, and the RFC 8693 token exchange
+        grant ("urn:ietf:params:oauth:grant-type:token-exchange") used to exchange
+        a validated source token for a signed UNI passport.
       requestBody:
         $ref: '#/components/requestBodies/tokenRequest'
       responses:
         '200':
           $ref: '#/components/responses/tokenResponse'
-        '400':
-          $ref: '#/components/responses/oauth2BadRequestResponse'
-        '401':
-          $ref: '#/components/responses/oauth2UnauthorizedResponse'
-        '500':
-          $ref: '#/components/responses/oauth2ServerErrorResponse'
-  /oauth2/v2/exchange:
-    description: |-
-      Implements token exchange for passport token issuance.
-    post:
-      x-no-security-requirements: true
-      x-hidden: true
-      description: |-
-        Exchanges a valid source access token for a signed passport JWT.
-        The passport is the canonical internal identity token trusted by all
-        downstream UNI services. The source token is validated, the subject's
-        identity and ACL are resolved, and a self-contained passport is returned.
-      requestBody:
-        $ref: '#/components/requestBodies/exchangeRequest'
-      responses:
-        '200':
-          $ref: '#/components/responses/exchangeResponse'
         '400':
           $ref: '#/components/responses/oauth2BadRequestResponse'
         '401':
@@ -1403,6 +1381,7 @@ components:
       - authorization_code
       - client_credentials
       - refresh_token
+      - urn:ietf:params:oauth:grant-type:token-exchange
     signingAlgorithm:
       description: Supported signing algorithms.
       type: string
@@ -1533,22 +1512,25 @@ components:
       - grant_type
       properties:
         grant_type:
-          description: Supported grant type.  Must be either "code", "refresh_token" or "client_credentials".
+          description: |-
+            Supported grant type. One of "authorization_code", "refresh_token",
+            "client_credentials", or "urn:ietf:params:oauth:grant-type:token-exchange"
+            (RFC 8693).
           type: string
         code:
-          description: Authorization code. Required with the "code" grant type.
+          description: Authorization code. Required with the "authorization_code" grant type.
           type: string
           nullable: true
         client_id:
-          description: Client ID. Required with the "code" and "refresh_token" grant types.
+          description: Client ID. Required with the "authorization_code" and "refresh_token" grant types.
           type: string
           nullable: true
         client_secret:
-          description: Client secret. Required with the "code" and "refresh_token" grant types.
+          description: Client secret. Required with the "authorization_code" and "refresh_token" grant types.
           type: string
           nullable: true
         redirect_uri:
-          description: Client redirect URI. Required with the "code" grant type.
+          description: Client redirect URI. Required with the "authorization_code" grant type.
           type: string
           nullable: true
         code_verifier:
@@ -1557,6 +1539,60 @@ components:
           nullable: true
         refresh_token:
           description: A refresh token for the "refresh_token" grant type.
+          type: string
+          nullable: true
+        subject_token:
+          description: |-
+            The security token that represents the identity of the party on behalf
+            of whom the request is being made. Required for the token-exchange grant
+            (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        subject_token_type:
+          description: |-
+            An identifier that indicates the type of the security token in the
+            "subject_token" parameter. Required for the token-exchange grant
+            (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        requested_token_type:
+          description: |-
+            An identifier for the type of the requested security token. Optional for
+            the token-exchange grant; defaults to the UNI passport token type URI
+            when omitted (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        audience:
+          description: |-
+            The logical name of the target service where the client intends to use
+            the requested security token. Optional for the token-exchange grant
+            (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        resource:
+          description: |-
+            A URI that indicates the target service or resource where the client
+            intends to use the requested security token. Optional for the
+            token-exchange grant (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        scope:
+          description: |-
+            A list of space-delimited, case-sensitive strings that specify the
+            requested scope of the issued token. Optional for the token-exchange
+            grant (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        organizationId:
+          description: |-
+            UNI extension. Optional organization context to scope the passport ACL to.
+            Used with the token-exchange grant.
+          type: string
+          nullable: true
+        projectId:
+          description: |-
+            UNI extension. Optional project context to include in the passport.
+            Used with the token-exchange grant.
           type: string
           nullable: true
 # This broke with an update to kin-openapi. The correct fix for that was to
@@ -1590,10 +1626,22 @@ components:
       - expires_in
       properties:
         token_type:
-          description: How the access token is to be presented to the resource server.
+          description: |-
+            How the issued token is to be presented to the resource server. Typically
+            "Bearer". For the RFC 8693 token-exchange grant this is "Bearer" when the
+            passport is presented in the Authorization header of downstream requests.
           type: string
         access_token:
-          description: The opaque access token.
+          description: |-
+            The issued token. For the token-exchange grant this carries the signed
+            UNI passport JWT (RFC 8693 section 2.2.1 defines "access_token" as the
+            response envelope for any issued security token).
+          type: string
+        issued_token_type:
+          description: |-
+            An identifier for the representation of the issued security token.
+            Required for the token-exchange grant; omitted for other grant types
+            (RFC 8693 section 2.2.1).
           type: string
         refresh_token:
           description: The opaque refresh token.
@@ -1603,31 +1651,6 @@ components:
           type: string
         expires_in:
           description: The time in seconds the token will last for.
-          type: integer
-    exchangeRequestOptions:
-      description: Token exchange request options.
-      type: object
-      properties:
-        organizationId:
-          description: Optional organization context to scope the passport ACL to.
-          type: string
-          nullable: true
-        projectId:
-          description: Optional project context to include in the passport.
-          type: string
-          nullable: true
-    exchangeResult:
-      description: Token exchange result containing a signed passport JWT.
-      type: object
-      required:
-      - passport
-      - expires_in
-      properties:
-        passport:
-          description: A signed passport JWT.
-          type: string
-        expires_in:
-          description: The time in seconds until the passport expires.
           type: integer
     authClaims:
       description: Custom claims for authorisation, specific to UNI
@@ -2402,14 +2425,6 @@ components:
             redirect_uri: https://example.com/oauth2/callback
             code: eyJhbGciOiJFQ0RILUVTIiwiY3R5IjoiSldUIiwiZW5jIjoiQTI1NkdDTSIsImVwayI6eyJrdHkiOiJFQyIsImNydiI6IlAtNTIxIiwieCI6IkFic05hU1ByY3Y5RVJsWmFrOHVDc2V0T2F2aTJ4bS1taXFPWjVvQmFNR2ptc05Cbi04aE84QU9DbGR2OVM3dDlydTBEbDhabzFEcThxOEM5WUp0WGJfa0YiLCJ5IjoiQWU3VS1DcktsY3RJOXYzM0RsTWFsS0ZBZk9YcC1QeV9zZ0Y5Tjdaa05NQkRDRkVKb0FrRy1FTnhTczI2ME5memg4SnJnSnBRbUFFWHhvZ0poWHp2YWZMQSJ9LCJraWQiOiIxZHh3c29KUlZEQmxTYmxvSm93dDlJTkJwdGJTb21XUlBZck5LeWNFQV9RIiwidHlwIjoiSldUIn0..urRmbxH2_bn8LMla.Yw0a3qstHMAKnxawkIYntHcvOCjaxjzvV1JlmYM-2CTbC1i2VtAsNIKoOlFJ56H2N08pMY9OpZ2cukCHP1BQxsKMsc41VwlIZYvjFrzWIEeDoF92FmpCRGWztuwchBWd7PEQYpfeJFJ2BegacGheQqfRXX35RNDy-ZOc4dWkuvFrV8ISuA8-7_ce7Ha25SrRuSRarTfM_BLA1uDA_P9AWjhsyGKOK2FkuaDU0XmXlLWDz6dKdKy9RJtR_nUUcsljtaImJXjNNPAmJq10nJ501EK_I6M9B3TRUrqalOBm4ks7-vmF_gcE1saOv2AciE9P2BMkc635kaD3C5HlyWT95Skd6C_FwppjQUvYUY0y7Eq2NpnVfkX4uSPm8fUD4brSjGWnHMNE8z4M2_PlM4KSZAieLRmMAjY5xW8XY_uCXr5nb-8SmA_P-ljCVOPPAXDXExa2xSxbAJvrYqWeuG2IvAkC0ab6pojlqUmkRWvOX5tnXQav5vO2qOAgCYUhSIWXz0-Y8hczRUSgDTyQm59yU7xqVqCiywChgXlO32KwhhnrfLxNlrMB45XOlzhJP1c3DCg7ZW7bO_Q7A08GjvrXxTm7gUDr-jsdW9hTSiNJQu__zSMFPVVNTqnz1MDFIeusi6GJi9VC0A_ouXsdhcNKn6jeIDV9dnMxCcjbQT5qsCEqo-UcCGvH0_w4aChpldMg8HGPeUSZhaBSL1yns_I0C9AADFe9dmXN6wCHBu8JCy-T4FoeXRlVSKVuG2GJi8sfzAFFh6iKhQXxHm5KNA_iorBJVEOSX3dL6KOUXfdsBfTzg3aMoEyp2bJ9NaactGmFyJZM9e6MxS8UxgN6KHe7Gduc0NGFyBru3ClMq2BzchOxbzDQ_oi5YoSuxLpgGl3xiJfNnClqFTqXMJ75uSk0_OkKgvmHea9QGRaasx5XALSpap_ckCZvNYjG_oZh404-KTjpa2iJgENczeUT2F4jq59rCCAUFZVfyu3qtBAeJme4VghnbTvaITJbpFeBUySgYKcuGQ.uvQMjilUi8JcdyGe3Lbatg
             code_verifier: ZWQ0MGJjZGYyNThkZDYyM2QwNzQyOTY0NGM0ZWZjMzU5ZjRmMDkzZjVkNDJkNjVhNjAxZDYzZTVkYzY0MmNjZQo
-    exchangeRequest:
-      description: Token exchange request. The source access token is provided in the Authorization header.
-      content:
-        application/x-www-form-urlencoded:
-          schema:
-            $ref: '#/components/schemas/exchangeRequestOptions'
-          example:
-            organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
     oauth2ProviderRequest:
       description: Body required to create an oauth2 provider.
       required: true
@@ -2636,16 +2651,6 @@ components:
             refresh_token: eyJhbGciOiJFQ0RILUVTIiwiY3R5IjoiSldUIiwiZW5jIjoiQTI1NkdDTSIsImVwayI6eyJrdHkiOiJFQyIsImNydiI6IlAtNTIxIiwieCI6IkFTcHB0RE03Z2RVcEJVN2o2R3RnTk5yRE1kMm9pZHo1NWNzMi1rcEpRa0xTRUJBSTZTdlQ5SlR6eDdXM0kyUU9Edk5DbHFMdGhONHd3SEhaUDVEV1FEam0iLCJ5IjoiQU9rQ05kckVWR1JiVzF5OFdKRjhwU3BMamNqYjJ4NWEzYUhQOEl4XzZBX3NzU210OEVzYlRMbDFTcjRYS0EzYU4yV2pnaVY2RGpVSGdJY01oWnJ5Uy1uNCJ9LCJraWQiOiJzR1Y4a0IyYkRfVzA4ZVJIcjJXR2RPMGhxVm5XUUtFaERTVW91dXY3RE5rIiwidHlwIjoidW5pa29ybi1jbG91ZC5vcmcvcnQrand0In0..OI78X8c0hyScr_D7.6GgtL4ScJr8l4oxo7Uvak-KXoNttUDQxmZnIkcJD8Qpa_eJOw6SjWH3CS9jlkZRCg3d7U17t-b0sv-11WumWlUv7RFs74bEakr9Ue2-SVdguDaALHEd9gCvLPqV6BmQL3SroFWgVu7Mei0U0iore6E-eK-_bt7mGU00NXGTvgPMkYGZkwrX8ecJ8yajL-1t--N1ygTRG3eDU4nkNEJEF41tqB9hCYss_AUmCnIs0RFapVu-7hKgj6TzdOn6AwPjruaywvlIxzjFpMIWabgoUAPzqa_SOrlG-a7S91Mu3hzR7b5lFP2T8GR4oRohsUNrRZt9IgZuAJGcVM74m0t43ZvJSKDR50em7-zJr554qdlaX8qu2htxtYUBlD-Pzxw4swumw-335MJzasXPGCErTDf4ezSXBCbIs5IH4cbR_PztBqbkVTZ2YPuy7cORIKQiz8llMZCwirs2ad7HHvulLFgMl5SU6lv6zhi-QYTb0dTvc8DcKHhGljyDQtCYyxEF-GuU3VXiDH8nGHJlm2V5RjaRmTpQkjAn_2B9Ul8B8wwS1ROOCdTVpccdSa1F04izI5eYTO1I4sxtabw9r-E028y6dVOtmSPpcfaj88EB9_YdP3e8WrgdUz0_JPEodyWURmn5InoCG6oOYvuofViSXJ4XOtjME7vhgn4yQfOlebTnbVlV6zY6Vlb2BPn7VXVTCAvzItmfvlYF3cg4-uk11k-LTSSQ0mdll66gnwSHqjNQImknkwpVCTmmupeljG0bQWUt1J2s4ONvnLnPF8rlnnrOWBCvwnM33dO2hy9wt0edpK-IM3lGSPi3iX14ET4opFniZbLZbTipCwPZzvSeGhlMeXXTzg5quNQNupwtIdFgYmJacn301eRoR.OSpqA7IdukA7-HLtM4CRUQ
             id_token: eyJhbGciOiJFUzUxMiJ9.eyJhdF9oYXNoIjoidGJHNlFHek5WZE5fcjZ6Y0EzRlFyQzllNmVPbUpPN3lrSjFsTFBxNUJ0RSIsImF1ZCI6WyI5YTcxOWUxZS1hYTg1LTRhMjEtYTIyMS0zMjRlNzg3ZWZkNzgiXSwiZW1haWwiOiJqb2huLmRvZUBlbWFpbC5jb20iLCJleHAiOjE2OTE1NzM4NzEsImlhdCI6MTY5MTQ4NzQ3MSwiaXNzIjoiaHR0cHM6Ly9rdWJlcm5ldGVzLmVzY2hlcmNsb3VkLmNvbSIsInBpY3R1cmUiOiJodHRwczovL3d3dy5ncmF2YXRhci5jb20vYXZhdGFyLzhmNmU5NjI3NGMyYWJmNjE3YTM5ODdlNzRlOWU3NTdlIiwic3ViIjoiam9obi5kb2VAZW1haWwuY29tIn0.AYxSoAwkuKfBpp5o1spmAyqzhkSR76hbjF1OCKe4iLS6BCP9ySZYeV-kBCd0t3cd6VxbO5FVQJPRt8k0q88rc21JATyV8kScNnr-1jFmAJuXO6ga021KTRQnG68D8zZN9LwmMSRh3HPFtOq4LCcmQES2adeJysoG998mmtuTwp4fArwa
             expires_in: 3600
-    exchangeResponse:
-      description: |-
-        Token exchange was successful and returns a signed passport JWT.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/exchangeResult'
-          example:
-            passport: eyJhbGciOiJFUzUxMiIsInR5cCI6IkpXVCJ9.eyJ0eXAiOiJwYXNzcG9ydCIsInN1YiI6InVzZXJAZXhhbXBsZS5jb20ifQ.signature
-            expires_in: 120
     userinfoResponse:
       description: |-
         Information about the user from the access token.

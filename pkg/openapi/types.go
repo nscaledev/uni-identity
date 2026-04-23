@@ -59,9 +59,10 @@ const (
 
 // Defines values for GrantType.
 const (
-	AuthorizationCode GrantType = "authorization_code"
-	ClientCredentials GrantType = "client_credentials"
-	RefreshToken      GrantType = "refresh_token"
+	AuthorizationCode                        GrantType = "authorization_code"
+	ClientCredentials                        GrantType = "client_credentials"
+	RefreshToken                             GrantType = "refresh_token"
+	UrnIetfParamsOauthGrantTypeTokenExchange GrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Defines values for Oauth2ErrorError.
@@ -287,24 +288,6 @@ type Claim string
 
 // CodeChallengeMethod Supported code challenge methods.
 type CodeChallengeMethod string
-
-// ExchangeRequestOptions Token exchange request options.
-type ExchangeRequestOptions struct {
-	// OrganizationId Optional organization context to scope the passport ACL to.
-	OrganizationId *string `json:"organizationId"`
-
-	// ProjectId Optional project context to include in the passport.
-	ProjectId *string `json:"projectId"`
-}
-
-// ExchangeResult Token exchange result containing a signed passport JWT.
-type ExchangeResult struct {
-	// ExpiresIn The time in seconds until the passport expires.
-	ExpiresIn int `json:"expires_in"`
-
-	// Passport A signed passport JWT.
-	Passport string `json:"passport"`
-}
 
 // GrantType Supported grant type.
 type GrantType string
@@ -738,7 +721,9 @@ type Subject struct {
 
 // Token OAuth 2.0 token result.
 type Token struct {
-	// AccessToken The opaque access token.
+	// AccessToken The issued token. For the token-exchange grant this carries the signed
+	// UNI passport JWT (RFC 8693 section 2.2.1 defines "access_token" as the
+	// response envelope for any issued security token).
 	AccessToken string `json:"access_token"`
 
 	// ExpiresIn The time in seconds the token will last for.
@@ -747,35 +732,82 @@ type Token struct {
 	// IdToken An OIDC ID token.
 	IdToken *string `json:"id_token,omitempty"`
 
+	// IssuedTokenType An identifier for the representation of the issued security token.
+	// Required for the token-exchange grant; omitted for other grant types
+	// (RFC 8693 section 2.2.1).
+	IssuedTokenType *string `json:"issued_token_type,omitempty"`
+
 	// RefreshToken The opaque refresh token.
 	RefreshToken *string `json:"refresh_token,omitempty"`
 
-	// TokenType How the access token is to be presented to the resource server.
+	// TokenType How the issued token is to be presented to the resource server. Typically
+	// "Bearer". For the RFC 8693 token-exchange grant this is "Bearer" when the
+	// passport is presented in the Authorization header of downstream requests.
 	TokenType string `json:"token_type"`
 }
 
 // TokenRequestOptions OAuth 2.0 token request.
 type TokenRequestOptions struct {
-	// ClientId Client ID. Required with the "code" and "refresh_token" grant types.
+	// Audience The logical name of the target service where the client intends to use
+	// the requested security token. Optional for the token-exchange grant
+	// (RFC 8693 section 2.1).
+	Audience *string `json:"audience"`
+
+	// ClientId Client ID. Required with the "authorization_code" and "refresh_token" grant types.
 	ClientId *string `json:"client_id"`
 
-	// ClientSecret Client secret. Required with the "code" and "refresh_token" grant types.
+	// ClientSecret Client secret. Required with the "authorization_code" and "refresh_token" grant types.
 	ClientSecret *string `json:"client_secret"`
 
-	// Code Authorization code. Required with the "code" grant type.
+	// Code Authorization code. Required with the "authorization_code" grant type.
 	Code *string `json:"code"`
 
 	// CodeVerifier Client code verifier.
 	CodeVerifier *string `json:"code_verifier"`
 
-	// GrantType Supported grant type.  Must be either "code", "refresh_token" or "client_credentials".
+	// GrantType Supported grant type. One of "authorization_code", "refresh_token",
+	// "client_credentials", or "urn:ietf:params:oauth:grant-type:token-exchange"
+	// (RFC 8693).
 	GrantType string `json:"grant_type"`
 
-	// RedirectUri Client redirect URI. Required with the "code" grant type.
+	// OrganizationId UNI extension. Optional organization context to scope the passport ACL to.
+	// Used with the token-exchange grant.
+	OrganizationId *string `json:"organizationId"`
+
+	// ProjectId UNI extension. Optional project context to include in the passport.
+	// Used with the token-exchange grant.
+	ProjectId *string `json:"projectId"`
+
+	// RedirectUri Client redirect URI. Required with the "authorization_code" grant type.
 	RedirectUri *string `json:"redirect_uri"`
 
 	// RefreshToken A refresh token for the "refresh_token" grant type.
 	RefreshToken *string `json:"refresh_token"`
+
+	// RequestedTokenType An identifier for the type of the requested security token. Optional for
+	// the token-exchange grant; defaults to the UNI passport token type URI
+	// when omitted (RFC 8693 section 2.1).
+	RequestedTokenType *string `json:"requested_token_type"`
+
+	// Resource A URI that indicates the target service or resource where the client
+	// intends to use the requested security token. Optional for the
+	// token-exchange grant (RFC 8693 section 2.1).
+	Resource *string `json:"resource"`
+
+	// Scope A list of space-delimited, case-sensitive strings that specify the
+	// requested scope of the issued token. Optional for the token-exchange
+	// grant (RFC 8693 section 2.1).
+	Scope *string `json:"scope"`
+
+	// SubjectToken The security token that represents the identity of the party on behalf
+	// of whom the request is being made. Required for the token-exchange grant
+	// (RFC 8693 section 2.1).
+	SubjectToken *string `json:"subject_token"`
+
+	// SubjectTokenType An identifier that indicates the type of the security token in the
+	// "subject_token" parameter. Required for the token-exchange grant
+	// (RFC 8693 section 2.1).
+	SubjectTokenType *string `json:"subject_token_type"`
 }
 
 // UserRead A user read object.
@@ -919,9 +951,6 @@ type AclResponse = Acl
 
 // AllocationResponse An allocation of resources.
 type AllocationResponse = AllocationRead
-
-// ExchangeResponse Token exchange result containing a signed passport JWT.
-type ExchangeResponse = ExchangeResult
 
 // GroupResponse A group when read.
 type GroupResponse = GroupRead
@@ -1079,9 +1108,6 @@ type PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody = UserWrite
 
 // PostOauth2V2AuthorizationFormdataRequestBody defines body for PostOauth2V2Authorization for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2AuthorizationFormdataRequestBody = AuthorizationRequestOptions
-
-// PostOauth2V2ExchangeFormdataRequestBody defines body for PostOauth2V2Exchange for application/x-www-form-urlencoded ContentType.
-type PostOauth2V2ExchangeFormdataRequestBody = ExchangeRequestOptions
 
 // PostOauth2V2LoginFormdataRequestBody defines body for PostOauth2V2Login for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2LoginFormdataRequestBody = LoginRequestOptions

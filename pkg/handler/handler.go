@@ -152,6 +152,7 @@ func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http
 			openapi.AuthorizationCode,
 			openapi.ClientCredentials,
 			openapi.RefreshToken,
+			openapi.UrnIetfParamsOauthGrantTypeTokenExchange,
 		},
 		IdTokenSigningAlgValuesSupported: []openapi.SigningAlgorithm{
 			openapi.ES512,
@@ -210,10 +211,6 @@ func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 	// See OIDC 1.0 Section 3.1.3.3.
 	h.setUncacheableNoStore(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
-}
-
-func (h *Handler) PostOauth2V2Exchange(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
 }
 
 func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
