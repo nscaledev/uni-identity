@@ -22,3 +22,8 @@ test-results.json
 
 # CI infrastructure — generated per cluster run, not committed
 hack/ci/ca-bundle.pem
+
+# Local test run artifacts
+test/runs/
+.DS_Store
+**/*.har
