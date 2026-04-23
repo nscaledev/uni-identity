@@ -49,6 +49,10 @@ type passportClaims struct {
 	ACL       *identityopenapi.Acl              `json:"acl"`
 }
 
+func passportIssuedTokenType() string {
+	return "urn:nscale:params:oauth:token-type:passport"
+}
+
 func decodePassportClaims(passport string) passportClaims {
 	parsed, err := jwt.ParseSigned(passport, []gojose.SignatureAlgorithm{gojose.ES512})
 	Expect(err).NotTo(HaveOccurred(), "Passport should be a valid ES512 JWS")
@@ -78,10 +82,13 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
-				Expect(result.Passport).NotTo(BeEmpty(), "Passport JWT should not be empty")
+				Expect(result.AccessToken).NotTo(BeEmpty(), "Passport JWT should not be empty")
 				Expect(result.ExpiresIn).To(Equal(120), "Passport TTL should be 120 seconds")
+				Expect(result.TokenType).To(Equal("Bearer"))
+				Expect(result.IssuedTokenType).NotTo(BeNil())
+				Expect(*result.IssuedTokenType).To(Equal(passportIssuedTokenType()))
 
-				claims := decodePassportClaims(result.Passport)
+				claims := decodePassportClaims(result.AccessToken)
 				Expect(claims.Type).To(Equal("passport"))
 				Expect(claims.Source).To(Equal("uni"))
 				Expect(claims.Subject).NotTo(BeEmpty())
@@ -94,7 +101,7 @@ var _ = Describe("Passport Token Exchange", func() {
 
 		Describe("Given valid authentication with organization scope", func() {
 			It("should return a passport scoped to the organization", func() {
-				options := &identityopenapi.ExchangeRequestOptions{
+				options := &identityopenapi.TokenRequestOptions{
 					OrganizationId: &config.OrgID,
 				}
 
@@ -102,10 +109,10 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
-				Expect(result.Passport).NotTo(BeEmpty(), "Passport JWT should not be empty")
+				Expect(result.AccessToken).NotTo(BeEmpty(), "Passport JWT should not be empty")
 				Expect(result.ExpiresIn).To(Equal(120), "Passport TTL should be 120 seconds")
 
-				claims := decodePassportClaims(result.Passport)
+				claims := decodePassportClaims(result.AccessToken)
 				Expect(claims.OrgID).To(Equal(config.OrgID))
 				Expect(claims.ProjectID).To(BeEmpty())
 				Expect(claims.ACL).NotTo(BeNil())
@@ -116,7 +123,7 @@ var _ = Describe("Passport Token Exchange", func() {
 
 		Describe("Given valid authentication with organization and project scope", func() {
 			It("should return a passport scoped to the organization and project", func() {
-				options := &identityopenapi.ExchangeRequestOptions{
+				options := &identityopenapi.TokenRequestOptions{
 					OrganizationId: &config.OrgID,
 					ProjectId:      &config.ProjectID,
 				}
@@ -125,10 +132,10 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
-				Expect(result.Passport).NotTo(BeEmpty(), "Passport JWT should not be empty")
+				Expect(result.AccessToken).NotTo(BeEmpty(), "Passport JWT should not be empty")
 				Expect(result.ExpiresIn).To(Equal(120), "Passport TTL should be 120 seconds")
 
-				claims := decodePassportClaims(result.Passport)
+				claims := decodePassportClaims(result.AccessToken)
 				Expect(claims.OrgID).To(Equal(config.OrgID))
 				Expect(claims.ProjectID).To(Equal(config.ProjectID))
 				Expect(claims.ACL).NotTo(BeNil())
@@ -141,7 +148,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		Describe("Given an out-of-scope organization", func() {
 			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidOrgID := "00000000-0000-0000-0000-000000000000"
-				options := &identityopenapi.ExchangeRequestOptions{
+				options := &identityopenapi.TokenRequestOptions{
 					OrganizationId: &invalidOrgID,
 				}
 
@@ -160,7 +167,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		Describe("Given an invalid project scope", func() {
 			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidProjectID := "00000000-0000-0000-0000-000000000000"
-				options := &identityopenapi.ExchangeRequestOptions{
+				options := &identityopenapi.TokenRequestOptions{
 					OrganizationId: &config.OrgID,
 					ProjectId:      &invalidProjectID,
 				}
@@ -190,8 +197,8 @@ var _ = Describe("Passport Token Exchange", func() {
 					"Should return unexpected status code error for missing auth")
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
-				Expect(oauthErr.ErrorDescription).To(ContainSubstring("authorization header not set"))
+				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
+				Expect(oauthErr.ErrorDescription).To(ContainSubstring("subject_token must be specified"))
 
 				GinkgoWriter.Printf("Expected error for missing authentication: %v\n", err)
 			})
@@ -210,16 +217,19 @@ var _ = Describe("Passport Token Exchange", func() {
 				serviceConfig.AuthToken = *created.Status.AccessToken
 				serviceClient := api.NewAPIClientWithConfig(&serviceConfig)
 
-				result, err := serviceClient.ExchangePassport(ctx, &identityopenapi.ExchangeRequestOptions{
+				result, err := serviceClient.ExchangePassport(ctx, &identityopenapi.TokenRequestOptions{
 					OrganizationId: &config.OrgID,
 				})
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).NotTo(BeNil())
-				Expect(result.Passport).NotTo(BeEmpty())
+				Expect(result.AccessToken).NotTo(BeEmpty())
 				Expect(result.ExpiresIn).To(Equal(120))
+				Expect(result.TokenType).To(Equal("Bearer"))
+				Expect(result.IssuedTokenType).NotTo(BeNil())
+				Expect(*result.IssuedTokenType).To(Equal(passportIssuedTokenType()))
 
-				claims := decodePassportClaims(result.Passport)
+				claims := decodePassportClaims(result.AccessToken)
 				Expect(claims.Type).To(Equal("passport"))
 				Expect(claims.Acctype).To(Equal(identityopenapi.Service))
 				Expect(claims.Source).To(Equal("uni"))
