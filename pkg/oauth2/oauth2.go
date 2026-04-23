@@ -1773,14 +1773,6 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")
 }
 
-// TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange. It exchanges a
-// validated source token (presented via subject_token / subject_token_type) for
-// a signed UNI passport returned in the access_token field with issued_token_type
-// set to the UNI passport token type URI.
-func (a *Authenticator) TokenExchange(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
-	return nil, errors.OAuth2InvalidRequest("token exchange is not yet implemented")
-}
-
 // GetUserinfo does access token introspection.
 func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
 	verifyInfo := &VerifyInfo{
