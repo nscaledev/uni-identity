@@ -48,6 +48,14 @@ type APIClient struct {
 	endpoints *Endpoints
 }
 
+func tokenExchangeGrantType() string {
+	return "urn:ietf:params:oauth:grant-type:token-exchange"
+}
+
+func accessTokenSubjectTokenType() string {
+	return "urn:ietf:params:oauth:token-type:access_token"
+}
+
 // GetEndpoints returns the endpoints helper for direct path access in tests.
 func (c *APIClient) GetEndpoints() *Endpoints {
 	return c.endpoints
@@ -366,6 +374,7 @@ func (c *APIClient) GetQuotas(ctx context.Context, orgID string) (*identityopena
 
 	return &quotas, nil
 }
+
 // SetQuotas updates the quotas for an organization.
 func (c *APIClient) SetQuotas(ctx context.Context, orgID string, quotas identityopenapi.QuotasWrite) (*identityopenapi.QuotasRead, error) {
 	path := c.endpoints.GetQuotas(orgID)
@@ -511,11 +520,34 @@ func putResource[Req, R any](c *APIClient, ctx context.Context, path, resourceID
 	return &result, nil
 }
 
-func (c *APIClient) exchangeForm(options *identityopenapi.ExchangeRequestOptions) url.Values {
+func (c *APIClient) exchangeForm(options *identityopenapi.TokenRequestOptions) url.Values {
 	form := url.Values{}
+
+	form.Set("grant_type", tokenExchangeGrantType())
+	form.Set("subject_token_type", accessTokenSubjectTokenType())
+
+	if c.config.AuthToken != "" {
+		form.Set("subject_token", c.config.AuthToken)
+	}
 
 	if options == nil {
 		return form
+	}
+
+	if options.RequestedTokenType != nil {
+		form.Set("requested_token_type", *options.RequestedTokenType)
+	}
+
+	if options.Audience != nil {
+		form.Set("audience", *options.Audience)
+	}
+
+	if options.Resource != nil {
+		form.Set("resource", *options.Resource)
+	}
+
+	if options.Scope != nil {
+		form.Set("scope", *options.Scope)
 	}
 
 	if options.OrganizationId != nil {
@@ -565,10 +597,10 @@ func (c *APIClient) doFormRequest(ctx context.Context, method, path string, form
 	return resp, respBody, nil
 }
 
-// ExchangePassport exchanges an access token for a passport JWT.
+// ExchangePassport exchanges an access token for a passport JWT via the RFC 8693 grant.
 // The options parameter is optional; pass nil for an unscoped exchange.
-func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopenapi.ExchangeRequestOptions) (*identityopenapi.ExchangeResult, error) {
-	path := c.endpoints.Exchange()
+func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopenapi.TokenRequestOptions) (*identityopenapi.Token, error) {
+	path := c.endpoints.Token()
 
 	//nolint:bodyclose // DoRequest handles response body closing internally
 	_, respBody, err := c.doFormRequest(ctx, http.MethodPost, path, c.exchangeForm(options), http.StatusOK)
@@ -576,22 +608,23 @@ func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopena
 		return nil, fmt.Errorf("exchanging passport: %w", err)
 	}
 
-	var result identityopenapi.ExchangeResult
+	var result identityopenapi.Token
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("unmarshaling exchange result: %w", err)
+		return nil, fmt.Errorf("unmarshaling token exchange result: %w", err)
 	}
 
 	return &result, nil
 }
 
-// ExchangePassportRaw performs a raw exchange request returning the HTTP response
+// ExchangePassportRaw performs a raw token-exchange request returning the HTTP response
 // and body bytes. Use this for testing error scenarios where the response may not
-// be a valid ExchangeResult.
-func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int, options *identityopenapi.ExchangeRequestOptions) (*http.Response, []byte, error) {
-	path := c.endpoints.Exchange()
+// be a valid token result.
+func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int, options *identityopenapi.TokenRequestOptions) (*http.Response, []byte, error) {
+	path := c.endpoints.Token()
 
 	return c.doFormRequest(ctx, http.MethodPost, path, c.exchangeForm(options), expectedStatus)
 }
+
 // UpdateServiceAccount updates an existing service account.
 func (c *APIClient) UpdateServiceAccount(ctx context.Context, orgID, saID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.ServiceAccountRead, error) {
 	return putResource[identityopenapi.ServiceAccountWrite, identityopenapi.ServiceAccountRead](

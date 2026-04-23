@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -81,26 +80,29 @@ type PassportClaims struct {
 	ACL *openapi.Acl `json:"acl"`
 }
 
-// Exchange validates a source access token, resolves identity and ACL,
-// and returns a signed passport JWT.
-func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi.ExchangeResult, error) {
+// TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports.
+// It validates the source access token provided in subject_token, resolves
+// identity and ACL, and returns a signed passport in the access_token field.
+func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
+	ctx := r.Context()
 	log := log.FromContext(ctx)
 
-	token, err := extractBearerToken(r)
-	if err != nil {
-		log.Info("passport exchange failed: missing or invalid authorization header")
-
-		return nil, err
-	}
-
-	options, err := parseExchangeRequest(r)
+	options, err := parseTokenExchangeRequest(r)
 	if err != nil {
 		log.Info("passport exchange failed: malformed request body")
 
 		return nil, err
 	}
 
-	userinfo, _, err := a.GetUserinfo(ctx, r, token)
+	if err := validateTokenExchangeRequest(options); err != nil {
+		log.Info("passport exchange failed: invalid token-exchange request")
+
+		return nil, err
+	}
+
+	subjectToken := *options.SubjectToken
+
+	userinfo, _, err := a.GetUserinfo(ctx, r, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -111,7 +113,7 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 
 	// Set up authorization context so rbac.GetACL can read it.
 	authCtx := authorization.NewContext(ctx, &authorization.Info{
-		Token:    token,
+		Token:    subjectToken,
 		Userinfo: userinfo,
 	})
 
@@ -182,9 +184,11 @@ func (a *Authenticator) Exchange(ctx context.Context, r *http.Request) (*openapi
 		"passportID", passportID,
 	)
 
-	result := &openapi.ExchangeResult{
-		Passport:  passport,
-		ExpiresIn: int(PassportTTL.Seconds()),
+	result := &openapi.Token{
+		TokenType:       "Bearer",
+		AccessToken:     passport,
+		ExpiresIn:       int(PassportTTL.Seconds()),
+		IssuedTokenType: stringPtr(PassportIssuedTokenType()),
 	}
 
 	return result, nil
@@ -214,7 +218,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	return nil
 }
 
-func requestedScope(options *openapi.ExchangeRequestOptions) (string, string) {
+func requestedScope(options *openapi.TokenRequestOptions) (string, string) {
 	if options == nil {
 		return "", ""
 	}
@@ -232,6 +236,32 @@ func requestedScope(options *openapi.ExchangeRequestOptions) (string, string) {
 	return organizationID, projectID
 }
 
+func validateTokenExchangeRequest(options *openapi.TokenRequestOptions) error {
+	if options == nil {
+		return errors.OAuth2InvalidRequest("token exchange request not parsed")
+	}
+
+	if options.SubjectToken == nil || *options.SubjectToken == "" {
+		return errors.OAuth2InvalidRequest("subject_token must be specified")
+	}
+
+	if options.SubjectTokenType == nil || *options.SubjectTokenType == "" {
+		return errors.OAuth2InvalidRequest("subject_token_type must be specified")
+	}
+
+	if *options.SubjectTokenType != AccessTokenSubjectTokenType() {
+		return errors.OAuth2InvalidRequest("subject_token_type is not supported")
+	}
+
+	if options.RequestedTokenType != nil &&
+		*options.RequestedTokenType != "" &&
+		*options.RequestedTokenType != PassportIssuedTokenType() {
+		return errors.OAuth2InvalidRequest("requested_token_type is not supported")
+	}
+
+	return nil
+}
+
 func normalizeExchangeUserinfoError(err error) error {
 	var oauthErr *errors.Error
 	if goerrors.As(err, &oauthErr) {
@@ -245,32 +275,39 @@ func normalizeExchangeUserinfoError(err error) error {
 	return err
 }
 
-// extractBearerToken extracts the Bearer token from the Authorization header.
-func extractBearerToken(r *http.Request) (string, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return "", errors.OAuth2AccessDenied("authorization header not set")
-	}
-
-	parts := strings.Split(header, " ")
-	if len(parts) != 2 {
-		return "", errors.OAuth2InvalidRequest("authorization header malformed")
-	}
-
-	if !strings.EqualFold(parts[0], "bearer") {
-		return "", errors.OAuth2InvalidRequest("authorization scheme not allowed")
-	}
-
-	return parts[1], nil
-}
-
-// parseExchangeRequest parses the form-encoded request body into ExchangeRequestOptions.
-func parseExchangeRequest(r *http.Request) (*openapi.ExchangeRequestOptions, error) {
+// parseTokenExchangeRequest parses the form-encoded token request into TokenRequestOptions.
+func parseTokenExchangeRequest(r *http.Request) (*openapi.TokenRequestOptions, error) {
 	if err := r.ParseForm(); err != nil {
 		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
 	}
 
-	options := &openapi.ExchangeRequestOptions{}
+	options := &openapi.TokenRequestOptions{
+		GrantType: r.Form.Get("grant_type"),
+	}
+
+	if v := r.Form.Get("subject_token"); v != "" {
+		options.SubjectToken = &v
+	}
+
+	if v := r.Form.Get("subject_token_type"); v != "" {
+		options.SubjectTokenType = &v
+	}
+
+	if v := r.Form.Get("requested_token_type"); v != "" {
+		options.RequestedTokenType = &v
+	}
+
+	if v := r.Form.Get("audience"); v != "" {
+		options.Audience = &v
+	}
+
+	if v := r.Form.Get("resource"); v != "" {
+		options.Resource = &v
+	}
+
+	if v := r.Form.Get("scope"); v != "" {
+		options.Scope = &v
+	}
 
 	if v := r.Form.Get("organizationId"); v != "" {
 		options.OrganizationId = &v
@@ -281,6 +318,18 @@ func parseExchangeRequest(r *http.Request) (*openapi.ExchangeRequestOptions, err
 	}
 
 	return options, nil
+}
+
+func stringPtr(value string) *string {
+	return &value
+}
+
+func PassportIssuedTokenType() string {
+	return "urn:nscale:params:oauth:token-type:passport"
+}
+
+func AccessTokenSubjectTokenType() string {
+	return "urn:ietf:params:oauth:token-type:access_token"
 }
 
 // projectInACL returns true if projectID appears in the ACL's project list.
