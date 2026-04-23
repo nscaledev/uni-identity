@@ -330,14 +330,23 @@ var _ = Describe("Group Subjects", func() {
 		// §5.2 Create with userIDs (legacy) — subjects auto-populated
 		Describe("Given a new group created with userIDs (legacy field)", func() {
 			It("should create successfully and subjects should be auto-populated", func() {
-				legacyEmail := fmt.Sprintf("qa-legacy-%d@example.com", time.Now().UnixNano())
+				// userIDs are OrganizationUser object IDs — fetch a real one from the org.
+				users, err := client.ListUsers(ctx, config.OrgID)
+				if err != nil || len(users) == 0 {
+					Skip("No users available in organization to test legacy userIDs field")
+				}
 
-				payload := api.NewGroupPayload().WithUserIDs([]string{legacyEmail}).Build()
+				realUserID := users[0].Metadata.Id
+
+				payload := api.NewGroupPayload().WithUserIDs([]string{realUserID}).Build()
 				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
 				Expect(groupID).NotTo(BeEmpty())
 				Expect(group.Spec.UserIDs).NotTo(BeNil(),
 					"userIDs must be present after create with legacy field")
+				// subjects should be auto-populated from the resolved userID
+				Expect(group.Spec.Subjects).NotTo(BeNil(),
+					"subjects must be auto-populated when group is created with userIDs")
 
 				GinkgoWriter.Printf("Created group with userIDs (legacy): %s (ID: %s)\n",
 					group.Metadata.Name, groupID)
