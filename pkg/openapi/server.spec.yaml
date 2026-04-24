@@ -75,18 +75,18 @@ paths:
           $ref: '#/components/responses/htmlErrorResponse'
   /oauth2/v2/token:
     description: |-
-      Implements OAuth 2.0 code exchange.
+      Implements OAuth 2.0 token issuance.
     post:
       x-no-security-requirements: true
       x-hidden: true
       description: |-
-        Provides authorization code to access token exchange as per the OAuth 2.0
-        specification with the "authorization_code" grant. If requested during
-        authentication, an OpenID Connect identity token will also be returned.  
-        This endpoint also supports the "refresh_token" grant for transparent
-        re-authentication, and the "client_credentials" grant which is used by
-        other services, in conjunction with X.509 client certificates, to authenticate
-        and authorize their API access requirements.
+        Issues tokens according to the OAuth 2.0 specification. Supports the
+        "authorization_code" grant for code-to-token exchange (optionally returning
+        an OpenID Connect identity token), the "refresh_token" grant for transparent
+        re-authentication, the "client_credentials" grant used by services in
+        conjunction with X.509 client certificates, and the RFC 8693 token exchange
+        grant ("urn:ietf:params:oauth:grant-type:token-exchange") used to exchange
+        a validated source token for a signed UNI passport.
       requestBody:
         $ref: '#/components/requestBodies/tokenRequest'
       responses:
@@ -1381,6 +1381,7 @@ components:
       - authorization_code
       - client_credentials
       - refresh_token
+      - urn:ietf:params:oauth:grant-type:token-exchange
     signingAlgorithm:
       description: Supported signing algorithms.
       type: string
@@ -1511,22 +1512,25 @@ components:
       - grant_type
       properties:
         grant_type:
-          description: Supported grant type.  Must be either "code", "refresh_token" or "client_credentials".
+          description: |-
+            Supported grant type. One of "authorization_code", "refresh_token",
+            "client_credentials", or "urn:ietf:params:oauth:grant-type:token-exchange"
+            (RFC 8693).
           type: string
         code:
-          description: Authorization code. Required with the "code" grant type.
+          description: Authorization code. Required with the "authorization_code" grant type.
           type: string
           nullable: true
         client_id:
-          description: Client ID. Required with the "code" and "refresh_token" grant types.
+          description: Client ID. Required with the "authorization_code" and "refresh_token" grant types.
           type: string
           nullable: true
         client_secret:
-          description: Client secret. Required with the "code" and "refresh_token" grant types.
+          description: Client secret. Required with the "authorization_code" and "refresh_token" grant types.
           type: string
           nullable: true
         redirect_uri:
-          description: Client redirect URI. Required with the "code" grant type.
+          description: Client redirect URI. Required with the "authorization_code" grant type.
           type: string
           nullable: true
         code_verifier:
@@ -1535,6 +1539,60 @@ components:
           nullable: true
         refresh_token:
           description: A refresh token for the "refresh_token" grant type.
+          type: string
+          nullable: true
+        subject_token:
+          description: |-
+            The security token that represents the identity of the party on behalf
+            of whom the request is being made. Required for the token-exchange grant
+            (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        subject_token_type:
+          description: |-
+            An identifier that indicates the type of the security token in the
+            "subject_token" parameter. Required for the token-exchange grant
+            (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        requested_token_type:
+          description: |-
+            An identifier for the type of the requested security token. Optional for
+            the token-exchange grant; defaults to the UNI passport token type URI
+            when omitted (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        audience:
+          description: |-
+            The logical name of the target service where the client intends to use
+            the requested security token. Optional for the token-exchange grant
+            (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        resource:
+          description: |-
+            A URI that indicates the target service or resource where the client
+            intends to use the requested security token. Optional for the
+            token-exchange grant (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        scope:
+          description: |-
+            A list of space-delimited, case-sensitive strings that specify the
+            requested scope of the issued token. Optional for the token-exchange
+            grant (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        organizationId:
+          description: |-
+            UNI extension. Optional organization context to scope the passport ACL to.
+            Used with the token-exchange grant.
+          type: string
+          nullable: true
+        projectId:
+          description: |-
+            UNI extension. Optional project context to include in the passport.
+            Used with the token-exchange grant.
           type: string
           nullable: true
 # This broke with an update to kin-openapi. The correct fix for that was to
@@ -1568,10 +1626,22 @@ components:
       - expires_in
       properties:
         token_type:
-          description: How the access token is to be presented to the resource server.
+          description: |-
+            How the issued token is to be presented to the resource server. Typically
+            "Bearer". For the RFC 8693 token-exchange grant this is "Bearer" when the
+            passport is presented in the Authorization header of downstream requests.
           type: string
         access_token:
-          description: The opaque access token.
+          description: |-
+            The issued token. For the token-exchange grant this carries the signed
+            UNI passport JWT (RFC 8693 section 2.2.1 defines "access_token" as the
+            response envelope for any issued security token).
+          type: string
+        issued_token_type:
+          description: |-
+            An identifier for the representation of the issued security token.
+            Required for the token-exchange grant; omitted for other grant types
+            (RFC 8693 section 2.2.1).
           type: string
         refresh_token:
           description: The opaque refresh token.
