@@ -222,26 +222,58 @@ func (c *APIClient) CreateGroup(ctx context.Context, orgID string, group identit
 }
 
 // UpdateGroup updates an existing group in an organization.
-// Returns nil on success. API returns 200 with empty body.
-func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) error {
+// Returns the updated group when the API includes a body in the 200 response
+// (Phase 1 behaviour), or nil when the body is empty (pre-Phase-1 behaviour).
+// Callers that need to assert the body is present should check the returned
+// pointer is non-nil.
+func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) (*identityopenapi.GroupRead, error) {
 	path := c.endpoints.GetGroup(orgID, groupID)
 
 	body, err := json.Marshal(group)
 	if err != nil {
-		return fmt.Errorf("marshaling group: %w", err)
+		return nil, fmt.Errorf("marshaling group: %w", err)
 	}
 
 	//nolint:bodyclose // DoRequest handles response body closing internally
-	resp, _, err := c.DoRequest(ctx, http.MethodPut, path, bytes.NewReader(body), http.StatusOK)
+	resp, respBody, err := c.DoRequest(ctx, http.MethodPut, path, bytes.NewReader(body), http.StatusOK)
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
-			return fmt.Errorf("group %s: %w", groupID, coreclient.ErrResourceNotFound)
+			return nil, fmt.Errorf("group %s: %w", groupID, coreclient.ErrResourceNotFound)
 		}
 
-		return fmt.Errorf("updating group: %w", err)
+		return nil, fmt.Errorf("updating group: %w", err)
 	}
 
-	return nil
+	// Pre-Phase-1 the API returned 200 with an empty body; tolerate that here
+	// so existing tests continue to pass. Phase-1 returns the updated group JSON.
+	if len(respBody) == 0 {
+		return nil, nil //nolint:nilnil // intentional: empty body is valid pre-Phase-1
+	}
+
+	var updated identityopenapi.GroupRead
+	if err := json.Unmarshal(respBody, &updated); err != nil {
+		return nil, fmt.Errorf("unmarshaling updated group: %w", err)
+	}
+
+	return &updated, nil
+}
+
+// GetUserinfo returns userinfo claims for the current token.
+func (c *APIClient) GetUserinfo(ctx context.Context) (*identityopenapi.Userinfo, error) {
+	path := c.endpoints.GetUserinfo()
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("getting userinfo: %w", err)
+	}
+
+	var userinfo identityopenapi.Userinfo
+	if err := json.Unmarshal(respBody, &userinfo); err != nil {
+		return nil, fmt.Errorf("unmarshaling userinfo: %w", err)
+	}
+
+	return &userinfo, nil
 }
 
 // DeleteGroup deletes a group from an organization.
