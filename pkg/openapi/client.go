@@ -121,9 +121,6 @@ type ClientInterface interface {
 
 	PutApiV1OrganizationsOrganizationID(ctx context.Context, organizationID OrganizationIDParameter, body PutApiV1OrganizationsOrganizationIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1OrganizationsOrganizationIDAcl request
-	GetApiV1OrganizationsOrganizationIDAcl(ctx context.Context, organizationID OrganizationIDParameter, reqEditors ...RequestEditorFn) (*http.Response, error)
-
 	// GetApiV1OrganizationsOrganizationIDGroups request
 	GetApiV1OrganizationsOrganizationIDGroups(ctx context.Context, organizationID OrganizationIDParameter, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -409,18 +406,6 @@ func (c *Client) PutApiV1OrganizationsOrganizationIDWithBody(ctx context.Context
 
 func (c *Client) PutApiV1OrganizationsOrganizationID(ctx context.Context, organizationID OrganizationIDParameter, body PutApiV1OrganizationsOrganizationIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutApiV1OrganizationsOrganizationIDRequest(c.Server, organizationID, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetApiV1OrganizationsOrganizationIDAcl(ctx context.Context, organizationID OrganizationIDParameter, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1OrganizationsOrganizationIDAclRequest(c.Server, organizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -1459,40 +1444,6 @@ func NewPutApiV1OrganizationsOrganizationIDRequestWithBody(server string, organi
 	}
 
 	req.Header.Add("Content-Type", contentType)
-
-	return req, nil
-}
-
-// NewGetApiV1OrganizationsOrganizationIDAclRequest generates requests for GetApiV1OrganizationsOrganizationIDAcl
-func NewGetApiV1OrganizationsOrganizationIDAclRequest(server string, organizationID OrganizationIDParameter) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "organizationID", runtime.ParamLocationPath, organizationID)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/api/v1/organizations/%s/acl", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
 
 	return req, nil
 }
@@ -3331,9 +3282,6 @@ type ClientWithResponsesInterface interface {
 
 	PutApiV1OrganizationsOrganizationIDWithResponse(ctx context.Context, organizationID OrganizationIDParameter, body PutApiV1OrganizationsOrganizationIDJSONRequestBody, reqEditors ...RequestEditorFn) (*PutApiV1OrganizationsOrganizationIDResponse, error)
 
-	// GetApiV1OrganizationsOrganizationIDAclWithResponse request
-	GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx context.Context, organizationID OrganizationIDParameter, reqEditors ...RequestEditorFn) (*GetApiV1OrganizationsOrganizationIDAclResponse, error)
-
 	// GetApiV1OrganizationsOrganizationIDGroupsWithResponse request
 	GetApiV1OrganizationsOrganizationIDGroupsWithResponse(ctx context.Context, organizationID OrganizationIDParameter, reqEditors ...RequestEditorFn) (*GetApiV1OrganizationsOrganizationIDGroupsResponse, error)
 
@@ -3711,30 +3659,6 @@ func (r PutApiV1OrganizationsOrganizationIDResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r PutApiV1OrganizationsOrganizationIDResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type GetApiV1OrganizationsOrganizationIDAclResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON200      *AclResponse
-	JSON401      *externalRef0.UnauthorizedResponse
-	JSON500      *externalRef0.InternalServerErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GetApiV1OrganizationsOrganizationIDAclResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1OrganizationsOrganizationIDAclResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -4891,15 +4815,6 @@ func (c *ClientWithResponses) PutApiV1OrganizationsOrganizationIDWithResponse(ct
 	return ParsePutApiV1OrganizationsOrganizationIDResponse(rsp)
 }
 
-// GetApiV1OrganizationsOrganizationIDAclWithResponse request returning *GetApiV1OrganizationsOrganizationIDAclResponse
-func (c *ClientWithResponses) GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx context.Context, organizationID OrganizationIDParameter, reqEditors ...RequestEditorFn) (*GetApiV1OrganizationsOrganizationIDAclResponse, error) {
-	rsp, err := c.GetApiV1OrganizationsOrganizationIDAcl(ctx, organizationID, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetApiV1OrganizationsOrganizationIDAclResponse(rsp)
-}
-
 // GetApiV1OrganizationsOrganizationIDGroupsWithResponse request returning *GetApiV1OrganizationsOrganizationIDGroupsResponse
 func (c *ClientWithResponses) GetApiV1OrganizationsOrganizationIDGroupsWithResponse(ctx context.Context, organizationID OrganizationIDParameter, reqEditors ...RequestEditorFn) (*GetApiV1OrganizationsOrganizationIDGroupsResponse, error) {
 	rsp, err := c.GetApiV1OrganizationsOrganizationIDGroups(ctx, organizationID, reqEditors...)
@@ -5797,46 +5712,6 @@ func ParsePutApiV1OrganizationsOrganizationIDResponse(rsp *http.Response) (*PutA
 			return nil, err
 		}
 		response.JSON409 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
-		var dest externalRef0.InternalServerErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON500 = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetApiV1OrganizationsOrganizationIDAclResponse parses an HTTP response from a GetApiV1OrganizationsOrganizationIDAclWithResponse call
-func ParseGetApiV1OrganizationsOrganizationIDAclResponse(rsp *http.Response) (*GetApiV1OrganizationsOrganizationIDAclResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetApiV1OrganizationsOrganizationIDAclResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest AclResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON200 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest externalRef0.UnauthorizedResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse

@@ -70,12 +70,6 @@ func (e *Endpoints) GetGlobalACL() string {
 	return "/api/v1/acl"
 }
 
-// GetOrganizationACL returns the endpoint for getting organization ACL.
-func (e *Endpoints) GetOrganizationACL(orgID string) string {
-	return fmt.Sprintf("/api/v1/organizations/%s/acl",
-		url.PathEscape(orgID))
-}
-
 // ListUsers returns the endpoint for listing all users in an organization.
 func (e *Endpoints) ListUsers(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/users",

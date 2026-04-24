@@ -384,7 +384,7 @@ func WaitForProjectInACL(callerClient *APIClient, ctx context.Context, config *T
 	var found identityopenapi.AclProject
 
 	Eventually(func() bool {
-		acl, err := callerClient.GetOrganizationACL(ctx, config.OrgID)
+		acl, err := callerClient.GetGlobalACL(ctx)
 		if err != nil || acl.Organizations == nil || len(*acl.Organizations) == 0 {
 			return false
 		}
@@ -419,7 +419,7 @@ func WaitForProjectInACL(callerClient *APIClient, ctx context.Context, config *T
 // caller's organization ACL.
 func WaitForProjectRemovedFromACL(callerClient *APIClient, ctx context.Context, config *TestConfig, projectID string) {
 	Eventually(func() bool {
-		acl, err := callerClient.GetOrganizationACL(ctx, config.OrgID)
+		acl, err := callerClient.GetGlobalACL(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
 		if acl.Organizations == nil || len(*acl.Organizations) == 0 {

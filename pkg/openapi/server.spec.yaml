@@ -352,27 +352,6 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
-  /api/v1/organizations/{organizationID}/acl:
-    description: |-
-      Gets an ACL associated with the user, scoped to the organization.
-      This is used to perform basic RBAC on remote services and to control
-      UX.
-    parameters:
-    - $ref: '#/components/parameters/organizationIDParameter'
-    get:
-      x-no-authorization: true
-      x-hidden: true
-      description: |-
-        Returns access control properties for the user.
-      security:
-      - oauth2Authentication: []
-      responses:
-        '200':
-          $ref: '#/components/responses/aclResponse'
-        '401':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
-        '500':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
   /api/v1/organizations/{organizationID}/serviceaccounts:
     description: |-
       Allows management of service accounts.

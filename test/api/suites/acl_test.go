@@ -129,24 +129,34 @@ var _ = Describe("Access Control Discovery", func() {
 
 		})
 
-		Describe("Given valid organization", func() {
-			It("should return organization-scoped ACL with endpoint permissions", func() {
-				// adminClient is used explicitly: org-ACL content reflects the caller's effective
-				// role within the organization.  An administrator token reliably produces a
-				// non-empty acl.Organization.Endpoints list.
-				acl, err := adminClient.GetOrganizationACL(ctx, config.OrgID)
+		Describe("Given the caller belongs to an organization", func() {
+			It("should include ACL content for the caller's organization", func() {
+				acl, err := adminClient.GetGlobalACL(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(acl).NotTo(BeNil())
-				Expect(acl.Organization).NotTo(BeNil(), "Organization field should be present in org ACL")
-				Expect(acl.Organization.Id).To(Equal(config.OrgID), "Organization ID should match request")
+				Expect(acl.Organizations).NotTo(BeNil(), "Organizations field should be present in ACL")
 
-				if acl.Organization.Endpoints != nil {
-					Expect(*acl.Organization.Endpoints).NotTo(BeEmpty(),
+				var organization *identityopenapi.AclOrganization
+				unrelatedFound := false
+				for i := range *acl.Organizations {
+					if (*acl.Organizations)[i].Id == "00000000-0000-0000-0000-000000000000" {
+						unrelatedFound = true
+					}
+
+					if (*acl.Organizations)[i].Id == config.OrgID {
+						organization = &(*acl.Organizations)[i]
+					}
+				}
+				Expect(organization).NotTo(BeNil(), "Organization ID should be present in ACL")
+				Expect(unrelatedFound).To(BeFalse(),
+					"ACL should not include organizations the caller is not a member of")
+
+				if organization.Endpoints != nil {
+					Expect(*organization.Endpoints).NotTo(BeEmpty(),
 						"Organization should have at least one endpoint permission")
-
 					endpointsByService := make(map[string]int)
-					for _, endpoint := range *acl.Organization.Endpoints {
+					for _, endpoint := range *organization.Endpoints {
 						Expect(endpoint.Name).NotTo(BeEmpty())
 						Expect(endpoint.Operations).NotTo(BeEmpty())
 
@@ -161,37 +171,11 @@ var _ = Describe("Access Control Discovery", func() {
 					}
 
 					GinkgoWriter.Printf("Organization ACL for %s retrieved\n", config.OrgID)
-					GinkgoWriter.Printf("  Total endpoints: %d\n", len(*acl.Organization.Endpoints))
+					GinkgoWriter.Printf("  Total endpoints: %d\n", len(*organization.Endpoints))
 					for service, count := range endpointsByService {
 						GinkgoWriter.Printf("  Service '%s': %d endpoints\n", service, count)
 					}
 				}
-			})
-		})
-
-		Describe("Given invalid organization ID", func() {
-			It("should fall back to global ACL content without scoped organization details", func() {
-				acl, err := adminClient.GetOrganizationACL(ctx, "00000000-0000-0000-0000-000000000000")
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(acl).NotTo(BeNil())
-				Expect(acl.Organization).To(BeNil(),
-					"Organization field should be absent when the requested organization is not in scope")
-				Expect(acl.Organizations).NotTo(BeNil(),
-					"Organizations ACL should still be present for the caller")
-				Expect(*acl.Organizations).NotTo(BeEmpty(),
-					"At least one organization should still be visible in the fallback ACL")
-
-				found := false
-				for _, org := range *acl.Organizations {
-					if org.Id == config.OrgID {
-						found = true
-						break
-					}
-				}
-
-				Expect(found).To(BeTrue(),
-					"Fallback ACL should still include the caller's real organization %s", config.OrgID)
 			})
 		})
 	})
