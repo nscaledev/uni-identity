@@ -148,55 +148,24 @@ func hasHTTPAuthorization(r *http.Request) bool {
 	return r.Header.Get("Authorization") != ""
 }
 
-// aclCacheKey returns the key to use when caching an ACL.
-//
-// There are three authorization modes that matter here.
-//
-//  1. Direct bearer-token calls from users or service accounts.
-//     RBAC is resolved directly against the authenticated token subject.
-//
-//  2. Attributed service-to-service calls without impersonation.
-//     A principal header may be present for attribution, ownership and audit,
-//     but RBAC is still resolved against the authenticated calling service.
-//
-//  3. Impersonated service-to-service calls.
-//     RBAC is resolved as the intersection of the calling service's ACL and
-//     the propagated actor's ACL in order to prevent confused deputy bugs.
-//
-// All three modes retain the requested organization scope in the cache key.
-// Even though RBAC enforcement uses the non-legacy Organizations field, the
-// scoped /api/v1/organizations/{id}/acl response still depends on
-// organizationID for membership checks and for the legacy Organization field.
-//
-// Mode 3 must be keyed separately from direct or attributed calls because the
-// effective ACL is the intersection of the calling service's ACL and the
-// impersonated actor's ACL. Reusing a direct entry for an impersonated call
-// would over-grant, while reusing an impersonated entry for a direct or
-// attributed call would under-grant.
-//
-// The impersonated cache key therefore includes both:
-// - the authenticated calling service subject.
-// - the impersonated actor.
-func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
+// aclCacheKey returns the key to use when caching an ACL. For impersonated calls
+// the key is the end-user actor so that each user gets their own cache entry
+// rather than sharing the calling service's entry. Organization scope must also
+// be part of the key, otherwise unscoped ACLs can be incorrectly reused for
+// /organizations/{id}/acl and other scoped routes.
+func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) string {
 	scope := organizationID
 	if scope == "" {
 		scope = "_global"
 	}
 
 	if principal.ImpersonateFromContext(ctx) {
-		p, err := principal.FromContext(ctx)
-		if err != nil {
-			return "", fmt.Errorf("%w: impersonated principal missing", ErrHeader)
+		if p, err := principal.FromContext(ctx); err == nil && p.Actor != "" {
+			return p.Actor + "|" + scope
 		}
-
-		if p.Actor == "" {
-			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
-		}
-
-		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + scope, nil
 	}
 
-	return "direct|" + info.Userinfo.Sub + "|" + scope, nil
+	return info.Userinfo.Sub + "|" + scope
 }
 
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
@@ -245,26 +214,6 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 	return v.authorizer.Authorize(input)
 }
 
-func (v *Validator) getACL(ctx context.Context, info *authorization.Info, organizationID string) (*identityapi.Acl, error) {
-	cacheKey, err := aclCacheKey(ctx, info, organizationID)
-	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("acl cache key generation failure").WithError(err)
-	}
-
-	if acl, ok := v.acls.Get(cacheKey); ok {
-		return acl, nil
-	}
-
-	acl, err := v.authorizer.GetACL(authorization.NewContext(ctx, info), organizationID)
-	if err != nil {
-		return nil, err
-	}
-
-	v.acls.Add(cacheKey, acl, v.options.ACLCacheTimeout)
-
-	return acl, nil
-}
-
 func (v *Validator) validateRequest(r *http.Request, route *routers.Route, params map[string]string) (*openapi3filter.ResponseValidationInput, error) {
 	// This authorization callback is fired if the API endpoint is marked as
 	// requiring it.
@@ -292,10 +241,19 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 			return err
 		}
 
-		acl, err := v.getACL(ctx, info, params["organizationID"])
-		if err != nil {
-			authInfo.err = err
-			return err
+		// This happens every call, so do some caching to improve throughput.
+		cacheKey := aclCacheKey(ctx, info, params["organizationID"])
+
+		acl, ok := v.acls.Get(cacheKey)
+		if !ok {
+			// Get the ACL associated with the actor.
+			acl, err = v.authorizer.GetACL(authorization.NewContext(ctx, info), params["organizationID"])
+			if err != nil {
+				authInfo.err = err
+				return err
+			}
+
+			v.acls.Add(cacheKey, acl, v.options.ACLCacheTimeout)
 		}
 
 		authInfo.acl = acl
@@ -406,10 +364,6 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 	ctx = principal.NewContext(ctx, p)
 
 	if r.Header.Get(principal.ImpersonateHeader) == "true" {
-		if p.Actor == "" {
-			return nil, fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
-		}
-
 		ctx = principal.NewImpersonateContext(ctx)
 	}
 
