@@ -163,11 +163,6 @@ func hasHTTPAuthorization(r *http.Request) bool {
 //     RBAC is resolved as the intersection of the calling service's ACL and
 //     the propagated actor's ACL in order to prevent confused deputy bugs.
 //
-// All three modes retain the requested organization scope in the cache key.
-// Even though RBAC enforcement uses the non-legacy Organizations field, the
-// scoped /api/v1/organizations/{id}/acl response still depends on
-// organizationID for membership checks and for the legacy Organization field.
-//
 // Mode 3 must be keyed separately from direct or attributed calls because the
 // effective ACL is the intersection of the calling service's ACL and the
 // impersonated actor's ACL. Reusing a direct entry for an impersonated call
@@ -177,12 +172,7 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // The impersonated cache key therefore includes both:
 // - the authenticated calling service subject.
 // - the impersonated actor.
-func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
-	scope := organizationID
-	if scope == "" {
-		scope = "_global"
-	}
-
+func aclCacheKey(ctx context.Context, info *authorization.Info) (string, error) {
 	if principal.ImpersonateFromContext(ctx) {
 		p, err := principal.FromContext(ctx)
 		if err != nil {
@@ -193,10 +183,10 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
-		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + scope, nil
+		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor, nil
 	}
 
-	return "direct|" + info.Userinfo.Sub + "|" + scope, nil
+	return "direct|" + info.Userinfo.Sub, nil
 }
 
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
@@ -248,8 +238,8 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 	return v.authorizer.Authorize(input)
 }
 
-func (v *Validator) getACL(ctx context.Context, info *authorization.Info, organizationID string) (*identityapi.Acl, error) {
-	cacheKey, err := aclCacheKey(ctx, info, organizationID)
+func (v *Validator) getACL(ctx context.Context, info *authorization.Info) (*identityapi.Acl, error) {
+	cacheKey, err := aclCacheKey(ctx, info)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("acl cache key generation failure").WithError(err)
 	}
@@ -258,7 +248,7 @@ func (v *Validator) getACL(ctx context.Context, info *authorization.Info, organi
 		return acl, nil
 	}
 
-	acl, err := v.authorizer.GetACL(authorization.NewContext(ctx, info), organizationID)
+	acl, err := v.authorizer.GetACL(authorization.NewContext(ctx, info))
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +285,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 			return err
 		}
 
-		acl, err := v.getACL(ctx, info, params["organizationID"])
+		acl, err := v.getACL(ctx, info)
 		if err != nil {
 			authInfo.err = err
 			return err

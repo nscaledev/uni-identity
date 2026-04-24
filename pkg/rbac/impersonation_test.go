@@ -110,16 +110,14 @@ func TestImpersonation_ServiceHasGlobalProjectRead_UserProjectDeployStripped(t *
 	})
 
 	// Charlie has project:read and project:deploy on beta; project:deploy on alpha.
-	// Scoped project permissions land in acl.Projects (top-level), not acl.Organization.Projects.
 	// After intersection: only project:read survives; alpha (deploy-only) is dropped.
 	acl := impersonate(t, f, userCharlieSubject)
 
-	// org:read is not in the service allow-list, so Organization should be nil.
-	assert.Nil(t, acl.Organization)
+	organization := requireSingleOrganizationACL(t, acl)
+	assert.Nil(t, organization.Endpoints)
+	require.NotNil(t, organization.Projects)
 
-	require.NotNil(t, acl.Projects)
-
-	projects := *acl.Projects
+	projects := *organization.Projects
 
 	for _, proj := range projects {
 		for _, ep := range proj.Endpoints {
@@ -146,12 +144,12 @@ func TestImpersonation_ServiceHasGlobalOrgRead_UserOrgReadPermitted(t *testing.T
 	// so it should appear in the impersonated ACL.
 	acl := impersonate(t, f, userBobSubject)
 
-	require.NotNil(t, acl.Organization, "org-scoped org:read should survive intersection")
-	require.NotNil(t, acl.Organization.Endpoints)
+	organization := requireSingleOrganizationACL(t, acl)
+	require.NotNil(t, organization.Endpoints, "org-scoped org:read should survive intersection")
 
 	hasOrgRead := false
 
-	for _, ep := range *acl.Organization.Endpoints {
+	for _, ep := range *organization.Endpoints {
 		if ep.Name == "org:read" {
 			hasOrgRead = true
 
@@ -176,9 +174,7 @@ func TestImpersonation_ServiceLacksResource_UserPermissionsForThatResourceStripp
 	acl := impersonate(t, f, userBobSubject)
 
 	assert.Nil(t, acl.Global)
-	assert.Nil(t, acl.Organization)
 	assert.Nil(t, acl.Organizations)
-	assert.Nil(t, acl.Projects)
 }
 
 // TestImpersonation_ServiceHasSubsetOfOperations_ExcessUserOperationsStripped verifies
@@ -196,12 +192,7 @@ func TestImpersonation_ServiceHasSubsetOfOperations_ExcessUserOperationsStripped
 
 	acl := impersonate(t, f, userBobSubject)
 
-	// org:read is not in the service allow-list either, so Organization should be nil.
-	assert.Nil(t, acl.Organization)
 	assert.Nil(t, acl.Organizations)
-
-	// project:deploy [create, update] ∩ project:deploy [read] = ∅ → projects dropped.
-	assert.Nil(t, acl.Projects)
 }
 
 // TestImpersonation_ServiceHasNoPermissions_EmptyACLReturned verifies that a service
@@ -215,7 +206,5 @@ func TestImpersonation_ServiceHasNoPermissions_EmptyACLReturned(t *testing.T) {
 	acl := impersonate(t, f, userCharlieSubject)
 
 	assert.Nil(t, acl.Global)
-	assert.Nil(t, acl.Organization)
 	assert.Nil(t, acl.Organizations)
-	assert.Nil(t, acl.Projects)
 }

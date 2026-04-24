@@ -383,7 +383,7 @@ func testUserToServiceAuthenticationSuccess(t *testing.T, principalType identity
 
 	authorizer := mock.NewMockAuthorizer(c)
 	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, principalType), nil)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
@@ -510,7 +510,7 @@ func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
@@ -536,7 +536,7 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
@@ -587,7 +587,7 @@ func TestServiceToServiceDirectAndImpersonatedACLsDoNotShareCacheEntries(t *test
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(2).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Times(2).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
@@ -619,7 +619,7 @@ func TestServiceToServiceDirectACLsReuseCacheEntries(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(1).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Times(1).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
@@ -650,7 +650,7 @@ func TestServiceToServiceImpersonatedACLsReuseCacheEntries(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(1).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Times(1).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
@@ -683,7 +683,7 @@ func TestServiceToServiceImpersonatedACLsDoNotShareCacheEntriesAcrossServices(t 
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(2).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Times(2).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)
@@ -732,7 +732,7 @@ func TestValidateBodyBypass(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+	authorizer.EXPECT().GetACL(gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
 	m := getMux(t, authorizer, h)

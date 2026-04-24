@@ -43,7 +43,6 @@ var (
 	ErrResourceReference      = goerrors.New("resource reference error")
 	ErrNoAuthz                = goerrors.New("no authorization data in userinfo")
 	ErrWrongOrganizationCount = goerrors.New("expected exactly one organization ID")
-	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
 	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
 )
 
@@ -355,89 +354,6 @@ func accumulateProjectPermissions(groups map[string]*unikornv1.Group, roles map[
 	return endpoints, nil
 }
 
-// accumulateOrganizationScopedProject looks at all groups linked to the project and accumulates
-// any endpoint permissions that apply.  If there are any permissions, then return the
-// scoped endpoints, otherwise nil.
-func accumulateOrganizationScopedProject(groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, project *unikornv1.Project) (*openapi.AclProject, error) {
-	endpoints, err := accumulateProjectPermissions(groups, roles, project)
-	if err != nil {
-		return nil, err
-	}
-
-	if endpoints != nil && len(*endpoints) > 0 {
-		acl := &openapi.AclProject{
-			Id:        project.Name,
-			Endpoints: *endpoints,
-		}
-
-		return acl, nil
-	}
-
-	//nolint:nilnil
-	return nil, nil
-}
-
-// accumulateOrganizationScopedProjects iterates over all projects the subject has access to then
-// accumulates any permissions that apply to each project.  If there are any permissions
-// then add them to the ACL.
-func accumulateOrganizationScopedProjects(acl *openapi.Acl, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, projects *unikornv1.ProjectList) error {
-	aclProjects := make(openapi.AclProjectList, 0, len(projects.Items))
-
-	for i := range projects.Items {
-		project := &projects.Items[i]
-
-		aclProject, err := accumulateOrganizationScopedProject(groups, roles, project)
-		if err != nil {
-			return err
-		}
-
-		if aclProject == nil {
-			continue
-		}
-
-		aclProjects = append(aclProjects, *aclProject)
-	}
-
-	if len(aclProjects) > 0 {
-		acl.Projects = &aclProjects
-	}
-
-	return nil
-}
-
-// accumulateOrganizationScopedPermissions are only applied for scoped ACL accesses.  This accepts
-// a set of groups the subject is a member of, adds any organization scoped permissions,
-// then adds any project scoped permissions.
-func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl *openapi.Acl, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, organizationID string) error {
-	// No scope is asked for, so none shall be populated!
-	if organizationID == "" {
-		return nil
-	}
-
-	organizationEndpoints, err := accumulateOrganizationPermissions(groups, roles)
-	if err != nil {
-		return err
-	}
-
-	if organizationEndpoints != nil {
-		acl.Organization = &openapi.AclOrganization{
-			Id:        organizationID,
-			Endpoints: organizationEndpoints,
-		}
-	}
-
-	projects, err := r.getProjects(ctx, organizationID)
-	if err != nil {
-		return err
-	}
-
-	if err := accumulateOrganizationScopedProjects(acl, groups, roles, projects); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // organizationToSubjectMap temporary mapping from an organization ID to a subject.
 // This will cease to exist when groups have a consistent idea of a subject.
 type organizationToSubjectMap map[string]string
@@ -543,7 +459,7 @@ func (r *RBAC) processSystemAccountACL(ctx context.Context, subject string) (*op
 	return acl, nil
 }
 
-func (r *RBAC) getServiceAccountContext(ctx context.Context, organizationID string, authz *openapi.AuthClaims) (string, string, error) {
+func (r *RBAC) getServiceAccountContext(ctx context.Context, authz *openapi.AuthClaims) (string, string, error) {
 	if authz == nil {
 		return "", "", ErrNoAuthz
 	}
@@ -553,9 +469,6 @@ func (r *RBAC) getServiceAccountContext(ctx context.Context, organizationID stri
 	}
 
 	subjectOrganizationID := authz.OrgIds[0]
-	if organizationID != "" && subjectOrganizationID != organizationID {
-		return "", "", ErrNotInOrganization
-	}
 
 	organizationNamespace, err := r.getOrganizationNamespace(ctx, subjectOrganizationID)
 	if err != nil {
@@ -566,28 +479,11 @@ func (r *RBAC) getServiceAccountContext(ctx context.Context, organizationID stri
 }
 
 // processServiceAccountACL looks up a service account, any groups it's a member of,
-// then adds their permissions to the ACL.  As service accounts are bound to a specific
-// organization we must check the scoped organization matches that of the service account.
-//
-//nolint:cyclop
-func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
-	subjectOrganizationID, organizationNamespace, err := r.getServiceAccountContext(ctx, organizationID, authz)
+// then adds their permissions to the ACL.
+func (r *RBAC) processServiceAccountACL(ctx context.Context, subject string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+	subjectOrganizationID, organizationNamespace, err := r.getServiceAccountContext(ctx, authz)
 	if err != nil {
-		// TODO: same information leakage concern as processUserAccountACL — see
-		// the TODO there for details. Once downstream consumers are audited we
-		// should return ErrNotInOrganization here instead of falling through.
-		if !goerrors.Is(err, ErrNotInOrganization) {
-			return nil, err
-		}
-
-		// Org mismatch: skip scoped section, fall through to unscoped ACL
-		// using the service account's home org.
-		subjectOrganizationID = authz.OrgIds[0]
-
-		organizationNamespace, err = r.getOrganizationNamespace(ctx, subjectOrganizationID)
-		if err != nil {
-			return nil, fmt.Errorf("%w, failed to get organization namespace %q", err, subjectOrganizationID)
-		}
+		return nil, err
 	}
 
 	groups, err := r.getGroups(ctx, organizationNamespace, groupServiceAccountFilter(subject))
@@ -600,18 +496,6 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 	// Nothing to do.
 	if len(groups) == 0 {
 		return acl, nil
-	}
-
-	roles, err := r.getRoles(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Scoped ACL handling — only when the requested org matches the service account's org.
-	if organizationID == "" || organizationID == subjectOrganizationID {
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, subjectOrganizationID); err != nil {
-			return nil, err
-		}
 	}
 
 	// Unscoped ACL handling.
@@ -628,9 +512,7 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 
 // processUserAccountACL ensures the user exists and is active, looks up any groups it's
 // a member of and adds their permissions to the ACL.
-//
-//nolint:cyclop,nestif
-func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+func (r *RBAC) processUserAccountACL(ctx context.Context, subject string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	if authz == nil {
 		return nil, ErrNoAuthz
 	}
@@ -648,32 +530,6 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 		}
 
 		return acl, nil
-	}
-
-	if organizationID != "" {
-		if !slices.Contains(authz.OrgIds, organizationID) {
-			return nil, ErrNotInOrganization
-		}
-
-		organizationNamespace, err := r.getOrganizationNamespace(ctx, organizationID)
-		if err != nil {
-			return nil, fmt.Errorf("%w, failed to get organization namespace %q", err, organizationID)
-		}
-
-		groups, err := r.getGroups(ctx, organizationNamespace, r.groupSubjectFilter(ctx, subject))
-		if err != nil {
-			return nil, err
-		}
-
-		// Nothing to do.
-		if len(groups) == 0 {
-			return acl, nil
-		}
-
-		// Scoped ACL handling.
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID); err != nil {
-			return nil, err
-		}
 	}
 
 	if len(authz.OrgIds) == 0 {
@@ -780,19 +636,6 @@ func intersectACL(userACL *openapi.Acl, serviceACL *openapi.Acl) *openapi.Acl {
 
 	result.Global = filterEndpointsPtr(userACL.Global, svc)
 
-	if userACL.Organization != nil {
-		endpoints := filterEndpointsPtr(userACL.Organization.Endpoints, svc)
-		projects := filterProjects(userACL.Organization.Projects, svc)
-
-		if endpoints != nil || projects != nil {
-			result.Organization = &openapi.AclOrganization{
-				Id:        userACL.Organization.Id,
-				Endpoints: endpoints,
-				Projects:  projects,
-			}
-		}
-	}
-
 	if userACL.Organizations != nil {
 		orgs := make(openapi.AclOrganizationList, 0, len(*userACL.Organizations))
 
@@ -814,15 +657,13 @@ func intersectACL(userACL *openapi.Acl, serviceACL *openapi.Acl) *openapi.Acl {
 		}
 	}
 
-	result.Projects = filterProjects(userACL.Projects, svc)
-
 	return result
 }
 
 // getSystemAccountACL returns the ACL for a system account, handling impersonation.
 // If the service has signalled impersonation, the ACL is the intersection of the
 // end-user's ACL and the service's own ACL (confused deputy prevention).
-func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID string) (*openapi.Acl, error) {
+func (r *RBAC) getSystemAccountACL(ctx context.Context, subject string) (*openapi.Acl, error) {
 	p, err := principal.FromContext(ctx)
 	if err != nil || !principal.ImpersonateFromContext(ctx) || p.Actor == "" {
 		return r.processSystemAccountACL(ctx, subject)
@@ -844,7 +685,7 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		OrgIds:  organizationIDs,
 	}
 
-	principalACL, err := r.processImpersonatedPrincipalACL(ctx, p, organizationID, principalACLClaims)
+	principalACL, err := r.processImpersonatedPrincipalACL(ctx, p, principalACLClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -857,12 +698,12 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 	return intersectACL(principalACL, serviceACL), nil
 }
 
-func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal.Principal, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal.Principal, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	switch p.Type {
 	case openapi.User:
-		return r.processUserAccountACL(ctx, p.Actor, organizationID, authz)
+		return r.processUserAccountACL(ctx, p.Actor, authz)
 	case openapi.Service:
-		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
+		return r.processServiceAccountACL(ctx, p.Actor, authz)
 	case openapi.System:
 		return nil, fmt.Errorf("%w: %q", ErrInvalidPrincipalType, p.Type)
 	default:
@@ -870,9 +711,9 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 	}
 }
 
-// GetACL returns a granular set of permissions for a user based on their scope.
+// GetACL returns a granular set of permissions for a user.
 // This is used for API level access control and UX.
-func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
+func (r *RBAC) GetACL(ctx context.Context) (*openapi.Acl, error) {
 	// All the tokens introspection info is in the context...
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
@@ -891,14 +732,14 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	}
 
 	if accountType == openapi.System {
-		return r.getSystemAccountACL(ctx, subject, organizationID)
+		return r.getSystemAccountACL(ctx, subject)
 	}
 
 	if accountType == openapi.Service {
-		return r.processServiceAccountACL(ctx, subject, organizationID, authz)
+		return r.processServiceAccountACL(ctx, subject, authz)
 	}
 
-	return r.processUserAccountACL(ctx, subject, organizationID, authz)
+	return r.processUserAccountACL(ctx, subject, authz)
 }
 
 func (r *RBAC) NewSuperContext(ctx context.Context) (context.Context, error) {
