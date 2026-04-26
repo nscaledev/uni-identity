@@ -317,7 +317,6 @@ func TestExchangeImpersonation_HappyPath(t *testing.T) {
 	assert.Equal(t, orgID, claims.OrgID)
 	assert.ElementsMatch(t, []string{orgID}, claims.OrgIDs)
 	assert.Empty(t, claims.Email, "impersonation has no token-backed email")
-	require.NotNil(t, claims.ACL)
 }
 
 // TestExchangeImpersonation_WithoutImpersonateHeader confirms that an mTLS
@@ -444,55 +443,6 @@ func TestExchangeImpersonation_OrgNotInPrincipalScope(t *testing.T) {
 
 	require.ErrorAs(t, err, &oauthErr)
 	assert.Contains(t, err.Error(), "organization not in scope")
-}
-
-// TestExchangeImpersonation_ACLIntersectedAgainstService confirms that the
-// passport's ACL is the intersection of the service's ACL and the user's ACL.
-// The service role here grants only project:Read globally, but the user has
-// project:Read+Update in their org. Only project:Read should survive.
-func TestExchangeImpersonation_ACLIntersectedAgainstService(t *testing.T) {
-	t.Parallel()
-
-	env := setupPassportImpersonationEnv(t)
-
-	orgID := "org1"
-
-	req := buildImpersonatedRequest(t, impersonatedRequest{
-		commonName: impersonationServiceCN,
-		principal: &principal.Principal{
-			Actor:           "alice@example.com",
-			OrganizationIDs: []string{orgID},
-		},
-		impersonateHdr: "true",
-		options: &openapi.ExchangeRequestOptions{
-			OrganizationId: &orgID,
-		},
-	})
-
-	result, err := env.authenticator.Exchange(t.Context(), req)
-	require.NoError(t, err)
-
-	claims := parsePassport(t, env, result.Passport)
-	require.NotNil(t, claims.ACL)
-	require.NotNil(t, claims.ACL.Projects)
-
-	// Find the alpha project and verify only Read survived the intersection.
-	var alphaOps []openapi.AclOperation
-
-	for _, p := range *claims.ACL.Projects {
-		if p.Id == "project-alpha" {
-			for _, ep := range p.Endpoints {
-				if ep.Name == "project" {
-					alphaOps = ep.Operations
-				}
-			}
-		}
-	}
-
-	require.NotEmpty(t, alphaOps, "expected project scope for project-alpha in intersected ACL")
-	assert.Contains(t, alphaOps, openapi.Read)
-	assert.NotContains(t, alphaOps, openapi.Update,
-		"project:Update was granted to user but not service — must be stripped")
 }
 
 // TestExchangeImpersonation_NoCertFails confirms that a request with no bearer

@@ -79,18 +79,17 @@ type PassportClaims struct {
 	ProjectID string `json:"project_id,omitempty"`
 	// Actor is the end-user identifier for principal propagation and audit.
 	Actor string `json:"actor"`
-	// ACL is the organization-scoped ACL structure.
-	ACL *openapi.Acl `json:"acl"`
 }
 
-// Exchange validates a caller's credentials, resolves identity and ACL, and
-// returns a signed passport JWT. Two authentication modes are accepted:
+// Exchange validates a caller's credentials, resolves identity, and returns a
+// signed passport JWT. Two authentication modes are accepted:
 //
 //   - Bearer: an end-user access token in the Authorization header.
 //   - mTLS + impersonation: a service client cert plus an X-Impersonate: true
 //     header and an X-Principal header carrying the impersonated user. This
-//     mints a passport on the user's behalf with an ACL intersected against
-//     the calling service's own ACL (confused-deputy prevention).
+//     mints a passport on the user's behalf; the requested org/project scope
+//     is authorised against the user ∩ service ACL intersection (confused-
+//     deputy prevention), but the ACL itself is not embedded in the passport.
 //
 // A service calling over mTLS WITHOUT the impersonation header is refused:
 // autonomous service-to-service traffic does not receive a passport.
@@ -179,7 +178,7 @@ func (a *Authenticator) exchangeBearer(ctx context.Context, r *http.Request, opt
 		acctype: authz.Acctype,
 		email:   email,
 		orgIDs:  authz.OrgIds,
-	}, organizationID, projectID, acl)
+	}, organizationID, projectID)
 }
 
 // resolveImpersonation validates the mTLS client certificate and impersonation
@@ -258,7 +257,9 @@ func (a *Authenticator) exchangeImpersonated(ctx context.Context, r *http.Reques
 
 	// Present the CALLING SERVICE as the authenticated subject so rbac.GetACL
 	// takes the system-account + impersonation branch and returns the
-	// intersection of the user's and service's ACLs.
+	// intersection of the user's and service's ACLs. The intersection is used
+	// only to authorise the requested project scope below — it is not embedded
+	// in the passport.
 	authCtx := authorization.NewContext(impersonatedCtx, &authorization.Info{
 		SystemAccount: true,
 		Userinfo: &openapi.Userinfo{
@@ -303,7 +304,7 @@ func (a *Authenticator) exchangeImpersonated(ctx context.Context, r *http.Reques
 		orgIDs:          p.OrganizationIDs,
 		impersonated:    true,
 		serviceIdentity: serviceIdentity,
-	}, organizationID, projectID, acl)
+	}, organizationID, projectID)
 }
 
 // passportIdentity bundles the subject details used to mint a passport, letting
@@ -320,7 +321,7 @@ type passportIdentity struct {
 
 // mintPassport builds the passport claims from the provided identity and the
 // authorised scope, signs the JWT, logs the issuance, and returns the result.
-func (a *Authenticator) mintPassport(ctx context.Context, id passportIdentity, organizationID, projectID string, acl *openapi.Acl) (*openapi.ExchangeResult, error) {
+func (a *Authenticator) mintPassport(ctx context.Context, id passportIdentity, organizationID, projectID string) (*openapi.ExchangeResult, error) {
 	log := log.FromContext(ctx)
 
 	now := time.Now()
@@ -343,7 +344,6 @@ func (a *Authenticator) mintPassport(ctx context.Context, id passportIdentity, o
 		OrgID:     organizationID,
 		ProjectID: projectID,
 		Actor:     id.actor,
-		ACL:       acl,
 	}
 
 	passport, err := a.jwtIssuer.EncodeJWT(ctx, claims)
