@@ -76,13 +76,14 @@ type PassportClaims struct {
 	ProjectID string `json:"project_id,omitempty"`
 	// Actor is the end-user identifier for principal propagation and audit.
 	Actor string `json:"actor"`
-	// ACL is the organization-scoped ACL structure.
-	ACL *openapi.Acl `json:"acl"`
 }
 
 // TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports.
 // It validates the source access token provided in subject_token, resolves
-// identity and ACL, and returns a signed passport in the access_token field.
+// identity, and returns a signed passport in the access_token field. The ACL
+// is fetched only to authorise the requested org/project scope; it is not
+// embedded in the passport — downstream services continue to fetch ACL via
+// the existing remote authoriser path keyed off passport-verified identity.
 func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
 	ctx := r.Context()
 	log := log.FromContext(ctx)
@@ -161,7 +162,6 @@ func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*
 		OrgID:     organizationID,
 		ProjectID: projectID,
 		Actor:     userinfo.Sub,
-		ACL:       acl,
 	}
 
 	if userinfo.Email != nil {

@@ -46,7 +46,6 @@ type passportClaims struct {
 	OrgID     string                            `json:"org_id,omitempty"`
 	ProjectID string                            `json:"project_id,omitempty"`
 	Actor     string                            `json:"actor"`
-	ACL       *identityopenapi.Acl              `json:"acl"`
 }
 
 func passportIssuedTokenType() string {
@@ -93,7 +92,6 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(claims.Source).To(Equal("uni"))
 				Expect(claims.Subject).NotTo(BeEmpty())
 				Expect(claims.Actor).To(Equal(claims.Subject))
-				Expect(claims.ACL).NotTo(BeNil())
 
 				GinkgoWriter.Printf("Passport exchanged successfully, expires_in: %d\n", result.ExpiresIn)
 			})
@@ -115,7 +113,6 @@ var _ = Describe("Passport Token Exchange", func() {
 				claims := decodePassportClaims(result.AccessToken)
 				Expect(claims.OrgID).To(Equal(config.OrgID))
 				Expect(claims.ProjectID).To(BeEmpty())
-				Expect(claims.ACL).NotTo(BeNil())
 
 				GinkgoWriter.Printf("Org-scoped passport exchanged for org %s\n", config.OrgID)
 			})
@@ -138,7 +135,6 @@ var _ = Describe("Passport Token Exchange", func() {
 				claims := decodePassportClaims(result.AccessToken)
 				Expect(claims.OrgID).To(Equal(config.OrgID))
 				Expect(claims.ProjectID).To(Equal(config.ProjectID))
-				Expect(claims.ACL).NotTo(BeNil())
 
 				GinkgoWriter.Printf("Org+project-scoped passport exchanged for org %s, project %s\n",
 					config.OrgID, config.ProjectID)
@@ -238,7 +234,6 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(claims.OrgIDs).To(ContainElement(config.OrgID))
 				Expect(claims.OrgID).To(Equal(config.OrgID))
 				Expect(claims.ProjectID).To(BeEmpty())
-				Expect(claims.ACL).NotTo(BeNil())
 			})
 		})
 	})

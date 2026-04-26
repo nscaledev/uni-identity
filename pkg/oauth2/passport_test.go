@@ -241,7 +241,6 @@ func TestExchangeFederatedUser(t *testing.T) {
 	assert.Equal(t, "user@example.com", claims.Email)
 	assert.Equal(t, "user@example.com", claims.Actor)
 	assert.ElementsMatch(t, []string{"org1"}, claims.OrgIDs)
-	assert.NotNil(t, claims.ACL)
 
 	// Verify timing: exp should be iat + 120s.
 	assert.Equal(t, claims.IssuedAt.Time().Add(oauth2.PassportTTL), claims.Expiry.Time())
@@ -630,8 +629,6 @@ func TestExchangeSystemAccountWithOrganizationScope(t *testing.T) {
 	assert.Equal(t, "system-service", claims.Subject)
 	assert.Empty(t, claims.OrgIDs)
 	assert.Equal(t, orgID, claims.OrgID)
-	require.NotNil(t, claims.ACL)
-	require.NotNil(t, claims.ACL.Global)
 }
 
 func TestExchangeSystemAccountWithOrganizationScopeStillUsesRBAC(t *testing.T) {
