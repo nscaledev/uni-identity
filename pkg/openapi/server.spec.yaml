@@ -1585,8 +1585,8 @@ components:
           nullable: true
         organizationId:
           description: |-
-            UNI extension. Optional organization context to scope the passport ACL to.
-            Used with the token-exchange grant.
+            UNI extension. Optional organization context to set in the passport's
+            org_id claim. Used with the token-exchange grant.
           type: string
           nullable: true
         projectId:
