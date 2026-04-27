@@ -46,6 +46,7 @@ func HandlerContextFixture(ctx context.Context, flags int) context.Context {
 	}
 
 	p := &principal.Principal{
+		Type:  openapi.User,
 		Actor: PrincipalActor,
 	}
 
