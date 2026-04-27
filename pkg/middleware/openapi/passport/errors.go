@@ -36,7 +36,22 @@ var (
 	// passport — return a server error, not a credential error.
 	ErrJWKSUnavailable = errors.New("JWKS unavailable")
 
-	// ErrClaimsCacheEntryType is returned when a claims cache value has an
-	// unexpected type.
-	ErrClaimsCacheEntryType = errors.New("passport claims cache entry has invalid type")
+	// ErrExchangeUnauthorized indicates the source token failed token exchange
+	// authentication and should be surfaced as 401.
+	ErrExchangeUnauthorized = errors.New("token exchange unauthorized")
+
+	// ErrExchangeUnavailable indicates token exchange could not be completed
+	// due to transport or upstream unavailability and should degrade to remote.
+	ErrExchangeUnavailable = errors.New("token exchange unavailable")
+
+	// ErrExchangeFailed indicates token exchange returned a non-retriable
+	// non-success response status.
+	ErrExchangeFailed = errors.New("token exchange failed")
+
+	// ErrExchangeInvalidResponse indicates a malformed successful response body.
+	ErrExchangeInvalidResponse = errors.New("token exchange invalid response")
+
+	// ErrExchangeMissingAccessToken indicates a successful response omitted
+	// the access_token field.
+	ErrExchangeMissingAccessToken = errors.New("token exchange response missing access token")
 )

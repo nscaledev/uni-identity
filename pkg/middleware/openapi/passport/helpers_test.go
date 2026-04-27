@@ -87,10 +87,3 @@ func mintPassport(t *testing.T, kp testKeyPair, opts ...func(*identityoauth2.Pas
 func withExpired(c *identityoauth2.PassportClaims) {
 	c.Expiry = jwt.NewNumericDate(time.Now().Add(-time.Hour))
 }
-
-// withACL attaches an ACL to the passport.
-func withACL(acl *identityapi.Acl) func(*identityoauth2.PassportClaims) {
-	return func(c *identityoauth2.PassportClaims) {
-		c.ACL = acl
-	}
-}

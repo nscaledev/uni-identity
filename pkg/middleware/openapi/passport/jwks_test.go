@@ -18,8 +18,11 @@ package passport //nolint:testpackage
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +31,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var errForcedRead = errors.New("forced read error")
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type errorReadCloser struct{}
+
+func (errorReadCloser) Read(_ []byte) (int, error) {
+	return 0, errForcedRead
+}
+
+func (errorReadCloser) Close() error {
+	return nil
+}
 
 func newJWKSServer(t *testing.T, keySet *jose.JSONWebKeySet) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
@@ -148,5 +169,121 @@ func TestJWKSCache_Get(t *testing.T) {
 
 		_, err := cache.Get(t.Context(), "test-kid")
 		assert.ErrorIs(t, err, ErrJWKSUnavailable)
+	})
+
+	t.Run("returns jwks unavailable error when request cannot be created", func(t *testing.T) {
+		t.Parallel()
+
+		cache := NewJWKSCache(http.DefaultClient, "://bad-url", time.Minute)
+
+		_, err := cache.Get(t.Context(), "test-kid")
+		assert.ErrorIs(t, err, ErrJWKSUnavailable)
+	})
+
+	t.Run("returns jwks unavailable error on non-200 status", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+
+		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+
+		_, err := cache.Get(t.Context(), "test-kid")
+		assert.ErrorIs(t, err, ErrJWKSUnavailable)
+	})
+
+	t.Run("returns jwks unavailable error on malformed response", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, err := io.WriteString(w, `{`)
+			assert.NoError(t, err)
+		}))
+		defer server.Close()
+
+		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+
+		_, err := cache.Get(t.Context(), "test-kid")
+		assert.ErrorIs(t, err, ErrJWKSUnavailable)
+	})
+
+	t.Run("returns jwks unavailable error on response body read failure", func(t *testing.T) {
+		t.Parallel()
+
+		httpClient := &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       errorReadCloser{},
+				}, nil
+			}),
+		}
+
+		cache := NewJWKSCache(httpClient, "https://example.com/oauth2/v2/jwks", time.Minute)
+
+		_, err := cache.Get(t.Context(), "test-kid")
+		assert.ErrorIs(t, err, ErrJWKSUnavailable)
+	})
+
+	t.Run("coalesces concurrent refreshes", func(t *testing.T) {
+		t.Parallel()
+
+		keyPair := newTestKeyPair(t, "test-kid")
+		keySet := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{keyPair.pub}}
+
+		release := make(chan struct{})
+
+		var fetchCount atomic.Int32
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fetchCount.Add(1)
+			<-release
+
+			w.Header().Set("Content-Type", "application/json")
+			assert.NoError(t, json.NewEncoder(w).Encode(&keySet))
+		}))
+		defer server.Close()
+
+		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+
+		const goroutines = 8
+
+		start := make(chan struct{})
+		errCh := make(chan error, goroutines)
+
+		var wg sync.WaitGroup
+		for range goroutines {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				<-start
+
+				_, err := cache.Get(t.Context(), "test-kid")
+				errCh <- err
+			}()
+		}
+
+		close(start)
+
+		require.Eventually(t, func() bool {
+			return fetchCount.Load() >= 1
+		}, time.Second, 10*time.Millisecond)
+
+		time.Sleep(20 * time.Millisecond)
+		close(release)
+
+		wg.Wait()
+		close(errCh)
+
+		for err := range errCh {
+			require.NoError(t, err)
+		}
+
+		assert.Equal(t, int32(1), fetchCount.Load())
 	})
 }

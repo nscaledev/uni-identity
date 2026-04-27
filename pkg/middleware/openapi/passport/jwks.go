@@ -28,22 +28,21 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"golang.org/x/sync/singleflight"
 )
 
 //nolint:gochecknoglobals
 var jwksCacheRefreshTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
-		Name: "identity_jwks_cache_refresh_total",
-		Help: "Total number of JWKS cache refresh attempts, labeled by trigger.",
+		Name: "identity_passport_jwks_cache_refresh_total",
+		Help: "Total number of JWKS cache refresh attempts, labeled by trigger and result.",
 	},
-	[]string{"trigger"},
+	[]string{"trigger", "result"},
 )
 
 // JWKSCache fetches and caches the identity service's public JWKS.
 // It refreshes on TTL expiry or on a key-ID miss. Zero network calls on the
 // hot path when a valid cached key is present.
-//
-// TODO: add singleflight to prevent thundering herd on concurrent cache misses.
 type JWKSCache struct {
 	httpClient *http.Client
 	jwksURI    string
@@ -51,6 +50,7 @@ type JWKSCache struct {
 	mutex      sync.RWMutex
 	keySet     jose.JSONWebKeySet
 	fetchedAt  time.Time
+	refreshSF  singleflight.Group
 }
 
 // NewJWKSCache returns a new JWKS cache.
@@ -77,7 +77,7 @@ func (c *JWKSCache) Get(ctx context.Context, kid string) (*jose.JSONWebKey, erro
 		trigger = "kid_miss"
 	}
 
-	if err := c.refresh(ctx, trigger); err != nil {
+	if err := c.refreshSingleFlight(ctx, trigger); err != nil {
 		return nil, err
 	}
 
@@ -87,6 +87,14 @@ func (c *JWKSCache) Get(ctx context.Context, kid string) (*jose.JSONWebKey, erro
 	}
 
 	return key, nil
+}
+
+func (c *JWKSCache) refreshSingleFlight(ctx context.Context, trigger string) error {
+	_, err, _ := c.refreshSF.Do(c.jwksURI, func() (any, error) {
+		return nil, c.refresh(ctx, trigger)
+	})
+
+	return err
 }
 
 // load returns the cached key for kid and whether the cache is within its TTL.
@@ -105,40 +113,41 @@ func (c *JWKSCache) load(kid string) (*jose.JSONWebKey, bool) {
 }
 
 // refresh fetches the JWKS from the remote endpoint and updates the cache.
-// trigger labels the prometheus counter ("ttl", "kid_miss", or "error").
+// trigger labels what caused refresh ("ttl" or "kid_miss").
+// result labels outcome ("success" or "error").
 func (c *JWKSCache) refresh(ctx context.Context, trigger string) error {
-	jwksCacheRefreshTotal.WithLabelValues(trigger).Inc()
-
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.jwksURI, nil)
 	if err != nil {
+		jwksCacheRefreshTotal.WithLabelValues(trigger, "error").Inc()
 		return fmt.Errorf("%w: failed to build JWKS request: %w", ErrJWKSUnavailable, err)
 	}
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		jwksCacheRefreshTotal.WithLabelValues("error").Inc()
+		jwksCacheRefreshTotal.WithLabelValues(trigger, "error").Inc()
 		return fmt.Errorf("%w: JWKS fetch failed: %w", ErrJWKSUnavailable, err)
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		jwksCacheRefreshTotal.WithLabelValues("error").Inc()
+		jwksCacheRefreshTotal.WithLabelValues(trigger, "error").Inc()
 		return fmt.Errorf("%w: JWKS endpoint returned status %d", ErrJWKSUnavailable, response.StatusCode)
 	}
 
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
-		jwksCacheRefreshTotal.WithLabelValues("error").Inc()
+		jwksCacheRefreshTotal.WithLabelValues(trigger, "error").Inc()
 		return fmt.Errorf("%w: failed to read JWKS response body: %w", ErrJWKSUnavailable, err)
 	}
 
 	var keySet jose.JSONWebKeySet
 	if err := json.Unmarshal(body, &keySet); err != nil {
-		jwksCacheRefreshTotal.WithLabelValues("error").Inc()
+		jwksCacheRefreshTotal.WithLabelValues(trigger, "error").Inc()
 		return fmt.Errorf("%w: failed to decode JWKS: %w", ErrJWKSUnavailable, err)
 	}
 
 	c.store(keySet)
+	jwksCacheRefreshTotal.WithLabelValues(trigger, "success").Inc()
 
 	return nil
 }
