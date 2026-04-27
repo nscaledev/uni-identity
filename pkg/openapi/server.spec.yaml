@@ -86,7 +86,7 @@ paths:
         re-authentication, the "client_credentials" grant used by services in
         conjunction with X.509 client certificates, and the RFC 8693 token exchange
         grant ("urn:ietf:params:oauth:grant-type:token-exchange") used to exchange
-        a validated source token for a signed UNI passport.
+        a validated source token for a signed JWT carrying delegated authorization claims.
       requestBody:
         $ref: '#/components/requestBodies/tokenRequest'
       responses:
@@ -1558,8 +1558,8 @@ components:
         requested_token_type:
           description: |-
             An identifier for the type of the requested security token. Optional for
-            the token-exchange grant; defaults to the UNI passport token type URI
-            when omitted (RFC 8693 section 2.1).
+            the token-exchange grant; defaults to the implementation-defined exchanged
+            token type URI when omitted (RFC 8693 section 2.1).
           type: string
           nullable: true
         audience:
@@ -1583,16 +1583,16 @@ components:
             grant (RFC 8693 section 2.1).
           type: string
           nullable: true
-        organizationId:
+        x_organization_id:
           description: |-
-            UNI extension. Optional organization context to set in the passport's
-            org_id claim. Used with the token-exchange grant.
+            Optional organization context to scope the issued token ACL to. Used
+            with the token-exchange grant.
           type: string
           nullable: true
-        projectId:
+        x_project_id:
           description: |-
-            UNI extension. Optional project context to include in the passport.
-            Used with the token-exchange grant.
+            Optional project context to include in the issued token. Used with
+            the token-exchange grant.
           type: string
           nullable: true
 # This broke with an update to kin-openapi. The correct fix for that was to
@@ -1629,13 +1629,13 @@ components:
           description: |-
             How the issued token is to be presented to the resource server. Typically
             "Bearer". For the RFC 8693 token-exchange grant this is "Bearer" when the
-            passport is presented in the Authorization header of downstream requests.
+            issued JWT is presented in the Authorization header of downstream requests.
           type: string
         access_token:
           description: |-
             The issued token. For the token-exchange grant this carries the signed
-            UNI passport JWT (RFC 8693 section 2.2.1 defines "access_token" as the
-            response envelope for any issued security token).
+            JWT returned by the exchange (RFC 8693 section 2.2.1 defines
+            "access_token" as the response envelope for any issued security token).
           type: string
         issued_token_type:
           description: |-

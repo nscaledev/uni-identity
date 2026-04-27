@@ -722,8 +722,8 @@ type Subject struct {
 // Token OAuth 2.0 token result.
 type Token struct {
 	// AccessToken The issued token. For the token-exchange grant this carries the signed
-	// UNI passport JWT (RFC 8693 section 2.2.1 defines "access_token" as the
-	// response envelope for any issued security token).
+	// JWT returned by the exchange (RFC 8693 section 2.2.1 defines
+	// "access_token" as the response envelope for any issued security token).
 	AccessToken string `json:"access_token"`
 
 	// ExpiresIn The time in seconds the token will last for.
@@ -742,7 +742,7 @@ type Token struct {
 
 	// TokenType How the issued token is to be presented to the resource server. Typically
 	// "Bearer". For the RFC 8693 token-exchange grant this is "Bearer" when the
-	// passport is presented in the Authorization header of downstream requests.
+	// issued JWT is presented in the Authorization header of downstream requests.
 	TokenType string `json:"token_type"`
 }
 
@@ -770,14 +770,6 @@ type TokenRequestOptions struct {
 	// (RFC 8693).
 	GrantType string `json:"grant_type"`
 
-	// OrganizationId UNI extension. Optional organization context to scope the passport ACL to.
-	// Used with the token-exchange grant.
-	OrganizationId *string `json:"organizationId"`
-
-	// ProjectId UNI extension. Optional project context to include in the passport.
-	// Used with the token-exchange grant.
-	ProjectId *string `json:"projectId"`
-
 	// RedirectUri Client redirect URI. Required with the "authorization_code" grant type.
 	RedirectUri *string `json:"redirect_uri"`
 
@@ -785,8 +777,8 @@ type TokenRequestOptions struct {
 	RefreshToken *string `json:"refresh_token"`
 
 	// RequestedTokenType An identifier for the type of the requested security token. Optional for
-	// the token-exchange grant; defaults to the UNI passport token type URI
-	// when omitted (RFC 8693 section 2.1).
+	// the token-exchange grant; defaults to the implementation-defined exchanged
+	// token type URI when omitted (RFC 8693 section 2.1).
 	RequestedTokenType *string `json:"requested_token_type"`
 
 	// Resource A URI that indicates the target service or resource where the client
@@ -808,6 +800,14 @@ type TokenRequestOptions struct {
 	// "subject_token" parameter. Required for the token-exchange grant
 	// (RFC 8693 section 2.1).
 	SubjectTokenType *string `json:"subject_token_type"`
+
+	// XOrganizationId Optional organization context to scope the issued token ACL to. Used
+	// with the token-exchange grant.
+	XOrganizationId *string `json:"x_organization_id"`
+
+	// XProjectId Optional project context to include in the issued token. Used with
+	// the token-exchange grant.
+	XProjectId *string `json:"x_project_id"`
 }
 
 // UserRead A user read object.
