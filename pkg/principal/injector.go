@@ -27,6 +27,7 @@ import (
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -38,29 +39,51 @@ import (
 // an impersonation signal (set via NewImpersonateContext), it also sets
 // X-Impersonate so that the receiving service resolves RBAC against the
 // end-user principal rather than the calling service's system account role.
+// When authorization context carries a passport token, Injector also sets the
+// outbound Authorization bearer header to that passport for propagation.
 // Services acting autonomously on a user's behalf (e.g. controllers creating
 // allocations) should not set the impersonation flag — the principal is then
 // attribution-only and the system account role governs access.
 func Injector(cli client.Client, options *coreclient.HTTPClientOptions) func(context.Context, *http.Request) error {
 	return func(ctx context.Context, r *http.Request) error {
-		principal, err := FromContext(ctx)
-		if err != nil {
+		if err := injectPrincipalHeaders(ctx, r); err != nil {
 			return err
 		}
 
-		data, err := json.Marshal(principal)
-		if err != nil {
-			return err
-		}
-
-		r.Header.Set(Header, base64.RawURLEncoding.EncodeToString(data))
-
-		if ImpersonateFromContext(ctx) {
-			r.Header.Set(ImpersonateHeader, "true")
+		if authInfo, err := authorization.FromContext(ctx); err == nil && authInfo.Passport != "" {
+			r.Header.Set("Authorization", "bearer "+authInfo.Passport)
 		}
 
 		return nil
 	}
+}
+
+func injectPrincipalHeaders(ctx context.Context, r *http.Request) error {
+	principal, err := FromContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(principal)
+	if err != nil {
+		return err
+	}
+
+	r.Header.Set(Header, base64.RawURLEncoding.EncodeToString(data))
+
+	if ImpersonateFromContext(ctx) {
+		r.Header.Set(ImpersonateHeader, "true")
+	}
+
+	return nil
+}
+
+// PrincipalOnlyInjector propagates X-Principal and optional X-Impersonate.
+// It intentionally does not set the Authorization header.
+//
+//nolint:revive // Keep explicit naming for call-site intent.
+func PrincipalOnlyInjector(cli client.Client, options *coreclient.HTTPClientOptions) func(context.Context, *http.Request) error {
+	return injectPrincipalHeaders
 }
 
 // FromResource loads the identity principal stored in the resource.
