@@ -119,6 +119,11 @@ func (e *Endpoints) GetQuotas(orgID string) string {
 		url.PathEscape(orgID))
 }
 
+// Token returns the OAuth2 token endpoint path.
+func (e *Endpoints) Token() string {
+	return "/oauth2/v2/token"
+}
+
 // ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.
 func (e *Endpoints) ListGlobalOauth2Providers() string {
 	return "/api/v1/oauth2providers"
