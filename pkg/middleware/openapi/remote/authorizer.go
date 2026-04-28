@@ -264,11 +264,13 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		return nil, err
 	}
 
+	requestCtx := ctx
+
 	// Trace context and TLS are handled by the cached client.
 	// TODO: a nicer way to inject a token per call would be prefereable.
 	options := []identityapi.ClientOption{
 		identityapi.WithHTTPClient(a.httpClient),
-		identityapi.WithRequestEditorFn(principal.Injector(a.client, a.clientOptions)),
+		identityapi.WithRequestEditorFn(principal.PrincipalOnlyInjector(a.client, a.clientOptions)),
 	}
 
 	if info.Token != "" {
@@ -277,6 +279,20 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 
 			return nil
 		}))
+	} else if info.Passport != "" {
+		// Passport-only contexts intentionally do NOT forward the passport JWT as a
+		// bearer credential on this internal ACL lookup hop.
+		//
+		// Instead we force delegated-principal semantics using:
+		//   - service identity from mTLS,
+		//   - X-Principal propagated from the caller context,
+		//   - X-Impersonate=true.
+		//
+		// This keeps ACL resolution aligned with our service-to-service trust model:
+		// the callee authorizes the delegated actor constrained by the calling
+		// service identity, rather than trusting bearer propagation between internal
+		// services.
+		requestCtx = principal.NewImpersonateContext(requestCtx)
 	}
 
 	client, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
@@ -285,7 +301,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 	}
 
 	if organizationID == "" {
-		response, err := client.GetApiV1AclWithResponse(ctx)
+		response, err := client.GetApiV1AclWithResponse(requestCtx)
 		if err != nil {
 			return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
 		}
@@ -297,7 +313,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		return response.JSON200, nil
 	}
 
-	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, organizationID)
+	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(requestCtx, organizationID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
 	}

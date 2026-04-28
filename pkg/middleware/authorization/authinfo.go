@@ -30,6 +30,8 @@ import (
 type Info struct {
 	// Token is a copy of the access token made available to handlers.
 	Token string
+	// Passport is the exchanged passport token to propagate on internal calls.
+	Passport string
 	// Userinfo is a parsed version of the token, used primarily for
 	// auditing etc.
 	Userinfo *openapi.Userinfo
