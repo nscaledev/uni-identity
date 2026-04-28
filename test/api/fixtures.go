@@ -135,7 +135,7 @@ func findOrphanedGroupID(ctx context.Context, client *APIClient, config *TestCon
 
 	groups, listErr := client.ListGroups(ctx, config.OrgID)
 	if listErr != nil {
-		GinkgoWriter.Printf("Warning: Could not list groups for cleanup: %v\n", listErr)
+		Expect(listErr).NotTo(HaveOccurred(), "failed to list groups for cleanup")
 		return ""
 	}
 
@@ -198,10 +198,9 @@ func CreateServiceAccountWithCleanup(client *APIClient, ctx context.Context, con
 
 		GinkgoWriter.Printf("Cleaning up service account: %s\n", saID)
 
-		if err := client.DeleteServiceAccount(ctx, config.OrgID, saID); err != nil {
-			GinkgoWriter.Printf("Warning: Failed to delete service account %s: %v\n", saID, err)
-		} else {
-			GinkgoWriter.Printf("Successfully deleted service account: %s\n", saID)
+		err := client.DeleteServiceAccount(ctx, config.OrgID, saID)
+		if !errors.Is(err, coreclient.ErrResourceNotFound) {
+			Expect(err).NotTo(HaveOccurred())
 		}
 	})
 
@@ -269,10 +268,9 @@ func CreateUserWithCleanup(client *APIClient, ctx context.Context, config *TestC
 
 		GinkgoWriter.Printf("Cleaning up user: %s\n", userID)
 
-		if err := client.DeleteUser(ctx, config.OrgID, userID); err != nil {
-			GinkgoWriter.Printf("Warning: Failed to delete user %s: %v\n", userID, err)
-		} else {
-			GinkgoWriter.Printf("Successfully deleted user: %s\n", userID)
+		err := client.DeleteUser(ctx, config.OrgID, userID)
+		if !errors.Is(err, coreclient.ErrResourceNotFound) {
+			Expect(err).NotTo(HaveOccurred())
 		}
 	})
 
@@ -336,9 +334,9 @@ func CreateProjectWithCleanup(client *APIClient, ctx context.Context, config *Te
 
 		GinkgoWriter.Printf("Cleaning up project: %s\n", projectID)
 
-		if err := client.DeleteProject(ctx, config.OrgID, projectID); err != nil {
-			GinkgoWriter.Printf("Warning: Failed to delete project %s: %v\n", projectID, err)
-			return
+		err := client.DeleteProject(ctx, config.OrgID, projectID)
+		if !errors.Is(err, coreclient.ErrResourceNotFound) {
+			Expect(err).NotTo(HaveOccurred())
 		}
 
 		Eventually(func() bool {
@@ -478,10 +476,9 @@ func CreateOauth2ProviderWithCleanup(client *APIClient, ctx context.Context, con
 
 		GinkgoWriter.Printf("Cleaning up oauth2provider: %s\n", providerID)
 
-		if err := client.DeleteOauth2Provider(ctx, config.OrgID, providerID); err != nil {
-			GinkgoWriter.Printf("Warning: Failed to delete oauth2provider %s: %v\n", providerID, err)
-		} else {
-			GinkgoWriter.Printf("Successfully deleted oauth2provider: %s\n", providerID)
+		err := client.DeleteOauth2Provider(ctx, config.OrgID, providerID)
+		if !errors.Is(err, coreclient.ErrResourceNotFound) {
+			Expect(err).NotTo(HaveOccurred())
 		}
 	})
 
@@ -515,11 +512,9 @@ func CreateGroupWithCleanup(client *APIClient, ctx context.Context, config *Test
 
 		GinkgoWriter.Printf("Cleaning up group: %s\n", groupID)
 
-		deleteErr := client.DeleteGroup(ctx, config.OrgID, groupID)
-		if deleteErr != nil {
-			GinkgoWriter.Printf("Warning: Failed to delete group %s: %v\n", groupID, deleteErr)
-		} else {
-			GinkgoWriter.Printf("Successfully deleted group: %s\n", groupID)
+		err := client.DeleteGroup(ctx, config.OrgID, groupID)
+		if !errors.Is(err, coreclient.ErrResourceNotFound) {
+			Expect(err).NotTo(HaveOccurred())
 		}
 	})
 
