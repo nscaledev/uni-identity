@@ -48,8 +48,9 @@ import (
 
 const (
 	// JWT claims have second accuracy, so use whole seconds as our time
-	// basis.
-	accessTokenDuration  = time.Second
+	// basis.  The access token must survive the 2× RefreshPeriod sleep
+	// plus issue + verify round-trip on slow CI runners.
+	accessTokenDuration  = 5 * time.Second
 	refreshTokenDuration = 30 * time.Second
 )
 
