@@ -86,6 +86,94 @@ func newAuthorizerWithMock(t *testing.T, keyPair testKeyPair, exchange exchanger
 	return authorizer, uni
 }
 
+func TestNewAuthorizer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejects nil fallback authorizer", func(t *testing.T) {
+		t.Parallel()
+
+		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", nil, nil)
+
+		require.Error(t, err)
+		require.ErrorIs(t, err, errUniAuthorizerRequired)
+		assert.Nil(t, a)
+	})
+
+	t.Run("requires HTTP client and identity host", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name      string
+			ctor      func(uni *mock.MockAuthorizer) (*Authorizer, error)
+			expectErr error
+		}{
+			{
+				name: "requires HTTP client",
+				ctor: func(uni *mock.MockAuthorizer) (*Authorizer, error) {
+					return NewAuthorizer(nil, "https://identity.example.com", uni, nil)
+				},
+				expectErr: errHTTPClientRequired,
+			},
+			{
+				name: "requires identity host",
+				ctor: func(uni *mock.MockAuthorizer) (*Authorizer, error) {
+					return NewAuthorizer(http.DefaultClient, "", uni, nil)
+				},
+				expectErr: errIdentityHostRequired,
+			},
+		}
+
+		for _, tt := range tests {
+			tc := tt
+
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				ctrl := gomock.NewController(t)
+				uni := mock.NewMockAuthorizer(ctrl)
+
+				a, err := tc.ctor(uni)
+				require.Error(t, err)
+				require.ErrorIs(t, err, tc.expectErr)
+				assert.Nil(t, a)
+			})
+		}
+	})
+
+	t.Run("delegates ACL retrieval to injected fallback authorizer", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		uni := mock.NewMockAuthorizer(ctrl)
+
+		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", uni, nil)
+		require.NoError(t, err)
+
+		ctx := t.Context()
+		expectedACL := &identityapi.Acl{}
+		uni.EXPECT().GetACL(ctx, "org-123").Return(expectedACL, nil)
+
+		acl, getErr := a.GetACL(ctx, "org-123")
+		require.NoError(t, getErr)
+		assert.Equal(t, expectedACL, acl)
+	})
+
+	t.Run("accepts explicit constructor options", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		uni := mock.NewMockAuthorizer(ctrl)
+
+		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", uni, &Options{
+			JWKSCacheTTL:    2 * time.Minute,
+			JWKSTimeout:     500 * time.Millisecond,
+			ExchangeTimeout: 600 * time.Millisecond,
+		})
+		require.NoError(t, err)
+		assert.NotNil(t, a)
+	})
+}
+
 func TestGetBearerToken(t *testing.T) {
 	t.Parallel()
 
@@ -346,65 +434,69 @@ func TestAuthorizer_AuthorizePassesScopeToExchange(t *testing.T) {
 	assert.Equal(t, "proj-1", capturedOptions.projectID)
 }
 
-func TestPassportFlow_PassportInputKeepsPassportOnlyACLContext(t *testing.T) {
+func TestPassportFlow_ACLContextPropagation(t *testing.T) {
 	t.Parallel()
 
-	keyPair := newTestKeyPair(t, "auth-kid")
-	authorizer, uni := newAuthorizerWithMock(t, keyPair, nil)
+	t.Run("incoming passport keeps passport-only ACL context", func(t *testing.T) {
+		t.Parallel()
 
-	input := oauth2AuthInput(mintPassport(t, keyPair))
-	info, err := authorizer.Authorize(input)
-	require.NoError(t, err)
-	require.NotNil(t, info)
-	require.Empty(t, info.Token)
-	require.NotEmpty(t, info.Passport)
+		keyPair := newTestKeyPair(t, "auth-kid")
+		authorizer, uni := newAuthorizerWithMock(t, keyPair, nil)
 
-	ctx := authorization.NewContext(t.Context(), info)
-
-	uni.EXPECT().GetACL(gomock.Any(), "org-id").DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
-		aclInfo, err := authorization.FromContext(ctx)
+		input := oauth2AuthInput(mintPassport(t, keyPair))
+		info, err := authorizer.Authorize(input)
 		require.NoError(t, err)
-		assert.Empty(t, aclInfo.Token)
-		assert.Equal(t, info.Passport, aclInfo.Passport)
+		require.NotNil(t, info)
+		require.Empty(t, info.Token)
+		require.NotEmpty(t, info.Passport)
 
-		return &identityapi.Acl{}, nil
+		ctx := authorization.NewContext(t.Context(), info)
+
+		uni.EXPECT().GetACL(gomock.Any(), "org-id").DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
+			aclInfo, err := authorization.FromContext(ctx)
+			require.NoError(t, err)
+			assert.Empty(t, aclInfo.Token)
+			assert.Equal(t, info.Passport, aclInfo.Passport)
+
+			return &identityapi.Acl{}, nil
+		})
+
+		_, err = authorizer.GetACL(ctx, "org-id")
+		require.NoError(t, err)
 	})
 
-	_, err = authorizer.GetACL(ctx, "org-id")
-	require.NoError(t, err)
-}
+	t.Run("exchanged token keeps source token for ACL context", func(t *testing.T) {
+		t.Parallel()
 
-func TestPassportFlow_ExchangeInputKeepsSourceTokenForACLContext(t *testing.T) {
-	t.Parallel()
+		keyPair := newTestKeyPair(t, "auth-kid")
+		passportToken := mintPassport(t, keyPair)
 
-	keyPair := newTestKeyPair(t, "auth-kid")
-	passportToken := mintPassport(t, keyPair)
+		authorizer, uni := newAuthorizerWithMock(t, keyPair, exchangeFunc(func(_ context.Context, sourceToken string, _ *exchangeOptions) (string, error) {
+			require.Equal(t, "raw-source-token", sourceToken)
+			return passportToken, nil
+		}))
 
-	authorizer, uni := newAuthorizerWithMock(t, keyPair, exchangeFunc(func(_ context.Context, sourceToken string, _ *exchangeOptions) (string, error) {
-		require.Equal(t, "raw-source-token", sourceToken)
-		return passportToken, nil
-	}))
-
-	input := oauth2AuthInput("raw-source-token")
-	info, err := authorizer.Authorize(input)
-	require.NoError(t, err)
-	require.NotNil(t, info)
-	require.Equal(t, "raw-source-token", info.Token)
-	require.Equal(t, passportToken, info.Passport)
-
-	ctx := authorization.NewContext(t.Context(), info)
-
-	uni.EXPECT().GetACL(gomock.Any(), "org-id").DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
-		aclInfo, err := authorization.FromContext(ctx)
+		input := oauth2AuthInput("raw-source-token")
+		info, err := authorizer.Authorize(input)
 		require.NoError(t, err)
-		assert.Equal(t, "raw-source-token", aclInfo.Token)
-		assert.Equal(t, passportToken, aclInfo.Passport)
+		require.NotNil(t, info)
+		require.Equal(t, "raw-source-token", info.Token)
+		require.Equal(t, passportToken, info.Passport)
 
-		return &identityapi.Acl{}, nil
+		ctx := authorization.NewContext(t.Context(), info)
+
+		uni.EXPECT().GetACL(gomock.Any(), "org-id").DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
+			aclInfo, err := authorization.FromContext(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, "raw-source-token", aclInfo.Token)
+			assert.Equal(t, passportToken, aclInfo.Passport)
+
+			return &identityapi.Acl{}, nil
+		})
+
+		_, err = authorizer.GetACL(ctx, "org-id")
+		require.NoError(t, err)
 	})
-
-	_, err = authorizer.GetACL(ctx, "org-id")
-	require.NoError(t, err)
 }
 
 func TestNewExchangeOptionsFromInput(t *testing.T) {
