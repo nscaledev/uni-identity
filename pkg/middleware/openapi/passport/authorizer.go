@@ -28,15 +28,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
-	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	apierrors "github.com/unikorn-cloud/core/pkg/server/errors"
-	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	openapiinterfaces "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	identityoauth2 "github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -65,9 +62,9 @@ type Options struct {
 	ExchangeTimeout time.Duration
 }
 
-func (o *Options) withDefaults() Options {
+func (o *Options) withDefaults() *Options {
 	if o == nil {
-		return Options{
+		return &Options{
 			JWKSCacheTTL:    defaultJWKSCacheTTL,
 			JWKSTimeout:     defaultJWKSTimeout,
 			ExchangeTimeout: defaultExchangeTimeout,
@@ -88,7 +85,7 @@ func (o *Options) withDefaults() Options {
 		out.ExchangeTimeout = defaultExchangeTimeout
 	}
 
-	return out
+	return &out
 }
 
 //nolint:gochecknoglobals
@@ -137,41 +134,40 @@ type Authorizer struct {
 
 var _ openapiinterfaces.Authorizer = &Authorizer{}
 
-var errUniAuthorizerRequired = errors.New("passport: uni authorizer is required")
+var (
+	errUniAuthorizerRequired = errors.New("passport: uni authorizer is required")
+	errHTTPClientRequired    = errors.New("passport: http client is required")
+	errIdentityHostRequired  = errors.New("passport: identity host is required")
+)
 
-// NewAuthorizer builds a passport Authorizer with default options.
-//
-// uni is the non-passport authorizer used for ACL lookup and degraded-mode
-// fallback when token exchange is temporarily unavailable.
-func NewAuthorizer(uni openapiinterfaces.Authorizer, kubeClient client.Client, identityOptions *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*Authorizer, error) {
-	return NewAuthorizerWithOptions(uni, kubeClient, identityOptions, clientOptions, nil)
-}
-
-// NewAuthorizerWithOptions builds a passport Authorizer with explicit options.
+// NewAuthorizer builds a passport Authorizer.
 //
 // uni is required because passport middleware still relies on a non-passport
 // authorizer for ACL lookup and degraded-mode fallback when token exchange is
 // temporarily unavailable.
-func NewAuthorizerWithOptions(uni openapiinterfaces.Authorizer, kubeClient client.Client, identityOptions *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, authorizerOptions *Options) (*Authorizer, error) {
+func NewAuthorizer(httpClient *http.Client, identityHost string, uni openapiinterfaces.Authorizer, options *Options) (*Authorizer, error) {
 	if uni == nil {
 		return nil, errUniAuthorizerRequired
 	}
 
-	options := authorizerOptions.withDefaults()
-
-	baseHTTPClient, err := identityclient.New(kubeClient, identityOptions, clientOptions).HTTPClient(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("passport: failed to create identity HTTP client: %w", err)
+	if httpClient == nil {
+		return nil, errHTTPClientRequired
 	}
 
-	jwksHTTPClient := *baseHTTPClient
+	if strings.TrimSpace(identityHost) == "" {
+		return nil, errIdentityHostRequired
+	}
+
+	options = options.withDefaults()
+
+	jwksHTTPClient := *httpClient
 	jwksHTTPClient.Timeout = options.JWKSTimeout
 
-	exchangeHTTPClient := *baseHTTPClient
+	exchangeHTTPClient := *httpClient
 	exchangeHTTPClient.Timeout = options.ExchangeTimeout
 
 	var (
-		host      = strings.TrimRight(identityOptions.Host(), "/")
+		host      = strings.TrimRight(identityHost, "/")
 		jwksURI   = host + "/oauth2/v2/jwks"
 		tokenURL  = host + "/oauth2/v2/token"
 		jwksCache = NewJWKSCache(&jwksHTTPClient, jwksURI, options.JWKSCacheTTL)

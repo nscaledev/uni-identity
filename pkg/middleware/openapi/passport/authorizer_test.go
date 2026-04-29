@@ -32,8 +32,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	coreclient "github.com/unikorn-cloud/core/pkg/client"
-	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/mock"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
@@ -94,60 +92,34 @@ func TestNewAuthorizer(t *testing.T) {
 	t.Run("rejects nil fallback authorizer", func(t *testing.T) {
 		t.Parallel()
 
-		tests := []struct {
-			name string
-			ctor func() (*Authorizer, error)
-		}{
-			{
-				name: "NewAuthorizer",
-				ctor: func() (*Authorizer, error) {
-					return NewAuthorizer(nil, nil, nil, nil)
-				},
-			},
-			{
-				name: "NewAuthorizerWithOptions",
-				ctor: func() (*Authorizer, error) {
-					return NewAuthorizerWithOptions(nil, nil, nil, nil, nil)
-				},
-			},
-		}
+		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", nil, nil)
 
-		for _, tt := range tests {
-			tc := tt
-
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
-
-				a, err := tc.ctor()
-
-				require.Error(t, err)
-				require.ErrorIs(t, err, errUniAuthorizerRequired)
-				assert.Nil(t, a)
-			})
-		}
+		require.Error(t, err)
+		require.ErrorIs(t, err, errUniAuthorizerRequired)
+		assert.Nil(t, a)
 	})
 
-	t.Run("delegates ACL retrieval to injected fallback authorizer", func(t *testing.T) {
+	t.Run("requires HTTP client and identity host", func(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
-			name  string
-			orgID string
-			ctor  func(uni *mock.MockAuthorizer, options *identityclient.Options) (*Authorizer, error)
+			name      string
+			ctor      func(uni *mock.MockAuthorizer) (*Authorizer, error)
+			expectErr error
 		}{
 			{
-				name:  "NewAuthorizer",
-				orgID: "org-123",
-				ctor: func(uni *mock.MockAuthorizer, options *identityclient.Options) (*Authorizer, error) {
-					return NewAuthorizer(uni, nil, options, &coreclient.HTTPClientOptions{})
+				name: "requires HTTP client",
+				ctor: func(uni *mock.MockAuthorizer) (*Authorizer, error) {
+					return NewAuthorizer(nil, "https://identity.example.com", uni, nil)
 				},
+				expectErr: errHTTPClientRequired,
 			},
 			{
-				name:  "NewAuthorizerWithOptions",
-				orgID: "org-456",
-				ctor: func(uni *mock.MockAuthorizer, options *identityclient.Options) (*Authorizer, error) {
-					return NewAuthorizerWithOptions(uni, nil, options, &coreclient.HTTPClientOptions{}, nil)
+				name: "requires identity host",
+				ctor: func(uni *mock.MockAuthorizer) (*Authorizer, error) {
+					return NewAuthorizer(http.DefaultClient, "", uni, nil)
 				},
+				expectErr: errIdentityHostRequired,
 			},
 		}
 
@@ -159,20 +131,46 @@ func TestNewAuthorizer(t *testing.T) {
 
 				ctrl := gomock.NewController(t)
 				uni := mock.NewMockAuthorizer(ctrl)
-				identityOptions := identityclient.NewOptions()
 
-				a, err := tc.ctor(uni, identityOptions)
-				require.NoError(t, err)
-
-				ctx := t.Context()
-				expectedACL := &identityapi.Acl{}
-				uni.EXPECT().GetACL(ctx, tc.orgID).Return(expectedACL, nil)
-
-				acl, getErr := a.GetACL(ctx, tc.orgID)
-				require.NoError(t, getErr)
-				assert.Equal(t, expectedACL, acl)
+				a, err := tc.ctor(uni)
+				require.Error(t, err)
+				require.ErrorIs(t, err, tc.expectErr)
+				assert.Nil(t, a)
 			})
 		}
+	})
+
+	t.Run("delegates ACL retrieval to injected fallback authorizer", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		uni := mock.NewMockAuthorizer(ctrl)
+
+		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", uni, nil)
+		require.NoError(t, err)
+
+		ctx := t.Context()
+		expectedACL := &identityapi.Acl{}
+		uni.EXPECT().GetACL(ctx, "org-123").Return(expectedACL, nil)
+
+		acl, getErr := a.GetACL(ctx, "org-123")
+		require.NoError(t, getErr)
+		assert.Equal(t, expectedACL, acl)
+	})
+
+	t.Run("accepts explicit constructor options", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		uni := mock.NewMockAuthorizer(ctrl)
+
+		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", uni, &Options{
+			JWKSCacheTTL:    2 * time.Minute,
+			JWKSTimeout:     500 * time.Millisecond,
+			ExchangeTimeout: 600 * time.Millisecond,
+		})
+		require.NoError(t, err)
+		assert.NotNil(t, a)
 	})
 }
 
