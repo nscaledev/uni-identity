@@ -31,6 +31,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
+	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
@@ -160,7 +161,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidTarget))
+				Expect(oauthErr.Error).To(Equal(oauth2errors.InvalidTargetCode))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("organization not in scope"))
 			})
 		})
@@ -180,7 +181,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidTarget))
+				Expect(oauthErr.Error).To(Equal(oauth2errors.InvalidTargetCode))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("project not in scope"))
 			})
 		})

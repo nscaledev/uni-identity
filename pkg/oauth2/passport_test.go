@@ -1069,6 +1069,6 @@ func TestExchangeHandlerOutOfScopeOrganizationReturnsInvalidTarget(t *testing.T)
 	var oauthResp openapi.Oauth2Error
 
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
-	assert.Equal(t, openapi.InvalidTarget, oauthResp.Error)
+	assert.Equal(t, oauth2errors.InvalidTargetCode, oauthResp.Error)
 	assert.Contains(t, oauthResp.ErrorDescription, "organization not in scope")
 }

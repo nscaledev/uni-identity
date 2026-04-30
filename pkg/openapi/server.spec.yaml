@@ -1229,12 +1229,11 @@ components:
           - access_denied
           - unsupported_response_type
           - invalid_scope
-          - server_error
+          - server_error 
           - temporarily_unavailable
           - invalid_client
           - invalid_grant
           - unsupported_grant_type
-          - invalid_target
         error_description:
           description: Verbose message describing the error.
           type: string
@@ -1575,6 +1574,13 @@ components:
             A URI that indicates the target service or resource where the client
             intends to use the requested security token. Optional for the
             token-exchange grant (RFC 8693 section 2.1).
+          type: string
+          nullable: true
+        scope:
+          description: |-
+            A list of space-delimited, case-sensitive strings that specify the
+            requested scope of the issued token. Optional for the token-exchange
+            grant (RFC 8693 section 2.1).
           type: string
           nullable: true
         x_organization_id:

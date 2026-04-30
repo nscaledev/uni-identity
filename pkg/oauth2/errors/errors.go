@@ -27,6 +27,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// InvalidTargetCode is the OAuth 2.0 error code returned for unresolvable
+// target services (RFC 8693 §2.2.2). It is defined here rather than added to
+// the OpenAPI Oauth2ErrorError enum so that the published spec stays aligned
+// with the generic OAuth 2.0 set; the runtime still emits the correct value.
+const InvalidTargetCode openapi.Oauth2ErrorError = "invalid_target"
+
 type Error struct {
 	// status is the HTTP status code to return.
 	status int
@@ -142,7 +148,7 @@ func OAuth2InvalidScope(description string) *Error {
 // or unable to issue a token for any target service indicated by the
 // "resource" or "audience" parameters (RFC 8693 section 2.2.2).
 func OAuth2InvalidTarget(description string) *Error {
-	return newError(http.StatusBadRequest, openapi.InvalidTarget, description)
+	return newError(http.StatusBadRequest, InvalidTargetCode, description)
 }
 
 // oAuth2ServerError tells the client we are at fault, this should never be seen
