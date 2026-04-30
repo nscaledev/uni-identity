@@ -138,6 +138,13 @@ func OAuth2InvalidScope(description string) *Error {
 	return newError(http.StatusUnauthorized, openapi.InvalidScope, description)
 }
 
+// OAuth2InvalidTarget is raised when the authorization server is unwilling
+// or unable to issue a token for any target service indicated by the
+// "resource" or "audience" parameters (RFC 8693 section 2.2.2).
+func OAuth2InvalidTarget(description string) *Error {
+	return newError(http.StatusBadRequest, openapi.InvalidTarget, description)
+}
+
 // oAuth2ServerError tells the client we are at fault, this should never be seen
 // in production.  If so then our testing needs to improve.
 func oAuth2ServerError(description string) *Error {

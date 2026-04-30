@@ -72,6 +72,7 @@ const (
 	InvalidGrant            Oauth2ErrorError = "invalid_grant"
 	InvalidRequest          Oauth2ErrorError = "invalid_request"
 	InvalidScope            Oauth2ErrorError = "invalid_scope"
+	InvalidTarget           Oauth2ErrorError = "invalid_target"
 	ServerError             Oauth2ErrorError = "server_error"
 	TemporarilyUnavailable  Oauth2ErrorError = "temporarily_unavailable"
 	UnauthorizedClient      Oauth2ErrorError = "unauthorized_client"
@@ -288,24 +289,6 @@ type Claim string
 
 // CodeChallengeMethod Supported code challenge methods.
 type CodeChallengeMethod string
-
-// ExchangeRequestOptions Token exchange request options.
-type ExchangeRequestOptions struct {
-	// OrganizationId Optional organization context to scope the passport ACL to.
-	OrganizationId *string `json:"organizationId"`
-
-	// ProjectId Optional project context to include in the passport.
-	ProjectId *string `json:"projectId"`
-}
-
-// ExchangeResult Token exchange result containing a signed passport JWT.
-type ExchangeResult struct {
-	// ExpiresIn The time in seconds until the passport expires.
-	ExpiresIn int `json:"expires_in"`
-
-	// Passport A signed passport JWT.
-	Passport string `json:"passport"`
-}
 
 // GrantType Supported grant type.
 type GrantType string
@@ -804,11 +787,6 @@ type TokenRequestOptions struct {
 	// token-exchange grant (RFC 8693 section 2.1).
 	Resource *string `json:"resource"`
 
-	// Scope A list of space-delimited, case-sensitive strings that specify the
-	// requested scope of the issued token. Optional for the token-exchange
-	// grant (RFC 8693 section 2.1).
-	Scope *string `json:"scope"`
-
 	// SubjectToken The security token that represents the identity of the party on behalf
 	// of whom the request is being made. Required for the token-exchange grant
 	// (RFC 8693 section 2.1).
@@ -970,9 +948,6 @@ type AclResponse = Acl
 // AllocationResponse An allocation of resources.
 type AllocationResponse = AllocationRead
 
-// ExchangeResponse Token exchange result containing a signed passport JWT.
-type ExchangeResponse = ExchangeResult
-
 // GroupResponse A group when read.
 type GroupResponse = GroupRead
 
@@ -1129,9 +1104,6 @@ type PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody = UserWrite
 
 // PostOauth2V2AuthorizationFormdataRequestBody defines body for PostOauth2V2Authorization for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2AuthorizationFormdataRequestBody = AuthorizationRequestOptions
-
-// PostOauth2V2ExchangeFormdataRequestBody defines body for PostOauth2V2Exchange for application/x-www-form-urlencoded ContentType.
-type PostOauth2V2ExchangeFormdataRequestBody = ExchangeRequestOptions
 
 // PostOauth2V2LoginFormdataRequestBody defines body for PostOauth2V2Login for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2LoginFormdataRequestBody = LoginRequestOptions
