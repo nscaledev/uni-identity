@@ -22,12 +22,15 @@ package suites
 
 import (
 	"errors"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
+	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
@@ -142,9 +145,9 @@ var _ = Describe("Group Management", func() {
 
 					Expect(group.Metadata.HealthStatus).NotTo(BeEmpty())
 					Expect(group.Metadata.HealthStatus).To(BeElementOf(
-					coreopenapi.ResourceHealthStatusHealthy,
-					coreopenapi.ResourceHealthStatusDegraded,
-					coreopenapi.ResourceHealthStatusError))
+						coreopenapi.ResourceHealthStatusHealthy,
+						coreopenapi.ResourceHealthStatusDegraded,
+						coreopenapi.ResourceHealthStatusError))
 
 					GinkgoWriter.Printf("  Group: %s (ID: %s)\n",
 						group.Metadata.Name, group.Metadata.Id)
@@ -255,6 +258,104 @@ var _ = Describe("Group Management", func() {
 				err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
+	Context("When checking group subject issuer consistency", func() {
+		Describe("Given a user added to a group via different API paths", func() {
+			It("should store subjects with the same issuer regardless of which API path set membership", func() {
+				// Create a group with no users via the groups API.
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, api.NewGroupPayload().Build())
+
+				// Create a user and assign them to the group via the users API.
+				// Internally this calls updateGroups, which writes Issuer: "".
+				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
+					WithSubject(fmt.Sprintf("test-user-%s@example.com", time.Now().Format("20060102150405"))).
+					WithState(identityopenapi.Active).
+					WithGroupIDs([]string{groupID}).
+					Build())
+
+				readIssuer := func(apiResource string) string {
+					group, err := client.GetGroup(ctx, config.OrgID, groupID)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(group.Spec.Subjects).NotTo(BeNil())
+					Expect(*group.Spec.Subjects).NotTo(BeEmpty())
+
+					issuer := (*group.Spec.Subjects)[0].Issuer
+					GinkgoWriter.Printf("Issuer written by %s API path: %s\n", apiResource, issuer)
+
+					return issuer
+				}
+
+				// Read the group to capture the issuer written by the users API path.
+				issuerWrittenByUsersAPI := readIssuer("users")
+
+				// Update the group via the groups API using UserIDs for the same user.
+				// Internally this calls userIDsToSubjects, which writes Issuer: c.issuer.URL.
+				Expect(client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
+					WithName(group.Metadata.Name).
+					WithUserIDs([]string{userID}).
+					Build())).NotTo(HaveOccurred())
+
+				// Read the group again to capture the issuer written by the groups API path.
+				issuerWrittenByGroupsAPI := readIssuer("groups")
+
+				// Both paths must produce the same issuer value. This currently fails because
+				// updateGroups (users API) writes Issuer: "" while userIDsToSubjects (groups API)
+				// writes Issuer: c.issuer.URL.
+				Expect(issuerWrittenByUsersAPI).To(Equal(issuerWrittenByGroupsAPI), "subject issuer must be identical regardless of which API path last set group membership")
+			})
+		})
+	})
+
+	Context("When a user is deleted after group membership was set via the groups API", func() {
+		Describe("Given a user whose subject was last written by userIDsToSubjects", func() {
+			It("should not leave a dangling subject in the group after the user is deleted", func() {
+				// Create a group with no users.
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, api.NewGroupPayload().Build())
+
+				// Create a user and add them to the group via the users API.
+				// updateGroups writes Issuer: "" onto the subject.
+				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
+					WithSubject(fmt.Sprintf("dangling-subject-test-%s@example.com", time.Now().Format("20060102150405"))).
+					WithState(identityopenapi.Active).
+					WithGroupIDs([]string{groupID}).
+					Build())
+
+				// Re-set group membership via the groups API using UserIDs.
+				// userIDsToSubjects writes Issuer: c.issuer.URL, overwriting the Issuer: "" entry.
+				Expect(client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
+					WithName(group.Metadata.Name).
+					WithUserIDs([]string{userID}).
+					Build())).NotTo(HaveOccurred())
+
+				// Delete the user via the users API.
+				// removeFromGroup constructs a subject with Issuer: "" and matches by both ID and Issuer.
+				// Because the stored subject now has Issuer: c.issuer.URL, the match fails and the
+				// subject is NOT removed — it remains as a dangling entry in the group.
+				//
+				// Note: CreateUserWithCleanup registered a DeferCleanup; deleting here first is fine
+				// because that cleanup handles 404 gracefully.
+				Expect(client.DeleteUser(ctx, config.OrgID, userID)).NotTo(HaveOccurred())
+
+				// The group subjects list must be empty after the user is deleted.
+				// This currently FAILS because the issuer mismatch between the two API paths
+				// prevents removeFromGroup from finding and removing the subject.
+				//
+				// Additionally, the dangling subject has Issuer: c.issuer.URL, so it is NOT
+				// skipped by the "continue // Skip external subjects" guard in subjectsToUserIDs.
+				// Any subsequent GET→PUT round-trip using the subjects API path will call
+				// findUserBySubject on the dangling entry and return an error, breaking group updates.
+				updatedGroup, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+
+				var subjectCount int
+				if updatedGroup.Spec.Subjects != nil {
+					subjectCount = len(*updatedGroup.Spec.Subjects)
+				}
+
+				Expect(subjectCount).To(Equal(0), "deleting a user must remove their subject from all groups; a dangling subject remains when the groups API last wrote membership because removeFromGroup matches by Issuer and the two API paths write different Issuer values")
 			})
 		})
 	})
