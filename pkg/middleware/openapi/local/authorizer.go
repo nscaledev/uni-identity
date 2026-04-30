@@ -129,6 +129,6 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
-func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
-	return a.rbac.GetACL(ctx, organizationID)
+func (a *Authorizer) GetACL(ctx context.Context) (*openapi.Acl, error) {
+	return a.rbac.GetACL(ctx)
 }

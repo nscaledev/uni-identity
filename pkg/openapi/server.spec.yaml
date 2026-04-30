@@ -352,27 +352,6 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
-  /api/v1/organizations/{organizationID}/acl:
-    description: |-
-      Gets an ACL associated with the user, scoped to the organization.
-      This is used to perform basic RBAC on remote services and to control
-      UX.
-    parameters:
-    - $ref: '#/components/parameters/organizationIDParameter'
-    get:
-      x-no-authorization: true
-      x-hidden: true
-      description: |-
-        Returns access control properties for the user.
-      security:
-      - oauth2Authentication: []
-      responses:
-        '200':
-          $ref: '#/components/responses/aclResponse'
-        '401':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
-        '500':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
   /api/v1/organizations/{organizationID}/serviceaccounts:
     description: |-
       Allows management of service accounts.
@@ -1963,10 +1942,6 @@ components:
           $ref: '#/components/schemas/aclEndpoints'
         organizations:
           $ref: '#/components/schemas/aclOrganizationList'
-        organization:
-          $ref: '#/components/schemas/aclOrganization'
-        projects:
-          $ref: '#/components/schemas/aclProjectList'
     stringList:
       description: A list of strings.
       type: array
@@ -2784,8 +2759,8 @@ components:
           schema:
             $ref: '#/components/schemas/acl'
           example:
-            organization:
-              id: adb2e414-1aef-4589-b933-ad0613d2d78f
+            organizations:
+            - id: adb2e414-1aef-4589-b933-ad0613d2d78f
               endpoints:
               - name: groups
                 operations:
@@ -2793,12 +2768,12 @@ components:
                 - read
                 - update
                 - delete
-            project:
-            - id: a866ea05-2655-41bc-8135-d99b62ed4be6
-              endpoints:
-              - name: infrastructure
-                operations:
-                - create
+              projects:
+              - id: a866ea05-2655-41bc-8135-d99b62ed4be6
+                endpoints:
+                - name: infrastructure
+                  operations:
+                  - create
     rolesResponse:
       description: |-
         A set of roles within the organization.

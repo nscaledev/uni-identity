@@ -280,24 +280,6 @@ func (c *APIClient) GetGlobalACL(ctx context.Context) (*identityopenapi.Acl, err
 	return &acl, nil
 }
 
-// GetOrganizationACL gets the ACL for a specific organization.
-func (c *APIClient) GetOrganizationACL(ctx context.Context, orgID string) (*identityopenapi.Acl, error) {
-	path := c.endpoints.GetOrganizationACL(orgID)
-
-	//nolint:bodyclose // DoRequest handles response body closing internally
-	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
-	if err != nil {
-		return nil, fmt.Errorf("getting organization ACL: %w", err)
-	}
-
-	var acl identityopenapi.Acl
-	if err := json.Unmarshal(respBody, &acl); err != nil {
-		return nil, fmt.Errorf("unmarshaling ACL: %w", err)
-	}
-
-	return &acl, nil
-}
-
 // ListUsers lists all users in an organization.
 func (c *APIClient) ListUsers(ctx context.Context, orgID string) (identityopenapi.Users, error) {
 	path := c.endpoints.ListUsers(orgID)

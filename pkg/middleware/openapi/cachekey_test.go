@@ -47,18 +47,13 @@ func TestACLCacheKey(t *testing.T) {
 		SystemAccount: true,
 	}
 
-	t.Run("DirectIncludesOrganizationScope", func(t *testing.T) {
+	t.Run("DirectUsesSubjectOnly", func(t *testing.T) {
 		t.Parallel()
 
-		global, err := aclCacheKey(t.Context(), directInfo, "")
+		key, err := aclCacheKey(t.Context(), directInfo)
 		require.NoError(t, err)
 
-		scoped, err := aclCacheKey(t.Context(), directInfo, "org-1")
-		require.NoError(t, err)
-
-		require.Equal(t, "direct|user-1|_global", global)
-		require.Equal(t, "direct|user-1|org-1", scoped)
-		require.NotEqual(t, global, scoped)
+		require.Equal(t, "direct|user-1", key)
 	})
 
 	t.Run("AttributedCallUsesDirectKeyShape", func(t *testing.T) {
@@ -68,10 +63,10 @@ func TestACLCacheKey(t *testing.T) {
 			Actor: "someone-else",
 		})
 
-		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
+		key, err := aclCacheKey(ctx, serviceInfo)
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", key)
+		require.Equal(t, "direct|compute-service", key)
 	})
 
 	t.Run("ImpersonatedDiffersFromDirect", func(t *testing.T) {
@@ -82,14 +77,14 @@ func TestACLCacheKey(t *testing.T) {
 		})
 		ctx = principal.NewImpersonateContext(ctx)
 
-		direct, err := aclCacheKey(t.Context(), serviceInfo, "org-1")
+		direct, err := aclCacheKey(t.Context(), serviceInfo)
 		require.NoError(t, err)
 
-		impersonated, err := aclCacheKey(ctx, serviceInfo, "org-1")
+		impersonated, err := aclCacheKey(ctx, serviceInfo)
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", direct)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", impersonated)
+		require.Equal(t, "direct|compute-service", direct)
+		require.Equal(t, "impersonated|compute-service|user-1", impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
 
@@ -108,18 +103,18 @@ func TestACLCacheKey(t *testing.T) {
 			SystemAccount: true,
 		}
 
-		computeKey, err := aclCacheKey(ctx, serviceInfo, "org-1")
+		computeKey, err := aclCacheKey(ctx, serviceInfo)
 		require.NoError(t, err)
 
-		regionKey, err := aclCacheKey(ctx, otherServiceInfo, "org-1")
+		regionKey, err := aclCacheKey(ctx, otherServiceInfo)
 		require.NoError(t, err)
 
 		require.NotEqual(t, computeKey, regionKey)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", computeKey)
-		require.Equal(t, "impersonated|region-service|user-1|org-1", regionKey)
+		require.Equal(t, "impersonated|compute-service|user-1", computeKey)
+		require.Equal(t, "impersonated|region-service|user-1", regionKey)
 	})
 
-	t.Run("ImpersonatedIncludesOrganizationScope", func(t *testing.T) {
+	t.Run("ImpersonatedUsesServiceAndActor", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := principal.NewContext(t.Context(), &principal.Principal{
@@ -127,15 +122,10 @@ func TestACLCacheKey(t *testing.T) {
 		})
 		ctx = principal.NewImpersonateContext(ctx)
 
-		global, err := aclCacheKey(ctx, serviceInfo, "")
+		key, err := aclCacheKey(ctx, serviceInfo)
 		require.NoError(t, err)
 
-		scoped, err := aclCacheKey(ctx, serviceInfo, "org-1")
-		require.NoError(t, err)
-
-		require.Equal(t, "impersonated|compute-service|user-1|_global", global)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", scoped)
-		require.NotEqual(t, global, scoped)
+		require.Equal(t, "impersonated|compute-service|user-1", key)
 	})
 
 	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {
@@ -146,7 +136,7 @@ func TestACLCacheKey(t *testing.T) {
 		ctx := principal.NewContext(t.Context(), &principal.Principal{})
 		ctx = principal.NewImpersonateContext(ctx)
 
-		_, err := aclCacheKey(ctx, serviceInfo, "org-1")
+		_, err := aclCacheKey(ctx, serviceInfo)
 
 		require.Error(t, err)
 	})

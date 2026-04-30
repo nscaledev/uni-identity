@@ -240,26 +240,6 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1Oauth2providersW
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1Oauth2providersWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1Oauth2providersWithResponse), varargs...)
 }
 
-// GetApiV1OrganizationsOrganizationIDAclWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDAclWithResponse(arg0 context.Context, arg1 string, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDAclResponse, error) {
-	m.ctrl.T.Helper()
-	varargs := []any{arg0, arg1}
-	for _, a := range arg2 {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "GetApiV1OrganizationsOrganizationIDAclWithResponse", varargs...)
-	ret0, _ := ret[0].(*openapi.GetApiV1OrganizationsOrganizationIDAclResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetApiV1OrganizationsOrganizationIDAclWithResponse indicates an expected call of GetApiV1OrganizationsOrganizationIDAclWithResponse.
-func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsOrganizationIDAclWithResponse(arg0, arg1 any, arg2 ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{arg0, arg1}, arg2...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1OrganizationsOrganizationIDAclWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1OrganizationsOrganizationIDAclWithResponse), varargs...)
-}
-
 // GetApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) GetApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(arg0 context.Context, arg1, arg2 string, arg3 ...openapi.RequestEditorFn) (*openapi.GetApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
 	m.ctrl.T.Helper()

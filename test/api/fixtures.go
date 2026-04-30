@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -383,12 +384,24 @@ func WaitForProjectInACL(callerClient *APIClient, ctx context.Context, config *T
 	var found identityopenapi.AclProject
 
 	Eventually(func() bool {
-		acl, err := callerClient.GetOrganizationACL(ctx, config.OrgID)
-		if err != nil || acl.Projects == nil {
+		acl, err := callerClient.GetGlobalACL(ctx)
+		if err != nil || acl.Organizations == nil || len(*acl.Organizations) == 0 {
 			return false
 		}
 
-		for _, p := range *acl.Projects {
+		index := slices.IndexFunc(*acl.Organizations, func(organization identityopenapi.AclOrganization) bool {
+			return organization.Id == config.OrgID
+		})
+		if index == -1 {
+			return false
+		}
+
+		organization := (*acl.Organizations)[index]
+		if organization.Projects == nil {
+			return false
+		}
+
+		for _, p := range *organization.Projects {
 			if p.Id == projectID {
 				found = p
 				return true
@@ -406,14 +419,26 @@ func WaitForProjectInACL(callerClient *APIClient, ctx context.Context, config *T
 // caller's organization ACL.
 func WaitForProjectRemovedFromACL(callerClient *APIClient, ctx context.Context, config *TestConfig, projectID string) {
 	Eventually(func() bool {
-		acl, err := callerClient.GetOrganizationACL(ctx, config.OrgID)
+		acl, err := callerClient.GetGlobalACL(ctx)
 		Expect(err).NotTo(HaveOccurred())
 
-		if acl.Projects == nil {
+		if acl.Organizations == nil || len(*acl.Organizations) == 0 {
 			return true
 		}
 
-		for _, p := range *acl.Projects {
+		index := slices.IndexFunc(*acl.Organizations, func(organization identityopenapi.AclOrganization) bool {
+			return organization.Id == config.OrgID
+		})
+		if index == -1 {
+			return true
+		}
+
+		organization := (*acl.Organizations)[index]
+		if organization.Projects == nil {
+			return true
+		}
+
+		for _, p := range *organization.Projects {
 			if p.Id == projectID {
 				return false
 			}
