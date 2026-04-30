@@ -1063,6 +1063,47 @@ func TestSystemAccountWithServiceAccountPrincipalUsesServiceACL(t *testing.T) {
 	assert.Equal(t, aclDirect, aclImpersonated)
 }
 
+// TestSystemAccount_ImpersonatedServiceAccount_WrongOrganization verifies that a
+// system account impersonating a service-typed principal whose home org does not
+// match the requested scope is rejected with ErrNotInOrganization. This guards
+// the impersonation dispatch path (processImpersonatedPrincipalACL →
+// processServiceAccountACL) against the same cross-org leak that ID-194 closed
+// for direct service-account requests.
+func TestSystemAccount_ImpersonatedServiceAccount_WrongOrganization(t *testing.T) {
+	t.Parallel()
+
+	f, c := setupTestEnvironment(t)
+
+	superServiceRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "role-super-service",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(t.Context(), superServiceRole))
+
+	f.rbac = rbac.New(c, testNamespace, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{"compute-service": "role-super-service"},
+	})
+
+	// The impersonated service account claims altOrgID as its home, but
+	// getACLForSystemAccount asks for testOrgID — a cross-org request.
+	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
+		Actor:           f.serviceAccountAltAlphaID,
+		Type:            openapi.Service,
+		OrganizationIDs: []string{altOrgID},
+	}, true)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrNotInOrganization)
+}
+
 func TestSystemAccountWithMissingPrincipalTypeFailsClosed(t *testing.T) {
 	t.Parallel()
 
