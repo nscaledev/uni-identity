@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,9 +39,11 @@ import (
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
@@ -171,14 +174,99 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 	require.Nil(t, info)
 }
 
+func TestRemoteGetACLUsesSourceTokenAuthorization(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, _ := setupTestEnvironment(t)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	ctx := principal.NewContext(t.Context(), &principal.Principal{Actor: testSubject})
+	ctx = authorization.NewContext(ctx, &authorization.Info{Token: "source-token"})
+
+	_, err := auth.GetACL(ctx, "")
+	require.NoError(t, err)
+
+	authorizationHeader, impersonateHeader, path := server.ACLRequest()
+	require.Equal(t, "bearer source-token", authorizationHeader)
+	require.Empty(t, impersonateHeader)
+	require.Equal(t, "/api/v1/acl", path)
+}
+
+func TestRemoteGetACLPassportOnlyUsesImpersonation(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, _ := setupTestEnvironment(t)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	ctx := principal.NewContext(t.Context(), &principal.Principal{
+		Actor:           testSubject,
+		OrganizationID:  testOrgID,
+		OrganizationIDs: []string{testOrgID},
+	})
+	ctx = authorization.NewContext(ctx, &authorization.Info{Passport: "passport-token"})
+
+	_, err := auth.GetACL(ctx, "")
+	require.NoError(t, err)
+
+	authorizationHeader, impersonateHeader, path := server.ACLRequest()
+	require.Empty(t, authorizationHeader)
+	require.Equal(t, "true", impersonateHeader)
+	require.Equal(t, "/api/v1/acl", path)
+}
+
+func TestRemoteGetACLPassportOnlyUsesImpersonationForOrganizationScope(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, _ := setupTestEnvironment(t)
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	ctx := principal.NewContext(t.Context(), &principal.Principal{
+		Actor:           testSubject,
+		OrganizationID:  testOrgID,
+		OrganizationIDs: []string{testOrgID},
+	})
+	ctx = authorization.NewContext(ctx, &authorization.Info{Passport: "passport-token"})
+
+	_, err := auth.GetACL(ctx, testOrgID)
+	require.NoError(t, err)
+
+	authorizationHeader, impersonateHeader, path := server.ACLRequest()
+	require.Empty(t, authorizationHeader)
+	require.Equal(t, "true", impersonateHeader)
+	require.Equal(t, "/api/v1/organizations/"+testOrgID+"/acl", path)
+}
+
 // ---- helpers
 
 type server struct {
 	*mtlstest.MTLSServer
 	Called *atomic.Int32 // used to check that cache is used rather than repeating calls
+
+	mu                   sync.Mutex
+	aclAuthorization     string
+	aclImpersonateHeader string
+	aclPath              string
+}
+
+func (s *server) setACLRequest(path, authorizationHeader, impersonateHeader string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.aclPath = path
+	s.aclAuthorization = authorizationHeader
+	s.aclImpersonateHeader = impersonateHeader
+}
+
+func (s *server) ACLRequest() (string, string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.aclAuthorization, s.aclImpersonateHeader, s.aclPath
 }
 
 // setupTestEnvironment creates a test environment with necessary K8s resources and identity server.
+//
+//nolint:cyclop // Test fixture setup intentionally builds full auth stack.
 func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	t.Helper()
 
@@ -195,12 +283,13 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	var mtlsServer *mtlstest.MTLSServer
 
 	var called atomic.Int32
+	server := &server{Called: &called}
 
 	// Create mTLS server with handler
 	var err error
 	mtlsServer, err = mtlstest.NewMTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/.well-known/openid-configuration":
+		switch {
+		case r.URL.Path == "/.well-known/openid-configuration":
 			u := mtlsServer.URL()
 			// OIDC discovery endpoint
 			config := map[string]interface{}{
@@ -214,7 +303,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(config)
 
-		case "/oauth2/v2/userinfo":
+		case r.URL.Path == "/oauth2/v2/userinfo":
 			called.Add(1)
 
 			// Userinfo endpoint. This part of the handler is copied from handlers/handler.go, because the
@@ -246,12 +335,23 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(userinfo)
 
+		case r.URL.Path == "/api/v1/acl":
+			server.setACLRequest(r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("X-Impersonate"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+
+		case strings.HasPrefix(r.URL.Path, "/api/v1/organizations/") && strings.HasSuffix(r.URL.Path, "/acl"):
+			server.setACLRequest(r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("X-Impersonate"))
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	require.NoError(t, err)
 	t.Cleanup(mtlsServer.Close)
+	server.MTLSServer = mtlsServer
 
 	// Create signing key secret (for JWT signing)
 	signingSecret := &corev1.Secret{
@@ -380,7 +480,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	require.NotNil(t, tokens)
 	accessToken := tokens.AccessToken
 
-	return fakeClient, &server{mtlsServer, &called}, accessToken
+	return fakeClient, server, accessToken
 }
 
 // The fields are all unexported, and the only way to set them is with flags. So,
