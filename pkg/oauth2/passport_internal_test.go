@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -85,15 +86,15 @@ func TestRequestedScope(t *testing.T) {
 		{
 			name: "organization only",
 			options: &openapi.TokenRequestOptions{
-				OrganizationId: &orgID,
+				XOrganizationId: &orgID,
 			},
 			expectedOrg: orgID,
 		},
 		{
 			name: "organization and project",
 			options: &openapi.TokenRequestOptions{
-				OrganizationId: &orgID,
-				ProjectId:      &projectID,
+				XOrganizationId: &orgID,
+				XProjectId:      &projectID,
 			},
 			expectedOrg:  orgID,
 			expectedProj: projectID,
@@ -446,6 +447,178 @@ func TestValidateProjectScopeK8sFailure(t *testing.T) {
 			require.Error(t, err)
 			require.ErrorIs(t, err, errPassportInternalBoom)
 			assert.Contains(t, err.Error(), "failed to verify project membership")
+		})
+	}
+}
+
+func TestRequestedAudience(t *testing.T) {
+	t.Parallel()
+
+	logical := "compute-api"
+	resource := "https://compute.example.com/"
+	dupResource := "https://compute.example.com/"
+	relativeResource := "/foo"
+	fragmentResource := "https://compute.example.com/#fragment"
+
+	testCases := []struct {
+		name        string
+		options     *openapi.TokenRequestOptions
+		expected    jwt.Audience
+		expectError bool
+	}{
+		{
+			name: "no options yields no audience",
+		},
+		{
+			name:     "audience only",
+			options:  &openapi.TokenRequestOptions{Audience: &logical},
+			expected: jwt.Audience{logical},
+		},
+		{
+			name:     "resource only",
+			options:  &openapi.TokenRequestOptions{Resource: &resource},
+			expected: jwt.Audience{resource},
+		},
+		{
+			name: "resource and matching audience deduplicates",
+			options: &openapi.TokenRequestOptions{
+				Resource: &resource,
+				Audience: &dupResource,
+			},
+			expected: jwt.Audience{resource},
+		},
+		{
+			name: "resource and distinct audience are both included",
+			options: &openapi.TokenRequestOptions{
+				Resource: &resource,
+				Audience: &logical,
+			},
+			expected: jwt.Audience{resource, logical},
+		},
+		{
+			name:        "relative resource is rejected",
+			options:     &openapi.TokenRequestOptions{Resource: &relativeResource},
+			expectError: true,
+		},
+		{
+			name:        "resource with fragment is rejected",
+			options:     &openapi.TokenRequestOptions{Resource: &fragmentResource},
+			expectError: true,
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			audience, err := requestedAudience(test.options)
+
+			if test.expectError {
+				require.Error(t, err)
+
+				var oauthErr *oauth2errors.Error
+
+				require.ErrorAs(t, err, &oauthErr)
+				assert.Contains(t, err.Error(), "absolute URI")
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, test.expected, audience)
+		})
+	}
+}
+
+func TestValidateTokenExchangeRequest(t *testing.T) {
+	t.Parallel()
+
+	subject := "subject-token-value"
+	accessTokenType := AccessTokenSubjectTokenType()
+	passportType := PassportIssuedTokenType()
+	idTokenType := "urn:ietf:params:oauth:token-type:id_token" //nolint:gosec // token type identifier, not a credential
+	empty := ""
+
+	testCases := []struct {
+		name        string
+		options     *openapi.TokenRequestOptions
+		expectError string
+	}{
+		{
+			name:        "nil options",
+			options:     nil,
+			expectError: "token exchange request not parsed",
+		},
+		{
+			name: "missing subject_token",
+			options: &openapi.TokenRequestOptions{
+				SubjectTokenType: &accessTokenType,
+			},
+			expectError: "subject_token must be specified",
+		},
+		{
+			name: "empty subject_token",
+			options: &openapi.TokenRequestOptions{
+				SubjectToken:     &empty,
+				SubjectTokenType: &accessTokenType,
+			},
+			expectError: "subject_token must be specified",
+		},
+		{
+			name: "missing subject_token_type",
+			options: &openapi.TokenRequestOptions{
+				SubjectToken: &subject,
+			},
+			expectError: "subject_token_type must be specified",
+		},
+		{
+			name: "unsupported subject_token_type",
+			options: &openapi.TokenRequestOptions{
+				SubjectToken:     &subject,
+				SubjectTokenType: &idTokenType,
+			},
+			expectError: "subject_token_type is not supported",
+		},
+		{
+			name: "passport requested_token_type accepted",
+			options: &openapi.TokenRequestOptions{
+				SubjectToken:       &subject,
+				SubjectTokenType:   &accessTokenType,
+				RequestedTokenType: &passportType,
+			},
+		},
+		{
+			name: "registered access_token requested_token_type accepted as default synonym",
+			options: &openapi.TokenRequestOptions{
+				SubjectToken:       &subject,
+				SubjectTokenType:   &accessTokenType,
+				RequestedTokenType: &accessTokenType,
+			},
+		},
+		{
+			name: "unsupported requested_token_type rejected",
+			options: &openapi.TokenRequestOptions{
+				SubjectToken:       &subject,
+				SubjectTokenType:   &accessTokenType,
+				RequestedTokenType: &idTokenType,
+			},
+			expectError: "requested_token_type is not supported",
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateTokenExchangeRequest(test.options)
+
+			if test.expectError == "" {
+				require.NoError(t, err)
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.expectError)
 		})
 	}
 }

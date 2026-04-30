@@ -212,6 +212,7 @@ func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 	h.setUncacheableNoStore(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
+
 func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 	header := r.Header.Get("Authorization")
 	if header == "" {

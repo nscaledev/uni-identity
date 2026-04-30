@@ -140,24 +140,33 @@ func exchangeRequest(t *testing.T, token string, body *openapi.TokenRequestOptio
 		"subject_token_type": {oauth2.AccessTokenSubjectTokenType()},
 	}
 
-	if body != nil {
-		if body.RequestedTokenType != nil {
-			form.Set("requested_token_type", *body.RequestedTokenType)
-		}
-
-		if body.OrganizationId != nil {
-			form.Set("organizationId", *body.OrganizationId)
-		}
-
-		if body.ProjectId != nil {
-			form.Set("projectId", *body.ProjectId)
-		}
-	}
+	applyExchangeFormBody(form, body)
 
 	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	return req
+}
+
+func applyExchangeFormBody(form url.Values, body *openapi.TokenRequestOptions) {
+	if body == nil {
+		return
+	}
+
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"requested_token_type", body.RequestedTokenType},
+		{"audience", body.Audience},
+		{"resource", body.Resource},
+		{"x_organization_id", body.XOrganizationId},
+		{"x_project_id", body.XProjectId},
+	} {
+		if field.value != nil {
+			form.Set(field.name, *field.value)
+		}
+	}
 }
 
 // parsePassport parses and verifies a passport JWT using the test JWKS.
@@ -239,7 +248,8 @@ func TestExchangeFederatedUser(t *testing.T) {
 	assert.Equal(t, openapi.User, claims.Acctype)
 	assert.Equal(t, "uni", claims.Source)
 	assert.Equal(t, "user@example.com", claims.Email)
-	assert.Equal(t, "user@example.com", claims.Actor)
+	assert.Nil(t, claims.Actor, "act claim must be omitted when subject is the acting party")
+	assert.Empty(t, claims.Audience, "aud must be empty when no audience or resource was requested")
 	assert.ElementsMatch(t, []string{"org1"}, claims.OrgIDs)
 
 	// Verify timing: exp should be iat + 120s.
@@ -337,8 +347,8 @@ func TestExchangeWithOrgScope(t *testing.T) {
 	orgID := "org1"
 	projectID := "project1"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
-		ProjectId:      &projectID,
+		XOrganizationId: &orgID,
+		XProjectId:      &projectID,
 	})
 
 	result, err := env.authenticator.TokenExchange(nil, req)
@@ -402,8 +412,8 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 	orgID := "org1"
 	bogusProject := "nonexistent-project"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
-		ProjectId:      &bogusProject,
+		XOrganizationId: &orgID,
+		XProjectId:      &bogusProject,
 	})
 
 	_, err := env.authenticator.TokenExchange(nil, req)
@@ -462,7 +472,7 @@ func TestExchangeInvalidOrganizationID(t *testing.T) {
 
 	orgID := "org2"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
+		XOrganizationId: &orgID,
 	})
 
 	_, err := env.authenticator.TokenExchange(nil, req)
@@ -578,7 +588,7 @@ func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 
 	wrongOrgID := "other-org"
 	req := exchangeRequest(t, tokens.AccessToken, &openapi.TokenRequestOptions{
-		OrganizationId: &wrongOrgID,
+		XOrganizationId: &wrongOrgID,
 	})
 
 	_, err = env.authenticator.TokenExchange(nil, req)
@@ -616,7 +626,7 @@ func TestExchangeSystemAccountWithOrganizationScope(t *testing.T) {
 
 	orgID := "target-org"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
+		XOrganizationId: &orgID,
 	})
 
 	result, err := env.authenticator.TokenExchange(nil, req)
@@ -640,7 +650,7 @@ func TestExchangeSystemAccountWithOrganizationScopeStillUsesRBAC(t *testing.T) {
 
 	orgID := "target-org"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
+		XOrganizationId: &orgID,
 	})
 
 	_, err := env.authenticator.TokenExchange(nil, req)
@@ -863,4 +873,202 @@ func TestPassportSignatureVerifiesAgainstJWKS(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, parsed.Headers, 1)
 	assert.Equal(t, string(gojose.ES512), parsed.Headers[0].Algorithm)
+}
+
+func TestExchangeWithAudienceAndResource(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	audience := "compute-api"
+	resource := "https://compute.example.com/"
+
+	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
+		Audience: &audience,
+		Resource: &resource,
+	})
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+
+	claims := parsePassport(t, env, result.AccessToken)
+
+	assert.ElementsMatch(t, []string{audience, resource}, []string(claims.Audience))
+}
+
+func TestExchangeRejectsInvalidResourceURI(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	bogus := "not-a-uri"
+
+	req := exchangeRequest(t, "irrelevant", &openapi.TokenRequestOptions{
+		Resource: &bogus,
+	})
+
+	_, err := env.authenticator.TokenExchange(nil, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute URI")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+}
+
+func TestExchangeAcceptsRegisteredAccessTokenRequestedType(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	requestedType := oauth2.AccessTokenSubjectTokenType()
+
+	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
+		RequestedTokenType: &requestedType,
+	})
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+	require.NotNil(t, result.IssuedTokenType)
+	assert.Equal(t, passportIssuedTokenType(), *result.IssuedTokenType)
+}
+
+func TestExchangeRejectsActorToken(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	form := url.Values{
+		"grant_type":         {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
+		"subject_token":      {"some-subject-token"},
+		"subject_token_type": {oauth2.AccessTokenSubjectTokenType()},
+		"actor_token":        {"some-actor-token"},
+		"actor_token_type":   {oauth2.AccessTokenSubjectTokenType()},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	_, err := env.authenticator.TokenExchange(nil, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "actor_token is not supported")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+}
+
+func TestExchangeRejectsNonFormContentType(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
+		strings.NewReader(`{"grant_type":"urn:ietf:params:oauth:grant-type:token-exchange"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	_, err := env.authenticator.TokenExchange(nil, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Content-Type must be application/x-www-form-urlencoded")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+}
+
+func TestExchangeHandlerOutOfScopeOrganizationReturnsInvalidTarget(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	require.NoError(t, err)
+
+	wrongOrgID := "not-my-org"
+	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
+		XOrganizationId: &wrongOrgID,
+	})
+	recorder := httptest.NewRecorder()
+
+	h.PostOauth2V2Token(recorder, req)
+
+	resp := recorder.Result()
+
+	t.Cleanup(func() {
+		require.NoError(t, resp.Body.Close())
+	})
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var oauthResp openapi.Oauth2Error
+
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
+	assert.Equal(t, openapi.InvalidTarget, oauthResp.Error)
+	assert.Contains(t, oauthResp.ErrorDescription, "organization not in scope")
 }
