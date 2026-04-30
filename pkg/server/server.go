@@ -37,6 +37,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/passport"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -127,10 +128,15 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
 	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
 	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
+	uniAuthorizer := local.NewAuthorizer(oauth2, rbac)
 
 	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
-	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
+	passportAuthorizer, err := passport.NewAuthorizer(http.DefaultClient, s.HandlerOptions.Issuer.URL, uniAuthorizer, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, passportAuthorizer)
 	audit := audit.New(constants.Application, constants.Version)
 
 	// Middleware specified here is applied to all requests post-routing.

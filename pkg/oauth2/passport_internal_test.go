@@ -85,15 +85,15 @@ func TestRequestedScope(t *testing.T) {
 		{
 			name: "organization only",
 			options: &openapi.TokenRequestOptions{
-				OrganizationId: &orgID,
+				XOrganizationId: &orgID,
 			},
 			expectedOrg: orgID,
 		},
 		{
 			name: "organization and project",
 			options: &openapi.TokenRequestOptions{
-				OrganizationId: &orgID,
-				ProjectId:      &projectID,
+				XOrganizationId: &orgID,
+				XProjectId:      &projectID,
 			},
 			expectedOrg:  orgID,
 			expectedProj: projectID,

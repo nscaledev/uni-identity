@@ -224,13 +224,13 @@ func requestedScope(options *openapi.TokenRequestOptions) (string, string) {
 	}
 
 	var organizationID string
-	if options.OrganizationId != nil {
-		organizationID = *options.OrganizationId
+	if options.XOrganizationId != nil {
+		organizationID = *options.XOrganizationId
 	}
 
 	var projectID string
-	if options.ProjectId != nil {
-		projectID = *options.ProjectId
+	if options.XProjectId != nil {
+		projectID = *options.XProjectId
 	}
 
 	return organizationID, projectID
@@ -310,11 +310,11 @@ func parseTokenExchangeRequest(r *http.Request) (*openapi.TokenRequestOptions, e
 	}
 
 	if v := r.Form.Get("organizationId"); v != "" {
-		options.OrganizationId = &v
+		options.XOrganizationId = &v
 	}
 
 	if v := r.Form.Get("projectId"); v != "" {
-		options.ProjectId = &v
+		options.XProjectId = &v
 	}
 
 	return options, nil

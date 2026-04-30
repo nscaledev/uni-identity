@@ -550,12 +550,12 @@ func (c *APIClient) exchangeForm(options *identityopenapi.TokenRequestOptions) u
 		form.Set("scope", *options.Scope)
 	}
 
-	if options.OrganizationId != nil {
-		form.Set("organizationId", *options.OrganizationId)
+	if options.XOrganizationId != nil {
+		form.Set("organizationId", *options.XOrganizationId)
 	}
 
-	if options.ProjectId != nil {
-		form.Set("projectId", *options.ProjectId)
+	if options.XProjectId != nil {
+		form.Set("projectId", *options.XProjectId)
 	}
 
 	return form

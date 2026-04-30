@@ -145,12 +145,12 @@ func exchangeRequest(t *testing.T, token string, body *openapi.TokenRequestOptio
 			form.Set("requested_token_type", *body.RequestedTokenType)
 		}
 
-		if body.OrganizationId != nil {
-			form.Set("organizationId", *body.OrganizationId)
+		if body.XOrganizationId != nil {
+			form.Set("organizationId", *body.XOrganizationId)
 		}
 
-		if body.ProjectId != nil {
-			form.Set("projectId", *body.ProjectId)
+		if body.XProjectId != nil {
+			form.Set("projectId", *body.XProjectId)
 		}
 	}
 
@@ -337,8 +337,8 @@ func TestExchangeWithOrgScope(t *testing.T) {
 	orgID := "org1"
 	projectID := "project1"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
-		ProjectId:      &projectID,
+		XOrganizationId: &orgID,
+		XProjectId:      &projectID,
 	})
 
 	result, err := env.authenticator.TokenExchange(nil, req)
@@ -402,8 +402,8 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 	orgID := "org1"
 	bogusProject := "nonexistent-project"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
-		ProjectId:      &bogusProject,
+		XOrganizationId: &orgID,
+		XProjectId:      &bogusProject,
 	})
 
 	_, err := env.authenticator.TokenExchange(nil, req)
@@ -462,7 +462,7 @@ func TestExchangeInvalidOrganizationID(t *testing.T) {
 
 	orgID := "org2"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
+		XOrganizationId: &orgID,
 	})
 
 	_, err := env.authenticator.TokenExchange(nil, req)
@@ -578,7 +578,7 @@ func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 
 	wrongOrgID := "other-org"
 	req := exchangeRequest(t, tokens.AccessToken, &openapi.TokenRequestOptions{
-		OrganizationId: &wrongOrgID,
+		XOrganizationId: &wrongOrgID,
 	})
 
 	_, err = env.authenticator.TokenExchange(nil, req)
@@ -616,7 +616,7 @@ func TestExchangeSystemAccountWithOrganizationScope(t *testing.T) {
 
 	orgID := "target-org"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
+		XOrganizationId: &orgID,
 	})
 
 	result, err := env.authenticator.TokenExchange(nil, req)
@@ -640,7 +640,7 @@ func TestExchangeSystemAccountWithOrganizationScopeStillUsesRBAC(t *testing.T) {
 
 	orgID := "target-org"
 	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		OrganizationId: &orgID,
+		XOrganizationId: &orgID,
 	})
 
 	_, err := env.authenticator.TokenExchange(nil, req)
