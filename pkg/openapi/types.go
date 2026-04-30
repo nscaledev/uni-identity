@@ -72,7 +72,6 @@ const (
 	InvalidGrant            Oauth2ErrorError = "invalid_grant"
 	InvalidRequest          Oauth2ErrorError = "invalid_request"
 	InvalidScope            Oauth2ErrorError = "invalid_scope"
-	InvalidTarget           Oauth2ErrorError = "invalid_target"
 	ServerError             Oauth2ErrorError = "server_error"
 	TemporarilyUnavailable  Oauth2ErrorError = "temporarily_unavailable"
 	UnauthorizedClient      Oauth2ErrorError = "unauthorized_client"
@@ -786,6 +785,11 @@ type TokenRequestOptions struct {
 	// intends to use the requested security token. Optional for the
 	// token-exchange grant (RFC 8693 section 2.1).
 	Resource *string `json:"resource"`
+
+	// Scope A list of space-delimited, case-sensitive strings that specify the
+	// requested scope of the issued token. Optional for the token-exchange
+	// grant (RFC 8693 section 2.1).
+	Scope *string `json:"scope"`
 
 	// SubjectToken The security token that represents the identity of the party on behalf
 	// of whom the request is being made. Required for the token-exchange grant
