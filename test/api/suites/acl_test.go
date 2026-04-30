@@ -169,29 +169,17 @@ var _ = Describe("Access Control Discovery", func() {
 			})
 		})
 
-		Describe("Given invalid organization ID", func() {
-			It("should fall back to global ACL content without scoped organization details", func() {
-				acl, err := adminClient.GetOrganizationACL(ctx, "00000000-0000-0000-0000-000000000000")
+		Describe("Given an organization the caller is not a member of", func() {
+			It("should reject the request with 403 Forbidden", func() {
+				path := adminClient.GetEndpoints().GetOrganizationACL("00000000-0000-0000-0000-000000000000")
 
-				Expect(err).NotTo(HaveOccurred())
-				Expect(acl).NotTo(BeNil())
-				Expect(acl.Organization).To(BeNil(),
-					"Organization field should be absent when the requested organization is not in scope")
-				Expect(acl.Organizations).NotTo(BeNil(),
-					"Organizations ACL should still be present for the caller")
-				Expect(*acl.Organizations).NotTo(BeEmpty(),
-					"At least one organization should still be visible in the fallback ACL")
+				_, respBody, err := adminClient.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
 
-				found := false
-				for _, org := range *acl.Organizations {
-					if org.Id == config.OrgID {
-						found = true
-						break
-					}
-				}
-
-				Expect(found).To(BeTrue(),
-					"Fallback ACL should still include the caller's real organization %s", config.OrgID)
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue(),
+					"non-member org ACL request should fail with unexpected-status-code error")
+				Expect(string(respBody)).To(ContainSubstring("forbidden"),
+					"response body should identify the failure as forbidden")
 			})
 		})
 	})
