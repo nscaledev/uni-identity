@@ -567,27 +567,13 @@ func (r *RBAC) getServiceAccountContext(ctx context.Context, organizationID stri
 
 // processServiceAccountACL looks up a service account, any groups it's a member of,
 // then adds their permissions to the ACL.  As service accounts are bound to a specific
-// organization we must check the scoped organization matches that of the service account.
-//
-//nolint:cyclop
+// organization, getServiceAccountContext returns ErrNotInOrganization when the requested
+// scope is for a different organization; that error is propagated so the HTTP layer
+// returns 403 to the caller.
 func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	subjectOrganizationID, organizationNamespace, err := r.getServiceAccountContext(ctx, organizationID, authz)
 	if err != nil {
-		// TODO: same information leakage concern as processUserAccountACL — see
-		// the TODO there for details. Once downstream consumers are audited we
-		// should return ErrNotInOrganization here instead of falling through.
-		if !goerrors.Is(err, ErrNotInOrganization) {
-			return nil, err
-		}
-
-		// Org mismatch: skip scoped section, fall through to unscoped ACL
-		// using the service account's home org.
-		subjectOrganizationID = authz.OrgIds[0]
-
-		organizationNamespace, err = r.getOrganizationNamespace(ctx, subjectOrganizationID)
-		if err != nil {
-			return nil, fmt.Errorf("%w, failed to get organization namespace %q", err, subjectOrganizationID)
-		}
+		return nil, err
 	}
 
 	groups, err := r.getGroups(ctx, organizationNamespace, groupServiceAccountFilter(subject))
@@ -607,11 +593,8 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 		return nil, err
 	}
 
-	// Scoped ACL handling — only when the requested org matches the service account's org.
-	if organizationID == "" || organizationID == subjectOrganizationID {
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, subjectOrganizationID); err != nil {
-			return nil, err
-		}
+	if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, subjectOrganizationID); err != nil {
+		return nil, err
 	}
 
 	// Unscoped ACL handling.

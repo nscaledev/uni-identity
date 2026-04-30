@@ -881,9 +881,9 @@ func TestServiceAccountMultipleOrgIDs(t *testing.T) {
 	assert.ErrorIs(t, err, rbac.ErrWrongOrganizationCount)
 }
 
-// TestServiceAccountWrongOrganization verifies that a service account querying with an
-// org ID it doesn't belong to gracefully falls back to an unscoped ACL without
-// org-scoped permissions.
+// TestServiceAccount_WrongOrganization verifies that a service account querying with an
+// org ID it doesn't belong to is rejected with ErrNotInOrganization. The HTTP layer
+// translates this into a 403 response, matching the behavior of user accounts.
 func TestServiceAccount_WrongOrganization(t *testing.T) {
 	t.Parallel()
 
@@ -901,10 +901,9 @@ func TestServiceAccount_WrongOrganization(t *testing.T) {
 
 	ctx := authorization.NewContext(t.Context(), info)
 
-	acl, err := f.rbac.GetACL(ctx, altOrgID) // <-- asking about **alternative org**
-	require.NoError(t, err)
-	assert.Nil(t, acl.Organization, "org-scoped section should be absent for mismatched org")
-	assert.NotNil(t, acl.Organizations, "unscoped organizations list should still be present")
+	_, err := f.rbac.GetACL(ctx, altOrgID) // <-- asking about **alternative org**
+	require.Error(t, err)
+	assert.ErrorIs(t, err, rbac.ErrNotInOrganization)
 }
 
 // getACLForSystemAccount gets the ACL for a system account (mTLS-authenticated service), optionally

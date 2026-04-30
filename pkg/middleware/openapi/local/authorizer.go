@@ -20,6 +20,7 @@ package local
 
 import (
 	"context"
+	goerrors "errors"
 	"net/http"
 	"strings"
 
@@ -130,5 +131,17 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 // GetACL retrieves access control information from the subject identified
 // by the Authorize call.
 func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
-	return a.rbac.GetACL(ctx, organizationID)
+	acl, err := a.rbac.GetACL(ctx, organizationID)
+	if err != nil {
+		// A principal asking for an organization scope it does not belong to is a
+		// permission denial. Translate the sentinel into the HTTP 403 contract here
+		// so RBAC stays free of HTTP coupling.
+		if goerrors.Is(err, rbac.ErrNotInOrganization) {
+			return nil, errors.HTTPForbidden("principal is not a member of the requested organization").WithError(err)
+		}
+
+		return nil, err
+	}
+
+	return acl, nil
 }
