@@ -20,9 +20,7 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"mime"
 	"net/http"
-	"net/url"
 	"slices"
 	"time"
 
@@ -55,17 +53,6 @@ const (
 	PassportSourceUNI = "uni"
 )
 
-// ActorClaim is the RFC 8693 section 4.1 "act" claim. It identifies the
-// acting party in a delegation chain and is omitted when no delegation has
-// occurred. Non-identity claims (exp, nbf, aud) are not meaningful here per
-// the RFC and are deliberately not included.
-type ActorClaim struct {
-	// Subject identifies the acting party.
-	Subject string `json:"sub"`
-	// Act nests the previous actor when a delegation chain is in play.
-	Act *ActorClaim `json:"act,omitempty"`
-}
-
 // PassportClaims defines the JWT claims for a passport token.
 type PassportClaims struct {
 	jwt.Claims `json:",inline"`
@@ -87,9 +74,8 @@ type PassportClaims struct {
 	// ProjectID is the current project context from the exchange request.
 	//nolint:tagliatelle
 	ProjectID string `json:"project_id,omitempty"`
-	// Actor expresses delegation per RFC 8693 section 4.1; omitted when the
-	// passport's subject is itself the acting party.
-	Actor *ActorClaim `json:"act,omitempty"`
+	// Actor is the end-user identifier for principal propagation and audit.
+	Actor string `json:"actor"`
 }
 
 // TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports.
@@ -102,16 +88,36 @@ func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*
 	ctx := r.Context()
 	log := log.FromContext(ctx)
 
-	options, audience, err := parseAndValidateTokenExchangeRequest(r)
+	options, err := parseTokenExchangeRequest(r)
 	if err != nil {
+		log.Info("passport exchange failed: malformed request body")
+
+		return nil, err
+	}
+
+	return a.ExchangePassport(ctx, options)
+}
+
+// ExchangePassport performs token exchange using typed request options.
+// This is shared by the HTTP handler and internal callers.
+func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.TokenRequestOptions) (*openapi.Token, error) {
+	log := log.FromContext(ctx)
+
+	if err := validateTokenExchangeRequest(options); err != nil {
 		log.Info("passport exchange failed: invalid token-exchange request")
 
 		return nil, err
 	}
 
+	// GetUserinfo currently returns AccessDenied errors that require an *http.Request
+	// to construct WWW-Authenticate metadata. ExchangePassport is a non-handler path,
+	// so provide a minimal request carrying the current context.
+	request := &http.Request{Header: make(http.Header)}
+	request = request.WithContext(ctx)
+
 	subjectToken := *options.SubjectToken
 
-	userinfo, _, err := a.GetUserinfo(ctx, r, subjectToken)
+	userinfo, _, err := a.GetUserinfo(ctx, request, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -159,7 +165,6 @@ func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*
 			ID:        passportID,
 			Issuer:    PassportIssuer,
 			Subject:   userinfo.Sub,
-			Audience:  audience,
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
 			Expiry:    jwt.NewNumericDate(now.Add(PassportTTL)),
@@ -170,6 +175,7 @@ func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*
 		OrgIDs:    authz.OrgIds,
 		OrgID:     organizationID,
 		ProjectID: projectID,
+		Actor:     userinfo.Sub,
 	}
 
 	if userinfo.Email != nil {
@@ -210,7 +216,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	// GetUserinfo normally populates authz for valid UNI tokens, but keep the
 	// nil guard so malformed or partially mocked callers still fail closed.
 	if authz == nil {
-		return errors.OAuth2InvalidTarget("organization not in scope")
+		return errors.OAuth2AccessDenied("organization not in scope")
 	}
 
 	// System principals do not carry explicit organization memberships in OrgIds.
@@ -220,7 +226,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	}
 
 	if !slices.Contains(authz.OrgIds, organizationID) {
-		return errors.OAuth2InvalidTarget("organization not in scope")
+		return errors.OAuth2AccessDenied("organization not in scope")
 	}
 
 	return nil
@@ -244,76 +250,11 @@ func requestedScope(options *openapi.TokenRequestOptions) (string, string) {
 	return organizationID, projectID
 }
 
-// requestedAudience builds the JWT aud claim from the RFC 8693 audience and
-// resource parameters. Resource values must be absolute URIs without a fragment
-// (RFC 8693 section 2.1, RFC 3986 section 4.3); audience values are opaque
-// logical names. Duplicates between the two are removed so the aud claim is a
-// stable set.
-func requestedAudience(options *openapi.TokenRequestOptions) (jwt.Audience, error) {
-	if options == nil {
-		return nil, nil
-	}
-
-	var audience jwt.Audience
-
-	add := func(v string) {
-		if v == "" || slices.Contains(audience, v) {
-			return
-		}
-
-		audience = append(audience, v)
-	}
-
-	if options.Resource != nil && *options.Resource != "" {
-		u, err := url.Parse(*options.Resource)
-		if err != nil || !u.IsAbs() || u.Fragment != "" {
-			return nil, errors.OAuth2InvalidTarget("resource must be an absolute URI without a fragment")
-		}
-
-		add(*options.Resource)
-	}
-
-	if options.Audience != nil {
-		add(*options.Audience)
-	}
-
-	return audience, nil
-}
-
-// parseAndValidateTokenExchangeRequest is the single entry point for
-// processing an RFC 8693 token-exchange request: it parses the form body,
-// validates the required parameters, and resolves the requested audience.
-func parseAndValidateTokenExchangeRequest(r *http.Request) (*openapi.TokenRequestOptions, jwt.Audience, error) {
-	options, err := parseTokenExchangeRequest(r)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if err := validateTokenExchangeRequest(options); err != nil {
-		return nil, nil, err
-	}
-
-	audience, err := requestedAudience(options)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return options, audience, nil
-}
-
 func validateTokenExchangeRequest(options *openapi.TokenRequestOptions) error {
 	if options == nil {
 		return errors.OAuth2InvalidRequest("token exchange request not parsed")
 	}
 
-	if err := validateSubjectToken(options); err != nil {
-		return err
-	}
-
-	return validateRequestedTokenType(options)
-}
-
-func validateSubjectToken(options *openapi.TokenRequestOptions) error {
 	if options.SubjectToken == nil || *options.SubjectToken == "" {
 		return errors.OAuth2InvalidRequest("subject_token must be specified")
 	}
@@ -326,24 +267,13 @@ func validateSubjectToken(options *openapi.TokenRequestOptions) error {
 		return errors.OAuth2InvalidRequest("subject_token_type is not supported")
 	}
 
-	return nil
-}
-
-func validateRequestedTokenType(options *openapi.TokenRequestOptions) error {
-	if options.RequestedTokenType == nil || *options.RequestedTokenType == "" {
-		return nil
-	}
-
-	// RFC 8693 section 2.1: when the registered access_token URI is requested,
-	// the AS picks the issued token type at its discretion. We honour that by
-	// accepting it as a synonym for the server default alongside the explicit
-	// passport URI.
-	switch *options.RequestedTokenType {
-	case PassportIssuedTokenType(), AccessTokenSubjectTokenType():
-		return nil
-	default:
+	if options.RequestedTokenType != nil &&
+		*options.RequestedTokenType != "" &&
+		*options.RequestedTokenType != PassportIssuedTokenType() {
 		return errors.OAuth2InvalidRequest("requested_token_type is not supported")
 	}
+
+	return nil
 }
 
 func normalizeExchangeUserinfoError(err error) error {
@@ -359,72 +289,49 @@ func normalizeExchangeUserinfoError(err error) error {
 	return err
 }
 
-// parseTokenExchangeRequest parses the form-encoded token request into
-// TokenRequestOptions and rejects request shapes we deliberately don't support.
-//
-// RFC 8693 §2.1 requires the request body to be
-// application/x-www-form-urlencoded; we enforce that explicitly so a caller
-// can't smuggle params via a query string under a JSON Content-Type. The
-// actor_token path is rejected because Phase 2 has no delegation flow — once
-// the spec MUSTs validation when actor_token is present, silently dropping
-// it would be a conformance gap.
-//
-// Note: audience and resource may appear multiple times per RFC 8693 §2.1,
-// but the typed model and form lookup here take only the first instance.
-// Multi-value support is a future extension.
+// parseTokenExchangeRequest parses the form-encoded token request into TokenRequestOptions.
 func parseTokenExchangeRequest(r *http.Request) (*openapi.TokenRequestOptions, error) {
-	if err := assertFormContentType(r); err != nil {
-		return nil, err
-	}
-
 	if err := r.ParseForm(); err != nil {
 		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
-	}
-
-	if r.Form.Get("actor_token") != "" || r.Form.Get("actor_token_type") != "" {
-		return nil, errors.OAuth2InvalidRequest("actor_token is not supported")
 	}
 
 	options := &openapi.TokenRequestOptions{
 		GrantType: r.Form.Get("grant_type"),
 	}
 
-	for _, mapping := range []struct {
-		name string
-		dest **string
-	}{
-		{"subject_token", &options.SubjectToken},
-		{"subject_token_type", &options.SubjectTokenType},
-		{"requested_token_type", &options.RequestedTokenType},
-		{"audience", &options.Audience},
-		{"resource", &options.Resource},
-		{"x_organization_id", &options.XOrganizationId},
-		{"x_project_id", &options.XProjectId},
-	} {
-		if v := r.Form.Get(mapping.name); v != "" {
-			value := v
-			*mapping.dest = &value
-		}
+	if v := r.Form.Get("subject_token"); v != "" {
+		options.SubjectToken = &v
+	}
+
+	if v := r.Form.Get("subject_token_type"); v != "" {
+		options.SubjectTokenType = &v
+	}
+
+	if v := r.Form.Get("requested_token_type"); v != "" {
+		options.RequestedTokenType = &v
+	}
+
+	if v := r.Form.Get("audience"); v != "" {
+		options.Audience = &v
+	}
+
+	if v := r.Form.Get("resource"); v != "" {
+		options.Resource = &v
+	}
+
+	if v := r.Form.Get("scope"); v != "" {
+		options.Scope = &v
+	}
+
+	if v := r.Form.Get("organizationId"); v != "" {
+		options.XOrganizationId = &v
+	}
+
+	if v := r.Form.Get("projectId"); v != "" {
+		options.XProjectId = &v
 	}
 
 	return options, nil
-}
-
-// assertFormContentType enforces RFC 8693 §2.1's content-type requirement.
-// An empty Content-Type is tolerated to keep tests that build requests by
-// hand without setting headers exercising the same path.
-func assertFormContentType(r *http.Request) error {
-	ct := r.Header.Get("Content-Type")
-	if ct == "" {
-		return nil
-	}
-
-	mediaType, _, err := mime.ParseMediaType(ct)
-	if err != nil || mediaType != "application/x-www-form-urlencoded" {
-		return errors.OAuth2InvalidRequest("Content-Type must be application/x-www-form-urlencoded")
-	}
-
-	return nil
 }
 
 func stringPtr(value string) *string {
@@ -493,7 +400,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 	// organization. Without that membership check, callers could inject an
 	// arbitrary project ID into the passport claims.
 	if !hasBroaderScope(acl, organizationID) {
-		return errors.OAuth2InvalidTarget("project not in scope")
+		return errors.OAuth2AccessDenied("project not in scope")
 	}
 
 	ok, err := a.projectInOrganization(ctx, organizationID, projectID)
@@ -502,7 +409,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 	}
 
 	if !ok {
-		return errors.OAuth2InvalidTarget("project not in scope")
+		return errors.OAuth2AccessDenied("project not in scope")
 	}
 
 	return nil

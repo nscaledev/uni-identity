@@ -31,15 +31,9 @@ import (
 	. "github.com/onsi/gomega"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
-	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
-
-type actorClaim struct {
-	Subject string      `json:"sub"`
-	Act     *actorClaim `json:"act,omitempty"`
-}
 
 type passportClaims struct {
 	jwt.Claims `json:",inline"`
@@ -51,7 +45,7 @@ type passportClaims struct {
 	OrgIDs    []string                          `json:"org_ids"`
 	OrgID     string                            `json:"org_id,omitempty"`
 	ProjectID string                            `json:"project_id,omitempty"`
-	Actor     *actorClaim                       `json:"act,omitempty"`
+	Actor     string                            `json:"actor"`
 }
 
 func passportIssuedTokenType() string {
@@ -97,7 +91,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(claims.Type).To(Equal("passport"))
 				Expect(claims.Source).To(Equal("uni"))
 				Expect(claims.Subject).NotTo(BeEmpty())
-				Expect(claims.Actor).To(BeNil(), "act claim must be omitted when subject is the acting party")
+				Expect(claims.Actor).To(Equal(claims.Subject))
 
 				GinkgoWriter.Printf("Passport exchanged successfully, expires_in: %d\n", result.ExpiresIn)
 			})
@@ -106,7 +100,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		Describe("Given valid authentication with organization scope", func() {
 			It("should return a passport scoped to the organization", func() {
 				options := &identityopenapi.TokenRequestOptions{
-					XOrganizationId: &config.OrgID,
+					OrganizationId: &config.OrgID,
 				}
 
 				result, err := client.ExchangePassport(ctx, options)
@@ -127,8 +121,8 @@ var _ = Describe("Passport Token Exchange", func() {
 		Describe("Given valid authentication with organization and project scope", func() {
 			It("should return a passport scoped to the organization and project", func() {
 				options := &identityopenapi.TokenRequestOptions{
-					XOrganizationId: &config.OrgID,
-					XProjectId:      &config.ProjectID,
+					OrganizationId: &config.OrgID,
+					ProjectId:      &config.ProjectID,
 				}
 
 				result, err := client.ExchangePassport(ctx, options)
@@ -148,40 +142,40 @@ var _ = Describe("Passport Token Exchange", func() {
 		})
 
 		Describe("Given an out-of-scope organization", func() {
-			It("should reject the exchange with an OAuth2 invalid_target response", func() {
+			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidOrgID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
-					XOrganizationId: &invalidOrgID,
+					OrganizationId: &invalidOrgID,
 				}
 
 				resp, respBody, err := client.ExchangePassportRaw(ctx, 0, options)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(oauth2errors.InvalidTargetCode))
+				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("organization not in scope"))
 			})
 		})
 
 		Describe("Given an invalid project scope", func() {
-			It("should reject the exchange with an OAuth2 invalid_target response", func() {
+			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidProjectID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
-					XOrganizationId: &config.OrgID,
-					XProjectId:      &invalidProjectID,
+					OrganizationId: &config.OrgID,
+					ProjectId:      &invalidProjectID,
 				}
 
 				resp, respBody, err := client.ExchangePassportRaw(ctx, 0, options)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(oauth2errors.InvalidTargetCode))
+				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("project not in scope"))
 			})
 		})
@@ -220,7 +214,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				serviceClient := api.NewAPIClientWithConfig(&serviceConfig)
 
 				result, err := serviceClient.ExchangePassport(ctx, &identityopenapi.TokenRequestOptions{
-					XOrganizationId: &config.OrgID,
+					OrganizationId: &config.OrgID,
 				})
 
 				Expect(err).NotTo(HaveOccurred())
@@ -236,7 +230,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(claims.Acctype).To(Equal(identityopenapi.Service))
 				Expect(claims.Source).To(Equal("uni"))
 				Expect(claims.Subject).NotTo(BeEmpty())
-				Expect(claims.Actor).To(BeNil(), "act claim must be omitted when subject is the acting party")
+				Expect(claims.Actor).To(Equal(claims.Subject))
 				Expect(claims.OrgIDs).To(ContainElement(config.OrgID))
 				Expect(claims.OrgID).To(Equal(config.OrgID))
 				Expect(claims.ProjectID).To(BeEmpty())
