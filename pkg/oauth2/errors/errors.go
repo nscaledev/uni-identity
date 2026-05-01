@@ -38,6 +38,16 @@ type Error struct {
 	err error
 }
 
+// StatusCode returns the HTTP status associated with this OAuth2 error.
+func (e *Error) StatusCode() int {
+	return e.status
+}
+
+// Code returns the OAuth2 machine-readable error code.
+func (e *Error) Code() openapi.Oauth2ErrorError {
+	return e.code
+}
+
 // newError returns a new HTTP error.
 func newError(status int, code openapi.Oauth2ErrorError, description string) *Error {
 	return &Error{

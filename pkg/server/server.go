@@ -130,8 +130,11 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
 	uniAuthorizer := local.NewAuthorizer(oauth2, rbac)
 
+	verifier := passport.NewVerifier(passport.NewLocalKeySource(issuer))
+	tokenExchange := passport.NewLocalTokenExchange(oauth2)
+
 	// Setup middleware.
-	passportAuthorizer, err := passport.NewAuthorizer(http.DefaultClient, s.HandlerOptions.Issuer.URL, uniAuthorizer, nil)
+	passportAuthorizer, err := passport.NewAuthorizer(verifier, uniAuthorizer, tokenExchange)
 	if err != nil {
 		return nil, err
 	}

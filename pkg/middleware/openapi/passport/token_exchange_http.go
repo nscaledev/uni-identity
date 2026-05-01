@@ -34,29 +34,24 @@ const (
 	tokenExchangeRequestedPassport = "urn:nscale:params:oauth:token-type:passport"
 )
 
-type exchangeOptions struct {
-	organizationID string
-	projectID      string
-}
-
-type exchanger interface {
-	Exchange(ctx context.Context, sourceToken string, options *exchangeOptions) (string, error)
-}
-
-type exchangeClient struct {
+// HTTPTokenExchange exchanges source access tokens through an OAuth2 token endpoint.
+type HTTPTokenExchange struct {
 	httpClient *http.Client
 	tokenURL   string
 }
 
-type exchangeResponse struct {
+type tokenExchangeResponse struct {
 	AccessToken string `json:"access_token"` //nolint:tagliatelle
 }
 
-func newExchangeClient(httpClient *http.Client, tokenURL string) *exchangeClient {
-	return &exchangeClient{httpClient: httpClient, tokenURL: tokenURL}
+// NewHTTPTokenExchange builds a token exchanger that performs RFC8693 token exchange over HTTP.
+func NewHTTPTokenExchange(httpClient *http.Client, tokenURL string) *HTTPTokenExchange {
+	return &HTTPTokenExchange{httpClient: httpClient, tokenURL: tokenURL}
 }
 
-func exchangeForm(sourceToken string, options *exchangeOptions) url.Values {
+var _ TokenExchange = (*HTTPTokenExchange)(nil)
+
+func tokenExchangeForm(sourceToken string, options *tokenExchangeOptions) url.Values {
 	form := url.Values{}
 	form.Set("grant_type", tokenExchangeGrantType)
 	form.Set("subject_token", sourceToken)
@@ -76,40 +71,40 @@ func exchangeForm(sourceToken string, options *exchangeOptions) url.Values {
 	return form
 }
 
-func classifyExchangeStatus(statusCode int) error {
+func classifyTokenExchangeStatus(statusCode int) error {
 	switch {
 	case statusCode == http.StatusUnauthorized:
-		return ErrExchangeUnauthorized
+		return ErrTokenExchangeUnauthorized
 	case statusCode >= http.StatusInternalServerError:
-		return fmt.Errorf("%w: status code %d", ErrExchangeUnavailable, statusCode)
+		return fmt.Errorf("%w: status code %d", ErrTokenExchangeUnavailable, statusCode)
 	case statusCode != http.StatusOK:
-		return fmt.Errorf("%w: status code %d", ErrExchangeFailed, statusCode)
+		return fmt.Errorf("%w: status code %d", ErrTokenExchangeFailed, statusCode)
 	default:
 		return nil
 	}
 }
 
-func decodeExchangeResponse(resp *http.Response) (string, error) {
+func decodeTokenExchangeResponse(resp *http.Response) (string, error) {
 	defer resp.Body.Close()
 
-	if err := classifyExchangeStatus(resp.StatusCode); err != nil {
+	if err := classifyTokenExchangeStatus(resp.StatusCode); err != nil {
 		return "", err
 	}
 
-	var body exchangeResponse
+	var body tokenExchangeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", fmt.Errorf("%w: %w", ErrExchangeInvalidResponse, err)
+		return "", fmt.Errorf("%w: %w", ErrTokenExchangeInvalidResponse, err)
 	}
 
 	if body.AccessToken == "" {
-		return "", ErrExchangeMissingAccessToken
+		return "", ErrTokenExchangeMissingAccessToken
 	}
 
 	return body.AccessToken, nil
 }
 
-func (c *exchangeClient) Exchange(ctx context.Context, sourceToken string, options *exchangeOptions) (string, error) {
-	form := exchangeForm(sourceToken, options)
+func (c *HTTPTokenExchange) Exchange(ctx context.Context, sourceToken string, options *tokenExchangeOptions) (string, error) {
+	form := tokenExchangeForm(sourceToken, options)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -120,14 +115,16 @@ func (c *exchangeClient) Exchange(ctx context.Context, sourceToken string, optio
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrExchangeUnavailable, err)
+		return "", fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
 	}
 
-	return decodeExchangeResponse(resp)
+	return decodeTokenExchangeResponse(resp)
 }
 
-type exchangeFunc func(ctx context.Context, sourceToken string, options *exchangeOptions) (string, error)
+type tokenExchangeFunc func(ctx context.Context, sourceToken string, options *tokenExchangeOptions) (string, error)
 
-func (f exchangeFunc) Exchange(ctx context.Context, sourceToken string, options *exchangeOptions) (string, error) {
+func (f tokenExchangeFunc) Exchange(ctx context.Context, sourceToken string, options *tokenExchangeOptions) (string, error) {
 	return f(ctx, sourceToken, options)
 }
+
+var _ TokenExchange = tokenExchangeFunc(nil)

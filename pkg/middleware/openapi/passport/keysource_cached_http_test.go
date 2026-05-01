@@ -69,7 +69,7 @@ func newJWKSServer(t *testing.T, keySet *jose.JSONWebKeySet) (*httptest.Server, 
 	return server, &fetchCount
 }
 
-func TestJWKSCache_Get(t *testing.T) {
+func TestCachedHTTPKeySource_Get(t *testing.T) {
 	t.Parallel()
 
 	t.Run("fetches lazily on first call", func(t *testing.T) {
@@ -79,9 +79,9 @@ func TestJWKSCache_Get(t *testing.T) {
 		keySet := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{keyPair.pub}}
 		server, fetchCount := newJWKSServer(t, &keySet)
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
-		key, err := cache.Get(t.Context(), "test-kid")
+		key, err := keySource.Get(t.Context(), "test-kid")
 		require.NoError(t, err)
 		assert.Equal(t, "test-kid", key.KeyID)
 		assert.Equal(t, int32(1), fetchCount.Load())
@@ -94,12 +94,12 @@ func TestJWKSCache_Get(t *testing.T) {
 		keySet := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{keyPair.pub}}
 		server, fetchCount := newJWKSServer(t, &keySet)
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
-		_, err := cache.Get(t.Context(), "test-kid")
+		_, err := keySource.Get(t.Context(), "test-kid")
 		require.NoError(t, err)
 
-		_, err = cache.Get(t.Context(), "test-kid")
+		_, err = keySource.Get(t.Context(), "test-kid")
 		require.NoError(t, err)
 
 		assert.Equal(t, int32(1), fetchCount.Load())
@@ -112,14 +112,14 @@ func TestJWKSCache_Get(t *testing.T) {
 		keySet := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{keyPair.pub}}
 		server, fetchCount := newJWKSServer(t, &keySet)
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Nanosecond)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Nanosecond)
 
-		_, err := cache.Get(t.Context(), "test-kid")
+		_, err := keySource.Get(t.Context(), "test-kid")
 		require.NoError(t, err)
 
 		time.Sleep(10 * time.Millisecond)
 
-		_, err = cache.Get(t.Context(), "test-kid")
+		_, err = keySource.Get(t.Context(), "test-kid")
 		require.NoError(t, err)
 
 		assert.GreaterOrEqual(t, fetchCount.Load(), int32(2))
@@ -133,17 +133,17 @@ func TestJWKSCache_Get(t *testing.T) {
 		keySet := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{otherKeyPair.pub}}
 		server, fetchCount := newJWKSServer(t, &keySet)
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
 		// Prime cache with other-kid.
-		_, err := cache.Get(t.Context(), "other-kid")
+		_, err := keySource.Get(t.Context(), "other-kid")
 		require.NoError(t, err)
 		require.Equal(t, int32(1), fetchCount.Load())
 
 		// Server now exposes test-kid.
 		keySet.Keys = []jose.JSONWebKey{keyPair.pub}
 
-		key, err := cache.Get(t.Context(), "test-kid")
+		key, err := keySource.Get(t.Context(), "test-kid")
 		require.NoError(t, err)
 		assert.Equal(t, "test-kid", key.KeyID)
 		assert.Equal(t, int32(2), fetchCount.Load())
@@ -156,27 +156,27 @@ func TestJWKSCache_Get(t *testing.T) {
 		keySet := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{keyPair.pub}}
 		server, _ := newJWKSServer(t, &keySet)
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
-		_, err := cache.Get(t.Context(), "nonexistent-kid")
+		_, err := keySource.Get(t.Context(), "nonexistent-kid")
 		assert.ErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
 	t.Run("returns jwks unavailable error on unreachable endpoint", func(t *testing.T) {
 		t.Parallel()
 
-		cache := NewJWKSCache(http.DefaultClient, "http://127.0.0.1:0/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(http.DefaultClient, "http://127.0.0.1:0/jwks", time.Minute)
 
-		_, err := cache.Get(t.Context(), "test-kid")
+		_, err := keySource.Get(t.Context(), "test-kid")
 		assert.ErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
 	t.Run("returns jwks unavailable error when request cannot be created", func(t *testing.T) {
 		t.Parallel()
 
-		cache := NewJWKSCache(http.DefaultClient, "://bad-url", time.Minute)
+		keySource := NewCachedHTTPKeySource(http.DefaultClient, "://bad-url", time.Minute)
 
-		_, err := cache.Get(t.Context(), "test-kid")
+		_, err := keySource.Get(t.Context(), "test-kid")
 		assert.ErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
@@ -188,9 +188,9 @@ func TestJWKSCache_Get(t *testing.T) {
 		}))
 		defer server.Close()
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
-		_, err := cache.Get(t.Context(), "test-kid")
+		_, err := keySource.Get(t.Context(), "test-kid")
 		assert.ErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
@@ -204,9 +204,9 @@ func TestJWKSCache_Get(t *testing.T) {
 		}))
 		defer server.Close()
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
-		_, err := cache.Get(t.Context(), "test-kid")
+		_, err := keySource.Get(t.Context(), "test-kid")
 		assert.ErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
@@ -223,9 +223,9 @@ func TestJWKSCache_Get(t *testing.T) {
 			}),
 		}
 
-		cache := NewJWKSCache(httpClient, "https://example.com/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(httpClient, JWKSURL("https://example.com"), time.Minute)
 
-		_, err := cache.Get(t.Context(), "test-kid")
+		_, err := keySource.Get(t.Context(), "test-kid")
 		assert.ErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
@@ -248,7 +248,7 @@ func TestJWKSCache_Get(t *testing.T) {
 		}))
 		defer server.Close()
 
-		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
 		const goroutines = 8
 
@@ -263,7 +263,7 @@ func TestJWKSCache_Get(t *testing.T) {
 				defer wg.Done()
 				<-start
 
-				_, err := cache.Get(t.Context(), "test-kid")
+				_, err := keySource.Get(t.Context(), "test-kid")
 				errCh <- err
 			}()
 		}

@@ -37,57 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const (
-	// defaultJWKSCacheTTL is the default TTL for the JWKS cache.
-	defaultJWKSCacheTTL = 5 * time.Minute
-	// defaultJWKSTimeout is the timeout for JWKS fetch requests.
-	defaultJWKSTimeout = 5 * time.Second
-	// defaultExchangeTimeout is the timeout for token exchange requests.
-	defaultExchangeTimeout = 5 * time.Second
-)
-
-// Options controls timeout and cache settings for the passport authorizer.
-// Zero values use package defaults.
-//
-// ExchangeTimeout controls the HTTP timeout used when exchanging a non-passport
-// bearer token for a passport at /oauth2/v2/token.
-//
-// This is configurable programmatically by constructing the authorizer via
-// NewAuthorizerWithOptions. There is intentionally no global flag at this layer;
-// embedding services can surface this through their own configuration surface if
-// required.
-type Options struct {
-	JWKSCacheTTL    time.Duration
-	JWKSTimeout     time.Duration
-	ExchangeTimeout time.Duration
-}
-
-func (o *Options) withDefaults() *Options {
-	if o == nil {
-		return &Options{
-			JWKSCacheTTL:    defaultJWKSCacheTTL,
-			JWKSTimeout:     defaultJWKSTimeout,
-			ExchangeTimeout: defaultExchangeTimeout,
-		}
-	}
-
-	out := *o
-
-	if out.JWKSCacheTTL <= 0 {
-		out.JWKSCacheTTL = defaultJWKSCacheTTL
-	}
-
-	if out.JWKSTimeout <= 0 {
-		out.JWKSTimeout = defaultJWKSTimeout
-	}
-
-	if out.ExchangeTimeout <= 0 {
-		out.ExchangeTimeout = defaultExchangeTimeout
-	}
-
-	return &out
-}
-
 //nolint:gochecknoglobals
 var (
 	passportVerificationTotal = promauto.NewCounterVec(
@@ -128,56 +77,36 @@ type Authorizer struct {
 	verifier *Verifier
 	// uni handles ACL lookup and non-passport/degraded authorization paths.
 	// This is intentionally interface-typed so callers can swap implementations.
-	uni      openapiinterfaces.Authorizer
-	exchange exchanger
+	uni           openapiinterfaces.Authorizer
+	tokenExchange TokenExchange
 }
 
 var _ openapiinterfaces.Authorizer = &Authorizer{}
 
 var (
+	errVerifierRequired      = errors.New("passport: verifier is required")
 	errUniAuthorizerRequired = errors.New("passport: uni authorizer is required")
-	errHTTPClientRequired    = errors.New("passport: http client is required")
-	errIdentityHostRequired  = errors.New("passport: identity host is required")
+	errTokenExchangeRequired = errors.New("passport: token exchange is required")
 )
 
-// NewAuthorizer builds a passport Authorizer.
-//
-// uni is required because passport middleware still relies on a non-passport
-// authorizer for ACL lookup and degraded-mode fallback when token exchange is
-// temporarily unavailable.
-func NewAuthorizer(httpClient *http.Client, identityHost string, uni openapiinterfaces.Authorizer, options *Options) (*Authorizer, error) {
+// NewAuthorizer builds a passport Authorizer from explicit dependencies.
+func NewAuthorizer(verifier *Verifier, uni openapiinterfaces.Authorizer, tokenExchange TokenExchange) (*Authorizer, error) {
+	if verifier == nil {
+		return nil, errVerifierRequired
+	}
+
 	if uni == nil {
 		return nil, errUniAuthorizerRequired
 	}
 
-	if httpClient == nil {
-		return nil, errHTTPClientRequired
+	if tokenExchange == nil {
+		return nil, errTokenExchangeRequired
 	}
-
-	if strings.TrimSpace(identityHost) == "" {
-		return nil, errIdentityHostRequired
-	}
-
-	options = options.withDefaults()
-
-	jwksHTTPClient := *httpClient
-	jwksHTTPClient.Timeout = options.JWKSTimeout
-
-	exchangeHTTPClient := *httpClient
-	exchangeHTTPClient.Timeout = options.ExchangeTimeout
-
-	var (
-		host      = strings.TrimRight(identityHost, "/")
-		jwksURI   = host + "/oauth2/v2/jwks"
-		tokenURL  = host + "/oauth2/v2/token"
-		jwksCache = NewJWKSCache(&jwksHTTPClient, jwksURI, options.JWKSCacheTTL)
-		verifier  = NewVerifier(jwksCache)
-	)
 
 	return &Authorizer{
-		verifier: verifier,
-		uni:      uni,
-		exchange: newExchangeClient(&exchangeHTTPClient, tokenURL),
+		verifier:      verifier,
+		uni:           uni,
+		tokenExchange: tokenExchange,
 	}, nil
 }
 
@@ -202,12 +131,12 @@ func getBearerToken(input *openapi3filter.AuthenticationInput) (string, error) {
 	return parts[1], nil
 }
 
-func newExchangeOptionsFromInput(input *openapi3filter.AuthenticationInput) *exchangeOptions {
+func newTokenExchangeOptionsFromInput(input *openapi3filter.AuthenticationInput) *tokenExchangeOptions {
 	if input == nil || input.RequestValidationInput == nil || input.RequestValidationInput.PathParams == nil {
 		return nil
 	}
 
-	return &exchangeOptions{
+	return &tokenExchangeOptions{
 		organizationID: input.RequestValidationInput.PathParams["organizationID"],
 		projectID:      input.RequestValidationInput.PathParams["projectID"],
 	}
@@ -256,9 +185,9 @@ func handlePassportVerificationError(r *http.Request, err error) error {
 	}
 }
 
-func (a *Authorizer) timedExchange(ctx context.Context, sourceToken string, options *exchangeOptions) (string, error) {
+func (a *Authorizer) timedTokenExchange(ctx context.Context, sourceToken string, options *tokenExchangeOptions) (string, error) {
 	start := time.Now()
-	passportToken, err := a.exchange.Exchange(ctx, sourceToken, options)
+	passportToken, err := a.tokenExchange.Exchange(ctx, sourceToken, options)
 	duration := time.Since(start).Seconds()
 	passportExchangeDuration.Observe(duration)
 
@@ -288,18 +217,18 @@ func (a *Authorizer) Authorize(input *openapi3filter.AuthenticationInput) (*auth
 		return nil, handlePassportVerificationError(r, err)
 	}
 
-	exchangeOpts := newExchangeOptionsFromInput(input)
+	tokenExchangeOpts := newTokenExchangeOptionsFromInput(input)
 
-	passportToken, err := a.timedExchange(r.Context(), rawToken, exchangeOpts)
+	passportToken, err := a.timedTokenExchange(r.Context(), rawToken, tokenExchangeOpts)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrExchangeUnauthorized):
+		case errors.Is(err, ErrTokenExchangeUnauthorized):
 			passportExchangeTotal.WithLabelValues("unauthorized").Inc()
 			logger.Info("passport exchange rejected source token", "auth_method", "exchange")
 
 			return nil, apierrors.AccessDenied(r, "token is invalid or has expired").WithValues("auth_method", "exchange")
 
-		case errors.Is(err, ErrExchangeUnavailable):
+		case errors.Is(err, ErrTokenExchangeUnavailable):
 			passportExchangeTotal.WithLabelValues("fallback").Inc()
 			passportAuthorizerTotal.WithLabelValues("remote_fallback").Inc()
 			// Fallback is not an authorization bypass.
@@ -307,7 +236,7 @@ func (a *Authorizer) Authorize(input *openapi3filter.AuthenticationInput) (*auth
 			// The legacy remote path still performs full token validation and ACL
 			// retrieval against identity. We use it only for exchange availability
 			// failures to preserve availability while keeping fail-closed semantics for
-			// invalid credentials (ErrExchangeUnauthorized and passport verification
+			// invalid credentials (ErrTokenExchangeUnauthorized and passport verification
 			// errors never fall back).
 			logger.Info("passport exchange unavailable, using legacy authorization fallback", "auth_method", "remote_fallback", "fallback_reason", "exchange_unavailable")
 

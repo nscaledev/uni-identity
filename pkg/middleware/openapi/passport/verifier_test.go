@@ -44,9 +44,9 @@ func newVerifierServer(t *testing.T, keySet *jose.JSONWebKeySet) (*httptest.Serv
 
 	t.Cleanup(server.Close)
 
-	cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
+	keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
-	return server, NewVerifier(cache)
+	return server, NewVerifier(keySource)
 }
 
 func TestVerifier_Verify(t *testing.T) {

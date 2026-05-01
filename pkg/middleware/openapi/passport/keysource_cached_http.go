@@ -40,10 +40,10 @@ var jwksCacheRefreshTotal = promauto.NewCounterVec(
 	[]string{"trigger", "result"},
 )
 
-// JWKSCache fetches and caches the identity service's public JWKS.
+// CachedHTTPKeySource fetches and caches the identity service's public JWKS.
 // It refreshes on TTL expiry or on a key-ID miss. Zero network calls on the
 // hot path when a valid cached key is present.
-type JWKSCache struct {
+type CachedHTTPKeySource struct {
 	httpClient *http.Client
 	jwksURI    string
 	ttl        time.Duration
@@ -53,10 +53,12 @@ type JWKSCache struct {
 	refreshSF  singleflight.Group
 }
 
-// NewJWKSCache returns a new JWKS cache.
+var _ KeySource = (*CachedHTTPKeySource)(nil)
+
+// NewCachedHTTPKeySource returns a new HTTP-backed JWKS cache key source.
 // httpClient should already be configured for TLS (re-use the identity HTTP client).
-func NewJWKSCache(httpClient *http.Client, jwksURI string, ttl time.Duration) *JWKSCache {
-	return &JWKSCache{
+func NewCachedHTTPKeySource(httpClient *http.Client, jwksURI string, ttl time.Duration) *CachedHTTPKeySource {
+	return &CachedHTTPKeySource{
 		httpClient: httpClient,
 		jwksURI:    jwksURI,
 		ttl:        ttl,
@@ -64,14 +66,12 @@ func NewJWKSCache(httpClient *http.Client, jwksURI string, ttl time.Duration) *J
 }
 
 // Get returns the public key identified by kid, refreshing the cache if necessary.
-func (c *JWKSCache) Get(ctx context.Context, kid string) (*jose.JSONWebKey, error) {
-	// Fast path: read under shared lock.
+func (c *CachedHTTPKeySource) Get(ctx context.Context, kid string) (*jose.JSONWebKey, error) {
 	key, isFresh := c.load(kid)
 	if isFresh && key != nil {
 		return key, nil
 	}
 
-	// Slow path: refresh.
 	trigger := "ttl"
 	if isFresh {
 		trigger = "kid_miss"
@@ -89,7 +89,7 @@ func (c *JWKSCache) Get(ctx context.Context, kid string) (*jose.JSONWebKey, erro
 	return key, nil
 }
 
-func (c *JWKSCache) refreshSingleFlight(ctx context.Context, trigger string) error {
+func (c *CachedHTTPKeySource) refreshSingleFlight(ctx context.Context, trigger string) error {
 	_, err, _ := c.refreshSF.Do(c.jwksURI, func() (any, error) {
 		return nil, c.refresh(ctx, trigger)
 	})
@@ -98,7 +98,7 @@ func (c *JWKSCache) refreshSingleFlight(ctx context.Context, trigger string) err
 }
 
 // load returns the cached key for kid and whether the cache is within its TTL.
-func (c *JWKSCache) load(kid string) (*jose.JSONWebKey, bool) {
+func (c *CachedHTTPKeySource) load(kid string) (*jose.JSONWebKey, bool) {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 
@@ -115,7 +115,7 @@ func (c *JWKSCache) load(kid string) (*jose.JSONWebKey, bool) {
 // refresh fetches the JWKS from the remote endpoint and updates the cache.
 // trigger labels what caused refresh ("ttl" or "kid_miss").
 // result labels outcome ("success" or "error").
-func (c *JWKSCache) refresh(ctx context.Context, trigger string) error {
+func (c *CachedHTTPKeySource) refresh(ctx context.Context, trigger string) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.jwksURI, nil)
 	if err != nil {
 		jwksCacheRefreshTotal.WithLabelValues(trigger, "error").Inc()
@@ -153,7 +153,7 @@ func (c *JWKSCache) refresh(ctx context.Context, trigger string) error {
 }
 
 // store stores the fetched key set under the write lock.
-func (c *JWKSCache) store(keySet jose.JSONWebKeySet) {
+func (c *CachedHTTPKeySource) store(keySet jose.JSONWebKeySet) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 

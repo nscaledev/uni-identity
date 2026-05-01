@@ -95,15 +95,29 @@ func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*
 		return nil, err
 	}
 
+	return a.ExchangePassport(ctx, options)
+}
+
+// ExchangePassport performs token exchange using typed request options.
+// This is shared by the HTTP handler and internal callers.
+func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.TokenRequestOptions) (*openapi.Token, error) {
+	log := log.FromContext(ctx)
+
 	if err := validateTokenExchangeRequest(options); err != nil {
 		log.Info("passport exchange failed: invalid token-exchange request")
 
 		return nil, err
 	}
 
+	// GetUserinfo currently returns AccessDenied errors that require an *http.Request
+	// to construct WWW-Authenticate metadata. ExchangePassport is a non-handler path,
+	// so provide a minimal request carrying the current context.
+	request := &http.Request{Header: make(http.Header)}
+	request = request.WithContext(ctx)
+
 	subjectToken := *options.SubjectToken
 
-	userinfo, _, err := a.GetUserinfo(ctx, r, subjectToken)
+	userinfo, _, err := a.GetUserinfo(ctx, request, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
