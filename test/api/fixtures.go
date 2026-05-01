@@ -20,9 +20,12 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -534,4 +537,46 @@ func CreateGroupWithCleanup(client *APIClient, ctx context.Context, config *Test
 	GinkgoWriter.Printf("Created group with ID: %s\n", groupID)
 
 	return *group, groupID
+}
+
+// DecodeJWTPayload decodes the payload claims of a JWT without signature verification.
+// For use in test assertions only — never use in production code.
+func DecodeJWTPayload(token string) (map[string]interface{}, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT: expected 3 parts, got %d", len(parts))
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("decoding JWT payload: %w", err)
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("unmarshaling JWT payload: %w", err)
+	}
+
+	return claims, nil
+}
+
+// DecodeJWTHeader decodes the header of a JWT without signature verification.
+// For use in test assertions only — never use in production code.
+func DecodeJWTHeader(token string) (map[string]interface{}, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT: expected 3 parts, got %d", len(parts))
+	}
+
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("decoding JWT header: %w", err)
+	}
+
+	var h map[string]interface{}
+	if err := json.Unmarshal(header, &h); err != nil {
+		return nil, fmt.Errorf("unmarshaling JWT header: %w", err)
+	}
+
+	return h, nil
 }

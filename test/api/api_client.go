@@ -22,7 +22,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/onsi/ginkgo/v2"
 
@@ -708,4 +711,114 @@ func (c *APIClient) DeleteOauth2Provider(ctx context.Context, orgID, providerID 
 	}
 
 	return nil
+}
+
+// PassportExchangeResponse is the response body from POST /oauth2/v2/exchange.
+type PassportExchangeResponse struct {
+	Passport  string `json:"passport"`
+	ExpiresIn int    `json:"expires_in"`
+	Error     string `json:"error,omitempty"`
+}
+
+// JWKS represents the JSON Web Key Set returned by GET /oauth2/v2/jwks.
+type JWKS struct {
+	Keys []JWK `json:"keys"`
+}
+
+// JWK represents a single JSON Web Key.
+type JWK struct {
+	Kid string `json:"kid"`
+	Kty string `json:"kty"`
+	Crv string `json:"crv,omitempty"`
+	X   string `json:"x,omitempty"`
+	Y   string `json:"y,omitempty"`
+}
+
+// WithToken returns a copy of this client using the provided auth token.
+// Useful for testing with specific token values (empty, invalid, etc.).
+func (c *APIClient) WithToken(token string) *APIClient {
+	newConfig := *c.config
+	newConfig.AuthToken = token
+
+	return NewAPIClientWithConfig(&newConfig)
+}
+
+// ExchangePassport exchanges the current client's token for a passport JWT.
+// scopeParams may include "organizationId" and/or "projectId" keys.
+// Returns an error if the server does not return 200.
+func (c *APIClient) ExchangePassport(ctx context.Context, scopeParams map[string]string) (*PassportExchangeResponse, error) {
+	statusCode, body, err := c.ExchangePassportRaw(ctx, scopeParams)
+	if err != nil {
+		return nil, err
+	}
+
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("exchange returned %d: %s", statusCode, string(body))
+	}
+
+	var result PassportExchangeResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("unmarshaling exchange response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// ExchangePassportRaw posts to the passport exchange endpoint with form-encoded body,
+// returning the raw HTTP status code and response body without asserting success.
+// Use this for testing rejection cases where a non-200 response is expected.
+func (c *APIClient) ExchangePassportRaw(ctx context.Context, scopeParams map[string]string) (int, []byte, error) {
+	form := url.Values{}
+	for k, v := range scopeParams {
+		form.Set(k, v)
+	}
+
+	fullURL := c.config.BaseURL + c.endpoints.ExchangePassport()
+
+	reqCtx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, fullURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, fmt.Errorf("creating exchange request: %w", err)
+	}
+
+	if c.config.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.config.AuthToken)
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Use http.DefaultClient so it picks up the TLS transport patched in tls_darwin_test.go.
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("executing exchange request: %w", err)
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("reading exchange response: %w", err)
+	}
+
+	return resp.StatusCode, body, nil
+}
+
+// GetJWKS fetches the public JWKS from the identity service.
+func (c *APIClient) GetJWKS(ctx context.Context) (*JWKS, error) {
+	path := c.endpoints.GetJWKS()
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("getting JWKS: %w", err)
+	}
+
+	var jwks JWKS
+	if err := json.Unmarshal(respBody, &jwks); err != nil {
+		return nil, fmt.Errorf("unmarshaling JWKS: %w", err)
+	}
+
+	return &jwks, nil
 }

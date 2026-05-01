@@ -27,6 +27,7 @@ type TestConfig struct {
 	coreconfig.BaseConfig
 	AdminToken          string
 	UserToken           string
+	AuditToken          string
 	OrgID               string
 	ProjectID           string
 	AdminGroupID        string
@@ -74,6 +75,7 @@ func LoadTestConfig() (*TestConfig, error) {
 		},
 		AdminToken:          firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN")),
 		UserToken:           v.GetString("USER_AUTH_TOKEN"),
+		AuditToken:          v.GetString("AUDIT_AUTH_TOKEN"),
 		OrgID:               v.GetString("TEST_ORG_ID"),
 		ProjectID:           v.GetString("TEST_PROJECT_ID"),
 		AdminGroupID:        v.GetString("TEST_ADMIN_GROUP_ID"),

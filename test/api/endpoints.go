@@ -141,3 +141,13 @@ func (e *Endpoints) GetOauth2Provider(orgID, providerID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/oauth2providers/%s",
 		url.PathEscape(orgID), url.PathEscape(providerID))
 }
+
+// ExchangePassport returns the endpoint for the passport token exchange.
+func (e *Endpoints) ExchangePassport() string {
+	return "/oauth2/v2/exchange"
+}
+
+// GetJWKS returns the endpoint for the JWKS (JSON Web Key Set).
+func (e *Endpoints) GetJWKS() string {
+	return "/oauth2/v2/jwks"
+}

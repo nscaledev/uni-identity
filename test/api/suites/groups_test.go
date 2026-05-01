@@ -508,3 +508,220 @@ var _ = Describe("Group Subjects", func() {
 		})
 	})
 })
+
+// From nscale-auth0-tests: groups.spec.ts §5.8 & §5.9 — ACL effect of group membership.
+var _ = Describe("Group Subjects - ACL Effect", func() {
+	BeforeEach(func() {
+		if userClient == nil {
+			Skip("USER_AUTH_TOKEN is required to test group membership ACL effects")
+		}
+	})
+
+	// Helper to count total ACL operations in org scope.
+	countOrgACLOps := func(c *api.APIClient) int {
+		acl, err := c.GetOrganizationACL(ctx, config.OrgID)
+		if err != nil || acl.Organization == nil || acl.Organization.Endpoints == nil {
+			return 0
+		}
+
+		total := 0
+
+		for _, ep := range *acl.Organization.Endpoints {
+			total += len(ep.Operations)
+		}
+
+		return total
+	}
+
+	// §5.8 adding a subject to a group grants ACL permissions
+	Describe("Given a group with a role, when the user's subject is added", func() {
+		It("should gain the role's endpoint operations in the user's org ACL", func() {
+			roles, err := adminClient.ListRoles(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			if len(roles) == 0 {
+				Skip("No roles available in organization")
+			}
+
+			// Capture the user's initial ACL operation count.
+			initialOps := countOrgACLOps(userClient)
+
+			// Get the user's external subject identifier from their token.
+			userinfo, err := userClient.GetUserinfo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			subjectID := userinfo.Sub
+			subject := identityopenapi.Subject{Id: subjectID, Issuer: ""}
+
+			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+				api.NewGroupPayload().
+					WithRoleIDs([]string{roles[0].Metadata.Id}).
+					WithSubjects([]identityopenapi.Subject{subject}).
+					Build())
+
+			Eventually(func() int {
+				return countOrgACLOps(userClient)
+			}).WithTimeout(config.TestTimeout).WithPolling(2*time.Second).Should(
+				BeNumerically(">", initialOps),
+				"user ACL operation count must increase after being added to a role-bearing group")
+
+			GinkgoWriter.Printf("Group %s granted ACL ops: before=%d after>%d\n",
+				groupID, initialOps, initialOps)
+		})
+	})
+
+	// §5.9 deleting a group removes the subject's ACL permissions
+	Describe("Given a group that was granting permissions, when the group is deleted", func() {
+		It("should reduce the user's org ACL operation count", func() {
+			roles, err := adminClient.ListRoles(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			if len(roles) == 0 {
+				Skip("No roles available in organization")
+			}
+
+			userinfo, err := userClient.GetUserinfo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			subjectID := userinfo.Sub
+			subject := identityopenapi.Subject{Id: subjectID, Issuer: ""}
+
+			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+				api.NewGroupPayload().
+					WithRoleIDs([]string{roles[0].Metadata.Id}).
+					WithSubjects([]identityopenapi.Subject{subject}).
+					Build())
+
+			// Wait for ACL to gain permissions.
+			var opsWithGroup int
+
+			Eventually(func() int {
+				opsWithGroup = countOrgACLOps(userClient)
+				return opsWithGroup
+			}).WithTimeout(config.TestTimeout).WithPolling(2*time.Second).Should(
+				BeNumerically(">", 0))
+
+			// Now delete the group (bypass DeferCleanup by deleting explicitly).
+			Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
+
+			// ACL should shrink back.
+			Eventually(func() int {
+				return countOrgACLOps(userClient)
+			}).WithTimeout(config.TestTimeout).WithPolling(2*time.Second).Should(
+				BeNumerically("<", opsWithGroup),
+				"user ACL operation count must decrease after the group is deleted")
+
+			GinkgoWriter.Printf("Group %s deleted — ACL ops reduced from %d\n",
+				groupID, opsWithGroup)
+		})
+	})
+})
+
+// From nscale-auth0-tests: groups.spec.ts §6.3 — migration backfill check.
+// After the Phase 1 migration all groups with userIDs must also have subjects populated.
+var _ = Describe("Group Migration - Startup Backfill", func() {
+	Describe("Given all existing groups in the organization", func() {
+		It("should have subjects backfilled for every group that has userIDs", func() {
+			groups, err := client.ListGroups(ctx, config.OrgID)
+
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, g := range groups {
+				if g.Spec.UserIDs == nil || len(*g.Spec.UserIDs) == 0 {
+					continue
+				}
+
+				Expect(g.Spec.Subjects).NotTo(BeNil(),
+					"group %s has userIDs but subjects is nil — backfill may have failed",
+					g.Metadata.Id)
+				Expect(*g.Spec.Subjects).NotTo(BeEmpty(),
+					"group %s has userIDs but subjects is empty — backfill may have failed",
+					g.Metadata.Id)
+
+				GinkgoWriter.Printf("Group %s: userIDs=%d subjects=%d (backfill OK)\n",
+					g.Metadata.Id, len(*g.Spec.UserIDs), len(*g.Spec.Subjects))
+			}
+		})
+	})
+})
+
+// From nscale-auth0-tests: groups.spec.ts §7 — RBAC permission matrix for groups.
+var _ = Describe("Groups RBAC Permission Matrix", func() {
+	// §7.1 admin token can list, create, and delete groups
+	Describe("Given an admin token", func() {
+		It("should be permitted to list, create, and delete groups", func() {
+			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+				api.NewGroupPayload().Build())
+
+			groups, err := adminClient.ListGroups(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			found := false
+
+			for _, g := range groups {
+				if g.Metadata.Id == groupID {
+					found = true
+					break
+				}
+			}
+
+			Expect(found).To(BeTrue(), "admin must see the group it created in the list")
+			GinkgoWriter.Printf("Admin list+create+delete OK for group %s\n", groupID)
+		})
+	})
+
+	// §7.2 audit token can list groups
+	Describe("Given an audit token requesting to list groups", func() {
+		BeforeEach(func() {
+			if auditClient == nil {
+				Skip("AUDIT_AUTH_TOKEN is not configured")
+			}
+		})
+
+		It("should be permitted to list groups", func() {
+			_, err := auditClient.ListGroups(ctx, config.OrgID)
+
+			Expect(err).NotTo(HaveOccurred(),
+				"audit token must be permitted to list groups")
+
+			GinkgoWriter.Printf("Audit: list groups permitted\n")
+		})
+	})
+
+	// §7.3 audit token cannot create groups
+	Describe("Given an audit token attempting to create a group", func() {
+		BeforeEach(func() {
+			if auditClient == nil {
+				Skip("AUDIT_AUTH_TOKEN is not configured")
+			}
+		})
+
+		It("should be denied with a forbidden response", func() {
+			_, err := auditClient.CreateGroup(ctx, config.OrgID,
+				api.NewGroupPayload().Build())
+
+			Expect(err).To(HaveOccurred(),
+				"audit token must not be permitted to create groups")
+
+			GinkgoWriter.Printf("Audit create group correctly denied: %v\n", err)
+		})
+	})
+
+	// §7.4 non-member token gets 403 on group operations in private org
+	Describe("Given a non-member organization", func() {
+		BeforeEach(func() {
+			if config.UnauthorisedOrgID == "" {
+				Skip("UNAUTHORISED_ORG_ID is not configured")
+			}
+		})
+
+		It("should deny group list access for a non-member token", func() {
+			_, err := client.ListGroups(ctx, config.UnauthorisedOrgID)
+
+			Expect(err).To(HaveOccurred(),
+				"non-member must not be permitted to list groups in a private org")
+
+			GinkgoWriter.Printf("Non-member list groups correctly denied: %v\n", err)
+		})
+	})
+})
