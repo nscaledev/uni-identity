@@ -764,6 +764,44 @@ func (c *APIClient) ExchangePassport(ctx context.Context, scopeParams map[string
 	return &result, nil
 }
 
+// ExchangePassportTryParse calls ExchangePassportRaw and if the response is 200
+// parses the body into a PassportExchangeResponse; on non-200 resp is nil.
+func (c *APIClient) ExchangePassportTryParse(ctx context.Context, scopeParams map[string]string) (int, *PassportExchangeResponse, error) {
+	statusCode, body, err := c.ExchangePassportRaw(ctx, scopeParams)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	if statusCode != http.StatusOK {
+		return statusCode, nil, nil
+	}
+
+	var resp PassportExchangeResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return statusCode, nil, fmt.Errorf("unmarshaling exchange response: %w", err)
+	}
+
+	return statusCode, &resp, nil
+}
+
+// ExchangePassportErrorCode calls ExchangePassportRaw and attempts to parse the body
+// as an OAuth2 error response, returning the value of the "error" field.
+// Returns "" if the body is not JSON or does not contain an "error" field.
+func (c *APIClient) ExchangePassportErrorCode(ctx context.Context, scopeParams map[string]string) (int, string, error) {
+	statusCode, body, err := c.ExchangePassportRaw(ctx, scopeParams)
+	if err != nil {
+		return 0, "", err
+	}
+
+	var errBody struct {
+		Error string `json:"error"`
+	}
+
+	_ = json.Unmarshal(body, &errBody)
+
+	return statusCode, errBody.Error, nil
+}
+
 // ExchangePassportRaw posts to the passport exchange endpoint with form-encoded body,
 // returning the raw HTTP status code and response body without asserting success.
 // Use this for testing rejection cases where a non-200 response is expected.

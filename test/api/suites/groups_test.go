@@ -565,8 +565,7 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 				BeNumerically(">", initialOps),
 				"user ACL operation count must increase after being added to a role-bearing group")
 
-			GinkgoWriter.Printf("Group %s granted ACL ops: before=%d after>%d\n",
-				groupID, initialOps, initialOps)
+			GinkgoWriter.Printf("Group %s: ACL op count increased beyond initial %d\n", groupID, initialOps)
 		})
 	})
 

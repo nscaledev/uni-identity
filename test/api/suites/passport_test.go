@@ -23,7 +23,6 @@ limitations under the License.
 package suites
 
 import (
-	"encoding/json"
 	"net/http"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -129,16 +128,14 @@ var _ = Describe("Passport Exchange - Happy Paths", func() {
 	// §3.6 exchange response Content-Type
 	Describe("Given a valid exchange request", func() {
 		It("should return Content-Type: application/json", func() {
-			// Use ExchangePassportRaw to inspect headers directly.
-			statusCode, body, err := client.ExchangePassportRaw(ctx, nil)
+			resp, err := client.ExchangePassport(ctx, nil)
+
 			Expect(err).NotTo(HaveOccurred())
-			// Content-Type check requires reading the full response; use status 200 as proxy.
-			Expect(statusCode).To(Equal(http.StatusOK))
-			// Verify the body is valid JSON (implied by Content-Type application/json).
-			var result map[string]interface{}
-			Expect(json.Unmarshal(body, &result)).To(Succeed(),
-				"exchange response body must be valid JSON")
-			Expect(result["passport"]).NotTo(BeEmpty())
+			Expect(resp).NotTo(BeNil())
+			Expect(resp.Passport).NotTo(BeEmpty(),
+				"exchange response must carry a non-empty passport field")
+
+			GinkgoWriter.Printf("Exchange response is valid JSON — passport length %d\n", len(resp.Passport))
 		})
 	})
 })
@@ -393,18 +390,13 @@ var _ = Describe("Passport Exchange - Rejection Cases", func() {
 	// §6.1 missing Authorization header → 401 with error: access_denied
 	Describe("Given no Authorization header", func() {
 		It("should return 401 with error access_denied", func() {
-			noAuthClient := client.WithToken("")
-			statusCode, body, err := noAuthClient.ExchangePassportRaw(ctx, nil)
+			statusCode, errorCode, err := client.WithToken("").ExchangePassportErrorCode(ctx, nil)
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(statusCode).To(Equal(http.StatusUnauthorized))
+			Expect(errorCode).To(Equal("access_denied"))
 
-			var errBody map[string]interface{}
-			if json.Unmarshal(body, &errBody) == nil {
-				Expect(errBody["error"]).To(Equal("access_denied"))
-			}
-
-			GinkgoWriter.Printf("No-auth exchange correctly returned 401\n")
+			GinkgoWriter.Printf("No-auth exchange correctly returned 401 with access_denied\n")
 		})
 	})
 
@@ -457,26 +449,25 @@ var _ = Describe("Passport Exchange - Scope Validation", func() {
 			}
 		})
 		It("should not embed the non-member org in the passport org_id claim", func() {
-			statusCode, body, err := client.ExchangePassportRaw(ctx, map[string]string{
+			statusCode, resp, err := client.ExchangePassportTryParse(ctx, map[string]string{
 				"organizationId": config.UnauthorisedOrgID,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			if statusCode == http.StatusOK {
-				var resp api.PassportExchangeResponse
-				Expect(json.Unmarshal(body, &resp)).To(Succeed())
-
-				claims, err := api.DecodeJWTPayload(resp.Passport)
-				Expect(err).NotTo(HaveOccurred())
-
-				orgID, _ := claims["org_id"].(string)
-				Expect(orgID).NotTo(Equal(config.UnauthorisedOrgID),
-					"org_id must not be set to an org the caller is not a member of")
-			} else {
+			if statusCode != http.StatusOK {
 				Expect(statusCode).To(BeElementOf(http.StatusBadRequest, http.StatusForbidden))
+				GinkgoWriter.Printf("Non-member org scope rejected with %d\n", statusCode)
+				return
 			}
 
-			GinkgoWriter.Printf("Non-member org scope correctly handled (status %d)\n", statusCode)
+			claims, err := api.DecodeJWTPayload(resp.Passport)
+			Expect(err).NotTo(HaveOccurred())
+
+			orgID, _ := claims["org_id"].(string)
+			Expect(orgID).NotTo(Equal(config.UnauthorisedOrgID),
+				"org_id must not be set to an org the caller is not a member of")
+
+			GinkgoWriter.Printf("Non-member org scope correctly handled — org_id absent\n")
 		})
 	})
 
@@ -484,25 +475,26 @@ var _ = Describe("Passport Exchange - Scope Validation", func() {
 	Describe("Given a garbage project ID", func() {
 		It("should not embed the garbage project ID in the passport project_id claim", func() {
 			fakeProjectID := "not-a-real-project-id"
-			statusCode, body, err := client.ExchangePassportRaw(ctx, map[string]string{
+			statusCode, resp, err := client.ExchangePassportTryParse(ctx, map[string]string{
 				"organizationId": config.OrgID,
 				"projectId":      fakeProjectID,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			if statusCode == http.StatusOK {
-				var resp api.PassportExchangeResponse
-				Expect(json.Unmarshal(body, &resp)).To(Succeed())
-
-				claims, err := api.DecodeJWTPayload(resp.Passport)
-				Expect(err).NotTo(HaveOccurred())
-
-				projectID, _ := claims["project_id"].(string)
-				Expect(projectID).NotTo(Equal(fakeProjectID),
-					"project_id must not be set to a non-existent project ID")
-			} else {
+			if statusCode != http.StatusOK {
 				Expect(statusCode).To(BeElementOf(http.StatusBadRequest, http.StatusForbidden))
+				GinkgoWriter.Printf("Garbage project ID rejected with %d\n", statusCode)
+				return
 			}
+
+			claims, err := api.DecodeJWTPayload(resp.Passport)
+			Expect(err).NotTo(HaveOccurred())
+
+			projectID, _ := claims["project_id"].(string)
+			Expect(projectID).NotTo(Equal(fakeProjectID),
+				"project_id must not be set to a non-existent project ID")
+
+			GinkgoWriter.Printf("Garbage project ID correctly not embedded in passport\n")
 		})
 	})
 
@@ -510,24 +502,25 @@ var _ = Describe("Passport Exchange - Scope Validation", func() {
 	Describe("Given a garbage org ID", func() {
 		It("should not embed the garbage org ID in the passport org_id claim", func() {
 			fakeOrgID := "not-a-real-org-id"
-			statusCode, body, err := client.ExchangePassportRaw(ctx, map[string]string{
+			statusCode, resp, err := client.ExchangePassportTryParse(ctx, map[string]string{
 				"organizationId": fakeOrgID,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			if statusCode == http.StatusOK {
-				var resp api.PassportExchangeResponse
-				Expect(json.Unmarshal(body, &resp)).To(Succeed())
-
-				claims, err := api.DecodeJWTPayload(resp.Passport)
-				Expect(err).NotTo(HaveOccurred())
-
-				orgID, _ := claims["org_id"].(string)
-				Expect(orgID).NotTo(Equal(fakeOrgID),
-					"org_id must not be set to a non-existent org ID")
-			} else {
+			if statusCode != http.StatusOK {
 				Expect(statusCode).To(BeElementOf(http.StatusBadRequest, http.StatusForbidden))
+				GinkgoWriter.Printf("Garbage org ID rejected with %d\n", statusCode)
+				return
 			}
+
+			claims, err := api.DecodeJWTPayload(resp.Passport)
+			Expect(err).NotTo(HaveOccurred())
+
+			orgID, _ := claims["org_id"].(string)
+			Expect(orgID).NotTo(Equal(fakeOrgID),
+				"org_id must not be set to a non-existent org ID")
+
+			GinkgoWriter.Printf("Garbage org ID correctly not embedded in passport\n")
 		})
 	})
 })
