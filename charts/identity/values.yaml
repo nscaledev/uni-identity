@@ -239,6 +239,8 @@ roles:
     protected: true
     scopes:
       global:
+        identity:projects: [read]
+        identity:projects/references: [create,delete]
         identity:allocations: [create,read,update,delete]
         region:networks:v2/references: [create,read,update,delete]
   # An administrator can do anything within an organization.

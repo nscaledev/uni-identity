@@ -152,6 +152,7 @@ func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http
 			openapi.AuthorizationCode,
 			openapi.ClientCredentials,
 			openapi.RefreshToken,
+			openapi.UrnIetfParamsOauthGrantTypeTokenExchange,
 		},
 		IdTokenSigningAlgValuesSupported: []openapi.SigningAlgorithm{
 			openapi.ES512,
