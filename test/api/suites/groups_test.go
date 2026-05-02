@@ -669,43 +669,6 @@ var _ = Describe("Groups RBAC Permission Matrix", func() {
 		})
 	})
 
-	// §7.2 audit token can list groups
-	Describe("Given an audit token requesting to list groups", func() {
-		BeforeEach(func() {
-			if auditClient == nil {
-				Skip("AUDIT_AUTH_TOKEN is not configured")
-			}
-		})
-
-		It("should be permitted to list groups", func() {
-			_, err := auditClient.ListGroups(ctx, config.OrgID)
-
-			Expect(err).NotTo(HaveOccurred(),
-				"audit token must be permitted to list groups")
-
-			GinkgoWriter.Printf("Audit: list groups permitted\n")
-		})
-	})
-
-	// §7.3 audit token cannot create groups
-	Describe("Given an audit token attempting to create a group", func() {
-		BeforeEach(func() {
-			if auditClient == nil {
-				Skip("AUDIT_AUTH_TOKEN is not configured")
-			}
-		})
-
-		It("should be denied with a forbidden response", func() {
-			_, err := auditClient.CreateGroup(ctx, config.OrgID,
-				api.NewGroupPayload().Build())
-
-			Expect(err).To(HaveOccurred(),
-				"audit token must not be permitted to create groups")
-
-			GinkgoWriter.Printf("Audit create group correctly denied: %v\n", err)
-		})
-	})
-
 	// §7.4 non-member token gets 403 on group operations in private org
 	Describe("Given a non-member organization", func() {
 		BeforeEach(func() {

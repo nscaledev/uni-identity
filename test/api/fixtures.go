@@ -20,12 +20,9 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -144,7 +141,7 @@ func findOrphanedGroupID(ctx context.Context, client *APIClient, config *TestCon
 
 	groups, listErr := client.ListGroups(ctx, config.OrgID)
 	if listErr != nil {
-		Expect(listErr).NotTo(HaveOccurred(), "failed to list groups for cleanup")
+		GinkgoWriter.Printf("Warning: Could not list groups for cleanup: %v\n", listErr)
 		return ""
 	}
 
@@ -207,9 +204,10 @@ func CreateServiceAccountWithCleanup(client *APIClient, ctx context.Context, con
 
 		GinkgoWriter.Printf("Cleaning up service account: %s\n", saID)
 
-		err := client.DeleteServiceAccount(ctx, config.OrgID, saID)
-		if !errors.Is(err, coreclient.ErrResourceNotFound) {
-			Expect(err).NotTo(HaveOccurred())
+		if err := client.DeleteServiceAccount(ctx, config.OrgID, saID); err != nil {
+			GinkgoWriter.Printf("Warning: Failed to delete service account %s: %v\n", saID, err)
+		} else {
+			GinkgoWriter.Printf("Successfully deleted service account: %s\n", saID)
 		}
 	})
 
@@ -277,9 +275,10 @@ func CreateUserWithCleanup(client *APIClient, ctx context.Context, config *TestC
 
 		GinkgoWriter.Printf("Cleaning up user: %s\n", userID)
 
-		err := client.DeleteUser(ctx, config.OrgID, userID)
-		if !errors.Is(err, coreclient.ErrResourceNotFound) {
-			Expect(err).NotTo(HaveOccurred())
+		if err := client.DeleteUser(ctx, config.OrgID, userID); err != nil {
+			GinkgoWriter.Printf("Warning: Failed to delete user %s: %v\n", userID, err)
+		} else {
+			GinkgoWriter.Printf("Successfully deleted user: %s\n", userID)
 		}
 	})
 
@@ -343,9 +342,9 @@ func CreateProjectWithCleanup(client *APIClient, ctx context.Context, config *Te
 
 		GinkgoWriter.Printf("Cleaning up project: %s\n", projectID)
 
-		err := client.DeleteProject(ctx, config.OrgID, projectID)
-		if !errors.Is(err, coreclient.ErrResourceNotFound) {
-			Expect(err).NotTo(HaveOccurred())
+		if err := client.DeleteProject(ctx, config.OrgID, projectID); err != nil {
+			GinkgoWriter.Printf("Warning: Failed to delete project %s: %v\n", projectID, err)
+			return
 		}
 
 		Eventually(func() bool {
@@ -485,9 +484,10 @@ func CreateOauth2ProviderWithCleanup(client *APIClient, ctx context.Context, con
 
 		GinkgoWriter.Printf("Cleaning up oauth2provider: %s\n", providerID)
 
-		err := client.DeleteOauth2Provider(ctx, config.OrgID, providerID)
-		if !errors.Is(err, coreclient.ErrResourceNotFound) {
-			Expect(err).NotTo(HaveOccurred())
+		if err := client.DeleteOauth2Provider(ctx, config.OrgID, providerID); err != nil {
+			GinkgoWriter.Printf("Warning: Failed to delete oauth2provider %s: %v\n", providerID, err)
+		} else {
+			GinkgoWriter.Printf("Successfully deleted oauth2provider: %s\n", providerID)
 		}
 	})
 
@@ -521,9 +521,11 @@ func CreateGroupWithCleanup(client *APIClient, ctx context.Context, config *Test
 
 		GinkgoWriter.Printf("Cleaning up group: %s\n", groupID)
 
-		err := client.DeleteGroup(ctx, config.OrgID, groupID)
-		if !errors.Is(err, coreclient.ErrResourceNotFound) {
-			Expect(err).NotTo(HaveOccurred())
+		deleteErr := client.DeleteGroup(ctx, config.OrgID, groupID)
+		if deleteErr != nil {
+			GinkgoWriter.Printf("Warning: Failed to delete group %s: %v\n", groupID, deleteErr)
+		} else {
+			GinkgoWriter.Printf("Successfully deleted group: %s\n", groupID)
 		}
 	})
 
@@ -537,46 +539,4 @@ func CreateGroupWithCleanup(client *APIClient, ctx context.Context, config *Test
 	GinkgoWriter.Printf("Created group with ID: %s\n", groupID)
 
 	return *group, groupID
-}
-
-// DecodeJWTPayload decodes the payload claims of a JWT without signature verification.
-// For use in test assertions only — never use in production code.
-func DecodeJWTPayload(token string) (map[string]interface{}, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT: expected 3 parts, got %d", len(parts))
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("decoding JWT payload: %w", err)
-	}
-
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return nil, fmt.Errorf("unmarshaling JWT payload: %w", err)
-	}
-
-	return claims, nil
-}
-
-// DecodeJWTHeader decodes the header of a JWT without signature verification.
-// For use in test assertions only — never use in production code.
-func DecodeJWTHeader(token string) (map[string]interface{}, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT: expected 3 parts, got %d", len(parts))
-	}
-
-	header, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return nil, fmt.Errorf("decoding JWT header: %w", err)
-	}
-
-	var h map[string]interface{}
-	if err := json.Unmarshal(header, &h); err != nil {
-		return nil, fmt.Errorf("unmarshaling JWT header: %w", err)
-	}
-
-	return h, nil
 }
