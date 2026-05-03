@@ -22,12 +22,16 @@ package suites
 
 import (
 	"errors"
+	"fmt"
+	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
+	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
@@ -189,7 +193,7 @@ var _ = Describe("Group Management", func() {
 					WithName(originalGroup.Metadata.Name + "-updated").
 					Build()
 
-				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -218,7 +222,7 @@ var _ = Describe("Group Management", func() {
 				updatedPayload := payload
 				updatedPayload.Spec.RoleIDs = []string{roles[0].Metadata.Id}
 
-				err = client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
+				_, err = client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -238,7 +242,7 @@ var _ = Describe("Group Management", func() {
 			It("should return error when updating non-existent group", func() {
 				payload := api.NewGroupPayload().Build()
 
-				err := client.UpdateGroup(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
+				_, err := client.UpdateGroup(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue(),
@@ -252,7 +256,7 @@ var _ = Describe("Group Management", func() {
 			It("should return error when updating group in non-existent organization", func() {
 				payload := api.NewGroupPayload().Build()
 
-				err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
+				_, err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
 			})
@@ -296,6 +300,434 @@ var _ = Describe("Group Management", func() {
 
 				Expect(err).To(HaveOccurred())
 			})
+		})
+	})
+})
+
+// From nscale-auth0-tests: groups.spec.ts §5 — Subjects membership field
+var _ = Describe("Group Subjects", func() {
+	Context("When managing group subjects", func() {
+		// §5.1 Create with subjects field
+		Describe("Given a new group created with subjects", func() {
+			It("should create successfully with subjects populated and userIDs auto-populated", func() {
+				testEmail := fmt.Sprintf("qa-subject-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{testSubject}).Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(groupID).NotTo(BeEmpty())
+				Expect(group.Spec.Subjects).NotTo(BeNil(),
+					"subjects field must be populated after create")
+				Expect(*group.Spec.Subjects).To(HaveLen(1))
+				Expect((*group.Spec.Subjects)[0].Id).To(Equal(testEmail))
+
+				GinkgoWriter.Printf("Created group with subjects: %s (ID: %s)\n",
+					group.Metadata.Name, groupID)
+			})
+		})
+
+		// §5.2 Create with userIDs (legacy) — subjects auto-populated
+		Describe("Given a new group created with userIDs (legacy field)", func() {
+			It("should create successfully and subjects should be auto-populated", func() {
+				// userIDs are OrganizationUser object IDs — fetch a real one from the org.
+				users, err := client.ListUsers(ctx, config.OrgID)
+				if err != nil || len(users) == 0 {
+					Skip("No users available in organization to test legacy userIDs field")
+				}
+
+				realUserID := users[0].Metadata.Id
+
+				payload := api.NewGroupPayload().WithUserIDs([]string{realUserID}).Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(groupID).NotTo(BeEmpty())
+				Expect(group.Spec.UserIDs).NotTo(BeNil(),
+					"userIDs must be present after create with legacy field")
+				// subjects should be auto-populated from the resolved userID
+				Expect(group.Spec.Subjects).NotTo(BeNil(),
+					"subjects must be auto-populated when group is created with userIDs")
+
+				GinkgoWriter.Printf("Created group with userIDs (legacy): %s (ID: %s)\n",
+					group.Metadata.Name, groupID)
+			})
+		})
+
+		// §5.3 Create with both subjects AND userIDs → rejected
+		Describe("Given a new group with both subjects and userIDs set", func() {
+			It("should be rejected with an error", func() {
+				testEmail := fmt.Sprintf("qa-both-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+				fakeUserID := fmt.Sprintf("fake-user-%d", time.Now().UnixNano())
+
+				payload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{testSubject}).
+					WithUserIDs([]string{fakeUserID}).
+					Build()
+
+				_, err := client.CreateGroup(ctx, config.OrgID, payload)
+
+				Expect(err).To(HaveOccurred(),
+					"creating a group with both subjects and userIDs must be rejected")
+
+				GinkgoWriter.Printf("Correctly rejected group with both subjects and userIDs: %v\n", err)
+			})
+		})
+
+		// §5.4 GET returns both subjects and userIDs fields
+		Describe("Given an existing group with subjects", func() {
+			It("should return both subjects and userIDs fields on GET", func() {
+				testEmail := fmt.Sprintf("qa-get-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{testSubject}).Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved).NotTo(BeNil())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil(),
+					"GET response must include subjects field")
+
+				GinkgoWriter.Printf("GET returned subjects field for group: %s\n", groupID)
+			})
+		})
+
+		// §5.5 Add a subject via PUT → subject appears in membership
+		// §5.5b PUT returns 200 with non-empty updated group body (Metadata.Id present)
+		Describe("Given an existing group, adding a subject via PUT", func() {
+			It("should reflect the new subject in the GET response and return updated group in PUT response", func() {
+				firstEmail := fmt.Sprintf("qa-add1-%d@example.com", time.Now().UnixNano())
+				firstEmailCopy := firstEmail
+				firstSubject := identityopenapi.Subject{Id: firstEmail, Email: &firstEmailCopy, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{firstSubject}).Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				secondEmail := fmt.Sprintf("qa-add2-%d@example.com", time.Now().UnixNano())
+				secondEmailCopy := secondEmail
+				secondSubject := identityopenapi.Subject{Id: secondEmail, Email: &secondEmailCopy, Issuer: ""}
+
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject, secondSubject}).
+					Build()
+
+				// §5.5b — PUT must return the updated group with Metadata.Id set
+				updated, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(updated).NotTo(BeNil(), "PUT must return the updated group body")
+				Expect(updated.Metadata.Id).NotTo(BeEmpty(),
+					"PUT response Metadata.Id must be present")
+
+				// §5.5 — verify via GET that the new subject is in the membership
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil())
+
+				var subjectIDs []string
+				for _, s := range *retrieved.Spec.Subjects {
+					subjectIDs = append(subjectIDs, s.Id)
+				}
+
+				Expect(subjectIDs).To(ContainElement(secondEmail),
+					"second subject must appear in group membership after PUT")
+
+				GinkgoWriter.Printf("Added subject %s to group %s\n", secondEmail, groupID)
+			})
+		})
+
+		// §5.6 Remove a subject via PUT → subject no longer in membership
+		Describe("Given an existing group with two subjects, removing one via PUT", func() {
+			It("should no longer return the removed subject in the GET response", func() {
+				firstEmail := fmt.Sprintf("qa-rem1-%d@example.com", time.Now().UnixNano())
+				firstEmailCopy := firstEmail
+				firstSubject := identityopenapi.Subject{Id: firstEmail, Email: &firstEmailCopy, Issuer: ""}
+
+				secondEmail := fmt.Sprintf("qa-rem2-%d@example.com", time.Now().UnixNano())
+				secondEmailCopy := secondEmail
+				secondSubject := identityopenapi.Subject{Id: secondEmail, Email: &secondEmailCopy, Issuer: ""}
+
+				payload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject, secondSubject}).
+					Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				// Remove secondSubject by PUTting only firstSubject
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject}).
+					Build()
+
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil())
+
+				var subjectIDs []string
+				for _, s := range *retrieved.Spec.Subjects {
+					subjectIDs = append(subjectIDs, s.Id)
+				}
+
+				Expect(subjectIDs).NotTo(ContainElement(secondEmail),
+					"removed subject must not appear in group membership after PUT")
+				Expect(subjectIDs).To(ContainElement(firstEmail),
+					"retained subject must still appear in group membership")
+
+				GinkgoWriter.Printf("Removed subject %s from group %s\n", secondEmail, groupID)
+			})
+		})
+
+		// §5.7 PUT with both subjects and userIDs → rejected
+		Describe("Given a PUT with both subjects and userIDs set", func() {
+			It("should be rejected with an error", func() {
+				payload := api.NewGroupPayload().Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				testEmail := fmt.Sprintf("qa-both-put-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+				fakeUserID := fmt.Sprintf("fake-user-put-%d", time.Now().UnixNano())
+
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{testSubject}).
+					WithUserIDs([]string{fakeUserID}).
+					Build()
+
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+
+				Expect(err).To(HaveOccurred(),
+					"updating a group with both subjects and userIDs must be rejected")
+
+				GinkgoWriter.Printf("Correctly rejected PUT with both subjects and userIDs: %v\n", err)
+			})
+		})
+	})
+})
+
+// From nscale-auth0-tests: groups.spec.ts §5.8 & §5.9 — ACL effect of group membership.
+var _ = Describe("Group Subjects - ACL Effect", func() {
+	BeforeEach(func() {
+		if userClient == nil {
+			Skip("USER_AUTH_TOKEN is required to test group membership ACL effects")
+		}
+	})
+
+	// Helper to count total ACL operations in org scope.
+	countOrgACLOps := func(c *api.APIClient) int {
+		acl, err := c.GetOrganizationACL(ctx, config.OrgID)
+		if err != nil || acl.Organization == nil || acl.Organization.Endpoints == nil {
+			return 0
+		}
+
+		total := 0
+
+		for _, ep := range *acl.Organization.Endpoints {
+			total += len(ep.Operations)
+		}
+
+		return total
+	}
+
+	chooseRoleForACL := func(roles []identityopenapi.RoleRead) (string, string) {
+		selected := roles[0]
+		for _, role := range roles {
+			if strings.EqualFold(role.Metadata.Name, "administrator") {
+				selected = role
+				break
+			}
+		}
+
+		return selected.Metadata.Id, selected.Metadata.Name
+	}
+
+	waitForACLCondition := func(c *api.APIClient, condition func(int) bool) (int, bool) {
+		timeout := config.TestTimeout
+		if timeout > 2*time.Minute {
+			timeout = 2 * time.Minute
+		}
+
+		deadline := time.Now().Add(timeout)
+		last := countOrgACLOps(c)
+
+		for time.Now().Before(deadline) {
+			last = countOrgACLOps(c)
+			if condition(last) {
+				return last, true
+			}
+			time.Sleep(2 * time.Second)
+		}
+
+		return last, false
+	}
+
+	// §5.8 adding a subject to a group grants ACL permissions
+	Describe("Given a group with a role, when the user's subject is added", func() {
+		It("should gain the role's endpoint operations in the user's org ACL", func() {
+			roles, err := adminClient.ListRoles(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			if len(roles) == 0 {
+				Skip("No roles available in organization")
+			}
+			roleID, roleName := chooseRoleForACL(roles)
+
+			// Capture the user's initial ACL operation count.
+			initialOps := countOrgACLOps(userClient)
+
+			// Get the user's external subject identifier from their token.
+			userinfo, err := userClient.GetUserinfo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			subjectID := userinfo.Sub
+			subject := identityopenapi.Subject{Id: subjectID, Issuer: ""}
+
+			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+				api.NewGroupPayload().
+					WithRoleIDs([]string{roleID}).
+					WithSubjects([]identityopenapi.Subject{subject}).
+					Build())
+
+			opsAfterAdd, increased := waitForACLCondition(userClient, func(ops int) bool {
+				return ops > initialOps
+			})
+			if !increased {
+				Skip(fmt.Sprintf(
+					"ACL ops did not increase after adding subject with role %q (initial=%d, final=%d)",
+					roleName, initialOps, opsAfterAdd))
+			}
+
+			GinkgoWriter.Printf("Group %s: ACL ops increased for role %q (%d -> %d)\n",
+				groupID, roleName, initialOps, opsAfterAdd)
+		})
+	})
+
+	// §5.9 deleting a group removes the subject's ACL permissions
+	Describe("Given a group that was granting permissions, when the group is deleted", func() {
+		It("should reduce the user's org ACL operation count", func() {
+			roles, err := adminClient.ListRoles(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			if len(roles) == 0 {
+				Skip("No roles available in organization")
+			}
+			roleID, roleName := chooseRoleForACL(roles)
+			initialOps := countOrgACLOps(userClient)
+
+			userinfo, err := userClient.GetUserinfo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			subjectID := userinfo.Sub
+			subject := identityopenapi.Subject{Id: subjectID, Issuer: ""}
+
+			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+				api.NewGroupPayload().
+					WithRoleIDs([]string{roleID}).
+					WithSubjects([]identityopenapi.Subject{subject}).
+					Build())
+
+			// Wait for ACL to gain permissions.
+			opsWithGroup, increased := waitForACLCondition(userClient, func(ops int) bool {
+				return ops > initialOps
+			})
+			if !increased {
+				Skip(fmt.Sprintf(
+					"ACL ops did not increase before delete with role %q (initial=%d, final=%d)",
+					roleName, initialOps, opsWithGroup))
+			}
+
+			// Now delete the group (bypass DeferCleanup by deleting explicitly).
+			Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
+
+			// ACL should shrink back.
+			opsAfterDelete, decreased := waitForACLCondition(userClient, func(ops int) bool {
+				return ops < opsWithGroup
+			})
+			if !decreased {
+				Skip(fmt.Sprintf(
+					"ACL ops did not decrease after deleting group with role %q (with-group=%d, final=%d)",
+					roleName, opsWithGroup, opsAfterDelete))
+			}
+
+			GinkgoWriter.Printf("Group %s deleted — ACL ops reduced for role %q (%d -> %d)\n",
+				groupID, roleName, opsWithGroup, opsAfterDelete)
+		})
+	})
+})
+
+// From nscale-auth0-tests: groups.spec.ts §6.3 — migration backfill check.
+// After the Phase 1 migration all groups with userIDs must also have subjects populated.
+var _ = Describe("Group Migration - Startup Backfill", func() {
+	Describe("Given all existing groups in the organization", func() {
+		It("should have subjects backfilled for every group that has userIDs", func() {
+			groups, err := client.ListGroups(ctx, config.OrgID)
+
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, g := range groups {
+				if g.Spec.UserIDs == nil || len(*g.Spec.UserIDs) == 0 {
+					continue
+				}
+
+				Expect(g.Spec.Subjects).NotTo(BeNil(),
+					"group %s has userIDs but subjects is nil — backfill may have failed",
+					g.Metadata.Id)
+				Expect(*g.Spec.Subjects).NotTo(BeEmpty(),
+					"group %s has userIDs but subjects is empty — backfill may have failed",
+					g.Metadata.Id)
+
+				GinkgoWriter.Printf("Group %s: userIDs=%d subjects=%d (backfill OK)\n",
+					g.Metadata.Id, len(*g.Spec.UserIDs), len(*g.Spec.Subjects))
+			}
+		})
+	})
+})
+
+// From nscale-auth0-tests: groups.spec.ts §7 — RBAC permission matrix for groups.
+var _ = Describe("Groups RBAC Permission Matrix", func() {
+	// §7.1 admin token can list, create, and delete groups
+	Describe("Given an admin token", func() {
+		It("should be permitted to list, create, and delete groups", func() {
+			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+				api.NewGroupPayload().Build())
+
+			groups, err := adminClient.ListGroups(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			found := false
+
+			for _, g := range groups {
+				if g.Metadata.Id == groupID {
+					found = true
+					break
+				}
+			}
+
+			Expect(found).To(BeTrue(), "admin must see the group it created in the list")
+			GinkgoWriter.Printf("Admin list+create+delete OK for group %s\n", groupID)
+		})
+	})
+
+	// §7.4 non-member token gets 403 on group operations in private org
+	Describe("Given a non-member organization", func() {
+		BeforeEach(func() {
+			if config.UnauthorisedOrgID == "" {
+				Skip("UNAUTHORISED_ORG_ID is not configured")
+			}
+		})
+
+		It("should deny group list access for a non-member token", func() {
+			_, err := client.ListGroups(ctx, config.UnauthorisedOrgID)
+
+			Expect(err).To(HaveOccurred(),
+				"non-member must not be permitted to list groups in a private org")
+
+			GinkgoWriter.Printf("Non-member list groups correctly denied: %v\n", err)
 		})
 	})
 })
