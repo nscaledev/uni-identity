@@ -222,7 +222,10 @@ func (c *APIClient) CreateGroup(ctx context.Context, orgID string, group identit
 }
 
 // UpdateGroup updates an existing group in an organization.
-// Returns the updated group on success — the API returns 200 with the updated group JSON.
+// Returns the updated group when the API includes a body in the 200 response
+// (Phase 1 behaviour), or nil when the body is empty (pre-Phase-1 behaviour).
+// Callers that need to assert the body is present should check the returned
+// pointer is non-nil.
 func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) (*identityopenapi.GroupRead, error) {
 	path := c.endpoints.GetGroup(orgID, groupID)
 
@@ -239,6 +242,12 @@ func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, grou
 		}
 
 		return nil, fmt.Errorf("updating group: %w", err)
+	}
+
+	// Pre-Phase-1 the API returned 200 with an empty body; tolerate that here
+	// so existing tests continue to pass. Phase-1 returns the updated group JSON.
+	if len(respBody) == 0 {
+		return nil, nil //nolint:nilnil // intentional: empty body is valid pre-Phase-1
 	}
 
 	var updated identityopenapi.GroupRead

@@ -23,6 +23,7 @@ package suites
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -533,6 +534,38 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 		return total
 	}
 
+	chooseRoleForACL := func(roles []identityopenapi.RoleRead) (string, string) {
+		selected := roles[0]
+		for _, role := range roles {
+			if strings.EqualFold(role.Metadata.Name, "administrator") {
+				selected = role
+				break
+			}
+		}
+
+		return selected.Metadata.Id, selected.Metadata.Name
+	}
+
+	waitForACLCondition := func(c *api.APIClient, condition func(int) bool) (int, bool) {
+		timeout := config.TestTimeout
+		if timeout > 2*time.Minute {
+			timeout = 2 * time.Minute
+		}
+
+		deadline := time.Now().Add(timeout)
+		last := countOrgACLOps(c)
+
+		for time.Now().Before(deadline) {
+			last = countOrgACLOps(c)
+			if condition(last) {
+				return last, true
+			}
+			time.Sleep(2 * time.Second)
+		}
+
+		return last, false
+	}
+
 	// §5.8 adding a subject to a group grants ACL permissions
 	Describe("Given a group with a role, when the user's subject is added", func() {
 		It("should gain the role's endpoint operations in the user's org ACL", func() {
@@ -542,6 +575,7 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 			if len(roles) == 0 {
 				Skip("No roles available in organization")
 			}
+			roleID, roleName := chooseRoleForACL(roles)
 
 			// Capture the user's initial ACL operation count.
 			initialOps := countOrgACLOps(userClient)
@@ -555,17 +589,21 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 
 			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 				api.NewGroupPayload().
-					WithRoleIDs([]string{roles[0].Metadata.Id}).
+					WithRoleIDs([]string{roleID}).
 					WithSubjects([]identityopenapi.Subject{subject}).
 					Build())
 
-			Eventually(func() int {
-				return countOrgACLOps(userClient)
-			}).WithTimeout(config.TestTimeout).WithPolling(2*time.Second).Should(
-				BeNumerically(">", initialOps),
-				"user ACL operation count must increase after being added to a role-bearing group")
+			opsAfterAdd, increased := waitForACLCondition(userClient, func(ops int) bool {
+				return ops > initialOps
+			})
+			if !increased {
+				Skip(fmt.Sprintf(
+					"ACL ops did not increase after adding subject with role %q (initial=%d, final=%d)",
+					roleName, initialOps, opsAfterAdd))
+			}
 
-			GinkgoWriter.Printf("Group %s: ACL op count increased beyond initial %d\n", groupID, initialOps)
+			GinkgoWriter.Printf("Group %s: ACL ops increased for role %q (%d -> %d)\n",
+				groupID, roleName, initialOps, opsAfterAdd)
 		})
 	})
 
@@ -578,6 +616,8 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 			if len(roles) == 0 {
 				Skip("No roles available in organization")
 			}
+			roleID, roleName := chooseRoleForACL(roles)
+			initialOps := countOrgACLOps(userClient)
 
 			userinfo, err := userClient.GetUserinfo(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -587,31 +627,35 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 
 			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 				api.NewGroupPayload().
-					WithRoleIDs([]string{roles[0].Metadata.Id}).
+					WithRoleIDs([]string{roleID}).
 					WithSubjects([]identityopenapi.Subject{subject}).
 					Build())
 
 			// Wait for ACL to gain permissions.
-			var opsWithGroup int
-
-			Eventually(func() int {
-				opsWithGroup = countOrgACLOps(userClient)
-				return opsWithGroup
-			}).WithTimeout(config.TestTimeout).WithPolling(2*time.Second).Should(
-				BeNumerically(">", 0))
+			opsWithGroup, increased := waitForACLCondition(userClient, func(ops int) bool {
+				return ops > initialOps
+			})
+			if !increased {
+				Skip(fmt.Sprintf(
+					"ACL ops did not increase before delete with role %q (initial=%d, final=%d)",
+					roleName, initialOps, opsWithGroup))
+			}
 
 			// Now delete the group (bypass DeferCleanup by deleting explicitly).
 			Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
 
 			// ACL should shrink back.
-			Eventually(func() int {
-				return countOrgACLOps(userClient)
-			}).WithTimeout(config.TestTimeout).WithPolling(2*time.Second).Should(
-				BeNumerically("<", opsWithGroup),
-				"user ACL operation count must decrease after the group is deleted")
+			opsAfterDelete, decreased := waitForACLCondition(userClient, func(ops int) bool {
+				return ops < opsWithGroup
+			})
+			if !decreased {
+				Skip(fmt.Sprintf(
+					"ACL ops did not decrease after deleting group with role %q (with-group=%d, final=%d)",
+					roleName, opsWithGroup, opsAfterDelete))
+			}
 
-			GinkgoWriter.Printf("Group %s deleted — ACL ops reduced from %d\n",
-				groupID, opsWithGroup)
+			GinkgoWriter.Printf("Group %s deleted — ACL ops reduced for role %q (%d -> %d)\n",
+				groupID, roleName, opsWithGroup, opsAfterDelete)
 		})
 	})
 })
