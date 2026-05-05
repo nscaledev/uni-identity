@@ -36,22 +36,22 @@ var (
 	// passport — return a server error, not a credential error.
 	ErrJWKSUnavailable = errors.New("JWKS unavailable")
 
-	// ErrExchangeUnauthorized indicates the source token failed token exchange
+	// ErrTokenExchangeUnauthorized indicates the source token failed token exchange
 	// authentication and should be surfaced as 401.
-	ErrExchangeUnauthorized = errors.New("token exchange unauthorized")
+	ErrTokenExchangeUnauthorized = errors.New("token exchange unauthorized")
 
-	// ErrExchangeUnavailable indicates token exchange could not be completed
+	// ErrTokenExchangeUnavailable indicates token exchange could not be completed
 	// due to transport or upstream unavailability and should degrade to remote.
-	ErrExchangeUnavailable = errors.New("token exchange unavailable")
+	ErrTokenExchangeUnavailable = errors.New("token exchange unavailable")
 
-	// ErrExchangeFailed indicates token exchange returned a non-retriable
+	// ErrTokenExchangeFailed indicates token exchange returned a non-retriable
 	// non-success response status.
-	ErrExchangeFailed = errors.New("token exchange failed")
+	ErrTokenExchangeFailed = errors.New("token exchange failed")
 
-	// ErrExchangeInvalidResponse indicates a malformed successful response body.
-	ErrExchangeInvalidResponse = errors.New("token exchange invalid response")
+	// ErrTokenExchangeInvalidResponse indicates a malformed successful response body.
+	ErrTokenExchangeInvalidResponse = errors.New("token exchange invalid response")
 
-	// ErrExchangeMissingAccessToken indicates a successful response omitted
+	// ErrTokenExchangeMissingAccessToken indicates a successful response omitted
 	// the access_token field.
-	ErrExchangeMissingAccessToken = errors.New("token exchange response missing access token")
+	ErrTokenExchangeMissingAccessToken = errors.New("token exchange response missing access token")
 )

@@ -34,7 +34,7 @@ func TestExchangeClient(t *testing.T) {
 		name      string
 		status    int
 		body      string
-		options   *exchangeOptions
+		options   *tokenExchangeOptions
 		expectErr error
 		contains  string
 	}{
@@ -42,7 +42,7 @@ func TestExchangeClient(t *testing.T) {
 			name:   "returns exchanged passport on success",
 			status: http.StatusOK,
 			body:   `{"access_token":"passport-token"}`,
-			options: &exchangeOptions{
+			options: &tokenExchangeOptions{
 				organizationID: "org-1",
 				projectID:      "proj-1",
 			},
@@ -51,13 +51,13 @@ func TestExchangeClient(t *testing.T) {
 			name:      "returns unauthorized sentinel on 401",
 			status:    http.StatusUnauthorized,
 			body:      `{"error":"access_denied"}`,
-			expectErr: ErrExchangeUnauthorized,
+			expectErr: ErrTokenExchangeUnauthorized,
 		},
 		{
 			name:      "returns unavailable sentinel on 503",
 			status:    http.StatusServiceUnavailable,
 			body:      `{"error":"server_error"}`,
-			expectErr: ErrExchangeUnavailable,
+			expectErr: ErrTokenExchangeUnavailable,
 		},
 		{
 			name:     "returns error on malformed success body",
@@ -94,7 +94,7 @@ func TestExchangeClient(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := newExchangeClient(server.Client(), server.URL)
+			client := NewHTTPTokenExchange(server.Client(), TokenExchangeURL(server.URL))
 			passport, err := client.Exchange(t.Context(), "raw-token", tt.options)
 
 			if tt.expectErr != nil || tt.contains != "" {
@@ -131,8 +131,8 @@ func TestExchangeClientTimeout(t *testing.T) {
 	httpClient := server.Client()
 	httpClient.Timeout = 10 * time.Millisecond
 
-	client := newExchangeClient(httpClient, server.URL)
+	client := NewHTTPTokenExchange(httpClient, TokenExchangeURL(server.URL))
 	_, err := client.Exchange(t.Context(), "raw-token", nil)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrExchangeUnavailable)
+	assert.ErrorIs(t, err, ErrTokenExchangeUnavailable)
 }

@@ -37,7 +37,19 @@ import (
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
-var errExchangeNotConfigured = errors.New("exchange not configured")
+var errTokenExchangeNotConfigured = errors.New("token exchange not configured")
+
+type keySourceFunc func(ctx context.Context, kid string) (*jose.JSONWebKey, error)
+
+func (f keySourceFunc) Get(ctx context.Context, kid string) (*jose.JSONWebKey, error) {
+	return f(ctx, kid)
+}
+
+func newNoopVerifier() *Verifier {
+	return NewVerifier(keySourceFunc(func(_ context.Context, _ string) (*jose.JSONWebKey, error) {
+		return &jose.JSONWebKey{}, nil
+	}))
+}
 
 func oauth2AuthInput(rawToken string) *openapi3filter.AuthenticationInput {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -51,7 +63,7 @@ func oauth2AuthInput(rawToken string) *openapi3filter.AuthenticationInput {
 	}
 }
 
-func newAuthorizerWithMock(t *testing.T, keyPair testKeyPair, exchange exchanger) (*Authorizer, *mock.MockAuthorizer) {
+func newAuthorizerWithMock(t *testing.T, keyPair testKeyPair, tokenExchange TokenExchange) (*Authorizer, *mock.MockAuthorizer) {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -68,19 +80,19 @@ func newAuthorizerWithMock(t *testing.T, keyPair testKeyPair, exchange exchanger
 
 	t.Cleanup(server.Close)
 
-	jwksCache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
-	verifier := NewVerifier(jwksCache)
+	keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
+	verifier := NewVerifier(keySource)
 
-	if exchange == nil {
-		exchange = exchangeFunc(func(_ context.Context, _ string, _ *exchangeOptions) (string, error) {
-			return "", errExchangeNotConfigured
+	if tokenExchange == nil {
+		tokenExchange = tokenExchangeFunc(func(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
+			return "", errTokenExchangeNotConfigured
 		})
 	}
 
 	authorizer := &Authorizer{
-		verifier: verifier,
-		uni:      uni,
-		exchange: exchange,
+		verifier:      verifier,
+		uni:           uni,
+		tokenExchange: tokenExchange,
 	}
 
 	return authorizer, uni
@@ -89,55 +101,49 @@ func newAuthorizerWithMock(t *testing.T, keyPair testKeyPair, exchange exchanger
 func TestNewAuthorizer(t *testing.T) {
 	t.Parallel()
 
+	t.Run("rejects nil verifier", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		uni := mock.NewMockAuthorizer(ctrl)
+		tokenExchange := tokenExchangeFunc(func(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
+			return "", nil
+		})
+
+		authorizer, err := NewAuthorizer(nil, uni, tokenExchange)
+
+		require.Error(t, err)
+		require.ErrorIs(t, err, errVerifierRequired)
+		assert.Nil(t, authorizer)
+	})
+
 	t.Run("rejects nil fallback authorizer", func(t *testing.T) {
 		t.Parallel()
 
-		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", nil, nil)
+		verifier := newNoopVerifier()
+		tokenExchange := tokenExchangeFunc(func(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
+			return "", nil
+		})
+
+		authorizer, err := NewAuthorizer(verifier, nil, tokenExchange)
 
 		require.Error(t, err)
 		require.ErrorIs(t, err, errUniAuthorizerRequired)
-		assert.Nil(t, a)
+		assert.Nil(t, authorizer)
 	})
 
-	t.Run("requires HTTP client and identity host", func(t *testing.T) {
+	t.Run("rejects nil token exchanger", func(t *testing.T) {
 		t.Parallel()
 
-		tests := []struct {
-			name      string
-			ctor      func(uni *mock.MockAuthorizer) (*Authorizer, error)
-			expectErr error
-		}{
-			{
-				name: "requires HTTP client",
-				ctor: func(uni *mock.MockAuthorizer) (*Authorizer, error) {
-					return NewAuthorizer(nil, "https://identity.example.com", uni, nil)
-				},
-				expectErr: errHTTPClientRequired,
-			},
-			{
-				name: "requires identity host",
-				ctor: func(uni *mock.MockAuthorizer) (*Authorizer, error) {
-					return NewAuthorizer(http.DefaultClient, "", uni, nil)
-				},
-				expectErr: errIdentityHostRequired,
-			},
-		}
+		ctrl := gomock.NewController(t)
+		uni := mock.NewMockAuthorizer(ctrl)
+		verifier := newNoopVerifier()
 
-		for _, tt := range tests {
-			tc := tt
+		authorizer, err := NewAuthorizer(verifier, uni, nil)
 
-			t.Run(tc.name, func(t *testing.T) {
-				t.Parallel()
-
-				ctrl := gomock.NewController(t)
-				uni := mock.NewMockAuthorizer(ctrl)
-
-				a, err := tc.ctor(uni)
-				require.Error(t, err)
-				require.ErrorIs(t, err, tc.expectErr)
-				assert.Nil(t, a)
-			})
-		}
+		require.Error(t, err)
+		require.ErrorIs(t, err, errTokenExchangeRequired)
+		assert.Nil(t, authorizer)
 	})
 
 	t.Run("delegates ACL retrieval to injected fallback authorizer", func(t *testing.T) {
@@ -146,32 +152,23 @@ func TestNewAuthorizer(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		uni := mock.NewMockAuthorizer(ctrl)
 
-		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", uni, nil)
+		verifier := newNoopVerifier()
+		tokenExchange := tokenExchangeFunc(func(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
+			return "", nil
+		})
+
+		authorizer, err := NewAuthorizer(verifier, uni, tokenExchange)
 		require.NoError(t, err)
 
 		ctx := t.Context()
 		expectedACL := &identityapi.Acl{}
 		uni.EXPECT().GetACL(ctx, "org-123").Return(expectedACL, nil)
 
-		acl, getErr := a.GetACL(ctx, "org-123")
+		acl, getErr := authorizer.GetACL(ctx, "org-123")
 		require.NoError(t, getErr)
 		assert.Equal(t, expectedACL, acl)
 	})
 
-	t.Run("accepts explicit constructor options", func(t *testing.T) {
-		t.Parallel()
-
-		ctrl := gomock.NewController(t)
-		uni := mock.NewMockAuthorizer(ctrl)
-
-		a, err := NewAuthorizer(http.DefaultClient, "https://identity.example.com", uni, &Options{
-			JWKSCacheTTL:    2 * time.Minute,
-			JWKSTimeout:     500 * time.Millisecond,
-			ExchangeTimeout: 600 * time.Millisecond,
-		})
-		require.NoError(t, err)
-		assert.NotNil(t, a)
-	})
 }
 
 func TestGetBearerToken(t *testing.T) {
@@ -242,7 +239,7 @@ func TestAuthorizer_Authorize(t *testing.T) {
 	tests := []struct {
 		name      string
 		makeToken func(t *testing.T, keyPair testKeyPair) string
-		exchange  func(t *testing.T, keyPair testKeyPair) exchanger
+		exchange  func(t *testing.T, keyPair testKeyPair) TokenExchange
 		setupMock func(mockRemote *mock.MockAuthorizer, input *openapi3filter.AuthenticationInput)
 		expectErr bool
 		contains  string
@@ -260,9 +257,9 @@ func TestAuthorizer_Authorize(t *testing.T) {
 			makeToken: func(_ *testing.T, _ testKeyPair) string {
 				return "not.a.passport"
 			},
-			exchange: func(_ *testing.T, _ testKeyPair) exchanger {
-				return exchangeFunc(func(_ context.Context, _ string, _ *exchangeOptions) (string, error) {
-					return "", ErrExchangeUnauthorized
+			exchange: func(_ *testing.T, _ testKeyPair) TokenExchange {
+				return tokenExchangeFunc(func(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
+					return "", ErrTokenExchangeUnauthorized
 				})
 			},
 			expectErr: true,
@@ -273,9 +270,9 @@ func TestAuthorizer_Authorize(t *testing.T) {
 			makeToken: func(_ *testing.T, _ testKeyPair) string {
 				return "not.a.passport"
 			},
-			exchange: func(_ *testing.T, _ testKeyPair) exchanger {
-				return exchangeFunc(func(_ context.Context, _ string, _ *exchangeOptions) (string, error) {
-					return "", ErrExchangeUnavailable
+			exchange: func(_ *testing.T, _ testKeyPair) TokenExchange {
+				return tokenExchangeFunc(func(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
+					return "", ErrTokenExchangeUnavailable
 				})
 			},
 			setupMock: func(mockRemote *mock.MockAuthorizer, input *openapi3filter.AuthenticationInput) {
@@ -296,12 +293,12 @@ func TestAuthorizer_Authorize(t *testing.T) {
 			makeToken: func(_ *testing.T, _ testKeyPair) string {
 				return "raw-source-token"
 			},
-			exchange: func(t *testing.T, keyPair testKeyPair) exchanger {
+			exchange: func(t *testing.T, keyPair testKeyPair) TokenExchange {
 				t.Helper()
 
 				passportToken := mintPassport(t, keyPair)
 
-				return exchangeFunc(func(_ context.Context, sourceToken string, _ *exchangeOptions) (string, error) {
+				return tokenExchangeFunc(func(_ context.Context, sourceToken string, _ *tokenExchangeOptions) (string, error) {
 					assert.Equal(t, "raw-source-token", sourceToken)
 					return passportToken, nil
 				})
@@ -354,12 +351,12 @@ func TestAuthorizer_Authorize(t *testing.T) {
 
 			keyPair := newTestKeyPair(t, "auth-kid")
 
-			var exchange exchanger
+			var tokenExchange TokenExchange
 			if tt.exchange != nil {
-				exchange = tt.exchange(t, keyPair)
+				tokenExchange = tt.exchange(t, keyPair)
 			}
 
-			authorizer, remote := newAuthorizerWithMock(t, keyPair, exchange)
+			authorizer, remote := newAuthorizerWithMock(t, keyPair, tokenExchange)
 
 			token := tt.makeToken(t, keyPair)
 			input := oauth2AuthInput(token)
@@ -411,9 +408,9 @@ func TestAuthorizer_AuthorizePassesScopeToExchange(t *testing.T) {
 
 	keyPair := newTestKeyPair(t, "auth-kid")
 
-	var capturedOptions *exchangeOptions
+	var capturedOptions *tokenExchangeOptions
 
-	authorizer, _ := newAuthorizerWithMock(t, keyPair, exchangeFunc(func(_ context.Context, sourceToken string, options *exchangeOptions) (string, error) {
+	authorizer, _ := newAuthorizerWithMock(t, keyPair, tokenExchangeFunc(func(_ context.Context, sourceToken string, options *tokenExchangeOptions) (string, error) {
 		assert.Equal(t, "raw-source-token", sourceToken)
 
 		capturedOptions = options
@@ -471,7 +468,7 @@ func TestPassportFlow_ACLContextPropagation(t *testing.T) {
 		keyPair := newTestKeyPair(t, "auth-kid")
 		passportToken := mintPassport(t, keyPair)
 
-		authorizer, uni := newAuthorizerWithMock(t, keyPair, exchangeFunc(func(_ context.Context, sourceToken string, _ *exchangeOptions) (string, error) {
+		authorizer, uni := newAuthorizerWithMock(t, keyPair, tokenExchangeFunc(func(_ context.Context, sourceToken string, _ *tokenExchangeOptions) (string, error) {
 			require.Equal(t, "raw-source-token", sourceToken)
 			return passportToken, nil
 		}))
@@ -534,7 +531,7 @@ func TestNewExchangeOptionsFromInput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			options := newExchangeOptionsFromInput(tt.input)
+			options := newTokenExchangeOptionsFromInput(tt.input)
 			if tt.expectNil {
 				assert.Nil(t, options)
 				return
@@ -545,33 +542,4 @@ func TestNewExchangeOptionsFromInput(t *testing.T) {
 			assert.Equal(t, tt.expectPrj, options.projectID)
 		})
 	}
-}
-
-func TestAuthorizerOptionsWithDefaults(t *testing.T) {
-	t.Parallel()
-
-	t.Run("applies package defaults when nil", func(t *testing.T) {
-		t.Parallel()
-
-		var options *Options
-		resolved := options.withDefaults()
-
-		assert.Equal(t, defaultJWKSCacheTTL, resolved.JWKSCacheTTL)
-		assert.Equal(t, defaultJWKSTimeout, resolved.JWKSTimeout)
-		assert.Equal(t, defaultExchangeTimeout, resolved.ExchangeTimeout)
-	})
-
-	t.Run("preserves explicit non-zero values", func(t *testing.T) {
-		t.Parallel()
-
-		resolved := (&Options{
-			JWKSCacheTTL:    2 * time.Minute,
-			JWKSTimeout:     750 * time.Millisecond,
-			ExchangeTimeout: 900 * time.Millisecond,
-		}).withDefaults()
-
-		assert.Equal(t, 2*time.Minute, resolved.JWKSCacheTTL)
-		assert.Equal(t, 750*time.Millisecond, resolved.JWKSTimeout)
-		assert.Equal(t, 900*time.Millisecond, resolved.ExchangeTimeout)
-	})
 }

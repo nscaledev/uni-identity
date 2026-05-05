@@ -33,12 +33,12 @@ import (
 
 // Verifier verifies passport JWTs locally using cached JWKS public keys.
 type Verifier struct {
-	cache *JWKSCache
+	keySource KeySource
 }
 
-// NewVerifier returns a new Verifier backed by the given JWKS cache.
-func NewVerifier(cache *JWKSCache) *Verifier {
-	return &Verifier{cache: cache}
+// NewVerifier returns a new Verifier backed by the given key source.
+func NewVerifier(keySource KeySource) *Verifier {
+	return &Verifier{keySource: keySource}
 }
 
 // Verify auto-detects and verifies a passport JWT.
@@ -63,7 +63,7 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*identityoauth2
 		return nil, fmt.Errorf("%w: JWT has no kid", ErrPassportInvalidSig)
 	}
 
-	publicKey, err := v.cache.Get(ctx, kid)
+	publicKey, err := v.keySource.Get(ctx, kid)
 	if err != nil {
 		if errors.Is(err, ErrJWKSUnavailable) {
 			return nil, err
@@ -107,6 +107,10 @@ func (v *Verifier) verifyClaims(token *jwt.JSONWebToken, publicKey *jose.JSONWeb
 // isPassport decodes the JWT payload (without verifying the signature) and returns
 // true if the typ body claim equals PassportType.
 // Any decode/unmarshal failure is treated as a non-passport token.
+//
+// This pre-check is only a routing hint for choosing the auth path; it is not
+// a trust decision. Passport signature and claims are fully verified in Verify,
+// including a defense-in-depth typ re-check after signature validation.
 func isPassport(rawToken string) bool {
 	var claims struct {
 		Type string `json:"typ"`
