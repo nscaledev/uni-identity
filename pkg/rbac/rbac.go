@@ -44,6 +44,7 @@ var (
 	ErrNoAuthz                = goerrors.New("no authorization data in userinfo")
 	ErrWrongOrganizationCount = goerrors.New("expected exactly one organization ID")
 	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
+	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
 )
 
 type Options struct {
@@ -838,10 +839,12 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		organizationIDs = []string{p.OrganizationID}
 	}
 
-	userACL, err := r.processUserAccountACL(ctx, p.Actor, organizationID, &openapi.AuthClaims{
-		Acctype: openapi.User,
+	principalACLClaims := &openapi.AuthClaims{
+		Acctype: p.Type,
 		OrgIds:  organizationIDs,
-	})
+	}
+
+	principalACL, err := r.processImpersonatedPrincipalACL(ctx, p, organizationID, principalACLClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -851,7 +854,20 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		return nil, err
 	}
 
-	return intersectACL(userACL, serviceACL), nil
+	return intersectACL(principalACL, serviceACL), nil
+}
+
+func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal.Principal, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+	switch p.Type {
+	case openapi.User:
+		return r.processUserAccountACL(ctx, p.Actor, organizationID, authz)
+	case openapi.Service:
+		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
+	case openapi.System:
+		return nil, fmt.Errorf("%w: %q", ErrInvalidPrincipalType, p.Type)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrInvalidPrincipalType, p.Type)
+	}
 }
 
 // GetACL returns a granular set of permissions for a user based on their scope.

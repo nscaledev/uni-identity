@@ -18,15 +18,22 @@ limitations under the License.
 package openapi_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
@@ -93,6 +100,38 @@ func addCertificateHeader(t *testing.T, r *http.Request, verified bool) {
 	}
 }
 
+func addCertificateHeaderForCN(t *testing.T, r *http.Request, verified bool, commonName string) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	require.NoError(t, err)
+
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: der,
+	})
+
+	r.Header.Set("Ssl-Client-Cert", url.QueryEscape(string(certPEM)))
+
+	if verified {
+		r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+	}
+}
+
 func addRelayedCertificateHeader(t *testing.T, r *http.Request) {
 	t.Helper()
 
@@ -146,8 +185,20 @@ func addPrincipalHeader(t *testing.T, r *http.Request) {
 	t.Helper()
 
 	p := &principal.Principal{
+		Type:  identityapi.User,
 		Actor: userActor,
 	}
+
+	dataJSON, err := json.Marshal(p)
+	require.NoError(t, err)
+
+	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(dataJSON))
+}
+
+func addPrincipalHeaderWithoutActor(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	p := &principal.Principal{}
 
 	dataJSON, err := json.Marshal(p)
 	require.NoError(t, err)
@@ -164,10 +215,19 @@ func addAuthorizationHeader(t *testing.T, r *http.Request) {
 
 // authInfoFixture creates a fixture to be returned from the Authorizer interface
 // on successful authentication.
-func authInfoFixture(actor string) *authorization.Info {
+func authInfoFixture(actor string, accountType identityapi.AuthClaimsAcctype) *authorization.Info {
+	authz := &identityapi.AuthClaims{
+		Acctype: accountType,
+	}
+
+	if accountType == "" {
+		authz = nil
+	}
+
 	return &authorization.Info{
 		Userinfo: &identityapi.Userinfo{
-			Sub: actor,
+			Sub:                       actor,
+			HttpsunikornCloudOrgauthz: authz,
 		},
 	}
 }
@@ -206,7 +266,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // validate checks all the correct bits are set, and the actor and principal
 // actors are correct.  The former is the parameter as that can change based
 // on calling context.
-func (h *handler) validate(t *testing.T, actor string) {
+func (h *handler) validate(t *testing.T, actor string, principalType identityapi.AuthClaimsAcctype) {
 	t.Helper()
 
 	// Check the authentication information is good for auditing.
@@ -220,6 +280,10 @@ func (h *handler) validate(t *testing.T, actor string) {
 	// Check the principal information is good for further auditing and accounting.
 	require.NotNil(t, h.principal)
 	require.Equal(t, userActor, h.principal.Actor)
+
+	if principalType != "" {
+		require.Equal(t, principalType, h.principal.Type)
+	}
 }
 
 // getSchema loads and validates the test schema that is defined for this
@@ -249,7 +313,8 @@ func getMux(t *testing.T, authorizer openapi.Authorizer, handler *handler) http.
 	t.Helper()
 
 	options := &openapi.Options{
-		ACLCacheSize: 1,
+		ACLCacheSize:    1,
+		ACLCacheTimeout: time.Minute,
 	}
 
 	routeresolver := routeresolver.New(getSchema(t))
@@ -301,11 +366,23 @@ func TestUserToServiceAuthenticationFailure(t *testing.T) {
 func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 	t.Parallel()
 
+	testUserToServiceAuthenticationSuccess(t, identityapi.User)
+}
+
+func TestUserToServiceAuthenticationSuccessServiceAccountPrincipal(t *testing.T) {
+	t.Parallel()
+
+	testUserToServiceAuthenticationSuccess(t, identityapi.Service)
+}
+
+func testUserToServiceAuthenticationSuccess(t *testing.T, principalType identityapi.AuthClaimsAcctype) {
+	t.Helper()
+
 	c := gomock.NewController(t)
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor), nil)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, principalType), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
@@ -321,7 +398,7 @@ func TestUserToServiceAuthenticationSuccess(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
-	h.validate(t, userActor)
+	h.validate(t, userActor, principalType)
 }
 
 // TestServiceToServiceMalformedCertificate tests the response when a client certificate is
@@ -449,7 +526,7 @@ func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
-	h.validate(t, serviceActor)
+	h.validate(t, serviceActor, "")
 }
 
 func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
@@ -475,7 +552,161 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
-	h.validate(t, serviceActor)
+	h.validate(t, serviceActor, "")
+}
+
+func TestServiceToServiceImpersonationRequiresActor(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	addCertificateHeader(t, r, true)
+	addPrincipalHeaderWithoutActor(t, r)
+	r.Header.Set(principal.ImpersonateHeader, "true")
+
+	m.ServeHTTP(w, r)
+
+	validateError(t, w, errors.IsBadRequest)
+}
+
+func TestServiceToServiceDirectAndImpersonatedACLsDoNotShareCacheEntries(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(2).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	r1, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeader(t, r1, true)
+	addPrincipalHeader(t, r1)
+
+	w1 := httptest.NewRecorder()
+	m.ServeHTTP(w1, r1)
+	require.Equal(t, http.StatusOK, w1.Result().StatusCode)
+
+	r2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeader(t, r2, true)
+	addPrincipalHeader(t, r2)
+	r2.Header.Set(principal.ImpersonateHeader, "true")
+
+	w2 := httptest.NewRecorder()
+	m.ServeHTTP(w2, r2)
+	require.Equal(t, http.StatusOK, w2.Result().StatusCode)
+}
+
+func TestServiceToServiceDirectACLsReuseCacheEntries(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(1).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	r1, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeader(t, r1, true)
+	addPrincipalHeader(t, r1)
+
+	w1 := httptest.NewRecorder()
+	m.ServeHTTP(w1, r1)
+	require.Equal(t, http.StatusOK, w1.Result().StatusCode)
+
+	r2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeader(t, r2, true)
+	addPrincipalHeader(t, r2)
+
+	w2 := httptest.NewRecorder()
+	m.ServeHTTP(w2, r2)
+	require.Equal(t, http.StatusOK, w2.Result().StatusCode)
+}
+
+func TestServiceToServiceImpersonatedACLsReuseCacheEntries(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(1).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	r1, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeader(t, r1, true)
+	addPrincipalHeader(t, r1)
+	r1.Header.Set(principal.ImpersonateHeader, "true")
+
+	w1 := httptest.NewRecorder()
+	m.ServeHTTP(w1, r1)
+	require.Equal(t, http.StatusOK, w1.Result().StatusCode)
+
+	r2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeader(t, r2, true)
+	addPrincipalHeader(t, r2)
+	r2.Header.Set(principal.ImpersonateHeader, "true")
+
+	w2 := httptest.NewRecorder()
+	m.ServeHTTP(w2, r2)
+	require.Equal(t, http.StatusOK, w2.Result().StatusCode)
+}
+
+func TestServiceToServiceImpersonatedACLsDoNotShareCacheEntriesAcrossServices(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(2).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	r1, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeaderForCN(t, r1, true, "compute-service")
+	addPrincipalHeader(t, r1)
+	r1.Header.Set(principal.ImpersonateHeader, "true")
+
+	w1 := httptest.NewRecorder()
+	m.ServeHTTP(w1, r1)
+	require.Equal(t, http.StatusOK, w1.Result().StatusCode)
+
+	r2, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+	addCertificateHeaderForCN(t, r2, true, "region-service")
+	addPrincipalHeader(t, r2)
+	r2.Header.Set(principal.ImpersonateHeader, "true")
+
+	w2 := httptest.NewRecorder()
+	m.ServeHTTP(w2, r2)
+	require.Equal(t, http.StatusOK, w2.Result().StatusCode)
 }
 
 type poisonReader struct{}

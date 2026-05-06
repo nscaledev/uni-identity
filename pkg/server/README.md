@@ -1,57 +1,139 @@
-# Unikorn Server
+# `pkg/server`
 
-## Code Generation
+This package is the runtime assembly layer for the identity API process.
 
-Everything is done with an OpenAPI schema.
-This allows us to auto-generate the server routing, schema validation middleware, types and clients.
-This happens automatically on update via the `Makefile`.
-Please ensure updated generated code is commited with your pull request.
+## Intent
 
-## API Definition
+`pkg/server` is where the identity service turns its documented building blocks into one running
+HTTP server.
 
-Consult the [OpenAPI schema](../../pkg/server/openapi/server.spec.yaml) for full details of what it does.
+It does not own the shared generic server framework in the way `../core/pkg/server` does, and it
+does not own business behaviour in the way handlers do. Instead it composes:
 
-## Getting Started with Development and Testing.
+- the shared `core` server substrate
+- identity-specific authn/authz and trust middleware
+- the concrete handler layer
+- the helper services those layers depend on
 
-Once everything is up and running, grab the IP address:
+into one application-level runtime pipeline.
 
-```bash
-export INGRESS_ADDR=$(kubectl -n unikorn get ingress/unikorn-server -o 'jsonpath={.status.loadBalancer.ingress[0].ip}')
-```
-And add it to your resolver:
+## What Is Specific Here
 
-```bash
-echo "${INGRESS_ADDR} kubernetes.eschercloud.com" >> /etc/hosts
-```
+### Identity Runtime Composition
 
-## API Testing
+This package wires together the process-wide services that the rest of the API stack relies on:
 
-This does what a client is expected to do to bootstrap a session.
-Copy this, make a script, whatever works for you!
+- `jose` for token cryptography and JWKS/signing-key lifecycle
+- `userdb` for local identity resolution
+- `rbac` for effective authority construction
+- `oauth2` for built-in token and session handling
+- middleware for request-time trust assembly
+- handlers for resource-specific API behaviour
 
-### Get an Unscoped Token
+That makes `pkg/server` the place where separately documented packages become one coherent identity
+service.
 
-When you first log in the the system you'll supply a username and password:
+### Shared Core Stack Plus Local Trust Stack
 
-```bash
-export TOKEN=$(curl -vkq https://kubernetes.eschercloud.com/api/v1/auth/tokens/password -X POST -u 'username:password' | jq  -r .token)
-```
+The package deliberately composes two layers of middleware:
 
-### Get a List of Projects
+- the shared pre-routing server pipeline from `core`
+- the identity-specific post-routing trust pipeline
 
-The token from the previous step allows very little functionality e.g. you cannot see any images or flavors.
-We need a scoped token for that:
+This split is important because it preserves platform-wide request behaviour while still allowing
+identity to inject its own authentication, authorization, principal, validation, and audit model.
 
-```bash
-curl -vkq https://kubernetes.eschercloud.com/api/v1/providers/openstack/projects -H "Authorization: Bearer ${TOKEN}" | jq  .
-```
+## Middleware Ordering
 
-It is anticipated that this step can be omitted most of the time for a Web application, as the project preference can be cached in `window.localStorage` to persist across sessions.
+The ordering here is intentional and should be read as precedent for other API services.
 
-### Get a Scoped Token
+### Pre-Routing Shared Middleware
 
-Grab a token that is scoped to a specific project and you can begin hitting other APIs:
+The `core` middleware stack is applied directly to the raw router in this order:
 
-```bash
-export TOKEN=$(curl -vkq https://kubernetes.eschercloud.com/api/v1/auth/tokens/token -H "Authorization: Bearer ${TOKEN}" -d '{"project":{"id":"23a9e437091d481da99f2aa07180b4ea"}}' | jq  -r token)
-```
+1. OpenTelemetry
+2. logging
+3. route resolver
+4. CORS
+
+The reasons matter:
+
+- OpenTelemetry must run first so trace context exists before anything else happens.
+- Logging must run early so even requests that fail before deep routing or service-specific
+  middleware still get captured, and so those logs can include the trace context established
+  earlier.
+- Route resolution must happen before middleware that depends on OpenAPI operation/schema metadata.
+- CORS comes after route resolution because its schema-driven `OPTIONS` behaviour depends on the
+  resolved route information.
+
+This is dependency layering, not arbitrary taste. Each stage establishes context the next stage
+needs.
+
+### Post-Routing Identity Middleware
+
+Identity-specific middleware is then attached through the generated OpenAPI server wrapper.
+
+The current stack is:
+
+- OpenAPI validator / local authorizer
+- audit
+
+Those are applied in reverse by the generated router wrapper, so the validator/authorizer becomes
+the inner trust-establishing layer around handlers, and audit wraps the resulting handler execution
+with normalized identity and authorization context already available.
+
+The important architectural rule is:
+
+- generic transport/request context first
+- route/schema context next
+- service-specific trust context after routing
+- audit and handlers after trust context exists
+
+## Runtime Flow
+
+At a high level, `GetServer()` does the following:
+
+1. build the OpenAPI schema helper
+2. create the raw router
+3. install the shared `core` middleware stack
+4. install generic `NotFound` and `MethodNotAllowed` handling
+5. construct process-wide identity helper services (`jose`, `userdb`, `rbac`, `oauth2`)
+6. construct identity-specific middleware (`local` authorizer, validator, audit)
+7. construct the top-level handler implementation
+8. attach everything through the generated OpenAPI router and return `http.Server`
+
+This makes the trust pipeline an application-level invariant rather than a handler-by-handler
+convention.
+
+## Invariants
+
+- `pkg/server` owns runtime composition, not business-domain behaviour
+- the shared `core` middleware stack runs before identity-specific middleware
+- middleware ordering is part of the package contract because later stages depend on context from
+  earlier stages
+- `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
+- generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
+  model
+
+## Caveats
+
+- The package is highly ordering-sensitive. Small changes in middleware order can change trust,
+  observability, or schema behaviour materially.
+- Because this package is orchestration-heavy, stale documentation here is especially risky: it can
+  give a false picture of how the service actually behaves at runtime.
+- The package is intentionally coupled to the current built-in identity stack. Changing the authn or
+  trust model would require coordinated changes across several of the composed subsystems.
+
+## Related Documentation
+
+- [`../core/pkg/server`](../../../core/pkg/server/README.md), which defines the shared server
+  substrate this package builds on
+- [`../core/pkg/server/middleware`](../../../core/pkg/server/middleware/README.md), which defines
+  the canonical shared pre-routing middleware pipeline composed here
+- [`pkg/middleware`](../middleware/README.md), which defines the identity-specific trust pipeline
+  attached after routing
+- [`pkg/handler`](../handler/README.md), which defines the resource-specific API behaviour invoked
+  once request context has been normalized
+- [`pkg/userdb`](../userdb/README.md), [`pkg/rbac`](../rbac/README.md),
+  [`pkg/oauth2`](../oauth2/README.md), and [`pkg/jose`](../jose/README.md), which are the main
+  process-wide helper services assembled here
