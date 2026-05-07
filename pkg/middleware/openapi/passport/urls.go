@@ -19,8 +19,9 @@ package passport
 import "strings"
 
 const (
-	jwksPath          = "/oauth2/v2/jwks"
-	tokenExchangePath = "/oauth2/v2/token"
+	jwksPath = "/oauth2/v2/jwks"
+	// tokenExchangePath is a URL path, not a credential — gosec G101 is a false positive here.
+	tokenExchangePath = "/oauth2/v2/token" //nolint:gosec
 )
 
 // JWKSURL returns the full JWKS endpoint URL for an identity host.

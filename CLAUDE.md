@@ -53,3 +53,21 @@ All new tests must follow the patterns established in `test/api/`:
 
 - **Build tags**: Integration tests use `//go:build integration`.
   E2e tests use `//go:build e2e`. Never omit the build tag.
+
+## Documentation Maintenance
+
+The package documentation under `pkg/**/README.md` is part of the implementation contract for this
+repository, not optional commentary.
+
+- Before making changes, consult the relevant package documentation so code changes stay aligned
+  with the documented architecture, invariants, caveats, and API conventions.
+- When implementation changes alter behaviour, architecture, lifecycle semantics, error handling,
+  or trust boundaries, update the affected package documentation in the same change.
+- Keep the documentation link graph coherent:
+  - avoid dead links
+  - add links for any new meaningful package documentation
+  - update higher-level rollups when lower-level package responsibilities move
+- If a code change invalidates an existing caveat or TODO in the docs, correct it rather than
+  leaving stale guidance behind.
+- Treat the top-level `README.md` and `pkg/README.md` as landing pages that should remain
+  technically accurate for new starters, external observers, and AI coding assistants.

@@ -168,7 +168,6 @@ func TestNewAuthorizer(t *testing.T) {
 		require.NoError(t, getErr)
 		assert.Equal(t, expectedACL, acl)
 	})
-
 }
 
 func TestGetBearerToken(t *testing.T) {

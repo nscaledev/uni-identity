@@ -17,6 +17,8 @@ limitations under the License.
 
 package principal
 
+import "github.com/unikorn-cloud/identity/pkg/openapi"
+
 // Principal records information about what user insigated a request.
 type Principal struct {
 	// OrganizationID of the originating request (optional).
@@ -25,6 +27,8 @@ type Principal struct {
 	OrganizationIDs []string `json:"organizationIds,omitempty"`
 	// ProjectID of the originating request (optional).
 	ProjectID string `json:"projectId,omitempty"`
+	// Type of the originating actor. This reuses the OpenAPI auth claim values.
+	Type openapi.AuthClaimsAcctype `json:"type,omitempty"`
 	// Actor of the originating request, this may be an email address
 	// for an end-user, a service identifier for a system service, or
 	// the service account name.

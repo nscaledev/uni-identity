@@ -18,7 +18,7 @@ package passport //nolint:testpackage
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,10 +28,48 @@ import (
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
+var (
+	errUnexpectedGrantType          = errors.New("unexpected grant_type")
+	errUnexpectedSubjectTokenType   = errors.New("unexpected subject_token_type")
+	errUnexpectedRequestedTokenType = errors.New("unexpected requested_token_type")
+	errUnexpectedSubjectToken       = errors.New("unexpected subject_token")
+	errUnexpectedOrganizationID     = errors.New("unexpected organizationId")
+	errUnexpectedProjectID          = errors.New("unexpected projectId")
+	errExchangeBoom                 = errors.New("boom")
+)
+
 type tokenExchangeServiceFunc func(ctx context.Context, options *identityapi.TokenRequestOptions) (*identityapi.Token, error)
 
 func (f tokenExchangeServiceFunc) ExchangePassport(ctx context.Context, options *identityapi.TokenRequestOptions) (*identityapi.Token, error) {
 	return f(ctx, options)
+}
+
+func ptrEquals(p *string, want string) bool {
+	return p != nil && *p == want
+}
+
+// validateExchangeOptions checks that the request the local exchange forwarded
+// matches what the success-path test expects.
+func validateExchangeOptions(options *identityapi.TokenRequestOptions) error {
+	checks := []struct {
+		ok  bool
+		err error
+	}{
+		{options.GrantType == string(identityapi.UrnIetfParamsOauthGrantTypeTokenExchange), errUnexpectedGrantType},
+		{ptrEquals(options.SubjectTokenType, tokenExchangeSubjectToken), errUnexpectedSubjectTokenType},
+		{ptrEquals(options.RequestedTokenType, tokenExchangeRequestedPassport), errUnexpectedRequestedTokenType},
+		{ptrEquals(options.SubjectToken, "raw-token"), errUnexpectedSubjectToken},
+		{ptrEquals(options.XOrganizationId, "org-1"), errUnexpectedOrganizationID},
+		{ptrEquals(options.XProjectId, "proj-1"), errUnexpectedProjectID},
+	}
+
+	for _, c := range checks {
+		if !c.ok {
+			return c.err
+		}
+	}
+
+	return nil
 }
 
 func TestLocalTokenExchange(t *testing.T) {
@@ -45,28 +83,8 @@ func TestLocalTokenExchange(t *testing.T) {
 		{
 			name: "returns exchanged passport on success",
 			service: func(_ context.Context, options *identityapi.TokenRequestOptions) (*identityapi.Token, error) {
-				if options.GrantType != string(identityapi.UrnIetfParamsOauthGrantTypeTokenExchange) {
-					return nil, fmt.Errorf("unexpected grant_type: %s", options.GrantType)
-				}
-
-				if options.SubjectTokenType == nil || *options.SubjectTokenType != tokenExchangeSubjectToken {
-					return nil, fmt.Errorf("unexpected subject_token_type")
-				}
-
-				if options.RequestedTokenType == nil || *options.RequestedTokenType != tokenExchangeRequestedPassport {
-					return nil, fmt.Errorf("unexpected requested_token_type")
-				}
-
-				if options.SubjectToken == nil || *options.SubjectToken != "raw-token" {
-					return nil, fmt.Errorf("unexpected subject_token")
-				}
-
-				if options.XOrganizationId == nil || *options.XOrganizationId != "org-1" {
-					return nil, fmt.Errorf("unexpected organizationId")
-				}
-
-				if options.XProjectId == nil || *options.XProjectId != "proj-1" {
-					return nil, fmt.Errorf("unexpected projectId")
+				if err := validateExchangeOptions(options); err != nil {
+					return nil, err
 				}
 
 				return &identityapi.Token{AccessToken: "passport-token"}, nil
@@ -89,7 +107,7 @@ func TestLocalTokenExchange(t *testing.T) {
 		{
 			name: "maps generic error to exchange unavailable",
 			service: func(_ context.Context, _ *identityapi.TokenRequestOptions) (*identityapi.Token, error) {
-				return nil, fmt.Errorf("boom")
+				return nil, errExchangeBoom
 			},
 			expectErr: ErrTokenExchangeUnavailable,
 		},
@@ -114,7 +132,7 @@ func TestLocalTokenExchange(t *testing.T) {
 
 			if tt.expectErr != nil {
 				require.Error(t, err)
-				assert.ErrorIs(t, err, tt.expectErr)
+				require.ErrorIs(t, err, tt.expectErr)
 				assert.Empty(t, token)
 
 				return

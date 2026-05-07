@@ -65,19 +65,7 @@ func (e *localTokenExchange) Exchange(ctx context.Context, sourceToken string, o
 
 	token, err := e.service.ExchangePassport(ctx, tokenOptions)
 	if err != nil {
-		var oauthErr *oauth2errors.Error
-		if errors.As(err, &oauthErr) {
-			switch {
-			case oauthErr.StatusCode() == http.StatusUnauthorized:
-				return "", ErrTokenExchangeUnauthorized
-			case oauthErr.StatusCode() >= http.StatusInternalServerError:
-				return "", fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
-			default:
-				return "", fmt.Errorf("%w: %w", ErrTokenExchangeFailed, err)
-			}
-		}
-
-		return "", fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
+		return "", mapExchangeError(err)
 	}
 
 	if token == nil || token.AccessToken == "" {
@@ -85,6 +73,25 @@ func (e *localTokenExchange) Exchange(ctx context.Context, sourceToken string, o
 	}
 
 	return token.AccessToken, nil
+}
+
+// mapExchangeError translates an in-process ExchangePassport error into one of
+// the package's exchange sentinels. Non-oauth errors are treated as availability
+// failures so the authorizer's fallback path engages.
+func mapExchangeError(err error) error {
+	var oauthErr *oauth2errors.Error
+	if !errors.As(err, &oauthErr) {
+		return fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
+	}
+
+	switch {
+	case oauthErr.StatusCode() == http.StatusUnauthorized:
+		return ErrTokenExchangeUnauthorized
+	case oauthErr.StatusCode() >= http.StatusInternalServerError:
+		return fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
+	default:
+		return fmt.Errorf("%w: %w", ErrTokenExchangeFailed, err)
+	}
 }
 
 func ptrString(value string) *string {
