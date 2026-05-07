@@ -1,10 +1,20 @@
 # Identity
 
-This package provides an OIDC compliant server, that federates other OIDC and oauth2 compliant backends.
+Identity provides the platform's authentication, delegated identity, and centralized RBAC
+services. It implements OAuth2/OIDC for built-in and self-contained deployments, can federate
+external identity providers, and supplies the trust and authorization model used by other UNI
+services.
 
 ## Developers
 
 [Developer Hub](https://github.com/nscaledev/uni/blob/main/DEVELOPER.md)
+
+## Package Documentation
+
+Implementation-level package documentation lives in [pkg/README.md](./pkg/README.md).
+Use that as the drill-down entry point for the service internals, especially for
+authentication, RBAC, middleware, handlers, and controller/provisioner
+behaviour.
 
 ## Architecture
 
@@ -19,25 +29,26 @@ Organizations are named and limited by normal Kubernetes resource name semantics
 Like all resources they may have a description attached to provide verbose identification.
 
 Organizations MAY define a domain e.g. `acme.com`.
-This allows users to login via email address where one of the generic IdP backends does not suffice, or the user isn't aware of who is providing identity services.
-By specifying a domain, any user whose email domain matches a registered organization domain will be routed to the correct IdP configured for the organization.
-This allows the use of a custom IdP that is not Google Identity (Google Workspace) or Microsoft Entra (Office 365), for example Okta or Authentik.
+In the built-in login flow this can be used to route a user to the correct upstream identity
+provider based on their email address.
 
-### oauth2 Providers
+This remains a supported capability, but it is no longer the main production center of gravity.
+The broader system direction is toward direct integration with third-party identity providers while
+retaining identity's internal authorization and delegated-identity model.
 
-The identity service provides some generic providers which covers the vast majority of many organizations.
+### OAuth2 Providers
 
-You can _bring your own_ by providing:
-
-* And OIDC compliant issuer endpoint
-* A client ID
-* A client secret
-
-By default Identity supports:
+Identity includes built-in provider presets for common backends such as:
 
 * Google Workspace
 * Microsoft Entra
 * GitHub
+
+It can also be configured against other OIDC/OAuth2-compatible providers by supplying:
+
+* An OIDC-compliant issuer endpoint
+* A client ID
+* A client secret
 
 ### Users
 
@@ -48,14 +59,12 @@ The user record forms the core of security on the platform.
 An end user cannot login without a corresponding user record.
 
 The user record also contains OIDC session data.
-When a user logs in, the authenticator creates or updates a session record for the user per-OIDC client.
-This facilitates token validation and revocation, and single use of refresh tokens.
+When a user logs in, the authenticator creates or updates a session record for the user per OIDC
+client. This facilitates token validation, revocation, single-use refresh tokens, and the
+single-active session/token-chain model enforced by the service.
 
-Users can exist in multiple states: `active`, `suspended` meaning they cannot login, or `pending` to indicate the system is awaiting email verification.
-
-Further reading:
-
-* [Email Notifications and User Verification](#email-notifications-and-user-verification)
+Users can exist in multiple states: `active`, `suspended` meaning they cannot login, or `pending`
+to indicate the system is awaiting email verification in older compatibility flows.
 
 ### Organization Users
 
@@ -71,9 +80,12 @@ The exception to this rule is a platform administrator.
 
 Roles grant fine grain permissions to users that permit individual operations (create, read, update, delete) to individual API endpoints.
 
-We define a number of default roles, but the system is flexible enough to have any arbitrary roles.
+We define a number of default roles, but the system is intended to support broader role sets over
+time, including finer-grained custom roles.
 
-The `administrator` role allows broad access across an organization, it can edit then organizations, create groups and associate users and roles with them, create projects and associate groups with them.
+The `administrator` role allows broad access across an organization, it can edit organizations,
+create groups and associate users and roles with them, create projects and associate groups with
+them.
 Administrator users can generally see all resources within the organization defined for other services, and manage them.
 
 The `user` role cannot modify anything defined by the identity service, it's only allowed to discover organizations and projects its a member of.
@@ -87,15 +99,18 @@ The `reader` is similar to the `user` but allows read only access, typically use
 
 ### Groups
 
-Every organization SHOULD have some groups, as it's useless without them.
-Groups define a set of organization users that belong to them, and a set of roles associated with that group.
+Every organization SHOULD have some groups, as they are the primary local delegation unit.
+Groups define a set of organization users and service accounts that belong to them, and a set of
+roles associated with that group.
 
 ### Projects
 
 Projects provide workspaces for use by external services.
-Users are included in a project by associating it with a group, therefore each project SHOULD have at least one group associated with it.
+Users and service accounts participate in a project indirectly by associating the project with one
+or more groups, therefore each project SHOULD have at least one group associated with it.
 
-Like most other components, flexibility is built in by design, so a project can be shared with multiple groups.
+Like most other components, flexibility is built in by design, so a project can be shared with
+multiple groups.
 
 ## Security
 
@@ -103,27 +118,41 @@ Like most other components, flexibility is built in by design, so a project can 
 
 Any compliant OIDC client library should be able to interact with the identity service, and passes the OpenID Connect Basic Conformance Suite.
 
-It features service discovery for simple configuration, and the login hint extension for seamless token refresh.
+It features service discovery for simple configuration, and the login hint extension for seamless
+token refresh.
 
-To enable a client, you will need to create a `oauth2client` resource in the identity service namespace, featuring the client ID (must be unique, typically you can use `uuidgen` for this), and an OIDC callback URI.
+To enable a client, you will need to create an `oauth2client` resource in the identity service
+namespace, featuring the client ID (must be unique, typically you can use `uuidgen` for this), and
+an OIDC callback URI.
 
 Optionally you can override the branding with a custom login and error URL callback too.
 These are available on the `OAuth2Client` data type.
 See the reference implementation [login](https://github.com/nscaledev/uni-ui/tree/main/src/routes/login) and [error](https://github.com/nscaledev/uni-ui/tree/main/src/routes/error) pages for the interface.
 
-Once created, the `oauth2client` controller will generate a client secret in the resource status that can be shared with the relaying party.
+Once created, the `oauth2client` controller will generate a client secret in the resource status
+that can be shared with the relaying party.
+
+This built-in confidential-client flow is especially relevant for local, self-contained, or
+development-oriented deployments. Production deployments may instead rely more heavily on
+third-party identity providers while still using identity as the internal authorization and
+delegated-identity service.
 
 ### Authentication
 
-Authentication is handled in a few different ways:
+Authentication is handled through two primary paths:
 
-* OIDC authorization code flow (for typical users via a browser).
-* Service accounts (that issue long lived access tokens).
-* System accounts secured by X.509 (used by services to talk to one another, and potentially financial grade users).
+* User to service: the caller presents a bearer token, identity validates it, and downstream RBAC
+  is evaluated as that user or service account.
+* Service to service: the caller authenticates with mTLS, service identity comes from the client
+  certificate, and delegated principal context is propagated explicitly when a service acts on
+  behalf of a user.
 
-Service endpoints that users directly interact with will use token introspection against he Identity service to authenticate a user, then retrieve and ACL to authorize the request.
+Identity keeps actor identity, delegated principal, and effective authority separate. When a
+service acts on behalf of a principal, downstream authorization can be limited by the intersection
+of service authority and principal authority.
 
-Services that act on behalf of an end user will use X.509 to retrieve an access token, then when interacting with downstream services will have that token authenticated and authorized in exactly the same way as with end user tokens.
+Older service-to-service token issuance paths still exist for compatibility, but the preferred
+model is direct mTLS plus delegated principal propagation.
 
 ### RBAC
 
@@ -152,18 +181,23 @@ These will return all clusters if you have global or organization scoped cluster
 By itself, the identity service doesn't offer much functionality beyond simple OIDC authentication flows.
 Other services are responsible for provisioning and managing actual resources.
 
-Because of historical reasons, organizations and projects create namespaces.
+For historical reasons, the current `v1` model still uses organization and project namespaces as
+part of resource placement and lifecycle coordination.
 This allowed projects and resources within them to accept any name the end user wished to use.
-Now we use random UUIDs to name resources and allow the actual human readable names to be mutable via a label.
+Now we use random UUIDs to name resources and allow the actual human readable names to be mutable
+via a label.
 
 ![Resource](./docs/images/namespaces.png)
 
-There is still some utility to having the namespaces in place as we can use it as a selector when listing resources.
+There is still some utility to having the namespaces in place as we can use them as selectors when
+listing resources, but this is current operational reality rather than the preferred long-term
+architecture.
 
 The identity service manages all this for you automatically.
 Unique namespace names are automatically generated by the platform, and organization and project resources record this in their status for easy navigation.
 
-Other services, e.g. the Kubernetes service can then consume the project namespace by having their custom resources residing in there, separating them from other projects and other organizations.
+Other services, e.g. the Kubernetes service can then consume the project namespace by having their
+custom resources residing in there, separating them from other projects and other organizations.
 
 ## Installation
 
@@ -196,8 +230,9 @@ This will require the callback URI to be registered as trusted.
 The identity provider will give you an issuer or discovery endpoint, client ID and client secret for the following steps.
 
 > [!NOTE]
-> Only Google Identity, Microsoft Entra and GitHub are currently supported.
-> Documentation for individual providers is provided by them.
+> Built-in presets are currently provided for Google Identity, Microsoft Entra, and GitHub.
+> Other OIDC/OAuth2-compatible providers can also be configured directly by supplying issuer and
+> client credentials.
 
 ### Installing the Service with Helm
 
@@ -252,30 +287,16 @@ helm repo add uni-identity https://nscaledev.github.io/uni-identity
 Deploy:
 
 ```shell
-helm update --install --namespace unikorn-identity uni-identity/uni-identity -f values.yaml
+helm upgrade --install --namespace unikorn-identity uni-identity/uni-identity -f values.yaml
 ```
 
-### Email Notifications and User Verification
+### Legacy Signup And Verification
 
-Identity supports a mode of operation where new user accounts need to be verified before they can be made active.
-First you will need to configure SMTP.
-Consult your provider on acquiring the server, port, and credentials.
+Identity still contains older email-verification and signup flows for compatibility with historical
+deployments.
 
-Create a secret containing the credentials:
-
-```shell
-kubectl create secret -n unikorn-identity generic --from-literal username=${USERNAME} --from-literal password=${PASSWORD} unikorn-smtp-credentials
-```
-
-Next configure your `values.yaml` file to add in the SMTP server information and enable user verification:
-
-```yaml
-smtp:
-  host: smtp.mail.yahoo.com:465
-
-signup:
-  enabled: true
-```
+These are no longer the main operating model and are generally not central to new deployments.
+If you still need them, you will need SMTP configured and the related Helm options enabled.
 
 ### Installing the Management Plugin
 
@@ -284,10 +305,11 @@ Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/rele
 * `kubectl-uni`
 * `kubectl_complete-uni`
 
-### User Onboarding
+### Initial User Setup
 
-Typically your deployment will have a small select few engineers who are able to see and do everything, including creating organizations.
-At present self-signup is not possible.
+Typically your deployment will have a small select few engineers who are able to see and do
+everything, including creating organizations.
+At present self-signup is not part of the normal operating model.
 
 In the earlier `values.yaml` manifest, the following section was defined:
 
@@ -299,9 +321,9 @@ platformAdministrators:
 
 This forms an implicit mapping from a user to a special role that grants access to all-the-things.
 
-In order to actually login, you will need a user account creating:
+In order to actually login, you will need a user account created:
 
-```yaml
+```shell
 kubectl uni create user \
      --namespace unikorn-identity \
      --user wile.e.coyote@acme.com
@@ -309,7 +331,7 @@ kubectl uni create user \
 
 And at least one organization:
 
-```yaml
+```shell
 kubectl uni create organization \
     --namespace unikorn-identity \
     --name looney-tunes
@@ -319,8 +341,10 @@ If your user's email address can be authenticated by any of the supported OIDC i
 
 ### 3rd Party Service Integration
 
-When using an integration such as the [Kubernetes Service](https://github.com/nscaledev/uni-kubernetes) you will need to configure system account to RBAC mappings.
-3rd party services usually act on behalf of a user, and as such need elevated global privileges, so as to avoid giving the end user permission to sensitive endpoints.
+When using an integration such as the [Kubernetes Service](https://github.com/nscaledev/uni-kubernetes)
+you will need to configure system-account to RBAC mappings.
+3rd party services usually act on behalf of a user, and as such need elevated global privileges, so
+as to avoid giving the end user permission to sensitive endpoints.
 
 In the earlier `values.yaml` manifest, the following section was defined:
 
@@ -330,10 +354,13 @@ systemAccounts:
   unikorn-compute: infra-manager-service
 ```
 
-In very simple terms, when you create a 3rd party service, that will need to generate an X.509 certificate in order to authenticate with the tokens endpoint and issue an access token to talk to other service APIs.
-That certificate will need to be signed by the trusted client CA (typically signed by the `unikorn-client-issuer` managed by cert-manager).
-The X.509 Common Name (CN) encoded in the certificate is the key to this mapping e.g. `unikorn-kubernetes`.
-The value references a role name that is either installed by default, or created specifically for your service.
+In very simple terms, a 3rd party service authenticates to other services using mTLS.
+The X.509 certificate must be signed by the trusted client CA (typically issued by the
+`unikorn-client-issuer` managed by cert-manager).
+The X.509 Common Name (CN) encoded in the certificate is the key to the system-account mapping e.g.
+`unikorn-kubernetes`.
+The mapped value references a role name that is either installed by default, or created
+specifically for your service.
 
 #### 3rd Party User RBAC
 
