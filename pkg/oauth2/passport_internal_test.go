@@ -251,6 +251,26 @@ func TestHasBroaderScope(t *testing.T) {
 	assert.False(t, hasBroaderScope(orgACL, ""))
 }
 
+func TestValidateProjectScopeRequiresOrganization(t *testing.T) {
+	t.Parallel()
+
+	authenticator := newPassportInternalAuthenticator(t)
+	acl := &openapi.Acl{
+		Global: &openapi.AclEndpoints{
+			{Name: "project:read", Operations: openapi.AclOperations{openapi.Read}},
+		},
+	}
+
+	err := authenticator.validateProjectScope(t.Context(), acl, "", "project-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "x_organization_id must be specified")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, openapi.InvalidRequest, oauthErr.Code())
+}
+
 func TestProjectInOrganization(t *testing.T) {
 	t.Parallel()
 
@@ -374,6 +394,48 @@ func TestValidateProjectScopeWithBroaderGrant(t *testing.T) {
 	require.NoError(t, authenticator.validateProjectScope(t.Context(), acl, "org-1", "project-1"))
 
 	err := authenticator.validateProjectScope(t.Context(), acl, "org-1", "project-2")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project not in scope")
+}
+
+func TestValidateProjectScopeChecksExplicitProjectMembership(t *testing.T) {
+	t.Parallel()
+
+	authenticator := newPassportInternalAuthenticator(t,
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: passportTestNamespace,
+				Name:      "org-1",
+			},
+			Status: unikornv1.OrganizationStatus{
+				Namespace: "org-1-ns",
+			},
+		},
+		&unikornv1.Project{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "org-1-ns",
+				Name:      "project-1",
+				Labels: map[string]string{
+					constants.OrganizationLabel: "org-1",
+				},
+			},
+		},
+	)
+
+	acl := &openapi.Acl{
+		Projects: &openapi.AclProjectList{
+			{
+				Id: "project-1",
+				Endpoints: openapi.AclEndpoints{
+					{Name: "project:read", Operations: openapi.AclOperations{openapi.Read}},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, authenticator.validateProjectScope(t.Context(), acl, "org-1", "project-1"))
+
+	err := authenticator.validateProjectScope(t.Context(), acl, "org-2", "project-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "project not in scope")
 }
@@ -603,6 +665,15 @@ func TestValidateTokenExchangeRequest(t *testing.T) {
 				RequestedTokenType: &idTokenType,
 			},
 			expectError: "requested_token_type is not supported",
+		},
+		{
+			name: "project scope without organization scope is rejected",
+			options: &openapi.TokenRequestOptions{
+				SubjectToken:     &subject,
+				SubjectTokenType: &accessTokenType,
+				XProjectId:       &subject,
+			},
+			expectError: "x_organization_id must be specified",
 		},
 	}
 

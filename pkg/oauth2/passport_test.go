@@ -676,6 +676,31 @@ func TestExchangeMissingSubjectToken(t *testing.T) {
 	assert.Contains(t, err.Error(), "subject_token must be specified")
 }
 
+func TestExchangeRejectsTokenExchangeParametersInQuery(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	form := url.Values{
+		"grant_type":         {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
+		"subject_token":      {"body-token-value"},
+		"subject_token_type": {oauth2.AccessTokenSubjectTokenType()},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token?subject_token=query-token-value",
+		strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	_, err := env.authenticator.TokenExchange(nil, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subject_token must be supplied in the form body")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, openapi.InvalidRequest, oauthErr.Code())
+}
+
 func TestExchangeMissingSubjectTokenType(t *testing.T) {
 	t.Parallel()
 
@@ -691,6 +716,26 @@ func TestExchangeMissingSubjectTokenType(t *testing.T) {
 	_, err := env.authenticator.TokenExchange(nil, req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "subject_token_type must be specified")
+}
+
+func TestExchangeRejectsProjectScopeWithoutOrganizationScope(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	projectID := "project1"
+	req := exchangeRequest(t, "token-value", &openapi.TokenRequestOptions{
+		XProjectId: &projectID,
+	})
+
+	_, err := env.authenticator.TokenExchange(nil, req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "x_organization_id must be specified")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, openapi.InvalidRequest, oauthErr.Code())
 }
 
 func TestExchangeUnsupportedSubjectTokenType(t *testing.T) {

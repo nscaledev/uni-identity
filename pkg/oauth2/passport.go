@@ -319,6 +319,10 @@ func validateTokenExchangeRequest(options *openapi.TokenRequestOptions) error {
 		return err
 	}
 
+	if err := validateRequestedScope(options); err != nil {
+		return err
+	}
+
 	return validateRequestedTokenType(options)
 }
 
@@ -355,6 +359,18 @@ func validateRequestedTokenType(options *openapi.TokenRequestOptions) error {
 	}
 }
 
+func validateRequestedScope(options *openapi.TokenRequestOptions) error {
+	if options.XProjectId == nil || *options.XProjectId == "" {
+		return nil
+	}
+
+	if options.XOrganizationId == nil || *options.XOrganizationId == "" {
+		return errors.OAuth2InvalidRequest("x_organization_id must be specified when x_project_id is specified")
+	}
+
+	return nil
+}
+
 func normalizeExchangeUserinfoError(err error) error {
 	var oauthErr *errors.Error
 	if goerrors.As(err, &oauthErr) {
@@ -386,16 +402,22 @@ func parseTokenExchangeRequest(r *http.Request) (*openapi.TokenRequestOptions, e
 		return nil, err
 	}
 
+	if err := rejectTokenExchangeQueryParameters(r); err != nil {
+		return nil, err
+	}
+
 	if err := r.ParseForm(); err != nil {
 		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
 	}
 
-	if r.Form.Get("actor_token") != "" || r.Form.Get("actor_token_type") != "" {
+	form := r.PostForm
+
+	if form.Get("actor_token") != "" || form.Get("actor_token_type") != "" {
 		return nil, errors.OAuth2InvalidRequest("actor_token is not supported")
 	}
 
 	options := &openapi.TokenRequestOptions{
-		GrantType: r.Form.Get("grant_type"),
+		GrantType: form.Get("grant_type"),
 	}
 
 	for _, mapping := range []struct {
@@ -410,13 +432,36 @@ func parseTokenExchangeRequest(r *http.Request) (*openapi.TokenRequestOptions, e
 		{"x_organization_id", &options.XOrganizationId},
 		{"x_project_id", &options.XProjectId},
 	} {
-		if v := r.Form.Get(mapping.name); v != "" {
+		if v := form.Get(mapping.name); v != "" {
 			value := v
 			*mapping.dest = &value
 		}
 	}
 
 	return options, nil
+}
+
+func rejectTokenExchangeQueryParameters(r *http.Request) error {
+	query := r.URL.Query()
+
+	for _, name := range []string{
+		"grant_type",
+		"subject_token",
+		"subject_token_type",
+		"requested_token_type",
+		"audience",
+		"resource",
+		"x_organization_id",
+		"x_project_id",
+		"actor_token",
+		"actor_token_type",
+	} {
+		if query.Has(name) {
+			return errors.OAuth2InvalidRequest(name + " must be supplied in the form body")
+		}
+	}
+
+	return nil
 }
 
 // assertFormContentType enforces RFC 8693 §2.1's content-type requirement.
@@ -491,17 +536,15 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 		return nil
 	}
 
-	// The narrowest and safest path is an explicit project grant already present
-	// in the computed ACL. In that case we can trust the scope immediately.
-	if projectInACL(projectID, acl) {
-		return nil
+	if organizationID == "" {
+		return errors.OAuth2InvalidRequest("x_organization_id must be specified when x_project_id is specified")
 	}
 
-	// A broader org/global grant may still legitimately embed a project-scoped
-	// passport, but only if the requested project actually belongs to the scoped
-	// organization. Without that membership check, callers could inject an
-	// arbitrary project ID into the passport claims.
-	if !hasBroaderScope(acl, organizationID) {
+	// A project-scoped passport is accepted only when ACL proves the caller can
+	// use the project or a broader grant covers it, and the project belongs to
+	// the requested organization. Without the membership check, callers could
+	// inject an arbitrary project ID into the passport claims.
+	if !projectInACL(projectID, acl) && !hasBroaderScope(acl, organizationID) {
 		return errors.OAuth2AccessDenied("project not in scope")
 	}
 
