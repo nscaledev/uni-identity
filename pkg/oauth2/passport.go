@@ -174,7 +174,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 			"organizationID", organizationID,
 		)
 
-		return nil, fmt.Errorf("%w: failed to compute ACL", err)
+		return nil, fmt.Errorf("failed to compute ACL: %w", err)
 	}
 
 	if err := a.validateProjectScope(ctx, acl, organizationID, projectID); err != nil {
