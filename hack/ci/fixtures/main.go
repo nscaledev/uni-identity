@@ -150,6 +150,7 @@ func newAPIClient(baseURL, caCertPath string, certPEM, keyPEM []byte) *openapi.C
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
 			TLSClientConfig: &tls.Config{
 				MinVersion:   tls.VersionTLS12,
 				Certificates: []tls.Certificate{cert},
@@ -300,8 +301,11 @@ func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgI
 	}
 }
 
-// resolveRoles lists the organization roles and returns the IDs for administrator and user.
-func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string) {
+// resolveRoles lists the organization roles and returns the IDs for:
+// - administrator (required)
+// - user (required)
+// - audit (optional; empty when absent)
+func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string, string) {
 	logf("Resolving role IDs...")
 
 	rolesResp, err := ac.GetApiV1OrganizationsOrganizationIDRolesWithResponse(ctx, orgID)
@@ -323,10 +327,21 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 		fatalf("user role not found in org %s", orgID)
 	}
 
+	auditRoleName := "auditor"
+	auditRoleID := findRole(rolesResp.JSON200, auditRoleName)
+	if auditRoleID == "" {
+		auditRoleID = findRole(rolesResp.JSON200, "audit")
+	}
+
 	logf("  administrator role ID: %s", administratorRoleID)
 	logf("  user role ID: %s", userRoleID)
+	if auditRoleID != "" {
+		logf("  audit role ID: %s", auditRoleID)
+	} else {
+		logf("  audit role lookup returned no match; AUDIT_AUTH_TOKEN will be empty")
+	}
 
-	return administratorRoleID, userRoleID
+	return administratorRoleID, userRoleID, auditRoleID
 }
 
 func main() {
@@ -390,10 +405,31 @@ func main() {
 	// Wait for the organization controller to provision the backing namespace.
 	waitForOrgNamespace(ctx, k8s, *namespace, orgID)
 
+	// Create a second org that test identities are not members of.
+	// Used by non-member authorization tests (UNAUTHORISED_ORG_ID).
+	otherOrgName := fmt.Sprintf("ci-unauthorised-org-%d", time.Now().UnixNano())
+	logf("Creating non-member Organization fixture %q...", otherOrgName)
+
+	otherOrgResp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: otherOrgName},
+		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
+	})
+	if err != nil {
+		fatalf("failed to create non-member Organization: %v", err)
+	}
+
+	if otherOrgResp.JSON202 == nil {
+		fatalf("create non-member Organization returned %s", otherOrgResp.Status())
+	}
+
+	unauthorisedOrgID := otherOrgResp.JSON202.Metadata.Id
+	logf("  Non-member Organization ID: %s", unauthorisedOrgID)
+	waitForOrgNamespace(ctx, k8s, *namespace, unauthorisedOrgID)
+
 	// ── Resolve role IDs ─────────────────────────────────────────────────────
 	// platform-administrator is protected and not returned by the API.
 	// We use administrator (org-scoped, full identity CRUD) and user (project-scoped).
-	administratorRoleID, userRoleID := resolveRoles(ctx, ac, orgID)
+	administratorRoleID, userRoleID, auditRoleID := resolveRoles(ctx, ac, orgID)
 
 	// ── Create Groups ─────────────────────────────────────────────────────────
 	// ci-admin-group: organization administrator — full identity CRUD at org scope.
@@ -409,11 +445,19 @@ func main() {
 	// ── Create ServiceAccounts ────────────────────────────────────────────────
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
+	auditToken := ""
+	if auditRoleID != "" {
+		auditGroupID := createGroup(ctx, ac, orgID, "ci-audit-group", []string{auditRoleID})
+		_, auditToken = createServiceAccount(ctx, ac, orgID, "ci-audit-sa", []string{auditGroupID})
+	} else {
+		logf("Skipping audit fixtures because audit role ID is empty")
+	}
 
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
 	fmt.Printf("TEST_ORG_ID=%s\n", orgID)
+	fmt.Printf("UNAUTHORISED_ORG_ID=%s\n", unauthorisedOrgID)
 	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID)
 	fmt.Printf("API_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID)
@@ -422,4 +466,6 @@ func main() {
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("USER_AUTH_TOKEN=%s\n", userToken)
+	fmt.Printf("SERVICE_ACCOUNT_TOKEN=%s\n", userToken)
+	fmt.Printf("AUDIT_AUTH_TOKEN=%s\n", auditToken)
 }
