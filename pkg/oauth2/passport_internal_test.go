@@ -141,9 +141,17 @@ func TestValidateOrganizationScope(t *testing.T) {
 			organizationID: "org-1",
 		},
 		{
-			name: "user outside organization is denied",
+			name: "user outside organization defers to rbac",
 			authz: &openapi.AuthClaims{
 				Acctype: openapi.User,
+				OrgIds:  []string{"org-2"},
+			},
+			organizationID: "org-1",
+		},
+		{
+			name: "service account outside organization is denied",
+			authz: &openapi.AuthClaims{
+				Acctype: openapi.Service,
 				OrgIds:  []string{"org-2"},
 			},
 			organizationID: "org-1",

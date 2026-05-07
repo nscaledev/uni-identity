@@ -34,6 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -169,6 +170,15 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	acl, err := a.rbac.GetACL(authCtx, organizationID)
 	if err != nil {
+		if goerrors.Is(err, rbac.ErrNotInOrganization) {
+			log.Info("passport exchange denied: organization not in scope",
+				"acctype", authz.Acctype,
+				"organizationID", organizationID,
+			)
+
+			return nil, errors.OAuth2AccessDenied("organization not in scope").WithError(err)
+		}
+
 		log.Error(err, "passport exchange failed: ACL computation failed",
 			"acctype", authz.Acctype,
 			"organizationID", organizationID,
@@ -245,7 +255,12 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 
 	// System principals do not carry explicit organization memberships in OrgIds.
 	// Their effective scope is derived from RBAC's system-account path instead.
-	if authz.Acctype == openapi.System {
+	//
+	// User principals also defer to RBAC because platform-administrator subjects
+	// are authorised by RBAC even when they are not members of the scoped
+	// organization. Ordinary users outside the organization are rejected by
+	// rbac.GetACL and normalized back to an OAuth2 access_denied response.
+	if authz.Acctype == openapi.System || authz.Acctype == openapi.User {
 		return nil
 	}
 

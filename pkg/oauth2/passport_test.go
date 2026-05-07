@@ -484,6 +484,62 @@ func TestExchangeInvalidOrganizationID(t *testing.T) {
 	require.ErrorAs(t, err, &oauthErr)
 }
 
+func TestExchangePlatformAdminUserWithOrganizationScopeOutsideMembership(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnvWithRBACOptions(t, &rbac.Options{
+		PlatformAdministratorSubjects: []string{"user@example.com"},
+		PlatformAdministratorRoleIDs:  []string{"platform-admin"},
+	}, &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "platform-admin",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}, &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "test-user",
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: "user@example.com",
+			State:   unikornv1.UserStateActive,
+		},
+	})
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	orgID := "org-outside-membership"
+	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
+		XOrganizationId: &orgID,
+	})
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+
+	claims := parsePassport(t, env, result.AccessToken)
+
+	assert.Equal(t, openapi.User, claims.Acctype)
+	assert.Equal(t, "user@example.com", claims.Subject)
+	assert.Empty(t, claims.OrgIDs)
+	assert.Equal(t, orgID, claims.OrgID)
+}
+
 func TestExchangeServiceAccount(t *testing.T) {
 	t.Parallel()
 
