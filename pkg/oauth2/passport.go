@@ -92,26 +92,56 @@ type PassportClaims struct {
 	Actor *ActorClaim `json:"act,omitempty"`
 }
 
-// TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports.
-// It validates the source access token provided in subject_token, resolves
-// identity, and returns a signed passport in the access_token field. The ACL
-// is fetched only to authorise the requested org/project scope; it is not
-// embedded in the passport — downstream services continue to fetch ACL via
-// the existing remote authoriser path keyed off passport-verified identity.
+// TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports
+// when invoked via the OAuth 2.0 token endpoint. It parses the form body and
+// hands off to ExchangePassport; non-handler callers should use that directly.
 func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
-	ctx := r.Context()
+	options, err := parseTokenExchangeRequest(r)
+	if err != nil {
+		log.FromContext(r.Context()).Info("passport exchange failed: malformed request body")
+
+		return nil, err
+	}
+
+	return a.ExchangePassport(r.Context(), options)
+}
+
+// ExchangePassport runs the RFC 8693 token-exchange flow against pre-parsed
+// request options. It validates the source access token, resolves identity,
+// authorises the requested org/project scope, and returns a signed passport
+// in the access_token field. The ACL is fetched only to authorise the
+// requested scope; it is not embedded in the passport — downstream services
+// continue to fetch ACL via the existing remote authoriser path keyed off
+// passport-verified identity.
+//
+// This is the entry point for in-process callers that already hold typed
+// TokenRequestOptions and don't need form parsing. The HTTP handler reaches
+// it via TokenExchange.
+func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.TokenRequestOptions) (*openapi.Token, error) {
 	log := log.FromContext(ctx)
 
-	options, audience, err := parseAndValidateTokenExchangeRequest(r)
-	if err != nil {
+	if err := validateTokenExchangeRequest(options); err != nil {
 		log.Info("passport exchange failed: invalid token-exchange request")
 
 		return nil, err
 	}
 
+	audience, err := requestedAudience(options)
+	if err != nil {
+		log.Info("passport exchange failed: invalid resource URI")
+
+		return nil, err
+	}
+
+	// GetUserinfo's signature requires *http.Request to construct
+	// WWW-Authenticate metadata on AccessDenied. The non-handler entry
+	// path doesn't have a real request, so synthesise one carrying the
+	// active context.
+	request := (&http.Request{Header: make(http.Header)}).WithContext(ctx)
+
 	subjectToken := *options.SubjectToken
 
-	userinfo, _, err := a.GetUserinfo(ctx, r, subjectToken)
+	userinfo, _, err := a.GetUserinfo(ctx, request, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -210,7 +240,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	// GetUserinfo normally populates authz for valid UNI tokens, but keep the
 	// nil guard so malformed or partially mocked callers still fail closed.
 	if authz == nil {
-		return errors.OAuth2InvalidTarget("organization not in scope")
+		return errors.OAuth2AccessDenied("organization not in scope")
 	}
 
 	// System principals do not carry explicit organization memberships in OrgIds.
@@ -220,7 +250,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	}
 
 	if !slices.Contains(authz.OrgIds, organizationID) {
-		return errors.OAuth2InvalidTarget("organization not in scope")
+		return errors.OAuth2AccessDenied("organization not in scope")
 	}
 
 	return nil
@@ -267,7 +297,7 @@ func requestedAudience(options *openapi.TokenRequestOptions) (jwt.Audience, erro
 	if options.Resource != nil && *options.Resource != "" {
 		u, err := url.Parse(*options.Resource)
 		if err != nil || !u.IsAbs() || u.Fragment != "" {
-			return nil, errors.OAuth2InvalidTarget("resource must be an absolute URI without a fragment")
+			return nil, errors.OAuth2InvalidRequest("resource must be an absolute URI without a fragment")
 		}
 
 		add(*options.Resource)
@@ -278,27 +308,6 @@ func requestedAudience(options *openapi.TokenRequestOptions) (jwt.Audience, erro
 	}
 
 	return audience, nil
-}
-
-// parseAndValidateTokenExchangeRequest is the single entry point for
-// processing an RFC 8693 token-exchange request: it parses the form body,
-// validates the required parameters, and resolves the requested audience.
-func parseAndValidateTokenExchangeRequest(r *http.Request) (*openapi.TokenRequestOptions, jwt.Audience, error) {
-	options, err := parseTokenExchangeRequest(r)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if err := validateTokenExchangeRequest(options); err != nil {
-		return nil, nil, err
-	}
-
-	audience, err := requestedAudience(options)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return options, audience, nil
 }
 
 func validateTokenExchangeRequest(options *openapi.TokenRequestOptions) error {
@@ -493,7 +502,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 	// organization. Without that membership check, callers could inject an
 	// arbitrary project ID into the passport claims.
 	if !hasBroaderScope(acl, organizationID) {
-		return errors.OAuth2InvalidTarget("project not in scope")
+		return errors.OAuth2AccessDenied("project not in scope")
 	}
 
 	ok, err := a.projectInOrganization(ctx, organizationID, projectID)
@@ -502,7 +511,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 	}
 
 	if !ok {
-		return errors.OAuth2InvalidTarget("project not in scope")
+		return errors.OAuth2AccessDenied("project not in scope")
 	}
 
 	return nil

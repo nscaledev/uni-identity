@@ -31,7 +31,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
-	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
@@ -148,7 +147,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		})
 
 		Describe("Given an out-of-scope organization", func() {
-			It("should reject the exchange with an OAuth2 invalid_target response", func() {
+			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidOrgID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
 					XOrganizationId: &invalidOrgID,
@@ -158,16 +157,16 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(oauth2errors.InvalidTargetCode))
+				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("organization not in scope"))
 			})
 		})
 
 		Describe("Given an invalid project scope", func() {
-			It("should reject the exchange with an OAuth2 invalid_target response", func() {
+			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidProjectID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
 					XOrganizationId: &config.OrgID,
@@ -178,10 +177,10 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(oauth2errors.InvalidTargetCode))
+				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("project not in scope"))
 			})
 		})
