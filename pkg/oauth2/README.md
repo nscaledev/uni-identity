@@ -96,19 +96,24 @@ That model is now transitional:
 The `client_credentials` path is therefore still part of the package, but it is not the preferred
 long-term service-to-service model.
 
-## Token Exchange Direction
+## Token Exchange
 
-The unimplemented token exchange path is deliberate future architecture, not dead surface area.
+The token endpoint implements the RFC 8693 token-exchange grant for UNI passports.
 
-There is a plan to support third-party authentication frontends while still keeping downstream UNI
-services on a single internal token model. In that world:
+In the current flow, a caller presents a validated UNI access token as the `subject_token` and identity
+issues a short-lived signed passport JWT. The passport records the source identity, account type,
+organization context, optional project context, and requested audience/resource values. It does not
+embed an ACL. The exchange computes ACL only to authorize the requested organization/project scope;
+downstream services continue to resolve permissions through the normal remote authorizer path keyed
+off the passport-verified principal.
 
-- third-party tokens authenticate the user externally
-- identity exchanges those tokens for internal UNI "passport" tokens
-- downstream services continue to handle those internal tokens consistently, including service
-  account-like behaviour where needed
+Passport exchange is intentionally handled by the existing `/oauth2/v2/token` endpoint rather than a
+separate route. Token-exchange parameters must be form-encoded in the POST body so credentials are not
+accepted from URL query strings.
 
-This means alternate authentication frontends complement this package rather than replacing it.
+This keeps room for alternate authentication frontends to complement this package rather than replace
+it: external authentication can happen outside identity, while identity remains the issuer of the
+internal token shape consumed by downstream UNI services.
 
 ## Caveats
 
@@ -118,8 +123,8 @@ This means alternate authentication frontends complement this package rather tha
   material rather than the architectural center of the package.
 - The package reaches into higher-level local concepts such as user database lookups and RBAC-aware
   admission decisions, so it is intentionally not protocol-pure.
-- Service token support and token exchange are both transition-sensitive areas and should be read in
-  the context of the broader authn/authz evolution, not as isolated features.
+- Service token support and passport token exchange are both transition-sensitive areas and should be
+  read in the context of the broader authn/authz evolution, not as isolated features.
 - Federated access tokens are still effectively bearer-style UNI tokens rather than sender-constrained
   tokens, so replay resistance depends more on lifetime, rotation, and session invalidation than on
   proof-of-possession.
