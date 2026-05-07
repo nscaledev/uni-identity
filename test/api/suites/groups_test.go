@@ -146,9 +146,9 @@ var _ = Describe("Group Management", func() {
 
 					Expect(group.Metadata.HealthStatus).NotTo(BeEmpty())
 					Expect(group.Metadata.HealthStatus).To(BeElementOf(
-					coreopenapi.ResourceHealthStatusHealthy,
-					coreopenapi.ResourceHealthStatusDegraded,
-					coreopenapi.ResourceHealthStatusError))
+						coreopenapi.ResourceHealthStatusHealthy,
+						coreopenapi.ResourceHealthStatusDegraded,
+						coreopenapi.ResourceHealthStatusError))
 
 					GinkgoWriter.Printf("  Group: %s (ID: %s)\n",
 						group.Metadata.Name, group.Metadata.Id)
@@ -351,6 +351,21 @@ var _ = Describe("Group Subjects", func() {
 
 				GinkgoWriter.Printf("Created group with userIDs (legacy): %s (ID: %s)\n",
 					group.Metadata.Name, groupID)
+			})
+		})
+
+		// §5.2b Create with non-existent userID → 404
+		Describe("Given a new group created with a non-existent userID", func() {
+			It("should return not found", func() {
+				payload := api.NewGroupPayload().
+					WithUserIDs([]string{"00000000-0000-0000-0000-000000000000"}).
+					Build()
+
+				_, err := client.CreateGroup(ctx, config.OrgID, payload)
+
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue(),
+					"creating a group with a non-existent userID should return 404 not found")
 			})
 		})
 

@@ -208,8 +208,12 @@ func (c *APIClient) CreateGroup(ctx context.Context, orgID string, group identit
 	}
 
 	//nolint:bodyclose // DoRequest handles response body closing internally
-	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusCreated)
+	resp, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusCreated)
 	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("creating group: %w", coreclient.ErrResourceNotFound)
+		}
+
 		return nil, fmt.Errorf("creating group: %w", err)
 	}
 
