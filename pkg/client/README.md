@@ -3,7 +3,7 @@
 ## Purpose
 
 This package is the identity-specific realization of the generic client
-machinery in [`core/pkg/client`](../../core/pkg/client/README.md).
+machinery in [`core/pkg/client`](https://github.com/nscaledev/uni-core/blob/main/pkg/client/README.md).
 
 Its main job is to construct outbound identity API clients that obey the same
 internal trust model that identity enforces on inbound requests in
@@ -21,7 +21,7 @@ In practice that means:
 
 This is not a general client abstraction and it is not the main place where
 Kubernetes client construction is documented. The Kubernetes/TLS foundations
-come from [`core/pkg/client`](../../core/pkg/client/README.md). This package
+come from [`core/pkg/client`](https://github.com/nscaledev/uni-core/blob/main/pkg/client/README.md). This package
 turns those foundations into concrete identity API callers.
 
 ## Main Components
@@ -35,7 +35,7 @@ turns those foundations into concrete identity API callers.
 - optional HTTP client certificate configuration
 
 It uses the shared TLS configuration support from
-[`core/pkg/client`](../../core/pkg/client/README.md) to construct an
+[`core/pkg/client`](https://github.com/nscaledev/uni-core/blob/main/pkg/client/README.md) to construct an
 `http.Client` suitable for calling the identity API.
 
 ### APIClient
@@ -70,7 +70,7 @@ delegated identity model as API-originated calls.
 
 It provides idempotent add/remove operations for project dependency references
 over the identity API, keyed from the shared resource-reference model in
-[`core/pkg/manager`](../../core/pkg/manager/README.md).
+[`core/pkg/manager`](https://github.com/nscaledev/uni-core/blob/main/pkg/manager/README.md).
 
 That matters for lifecycle coordination because it gives other services a way to
 block project deletion without requiring prior knowledge of the project
@@ -112,7 +112,7 @@ keying directly on the shared resource reference.
 - `References` and `Allocations` should be safe to retry during convergence and
   teardown flows.
 - The shared resource-reference model from
-  [`core/pkg/manager`](../../core/pkg/manager/README.md) is the correct durable
+  [`core/pkg/manager`](https://github.com/nscaledev/uni-core/blob/main/pkg/manager/README.md) is the correct durable
   identity for cross-service resource dependency tracking.
 
 ## Caveats
