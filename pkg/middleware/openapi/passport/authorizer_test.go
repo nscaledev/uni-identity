@@ -26,17 +26,13 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/mock"
-	identityoauth2 "github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
-
-	"k8s.io/apimachinery/pkg/util/cache"
 )
 
 // oauth2AuthInput builds a minimal AuthenticationInput carrying the given bearer token.
@@ -72,21 +68,11 @@ func newAuthorizerWithMock(t *testing.T, keyPair testKeyPair) (*Authorizer, *moc
 	jwksCache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
 	verifier := NewVerifier(jwksCache)
 	authorizer := &Authorizer{
-		verifier:    verifier,
-		remote:      remote,
-		claimsCache: cache.NewLRUExpireCache(passportClaimsCacheSize),
+		verifier: verifier,
+		remote:   remote,
 	}
 
 	return authorizer, remote, server
-}
-
-func passportInfoWithACL(t *testing.T, keyPair testKeyPair) (*authorization.Info, *identityapi.Acl) {
-	t.Helper()
-
-	expectedACL := &identityapi.Acl{}
-	token := mintPassport(t, keyPair, withACL(expectedACL))
-
-	return &authorization.Info{Token: token}, expectedACL
 }
 
 func TestGetBearerToken(t *testing.T) {
@@ -220,7 +206,7 @@ func TestAuthorizer_Authorize(t *testing.T) {
 			name: "populates authorization info from claims for valid passport",
 			makeToken: func(t *testing.T, keyPair testKeyPair) string {
 				t.Helper()
-				return mintPassport(t, keyPair, withACL(&identityapi.Acl{}))
+				return mintPassport(t, keyPair)
 			},
 			checkInfo: func(t *testing.T, info *authorization.Info, token string) {
 				t.Helper()
@@ -268,84 +254,25 @@ func TestAuthorizer_Authorize(t *testing.T) {
 	}
 }
 
-func TestAuthorizer_ClaimsCache(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		token     string
-		claims    *identityoauth2.PassportClaims
-		wantCache bool
-	}{
-		{
-			name:      "uses default ttl when exp is missing",
-			token:     "no-exp-token",
-			claims:    &identityoauth2.PassportClaims{},
-			wantCache: true,
-		},
-		{
-			name:  "does not cache expired claims",
-			token: "expired-token",
-			claims: &identityoauth2.PassportClaims{
-				Claims: jwt.Claims{Expiry: jwt.NewNumericDate(time.Now().Add(-time.Minute))},
-			},
-			wantCache: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			authorizer := &Authorizer{claimsCache: cache.NewLRUExpireCache(passportClaimsCacheSize)}
-			authorizer.cacheClaims(tt.token, tt.claims)
-
-			claims, ok, err := authorizer.claimsFromCache(tt.token)
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantCache, ok)
-
-			if tt.wantCache {
-				require.NotNil(t, claims)
-			}
-		})
-	}
-}
-
 func TestAuthorizer_GetACL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name            string
-		skipAuthContext bool
-		makeInfo        func(t *testing.T, keyPair testKeyPair) (*authorization.Info, *identityapi.Acl)
-		setupAuthorizer func(t *testing.T, authorizer *Authorizer, info *authorization.Info, expectedACL *identityapi.Acl)
-		setupMock       func(mockRemote *mock.MockAuthorizer, ctx any)
-		expectErr       bool
+		name      string
+		makeToken func(t *testing.T, keyPair testKeyPair) string
 	}{
 		{
-			name:            "returns error when authorization context missing",
-			skipAuthContext: true,
-			expectErr:       true,
-		},
-		{
-			name:     "returns acl from token claims cache",
-			makeInfo: passportInfoWithACL,
-			setupAuthorizer: func(_ *testing.T, authorizer *Authorizer, info *authorization.Info, expectedACL *identityapi.Acl) {
-				authorizer.cacheClaims(info.Token, &identityoauth2.PassportClaims{ACL: expectedACL})
-			},
-		},
-		{
 			name: "delegates to remote for non-passport token",
-			makeInfo: func(_ *testing.T, _ testKeyPair) (*authorization.Info, *identityapi.Acl) {
-				return &authorization.Info{Token: "not.a.passport.token"}, nil
-			},
-			setupMock: func(mockRemote *mock.MockAuthorizer, ctx any) {
-				mockRemote.EXPECT().GetACL(ctx, "org-id").Return(&identityapi.Acl{}, nil)
+			makeToken: func(_ *testing.T, _ testKeyPair) string {
+				return "not.a.passport.token"
 			},
 		},
 		{
-			name:     "returns embedded acl for passport token when acl not cached",
-			makeInfo: passportInfoWithACL,
+			name: "delegates to remote for passport token (acl is not embedded)",
+			makeToken: func(t *testing.T, keyPair testKeyPair) string {
+				t.Helper()
+				return mintPassport(t, keyPair)
+			},
 		},
 	}
 
@@ -356,37 +283,16 @@ func TestAuthorizer_GetACL(t *testing.T) {
 			keyPair := newTestKeyPair(t, "auth-kid")
 			authorizer, remote, _ := newAuthorizerWithMock(t, keyPair)
 
-			ctx := t.Context()
+			token := tt.makeToken(t, keyPair)
+			info := &authorization.Info{Token: token}
+			ctx := authorization.NewContext(t.Context(), info)
 
-			var (
-				info        *authorization.Info
-				expectedACL *identityapi.Acl
-			)
-
-			if !tt.skipAuthContext {
-				info, expectedACL = tt.makeInfo(t, keyPair)
-				ctx = authorization.NewContext(ctx, info)
-			}
-
-			if tt.setupAuthorizer != nil {
-				tt.setupAuthorizer(t, authorizer, info, expectedACL)
-			}
-
-			if tt.setupMock != nil {
-				tt.setupMock(remote, ctx)
-			}
+			expectedACL := &identityapi.Acl{}
+			remote.EXPECT().GetACL(ctx, "org-id").Return(expectedACL, nil)
 
 			acl, err := authorizer.GetACL(ctx, "org-id")
-
-			if tt.expectErr {
-				assert.Error(t, err)
-			} else {
-				require.NoError(t, err)
-
-				if expectedACL != nil {
-					assert.Equal(t, expectedACL, acl)
-				}
-			}
+			require.NoError(t, err)
+			assert.Same(t, expectedACL, acl)
 		})
 	}
 }

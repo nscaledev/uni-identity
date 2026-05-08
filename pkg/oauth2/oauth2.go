@@ -1753,10 +1753,12 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
 	}
 
-	// We support 3 garnt types:
+	// We support 4 grant types:
 	// * "authorization_code" is used by all humans in the system
 	// * "refresh_token" is used by anyone to get a new access token
 	// * "client_credentials" is used by other services for IPC
+	// * "urn:ietf:params:oauth:grant-type:token-exchange" (RFC 8693) is used to
+	//   exchange a validated source token for a signed UNI passport
 	switch openapi.GrantType(r.Form.Get("grant_type")) {
 	case openapi.AuthorizationCode:
 		return a.TokenAuthorizationCode(w, r)
@@ -1764,6 +1766,8 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 		return a.TokenRefreshToken(w, r)
 	case openapi.ClientCredentials:
 		return a.TokenClientCredentials(w, r)
+	case openapi.UrnIetfParamsOauthGrantTypeTokenExchange:
+		return a.TokenExchange(w, r)
 	}
 
 	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")
