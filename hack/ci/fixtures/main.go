@@ -301,10 +301,10 @@ func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgI
 	}
 }
 
-// resolveRoles lists the organization roles and returns the IDs for:
-// - administrator (required)
-// - user (required)
-// - audit (optional; empty when absent)
+// resolveRoles lists organization roles and returns role IDs.
+// - administrator is required.
+// - user is required.
+// - audit is optional and empty when absent.
 func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string, string) {
 	logf("Resolving role IDs...")
 
@@ -327,14 +327,14 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 		fatalf("user role not found in org %s", orgID)
 	}
 
-	auditRoleName := "auditor"
-	auditRoleID := findRole(rolesResp.JSON200, auditRoleName)
+	auditRoleID := findRole(rolesResp.JSON200, "auditor")
 	if auditRoleID == "" {
 		auditRoleID = findRole(rolesResp.JSON200, "audit")
 	}
 
 	logf("  administrator role ID: %s", administratorRoleID)
 	logf("  user role ID: %s", userRoleID)
+
 	if auditRoleID != "" {
 		logf("  audit role ID: %s", auditRoleID)
 	} else {
@@ -342,6 +342,41 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 	}
 
 	return administratorRoleID, userRoleID, auditRoleID
+}
+
+func createOrganizationFixture(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace, name, description string) string {
+	logf("Creating %s Organization fixture %q...", description, name)
+
+	resp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
+		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
+	})
+	if err != nil {
+		fatalf("failed to create %s Organization: %v", description, err)
+	}
+
+	if resp.JSON202 == nil {
+		fatalf("create %s Organization returned %s", description, resp.Status())
+	}
+
+	orgID := resp.JSON202.Metadata.Id
+	logf("  Organization ID: %s", orgID)
+	waitForOrgNamespace(ctx, k8s, namespace, orgID)
+
+	return orgID
+}
+
+func createAuditFixtures(ctx context.Context, ac *openapi.ClientWithResponses, orgID, auditRoleID string) string {
+	if auditRoleID == "" {
+		logf("Skipping audit fixtures because audit role ID is empty")
+
+		return ""
+	}
+
+	auditGroupID := createGroup(ctx, ac, orgID, "ci-audit-group", []string{auditRoleID})
+	_, auditToken := createServiceAccount(ctx, ac, orgID, "ci-audit-sa", []string{auditGroupID})
+
+	return auditToken
 }
 
 func main() {
@@ -385,46 +420,12 @@ func main() {
 	ac := newAPIClient(*baseURL, *caCertPath, certPEM, keyPEM)
 
 	// ── Create Organization ──────────────────────────────────────────────────
-	logf("Creating test Organization...")
-
-	orgResp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{Name: "ci-test-org"},
-		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
-	})
-	if err != nil {
-		fatalf("failed to create Organization: %v", err)
-	}
-
-	if orgResp.JSON202 == nil {
-		fatalf("create Organization returned %s", orgResp.Status())
-	}
-
-	orgID := orgResp.JSON202.Metadata.Id
-	logf("  Organization ID: %s", orgID)
-
-	// Wait for the organization controller to provision the backing namespace.
-	waitForOrgNamespace(ctx, k8s, *namespace, orgID)
+	orgID := createOrganizationFixture(ctx, ac, k8s, *namespace, "ci-test-org", "test")
 
 	// Create a second org that test identities are not members of.
 	// Used by non-member authorization tests (UNAUTHORISED_ORG_ID).
 	otherOrgName := fmt.Sprintf("ci-unauthorised-org-%d", time.Now().UnixNano())
-	logf("Creating non-member Organization fixture %q...", otherOrgName)
-
-	otherOrgResp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{Name: otherOrgName},
-		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
-	})
-	if err != nil {
-		fatalf("failed to create non-member Organization: %v", err)
-	}
-
-	if otherOrgResp.JSON202 == nil {
-		fatalf("create non-member Organization returned %s", otherOrgResp.Status())
-	}
-
-	unauthorisedOrgID := otherOrgResp.JSON202.Metadata.Id
-	logf("  Non-member Organization ID: %s", unauthorisedOrgID)
-	waitForOrgNamespace(ctx, k8s, *namespace, unauthorisedOrgID)
+	unauthorisedOrgID := createOrganizationFixture(ctx, ac, k8s, *namespace, otherOrgName, "non-member")
 
 	// ── Resolve role IDs ─────────────────────────────────────────────────────
 	// platform-administrator is protected and not returned by the API.
@@ -445,13 +446,7 @@ func main() {
 	// ── Create ServiceAccounts ────────────────────────────────────────────────
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
-	auditToken := ""
-	if auditRoleID != "" {
-		auditGroupID := createGroup(ctx, ac, orgID, "ci-audit-group", []string{auditRoleID})
-		_, auditToken = createServiceAccount(ctx, ac, orgID, "ci-audit-sa", []string{auditGroupID})
-	} else {
-		logf("Skipping audit fixtures because audit role ID is empty")
-	}
+	auditToken := createAuditFixtures(ctx, ac, orgID, auditRoleID)
 
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)

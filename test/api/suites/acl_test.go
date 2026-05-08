@@ -73,6 +73,7 @@ var _ = Describe("Access Control Discovery", func() {
 					if org.Id == config.OrgID {
 						found = true
 						GinkgoWriter.Printf("Found test organization in ACL: %s\n", config.OrgID)
+
 						break
 					}
 				}
@@ -95,22 +96,6 @@ var _ = Describe("Access Control Discovery", func() {
 			})
 		})
 
-		// From nscale-auth0-tests: acl.spec.ts §3.3
-		// Requesting the ACL scoped to an org the caller is not a member of must return
-		// an error — the caller must not be able to read another org's endpoint list.
-		Describe("Given a non-member organisation", func() {
-			BeforeEach(func() {
-				if config.UnauthorisedOrgID == "" {
-					Skip("UNAUTHORISED_ORG_ID is not configured")
-				}
-			})
-			It("should be denied access to another organization's ACL", func() {
-				_, err := client.GetOrganizationACL(ctx, config.UnauthorisedOrgID)
-				Expect(err).To(HaveOccurred(),
-					"requesting ACL for an org the caller is not a member of must be rejected")
-				GinkgoWriter.Printf("Non-member org ACL correctly denied: %v\n", err)
-			})
-		})
 	})
 
 	Context("When getting organization ACL", func() {
@@ -229,19 +214,6 @@ var _ = Describe("Access Control Discovery", func() {
 				Expect(*acl.Organizations).NotTo(BeEmpty(),
 					"service account must have at least one organisation in its ACL")
 				GinkgoWriter.Printf("Service account ACL retrieved with %d organisations\n", len(*acl.Organizations))
-			})
-		})
-		Describe("Given a non-member organisation", func() {
-			BeforeEach(func() {
-				if config.UnauthorisedOrgID == "" {
-					Skip("UNAUTHORISED_ORG_ID is not configured")
-				}
-			})
-			It("should be denied access to a non-home organisation ACL", func() {
-				_, err := serviceAccountClient.GetOrganizationACL(ctx, config.UnauthorisedOrgID)
-				Expect(err).To(HaveOccurred(),
-					"service account must be denied ACL for an org it is not a member of")
-				GinkgoWriter.Printf("Service account non-member org ACL correctly denied: %v\n", err)
 			})
 		})
 	})

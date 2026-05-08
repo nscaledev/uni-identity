@@ -98,6 +98,7 @@ var _ = Describe("Group Management", func() {
 						found = true
 						Expect(group.Metadata.Name).To(Equal(createdGroup.Metadata.Name))
 						GinkgoWriter.Printf("Found created group in list: %s\n", groupID)
+
 						break
 					}
 				}
@@ -294,10 +295,11 @@ var _ = Describe("Group Management", func() {
 
 				// Update the group via the groups API using UserIDs for the same user.
 				// Internally this calls userIDsToSubjects, which writes Issuer: c.issuer.URL.
-				Expect(client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
 					WithName(group.Metadata.Name).
 					WithUserIDs([]string{userID}).
-					Build())).NotTo(HaveOccurred())
+					Build())
+				Expect(err).NotTo(HaveOccurred())
 
 				// Read the group again to capture the issuer written by the groups API path.
 				issuerWrittenByGroupsAPI := readIssuer("groups")
@@ -326,10 +328,11 @@ var _ = Describe("Group Management", func() {
 
 				// Re-set group membership via the groups API using UserIDs.
 				// userIDsToSubjects writes Issuer: c.issuer.URL, overwriting the Issuer: "" entry.
-				Expect(client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
+				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
 					WithName(group.Metadata.Name).
 					WithUserIDs([]string{userID}).
-					Build())).NotTo(HaveOccurred())
+					Build())
+				Expect(err).NotTo(HaveOccurred())
 
 				// Delete the user via the users API.
 				// removeFromGroup constructs a subject with Issuer: "" and matches by both ID and Issuer.
@@ -402,7 +405,7 @@ var _ = Describe("Group Management", func() {
 	})
 })
 
-// From nscale-auth0-tests: groups.spec.ts §5 — Subjects membership field
+// From nscale-auth0-tests: groups.spec.ts §5 — Subjects membership field.
 var _ = Describe("Group Subjects", func() {
 	Context("When managing group subjects", func() {
 		// §5.1 Create with subjects field
