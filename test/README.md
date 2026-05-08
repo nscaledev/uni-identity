@@ -58,6 +58,10 @@ Optional variables for richer coverage:
 
 - `ADMIN_AUTH_TOKEN`
 - `USER_AUTH_TOKEN`
+- `SERVICE_ACCOUNT_TOKEN`
+- `TEST_USER_SUBJECT`
+- `TEST_USER_ID`
+- `TEST_USER_GLOBAL_ID`
 - `TEST_USER_SA_ID`
 - `IDENTITY_CA_CERT`
 

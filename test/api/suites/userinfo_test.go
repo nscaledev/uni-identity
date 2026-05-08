@@ -134,6 +134,32 @@ var _ = Describe("Userinfo", func() {
 		})
 
 		// From nscale-auth0-tests: userinfo.spec.ts §4.3
+		// A real user token must report acctype "user" in the authz claims.
+		Context("When authenticated as a user", func() {
+			BeforeEach(func() {
+				if userClient == nil {
+					Skip("USER_AUTH_TOKEN is not configured")
+				}
+			})
+
+			It("should report acctype 'user' in the authz claims", func() {
+				userinfo, err := userClient.GetUserinfo(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
+				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User))
+				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
+
+				if config.UserSubject != "" {
+					Expect(userinfo.Sub).To(Equal(config.UserSubject))
+					Expect(userinfo.Email).NotTo(BeNil())
+					Expect(*userinfo.Email).To(Equal(config.UserSubject))
+				}
+
+				GinkgoWriter.Printf("User acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
+			})
+		})
+
+		// From nscale-auth0-tests: userinfo.spec.ts §4.3
 		// A service account token must report acctype "service" in the authz claims.
 		Context("When authenticated as a service account", func() {
 			BeforeEach(func() {

@@ -20,6 +20,7 @@ limitations under the License.
 //   - an Organization
 //   - two Groups: one with the "administrator" role, one with the "user" role
 //   - a Project (members: both groups)
+//   - a user in the user group, yielding a federated bearer token
 //   - two ServiceAccounts: one per group, each yielding a distinct bearer token
 //
 // The resulting tokens exercise both org-scoped (administrator) and
@@ -44,10 +45,15 @@ import (
 	"time"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -63,6 +69,29 @@ func fatalf(format string, args ...interface{}) {
 
 func logf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "==> "+format+"\n", args...)
+}
+
+func newKubernetesClient() client.Client {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		fatalf("failed to get kubeconfig: %v", err)
+	}
+
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		fatalf("failed to register core scheme: %v", err)
+	}
+
+	if err := unikornv1.AddToScheme(scheme); err != nil {
+		fatalf("failed to register identity scheme: %v", err)
+	}
+
+	k8s, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		fatalf("failed to create Kubernetes client: %v", err)
+	}
+
+	return k8s
 }
 
 // issueCert creates a cert-manager Certificate via controller-runtime and
@@ -277,6 +306,83 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 	return id, token
 }
 
+// createUser creates an active user in the given groups and returns its organization user ID.
+func createUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, subject string, groupIDs []string) string {
+	logf("Creating user %q...", subject)
+
+	resp, err := ac.PostApiV1OrganizationsOrganizationIDUsersWithResponse(ctx, orgID, openapi.UserWrite{
+		Spec: openapi.UserSpec{
+			GroupIDs: groupIDs,
+			State:    openapi.Active,
+			Subject:  subject,
+		},
+	})
+	if err != nil {
+		fatalf("failed to create user %q: %v", subject, err)
+	}
+
+	if resp.JSON201 == nil {
+		fatalf("create user %q returned %s", subject, resp.Status())
+	}
+
+	id := resp.JSON201.Metadata.Id
+	logf("  user %q organization user ID: %s", subject, id)
+
+	return id
+}
+
+func findGlobalUserID(ctx context.Context, k8s client.Client, namespace, subject string) string {
+	users := &unikornv1.UserList{}
+	if err := k8s.List(ctx, users, client.InNamespace(namespace)); err != nil {
+		fatalf("failed to list global users: %v", err)
+	}
+
+	for _, user := range users.Items {
+		if user.Spec.Subject == subject {
+			return user.Name
+		}
+	}
+
+	fatalf("global user for subject %q not found", subject)
+
+	return ""
+}
+
+func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, subject, globalUserID string) string {
+	issuer := handlercommon.IssuerValue{}
+	if err := issuer.Set(baseURL); err != nil {
+		fatalf("failed to parse issuer %q: %v", baseURL, err)
+	}
+
+	jwtIssuer := jose.NewJWTIssuer(k8s, namespace, &jose.Options{})
+	authenticator := oauth2.New(&oauth2.Options{
+		AccessTokenDuration:      time.Hour,
+		RefreshTokenDuration:     time.Hour,
+		TokenCacheSize:           8192,
+		CodeCacheSize:            8192,
+		AccountCreationCacheSize: 8192,
+	}, namespace, issuer, k8s, jwtIssuer, nil, nil)
+
+	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
+		Issuer:   issuer.URL,
+		Audience: issuer.Hostname,
+		Subject:  subject,
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			Provider: "ci-fixtures",
+			ClientID: "ci-fixtures",
+			UserID:   globalUserID,
+			Scope:    oauth2.NewScope("openid email profile"),
+		},
+		Interactive: true,
+	})
+	if err != nil {
+		fatalf("failed to issue user token for %q: %v", subject, err)
+	}
+
+	return tokens.AccessToken
+}
+
 // waitForOrgNamespace polls until the organization controller has provisioned the backing namespace.
 func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgID string) {
 	logf("Waiting for Organization %s to be provisioned...", orgID)
@@ -393,15 +499,7 @@ func main() {
 	ctx := context.Background()
 
 	// Build a controller-runtime client using the in-cluster or KUBECONFIG credentials.
-	cfg, err := config.GetConfig()
-	if err != nil {
-		fatalf("failed to get kubeconfig: %v", err)
-	}
-
-	k8s, err := client.New(cfg, client.Options{})
-	if err != nil {
-		fatalf("failed to create Kubernetes client: %v", err)
-	}
+	k8s := newKubernetesClient()
 
 	// Issue mTLS client cert for ci-fixtures. The CN maps directly to the
 	// platform-administrator system account — no token exchange required.
@@ -435,10 +533,15 @@ func main() {
 	// Both groups are members so both service accounts can access project endpoints.
 	projectID := createProject(ctx, ac, orgID, "ci-test-project", []string{adminGroupID, userGroupID})
 
-	// ── Create ServiceAccounts ────────────────────────────────────────────────
+	// ── Create user and ServiceAccounts ───────────────────────────────────────
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
-	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
+	userSAID, serviceAccountToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
 	auditToken := createAuditFixtures(ctx, ac, orgID, auditRoleID)
+
+	userSubject := "ci-user@nscale.test"
+	userOrgID := createUser(ctx, ac, orgID, userSubject, []string{userGroupID})
+	userGlobalID := findGlobalUserID(ctx, k8s, *namespace, userSubject)
+	userToken := issueUserToken(ctx, k8s, *namespace, *baseURL, userSubject, userGlobalID)
 
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
@@ -451,8 +554,11 @@ func main() {
 	fmt.Printf("TEST_USER_GROUP_ID=%s\n", userGroupID)
 	fmt.Printf("TEST_ADMIN_SA_ID=%s\n", adminSAID)
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
+	fmt.Printf("TEST_USER_ID=%s\n", userOrgID)
+	fmt.Printf("TEST_USER_GLOBAL_ID=%s\n", userGlobalID)
+	fmt.Printf("TEST_USER_SUBJECT=%s\n", userSubject)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("USER_AUTH_TOKEN=%s\n", userToken)
-	fmt.Printf("SERVICE_ACCOUNT_TOKEN=%s\n", userToken)
+	fmt.Printf("SERVICE_ACCOUNT_TOKEN=%s\n", serviceAccountToken)
 	fmt.Printf("AUDIT_AUTH_TOKEN=%s\n", auditToken)
 }

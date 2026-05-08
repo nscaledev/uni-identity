@@ -32,6 +32,9 @@ type TestConfig struct {
 	ProjectID           string
 	AdminGroupID        string
 	UserGroupID         string
+	UserID              string
+	UserGlobalID        string
+	UserSubject         string
 	UserSAID            string
 	UnauthorisedOrgID   string
 	ServiceAccountToken string
@@ -80,6 +83,9 @@ func LoadTestConfig() (*TestConfig, error) {
 		ProjectID:           v.GetString("TEST_PROJECT_ID"),
 		AdminGroupID:        v.GetString("TEST_ADMIN_GROUP_ID"),
 		UserGroupID:         v.GetString("TEST_USER_GROUP_ID"),
+		UserID:              v.GetString("TEST_USER_ID"),
+		UserGlobalID:        v.GetString("TEST_USER_GLOBAL_ID"),
+		UserSubject:         v.GetString("TEST_USER_SUBJECT"),
 		UserSAID:            v.GetString("TEST_USER_SA_ID"),
 		UnauthorisedOrgID:   v.GetString("UNAUTHORISED_ORG_ID"),
 		ServiceAccountToken: v.GetString("SERVICE_ACCOUNT_TOKEN"),

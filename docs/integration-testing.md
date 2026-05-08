@@ -152,6 +152,10 @@ Optional variables used by the richer kind-generated flow:
 
 - `ADMIN_AUTH_TOKEN`
 - `USER_AUTH_TOKEN`
+- `SERVICE_ACCOUNT_TOKEN`
+- `TEST_USER_SUBJECT`
+- `TEST_USER_ID`
+- `TEST_USER_GLOBAL_ID`
 - `TEST_USER_SA_ID`
 - `IDENTITY_CA_CERT`
 
@@ -187,13 +191,15 @@ The fixture creates:
 
 - one organization
 - one project
+- one active federated user in the user group
 - one administrator service account
 - one user service account
 
 It writes both:
 
 - `API_AUTH_TOKEN` for backward-compatible API suite consumers
-- `ADMIN_AUTH_TOKEN` / `USER_AUTH_TOKEN` for explicit multi-principal coverage
+- `ADMIN_AUTH_TOKEN` / `USER_AUTH_TOKEN` for explicit admin and federated-user coverage
+- `SERVICE_ACCOUNT_TOKEN` for service-account-specific coverage
 
 ## Pre-PR Checklist
 

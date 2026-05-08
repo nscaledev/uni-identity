@@ -637,74 +637,121 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 		}
 	})
 
-	// Helper to count total ACL operations in org scope.
-	countOrgACLOps := func(c *api.APIClient) int {
-		acl, err := c.GetOrganizationACL(ctx, config.OrgID)
-		if err != nil || acl.Organization == nil || acl.Organization.Endpoints == nil {
-			return 0
-		}
-
-		total := 0
-
-		for _, ep := range *acl.Organization.Endpoints {
-			total += len(ep.Operations)
-		}
-
-		return total
+	type aclPermission struct {
+		endpoint  string
+		operation identityopenapi.AclOperation
 	}
 
-	chooseRoleForACL := func(roles []identityopenapi.RoleRead) (string, string) {
-		selected := roles[0]
+	adminOnlyPermissions := []aclPermission{
+		{endpoint: "identity:groups", operation: identityopenapi.Create},
+		{endpoint: "identity:groups", operation: identityopenapi.Update},
+		{endpoint: "identity:groups", operation: identityopenapi.Delete},
+		{endpoint: "identity:users", operation: identityopenapi.Create},
+		{endpoint: "identity:serviceaccounts", operation: identityopenapi.Create},
+		{endpoint: "identity:roles", operation: identityopenapi.Create},
+	}
+
+	orgACLHasPermission := func(c *api.APIClient, permission aclPermission) (bool, error) {
+		acl, err := c.GetOrganizationACL(ctx, config.OrgID)
+		if err != nil {
+			return false, err
+		}
+		if acl.Organization == nil || acl.Organization.Endpoints == nil {
+			return false, nil
+		}
+
+		for _, ep := range *acl.Organization.Endpoints {
+			if ep.Name != permission.endpoint {
+				continue
+			}
+
+			for _, operation := range ep.Operations {
+				if operation == permission.operation {
+					return true, nil
+				}
+			}
+
+			return false, nil
+		}
+
+		return false, nil
+	}
+
+	chooseAdministratorRole := func(roles []identityopenapi.RoleRead) string {
 		for _, role := range roles {
 			if strings.EqualFold(role.Metadata.Name, "administrator") {
-				selected = role
-				break
+				return role.Metadata.Id
 			}
 		}
 
-		return selected.Metadata.Id, selected.Metadata.Name
+		return ""
 	}
 
-	waitForACLCondition := func(c *api.APIClient, condition func(int) bool) (int, bool) {
+	chooseMissingPermission := func(c *api.APIClient) aclPermission {
+		for _, permission := range adminOnlyPermissions {
+			hasPermission, err := orgACLHasPermission(c, permission)
+			Expect(err).NotTo(HaveOccurred())
+			if !hasPermission {
+				return permission
+			}
+		}
+
+		Fail("test user already has all admin-only ACL permissions; cannot verify group subject ACL grant")
+
+		return aclPermission{}
+	}
+
+	currentUserSubject := func() identityopenapi.Subject {
+		userinfo, err := userClient.GetUserinfo(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
+		Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User),
+			"USER_AUTH_TOKEN must be a federated user token for subject ACL effect tests")
+		Expect(userinfo.Sub).NotTo(BeEmpty())
+
+		if config.UserSubject != "" {
+			Expect(userinfo.Sub).To(Equal(config.UserSubject))
+		}
+
+		email := userinfo.Sub
+
+		return identityopenapi.Subject{
+			Id:     userinfo.Sub,
+			Email:  &email,
+			Issuer: config.BaseURL,
+		}
+	}
+
+	waitForPermissionCondition := func(c *api.APIClient, permission aclPermission, expected bool) bool {
 		timeout := config.TestTimeout
 		if timeout > 2*time.Minute {
 			timeout = 2 * time.Minute
 		}
 
 		deadline := time.Now().Add(timeout)
-		last := countOrgACLOps(c)
 
 		for time.Now().Before(deadline) {
-			last = countOrgACLOps(c)
-			if condition(last) {
-				return last, true
+			hasPermission, err := orgACLHasPermission(c, permission)
+			if err == nil && hasPermission == expected {
+				return true
 			}
 			time.Sleep(2 * time.Second)
 		}
 
-		return last, false
+		return false
 	}
 
 	// §5.8 adding a subject to a group grants ACL permissions
 	Describe("Given a group with a role, when the user's subject is added", func() {
-		It("should gain the role's endpoint operations in the user's org ACL", func() {
+		It("should gain the role's specific endpoint operation in the user's org ACL", func() {
 			roles, err := adminClient.ListRoles(ctx, config.OrgID)
 			Expect(err).NotTo(HaveOccurred())
 
-			if len(roles) == 0 {
-				Skip("No roles available in organization")
-			}
-			roleID, roleName := chooseRoleForACL(roles)
+			roleID := chooseAdministratorRole(roles)
+			Expect(roleID).NotTo(BeEmpty(), "administrator role must be available for ACL effect testing")
 
-			// Capture the user's initial ACL operation count.
-			initialOps := countOrgACLOps(userClient)
-
-			// Get the user's external subject identifier from their token.
-			userinfo, err := userClient.GetUserinfo(ctx)
-			Expect(err).NotTo(HaveOccurred())
-
-			subjectID := userinfo.Sub
-			subject := identityopenapi.Subject{Id: subjectID, Issuer: ""}
+			subject := currentUserSubject()
+			permission := chooseMissingPermission(userClient)
 
 			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 				api.NewGroupPayload().
@@ -712,37 +759,26 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 					WithSubjects([]identityopenapi.Subject{subject}).
 					Build())
 
-			opsAfterAdd, increased := waitForACLCondition(userClient, func(ops int) bool {
-				return ops > initialOps
-			})
-			if !increased {
-				Skip(fmt.Sprintf(
-					"ACL ops did not increase after adding subject with role %q (initial=%d, final=%d)",
-					roleName, initialOps, opsAfterAdd))
-			}
+			Expect(waitForPermissionCondition(userClient, permission, true)).To(BeTrue(),
+				"ACL should include %s/%s after adding subject %s to administrator group",
+				permission.endpoint, permission.operation, subject.Id)
 
-			GinkgoWriter.Printf("Group %s: ACL ops increased for role %q (%d -> %d)\n",
-				groupID, roleName, initialOps, opsAfterAdd)
+			GinkgoWriter.Printf("Group %s: ACL gained %s/%s for subject %s\n",
+				groupID, permission.endpoint, permission.operation, subject.Id)
 		})
 	})
 
 	// §5.9 deleting a group removes the subject's ACL permissions
 	Describe("Given a group that was granting permissions, when the group is deleted", func() {
-		It("should reduce the user's org ACL operation count", func() {
+		It("should remove the role's specific endpoint operation from the user's org ACL", func() {
 			roles, err := adminClient.ListRoles(ctx, config.OrgID)
 			Expect(err).NotTo(HaveOccurred())
 
-			if len(roles) == 0 {
-				Skip("No roles available in organization")
-			}
-			roleID, roleName := chooseRoleForACL(roles)
-			initialOps := countOrgACLOps(userClient)
+			roleID := chooseAdministratorRole(roles)
+			Expect(roleID).NotTo(BeEmpty(), "administrator role must be available for ACL effect testing")
 
-			userinfo, err := userClient.GetUserinfo(ctx)
-			Expect(err).NotTo(HaveOccurred())
-
-			subjectID := userinfo.Sub
-			subject := identityopenapi.Subject{Id: subjectID, Issuer: ""}
+			subject := currentUserSubject()
+			permission := chooseMissingPermission(userClient)
 
 			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 				api.NewGroupPayload().
@@ -750,31 +786,19 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 					WithSubjects([]identityopenapi.Subject{subject}).
 					Build())
 
-			// Wait for ACL to gain permissions.
-			opsWithGroup, increased := waitForACLCondition(userClient, func(ops int) bool {
-				return ops > initialOps
-			})
-			if !increased {
-				Skip(fmt.Sprintf(
-					"ACL ops did not increase before delete with role %q (initial=%d, final=%d)",
-					roleName, initialOps, opsWithGroup))
-			}
+			Expect(waitForPermissionCondition(userClient, permission, true)).To(BeTrue(),
+				"ACL should include %s/%s before deleting group %s",
+				permission.endpoint, permission.operation, groupID)
 
 			// Now delete the group (bypass DeferCleanup by deleting explicitly).
 			Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
 
-			// ACL should shrink back.
-			opsAfterDelete, decreased := waitForACLCondition(userClient, func(ops int) bool {
-				return ops < opsWithGroup
-			})
-			if !decreased {
-				Skip(fmt.Sprintf(
-					"ACL ops did not decrease after deleting group with role %q (with-group=%d, final=%d)",
-					roleName, opsWithGroup, opsAfterDelete))
-			}
+			Expect(waitForPermissionCondition(userClient, permission, false)).To(BeTrue(),
+				"ACL should no longer include %s/%s after deleting group %s",
+				permission.endpoint, permission.operation, groupID)
 
-			GinkgoWriter.Printf("Group %s deleted — ACL ops reduced for role %q (%d -> %d)\n",
-				groupID, roleName, opsWithGroup, opsAfterDelete)
+			GinkgoWriter.Printf("Group %s deleted: ACL removed %s/%s for subject %s\n",
+				groupID, permission.endpoint, permission.operation, subject.Id)
 		})
 	})
 })

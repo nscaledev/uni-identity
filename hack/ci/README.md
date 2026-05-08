@@ -36,8 +36,12 @@ TEST_ADMIN_GROUP_ID=<uuid>
 TEST_USER_GROUP_ID=<uuid>
 TEST_ADMIN_SA_ID=<uuid>
 TEST_USER_SA_ID=<uuid>
+TEST_USER_ID=<uuid>
+TEST_USER_GLOBAL_ID=<uuid>
+TEST_USER_SUBJECT=ci-user@nscale.test
 ADMIN_AUTH_TOKEN=<jwt>   # administrator role — full org-level identity CRUD
-USER_AUTH_TOKEN=<jwt>    # user role — project-scoped access
+USER_AUTH_TOKEN=<jwt>    # federated user token — project-scoped access
+SERVICE_ACCOUNT_TOKEN=<jwt> # service account token — self-service account access
 ```
 
 Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
