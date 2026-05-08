@@ -29,8 +29,11 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/exchange"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,6 +66,7 @@ func newPassportInternalAuthenticator(t *testing.T, objects ...client.Object) *A
 	return &Authenticator{
 		client:    cli,
 		namespace: passportTestNamespace,
+		userdb:    userdb.NewUserDatabase(cli, passportTestNamespace),
 	}
 }
 
@@ -224,6 +228,133 @@ func TestNormalizeExchangeUserinfoError(t *testing.T) {
 			test.test(t, normalizeExchangeUserinfoError(test.err))
 		})
 	}
+}
+
+func TestNormalizeExchangeValidationError(t *testing.T) {
+	t.Parallel()
+
+	oauthErr := oauth2errors.OAuth2AccessDenied("token validation failed")
+
+	testCases := []struct {
+		name     string
+		err      error
+		expected func(t *testing.T, err error)
+	}{
+		{
+			name: "oauth2 errors are preserved",
+			err:  oauthErr,
+			expected: func(t *testing.T, err error) {
+				t.Helper()
+				assert.Same(t, oauthErr, err)
+			},
+		},
+		{
+			name: "unsupported source is normalized to access denied",
+			err:  exchange.ErrUnsupportedSource,
+			expected: func(t *testing.T, err error) {
+				t.Helper()
+				var normalized *oauth2errors.Error
+				require.ErrorAs(t, err, &normalized)
+				assert.Equal(t, "token validation failed", normalized.Error())
+			},
+		},
+		{
+			name: "auth0 claim failures are normalized to access denied",
+			err:  auth0.ErrInsufficientScope,
+			expected: func(t *testing.T, err error) {
+				t.Helper()
+				var normalized *oauth2errors.Error
+				require.ErrorAs(t, err, &normalized)
+				assert.Equal(t, "token validation failed", normalized.Error())
+			},
+		},
+		{
+			name: "unknown errors are preserved",
+			err:  errPassportInternalBoom,
+			expected: func(t *testing.T, err error) {
+				t.Helper()
+				assert.Same(t, errPassportInternalBoom, err)
+			},
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			test.expected(t, normalizeExchangeValidationError(test.err))
+		})
+	}
+}
+
+func TestPassportSourceClaim(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, PassportSourceUNI, passportSourceClaim(exchange.SourceUNI))
+	assert.Equal(t, PassportSourceAuth0, passportSourceClaim(exchange.SourceAuth0))
+	assert.Empty(t, passportSourceClaim(exchange.SourceUnknown))
+}
+
+func TestEnrichAuth0Identity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("email subject is enriched with organization memberships", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator := newPassportInternalAuthenticator(t,
+			&unikornv1.User{
+				ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "user-1"},
+				Spec:       unikornv1.UserSpec{Subject: "user@example.com", State: unikornv1.UserStateActive},
+			},
+			&unikornv1.OrganizationUser{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: passportTestNamespace,
+					Name:      "org-user-1",
+					Labels: map[string]string{
+						constants.UserLabel:         "user-1",
+						constants.OrganizationLabel: "org-1",
+					},
+				},
+				Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+			},
+		)
+
+		identity := &exchange.ValidatedIdentity{Source: exchange.SourceAuth0, Subject: "auth0|user-1", Email: "user@example.com"}
+		require.NoError(t, authenticator.enrichAuth0Identity(t.Context(), identity))
+
+		assert.Equal(t, "user@example.com", identity.Subject)
+		assert.Equal(t, openapi.User, identity.AccountType)
+		assert.Equal(t, []string{"org-1"}, identity.OrganizationIDs)
+	})
+
+	t.Run("missing email is denied", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator := newPassportInternalAuthenticator(t)
+		identity := &exchange.ValidatedIdentity{Source: exchange.SourceAuth0, Subject: "auth0|user-1", Email: " "}
+
+		err := authenticator.enrichAuth0Identity(t.Context(), identity)
+		require.Error(t, err)
+
+		var oauthErr *oauth2errors.Error
+
+		require.ErrorAs(t, err, &oauthErr)
+		assert.Contains(t, err.Error(), "token validation failed")
+	})
+
+	t.Run("unknown email is denied", func(t *testing.T) {
+		t.Parallel()
+
+		authenticator := newPassportInternalAuthenticator(t)
+		identity := &exchange.ValidatedIdentity{Source: exchange.SourceAuth0, Subject: "auth0|user-1", Email: "user@example.com"}
+
+		err := authenticator.enrichAuth0Identity(t.Context(), identity)
+		require.Error(t, err)
+
+		var oauthErr *oauth2errors.Error
+
+		require.ErrorAs(t, err, &oauthErr)
+		assert.Contains(t, err.Error(), "user identity not found or inactive")
+	})
 }
 
 func TestHasBroaderScope(t *testing.T) {

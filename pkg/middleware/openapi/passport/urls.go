@@ -19,7 +19,8 @@ package passport
 import "strings"
 
 const (
-	jwksPath          = "/oauth2/v2/jwks"
+	jwksPath = "/oauth2/v2/jwks"
+	//nolint:gosec // static endpoint path, not a credential
 	tokenExchangePath = "/oauth2/v2/token"
 )
 

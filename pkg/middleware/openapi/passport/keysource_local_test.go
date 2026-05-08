@@ -18,13 +18,15 @@ package passport //nolint:testpackage
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var errLookupFailed = errors.New("lookup failed")
 
 type keyLookupServiceFunc func(ctx context.Context, keyID string) (*jose.JSONWebKey, *jose.JSONWebKey, error)
 
@@ -54,7 +56,7 @@ func TestLocalKeySource(t *testing.T) {
 		t.Parallel()
 
 		service := keyLookupServiceFunc(func(_ context.Context, _ string) (*jose.JSONWebKey, *jose.JSONWebKey, error) {
-			return nil, nil, fmt.Errorf("lookup failed")
+			return nil, nil, errLookupFailed
 		})
 
 		source := NewLocalKeySource(service)

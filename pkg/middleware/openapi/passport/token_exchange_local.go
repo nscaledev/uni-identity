@@ -46,38 +46,11 @@ func (e *localTokenExchange) Exchange(ctx context.Context, sourceToken string, o
 		return "", fmt.Errorf("%w: local token exchange not configured", ErrTokenExchangeUnavailable)
 	}
 
-	tokenOptions := &identityapi.TokenRequestOptions{
-		GrantType:          string(identityapi.UrnIetfParamsOauthGrantTypeTokenExchange),
-		SubjectToken:       &sourceToken,
-		SubjectTokenType:   ptrString(identityoauth2.AccessTokenSubjectTokenType()),
-		RequestedTokenType: ptrString(identityoauth2.PassportIssuedTokenType()),
-	}
-
-	if options != nil {
-		if options.organizationID != "" {
-			tokenOptions.XOrganizationId = &options.organizationID
-		}
-
-		if options.projectID != "" {
-			tokenOptions.XProjectId = &options.projectID
-		}
-	}
+	tokenOptions := buildTokenExchangeRequestOptions(sourceToken, options)
 
 	token, err := e.service.ExchangePassport(ctx, tokenOptions)
 	if err != nil {
-		var oauthErr *oauth2errors.Error
-		if errors.As(err, &oauthErr) {
-			switch {
-			case oauthErr.StatusCode() == http.StatusUnauthorized:
-				return "", ErrTokenExchangeUnauthorized
-			case oauthErr.StatusCode() >= http.StatusInternalServerError:
-				return "", fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
-			default:
-				return "", fmt.Errorf("%w: %w", ErrTokenExchangeFailed, err)
-			}
-		}
-
-		return "", fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
+		return "", mapTokenExchangeError(err)
 	}
 
 	if token == nil || token.AccessToken == "" {
@@ -85,6 +58,46 @@ func (e *localTokenExchange) Exchange(ctx context.Context, sourceToken string, o
 	}
 
 	return token.AccessToken, nil
+}
+
+func buildTokenExchangeRequestOptions(sourceToken string, options *tokenExchangeOptions) *identityapi.TokenRequestOptions {
+	tokenOptions := &identityapi.TokenRequestOptions{
+		GrantType:          string(identityapi.UrnIetfParamsOauthGrantTypeTokenExchange),
+		SubjectToken:       &sourceToken,
+		SubjectTokenType:   ptrString(identityoauth2.AccessTokenSubjectTokenType()),
+		RequestedTokenType: ptrString(identityoauth2.PassportIssuedTokenType()),
+	}
+
+	if options == nil {
+		return tokenOptions
+	}
+
+	if options.organizationID != "" {
+		tokenOptions.XOrganizationId = &options.organizationID
+	}
+
+	if options.projectID != "" {
+		tokenOptions.XProjectId = &options.projectID
+	}
+
+	return tokenOptions
+}
+
+func mapTokenExchangeError(err error) error {
+	var oauthErr *oauth2errors.Error
+	if !errors.As(err, &oauthErr) {
+		return fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
+	}
+
+	if oauthErr.StatusCode() == http.StatusUnauthorized {
+		return ErrTokenExchangeUnauthorized
+	}
+
+	if oauthErr.StatusCode() >= http.StatusInternalServerError {
+		return fmt.Errorf("%w: %w", ErrTokenExchangeUnavailable, err)
+	}
+
+	return fmt.Errorf("%w: %w", ErrTokenExchangeFailed, err)
 }
 
 func ptrString(value string) *string {

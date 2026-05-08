@@ -39,6 +39,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/passport"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/exchange"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
@@ -62,6 +64,10 @@ type Server struct {
 	// OAuth2Options sets options for the oauth2/oidc authenticator.
 	OAuth2Options oauth2.Options
 
+	// Auth0Options configures the Auth0 access-token validator at exchange.
+	// Empty Issuer disables Auth0 validation; UNI tokens are unaffected.
+	Auth0Options auth0.Options
+
 	// CORSOptions are for remote resource sharing.
 	CORSOptions cors.Options
 
@@ -72,12 +78,21 @@ type Server struct {
 	OpenAPIOptions openapimiddleware.Options
 }
 
+type authComponents struct {
+	issuer        *jose.JWTIssuer
+	userdb        *userdb.UserDatabase
+	rbac          *rbac.RBAC
+	authenticator *oauth2.Authenticator
+	uniAuthorizer *local.Authorizer
+}
+
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CoreOptions.AddFlags(flags)
 	s.ServerOptions.AddFlags(flags)
 	s.HandlerOptions.AddFlags(flags)
 	s.JoseOptions.AddFlags(flags)
 	s.OAuth2Options.AddFlags(flags)
+	s.Auth0Options.AddFlags(flags)
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
@@ -119,22 +134,16 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
 
-	// Setup authn/authz
-	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
-	if err := issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{}); err != nil {
+	components, err := s.buildAuthComponents(client)
+	if err != nil {
 		return nil, err
 	}
 
-	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
-	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
-	uniAuthorizer := local.NewAuthorizer(oauth2, rbac)
+	if err := s.configureExchangeRouter(components.authenticator); err != nil {
+		return nil, err
+	}
 
-	verifier := passport.NewVerifier(passport.NewLocalKeySource(issuer))
-	tokenExchange := passport.NewLocalTokenExchange(oauth2)
-
-	// Setup middleware.
-	passportAuthorizer, err := passport.NewAuthorizer(verifier, uniAuthorizer, tokenExchange)
+	passportAuthorizer, err := buildPassportAuthorizer(components.issuer, components.uniAuthorizer, components.authenticator)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +162,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		},
 	}
 
-	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, components.issuer, components.authenticator, components.userdb, components.rbac, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -167,4 +176,63 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	}
 
 	return server, nil
+}
+
+func (s *Server) buildAuthComponents(client client.Client) (*authComponents, error) {
+	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
+	if err := issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{}); err != nil {
+		return nil, err
+	}
+
+	userDatabase := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
+	rbacClient := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
+	authenticator := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userDatabase, rbacClient)
+
+	return &authComponents{
+		issuer:        issuer,
+		userdb:        userDatabase,
+		rbac:          rbacClient,
+		authenticator: authenticator,
+		uniAuthorizer: local.NewAuthorizer(authenticator, rbacClient),
+	}, nil
+}
+
+func (s *Server) configureExchangeRouter(authenticator *oauth2.Authenticator) error {
+	detector := exchange.NewSourceDetector(s.HandlerOptions.Issuer.URL, s.Auth0Options.Issuer)
+	uniTokenValidator := exchange.NewUNITokenValidator(authenticator)
+
+	var auth0TokenValidator exchange.TokenValidator
+
+	if s.Auth0Options.Enabled() {
+		httpClient := &http.Client{Timeout: s.Auth0Options.EffectiveJWKSHTTPTimeout()}
+
+		keySource := auth0.NewCachedHTTPKeySource(
+			httpClient,
+			s.Auth0Options.EffectiveJWKSURL(),
+			s.Auth0Options.EffectiveJWKSCacheTTL(),
+		)
+
+		verifier, err := auth0.NewVerifier(keySource, &s.Auth0Options)
+		if err != nil {
+			return err
+		}
+
+		auth0TokenValidator = exchange.NewAuth0TokenValidator(verifier)
+	}
+
+	exchangeRouter, err := exchange.NewRouter(detector, uniTokenValidator, auth0TokenValidator)
+	if err != nil {
+		return err
+	}
+
+	authenticator.ConfigureExchangeRouter(detector, exchangeRouter)
+
+	return nil
+}
+
+func buildPassportAuthorizer(issuer *jose.JWTIssuer, uniAuthorizer *local.Authorizer, authenticator *oauth2.Authenticator) (*passport.Authorizer, error) {
+	verifier := passport.NewVerifier(passport.NewLocalKeySource(issuer))
+	tokenExchange := passport.NewLocalTokenExchange(authenticator)
+
+	return passport.NewAuthorizer(verifier, uniAuthorizer, tokenExchange)
 }

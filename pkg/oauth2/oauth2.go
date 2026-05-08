@@ -52,6 +52,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/exchange"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/providers"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/types"
@@ -153,6 +154,12 @@ type Authenticator struct {
 
 	// rbac is needed only for constructing a "superuser context"
 	rbac *rbac.RBAC
+
+	// exchangeDetector classifies source tokens for metrics and routing.
+	exchangeDetector *exchange.SourceDetector
+
+	// exchangeRouter validates source tokens using per-source validators.
+	exchangeRouter *exchange.Router
 
 	// tokenCache is used to enhance interaction as the validation is a
 	// very expensive operation.

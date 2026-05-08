@@ -17,6 +17,8 @@ limitations under the License.
 package oauth2_test
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +40,7 @@ import (
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/exchange"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
@@ -57,6 +60,20 @@ type passportTestEnv struct {
 	authenticator *oauth2.Authenticator
 	jwtIssuer     *jose.JWTIssuer
 	client        client.Client
+}
+
+type staticExchangeValidator struct {
+	source   exchange.Source
+	identity *exchange.ValidatedIdentity
+}
+
+func (v *staticExchangeValidator) Source() exchange.Source { return v.source }
+
+func (v *staticExchangeValidator) Validate(_ context.Context, _ string) (*exchange.ValidatedIdentity, error) {
+	identity := *v.identity
+	identity.Source = v.source
+
+	return &identity, nil
 }
 
 func setupPassportTestEnv(t *testing.T, objects ...client.Object) *passportTestEnv {
@@ -170,7 +187,31 @@ func parsePassport(t *testing.T, env *passportTestEnv, passportToken string) *oa
 	return claims
 }
 
-func TestExchangeFederatedUser(t *testing.T) {
+func fakeTokenWithIssuer(t *testing.T, issuer string) string {
+	t.Helper()
+
+	header := map[string]any{"alg": "none", "typ": "JWT"}
+	payload := map[string]any{"iss": issuer}
+
+	headerRaw, err := json.Marshal(header)
+	require.NoError(t, err)
+
+	payloadRaw, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	return base64.RawURLEncoding.EncodeToString(headerRaw) + "." +
+		base64.RawURLEncoding.EncodeToString(payloadRaw) + ".signature"
+}
+
+func normalizePassportForParity(claims *oauth2.PassportClaims) {
+	claims.Source = ""
+	claims.ID = ""
+	claims.IssuedAt = nil
+	claims.NotBefore = nil
+	claims.Expiry = nil
+}
+
+func TestTokenExchangeFederatedUser(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -246,7 +287,81 @@ func TestExchangeFederatedUser(t *testing.T) {
 	assert.Equal(t, claims.IssuedAt.Time().Add(oauth2.PassportTTL), claims.Expiry.Time())
 }
 
-func TestExchangeWithOrgScope(t *testing.T) {
+func TestTokenExchangePassportParityAcrossSources(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1",
+			},
+			Status: unikornv1.OrganizationStatus{
+				Namespace: josetesting.Namespace + "-org1",
+			},
+		},
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+		&unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1-user",
+				Labels: map[string]string{
+					constants.UserLabel:         "test-user",
+					constants.OrganizationLabel: "org1",
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{
+				State: unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	auth0Issuer := "https://auth0.example.com/"
+	identity := &exchange.ValidatedIdentity{
+		Subject:         "user@example.com",
+		Email:           "user@example.com",
+		AccountType:     openapi.User,
+		OrganizationIDs: []string{"org1"},
+	}
+
+	detector := exchange.NewSourceDetector("https://test.com", auth0Issuer)
+	router, err := exchange.NewRouter(
+		detector,
+		&staticExchangeValidator{source: exchange.SourceUNI, identity: identity},
+		&staticExchangeValidator{source: exchange.SourceAuth0, identity: identity},
+	)
+	require.NoError(t, err)
+
+	env.authenticator.ConfigureExchangeRouter(detector, router)
+
+	uniResult, err := env.authenticator.TokenExchange(nil, exchangeRequest(t, fakeTokenWithIssuer(t, "https://test.com"), nil))
+	require.NoError(t, err)
+
+	auth0Result, err := env.authenticator.TokenExchange(nil, exchangeRequest(t, fakeTokenWithIssuer(t, auth0Issuer), nil))
+	require.NoError(t, err)
+
+	uniClaims := parsePassport(t, env, uniResult.AccessToken)
+	auth0Claims := parsePassport(t, env, auth0Result.AccessToken)
+
+	assert.Equal(t, oauth2.PassportSourceUNI, uniClaims.Source)
+	assert.Equal(t, oauth2.PassportSourceAuth0, auth0Claims.Source)
+
+	normalizePassportForParity(uniClaims)
+	normalizePassportForParity(auth0Claims)
+
+	assert.Equal(t, uniClaims, auth0Claims)
+}
+
+func TestTokenExchangeWithOrgScope(t *testing.T) {
 	t.Parallel()
 
 	orgNamespace := josetesting.Namespace + "-org1"
@@ -350,7 +465,7 @@ func TestExchangeWithOrgScope(t *testing.T) {
 	assert.Equal(t, "project1", claims.ProjectID)
 }
 
-func TestExchangeInvalidProjectID(t *testing.T) {
+func TestTokenExchangeInvalidProjectID(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -411,7 +526,7 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "project not in scope")
 }
 
-func TestExchangeInvalidOrganizationID(t *testing.T) {
+func TestTokenExchangeInvalidOrganizationID(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -474,7 +589,7 @@ func TestExchangeInvalidOrganizationID(t *testing.T) {
 	require.ErrorAs(t, err, &oauthErr)
 }
 
-func TestExchangeServiceAccount(t *testing.T) {
+func TestTokenExchangeServiceAccount(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -532,7 +647,7 @@ func TestExchangeServiceAccount(t *testing.T) {
 	assert.ElementsMatch(t, []string{"test-org"}, claims.OrgIDs)
 }
 
-func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
+func TestTokenExchangeServiceAccountWrongOrganization(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -590,118 +705,114 @@ func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 	require.ErrorAs(t, err, &oauthErr)
 }
 
-func TestExchangeSystemAccountWithOrganizationScope(t *testing.T) {
+func TestTokenExchangeSystemAccountOrganizationScope(t *testing.T) {
 	t.Parallel()
 
-	env := setupPassportTestEnvWithRBACOptions(t, &rbac.Options{
-		SystemAccountRoleIDs: map[string]string{
-			"system-service": "role-super-service",
-		},
-	}, &unikornv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: josetesting.Namespace,
-			Name:      "role-super-service",
-		},
-		Spec: unikornv1.RoleSpec{
-			Scopes: unikornv1.RoleScopes{
-				Global: []unikornv1.RoleScope{
-					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
-					{Name: "project:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+	t.Run("registered system account can exchange with org scope", func(t *testing.T) {
+		t.Parallel()
+
+		env := setupPassportTestEnvWithRBACOptions(t, &rbac.Options{
+			SystemAccountRoleIDs: map[string]string{
+				"system-service": "role-super-service",
+			},
+		}, &unikornv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "role-super-service",
+			},
+			Spec: unikornv1.RoleSpec{
+				Scopes: unikornv1.RoleScopes{
+					Global: []unikornv1.RoleScope{
+						{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+						{Name: "project:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+					},
 				},
 			},
+		})
+
+		token := issueSystemToken(t, env, "system-service")
+		orgID := "target-org"
+		req := exchangeRequest(t, token, &openapi.TokenRequestOptions{XOrganizationId: &orgID})
+
+		result, err := env.authenticator.TokenExchange(nil, req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		claims := parsePassport(t, env, result.AccessToken)
+		assert.Equal(t, openapi.System, claims.Acctype)
+		assert.Equal(t, "system-service", claims.Subject)
+		assert.Empty(t, claims.OrgIDs)
+		assert.Equal(t, orgID, claims.OrgID)
+	})
+
+	t.Run("unregistered system account is denied by rbac", func(t *testing.T) {
+		t.Parallel()
+
+		env := setupPassportTestEnv(t)
+		token := issueSystemToken(t, env, "system-service")
+
+		orgID := "target-org"
+		req := exchangeRequest(t, token, &openapi.TokenRequestOptions{XOrganizationId: &orgID})
+
+		_, err := env.authenticator.TokenExchange(nil, req)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "organization not in scope")
+		assert.Contains(t, err.Error(), "system account 'system-service' not registered")
+	})
+}
+
+func TestTokenExchangeRequestValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		form        url.Values
+		errorString string
+	}{
+		{
+			name: "missing subject token",
+			form: url.Values{
+				"grant_type":         {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
+				"subject_token_type": {oauth2.AccessTokenSubjectTokenType()},
+			},
+			errorString: "subject_token must be specified",
 		},
-	})
+		{
+			name: "missing subject token type",
+			form: url.Values{
+				"grant_type":    {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
+				"subject_token": {"token-value"},
+			},
+			errorString: "subject_token_type must be specified",
+		},
+		{
+			name: "unsupported subject token type",
+			form: url.Values{
+				"grant_type":         {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
+				"subject_token":      {"token-value"},
+				"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
+			},
+			errorString: "subject_token_type is not supported",
+		},
+	}
 
-	token := issueSystemToken(t, env, "system-service")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	orgID := "target-org"
-	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		XOrganizationId: &orgID,
-	})
+			env := setupPassportTestEnv(t)
 
-	result, err := env.authenticator.TokenExchange(nil, req)
-	require.NoError(t, err)
-	require.NotNil(t, result)
+			req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(tt.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	claims := parsePassport(t, env, result.AccessToken)
-
-	assert.Equal(t, openapi.System, claims.Acctype)
-	assert.Equal(t, "system-service", claims.Subject)
-	assert.Empty(t, claims.OrgIDs)
-	assert.Equal(t, orgID, claims.OrgID)
+			_, err := env.authenticator.TokenExchange(nil, req)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.errorString)
+		})
+	}
 }
 
-func TestExchangeSystemAccountWithOrganizationScopeStillUsesRBAC(t *testing.T) {
-	t.Parallel()
-
-	env := setupPassportTestEnv(t)
-
-	token := issueSystemToken(t, env, "system-service")
-
-	orgID := "target-org"
-	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
-		XOrganizationId: &orgID,
-	})
-
-	_, err := env.authenticator.TokenExchange(nil, req)
-	require.Error(t, err)
-	assert.NotContains(t, err.Error(), "organization not in scope")
-	assert.Contains(t, err.Error(), "system account 'system-service' not registered")
-}
-
-func TestExchangeMissingSubjectToken(t *testing.T) {
-	t.Parallel()
-
-	env := setupPassportTestEnv(t)
-
-	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
-		strings.NewReader(url.Values{
-			"grant_type":         {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
-			"subject_token_type": {oauth2.AccessTokenSubjectTokenType()},
-		}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	_, err := env.authenticator.TokenExchange(nil, req)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "subject_token must be specified")
-}
-
-func TestExchangeMissingSubjectTokenType(t *testing.T) {
-	t.Parallel()
-
-	env := setupPassportTestEnv(t)
-
-	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
-		strings.NewReader(url.Values{
-			"grant_type":    {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
-			"subject_token": {"token-value"},
-		}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	_, err := env.authenticator.TokenExchange(nil, req)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "subject_token_type must be specified")
-}
-
-func TestExchangeUnsupportedSubjectTokenType(t *testing.T) {
-	t.Parallel()
-
-	env := setupPassportTestEnv(t)
-
-	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
-		strings.NewReader(url.Values{
-			"grant_type":         {string(openapi.UrnIetfParamsOauthGrantTypeTokenExchange)},
-			"subject_token":      {"token-value"},
-			"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
-		}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	_, err := env.authenticator.TokenExchange(nil, req)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "subject_token_type is not supported")
-}
-
-func TestExchangeInvalidToken(t *testing.T) {
+func TestTokenExchangeInvalidToken(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t)
@@ -717,7 +828,7 @@ func TestExchangeInvalidToken(t *testing.T) {
 	assert.Contains(t, err.Error(), "token validation failed")
 }
 
-func TestExchangeHandlerInvalidTokenReturnsUnauthorized(t *testing.T) {
+func TestTokenExchangeHandlerInvalidTokenReturnsUnauthorized(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t)
@@ -745,7 +856,7 @@ func TestExchangeHandlerInvalidTokenReturnsUnauthorized(t *testing.T) {
 	assert.Contains(t, oauthResp.ErrorDescription, "token validation failed")
 }
 
-func TestExchangeHandlerSuccess(t *testing.T) {
+func TestTokenExchangeHandlerSuccess(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -799,7 +910,7 @@ func TestExchangeHandlerSuccess(t *testing.T) {
 	assert.Equal(t, passportIssuedTokenType(), *result.IssuedTokenType)
 }
 
-func TestExchangeMalformedBody(t *testing.T) {
+func TestTokenExchangeMalformedBody(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -825,7 +936,7 @@ func TestExchangeMalformedBody(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to parse form data")
 }
 
-func TestPassportSignatureVerifiesAgainstJWKS(t *testing.T) {
+func TestTokenExchangePassportSignatureVerifiesAgainstJWKS(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,

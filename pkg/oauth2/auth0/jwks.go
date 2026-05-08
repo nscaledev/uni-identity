@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package passport
+package auth0
 
 import (
 	"context"
@@ -33,32 +33,39 @@ import (
 //nolint:gochecknoglobals
 var jwksCacheRefreshTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
-		Name: "identity_passport_jwks_cache_refresh_total",
-		Help: "Total number of JWKS cache refresh attempts, labeled by trigger and result.",
+		Name: "identity_auth0_jwks_cache_refresh_total",
+		Help: "Total number of Auth0 JWKS cache refresh attempts, labeled by trigger and result.",
 	},
 	[]string{"trigger", "result"},
 )
 
-// CachedHTTPKeySource fetches and caches the identity service's public JWKS.
-// It refreshes on TTL expiry or on a key-ID miss. Zero network calls on the
-// hot path when a valid cached key is present.
+// KeySource resolves Auth0 public keys by kid.
+type KeySource interface {
+	Get(ctx context.Context, kid string) (*jose.JSONWebKey, error)
+}
+
+// CachedHTTPKeySource fetches and caches an Auth0 JWKS over HTTP.
+// It refreshes on TTL expiry or on a kid miss, and uses singleflight to
+// suppress refresh stampedes. Hot path performs zero network calls when a
+// matching key is in cache.
 type CachedHTTPKeySource struct {
 	inner *jwks.CachedHTTPSource
 }
 
 var _ KeySource = (*CachedHTTPKeySource)(nil)
 
-// NewCachedHTTPKeySource returns a new HTTP-backed JWKS cache key source.
-// httpClient should already be configured for TLS (re-use the identity HTTP client).
-func NewCachedHTTPKeySource(httpClient *http.Client, jwksURI string, ttl time.Duration) *CachedHTTPKeySource {
+// NewCachedHTTPKeySource returns a JWKS-backed key source that caches keys
+// across requests. httpClient should already be configured with the desired
+// timeout — the cache does not impose its own per-request deadline.
+func NewCachedHTTPKeySource(httpClient *http.Client, jwksURL string, ttl time.Duration) *CachedHTTPKeySource {
 	return &CachedHTTPKeySource{
-		inner: jwks.NewCachedHTTPSource(httpClient, jwksURI, ttl, func(trigger, result string) {
+		inner: jwks.NewCachedHTTPSource(httpClient, jwksURL, ttl, func(trigger, result string) {
 			jwksCacheRefreshTotal.WithLabelValues(trigger, result).Inc()
 		}),
 	}
 }
 
-// Get returns the public key identified by kid, refreshing the cache if necessary.
+// Get returns the public key identified by kid. Refreshes on TTL expiry or kid miss.
 func (s *CachedHTTPKeySource) Get(ctx context.Context, kid string) (*jose.JSONWebKey, error) {
 	publicKey, err := s.inner.Get(ctx, kid)
 	if err == nil {

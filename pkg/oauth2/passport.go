@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -30,8 +31,11 @@ import (
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/exchange"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -49,21 +53,27 @@ const (
 	// PassportIssuer is the issuer claim value for passport tokens.
 	PassportIssuer = "uni-identity"
 
-	// PassportSourceUNI indicates the source token was a UNI access token.
+	// PassportSourceUNI marks passports minted from a UNI-issued access token.
 	PassportSourceUNI = "uni"
+
+	// PassportSourceAuth0 marks passports minted from an Auth0 access token
+	// validated locally via JWKS at exchange time.
+	PassportSourceAuth0 = "auth0"
 )
 
 // PassportClaims defines the JWT claims for a passport token.
 type PassportClaims struct {
 	jwt.Claims `json:",inline"`
-
 	// Type distinguishes passports from access tokens.
 	Type string `json:"typ"`
 	// Acctype is the account type: "user", "service", or "system".
 	Acctype openapi.AuthClaimsAcctype `json:"acctype"`
-	// Source identifies which IdP issued the original token.
-	Source string `json:"source"`
-	// Email is the user's email address, if available.
+	// Source identifies which IdP provided the source token at exchange.
+	// Optional for backward compatibility — readers must treat the empty string
+	// as equivalent to PassportSourceUNI to keep the contract additive.
+	Source string `json:"source,omitempty"`
+	// Email is the human actor's email address. Omitted for machine accounts.
+	// This is PII — do not log beyond the sub/actor verbosity level.
 	Email string `json:"email,omitempty"`
 	// OrgIDs is the list of organization IDs the subject is authorized for.
 	//nolint:tagliatelle
@@ -78,18 +88,27 @@ type PassportClaims struct {
 	Actor string `json:"actor"`
 }
 
-// TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports.
+// ConfigureExchangeRouter configures source-aware token validation for exchange.
+// When unset, ExchangePassport falls back to UNI-only validation via GetUserinfo.
+func (a *Authenticator) ConfigureExchangeRouter(detector *exchange.SourceDetector, router *exchange.Router) {
+	a.exchangeDetector = detector
+	a.exchangeRouter = router
+}
+
+// TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for source-aware passports.
 // It validates the source access token provided in subject_token, resolves
 // identity, and returns a signed passport in the access_token field. The ACL
-// is fetched only to authorise the requested org/project scope; it is not
+// is fetched only to authorize the requested org/project scope; it is not
 // embedded in the passport — downstream services continue to fetch ACL via
-// the existing remote authoriser path keyed off passport-verified identity.
+// the existing remote authorizer path keyed off passport-verified identity.
 func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
 	ctx := r.Context()
 	log := log.FromContext(ctx)
+	start := time.Now()
 
 	options, err := parseTokenExchangeRequest(r)
 	if err != nil {
+		exchange.ObserveExchange(exchange.SourceUnknown, exchange.ResultInvalidRequest, time.Since(start))
 		log.Info("passport exchange failed: malformed request body")
 
 		return nil, err
@@ -101,30 +120,38 @@ func (a *Authenticator) TokenExchange(_ http.ResponseWriter, r *http.Request) (*
 // ExchangePassport performs token exchange using typed request options.
 // This is shared by the HTTP handler and internal callers.
 func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.TokenRequestOptions) (*openapi.Token, error) {
+	start := time.Now()
+	token, source, result, err := a.timedExchangePassport(ctx, options)
+
+	exchange.ObserveExchange(source, result, time.Since(start))
+
+	return token, err
+}
+
+func (a *Authenticator) timedExchangePassport(ctx context.Context, options *openapi.TokenRequestOptions) (*openapi.Token, exchange.Source, exchange.Result, error) {
 	log := log.FromContext(ctx)
 
 	if err := validateTokenExchangeRequest(options); err != nil {
 		log.Info("passport exchange failed: invalid token-exchange request")
 
-		return nil, err
+		return nil, a.detectExchangeSourceFromOptions(options), exchange.ResultInvalidRequest, err
 	}
-
-	// GetUserinfo currently returns AccessDenied errors that require an *http.Request
-	// to construct WWW-Authenticate metadata. ExchangePassport is a non-handler path,
-	// so provide a minimal request carrying the current context.
-	request := &http.Request{Header: make(http.Header)}
-	request = request.WithContext(ctx)
 
 	subjectToken := *options.SubjectToken
 
-	userinfo, _, err := a.GetUserinfo(ctx, request, subjectToken)
+	userinfo, source, result, err := a.resolveExchangeUserinfo(ctx, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
-		return nil, normalizeExchangeUserinfoError(err)
+		return nil, source, result, err
 	}
 
 	authz := userinfo.HttpsunikornCloudOrgauthz
+
+	var accountType openapi.AuthClaimsAcctype
+	if authz != nil {
+		accountType = authz.Acctype
+	}
 
 	// Set up authorization context so rbac.GetACL can read it.
 	authCtx := authorization.NewContext(ctx, &authorization.Info{
@@ -136,25 +163,25 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	if err := validateOrganizationScope(authz, organizationID); err != nil {
 		log.Info("passport exchange denied: organization not in scope",
-			"acctype", authz.Acctype,
+			"accountType", accountType,
 			"organizationID", organizationID,
 		)
 
-		return nil, err
+		return nil, source, exchange.ClassifyResult(err), err
 	}
 
 	acl, err := a.rbac.GetACL(authCtx, organizationID)
 	if err != nil {
 		log.Error(err, "passport exchange failed: ACL computation failed",
-			"acctype", authz.Acctype,
+			"accountType", accountType,
 			"organizationID", organizationID,
 		)
 
-		return nil, fmt.Errorf("%w: failed to compute ACL", err)
+		return nil, source, exchange.ResultError, fmt.Errorf("%w: failed to compute ACL", err)
 	}
 
 	if err := a.validateProjectScope(ctx, acl, organizationID, projectID); err != nil {
-		return nil, err
+		return nil, source, exchange.ClassifyResult(err), err
 	}
 
 	now := time.Now()
@@ -171,7 +198,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		},
 		Type:      PassportType,
 		Acctype:   authz.Acctype,
-		Source:    PassportSourceUNI,
+		Source:    passportSourceClaim(source),
 		OrgIDs:    authz.OrgIds,
 		OrgID:     organizationID,
 		ProjectID: projectID,
@@ -188,24 +215,199 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 			"passportID", passportID,
 		)
 
-		return nil, fmt.Errorf("failed to mint passport: %w", err)
+		return nil, source, exchange.ResultError, fmt.Errorf("failed to mint passport: %w", err)
 	}
 
 	log.Info("passport exchanged",
-		"acctype", authz.Acctype,
-		"source", PassportSourceUNI,
+		"accountType", accountType,
+		"source", claims.Source,
 		"organizationID", organizationID,
 		"passportID", passportID,
 	)
 
-	result := &openapi.Token{
+	token := &openapi.Token{
 		TokenType:       "Bearer",
 		AccessToken:     passport,
 		ExpiresIn:       int(PassportTTL.Seconds()),
 		IssuedTokenType: stringPtr(PassportIssuedTokenType()),
 	}
 
-	return result, nil
+	return token, source, exchange.ResultSuccess, nil
+}
+
+// IntrospectUNIToken resolves and validates a UNI-issued access token.
+// It adapts Authenticator.GetUserinfo to the exchange.UNITokenIntrospector contract.
+func (a *Authenticator) IntrospectUNIToken(ctx context.Context, rawToken string) (*exchange.UNIIdentity, error) {
+	request := &http.Request{Header: make(http.Header)}
+	request = request.WithContext(ctx)
+
+	userinfo, _, err := a.GetUserinfo(ctx, request, rawToken)
+	if err != nil {
+		return nil, normalizeExchangeUserinfoError(err)
+	}
+
+	authz := userinfo.HttpsunikornCloudOrgauthz
+	if authz == nil {
+		return nil, fmt.Errorf("%w: authz claim missing", exchange.ErrUNIUserinfoNotAvailable)
+	}
+
+	identity := &exchange.UNIIdentity{
+		Subject:         userinfo.Sub,
+		AccountType:     authz.Acctype,
+		OrganizationIDs: slices.Clone(authz.OrgIds),
+	}
+
+	if userinfo.Email != nil {
+		identity.Email = *userinfo.Email
+	}
+
+	return identity, nil
+}
+
+func (a *Authenticator) resolveExchangeUserinfo(ctx context.Context, subjectToken string) (*openapi.Userinfo, exchange.Source, exchange.Result, error) {
+	if a.exchangeRouter == nil {
+		request := &http.Request{Header: make(http.Header)}
+		request = request.WithContext(ctx)
+
+		userinfo, _, err := a.GetUserinfo(ctx, request, subjectToken)
+		if err != nil {
+			normalized := normalizeExchangeUserinfoError(err)
+			return nil, exchange.SourceUNI, exchange.ClassifyResult(normalized), normalized
+		}
+
+		if userinfo.HttpsunikornCloudOrgauthz == nil {
+			err := errors.OAuth2AccessDenied("token validation failed").WithError(exchange.ErrUNIUserinfoNotAvailable)
+			return nil, exchange.SourceUNI, exchange.ClassifyResult(err), err
+		}
+
+		return userinfo, exchange.SourceUNI, exchange.ResultSuccess, nil
+	}
+
+	source := a.detectExchangeSource(subjectToken)
+
+	identity, err := a.exchangeRouter.Validate(ctx, subjectToken)
+	result := exchange.ClassifyResult(err)
+
+	if err != nil {
+		return nil, source, result, normalizeExchangeValidationError(err)
+	}
+
+	source = identity.Source
+
+	if source == exchange.SourceAuth0 {
+		if err := a.enrichAuth0Identity(ctx, identity); err != nil {
+			return nil, source, exchange.ClassifyResult(err), err
+		}
+	}
+
+	return userinfoFromValidatedIdentity(identity), source, result, nil
+}
+
+func (a *Authenticator) enrichAuth0Identity(ctx context.Context, identity *exchange.ValidatedIdentity) error {
+	if identity == nil {
+		return errors.OAuth2AccessDenied("token validation failed").WithError(auth0.ErrInvalidToken)
+	}
+
+	email := strings.TrimSpace(identity.Email)
+	if email == "" {
+		return errors.OAuth2AccessDenied("token validation failed").WithError(auth0.ErrInvalidToken)
+	}
+
+	organizationIDs, err := a.userdb.GetOrganizationIDs(ctx, email)
+	if err != nil {
+		if goerrors.Is(err, userdb.ErrResourceReference) {
+			return errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to query organization IDs", err)
+	}
+
+	identity.Subject = email
+	identity.Email = email
+	identity.AccountType = openapi.User
+	identity.OrganizationIDs = slices.Clone(organizationIDs)
+
+	return nil
+}
+
+func (a *Authenticator) detectExchangeSource(subjectToken string) exchange.Source {
+	if a.exchangeDetector == nil {
+		return exchange.SourceUnknown
+	}
+
+	source, err := a.exchangeDetector.Detect(subjectToken)
+	if err != nil {
+		return exchange.SourceUnknown
+	}
+
+	return source
+}
+
+func (a *Authenticator) detectExchangeSourceFromOptions(options *openapi.TokenRequestOptions) exchange.Source {
+	if options == nil || options.SubjectToken == nil || *options.SubjectToken == "" {
+		return exchange.SourceUnknown
+	}
+
+	return a.detectExchangeSource(*options.SubjectToken)
+}
+
+func normalizeExchangeValidationError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var oauthErr *errors.Error
+	if goerrors.As(err, &oauthErr) {
+		return err
+	}
+
+	if coreerrors.IsAccessDenied(err) {
+		return errors.OAuth2AccessDenied("token validation failed").WithError(err)
+	}
+
+	switch {
+	case goerrors.Is(err, exchange.ErrMalformedToken),
+		goerrors.Is(err, exchange.ErrUnsupportedSource),
+		goerrors.Is(err, exchange.ErrUNIUserinfoNotAvailable),
+		goerrors.Is(err, auth0.ErrInvalidToken),
+		goerrors.Is(err, auth0.ErrTokenExpired),
+		goerrors.Is(err, auth0.ErrInsufficientScope),
+		goerrors.Is(err, auth0.ErrJWKSUnavailable):
+		return errors.OAuth2AccessDenied("token validation failed").WithError(err)
+	default:
+		return err
+	}
+}
+
+func userinfoFromValidatedIdentity(identity *exchange.ValidatedIdentity) *openapi.Userinfo {
+	authz := &openapi.AuthClaims{
+		Acctype: identity.AccountType,
+		OrgIds:  slices.Clone(identity.OrganizationIDs),
+	}
+
+	userinfo := &openapi.Userinfo{
+		Sub:                       identity.Subject,
+		HttpsunikornCloudOrgauthz: authz,
+	}
+
+	if identity.Email != "" {
+		userinfo.Email = stringPtr(identity.Email)
+	}
+
+	return userinfo
+}
+
+func passportSourceClaim(source exchange.Source) string {
+	switch source {
+	case exchange.SourceUNI:
+		return PassportSourceUNI
+	case exchange.SourceAuth0:
+		return PassportSourceAuth0
+	case exchange.SourceUnknown:
+		return ""
+	default:
+		return ""
+	}
 }
 
 func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string) error {
@@ -379,7 +581,7 @@ func hasBroaderScope(acl *openapi.Acl, organizationID string) bool {
 	return acl.Organization.Endpoints != nil && len(*acl.Organization.Endpoints) > 0
 }
 
-// validateProjectScope authorises the passport's requested project scope.
+// validateProjectScope authorizes the passport's requested project scope.
 // A request is accepted if the project is present in the subject's ACL, or
 // if a broader (global/organization) grant covers it — in which case the
 // project must be verified to belong to the requested organization to prevent
