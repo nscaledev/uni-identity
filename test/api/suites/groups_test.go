@@ -23,6 +23,7 @@ package suites
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -455,18 +456,19 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
-		// §5.2b Create with non-existent userID → 404
+		// §5.2b Create with non-existent userID -> 400
 		Describe("Given a new group created with a non-existent userID", func() {
-			It("should return not found", func() {
+			It("should return invalid request", func() {
 				payload := api.NewGroupPayload().
 					WithUserIDs([]string{"00000000-0000-0000-0000-000000000000"}).
 					Build()
 
-				_, err := client.CreateGroup(ctx, config.OrgID, payload)
+				oauthErr, err := client.CreateGroupExpectError(ctx, config.OrgID, payload, http.StatusBadRequest)
 
-				Expect(err).To(HaveOccurred())
-				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue(),
-					"creating a group with a non-existent userID should return 404 not found")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
+				Expect(oauthErr.ErrorDescription).To(ContainSubstring("does not exist"),
+					"creating a group with a non-existent userID should return 400 invalid_request")
 			})
 		})
 

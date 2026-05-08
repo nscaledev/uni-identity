@@ -236,6 +236,29 @@ func (c *APIClient) CreateGroup(ctx context.Context, orgID string, group identit
 	return &created, nil
 }
 
+// CreateGroupExpectError creates a group and parses the expected OpenAPI error response.
+func (c *APIClient) CreateGroupExpectError(ctx context.Context, orgID string, group identityopenapi.GroupWrite, expectedStatus int) (*identityopenapi.Oauth2Error, error) {
+	path := c.endpoints.ListGroups(orgID)
+
+	body, err := json.Marshal(group)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling group: %w", err)
+	}
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), expectedStatus)
+	if err != nil {
+		return nil, fmt.Errorf("creating group expecting error: %w", err)
+	}
+
+	var oauthErr identityopenapi.Oauth2Error
+	if err := json.Unmarshal(respBody, &oauthErr); err != nil {
+		return nil, fmt.Errorf("unmarshaling group error response: %w", err)
+	}
+
+	return &oauthErr, nil
+}
+
 // UpdateGroup updates an existing group in an organization.
 // Returns the updated group when the API includes a body in the 200 response
 // (Phase 1 behaviour), or nil when the body is empty (pre-Phase-1 behaviour).
