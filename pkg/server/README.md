@@ -126,9 +126,9 @@ convention.
 
 ## Related Documentation
 
-- [`../core/pkg/server`](../../../core/pkg/server/README.md), which defines the shared server
+- [`core/pkg/server`](https://github.com/nscaledev/uni-core/blob/main/pkg/server/README.md), which defines the shared server
   substrate this package builds on
-- [`../core/pkg/server/middleware`](../../../core/pkg/server/middleware/README.md), which defines
+- [`core/pkg/server/middleware`](https://github.com/nscaledev/uni-core/blob/main/pkg/server/middleware/README.md), which defines
   the canonical shared pre-routing middleware pipeline composed here
 - [`pkg/middleware`](../middleware/README.md), which defines the identity-specific trust pipeline
   attached after routing

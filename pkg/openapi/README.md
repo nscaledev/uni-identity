@@ -74,7 +74,8 @@ the primary authoring surface:
 - public documentation quality depends directly on the quality of endpoint
   `summary`, `tags`, and `description` fields in the schema
 - shared platform API primitives are imported from
-  [`core/pkg/openapi`](../../core/pkg/openapi), rather than being redefined here
+  [`core/pkg/openapi`](https://github.com/nscaledev/uni-core/blob/main/pkg/openapi/README.md),
+  rather than being redefined here
 
 ## Semantics That Live Elsewhere
 
