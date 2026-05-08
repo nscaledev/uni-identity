@@ -631,16 +631,25 @@ var _ = Describe("Group Subjects", func() {
 
 // From nscale-auth0-tests: groups.spec.ts §5.8 & §5.9 — ACL effect of group membership.
 var _ = Describe("Group Subjects - ACL Effect", func() {
-	BeforeEach(func() {
-		if userClient == nil {
-			Skip("USER_AUTH_TOKEN is required to test group membership ACL effects")
-		}
-	})
-
 	type aclPermission struct {
 		endpoint  string
 		operation identityopenapi.AclOperation
 	}
+
+	type aclEffectGroup struct {
+		groupID    string
+		permission aclPermission
+	}
+
+	var aclEffectGroups []aclEffectGroup
+
+	BeforeEach(func() {
+		aclEffectGroups = nil
+
+		if userClient == nil {
+			Skip("USER_AUTH_TOKEN is required to test group membership ACL effects")
+		}
+	})
 
 	adminOnlyPermissions := []aclPermission{
 		{endpoint: "identity:groups", operation: identityopenapi.Create},
@@ -741,6 +750,19 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 		return false
 	}
 
+	AfterEach(func() {
+		for _, group := range aclEffectGroups {
+			err := adminClient.DeleteGroup(ctx, config.OrgID, group.groupID)
+			if !errors.Is(err, coreclient.ErrResourceNotFound) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(waitForPermissionCondition(userClient, group.permission, false)).To(BeTrue(),
+				"ACL should no longer include %s/%s after deleting group %s",
+				group.permission.endpoint, group.permission.operation, group.groupID)
+		}
+	})
+
 	// §5.8 adding a subject to a group grants ACL permissions
 	Describe("Given a group with a role, when the user's subject is added", func() {
 		It("should gain the role's specific endpoint operation in the user's org ACL", func() {
@@ -753,11 +775,18 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 			subject := currentUserSubject()
 			permission := chooseMissingPermission(userClient)
 
-			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+			group, err := adminClient.CreateGroup(ctx, config.OrgID,
 				api.NewGroupPayload().
 					WithRoleIDs([]string{roleID}).
 					WithSubjects([]identityopenapi.Subject{subject}).
 					Build())
+			Expect(err).NotTo(HaveOccurred())
+
+			groupID := group.Metadata.Id
+			aclEffectGroups = append(aclEffectGroups, aclEffectGroup{
+				groupID:    groupID,
+				permission: permission,
+			})
 
 			Expect(waitForPermissionCondition(userClient, permission, true)).To(BeTrue(),
 				"ACL should include %s/%s after adding subject %s to administrator group",
@@ -780,17 +809,24 @@ var _ = Describe("Group Subjects - ACL Effect", func() {
 			subject := currentUserSubject()
 			permission := chooseMissingPermission(userClient)
 
-			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
+			group, err := adminClient.CreateGroup(ctx, config.OrgID,
 				api.NewGroupPayload().
 					WithRoleIDs([]string{roleID}).
 					WithSubjects([]identityopenapi.Subject{subject}).
 					Build())
+			Expect(err).NotTo(HaveOccurred())
+
+			groupID := group.Metadata.Id
+			aclEffectGroups = append(aclEffectGroups, aclEffectGroup{
+				groupID:    groupID,
+				permission: permission,
+			})
 
 			Expect(waitForPermissionCondition(userClient, permission, true)).To(BeTrue(),
 				"ACL should include %s/%s before deleting group %s",
 				permission.endpoint, permission.operation, groupID)
 
-			// Now delete the group (bypass DeferCleanup by deleting explicitly).
+			// Delete explicitly so this spec asserts the removal behavior; AfterEach still guards failures.
 			Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
 
 			Expect(waitForPermissionCondition(userClient, permission, false)).To(BeTrue(),
