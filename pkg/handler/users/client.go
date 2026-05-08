@@ -174,7 +174,7 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 	subject := unikornv1.GroupSubject{
 		ID:     user.Spec.Subject,
 		Email:  user.Spec.Subject,
-		Issuer: "", // Issuer empty for local users
+		Issuer: c.issuer.URL,
 	}
 
 	for i := range groups.Items {
