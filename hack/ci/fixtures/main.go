@@ -335,17 +335,11 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 	logf("  administrator role ID: %s", administratorRoleID)
 	logf("  user role ID: %s", userRoleID)
 
-	if auditRoleID != "" {
-		logf("  audit role ID: %s", auditRoleID)
-	} else {
-		logf("  audit role lookup returned no match; AUDIT_AUTH_TOKEN will be empty")
-	}
-
 	return administratorRoleID, userRoleID, auditRoleID
 }
 
 func createOrganizationFixture(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace, name, description string) string {
-	logf("Creating %s Organization fixture %q...", description, name)
+	logf("Creating %s Organization...", description)
 
 	resp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
@@ -368,8 +362,6 @@ func createOrganizationFixture(ctx context.Context, ac *openapi.ClientWithRespon
 
 func createAuditFixtures(ctx context.Context, ac *openapi.ClientWithResponses, orgID, auditRoleID string) string {
 	if auditRoleID == "" {
-		logf("Skipping audit fixtures because audit role ID is empty")
-
 		return ""
 	}
 
