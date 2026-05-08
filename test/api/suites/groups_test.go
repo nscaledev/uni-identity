@@ -195,7 +195,7 @@ var _ = Describe("Group Management", func() {
 					WithName(originalGroup.Metadata.Name + "-updated").
 					Build()
 
-				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
+				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -224,7 +224,7 @@ var _ = Describe("Group Management", func() {
 				updatedPayload := payload
 				updatedPayload.Spec.RoleIDs = []string{roles[0].Metadata.Id}
 
-				_, err = client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
+				err = client.UpdateGroup(ctx, config.OrgID, groupID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -244,7 +244,7 @@ var _ = Describe("Group Management", func() {
 			It("should return error when updating non-existent group", func() {
 				payload := api.NewGroupPayload().Build()
 
-				_, err := client.UpdateGroup(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
+				err := client.UpdateGroup(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue(),
@@ -258,7 +258,7 @@ var _ = Describe("Group Management", func() {
 			It("should return error when updating group in non-existent organization", func() {
 				payload := api.NewGroupPayload().Build()
 
-				_, err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
+				err := client.UpdateGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
 			})
@@ -296,7 +296,7 @@ var _ = Describe("Group Management", func() {
 
 				// Update the group via the groups API using UserIDs for the same user.
 				// Internally this calls userIDsToSubjects, which writes Issuer: c.issuer.URL.
-				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
+				err := client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
 					WithName(group.Metadata.Name).
 					WithUserIDs([]string{userID}).
 					Build())
@@ -329,7 +329,7 @@ var _ = Describe("Group Management", func() {
 
 				// Re-set group membership via the groups API using UserIDs.
 				// userIDsToSubjects writes Issuer: c.issuer.URL, overwriting the Issuer: "" entry.
-				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
+				err := client.UpdateGroup(ctx, config.OrgID, groupID, api.NewGroupPayload().
 					WithName(group.Metadata.Name).
 					WithUserIDs([]string{userID}).
 					Build())
@@ -535,7 +535,7 @@ var _ = Describe("Group Subjects", func() {
 					Build()
 
 				// PUT may return updated group body (Phase-1) or empty body (legacy).
-				updated, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				updated, err := client.UpdateGroupWithResponse(ctx, config.OrgID, groupID, updatePayload)
 
 				Expect(err).NotTo(HaveOccurred())
 				if updated != nil {
@@ -581,7 +581,7 @@ var _ = Describe("Group Subjects", func() {
 					WithSubjects([]identityopenapi.Subject{firstSubject}).
 					Build()
 
-				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
 				Expect(err).NotTo(HaveOccurred())
 
 				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
@@ -618,7 +618,7 @@ var _ = Describe("Group Subjects", func() {
 					WithUserIDs([]string{fakeUserID}).
 					Build()
 
-				_, err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
 
 				Expect(err).To(HaveOccurred(),
 					"updating a group with both subjects and userIDs must be rejected")

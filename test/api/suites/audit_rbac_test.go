@@ -156,7 +156,7 @@ var _ = Describe("Console - Audit View Permissions (Write Denied)", func() {
 			_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 				api.NewGroupPayload().Build())
 
-			_, err := auditClient.UpdateGroup(ctx, config.OrgID, groupID,
+			err := auditClient.UpdateGroup(ctx, config.OrgID, groupID,
 				api.NewGroupPayload().Build())
 
 			Expect(err).To(HaveOccurred(),

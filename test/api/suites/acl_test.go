@@ -213,6 +213,8 @@ var _ = Describe("Access Control Discovery", func() {
 				Expect(acl.Organizations).NotTo(BeNil())
 				Expect(*acl.Organizations).NotTo(BeEmpty(),
 					"service account must have at least one organisation in its ACL")
+				Expect(*acl.Organizations).To(ContainElement(HaveField("Id", Equal(config.OrgID))),
+					"service account ACL should include home organisation %s", config.OrgID)
 				GinkgoWriter.Printf("Service account ACL retrieved with %d organisations\n", len(*acl.Organizations))
 			})
 		})

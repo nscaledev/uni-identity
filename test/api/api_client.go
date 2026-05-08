@@ -260,11 +260,19 @@ func (c *APIClient) CreateGroupExpectError(ctx context.Context, orgID string, gr
 }
 
 // UpdateGroup updates an existing group in an organization.
+// Returns nil on success.
+func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) error {
+	_, err := c.UpdateGroupWithResponse(ctx, orgID, groupID, group)
+
+	return err
+}
+
+// UpdateGroupWithResponse updates an existing group in an organization.
 // Returns the updated group when the API includes a body in the 200 response
 // (Phase 1 behaviour), or nil when the body is empty (pre-Phase-1 behaviour).
 // Callers that need to assert the body is present should check the returned
 // pointer is non-nil.
-func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) (*identityopenapi.GroupRead, error) {
+func (c *APIClient) UpdateGroupWithResponse(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) (*identityopenapi.GroupRead, error) {
 	path := c.endpoints.GetGroup(orgID, groupID)
 
 	body, err := json.Marshal(group)
