@@ -84,8 +84,8 @@ func TestExchangeClient(t *testing.T) {
 				assert.Equal(t, "raw-token", r.Form.Get("subject_token"))
 
 				if tt.options != nil {
-					assert.Equal(t, tt.options.organizationID, r.Form.Get("organizationId"))
-					assert.Equal(t, tt.options.projectID, r.Form.Get("projectId"))
+					assert.Equal(t, tt.options.organizationID, r.Form.Get("x_organization_id"))
+					assert.Equal(t, tt.options.projectID, r.Form.Get("x_project_id"))
 				}
 
 				w.WriteHeader(tt.status)

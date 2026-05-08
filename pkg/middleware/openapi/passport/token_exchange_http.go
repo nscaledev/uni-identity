@@ -59,12 +59,15 @@ func tokenExchangeForm(sourceToken string, options *tokenExchangeOptions) url.Va
 	form.Set("requested_token_type", tokenExchangeRequestedPassport)
 
 	if options != nil {
+		// Field names must match the token endpoint's TokenRequestOptions schema
+		// (json:"x_organization_id" / json:"x_project_id"). Sending
+		// organizationId/projectId silently drops the scope on the server side.
 		if options.organizationID != "" {
-			form.Set("organizationId", options.organizationID)
+			form.Set("x_organization_id", options.organizationID)
 		}
 
 		if options.projectID != "" {
-			form.Set("projectId", options.projectID)
+			form.Set("x_project_id", options.projectID)
 		}
 	}
 
