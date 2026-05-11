@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -93,6 +94,11 @@ type PassportClaims struct {
 func (a *Authenticator) ConfigureExchangeRouter(detector *exchange.SourceDetector, router *exchange.Router) {
 	a.exchangeDetector = detector
 	a.exchangeRouter = router
+}
+
+// ConfigureAuth0OpaqueFallback configures migration-only Auth0 /userinfo fallback.
+func (a *Authenticator) ConfigureAuth0OpaqueFallback(validator exchange.TokenValidator) {
+	a.auth0OpaqueValidator = validator
 }
 
 // TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for source-aware passports.
@@ -289,10 +295,22 @@ func (a *Authenticator) resolveExchangeUserinfo(ctx context.Context, subjectToke
 	result := exchange.ClassifyResult(err)
 
 	if err != nil {
+		if source == exchange.SourceAuth0 {
+			exchange.ObserveAuth0Validation(exchange.ValidationModeJWT, result)
+		}
+
+		if a.shouldTryAuth0OpaqueFallback(source, err) {
+			return a.resolveExchangeUserinfoWithAuth0Fallback(ctx, subjectToken)
+		}
+
 		return nil, source, result, normalizeExchangeValidationError(err)
 	}
 
 	source = identity.Source
+
+	if source == exchange.SourceAuth0 {
+		exchange.ObserveAuth0Validation(exchange.ValidationModeJWT, exchange.ResultSuccess)
+	}
 
 	if source == exchange.SourceAuth0 {
 		if err := a.enrichAuth0Identity(ctx, identity); err != nil {
@@ -301,6 +319,86 @@ func (a *Authenticator) resolveExchangeUserinfo(ctx context.Context, subjectToke
 	}
 
 	return userinfoFromValidatedIdentity(identity), source, result, nil
+}
+
+func (a *Authenticator) resolveExchangeUserinfoWithAuth0Fallback(ctx context.Context, subjectToken string) (*openapi.Userinfo, exchange.Source, exchange.Result, error) {
+	if a.auth0OpaqueValidator == nil {
+		err := errors.OAuth2AccessDenied("token validation failed").WithError(exchange.ErrUnsupportedSource)
+		return nil, exchange.SourceUnknown, exchange.ClassifyResult(err), err
+	}
+
+	log := log.FromContext(ctx)
+	start := time.Now()
+
+	identity, err := a.auth0OpaqueValidator.Validate(ctx, subjectToken)
+	result := exchange.ClassifyResult(err)
+
+	exchange.ObserveAuth0UserinfoCall(result, time.Since(start))
+
+	if err != nil {
+		exchange.ObserveAuth0Validation(exchange.ValidationModeUserinfo, result)
+
+		correlationID := trace.SpanFromContext(ctx).SpanContext().TraceID().String()
+		log.Info(
+			"auth0 opaque fallback invocation",
+			"source", PassportSourceAuth0,
+			"fallback", true,
+			"correlationID", correlationID,
+			"subject", "",
+			"result", result,
+		)
+
+		return nil, exchange.SourceAuth0, result, normalizeExchangeValidationError(err)
+	}
+
+	if err := a.enrichAuth0Identity(ctx, identity); err != nil {
+		result = exchange.ClassifyResult(err)
+		exchange.ObserveAuth0Validation(exchange.ValidationModeUserinfo, result)
+
+		correlationID := trace.SpanFromContext(ctx).SpanContext().TraceID().String()
+
+		log.Info(
+			"auth0 opaque fallback invocation",
+			"source", PassportSourceAuth0,
+			"fallback", true,
+			"correlationID", correlationID,
+			"subject", identity.Subject,
+			"result", result,
+		)
+
+		return nil, exchange.SourceAuth0, result, err
+	}
+
+	exchange.ObserveAuth0Validation(exchange.ValidationModeUserinfo, exchange.ResultSuccess)
+
+	correlationID := trace.SpanFromContext(ctx).SpanContext().TraceID().String()
+
+	log.Info(
+		"auth0 opaque fallback invocation",
+		"source", PassportSourceAuth0,
+		"fallback", true,
+		"correlationID", correlationID,
+		"subject", identity.Subject,
+		"result", exchange.ResultSuccess,
+	)
+
+	return userinfoFromValidatedIdentity(identity), exchange.SourceAuth0, exchange.ResultSuccess, nil
+}
+
+func (a *Authenticator) shouldTryAuth0OpaqueFallback(source exchange.Source, err error) bool {
+	if a.auth0OpaqueValidator == nil || err == nil {
+		return false
+	}
+
+	if source == exchange.SourceAuth0 {
+		return goerrors.Is(err, exchange.ErrMalformedToken)
+	}
+
+	if source == exchange.SourceUnknown {
+		return goerrors.Is(err, exchange.ErrMalformedToken) || goerrors.Is(err, exchange.ErrUnsupportedSource)
+	}
+
+	return false
 }
 
 func (a *Authenticator) enrichAuth0Identity(ctx context.Context, identity *exchange.ValidatedIdentity) error {

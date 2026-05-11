@@ -44,4 +44,8 @@ type ValidatedIdentity struct {
 
 	// OrganizationIDs is the full set of organizations the actor can access.
 	OrganizationIDs []string
+
+	// Fallback is true when identity was resolved through migration-only
+	// Auth0 /userinfo fallback rather than local JWT validation.
+	Fallback bool
 }

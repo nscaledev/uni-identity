@@ -88,6 +88,29 @@ func TestObserveExchange(t *testing.T) {
 	})
 }
 
+//nolint:paralleltest // DefaultGatherer is process-global; parallel writers would race label assertions.
+func TestObserveAuth0Validation(t *testing.T) {
+	t.Run("emits mode and result labels", func(t *testing.T) {
+		exchange.ObserveAuth0Validation(exchange.ValidationModeJWT, exchange.ResultSuccess)
+		exchange.ObserveAuth0Validation(exchange.ValidationModeUserinfo, exchange.ResultUnauthorized)
+
+		labels := metricLabels(t, "identity_exchange_auth0_validation_total")
+
+		assert.Contains(t, labels, map[string]string{"mode": "jwt", "result": string(exchange.ResultSuccess)})
+		assert.Contains(t, labels, map[string]string{"mode": "userinfo", "result": string(exchange.ResultUnauthorized)})
+	})
+}
+
+//nolint:paralleltest // DefaultGatherer is process-global; parallel writers would race label assertions.
+func TestObserveAuth0UserinfoCall(t *testing.T) {
+	t.Run("emits result label", func(t *testing.T) {
+		exchange.ObserveAuth0UserinfoCall(exchange.ResultSuccess, 9*time.Millisecond)
+
+		labels := metricLabels(t, "identity_exchange_auth0_userinfo_duration_seconds")
+		assert.Contains(t, labels, map[string]string{"result": string(exchange.ResultSuccess)})
+	})
+}
+
 func TestClassifyResult(t *testing.T) {
 	t.Parallel()
 
@@ -107,6 +130,8 @@ func TestClassifyResult(t *testing.T) {
 			{name: "auth0 token expired", err: auth0.ErrTokenExpired, expected: exchange.ResultExpired},
 			{name: "auth0 insufficient scope", err: auth0.ErrInsufficientScope, expected: exchange.ResultInsufficientScope},
 			{name: "auth0 invalid token", err: auth0.ErrInvalidToken, expected: exchange.ResultUnauthorized},
+			{name: "auth0 userinfo unavailable", err: auth0.ErrUserinfoUnavailable, expected: exchange.ResultError},
+			{name: "auth0 userinfo circuit open", err: auth0.ErrUserinfoCircuitOpen, expected: exchange.ResultError},
 			{name: "uni userinfo unavailable", err: exchange.ErrUNIUserinfoNotAvailable, expected: exchange.ResultUnauthorized},
 			{name: "oauth2 invalid request", err: oauth2errors.OAuth2InvalidRequest("bad request"), expected: exchange.ResultInvalidRequest},
 			{name: "unrecognized falls through to error", err: errUnrecognised, expected: exchange.ResultError},

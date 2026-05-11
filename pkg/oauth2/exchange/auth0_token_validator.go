@@ -23,8 +23,7 @@ import (
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
-// auth0Verifier is the slice of auth0.Verifier the Auth0 validator depends on.
-// Mocked directly in tests.
+// auth0Verifier is the subset of auth0 verifiers required by this adapter.
 type auth0Verifier interface {
 	Verify(ctx context.Context, rawToken string) (*auth0.Claims, error)
 }
@@ -33,11 +32,12 @@ type auth0Verifier interface {
 // contract by lifting its claim shape into ValidatedIdentity.
 type Auth0TokenValidator struct {
 	verifier auth0Verifier
+	fallback bool
 }
 
 // NewAuth0TokenValidator wraps an auth0.Verifier as a TokenValidator.
-func NewAuth0TokenValidator(verifier *auth0.Verifier) *Auth0TokenValidator {
-	return &Auth0TokenValidator{verifier: verifier}
+func NewAuth0TokenValidator(verifier auth0Verifier, fallback bool) *Auth0TokenValidator {
+	return &Auth0TokenValidator{verifier: verifier, fallback: fallback}
 }
 
 var _ TokenValidator = (*Auth0TokenValidator)(nil)
@@ -55,12 +55,11 @@ func (a *Auth0TokenValidator) Validate(ctx context.Context, rawToken string) (*V
 		return nil, err
 	}
 
-	identity := &ValidatedIdentity{
+	return &ValidatedIdentity{
 		Source:      a.Source(),
 		Subject:     claims.Subject,
 		Email:       claims.Email,
 		AccountType: identityapi.User,
-	}
-
-	return identity, nil
+		Fallback:    a.fallback,
+	}, nil
 }

@@ -161,6 +161,10 @@ type Authenticator struct {
 	// exchangeRouter validates source tokens using per-source validators.
 	exchangeRouter *exchange.Router
 
+	// auth0OpaqueValidator validates opaque Auth0 tokens via /userinfo fallback.
+	// Migration-only: phase 4 removes this fallback path.
+	auth0OpaqueValidator exchange.TokenValidator
+
 	// tokenCache is used to enhance interaction as the validation is a
 	// very expensive operation.
 	tokenCache *cache.LRUExpireCache

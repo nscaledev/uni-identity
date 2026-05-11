@@ -36,4 +36,12 @@ var (
 	// ErrJWKSUnavailable indicates the JWKS endpoint could not be reached or
 	// returned an unexpected response.
 	ErrJWKSUnavailable = errors.New("auth0 JWKS unavailable")
+
+	// ErrUserinfoUnavailable indicates the Auth0 /userinfo endpoint could not be
+	// reached or returned a transient failure.
+	ErrUserinfoUnavailable = errors.New("auth0 userinfo unavailable")
+
+	// ErrUserinfoCircuitOpen indicates /userinfo calls are short-circuited due to
+	// repeated upstream failures.
+	ErrUserinfoCircuitOpen = errors.New("auth0 userinfo circuit open")
 )

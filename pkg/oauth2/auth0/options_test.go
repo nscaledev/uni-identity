@@ -38,11 +38,13 @@ func TestOptions_AddFlagsParsesAll(t *testing.T) {
 		"--auth0-issuer=https://tenant.auth0.com/",
 		"--auth0-audience=https://identity.example.com",
 		"--auth0-jwks-url=https://tenant.auth0.com/keys",
+		"--auth0-opaque-fallback-enabled=true",
 	}))
 
 	assert.Equal(t, "https://tenant.auth0.com/", o.Issuer)
 	assert.Equal(t, "https://identity.example.com", o.Audience)
 	assert.Equal(t, "https://tenant.auth0.com/keys", o.JWKSURL)
+	assert.True(t, o.OpaqueFallbackEnabled)
 }
 
 func TestOptions_Enabled(t *testing.T) {
@@ -117,23 +119,95 @@ func TestOptions_EffectiveJWKSURL(t *testing.T) {
 	}
 }
 
-func TestOptions_EffectiveJWKSCacheTTL_Default(t *testing.T) {
+func TestOptions_EffectiveUserinfoURL(t *testing.T) {
 	t.Parallel()
 
-	o := &auth0.Options{}
-	assert.Equal(t, auth0.DefaultJWKSCacheTTL, o.EffectiveJWKSCacheTTL())
+	tests := []struct {
+		name     string
+		options  auth0.Options
+		expected string
+	}{
+		{
+			name:     "trailing slash on issuer is normalized",
+			options:  auth0.Options{Issuer: "https://tenant.auth0.com/"},
+			expected: "https://tenant.auth0.com/userinfo",
+		},
+		{
+			name:     "explicit override wins over issuer-derived URL",
+			options:  auth0.Options{Issuer: "https://tenant.auth0.com/", UserinfoURL: "https://tenant.auth0.com/custom-userinfo"},
+			expected: "https://tenant.auth0.com/custom-userinfo",
+		},
+		{
+			name:     "no issuer, no override returns empty",
+			options:  auth0.Options{},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, tt.options.EffectiveUserinfoURL())
+		})
+	}
 }
 
-func TestOptions_EffectiveJWKSHTTPTimeout_Default(t *testing.T) {
+func TestOptions_Defaults(t *testing.T) {
 	t.Parallel()
 
-	o := &auth0.Options{}
-	assert.Equal(t, auth0.DefaultJWKSHTTPTimeout, o.EffectiveJWKSHTTPTimeout())
-}
+	t.Run("effective jwks cache ttl", func(t *testing.T) {
+		t.Parallel()
 
-func TestOptions_EffectiveRequiredScope_Default(t *testing.T) {
-	t.Parallel()
+		o := &auth0.Options{}
+		assert.Equal(t, auth0.DefaultJWKSCacheTTL, o.EffectiveJWKSCacheTTL())
+	})
 
-	o := &auth0.Options{}
-	assert.Equal(t, auth0.DefaultRequiredScope, o.EffectiveRequiredScope())
+	t.Run("effective jwks http timeout", func(t *testing.T) {
+		t.Parallel()
+
+		o := &auth0.Options{}
+		assert.Equal(t, auth0.DefaultJWKSHTTPTimeout, o.EffectiveJWKSHTTPTimeout())
+	})
+
+	t.Run("effective required scope", func(t *testing.T) {
+		t.Parallel()
+
+		o := &auth0.Options{}
+		assert.Equal(t, auth0.DefaultRequiredScope, o.EffectiveRequiredScope())
+	})
+
+	t.Run("effective userinfo http timeout", func(t *testing.T) {
+		t.Parallel()
+
+		o := &auth0.Options{}
+		assert.Equal(t, auth0.DefaultUserinfoHTTPTimeout, o.EffectiveUserinfoHTTPTimeout())
+	})
+
+	t.Run("effective userinfo max retries", func(t *testing.T) {
+		t.Parallel()
+
+		o := &auth0.Options{UserinfoMaxRetries: -1}
+		assert.Equal(t, auth0.DefaultUserinfoMaxRetries, o.EffectiveUserinfoMaxRetries())
+	})
+
+	t.Run("effective userinfo retry backoff", func(t *testing.T) {
+		t.Parallel()
+
+		o := &auth0.Options{}
+		assert.Equal(t, auth0.DefaultUserinfoRetryBackoff, o.EffectiveUserinfoRetryBackoff())
+	})
+
+	t.Run("effective userinfo circuit failures", func(t *testing.T) {
+		t.Parallel()
+
+		o := &auth0.Options{}
+		assert.Equal(t, auth0.DefaultUserinfoCircuitFailures, o.EffectiveUserinfoCircuitFailures())
+	})
+
+	t.Run("effective userinfo circuit open duration", func(t *testing.T) {
+		t.Parallel()
+
+		o := &auth0.Options{}
+		assert.Equal(t, auth0.DefaultUserinfoCircuitOpenDuration, o.EffectiveUserinfoCircuitOpenDuration())
+	})
 }

@@ -76,5 +76,6 @@ func (u *UNITokenValidator) Validate(ctx context.Context, rawToken string) (*Val
 		Email:           identity.Email,
 		AccountType:     identity.AccountType,
 		OrganizationIDs: identity.OrganizationIDs,
+		Fallback:        false,
 	}, nil
 }

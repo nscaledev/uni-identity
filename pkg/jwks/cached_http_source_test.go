@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package jwks
+package jwks_test
 
 import (
 	"crypto/rand"
@@ -30,6 +30,8 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/unikorn-cloud/identity/pkg/jwks"
 )
 
 func testJWK(t *testing.T, kid string) jose.JSONWebKey {
@@ -55,11 +57,14 @@ func TestCachedHTTPSource_Get(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			fetchCount.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			require.NoError(t, json.NewEncoder(w).Encode(&keySet))
+
+			if err := json.NewEncoder(w).Encode(&keySet); err != nil {
+				t.Errorf("failed to encode key set: %v", err)
+			}
 		}))
 		defer server.Close()
 
-		source := NewCachedHTTPSource(server.Client(), server.URL, time.Minute, nil)
+		source := jwks.NewCachedHTTPSource(server.Client(), server.URL, time.Minute, nil)
 
 		got, err := source.Get(t.Context(), "kid-1")
 		require.NoError(t, err)
@@ -86,11 +91,14 @@ func TestCachedHTTPSource_Get(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			fetchCount.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			require.NoError(t, json.NewEncoder(w).Encode(&keySet))
+
+			if err := json.NewEncoder(w).Encode(&keySet); err != nil {
+				t.Errorf("failed to encode key set: %v", err)
+			}
 		}))
 		defer server.Close()
 
-		source := NewCachedHTTPSource(server.Client(), server.URL, time.Minute, nil)
+		source := jwks.NewCachedHTTPSource(server.Client(), server.URL, time.Minute, nil)
 
 		_, err := source.Get(t.Context(), "kid-1")
 		require.NoError(t, err)
@@ -119,11 +127,14 @@ func TestCachedHTTPSource_Get(t *testing.T) {
 			fetchCount.Add(1)
 			<-release
 			w.Header().Set("Content-Type", "application/json")
-			require.NoError(t, json.NewEncoder(w).Encode(&keySet))
+
+			if err := json.NewEncoder(w).Encode(&keySet); err != nil {
+				t.Errorf("failed to encode key set: %v", err)
+			}
 		}))
 		defer server.Close()
 
-		source := NewCachedHTTPSource(server.Client(), server.URL, time.Minute, nil)
+		source := jwks.NewCachedHTTPSource(server.Client(), server.URL, time.Minute, nil)
 
 		const goroutines = 8
 
@@ -164,10 +175,10 @@ func TestCachedHTTPSource_Get(t *testing.T) {
 	t.Run("returns unavailable on fetch failure", func(t *testing.T) {
 		t.Parallel()
 
-		source := NewCachedHTTPSource(http.DefaultClient, "http://127.0.0.1:0/jwks", time.Minute, nil)
+		source := jwks.NewCachedHTTPSource(http.DefaultClient, "http://127.0.0.1:0/jwks", time.Minute, nil)
 
 		_, err := source.Get(t.Context(), "kid-1")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrUnavailable)
+		assert.ErrorIs(t, err, jwks.ErrUnavailable)
 	})
 }

@@ -40,6 +40,24 @@ const (
 	// DefaultRequiredScope is the scope/permission an Auth0 access token must
 	// carry to be accepted at the exchange endpoint.
 	DefaultRequiredScope = "identity:token:exchange"
+
+	// DefaultUserinfoPath is the path appended to issuer for Auth0 /userinfo.
+	DefaultUserinfoPath = "userinfo"
+
+	// DefaultUserinfoHTTPTimeout bounds one /userinfo fallback call.
+	DefaultUserinfoHTTPTimeout = 700 * time.Millisecond
+
+	// DefaultUserinfoMaxRetries limits migration fallback retries.
+	DefaultUserinfoMaxRetries = 1
+
+	// DefaultUserinfoRetryBackoff is the pause between fallback retries.
+	DefaultUserinfoRetryBackoff = 100 * time.Millisecond
+
+	// DefaultUserinfoCircuitFailures opens circuit after consecutive failures.
+	DefaultUserinfoCircuitFailures = 5
+
+	// DefaultUserinfoCircuitOpenDuration is breaker open interval.
+	DefaultUserinfoCircuitOpenDuration = 30 * time.Second
 )
 
 // Options is the operator-facing configuration for the Auth0 verifier.
@@ -67,6 +85,28 @@ type Options struct {
 	// RequiredScope is the value that must appear in either the `permissions`
 	// or `scope` claim for the token to be accepted at exchange.
 	RequiredScope string
+
+	// OpaqueFallbackEnabled allows temporary Auth0 /userinfo fallback for opaque
+	// tokens during migration.
+	OpaqueFallbackEnabled bool
+
+	// UserinfoURL overrides the /userinfo endpoint. If empty, derived from issuer.
+	UserinfoURL string
+
+	// UserinfoHTTPTimeout bounds one /userinfo call.
+	UserinfoHTTPTimeout time.Duration
+
+	// UserinfoMaxRetries bounds /userinfo retries after transient failures.
+	UserinfoMaxRetries int
+
+	// UserinfoRetryBackoff is the delay between retries.
+	UserinfoRetryBackoff time.Duration
+
+	// UserinfoCircuitFailures opens the breaker after N consecutive failures.
+	UserinfoCircuitFailures int
+
+	// UserinfoCircuitOpenDuration keeps breaker open before half-open probe.
+	UserinfoCircuitOpenDuration time.Duration
 }
 
 // AddFlags wires the operator-facing CLI options. Tuning options (TTL,
@@ -75,6 +115,7 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringVar(&o.Issuer, "auth0-issuer", "", "Auth0 tenant issuer URL. Empty disables Auth0 token validation at exchange.")
 	f.StringVar(&o.Audience, "auth0-audience", "", "Auth0 API audience that access tokens must be addressed to.")
 	f.StringVar(&o.JWKSURL, "auth0-jwks-url", "", "Override the JWKS URL. Derived from --auth0-issuer when empty.")
+	f.BoolVar(&o.OpaqueFallbackEnabled, "auth0-opaque-fallback-enabled", false, "Enable temporary Auth0 /userinfo fallback for opaque tokens during migration.")
 }
 
 // Enabled returns true when the operator has configured an Auth0 issuer.
@@ -97,6 +138,20 @@ func (o *Options) EffectiveJWKSURL() string {
 	}
 
 	return strings.TrimRight(issuer, "/") + "/" + DefaultJWKSPath
+}
+
+// EffectiveUserinfoURL returns configured override, or issuer-derived /userinfo URL.
+func (o *Options) EffectiveUserinfoURL() string {
+	if override := strings.TrimSpace(o.UserinfoURL); override != "" {
+		return override
+	}
+
+	issuer := strings.TrimSpace(o.Issuer)
+	if issuer == "" {
+		return ""
+	}
+
+	return strings.TrimRight(issuer, "/") + "/" + DefaultUserinfoPath
 }
 
 // EffectiveJWKSCacheTTL returns the configured TTL, falling back to the default.
@@ -124,4 +179,49 @@ func (o *Options) EffectiveRequiredScope() string {
 	}
 
 	return DefaultRequiredScope
+}
+
+// EffectiveUserinfoHTTPTimeout returns configured timeout or default.
+func (o *Options) EffectiveUserinfoHTTPTimeout() time.Duration {
+	if o.UserinfoHTTPTimeout > 0 {
+		return o.UserinfoHTTPTimeout
+	}
+
+	return DefaultUserinfoHTTPTimeout
+}
+
+// EffectiveUserinfoMaxRetries returns configured retries or default.
+func (o *Options) EffectiveUserinfoMaxRetries() int {
+	if o.UserinfoMaxRetries >= 0 {
+		return o.UserinfoMaxRetries
+	}
+
+	return DefaultUserinfoMaxRetries
+}
+
+// EffectiveUserinfoRetryBackoff returns configured backoff or default.
+func (o *Options) EffectiveUserinfoRetryBackoff() time.Duration {
+	if o.UserinfoRetryBackoff > 0 {
+		return o.UserinfoRetryBackoff
+	}
+
+	return DefaultUserinfoRetryBackoff
+}
+
+// EffectiveUserinfoCircuitFailures returns configured threshold or default.
+func (o *Options) EffectiveUserinfoCircuitFailures() int {
+	if o.UserinfoCircuitFailures > 0 {
+		return o.UserinfoCircuitFailures
+	}
+
+	return DefaultUserinfoCircuitFailures
+}
+
+// EffectiveUserinfoCircuitOpenDuration returns configured open duration or default.
+func (o *Options) EffectiveUserinfoCircuitOpenDuration() time.Duration {
+	if o.UserinfoCircuitOpenDuration > 0 {
+		return o.UserinfoCircuitOpenDuration
+	}
+
+	return DefaultUserinfoCircuitOpenDuration
 }

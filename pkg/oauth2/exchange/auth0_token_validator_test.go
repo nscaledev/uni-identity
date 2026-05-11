@@ -64,7 +64,7 @@ func TestAuth0TokenValidator_Validate(t *testing.T) {
 			},
 		}
 
-		validator := &Auth0TokenValidator{verifier: verifier}
+		validator := NewAuth0TokenValidator(verifier, false)
 
 		identity, err := validator.Validate(t.Context(), "raw-token")
 		require.NoError(t, err)
@@ -73,13 +73,24 @@ func TestAuth0TokenValidator_Validate(t *testing.T) {
 		assert.Equal(t, "auth0|user-id", identity.Subject)
 		assert.Equal(t, "user@example.com", identity.Email)
 		assert.Equal(t, identityapi.User, identity.AccountType)
+		assert.False(t, identity.Fallback)
 		assert.Empty(t, identity.OrganizationIDs)
+	})
+
+	t.Run("marks identity as fallback when configured", func(t *testing.T) {
+		t.Parallel()
+
+		validator := NewAuth0TokenValidator(&fakeAuth0Verifier{claims: &auth0.Claims{Claims: jwt.Claims{Subject: "auth0|user-id"}}}, true)
+
+		identity, err := validator.Validate(t.Context(), "raw-token")
+		require.NoError(t, err)
+		assert.True(t, identity.Fallback)
 	})
 
 	t.Run("propagates verifier errors", func(t *testing.T) {
 		t.Parallel()
 
-		validator := &Auth0TokenValidator{verifier: &fakeAuth0Verifier{err: errFakeVerifier}}
+		validator := NewAuth0TokenValidator(&fakeAuth0Verifier{err: errFakeVerifier}, false)
 
 		_, err := validator.Validate(t.Context(), "raw-token")
 		require.ErrorIs(t, err, errFakeVerifier)

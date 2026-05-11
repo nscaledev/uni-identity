@@ -217,7 +217,18 @@ func (s *Server) configureExchangeRouter(authenticator *oauth2.Authenticator) er
 			return err
 		}
 
-		auth0TokenValidator = exchange.NewAuth0TokenValidator(verifier)
+		auth0TokenValidator = exchange.NewAuth0TokenValidator(verifier, false)
+
+		if s.Auth0Options.OpaqueFallbackEnabled {
+			userinfoVerifier, err := auth0.NewUserinfoVerifier(httpClient, &s.Auth0Options)
+			if err != nil {
+				return err
+			}
+
+			auth0OpaqueTokenValidator := exchange.NewAuth0TokenValidator(userinfoVerifier, true)
+
+			authenticator.ConfigureAuth0OpaqueFallback(auth0OpaqueTokenValidator)
+		}
 	}
 
 	exchangeRouter, err := exchange.NewRouter(detector, uniTokenValidator, auth0TokenValidator)

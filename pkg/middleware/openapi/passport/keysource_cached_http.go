@@ -23,10 +23,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
-	"github.com/go-jose/go-jose/v4"
 	"github.com/unikorn-cloud/identity/pkg/jwks"
 )
 

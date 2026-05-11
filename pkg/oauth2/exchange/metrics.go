@@ -44,6 +44,14 @@ const (
 	ResultError             Result = "error"
 )
 
+// ValidationMode labels which Auth0 validation path resolved the token.
+type ValidationMode string
+
+const (
+	ValidationModeJWT      ValidationMode = "jwt"
+	ValidationModeUserinfo ValidationMode = "userinfo"
+)
+
 //nolint:gochecknoglobals
 var (
 	exchangeRequestsTotal = promauto.NewCounterVec(
@@ -61,6 +69,22 @@ var (
 		},
 		[]string{"source"},
 	)
+
+	auth0ValidationTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "identity_exchange_auth0_validation_total",
+			Help: "Auth0 exchange validation attempts by mode and result.",
+		},
+		[]string{"mode", "result"},
+	)
+
+	auth0UserinfoDurationSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name: "identity_exchange_auth0_userinfo_duration_seconds",
+			Help: "Latency of Auth0 /userinfo fallback validation calls.",
+		},
+		[]string{"result"},
+	)
 )
 
 // ObserveExchange records the outcome of one exchange request. Callers should
@@ -76,6 +100,16 @@ func ObserveExchange(source Source, result Result, duration time.Duration) {
 
 	exchangeRequestsTotal.WithLabelValues(label, string(result)).Inc()
 	exchangeDurationSeconds.WithLabelValues(label).Observe(duration.Seconds())
+}
+
+// ObserveAuth0Validation records Auth0 validation attempt mode and result.
+func ObserveAuth0Validation(mode ValidationMode, result Result) {
+	auth0ValidationTotal.WithLabelValues(string(mode), string(result)).Inc()
+}
+
+// ObserveAuth0UserinfoCall records Auth0 /userinfo fallback latency by result.
+func ObserveAuth0UserinfoCall(result Result, duration time.Duration) {
+	auth0UserinfoDurationSeconds.WithLabelValues(string(result)).Observe(duration.Seconds())
 }
 
 func sourceLabel(s Source) string {
@@ -120,6 +154,8 @@ func classifyKnownResult(err error) (Result, bool) {
 		return ResultInsufficientScope, true
 	case errors.Is(err, auth0.ErrInvalidToken), errors.Is(err, ErrUNIUserinfoNotAvailable):
 		return ResultUnauthorized, true
+	case errors.Is(err, auth0.ErrUserinfoUnavailable), errors.Is(err, auth0.ErrUserinfoCircuitOpen):
+		return ResultError, true
 	default:
 		return "", false
 	}
