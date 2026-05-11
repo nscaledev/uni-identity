@@ -128,7 +128,7 @@ func TestJWKSCache_Get(t *testing.T) {
 		assert.Equal(t, int32(2), fetchCount.Load())
 	})
 
-	t.Run("returns jwks unavailable error on persistent kid miss", func(t *testing.T) {
+	t.Run("returns invalid signature error on persistent kid miss", func(t *testing.T) {
 		t.Parallel()
 
 		keyPair := newTestKeyPair(t, "test-kid")
@@ -138,7 +138,8 @@ func TestJWKSCache_Get(t *testing.T) {
 		cache := NewJWKSCache(server.Client(), server.URL+"/oauth2/v2/jwks", time.Minute)
 
 		_, err := cache.Get(t.Context(), "nonexistent-kid")
-		assert.ErrorIs(t, err, ErrJWKSUnavailable)
+		require.ErrorIs(t, err, ErrPassportInvalidSig)
+		assert.NotErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
 	t.Run("returns jwks unavailable error on unreachable endpoint", func(t *testing.T) {

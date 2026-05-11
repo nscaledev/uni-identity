@@ -83,7 +83,10 @@ func (c *JWKSCache) Get(ctx context.Context, kid string) (*jose.JSONWebKey, erro
 
 	key, _ = c.load(kid)
 	if key == nil {
-		return nil, fmt.Errorf("%w: kid %q not found after refresh", ErrJWKSUnavailable, kid)
+		// JWKS was retrieved but does not contain the requested kid: the token
+		// cannot be verified against any known key. This is a credential failure,
+		// not an availability failure.
+		return nil, fmt.Errorf("%w: kid %q not found in JWKS after refresh", ErrPassportInvalidSig, kid)
 	}
 
 	return key, nil

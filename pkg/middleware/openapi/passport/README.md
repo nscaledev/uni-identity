@@ -25,11 +25,15 @@ Its main responsibilities are:
 - The passport JWT is the only source of identity facts when the local path is taken; the package
   does not consult any other claim source on the hot path.
 - Verification is fail-closed: a token whose `typ` claim says it is a passport but which fails
-  signature, expiry, issuer, or `typ` re-check returns access denied without falling back to the
-  remote authorizer.
-- A confirmed passport whose signing key cannot be resolved (`ErrJWKSUnavailable`) does not fall
-  back to the remote authorizer either; the remote authorizer cannot validate that token type and
-  silently accepting it would defeat the local-verification model.
+  signature, expiry, issuer, `typ` re-check, or whose `kid` is absent from a successfully fetched
+  JWKS returns access denied without falling back to the remote authorizer. All of these are
+  credential failures (`ErrPassportInvalidSig` / `ErrPassportExpired`).
+- A confirmed passport whose verification cannot proceed because the JWKS endpoint itself is
+  unreachable or returns an unparsable response (`ErrJWKSUnavailable`) does not fall back to the
+  remote authorizer either; the remote authorizer cannot validate that token type and silently
+  accepting it would defeat the local-verification model. This is service degradation rather
+  than a credential failure, so it is distinguished from `ErrPassportInvalidSig` to avoid
+  classifying forged or stale-`kid` tokens as infrastructure outages.
 - ACL is **not** embedded in the passport. Every ACL request is delegated to the remote
   authorizer, keyed off passport-verified identity, so RBAC stays consistent with the rest of the
   platform model and a stale or compromised passport cannot extend its own permissions.
