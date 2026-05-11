@@ -534,7 +534,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDGroups(w http.ResponseWrit
 		return
 	}
 
-	result, err := groups.New(h.client, h.namespace, h.options.Issuer).Create(r.Context(), organizationID, request)
+	result, err := groups.New(h.directclient, h.namespace, h.options.Issuer).Create(r.Context(), organizationID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -566,7 +566,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Res
 		return
 	}
 
-	if err := groups.New(h.client, h.namespace, h.options.Issuer).Delete(r.Context(), organizationID, groupID); err != nil {
+	if err := groups.New(h.directclient, h.namespace, h.options.Issuer).Delete(r.Context(), organizationID, groupID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -588,7 +588,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 		return
 	}
 
-	if err := groups.New(h.client, h.namespace, h.options.Issuer).Update(r.Context(), organizationID, groupID, request); err != nil {
+	if err := groups.New(h.directclient, h.namespace, h.options.Issuer).Update(r.Context(), organizationID, groupID, request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
