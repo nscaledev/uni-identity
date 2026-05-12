@@ -273,6 +273,24 @@ func (c *APIClient) DeleteGroup(ctx context.Context, orgID, groupID string) erro
 	return nil
 }
 
+// GetUserinfo returns userinfo claims for the current token.
+func (c *APIClient) GetUserinfo(ctx context.Context) (*identityopenapi.Userinfo, error) {
+	path := c.endpoints.GetUserinfo()
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("getting userinfo: %w", err)
+	}
+
+	var userinfo identityopenapi.Userinfo
+	if err := json.Unmarshal(respBody, &userinfo); err != nil {
+		return nil, fmt.Errorf("unmarshaling userinfo: %w", err)
+	}
+
+	return &userinfo, nil
+}
+
 // GetGlobalACL gets the global ACL for the current user.
 func (c *APIClient) GetGlobalACL(ctx context.Context) (*identityopenapi.Acl, error) {
 	path := c.endpoints.GetGlobalACL()

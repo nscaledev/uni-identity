@@ -166,13 +166,10 @@ var _ = Describe("RBAC Enforcement", func() {
 		})
 
 		Describe("Given a request to list service accounts", func() {
-			It("should return only the requesting principal's own service account", func() {
-				serviceAccounts, err := userClient.ListServiceAccounts(ctx, config.OrgID)
+			It("should be denied with a forbidden response", func() {
+				_, err := userClient.ListServiceAccounts(ctx, config.OrgID)
 
-				Expect(err).NotTo(HaveOccurred())
-				Expect(serviceAccounts).To(HaveLen(1))
-				Expect(serviceAccounts[0].Metadata.Id).To(Equal(config.UserSAID))
-				Expect(serviceAccounts[0].Metadata.OrganizationId).To(Equal(config.OrgID))
+				Expect(err).To(HaveOccurred())
 			})
 		})
 
@@ -334,6 +331,28 @@ var _ = Describe("RBAC Enforcement", func() {
 				err := userClient.DeleteOauth2Provider(ctx, config.OrgID, providerID)
 
 				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+
+	Context("When authenticated as a service account", func() {
+		BeforeEach(func() {
+			if serviceAccountClient == nil {
+				Skip("SERVICE_ACCOUNT_TOKEN is required for service account RBAC tests")
+			}
+			if config.UserSAID == "" {
+				Skip("TEST_USER_SA_ID is not configured")
+			}
+		})
+
+		Describe("Given a request to list service accounts", func() {
+			It("should return only the requesting service account", func() {
+				serviceAccounts, err := serviceAccountClient.ListServiceAccounts(ctx, config.OrgID)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(serviceAccounts).To(HaveLen(1))
+				Expect(serviceAccounts[0].Metadata.Id).To(Equal(config.UserSAID))
+				Expect(serviceAccounts[0].Metadata.OrganizationId).To(Equal(config.OrgID))
 			})
 		})
 	})
