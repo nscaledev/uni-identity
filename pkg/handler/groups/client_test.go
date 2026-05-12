@@ -518,3 +518,61 @@ func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 	require.Error(t, err, "Should error when both subjects and userIDs are provided")
 	require.True(t, errors.IsBadRequest(err))
 }
+
+func TestUpdateGroup_DeduplicatesSpecFieldsBeforePersist(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createGroup(t)
+
+	roleA := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "role-a",
+		},
+	}
+
+	roleB := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "role-b",
+		},
+	}
+
+	require.NoError(t, f.client.Create(newContext(t), roleA))
+	require.NoError(t, f.client.Create(newContext(t), roleB))
+
+	subjects := []openapi.Subject{
+		{Id: userAliceSubject, Issuer: testIssuerURL, Email: ptr.To("alice-1@example.com")},
+		{Id: userAliceSubject, Issuer: testIssuerURL, Email: ptr.To("alice-2@example.com")},
+		{Id: "alice@example.com", Issuer: "https://external.example.com", Email: ptr.To("alice-external-1@example.com")},
+		{Id: "alice@example.com", Issuer: "https://external.example.com", Email: ptr.To("alice-external-2@example.com")},
+	}
+
+	request := &openapi.GroupWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: groupTestID},
+		Spec: openapi.GroupSpec{
+			RoleIDs:           openapi.StringList{"role-a", "role-a", "role-b"},
+			Subjects:          &subjects,
+			ServiceAccountIDs: openapi.StringList{"sa-a", "sa-a", "sa-b"},
+		},
+	}
+
+	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+
+	assert.Equal(t, []string{"role-a", "role-b"}, stored.Spec.RoleIDs)
+	assert.Equal(t, []string{"sa-a", "sa-b"}, stored.Spec.ServiceAccountIDs)
+	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+
+	require.Len(t, stored.Spec.Subjects, 2)
+	assert.Equal(t, userAliceSubject, stored.Spec.Subjects[0].ID)
+	assert.Equal(t, testIssuerURL, stored.Spec.Subjects[0].Issuer)
+	assert.Equal(t, "alice-1@example.com", stored.Spec.Subjects[0].Email)
+	assert.Equal(t, "alice@example.com", stored.Spec.Subjects[1].ID)
+	assert.Equal(t, "https://external.example.com", stored.Spec.Subjects[1].Issuer)
+	assert.Equal(t, "alice-external-1@example.com", stored.Spec.Subjects[1].Email)
+}
