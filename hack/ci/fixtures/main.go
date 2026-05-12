@@ -31,6 +31,7 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -63,6 +64,20 @@ func fatalf(format string, args ...interface{}) {
 
 func logf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "==> "+format+"\n", args...)
+}
+
+func responseDetail(status string, body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return status
+	}
+
+	const maxBodyLength = 4096
+	if len(body) > maxBodyLength {
+		body = append(body[:maxBodyLength], []byte("...<truncated>")...)
+	}
+
+	return fmt.Sprintf("%s: %s", status, string(body))
 }
 
 // issueCert creates a cert-manager Certificate via controller-runtime and
@@ -217,7 +232,7 @@ func createGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, na
 	}
 
 	if resp.JSON201 == nil {
-		fatalf("create group %q returned %s", name, resp.Status())
+		fatalf("create group %q returned %s", name, responseDetail(resp.Status(), resp.Body))
 	}
 
 	id := resp.JSON201.Metadata.Id
@@ -239,7 +254,7 @@ func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, 
 	}
 
 	if resp.JSON202 == nil {
-		fatalf("create project %q returned %s", name, resp.Status())
+		fatalf("create project %q returned %s", name, responseDetail(resp.Status(), resp.Body))
 	}
 
 	id := resp.JSON202.Metadata.Id
@@ -261,7 +276,7 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 	}
 
 	if resp.JSON201 == nil {
-		fatalf("create service account %q returned %s", name, resp.Status())
+		fatalf("create service account %q returned %s", name, responseDetail(resp.Status(), resp.Body))
 	}
 
 	id := resp.JSON201.Metadata.Id
@@ -310,7 +325,7 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 	}
 
 	if rolesResp.JSON200 == nil {
-		fatalf("list roles returned %s", rolesResp.Status())
+		fatalf("list roles returned %s", responseDetail(rolesResp.Status(), rolesResp.Body))
 	}
 
 	administratorRoleID := findRole(rolesResp.JSON200, "administrator")
@@ -381,7 +396,7 @@ func main() {
 	}
 
 	if orgResp.JSON202 == nil {
-		fatalf("create Organization returned %s", orgResp.Status())
+		fatalf("create Organization returned %s", responseDetail(orgResp.Status(), orgResp.Body))
 	}
 
 	orgID := orgResp.JSON202.Metadata.Id
