@@ -74,7 +74,8 @@ jobs:
         IDENTITY_NAMESPACE="${IDENTITY_NAMESPACE:-unikorn-identity-${KIND_SUFFIX}}"
         IDENTITY_RELEASE="${IDENTITY_RELEASE:-identity-${KIND_SUFFIX}}"
 
-        kubectl -n "$IDENTITY_NAMESPACE" get pods,events --sort-by=.lastTimestamp || true
+        kubectl -n "$IDENTITY_NAMESPACE" get pods -o wide || true
+        kubectl -n "$IDENTITY_NAMESPACE" get events --sort-by=.lastTimestamp || true
         kubectl -n "$IDENTITY_NAMESPACE" logs "deploy/${IDENTITY_RELEASE}-server" --tail=300 || true
         kubectl -n "$IDENTITY_NAMESPACE" logs "deploy/${IDENTITY_RELEASE}-organization-controller" --tail=200 || true
         kubectl -n "$IDENTITY_NAMESPACE" logs "deploy/${IDENTITY_RELEASE}-project-controller" --tail=200 || true
