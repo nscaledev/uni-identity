@@ -34,11 +34,18 @@ import (
 // Verifier verifies passport JWTs locally using cached JWKS public keys.
 type Verifier struct {
 	keySource KeySource
+	audiences []string
 }
 
 // NewVerifier returns a new Verifier backed by the given key source.
-func NewVerifier(keySource KeySource) *Verifier {
-	return &Verifier{keySource: keySource}
+//
+// audiences is the set of audience strings this service will accept on the
+// passport's aud claim. The token must list at least one of them. Passing an
+// empty slice disables audience binding, which leaves the service open to
+// cross-service replay of passports minted for a different audience; callers
+// should always provide at least one audience in production wiring.
+func NewVerifier(keySource KeySource, audiences []string) *Verifier {
+	return &Verifier{keySource: keySource, audiences: audiences}
 }
 
 // Verify auto-detects and verifies a passport JWT.
@@ -65,7 +72,10 @@ func (v *Verifier) Verify(ctx context.Context, rawToken string) (*identityoauth2
 
 	publicKey, err := v.keySource.Get(ctx, kid)
 	if err != nil {
-		if errors.Is(err, ErrJWKSUnavailable) {
+		// Both ErrJWKSUnavailable (service degradation) and ErrPassportInvalidSig
+		// (kid absent from a successfully fetched JWKS — i.e. a credential failure)
+		// are propagated verbatim so the authorizer can classify them correctly.
+		if errors.Is(err, ErrJWKSUnavailable) || errors.Is(err, ErrPassportInvalidSig) {
 			return nil, err
 		}
 
@@ -86,6 +96,10 @@ func (v *Verifier) verifyClaims(token *jwt.JSONWebToken, publicKey *jose.JSONWeb
 	expected := jwt.Expected{
 		Issuer: identityoauth2.PassportIssuer,
 		Time:   time.Now(),
+	}
+
+	if len(v.audiences) > 0 {
+		expected.AnyAudience = jwt.Audience(v.audiences)
 	}
 
 	if err := claims.ValidateWithLeeway(expected, 0); err != nil {

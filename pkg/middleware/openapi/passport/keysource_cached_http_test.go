@@ -149,7 +149,7 @@ func TestCachedHTTPKeySource_Get(t *testing.T) {
 		assert.Equal(t, int32(2), fetchCount.Load())
 	})
 
-	t.Run("returns jwks unavailable error on persistent kid miss", func(t *testing.T) {
+	t.Run("returns invalid signature error on persistent kid miss", func(t *testing.T) {
 		t.Parallel()
 
 		keyPair := newTestKeyPair(t, "test-kid")
@@ -159,7 +159,8 @@ func TestCachedHTTPKeySource_Get(t *testing.T) {
 		keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
 		_, err := keySource.Get(t.Context(), "nonexistent-kid")
-		assert.ErrorIs(t, err, ErrJWKSUnavailable)
+		require.ErrorIs(t, err, ErrPassportInvalidSig)
+		assert.NotErrorIs(t, err, ErrJWKSUnavailable)
 	})
 
 	t.Run("returns jwks unavailable error on unreachable endpoint", func(t *testing.T) {

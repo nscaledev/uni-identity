@@ -56,17 +56,21 @@ that keeps those two models separate while presenting handlers with one normaliz
 - OpenAPI validation, authentication, principal propagation, and ACL resolution are colocated so
   handlers receive already-normalized request context.
 
-## Local And Remote Modes
+## Local, Remote, And Passport Modes
 
-The package has two important integration modes:
+The package has three integration modes:
 
 - `local`, used by the identity service itself, where token validation and ACL resolution are handled
   directly against local `oauth2` and `rbac`
 - `remote`, used by other services, where bearer tokens are validated through identity and ACLs are
   fetched back from identity over the service client path
+- `passport`, used by other services that prefer to verify short-lived passport JWTs locally against
+  identity's published JWKS, exchanging non-passport bearer tokens through identity's token endpoint
+  and falling back to the `remote` authorizer only on exchange unavailability; ACL lookups are
+  always delegated to the `remote` authorizer
 
 The shared `openapi` middleware layer defines the common request pipeline and the cache/propagation
-rules across both modes.
+rules across all three modes.
 
 ## Ingress And Header Invariants
 
@@ -85,18 +89,25 @@ request model and should be treated as part of the security boundary, not merely
   formats; these paths should be reviewed as deletion candidates rather than normalized into the
   long-term design.
 - Remote bearer-token validation still depends on identity round-trips plus caching today.
-- The planned passport-token model is expected to shift more validation toward local JWKS-backed JWS
-  verification in downstream services.
+- The passport-token model shifts authentication toward local JWKS-backed JWS verification in
+  downstream services. ACL resolution still goes through identity — passports carry identity, not
+  ACL — so the round-trip cost moves from per-call validation to per-call ACL lookup, which is
+  cached by the existing remote-authorizer cache.
+- ACL cache keys for passport-only contexts are partitioned under the impersonated key family. The
+  passport authorizer signals this by setting `principal.NewImpersonateContext` before the validator
+  computes the cache key, so passport-only and direct (bearer) lookups for the same subject do not
+  pollute each other.
 
 ## TODO
 
 - Remove the legacy principal extraction/verification fallback once all callers use the current
   propagation model.
-- Revisit remote bearer-token validation when passport tokens are available so downstream services can
-  validate locally against JWKS rather than always depending on identity round-trips.
 
 ## Related Documentation
 
+- [`pkg/middleware/openapi/passport`](./passport/README.md), the passport-first authorizer that
+  verifies passport JWTs locally, exchanges non-passport bearer tokens through identity, and
+  delegates ACL lookups and exchange-unavailable fallback to the remote authorizer
 - [`pkg/oauth2`](../../oauth2/README.md), which establishes bearer-token actor identity and session state
 - [`pkg/principal`](../../principal/README.md), which defines delegated identity propagation
 - [`pkg/rbac`](../../rbac/README.md), which converts identity and principal context into effective ACLs

@@ -27,13 +27,18 @@ var (
 	// Fail closed — do not fall back to the remote authorizer.
 	ErrPassportExpired = errors.New("passport token has expired")
 
-	// ErrPassportInvalidSig is returned when the JWT cannot be parsed or its
-	// signature fails verification. Fail closed.
+	// ErrPassportInvalidSig is returned when the JWT cannot be parsed, its
+	// signature fails verification, its audience claim does not include any
+	// of the verifier's accepted audiences, or its kid is not present in a
+	// successfully fetched JWKS. All four are credential failures. Fail closed.
 	ErrPassportInvalidSig = errors.New("passport token has an invalid signature")
 
-	// ErrJWKSUnavailable is returned when the JWKS cannot be fetched and the
-	// token is a confirmed passport. The remote authorizer cannot validate a
-	// passport — return a server error, not a credential error.
+	// ErrJWKSUnavailable is returned when the JWKS endpoint cannot be fetched
+	// or returns an unparsable response. It signals service degradation, not a
+	// credential failure — a kid that is absent from a successfully fetched
+	// JWKS is classified as ErrPassportInvalidSig instead. The remote
+	// authorizer cannot validate a passport, so this still does not fall back
+	// to remote.
 	ErrJWKSUnavailable = errors.New("JWKS unavailable")
 
 	// ErrTokenExchangeUnauthorized indicates the source token failed token exchange

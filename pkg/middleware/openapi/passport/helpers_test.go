@@ -87,3 +87,10 @@ func mintPassport(t *testing.T, kp testKeyPair, opts ...func(*identityoauth2.Pas
 func withExpired(c *identityoauth2.PassportClaims) {
 	c.Expiry = jwt.NewNumericDate(time.Now().Add(-time.Hour))
 }
+
+// withAudience sets the aud claim on the minted passport.
+func withAudience(audiences ...string) func(*identityoauth2.PassportClaims) {
+	return func(c *identityoauth2.PassportClaims) {
+		c.Audience = jwt.Audience(audiences)
+	}
+}

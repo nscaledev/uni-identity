@@ -34,6 +34,12 @@ import (
 func newVerifierServer(t *testing.T, keySet *jose.JSONWebKeySet) (*httptest.Server, *Verifier) {
 	t.Helper()
 
+	return newVerifierServerWithAudiences(t, keySet, nil)
+}
+
+func newVerifierServerWithAudiences(t *testing.T, keySet *jose.JSONWebKeySet, audiences []string) (*httptest.Server, *Verifier) {
+	t.Helper()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -46,7 +52,7 @@ func newVerifierServer(t *testing.T, keySet *jose.JSONWebKeySet) (*httptest.Serv
 
 	keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
 
-	return server, NewVerifier(keySource)
+	return server, NewVerifier(keySource, audiences)
 }
 
 func TestVerifier_Verify(t *testing.T) {
@@ -167,6 +173,71 @@ func TestVerifier_Verify(t *testing.T) {
 				if tt.checkClaims != nil {
 					tt.checkClaims(t, claims)
 				}
+			}
+		})
+	}
+}
+
+func TestVerifier_Audience(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		audiences   []string
+		tokenAud    []string
+		expectErrIs error
+	}{
+		{
+			name:      "accepts token whose aud claim contains the expected audience",
+			audiences: []string{"uni-region"},
+			tokenAud:  []string{"uni-region"},
+		},
+		{
+			name:      "accepts token whose aud claim contains any of the expected audiences",
+			audiences: []string{"uni-region", "uni-compute"},
+			tokenAud:  []string{"uni-compute"},
+		},
+		{
+			name:        "rejects token minted for a different audience",
+			audiences:   []string{"uni-region"},
+			tokenAud:    []string{"uni-compute"},
+			expectErrIs: ErrPassportInvalidSig,
+		},
+		{
+			name:        "rejects token with no aud claim when audience binding is required",
+			audiences:   []string{"uni-region"},
+			tokenAud:    nil,
+			expectErrIs: ErrPassportInvalidSig,
+		},
+		{
+			name:      "accepts token regardless of aud when verifier has no audience binding",
+			audiences: nil,
+			tokenAud:  []string{"some-other-service"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			keyPair := newTestKeyPair(t, "vfy-kid")
+			keySet := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{keyPair.pub}}
+			_, verifier := newVerifierServerWithAudiences(t, &keySet, tt.audiences)
+
+			var opts []func(*identityoauth2.PassportClaims)
+			if tt.tokenAud != nil {
+				opts = append(opts, withAudience(tt.tokenAud...))
+			}
+
+			token := mintPassport(t, keyPair, opts...)
+
+			_, err := verifier.Verify(t.Context(), token)
+
+			if tt.expectErrIs != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.expectErrIs)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

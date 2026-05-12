@@ -295,6 +295,16 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 			return err
 		}
 
+		// Passport-only contexts (no source bearer token) use delegated-principal
+		// impersonation semantics for the downstream ACL lookup and any onward
+		// service-to-service calls. The flag must be set on ctx before getACL so
+		// that the ACL cache key is partitioned under "impersonated|...", otherwise
+		// a passport-only result would be cached under the direct key and could be
+		// served back to a direct (bearer) lookup with the same subject.
+		if info.Token == "" && info.Passport != "" {
+			ctx = principal.NewImpersonateContext(ctx)
+		}
+
 		acl, err := v.getACL(ctx, info, params["organizationID"])
 		if err != nil {
 			authInfo.err = err

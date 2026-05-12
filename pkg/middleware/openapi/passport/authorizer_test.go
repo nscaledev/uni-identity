@@ -48,7 +48,7 @@ func (f keySourceFunc) Get(ctx context.Context, kid string) (*jose.JSONWebKey, e
 func newNoopVerifier() *Verifier {
 	return NewVerifier(keySourceFunc(func(_ context.Context, _ string) (*jose.JSONWebKey, error) {
 		return &jose.JSONWebKey{}, nil
-	}))
+	}), nil)
 }
 
 func oauth2AuthInput(rawToken string) *openapi3filter.AuthenticationInput {
@@ -81,7 +81,7 @@ func newAuthorizerWithMock(t *testing.T, keyPair testKeyPair, tokenExchange Toke
 	t.Cleanup(server.Close)
 
 	keySource := NewCachedHTTPKeySource(server.Client(), JWKSURL(server.URL), time.Minute)
-	verifier := NewVerifier(keySource)
+	verifier := NewVerifier(keySource, nil)
 
 	if tokenExchange == nil {
 		tokenExchange = tokenExchangeFunc(func(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
