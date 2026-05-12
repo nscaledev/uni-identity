@@ -32,6 +32,7 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -69,6 +70,20 @@ func fatalf(format string, args ...interface{}) {
 
 func logf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "==> "+format+"\n", args...)
+}
+
+func responseDetail(status string, body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return status
+	}
+
+	const maxBodyLength = 4096
+	if len(body) > maxBodyLength {
+		body = append(body[:maxBodyLength], []byte("...<truncated>")...)
+	}
+
+	return fmt.Sprintf("%s: %s", status, string(body))
 }
 
 func newKubernetesClient() client.Client {
@@ -247,7 +262,7 @@ func createGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, na
 	}
 
 	if resp.JSON201 == nil {
-		fatalf("create group %q returned %s", name, resp.Status())
+		fatalf("create group %q returned %s", name, responseDetail(resp.Status(), resp.Body))
 	}
 
 	id := resp.JSON201.Metadata.Id
@@ -269,7 +284,7 @@ func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, 
 	}
 
 	if resp.JSON202 == nil {
-		fatalf("create project %q returned %s", name, resp.Status())
+		fatalf("create project %q returned %s", name, responseDetail(resp.Status(), resp.Body))
 	}
 
 	id := resp.JSON202.Metadata.Id
@@ -291,7 +306,7 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 	}
 
 	if resp.JSON201 == nil {
-		fatalf("create service account %q returned %s", name, resp.Status())
+		fatalf("create service account %q returned %s", name, responseDetail(resp.Status(), resp.Body))
 	}
 
 	id := resp.JSON201.Metadata.Id
@@ -322,7 +337,7 @@ func createUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, sub
 	}
 
 	if resp.JSON201 == nil {
-		fatalf("create user %q returned %s", subject, resp.Status())
+		fatalf("create user %q returned %s", subject, responseDetail(resp.Status(), resp.Body))
 	}
 
 	id := resp.JSON201.Metadata.Id
@@ -420,7 +435,7 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 	}
 
 	if rolesResp.JSON200 == nil {
-		fatalf("list roles returned %s", rolesResp.Status())
+		fatalf("list roles returned %s", responseDetail(rolesResp.Status(), rolesResp.Body))
 	}
 
 	administratorRoleID := findRole(rolesResp.JSON200, "administrator")
@@ -456,7 +471,7 @@ func createOrganizationFixture(ctx context.Context, ac *openapi.ClientWithRespon
 	}
 
 	if resp.JSON202 == nil {
-		fatalf("create %s Organization returned %s", description, resp.Status())
+		fatalf("create %s Organization returned %s", description, responseDetail(resp.Status(), resp.Body))
 	}
 
 	orgID := resp.JSON202.Metadata.Id
