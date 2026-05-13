@@ -405,7 +405,6 @@ var _ = Describe("Group Management", func() {
 	})
 })
 
-// From nscale-auth0-tests: groups.spec.ts §5 — Subjects membership field.
 var _ = Describe("Group Subjects", func() {
 	Context("When managing group subjects", func() {
 		fixtureUserID := func() string {
@@ -420,14 +419,16 @@ var _ = Describe("Group Subjects", func() {
 			return config.UserSubjectEmail
 		}
 
-		fixtureUserSubject := func() identityopenapi.Subject {
-			subjectEmail := fixtureUserSubjectEmail()
-
+		internalSubject := func(subjectEmail string) identityopenapi.Subject {
 			return identityopenapi.Subject{
 				Email:  &subjectEmail,
 				Id:     subjectEmail,
 				Issuer: config.BaseURL,
 			}
+		}
+
+		fixtureUserSubject := func() identityopenapi.Subject {
+			return internalSubject(fixtureUserSubjectEmail())
 		}
 
 		expectInvalidGroupWrite := func(method, path string, payload identityopenapi.GroupWrite, expectedDescription string) {
@@ -449,37 +450,6 @@ var _ = Describe("Group Subjects", func() {
 			Expect(oauthErr.ErrorDescription).To(ContainSubstring(expectedDescription))
 		}
 
-		// §5.1 Create with external subjects field
-		Describe("Given a new group created with external subjects", func() {
-			It("should create successfully with subjects populated and userIDs empty", func() {
-				testEmail := fmt.Sprintf("qa-subject-%d@example.com", time.Now().UnixNano())
-				email := testEmail
-				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
-
-				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{testSubject}).Build()
-				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
-
-				Expect(groupID).NotTo(BeEmpty())
-				Expect(group.Spec.Subjects).NotTo(BeNil(),
-					"subjects field must be populated after create")
-				Expect(*group.Spec.Subjects).To(HaveLen(1))
-				Expect((*group.Spec.Subjects)[0].Id).To(Equal(testEmail))
-				Expect((*group.Spec.Subjects)[0].Email).NotTo(BeNil(),
-					"subject email must round-trip after create")
-				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(testEmail))
-				Expect((*group.Spec.Subjects)[0].Issuer).To(BeEmpty(),
-					"external subject issuer should remain empty")
-				Expect(group.Spec.UserIDs).NotTo(BeNil(),
-					"userIDs field should be present for compatibility")
-				Expect(*group.Spec.UserIDs).To(BeEmpty(),
-					"external subjects should not auto-populate userIDs")
-
-				GinkgoWriter.Printf("Created group with subjects: %s (ID: %s)\n",
-					group.Metadata.Name, groupID)
-			})
-		})
-
-		// §5.1b Create with a valid internal subject — userIDs auto-populated
 		Describe("Given a new group created with a valid internal subject", func() {
 			It("should create successfully with subjects populated and userIDs auto-populated", func() {
 				expectedUserID := fixtureUserID()
@@ -510,7 +480,6 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
-		// §5.2 Create with userIDs (legacy) — subjects auto-populated
 		Describe("Given a new group created with userIDs (legacy field)", func() {
 			It("should create successfully and subjects should be auto-populated", func() {
 				realUserID := fixtureUserID()
@@ -542,7 +511,6 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
-		// §5.2b Create with non-existent userID -> 400
 		Describe("Given a new group created with a non-existent userID", func() {
 			It("should return invalid request", func() {
 				payload := api.NewGroupPayload().
@@ -564,7 +532,6 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
-		// §5.3 Create with both subjects AND userIDs → rejected
 		Describe("Given a new group with both subjects and userIDs set", func() {
 			It("should be rejected with an error", func() {
 				ciInvalidUserEmail := fmt.Sprintf("ci-invalid-user-create-%d@nscale.test", time.Now().UnixNano())
@@ -588,7 +555,6 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
-		// §5.4 GET returns subject contents and userIDs compatibility field
 		Describe("Given an existing group with subjects", func() {
 			It("should return subject contents and empty userIDs on GET", func() {
 				testEmail := fmt.Sprintf("qa-get-%d@example.com", time.Now().UnixNano())
@@ -620,7 +586,6 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
-		// §5.5 Add a subject via PUT → subject appears in membership
 		Describe("Given an existing group, adding a subject via PUT", func() {
 			It("should reflect the new subject in the GET response", func() {
 				firstEmail := fmt.Sprintf("qa-add1-%d@example.com", time.Now().UnixNano())
@@ -641,7 +606,6 @@ var _ = Describe("Group Subjects", func() {
 				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
 				Expect(err).NotTo(HaveOccurred())
 
-				// §5.5 — verify via GET that the new subject is in the membership
 				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(retrieved.Spec.Subjects).NotTo(BeNil())
@@ -658,21 +622,28 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
-		// §5.6 Remove a subject via PUT → subject no longer in membership
 		Describe("Given an existing group with two subjects, removing one via PUT", func() {
 			It("should no longer return the removed subject in the GET response", func() {
-				firstEmail := fmt.Sprintf("qa-rem1-%d@example.com", time.Now().UnixNano())
-				firstEmailCopy := firstEmail
-				firstSubject := identityopenapi.Subject{Id: firstEmail, Email: &firstEmailCopy, Issuer: ""}
-
-				secondEmail := fmt.Sprintf("qa-rem2-%d@example.com", time.Now().UnixNano())
-				secondEmailCopy := secondEmail
-				secondSubject := identityopenapi.Subject{Id: secondEmail, Email: &secondEmailCopy, Issuer: ""}
+				firstUser, firstUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
+					WithSubject(fmt.Sprintf("qa-rem-user-1-%d@nscale.test", time.Now().UnixNano())).
+					WithState(identityopenapi.Active).
+					Build())
+				secondUser, secondUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
+					WithSubject(fmt.Sprintf("qa-rem-user-2-%d@nscale.test", time.Now().UnixNano())).
+					WithState(identityopenapi.Active).
+					Build())
+				firstSubject := internalSubject(firstUser.Spec.Subject)
+				secondSubject := internalSubject(secondUser.Spec.Subject)
 
 				payload := api.NewGroupPayload().
 					WithSubjects([]identityopenapi.Subject{firstSubject, secondSubject}).
 					Build()
-				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(group.Spec.UserIDs).NotTo(BeNil(),
+					"userIDs field should be populated from valid internal subjects")
+				Expect(*group.Spec.UserIDs).To(ConsistOf(firstUserID, secondUserID),
+					"group should initially contain both resolved userIDs")
 
 				// Remove secondSubject by PUTting only firstSubject
 				updatePayload := api.NewGroupPayload().
@@ -691,14 +662,19 @@ var _ = Describe("Group Subjects", func() {
 					subjectIDs = append(subjectIDs, s.Id)
 				}
 
-				Expect(subjectIDs).To(ConsistOf(firstEmail),
+				Expect(subjectIDs).To(ConsistOf(firstSubject.Id),
 					"group membership must contain exactly the retained subject after PUT")
+				Expect(retrieved.Spec.UserIDs).NotTo(BeNil(),
+					"GET response must include userIDs compatibility field")
+				Expect(*retrieved.Spec.UserIDs).To(HaveLen(1),
+					"group membership must contain exactly one userID after PUT")
+				Expect(*retrieved.Spec.UserIDs).To(ConsistOf(firstUserID),
+					"group membership must contain exactly the retained userID after PUT")
 
-				GinkgoWriter.Printf("Removed subject %s from group %s\n", secondEmail, groupID)
+				GinkgoWriter.Printf("Removed subject %s from group %s\n", secondSubject.Id, groupID)
 			})
 		})
 
-		// §5.7 PUT with both subjects and userIDs → rejected
 		Describe("Given a PUT with both subjects and userIDs set", func() {
 			It("should be rejected with an error", func() {
 				payload := api.NewGroupPayload().Build()
