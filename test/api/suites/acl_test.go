@@ -198,7 +198,6 @@ var _ = Describe("Access Control Discovery", func() {
 		})
 	})
 
-	// From nscale-auth0-tests: acl.spec.ts §3.5, §3.6
 	Context("When a service account accesses the ACL", func() {
 		BeforeEach(func() {
 			if serviceAccountClient == nil {

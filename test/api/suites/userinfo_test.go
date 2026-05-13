@@ -56,10 +56,6 @@ var _ = Describe("Userinfo", func() {
 					"sub claim must be stable for the same token")
 			})
 
-			// From nscale-auth0-tests: userinfo.spec.ts §4.1
-			// The identity service issues custom authorisation claims under the
-			// https://unikorn-cloud.org/authz namespace.  Both acctype and orgIds
-			// are required for downstream RBAC consumers.
 			It("should include the custom authz claims with a valid acctype", func() {
 				userinfo, err := client.GetUserinfo(ctx)
 
@@ -78,9 +74,6 @@ var _ = Describe("Userinfo", func() {
 				GinkgoWriter.Printf("acctype: %s\n", authz.Acctype)
 			})
 
-			// From nscale-auth0-tests: userinfo.spec.ts §4.1
-			// org_ids must be a non-empty list — the token must always carry at least
-			// one organisation membership for authorization to be meaningful.
 			It("should include a non-empty orgIds list in the custom authz claims", func() {
 				userinfo, err := client.GetUserinfo(ctx)
 
@@ -93,9 +86,6 @@ var _ = Describe("Userinfo", func() {
 					len(userinfo.HttpsunikornCloudOrgauthz.OrgIds))
 			})
 
-			// From nscale-auth0-tests: userinfo.spec.ts §4.2
-			// The orgIds returned by userinfo must be consistent with the list of
-			// organisations returned by GET /api/v1/organizations for the same token.
 			It("should return orgIds that are consistent with the organizations list", func() {
 				userinfo, err := client.GetUserinfo(ctx)
 
@@ -110,10 +100,13 @@ var _ = Describe("Userinfo", func() {
 					orgIDs = append(orgIDs, org.Metadata.Id)
 				}
 
-				for _, claimOrgID := range userinfo.HttpsunikornCloudOrgauthz.OrgIds {
-					Expect(orgIDs).To(ContainElement(claimOrgID),
-						"each orgId in authz claims must appear in the organizations list")
+				expectedOrgIDs := make([]interface{}, 0, len(orgIDs))
+				for _, orgID := range orgIDs {
+					expectedOrgIDs = append(expectedOrgIDs, orgID)
 				}
+
+				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ConsistOf(expectedOrgIDs...),
+					"orgIds in authz claims must exactly match the organizations list")
 
 				GinkgoWriter.Printf("orgIds from claims: %v match organizations list\n",
 					userinfo.HttpsunikornCloudOrgauthz.OrgIds)
@@ -133,8 +126,6 @@ var _ = Describe("Userinfo", func() {
 			})
 		})
 
-		// From nscale-auth0-tests: userinfo.spec.ts §4.3
-		// A real user token must report acctype "user" in the authz claims.
 		Context("When authenticated as a user", func() {
 			BeforeEach(func() {
 				if userClient == nil {
@@ -149,6 +140,11 @@ var _ = Describe("Userinfo", func() {
 				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User))
 				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
 
+				if config.UnauthorisedOrgID != "" {
+					Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
+						"user authz claims must not include organizations the user is not a member of")
+				}
+
 				if config.UserSubjectEmail != "" {
 					Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
 					Expect(userinfo.Email).NotTo(BeNil())
@@ -159,8 +155,6 @@ var _ = Describe("Userinfo", func() {
 			})
 		})
 
-		// From nscale-auth0-tests: userinfo.spec.ts §4.3
-		// A service account token must report acctype "service" in the authz claims.
 		Context("When authenticated as a service account", func() {
 			BeforeEach(func() {
 				if serviceAccountClient == nil {

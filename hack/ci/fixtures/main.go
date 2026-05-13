@@ -179,7 +179,6 @@ func newAPIClient(baseURL, caCertPath string, certPEM, keyPEM []byte) *openapi.C
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
 			TLSClientConfig: &tls.Config{
 				MinVersion:   tls.VersionTLS12,
 				Certificates: []tls.Certificate{cert},

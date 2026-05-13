@@ -17,20 +17,39 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// From nscale-auth0-tests: console-audit-view.spec.ts §8 — ported to Go/Ginkgo.
-// Tests that an audit-role token can read all console-visible resources but cannot
-// mutate groups, organizations, or quotas.
-
 //nolint:revive,testpackage // dot imports and package naming standard for Ginkgo
 package suites
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
+
+func expectAuditRequestForbidden(method, path string, payload any) {
+	GinkgoHelper()
+
+	var body io.Reader
+	if payload != nil {
+		bodyBytes, err := json.Marshal(payload)
+		Expect(err).NotTo(HaveOccurred())
+
+		body = bytes.NewReader(bodyBytes)
+	}
+
+	resp, _, err := auditClient.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	Expect(err).NotTo(HaveOccurred(),
+		"audit %s %s should return 403 Forbidden", method, path)
+	Expect(resp).NotTo(BeNil())
+	Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+}
 
 var _ = Describe("Console Audit View Permissions", func() {
 	Context("When reading console-visible resources", func() {
@@ -40,7 +59,6 @@ var _ = Describe("Console Audit View Permissions", func() {
 			}
 		})
 
-		// §8.1
 		Describe("Given a request to list organizations", func() {
 			It("audit token should succeed and return at least one organization", func() {
 				orgs, err := auditClient.ListOrganizations(ctx)
@@ -48,11 +66,17 @@ var _ = Describe("Console Audit View Permissions", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(orgs).NotTo(BeEmpty())
 
+				var orgIDs []string
+				for _, org := range orgs {
+					orgIDs = append(orgIDs, org.Metadata.Id)
+				}
+
+				Expect(orgIDs).To(ContainElement(config.OrgID))
+
 				GinkgoWriter.Printf("Audit: listed %d organizations\n", len(orgs))
 			})
 		})
 
-		// §8.2
 		Describe("Given a request to view organization details", func() {
 			It("audit token should return organization with matching ID", func() {
 				org, err := auditClient.GetOrganization(ctx, config.OrgID)
@@ -65,18 +89,24 @@ var _ = Describe("Console Audit View Permissions", func() {
 			})
 		})
 
-		// §8.3
 		Describe("Given a request to list users", func() {
 			It("audit token should succeed and return a list", func() {
 				users, err := auditClient.ListUsers(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
-				// An empty list is valid — the assertion is that access is permitted (no error).
+				if config.UserID != "" {
+					var userIDs []string
+					for _, user := range users {
+						userIDs = append(userIDs, user.Metadata.Id)
+					}
+
+					Expect(userIDs).To(ContainElement(config.UserID))
+				}
+
 				GinkgoWriter.Printf("Audit: listed %d users\n", len(users))
 			})
 		})
 
-		// §8.4
 		Describe("Given a request to list roles", func() {
 			It("audit token should succeed and return at least one role", func() {
 				roles, err := auditClient.ListRoles(ctx, config.OrgID)
@@ -88,37 +118,50 @@ var _ = Describe("Console Audit View Permissions", func() {
 			})
 		})
 
-		// §8.5
 		Describe("Given a request to list groups", func() {
 			It("audit token should succeed and return a list", func() {
 				groups, err := auditClient.ListGroups(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
+				Expect(groups).NotTo(BeEmpty())
 				GinkgoWriter.Printf("Audit: listed %d groups\n", len(groups))
 			})
 		})
 
-		// §8.6
 		Describe("Given a request to list projects", func() {
 			It("audit token should succeed and return a list", func() {
 				projects, err := auditClient.ListProjects(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
+
+				var projectIDs []string
+				for _, project := range projects {
+					projectIDs = append(projectIDs, project.Metadata.Id)
+				}
+
+				Expect(projectIDs).To(ContainElement(config.ProjectID))
 				GinkgoWriter.Printf("Audit: listed %d projects\n", len(projects))
 			})
 		})
 
-		// §8.7
 		Describe("Given a request to list service accounts", func() {
 			It("audit token should succeed and return a list", func() {
 				sas, err := auditClient.ListServiceAccounts(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
+				if config.UserSAID != "" {
+					var serviceAccountIDs []string
+					for _, sa := range sas {
+						serviceAccountIDs = append(serviceAccountIDs, sa.Metadata.Id)
+					}
+
+					Expect(serviceAccountIDs).To(ContainElement(config.UserSAID))
+				}
+
 				GinkgoWriter.Printf("Audit: listed %d service accounts\n", len(sas))
 			})
 		})
 
-		// §8.8
 		Describe("Given a request to read quotas", func() {
 			It("audit token should succeed and return a quotas object", func() {
 				quotas, err := auditClient.GetQuotas(ctx, config.OrgID)
@@ -138,76 +181,61 @@ var _ = Describe("Console Audit View Permissions", func() {
 			}
 		})
 
-		// §8.9 audit token cannot create groups
 		Describe("Given a POST to create a group", func() {
 			It("audit token should be denied with a forbidden response", func() {
-				_, err := auditClient.CreateGroup(ctx, config.OrgID,
+				expectAuditRequestForbidden(http.MethodPost,
+					api.NewEndpoints().ListGroups(config.OrgID),
 					api.NewGroupPayload().Build())
 
-				Expect(err).To(HaveOccurred(),
-					"audit token must not be allowed to create groups")
-
-				GinkgoWriter.Printf("Audit group create correctly denied: %v\n", err)
+				GinkgoWriter.Printf("Audit group create correctly denied with 403\n")
 			})
 		})
 
-		// §8.10 audit token cannot update groups
 		Describe("Given a PUT to update a group", func() {
 			It("audit token should be denied with a forbidden response", func() {
 				_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 					api.NewGroupPayload().Build())
 
-				err := auditClient.UpdateGroup(ctx, config.OrgID, groupID,
+				expectAuditRequestForbidden(http.MethodPut,
+					api.NewEndpoints().GetGroup(config.OrgID, groupID),
 					api.NewGroupPayload().Build())
 
-				Expect(err).To(HaveOccurred(),
-					"audit token must not be allowed to update groups")
-
-				GinkgoWriter.Printf("Audit group update correctly denied: %v\n", err)
+				GinkgoWriter.Printf("Audit group update correctly denied with 403\n")
 			})
 		})
 
-		// §8.11 audit token cannot delete groups
 		Describe("Given a DELETE to remove a group", func() {
 			It("audit token should be denied with a forbidden response", func() {
 				_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 					api.NewGroupPayload().Build())
 
-				err := auditClient.DeleteGroup(ctx, config.OrgID, groupID)
+				expectAuditRequestForbidden(http.MethodDelete,
+					api.NewEndpoints().GetGroup(config.OrgID, groupID), nil)
 
-				Expect(err).To(HaveOccurred(),
-					"audit token must not be allowed to delete groups")
-
-				GinkgoWriter.Printf("Audit group delete correctly denied: %v\n", err)
+				GinkgoWriter.Printf("Audit group delete correctly denied with 403\n")
 			})
 		})
 
-		// §8.12 audit token cannot update organization
 		Describe("Given a PUT to update the organization", func() {
 			It("audit token should be denied with a forbidden response", func() {
 				original, err := adminClient.GetOrganization(ctx, config.OrgID)
 				Expect(err).NotTo(HaveOccurred())
 
-				err = auditClient.UpdateOrganization(ctx, config.OrgID,
+				expectAuditRequestForbidden(http.MethodPut,
+					api.NewEndpoints().GetOrganization(config.OrgID),
 					api.NewOrganizationPayload().FromRead(*original).Build())
 
-				Expect(err).To(HaveOccurred(),
-					"audit token must not be allowed to update the organization")
-
-				GinkgoWriter.Printf("Audit org update correctly denied: %v\n", err)
+				GinkgoWriter.Printf("Audit org update correctly denied with 403\n")
 			})
 		})
 
-		// §8.13 audit token cannot update quotas
 		Describe("Given a PUT to update quotas", func() {
 			It("audit token should be denied with a forbidden response", func() {
-				_, err := auditClient.SetQuotas(ctx, config.OrgID,
+				expectAuditRequestForbidden(http.MethodPut,
+					api.NewEndpoints().GetQuotas(config.OrgID),
 					identityopenapi.QuotasWrite{})
 
-				Expect(err).To(HaveOccurred(),
-					"audit token must not be allowed to update quotas")
-
-				GinkgoWriter.Printf("Audit quota update correctly denied: %v\n", err)
+				GinkgoWriter.Printf("Audit quota update correctly denied with 403\n")
 			})
 		})
 	})

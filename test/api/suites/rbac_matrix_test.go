@@ -21,6 +21,8 @@ limitations under the License.
 package suites
 
 import (
+	"net/http"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -120,6 +122,38 @@ var _ = Describe("RBAC Enforcement", func() {
 					Expect(u.Metadata.OrganizationId).To(Equal(config.OrgID))
 				}
 			})
+
+			Describe("Given TEST_USER_ID is configured", func() {
+				BeforeEach(func() {
+					if config.UserID == "" {
+						Skip("TEST_USER_ID is not configured")
+					}
+				})
+
+				It("should include the fixture user in the organization users list", func() {
+					users, err := adminClient.ListUsers(ctx, config.OrgID)
+
+					Expect(err).NotTo(HaveOccurred())
+
+					var found bool
+
+					for _, user := range users {
+						if user.Metadata.Id == config.UserID {
+							found = true
+							Expect(user.Metadata.OrganizationId).To(Equal(config.OrgID))
+
+							if config.UserSubjectEmail != "" {
+								Expect(user.Spec.Subject).To(Equal(config.UserSubjectEmail))
+							}
+
+							break
+						}
+					}
+
+					Expect(found).To(BeTrue(),
+						"admin should see fixture user %s in organization %s", config.UserID, config.OrgID)
+				})
+			})
 		})
 
 		Describe("Given a request to list projects", func() {
@@ -167,9 +201,12 @@ var _ = Describe("RBAC Enforcement", func() {
 
 		Describe("Given a request to list service accounts", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.ListServiceAccounts(ctx, config.OrgID)
+				resp, _, err := userClient.DoRequest(ctx, http.MethodGet,
+					api.NewEndpoints().ListServiceAccounts(config.OrgID), nil, http.StatusForbidden)
 
-				Expect(err).To(HaveOccurred())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 			})
 		})
 
@@ -311,6 +348,23 @@ var _ = Describe("RBAC Enforcement", func() {
 
 				Expect(projectIDs).NotTo(ContainElement(projectID),
 					"user should not see a project they are not a member of")
+			})
+		})
+
+		Describe("Given a request against an organization the user is not a member of", func() {
+			BeforeEach(func() {
+				if config.UnauthorisedOrgID == "" {
+					Skip("UNAUTHORISED_ORG_ID is not configured")
+				}
+			})
+
+			It("should be denied with a forbidden response", func() {
+				resp, _, err := userClient.DoRequest(ctx, http.MethodGet,
+					api.NewEndpoints().ListProjects(config.UnauthorisedOrgID), nil, http.StatusForbidden)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 			})
 		})
 
