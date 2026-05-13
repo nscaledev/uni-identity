@@ -434,6 +434,7 @@ func main() {
 
 	// ── Create user and ServiceAccounts ───────────────────────────────────────
 	const ciFixtureUserSubject = "ci-user@nscale.test"
+
 	createUser(ctx, ac, orgID, ciFixtureUserSubject, []string{userGroupID})
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
