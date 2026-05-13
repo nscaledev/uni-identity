@@ -23,6 +23,7 @@ package suites
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -32,25 +33,58 @@ import (
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
+func expectUserRequestForbidden(method, path string, payload any) {
+	GinkgoHelper()
+
+	var body io.Reader
+	if payload != nil {
+		bodyBytes, err := json.Marshal(payload)
+		Expect(err).NotTo(HaveOccurred())
+
+		body = bytes.NewReader(bodyBytes)
+	}
+
+	resp, _, err := userClient.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	Expect(err).NotTo(HaveOccurred(),
+		"user %s %s should return 403 Forbidden", method, path)
+	Expect(resp).NotTo(BeNil())
+	Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+}
+
 var _ = Describe("RBAC Enforcement", func() {
 	BeforeEach(func() {
-		if adminClient == nil || userClient == nil {
-			Skip("ADMIN_AUTH_TOKEN and USER_AUTH_TOKEN are required for RBAC enforcement testing")
-		}
+		Expect(config.AdminToken).NotTo(BeEmpty(),
+			"ADMIN_AUTH_TOKEN must be set by integration fixtures")
+		Expect(adminClient).NotTo(BeNil(),
+			"ADMIN_AUTH_TOKEN must create an administrator API client")
+		Expect(config.UserToken).NotTo(BeEmpty(),
+			"USER_AUTH_TOKEN must be set by integration fixtures")
+		Expect(userClient).NotTo(BeNil(),
+			"USER_AUTH_TOKEN must create a user API client")
 	})
 
 	Context("When authenticated as an administrator", func() {
 		Describe("Given a request to list groups", func() {
 			It("should return all groups in the organization with complete metadata", func() {
+				Expect(config.AdminGroupID).NotTo(BeEmpty(),
+					"TEST_ADMIN_GROUP_ID must be set by integration fixtures")
+				Expect(config.UserGroupID).NotTo(BeEmpty(),
+					"TEST_USER_GROUP_ID must be set by integration fixtures")
+
 				groups, err := adminClient.ListGroups(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(groups).NotTo(BeEmpty())
 
+				var groupIDs []string
 				for _, group := range groups {
 					Expect(group.Metadata.Id).NotTo(BeEmpty())
 					Expect(group.Metadata.OrganizationId).To(Equal(config.OrgID))
+
+					groupIDs = append(groupIDs, group.Metadata.Id)
 				}
+
+				Expect(groupIDs).To(ContainElements(config.AdminGroupID, config.UserGroupID))
 			})
 		})
 
@@ -61,11 +95,18 @@ var _ = Describe("RBAC Enforcement", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(roles).NotTo(BeEmpty())
 
+				roleNames := make(map[string]bool)
 				for _, role := range roles {
 					// RoleRead uses the base ResourceReadMetadata which does not carry
 					// OrganizationId; only Id is guaranteed on this resource type.
 					Expect(role.Metadata.Id).NotTo(BeEmpty())
+					Expect(role.Metadata.Name).NotTo(BeEmpty())
+
+					roleNames[role.Metadata.Name] = true
 				}
+
+				Expect(roleNames).To(HaveKey("administrator"))
+				Expect(roleNames).To(HaveKey("auditor"))
 			})
 		})
 
@@ -84,9 +125,8 @@ var _ = Describe("RBAC Enforcement", func() {
 
 			Describe("Given TEST_USER_SA_ID is configured", func() {
 				BeforeEach(func() {
-					if config.UserSAID == "" {
-						Skip("TEST_USER_SA_ID is not configured")
-					}
+					Expect(config.UserSAID).NotTo(BeEmpty(),
+						"TEST_USER_SA_ID must be set by integration fixtures")
 				})
 
 				It("should include service accounts belonging to other principals", func() {
@@ -174,45 +214,35 @@ var _ = Describe("RBAC Enforcement", func() {
 
 	Context("When authenticated as a user", func() {
 		BeforeEach(func() {
-			if userClient == nil {
-				Skip("USER_AUTH_TOKEN is required for user RBAC tests")
-			}
+			Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
 		})
-
-		// For denial tests, an error on any non-2xx response is sufficient to verify
-		// that access was denied without needing to inspect the response body.
 
 		Describe("Given a request to list groups", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.ListGroups(ctx, config.OrgID)
-				Expect(err).To(HaveOccurred())
+				expectUserRequestForbidden(http.MethodGet,
+					api.NewEndpoints().ListGroups(config.OrgID), nil)
 			})
 		})
 
 		Describe("Given a request to list roles", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.ListRoles(ctx, config.OrgID)
-				Expect(err).To(HaveOccurred())
+				expectUserRequestForbidden(http.MethodGet,
+					api.NewEndpoints().ListRoles(config.OrgID), nil)
 			})
 		})
 
 		Describe("Given a request to list service accounts", func() {
 			It("should be denied with a forbidden response", func() {
-				resp, _, err := userClient.DoRequest(ctx, http.MethodGet,
-					api.NewEndpoints().ListServiceAccounts(config.OrgID), nil, http.StatusForbidden)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+				expectUserRequestForbidden(http.MethodGet,
+					api.NewEndpoints().ListServiceAccounts(config.OrgID), nil)
 			})
 		})
 
 		Describe("Given a request to create a group", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.CreateGroup(ctx, config.OrgID,
+				expectUserRequestForbidden(http.MethodPost,
+					api.NewEndpoints().ListGroups(config.OrgID),
 					api.NewGroupPayload().Build())
-
-				Expect(err).To(HaveOccurred())
 			})
 		})
 
@@ -221,10 +251,9 @@ var _ = Describe("RBAC Enforcement", func() {
 				_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 					api.NewGroupPayload().Build())
 
-				err := userClient.UpdateGroup(ctx, config.OrgID, groupID,
+				expectUserRequestForbidden(http.MethodPut,
+					api.NewEndpoints().GetGroup(config.OrgID, groupID),
 					api.NewGroupPayload().Build())
-
-				Expect(err).To(HaveOccurred())
 			})
 		})
 
@@ -233,26 +262,23 @@ var _ = Describe("RBAC Enforcement", func() {
 				_, groupID := api.CreateGroupWithCleanup(adminClient, ctx, config,
 					api.NewGroupPayload().Build())
 
-				err := userClient.DeleteGroup(ctx, config.OrgID, groupID)
-
-				Expect(err).To(HaveOccurred())
+				expectUserRequestForbidden(http.MethodDelete,
+					api.NewEndpoints().GetGroup(config.OrgID, groupID), nil)
 			})
 		})
 
 		Describe("Given a request to create a service account", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.CreateServiceAccount(ctx, config.OrgID,
+				expectUserRequestForbidden(http.MethodPost,
+					api.NewEndpoints().ListServiceAccounts(config.OrgID),
 					api.NewServiceAccountPayload().Build())
-
-				Expect(err).To(HaveOccurred())
 			})
 		})
 
 		Describe("Given a request to list users", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.ListUsers(ctx, config.OrgID)
-
-				Expect(err).To(HaveOccurred())
+				expectUserRequestForbidden(http.MethodGet,
+					api.NewEndpoints().ListUsers(config.OrgID), nil)
 			})
 		})
 
@@ -267,15 +293,9 @@ var _ = Describe("RBAC Enforcement", func() {
 					writes[i] = identityopenapi.QuotaWrite{Kind: quota.Kind, Quantity: quota.Quantity}
 				}
 
-				body, err := json.Marshal(identityopenapi.QuotasWrite{Quotas: writes})
-				Expect(err).NotTo(HaveOccurred())
-
-				resp, _, err := userClient.DoRequest(ctx, http.MethodPut,
-					api.NewEndpoints().GetQuotas(config.OrgID), bytes.NewReader(body), http.StatusForbidden)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+				expectUserRequestForbidden(http.MethodPut,
+					api.NewEndpoints().GetQuotas(config.OrgID),
+					identityopenapi.QuotasWrite{Quotas: writes})
 			})
 		})
 
@@ -284,9 +304,8 @@ var _ = Describe("RBAC Enforcement", func() {
 				_, saID := api.CreateServiceAccountWithCleanup(adminClient, ctx, config,
 					api.NewServiceAccountPayload().Build())
 
-				err := userClient.DeleteServiceAccount(ctx, config.OrgID, saID)
-
-				Expect(err).To(HaveOccurred())
+				expectUserRequestForbidden(http.MethodDelete,
+					api.NewEndpoints().GetServiceAccount(config.OrgID, saID), nil)
 			})
 		})
 
@@ -296,10 +315,9 @@ var _ = Describe("RBAC Enforcement", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				err = userClient.UpdateOrganization(ctx, config.OrgID,
+				expectUserRequestForbidden(http.MethodPut,
+					api.NewEndpoints().GetOrganization(config.OrgID),
 					api.NewOrganizationPayload().FromRead(*original).Build())
-
-				Expect(err).To(HaveOccurred())
 			})
 		})
 
@@ -333,12 +351,15 @@ var _ = Describe("RBAC Enforcement", func() {
 				_, projectID := api.CreateProjectWithCleanup(adminClient, ctx, config,
 					api.NewProjectPayload().Build())
 
-				// Wait for provisioning so a 404 is a real denial, not a race.
+				// Wait for provisioning so the denial is RBAC, not a provisioning race.
 				api.WaitForProjectProvisioned(adminClient, ctx, config, projectID)
 
-				_, err := userClient.GetProject(ctx, config.OrgID, projectID)
+				resp, _, err := userClient.DoRequest(ctx, http.MethodGet,
+					api.NewEndpoints().GetProject(config.OrgID, projectID), nil, http.StatusForbidden)
 
-				Expect(err).To(HaveOccurred())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 			})
 
 			It("should not include a project the user is not a member of in the list", func() {
@@ -364,10 +385,9 @@ var _ = Describe("RBAC Enforcement", func() {
 
 		Describe("Given a request to create an OAuth2 provider", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.CreateOauth2Provider(ctx, config.OrgID,
+				expectUserRequestForbidden(http.MethodPost,
+					api.NewEndpoints().ListOauth2Providers(config.OrgID),
 					api.NewOauth2ProviderPayload().Build())
-
-				Expect(err).To(HaveOccurred())
 			})
 		})
 
@@ -376,9 +396,8 @@ var _ = Describe("RBAC Enforcement", func() {
 				_, providerID := api.CreateOauth2ProviderWithCleanup(adminClient, ctx, config,
 					api.NewOauth2ProviderPayload().Build())
 
-				err := userClient.DeleteOauth2Provider(ctx, config.OrgID, providerID)
-
-				Expect(err).To(HaveOccurred())
+				expectUserRequestForbidden(http.MethodDelete,
+					api.NewEndpoints().GetOauth2Provider(config.OrgID, providerID), nil)
 			})
 		})
 	})

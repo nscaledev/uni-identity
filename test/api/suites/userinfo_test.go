@@ -21,7 +21,6 @@ limitations under the License.
 package suites
 
 import (
-	"errors"
 	"net/http"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -48,9 +47,11 @@ var _ = Describe("Userinfo", func() {
 			It("should return consistent sub across repeated calls", func() {
 				first, err := client.GetUserinfo(ctx)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(first.Sub).NotTo(BeEmpty())
 
 				second, err := client.GetUserinfo(ctx)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(second.Sub).NotTo(BeEmpty())
 
 				Expect(first.Sub).To(Equal(second.Sub),
 					"sub claim must be stable for the same token")
@@ -64,29 +65,34 @@ var _ = Describe("Userinfo", func() {
 				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil(),
 					"https://unikorn-cloud.org/authz claim must be present")
 
-				authz := userinfo.HttpsunikornCloudOrgauthz
-				Expect(authz.Acctype).To(BeElementOf(
-					identityopenapi.Service,
-					identityopenapi.System,
-					identityopenapi.User,
-				), "acctype must be one of: service, system, user")
+				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.Service),
+					"default fixture token should be a service-account token")
 
-				GinkgoWriter.Printf("acctype: %s\n", authz.Acctype)
+				GinkgoWriter.Printf("acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
 			})
 
 			It("should include a non-empty orgIds list in the custom authz claims", func() {
+				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
+					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
+
 				userinfo, err := client.GetUserinfo(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
 				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(BeEmpty(),
 					"orgIds must contain at least one organisation ID")
+				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
+				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
+					"authz claims must not include organizations outside the token scope")
 
 				GinkgoWriter.Printf("orgIds count: %d\n",
 					len(userinfo.HttpsunikornCloudOrgauthz.OrgIds))
 			})
 
 			It("should return orgIds that are consistent with the organizations list", func() {
+				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
+					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
+
 				userinfo, err := client.GetUserinfo(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
@@ -99,6 +105,10 @@ var _ = Describe("Userinfo", func() {
 				for _, org := range orgs {
 					orgIDs = append(orgIDs, org.Metadata.Id)
 				}
+
+				Expect(orgIDs).To(ContainElement(config.OrgID))
+				Expect(orgIDs).NotTo(ContainElement(config.UnauthorisedOrgID),
+					"organizations list must not include organizations outside the token scope")
 
 				expectedOrgIDs := make([]interface{}, 0, len(orgIDs))
 				for _, orgID := range orgIDs {
@@ -116,13 +126,15 @@ var _ = Describe("Userinfo", func() {
 		Describe("Given no authentication", func() {
 			It("should reject the request", func() {
 				unauthClient := coreclient.NewAPIClient(config.BaseURL, "", config.RequestTimeout, &api.GinkgoLogger{})
-				_, _, err := unauthClient.DoRequest(ctx, http.MethodGet, api.NewEndpoints().GetUserinfo(), nil, http.StatusOK)
+				resp, _, err := unauthClient.DoRequest(ctx, http.MethodGet,
+					api.NewEndpoints().GetUserinfo(), nil, http.StatusUnauthorized)
 
-				Expect(err).To(HaveOccurred())
-				Expect(errors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue(),
-					"Unauthenticated userinfo request must be rejected")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
+					"Unauthenticated userinfo request must be rejected with 401")
 
-				GinkgoWriter.Printf("Unauthenticated userinfo rejected: %v\n", err)
+				GinkgoWriter.Printf("Unauthenticated userinfo rejected with %d\n", resp.StatusCode)
 			})
 		})
 
@@ -156,12 +168,19 @@ var _ = Describe("Userinfo", func() {
 			BeforeEach(func() {
 				Expect(serviceAccountClient).NotTo(BeNil(),
 					"SERVICE_ACCOUNT_TOKEN must be set by integration fixtures")
+				Expect(config.UserSAID).NotTo(BeEmpty(), "TEST_USER_SA_ID must be set by integration fixtures")
+				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
+					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
 			})
 			It("should report acctype 'service' in the authz claims", func() {
 				userinfo, err := serviceAccountClient.GetUserinfo(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
 				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.Service))
+				Expect(userinfo.Sub).To(Equal(config.UserSAID))
+				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
+				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
+					"service-account authz claims must not include organizations outside the token scope")
 				GinkgoWriter.Printf("Service account acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
 			})
 		})

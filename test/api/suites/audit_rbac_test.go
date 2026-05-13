@@ -59,6 +59,9 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 		Describe("Given a request to list organizations", func() {
 			It("audit token should succeed and return at least one organization", func() {
+				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
+					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
+
 				orgs, err := auditClient.ListOrganizations(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
@@ -66,10 +69,13 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 				var orgIDs []string
 				for _, org := range orgs {
+					Expect(org.Metadata.Id).NotTo(BeEmpty())
 					orgIDs = append(orgIDs, org.Metadata.Id)
 				}
 
 				Expect(orgIDs).To(ContainElement(config.OrgID))
+				Expect(orgIDs).NotTo(ContainElement(config.UnauthorisedOrgID),
+					"audit token must not list organizations outside its scope")
 
 				GinkgoWriter.Printf("Audit: listed %d organizations\n", len(orgs))
 			})
@@ -90,27 +96,51 @@ var _ = Describe("Console Audit View Permissions", func() {
 		Describe("Given a request to list users", func() {
 			It("audit token should succeed and return a list", func() {
 				Expect(config.UserID).NotTo(BeEmpty(), "TEST_USER_ID must be set by integration fixtures")
+				Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
+					"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
 
 				users, err := auditClient.ListUsers(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var userIDs []string
+				found := false
 				for _, user := range users {
-					userIDs = append(userIDs, user.Metadata.Id)
+					Expect(user.Metadata.OrganizationId).To(Equal(config.OrgID))
+
+					if user.Metadata.Id == config.UserID {
+						found = true
+						Expect(user.Spec.Subject).To(Equal(config.UserSubjectEmail))
+
+						break
+					}
 				}
 
-				Expect(userIDs).To(ContainElement(config.UserID))
+				Expect(found).To(BeTrue(),
+					"audit token should see fixture user %s in organization %s", config.UserID, config.OrgID)
 				GinkgoWriter.Printf("Audit: listed %d users\n", len(users))
 			})
 		})
 
 		Describe("Given a request to list roles", func() {
-			It("audit token should succeed and return at least one role", func() {
+			It("audit token should succeed and return the auditor role", func() {
 				roles, err := auditClient.ListRoles(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(roles).NotTo(BeEmpty())
+
+				roleNames := make(map[string]bool)
+				for _, role := range roles {
+					Expect(role.Metadata.Id).NotTo(BeEmpty())
+					Expect(role.Metadata.Name).NotTo(BeEmpty())
+
+					roleNames[role.Metadata.Name] = true
+				}
+
+				Expect(roleNames).To(HaveKey("auditor"))
+				Expect(roleNames).NotTo(HaveKey("administrator"),
+					"audit token must not see administrator as a grantable role")
+				Expect(roleNames).NotTo(HaveKey("user"),
+					"audit token must not see user as a grantable role")
 
 				GinkgoWriter.Printf("Audit: listed %d roles\n", len(roles))
 			})
@@ -118,10 +148,25 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 		Describe("Given a request to list groups", func() {
 			It("audit token should succeed and return a list", func() {
+				Expect(config.AdminGroupID).NotTo(BeEmpty(),
+					"TEST_ADMIN_GROUP_ID must be set by integration fixtures")
+				Expect(config.UserGroupID).NotTo(BeEmpty(),
+					"TEST_USER_GROUP_ID must be set by integration fixtures")
+
 				groups, err := auditClient.ListGroups(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(groups).NotTo(BeEmpty())
+
+				var groupIDs []string
+				for _, group := range groups {
+					Expect(group.Metadata.Id).NotTo(BeEmpty())
+					Expect(group.Metadata.OrganizationId).To(Equal(config.OrgID))
+
+					groupIDs = append(groupIDs, group.Metadata.Id)
+				}
+
+				Expect(groupIDs).To(ContainElements(config.AdminGroupID, config.UserGroupID))
 				GinkgoWriter.Printf("Audit: listed %d groups\n", len(groups))
 			})
 		})
@@ -134,6 +179,8 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 				var projectIDs []string
 				for _, project := range projects {
+					Expect(project.Metadata.OrganizationId).To(Equal(config.OrgID))
+
 					projectIDs = append(projectIDs, project.Metadata.Id)
 				}
 
@@ -145,17 +192,28 @@ var _ = Describe("Console Audit View Permissions", func() {
 		Describe("Given a request to list service accounts", func() {
 			It("audit token should succeed and return a list", func() {
 				Expect(config.UserSAID).NotTo(BeEmpty(), "TEST_USER_SA_ID must be set by integration fixtures")
+				Expect(config.UserGroupID).NotTo(BeEmpty(),
+					"TEST_USER_GROUP_ID must be set by integration fixtures")
 
 				sas, err := auditClient.ListServiceAccounts(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var serviceAccountIDs []string
+				found := false
 				for _, sa := range sas {
-					serviceAccountIDs = append(serviceAccountIDs, sa.Metadata.Id)
+					Expect(sa.Metadata.Id).NotTo(BeEmpty())
+					Expect(sa.Metadata.OrganizationId).To(Equal(config.OrgID))
+
+					if sa.Metadata.Id == config.UserSAID {
+						found = true
+						Expect(sa.Spec.GroupIDs).To(ContainElement(config.UserGroupID))
+
+						break
+					}
 				}
 
-				Expect(serviceAccountIDs).To(ContainElement(config.UserSAID))
+				Expect(found).To(BeTrue(),
+					"audit token should see fixture service account %s", config.UserSAID)
 				GinkgoWriter.Printf("Audit: listed %d service accounts\n", len(sas))
 			})
 		})

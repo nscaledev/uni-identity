@@ -200,6 +200,8 @@ var _ = Describe("Access Control Discovery", func() {
 		BeforeEach(func() {
 			Expect(serviceAccountClient).NotTo(BeNil(),
 				"SERVICE_ACCOUNT_TOKEN must be set by integration fixtures")
+			Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
+				"UNAUTHORISED_ORG_ID must be set by integration fixtures")
 		})
 		Describe("Given the service account's home organisation", func() {
 			It("should return the service account's ACL for its home org", func() {
@@ -211,6 +213,8 @@ var _ = Describe("Access Control Discovery", func() {
 					"service account must have at least one organisation in its ACL")
 				Expect(*acl.Organizations).To(ContainElement(HaveField("Id", Equal(config.OrgID))),
 					"service account ACL should include home organisation %s", config.OrgID)
+				Expect(*acl.Organizations).NotTo(ContainElement(HaveField("Id", Equal(config.UnauthorisedOrgID))),
+					"service account ACL must not include non-member organisation %s", config.UnauthorisedOrgID)
 				GinkgoWriter.Printf("Service account ACL retrieved with %d organisations\n", len(*acl.Organizations))
 			})
 		})
