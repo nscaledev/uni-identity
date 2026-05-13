@@ -21,6 +21,8 @@ limitations under the License.
 package suites
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -256,10 +258,24 @@ var _ = Describe("RBAC Enforcement", func() {
 
 		Describe("Given a request to set quotas", func() {
 			It("should be denied with a forbidden response", func() {
-				_, err := userClient.SetQuotas(ctx, config.OrgID,
-					identityopenapi.QuotasWrite{})
+				current, err := adminClient.GetQuotas(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(current.Quotas).NotTo(BeEmpty())
 
-				Expect(err).To(HaveOccurred())
+				writes := make(identityopenapi.QuotaWriteList, len(current.Quotas))
+				for i, quota := range current.Quotas {
+					writes[i] = identityopenapi.QuotaWrite{Kind: quota.Kind, Quantity: quota.Quantity}
+				}
+
+				body, err := json.Marshal(identityopenapi.QuotasWrite{Quotas: writes})
+				Expect(err).NotTo(HaveOccurred())
+
+				resp, _, err := userClient.DoRequest(ctx, http.MethodPut,
+					api.NewEndpoints().GetQuotas(config.OrgID), bytes.NewReader(body), http.StatusForbidden)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 			})
 		})
 
