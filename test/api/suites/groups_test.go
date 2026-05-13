@@ -408,6 +408,34 @@ var _ = Describe("Group Management", func() {
 // From nscale-auth0-tests: groups.spec.ts §5 — Subjects membership field.
 var _ = Describe("Group Subjects", func() {
 	Context("When managing group subjects", func() {
+		firstOrganizationUser := func() identityopenapi.UserRead {
+			users, err := client.ListUsers(ctx, config.OrgID)
+			if err != nil || len(users) == 0 {
+				Skip("No users available in organization to test legacy userIDs field")
+			}
+
+			return users[0]
+		}
+
+		expectInvalidGroupWrite := func(method, path string, payload identityopenapi.GroupWrite, expectedDescription string) {
+			body, err := json.Marshal(payload)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, respBody, err := client.DoRequest(
+				ctx,
+				method,
+				path,
+				bytes.NewReader(body),
+				http.StatusBadRequest,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			var oauthErr identityopenapi.Oauth2Error
+			Expect(json.Unmarshal(respBody, &oauthErr)).To(Succeed())
+			Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
+			Expect(oauthErr.ErrorDescription).To(ContainSubstring(expectedDescription))
+		}
+
 		// §5.1 Create with external subjects field
 		Describe("Given a new group created with external subjects", func() {
 			It("should create successfully with subjects populated and userIDs empty", func() {
@@ -442,13 +470,8 @@ var _ = Describe("Group Subjects", func() {
 		Describe("Given a new group created with userIDs (legacy field)", func() {
 			It("should create successfully and subjects should be auto-populated", func() {
 				// userIDs are OrganizationUser object IDs — fetch a real one from the org.
-				users, err := client.ListUsers(ctx, config.OrgID)
-				if err != nil || len(users) == 0 {
-					Skip("No users available in organization to test legacy userIDs field")
-				}
-
-				realUserID := users[0].Metadata.Id
-
+				user := firstOrganizationUser()
+				realUserID := user.Metadata.Id
 				payload := api.NewGroupPayload().WithUserIDs([]string{realUserID}).Build()
 				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
@@ -462,11 +485,11 @@ var _ = Describe("Group Subjects", func() {
 					"subjects must be auto-populated when group is created with userIDs")
 				Expect(*group.Spec.Subjects).To(HaveLen(1),
 					"response subjects must contain exactly one resolved subject")
-				Expect((*group.Spec.Subjects)[0].Id).To(Equal(users[0].Spec.Subject),
+				Expect((*group.Spec.Subjects)[0].Id).To(Equal(user.Spec.Subject),
 					"response subject ID must match the resolved user subject")
 				Expect((*group.Spec.Subjects)[0].Email).NotTo(BeNil(),
 					"response subject email must be populated from the resolved user")
-				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(users[0].Spec.Subject),
+				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(user.Spec.Subject),
 					"response subject email must match the resolved user subject")
 				Expect((*group.Spec.Subjects)[0].Issuer).NotTo(BeEmpty(),
 					"response subject issuer must be populated for a resolved user")
@@ -501,22 +524,24 @@ var _ = Describe("Group Subjects", func() {
 		// §5.3 Create with both subjects AND userIDs → rejected
 		Describe("Given a new group with both subjects and userIDs set", func() {
 			It("should be rejected with an error", func() {
-				testEmail := fmt.Sprintf("qa-both-%d@example.com", time.Now().UnixNano())
-				email := testEmail
-				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
-				fakeUserID := fmt.Sprintf("fake-user-%d", time.Now().UnixNano())
+				ciInvalidUserEmail := fmt.Sprintf("ci-invalid-user-create-%d@nscale.test", time.Now().UnixNano())
+				email := ciInvalidUserEmail
+				testSubject := identityopenapi.Subject{Id: ciInvalidUserEmail, Email: &email, Issuer: ""}
+				userID := firstOrganizationUser().Metadata.Id
 
 				payload := api.NewGroupPayload().
 					WithSubjects([]identityopenapi.Subject{testSubject}).
-					WithUserIDs([]string{fakeUserID}).
+					WithUserIDs([]string{userID}).
 					Build()
 
-				_, err := client.CreateGroup(ctx, config.OrgID, payload)
+				expectInvalidGroupWrite(
+					http.MethodPost,
+					api.NewEndpoints().ListGroups(config.OrgID),
+					payload,
+					"cannot provide both subjects and userIDs",
+				)
 
-				Expect(err).To(HaveOccurred(),
-					"creating a group with both subjects and userIDs must be rejected")
-
-				GinkgoWriter.Printf("Correctly rejected group with both subjects and userIDs: %v\n", err)
+				GinkgoWriter.Printf("Correctly rejected group with both subjects and userIDs\n")
 			})
 		})
 
@@ -636,22 +661,24 @@ var _ = Describe("Group Subjects", func() {
 				payload := api.NewGroupPayload().Build()
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
-				testEmail := fmt.Sprintf("qa-both-put-%d@example.com", time.Now().UnixNano())
-				email := testEmail
-				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
-				fakeUserID := fmt.Sprintf("fake-user-put-%d", time.Now().UnixNano())
+				ciInvalidUserEmail := fmt.Sprintf("ci-invalid-user-update-%d@nscale.test", time.Now().UnixNano())
+				email := ciInvalidUserEmail
+				testSubject := identityopenapi.Subject{Id: ciInvalidUserEmail, Email: &email, Issuer: ""}
+				userID := firstOrganizationUser().Metadata.Id
 
 				updatePayload := api.NewGroupPayload().
 					WithSubjects([]identityopenapi.Subject{testSubject}).
-					WithUserIDs([]string{fakeUserID}).
+					WithUserIDs([]string{userID}).
 					Build()
 
-				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				expectInvalidGroupWrite(
+					http.MethodPut,
+					api.NewEndpoints().GetGroup(config.OrgID, groupID),
+					updatePayload,
+					"cannot provide both subjects and userIDs",
+				)
 
-				Expect(err).To(HaveOccurred(),
-					"updating a group with both subjects and userIDs must be rejected")
-
-				GinkgoWriter.Printf("Correctly rejected PUT with both subjects and userIDs: %v\n", err)
+				GinkgoWriter.Printf("Correctly rejected PUT with both subjects and userIDs\n")
 			})
 		})
 	})
