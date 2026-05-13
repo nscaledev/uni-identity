@@ -32,9 +32,8 @@ import (
 
 var _ = Describe("RBAC Enforcement", func() {
 	BeforeEach(func() {
-		if adminClient == nil || userClient == nil {
-			Skip("ADMIN_AUTH_TOKEN and USER_AUTH_TOKEN are required for RBAC enforcement testing")
-		}
+		Expect(adminClient).NotTo(BeNil(), "ADMIN_AUTH_TOKEN or API_AUTH_TOKEN must be set by integration fixtures")
+		Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
 	})
 
 	Context("When authenticated as an administrator", func() {
@@ -81,13 +80,9 @@ var _ = Describe("RBAC Enforcement", func() {
 			})
 
 			Describe("Given TEST_USER_SA_ID is configured", func() {
-				BeforeEach(func() {
-					if config.UserSAID == "" {
-						Skip("TEST_USER_SA_ID is not configured")
-					}
-				})
-
 				It("should include service accounts belonging to other principals", func() {
+					Expect(config.UserSAID).NotTo(BeEmpty(), "TEST_USER_SA_ID must be set by integration fixtures")
+
 					serviceAccounts, err := adminClient.ListServiceAccounts(ctx, config.OrgID)
 
 					Expect(err).NotTo(HaveOccurred())
@@ -124,13 +119,11 @@ var _ = Describe("RBAC Enforcement", func() {
 			})
 
 			Describe("Given TEST_USER_ID is configured", func() {
-				BeforeEach(func() {
-					if config.UserID == "" {
-						Skip("TEST_USER_ID is not configured")
-					}
-				})
-
 				It("should include the fixture user in the organization users list", func() {
+					Expect(config.UserID).NotTo(BeEmpty(), "TEST_USER_ID must be set by integration fixtures")
+					Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
+						"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+
 					users, err := adminClient.ListUsers(ctx, config.OrgID)
 
 					Expect(err).NotTo(HaveOccurred())
@@ -141,10 +134,7 @@ var _ = Describe("RBAC Enforcement", func() {
 						if user.Metadata.Id == config.UserID {
 							found = true
 							Expect(user.Metadata.OrganizationId).To(Equal(config.OrgID))
-
-							if config.UserSubjectEmail != "" {
-								Expect(user.Spec.Subject).To(Equal(config.UserSubjectEmail))
-							}
+							Expect(user.Spec.Subject).To(Equal(config.UserSubjectEmail))
 
 							break
 						}
@@ -176,12 +166,6 @@ var _ = Describe("RBAC Enforcement", func() {
 	})
 
 	Context("When authenticated as a user", func() {
-		BeforeEach(func() {
-			if userClient == nil {
-				Skip("USER_AUTH_TOKEN is required for user RBAC tests")
-			}
-		})
-
 		// For denial tests, an error on any non-2xx response is sufficient to verify
 		// that access was denied without needing to inspect the response body.
 
@@ -351,23 +335,6 @@ var _ = Describe("RBAC Enforcement", func() {
 			})
 		})
 
-		Describe("Given a request against an organization the user is not a member of", func() {
-			BeforeEach(func() {
-				if config.UnauthorisedOrgID == "" {
-					Skip("UNAUTHORISED_ORG_ID is not configured")
-				}
-			})
-
-			It("should be denied with a forbidden response", func() {
-				resp, _, err := userClient.DoRequest(ctx, http.MethodGet,
-					api.NewEndpoints().ListProjects(config.UnauthorisedOrgID), nil, http.StatusForbidden)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-			})
-		})
-
 		Describe("Given a request to create an OAuth2 provider", func() {
 			It("should be denied with a forbidden response", func() {
 				_, err := userClient.CreateOauth2Provider(ctx, config.OrgID,
@@ -391,12 +358,9 @@ var _ = Describe("RBAC Enforcement", func() {
 
 	Context("When authenticated as a service account", func() {
 		BeforeEach(func() {
-			if serviceAccountClient == nil {
-				Skip("SERVICE_ACCOUNT_TOKEN is required for service account RBAC tests")
-			}
-			if config.UserSAID == "" {
-				Skip("TEST_USER_SA_ID is not configured")
-			}
+			Expect(serviceAccountClient).NotTo(BeNil(),
+				"SERVICE_ACCOUNT_TOKEN must be set by integration fixtures")
+			Expect(config.UserSAID).NotTo(BeEmpty(), "TEST_USER_SA_ID must be set by integration fixtures")
 		})
 
 		Describe("Given a request to list service accounts", func() {

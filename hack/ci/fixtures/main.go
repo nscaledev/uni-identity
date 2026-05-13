@@ -294,15 +294,14 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 	}
 
 	id := resp.JSON201.Metadata.Id
-	token := ""
 
-	if resp.JSON201.Status.AccessToken != nil {
-		token = *resp.JSON201.Status.AccessToken
+	if resp.JSON201.Status.AccessToken == nil || *resp.JSON201.Status.AccessToken == "" {
+		fatalf("create service account %q did not return an access token", name)
 	}
 
 	logf("  service account %q ID: %s", name, id)
 
-	return id, token
+	return id, *resp.JSON201.Status.AccessToken
 }
 
 // createUser creates an active user in the given groups and returns its organization user ID.

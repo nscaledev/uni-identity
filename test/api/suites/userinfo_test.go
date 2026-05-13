@@ -128,9 +128,11 @@ var _ = Describe("Userinfo", func() {
 
 		Context("When authenticated as a user", func() {
 			BeforeEach(func() {
-				if userClient == nil {
-					Skip("USER_AUTH_TOKEN is not configured")
-				}
+				Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
+				Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
+					"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
+					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
 			})
 
 			It("should report acctype 'user' in the authz claims", func() {
@@ -140,16 +142,11 @@ var _ = Describe("Userinfo", func() {
 				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User))
 				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
 
-				if config.UnauthorisedOrgID != "" {
-					Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
-						"user authz claims must not include organizations the user is not a member of")
-				}
-
-				if config.UserSubjectEmail != "" {
-					Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
-					Expect(userinfo.Email).NotTo(BeNil())
-					Expect(*userinfo.Email).To(Equal(config.UserSubjectEmail))
-				}
+				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
+					"user authz claims must not include organizations the user is not a member of")
+				Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
+				Expect(userinfo.Email).NotTo(BeNil())
+				Expect(*userinfo.Email).To(Equal(config.UserSubjectEmail))
 
 				GinkgoWriter.Printf("User acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
 			})
@@ -157,9 +154,8 @@ var _ = Describe("Userinfo", func() {
 
 		Context("When authenticated as a service account", func() {
 			BeforeEach(func() {
-				if serviceAccountClient == nil {
-					Skip("SERVICE_ACCOUNT_TOKEN is not configured")
-				}
+				Expect(serviceAccountClient).NotTo(BeNil(),
+					"SERVICE_ACCOUNT_TOKEN must be set by integration fixtures")
 			})
 			It("should report acctype 'service' in the authz claims", func() {
 				userinfo, err := serviceAccountClient.GetUserinfo(ctx)

@@ -54,9 +54,7 @@ func expectAuditRequestForbidden(method, path string, payload any) {
 var _ = Describe("Console Audit View Permissions", func() {
 	Context("When reading console-visible resources", func() {
 		BeforeEach(func() {
-			if auditClient == nil {
-				Skip("AUDIT_AUTH_TOKEN is not configured — skipping audit read-access tests")
-			}
+			Expect(auditClient).NotTo(BeNil(), "AUDIT_AUTH_TOKEN must be set by integration fixtures")
 		})
 
 		Describe("Given a request to list organizations", func() {
@@ -91,18 +89,18 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 		Describe("Given a request to list users", func() {
 			It("audit token should succeed and return a list", func() {
+				Expect(config.UserID).NotTo(BeEmpty(), "TEST_USER_ID must be set by integration fixtures")
+
 				users, err := auditClient.ListUsers(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
-				if config.UserID != "" {
-					var userIDs []string
-					for _, user := range users {
-						userIDs = append(userIDs, user.Metadata.Id)
-					}
 
-					Expect(userIDs).To(ContainElement(config.UserID))
+				var userIDs []string
+				for _, user := range users {
+					userIDs = append(userIDs, user.Metadata.Id)
 				}
 
+				Expect(userIDs).To(ContainElement(config.UserID))
 				GinkgoWriter.Printf("Audit: listed %d users\n", len(users))
 			})
 		})
@@ -146,18 +144,18 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 		Describe("Given a request to list service accounts", func() {
 			It("audit token should succeed and return a list", func() {
+				Expect(config.UserSAID).NotTo(BeEmpty(), "TEST_USER_SA_ID must be set by integration fixtures")
+
 				sas, err := auditClient.ListServiceAccounts(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
-				if config.UserSAID != "" {
-					var serviceAccountIDs []string
-					for _, sa := range sas {
-						serviceAccountIDs = append(serviceAccountIDs, sa.Metadata.Id)
-					}
 
-					Expect(serviceAccountIDs).To(ContainElement(config.UserSAID))
+				var serviceAccountIDs []string
+				for _, sa := range sas {
+					serviceAccountIDs = append(serviceAccountIDs, sa.Metadata.Id)
 				}
 
+				Expect(serviceAccountIDs).To(ContainElement(config.UserSAID))
 				GinkgoWriter.Printf("Audit: listed %d service accounts\n", len(sas))
 			})
 		})
@@ -176,9 +174,7 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 	Context("When mutating console-managed resources", func() {
 		BeforeEach(func() {
-			if auditClient == nil {
-				Skip("AUDIT_AUTH_TOKEN is not configured — skipping audit write-denied tests")
-			}
+			Expect(auditClient).NotTo(BeNil(), "AUDIT_AUTH_TOKEN must be set by integration fixtures")
 		})
 
 		Describe("Given a POST to create a group", func() {
@@ -231,9 +227,18 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 		Describe("Given a PUT to update quotas", func() {
 			It("audit token should be denied with a forbidden response", func() {
+				current, err := adminClient.GetQuotas(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(current.Quotas).NotTo(BeEmpty())
+
+				writes := make(identityopenapi.QuotaWriteList, len(current.Quotas))
+				for i, quota := range current.Quotas {
+					writes[i] = identityopenapi.QuotaWrite{Kind: quota.Kind, Quantity: quota.Quantity}
+				}
+
 				expectAuditRequestForbidden(http.MethodPut,
 					api.NewEndpoints().GetQuotas(config.OrgID),
-					identityopenapi.QuotasWrite{})
+					identityopenapi.QuotasWrite{Quotas: writes})
 
 				GinkgoWriter.Printf("Audit quota update correctly denied with 403\n")
 			})

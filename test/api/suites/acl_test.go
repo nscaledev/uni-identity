@@ -103,15 +103,12 @@ var _ = Describe("Access Control Discovery", func() {
 		// so only the user token produces ACL entries under Organization.Projects.
 		Describe("Given the caller is a member of groups assigned to projects", func() {
 			BeforeEach(func() {
-				if userClient == nil {
-					Skip("USER_AUTH_TOKEN is required for ACL projection testing")
-				}
+				Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
 			})
 
 			It("should no longer include a project in the ACL after it is deleted", func() {
-				if config.UserGroupID == "" {
-					Skip("TEST_USER_GROUP_ID is not configured")
-				}
+				Expect(config.UserGroupID).NotTo(BeEmpty(),
+					"TEST_USER_GROUP_ID must be set by integration fixtures")
 
 				_, projectID := api.CreateProjectWithCleanup(adminClient, ctx, config,
 					api.NewProjectPayload().
@@ -200,9 +197,8 @@ var _ = Describe("Access Control Discovery", func() {
 
 	Context("When a service account accesses the ACL", func() {
 		BeforeEach(func() {
-			if serviceAccountClient == nil {
-				Skip("SERVICE_ACCOUNT_TOKEN is not configured")
-			}
+			Expect(serviceAccountClient).NotTo(BeNil(),
+				"SERVICE_ACCOUNT_TOKEN must be set by integration fixtures")
 		})
 		Describe("Given the service account's home organisation", func() {
 			It("should return the service account's ACL for its home org", func() {
