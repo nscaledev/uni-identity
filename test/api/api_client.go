@@ -520,14 +520,18 @@ func putResource[Req, R any](c *APIClient, ctx context.Context, path, resourceID
 	return &result, nil
 }
 
-func (c *APIClient) exchangeForm(options *identityopenapi.TokenRequestOptions) url.Values {
+func (c *APIClient) exchangeForm(subjectToken string, options *identityopenapi.TokenRequestOptions) url.Values {
 	form := url.Values{}
 
 	form.Set("grant_type", tokenExchangeGrantType())
 	form.Set("subject_token_type", accessTokenSubjectTokenType())
 
-	if c.config.AuthToken != "" {
-		form.Set("subject_token", c.config.AuthToken)
+	if strings.TrimSpace(subjectToken) == "" {
+		subjectToken = c.config.AuthToken
+	}
+
+	if subjectToken != "" {
+		form.Set("subject_token", subjectToken)
 	}
 
 	if options == nil {
@@ -564,8 +568,8 @@ func (c *APIClient) exchangeForm(options *identityopenapi.TokenRequestOptions) u
 // doFormRequest sends an application/x-www-form-urlencoded request. The shared
 // core test client always applies application/json when a body is present, so
 // OAuth2 form endpoints need a local path that sets the correct content type.
-func (c *APIClient) doFormRequest(ctx context.Context, method, path string, form url.Values, expectedStatus int) (*http.Response, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.config.BaseURL, "/")+path, strings.NewReader(form.Encode()))
+func (c *APIClient) doFormRequest(ctx context.Context, path string, form url.Values, expectedStatus int) (*http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.config.BaseURL, "/")+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating form request: %w", err)
 	}
@@ -603,7 +607,7 @@ func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopena
 	path := c.endpoints.Token()
 
 	//nolint:bodyclose // DoRequest handles response body closing internally
-	_, respBody, err := c.doFormRequest(ctx, http.MethodPost, path, c.exchangeForm(options), http.StatusOK)
+	_, respBody, err := c.doFormRequest(ctx, path, c.exchangeForm("", options), http.StatusOK)
 	if err != nil {
 		return nil, fmt.Errorf("exchanging passport: %w", err)
 	}
@@ -622,7 +626,73 @@ func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopena
 func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int, options *identityopenapi.TokenRequestOptions) (*http.Response, []byte, error) {
 	path := c.endpoints.Token()
 
-	return c.doFormRequest(ctx, http.MethodPost, path, c.exchangeForm(options), expectedStatus)
+	return c.doFormRequest(ctx, path, c.exchangeForm("", options), expectedStatus)
+}
+
+// ExchangePassportWithSubjectToken exchanges a specific subject token for a passport.
+func (c *APIClient) ExchangePassportWithSubjectToken(ctx context.Context, subjectToken string, options *identityopenapi.TokenRequestOptions) (*identityopenapi.Token, error) {
+	path := c.endpoints.Token()
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.doFormRequest(ctx, path, c.exchangeForm(subjectToken, options), http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("exchanging passport with subject token: %w", err)
+	}
+
+	var result identityopenapi.Token
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshaling token exchange result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// ExchangePassportRawWithSubjectToken performs a raw token-exchange request for
+// a specific subject token.
+func (c *APIClient) ExchangePassportRawWithSubjectToken(ctx context.Context, subjectToken string, expectedStatus int, options *identityopenapi.TokenRequestOptions) (*http.Response, []byte, error) {
+	path := c.endpoints.Token()
+
+	return c.doFormRequest(ctx, path, c.exchangeForm(subjectToken, options), expectedStatus)
+}
+
+// GetUserinfoWithAccessToken calls the OAuth2 userinfo endpoint using the
+// provided bearer token.
+func (c *APIClient) GetUserinfoWithAccessToken(ctx context.Context, accessToken string) (*identityopenapi.Userinfo, error) {
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		strings.TrimSuffix(c.config.BaseURL, "/")+c.endpoints.Userinfo(),
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating userinfo request: %w", err)
+	}
+
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+
+	httpClient := &http.Client{Timeout: c.config.RequestTimeout}
+
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("doing userinfo request: %w", err)
+	}
+	defer response.Body.Close()
+
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading userinfo response: %w", err)
+	}
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("getting userinfo: expected %d, got %d: %w", http.StatusOK, response.StatusCode, coreclient.ErrUnexpectedStatusCode)
+	}
+
+	var result identityopenapi.Userinfo
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return nil, fmt.Errorf("unmarshaling userinfo response: %w", err)
+	}
+
+	return &result, nil
 }
 
 // UpdateServiceAccount updates an existing service account.

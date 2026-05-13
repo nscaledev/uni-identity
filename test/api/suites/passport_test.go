@@ -100,7 +100,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		Describe("Given valid authentication with organization scope", func() {
 			It("should return a passport scoped to the organization", func() {
 				options := &identityopenapi.TokenRequestOptions{
-					OrganizationId: &config.OrgID,
+					XOrganizationId: &config.OrgID,
 				}
 
 				result, err := client.ExchangePassport(ctx, options)
@@ -121,8 +121,8 @@ var _ = Describe("Passport Token Exchange", func() {
 		Describe("Given valid authentication with organization and project scope", func() {
 			It("should return a passport scoped to the organization and project", func() {
 				options := &identityopenapi.TokenRequestOptions{
-					OrganizationId: &config.OrgID,
-					ProjectId:      &config.ProjectID,
+					XOrganizationId: &config.OrgID,
+					XProjectId:      &config.ProjectID,
 				}
 
 				result, err := client.ExchangePassport(ctx, options)
@@ -145,7 +145,7 @@ var _ = Describe("Passport Token Exchange", func() {
 			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidOrgID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
-					OrganizationId: &invalidOrgID,
+					XOrganizationId: &invalidOrgID,
 				}
 
 				resp, respBody, err := client.ExchangePassportRaw(ctx, 0, options)
@@ -164,8 +164,8 @@ var _ = Describe("Passport Token Exchange", func() {
 			It("should reject the exchange with an OAuth2 access_denied response", func() {
 				invalidProjectID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
-					OrganizationId: &config.OrgID,
-					ProjectId:      &invalidProjectID,
+					XOrganizationId: &config.OrgID,
+					XProjectId:      &invalidProjectID,
 				}
 
 				resp, respBody, err := client.ExchangePassportRaw(ctx, 0, options)
@@ -214,7 +214,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				serviceClient := api.NewAPIClientWithConfig(&serviceConfig)
 
 				result, err := serviceClient.ExchangePassport(ctx, &identityopenapi.TokenRequestOptions{
-					OrganizationId: &config.OrgID,
+					XOrganizationId: &config.OrgID,
 				})
 
 				Expect(err).NotTo(HaveOccurred())

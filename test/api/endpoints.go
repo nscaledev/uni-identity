@@ -124,6 +124,11 @@ func (e *Endpoints) Token() string {
 	return "/oauth2/v2/token"
 }
 
+// Userinfo returns the OAuth2 userinfo endpoint path.
+func (e *Endpoints) Userinfo() string {
+	return "/oauth2/v2/userinfo"
+}
+
 // ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.
 func (e *Endpoints) ListGlobalOauth2Providers() string {
 	return "/api/v1/oauth2providers"

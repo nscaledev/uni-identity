@@ -32,6 +32,15 @@ type TestConfig struct {
 	AdminGroupID string
 	UserGroupID  string
 	UserSAID     string
+
+	Auth0ValidJWTToken         string
+	Auth0WrongAudienceJWTToken string
+	Auth0ExpiredJWTToken       string
+	Auth0WrongIssuerJWTToken   string
+	Auth0OpaqueToken           string
+	Auth0InactiveUserJWTToken  string
+	Auth0EquivalentUNIToken    string
+	Auth0ExpectedSubject       string
 }
 
 // LoadTestConfig loads configuration from environment variables and .env files using viper.
@@ -77,6 +86,15 @@ func LoadTestConfig() (*TestConfig, error) {
 		AdminGroupID: v.GetString("TEST_ADMIN_GROUP_ID"),
 		UserGroupID:  v.GetString("TEST_USER_GROUP_ID"),
 		UserSAID:     v.GetString("TEST_USER_SA_ID"),
+
+		Auth0ValidJWTToken:         v.GetString("AUTH0_VALID_JWT_TOKEN"),
+		Auth0WrongAudienceJWTToken: v.GetString("AUTH0_WRONG_AUDIENCE_JWT_TOKEN"),
+		Auth0ExpiredJWTToken:       v.GetString("AUTH0_EXPIRED_JWT_TOKEN"),
+		Auth0WrongIssuerJWTToken:   v.GetString("AUTH0_WRONG_ISSUER_JWT_TOKEN"),
+		Auth0OpaqueToken:           v.GetString("AUTH0_OPAQUE_TOKEN"),
+		Auth0InactiveUserJWTToken:  v.GetString("AUTH0_INACTIVE_USER_JWT_TOKEN"),
+		Auth0EquivalentUNIToken:    v.GetString("AUTH0_EQUIVALENT_UNI_TOKEN"),
+		Auth0ExpectedSubject:       v.GetString("AUTH0_EXPECTED_SUBJECT"),
 	}
 
 	// Validate required fields

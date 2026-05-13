@@ -31,16 +31,20 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
@@ -329,6 +333,287 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 	return administratorRoleID, userRoleID
 }
 
+var (
+	errAuth0TokenEndpoint = errors.New("auth0 token endpoint returned non-200")
+	errAuth0MissingToken  = errors.New("auth0 response missing access_token")
+)
+
+// auth0MintCreds bundles the OAuth client credentials and DB connection used
+// to mint password-realm tokens against a single Auth0 tenant.
+type auth0MintCreds struct {
+	Domain       string
+	ClientID     string
+	ClientSecret string
+	Realm        string
+	Scope        string
+}
+
+// auth0Mint executes a password-realm grant against Auth0 and returns the raw
+// access_token. When audience is empty, Auth0 issues an opaque token tied to
+// the user — used to drive the /userinfo fallback fixture.
+func auth0Mint(ctx context.Context, creds auth0MintCreds, audience, username, password string) (string, error) {
+	body := map[string]string{
+		"grant_type":    "http://auth0.com/oauth/grant-type/password-realm",
+		"client_id":     creds.ClientID,
+		"client_secret": creds.ClientSecret,
+		"username":      username,
+		"password":      password,
+		"realm":         creds.Realm,
+		"scope":         creds.Scope,
+	}
+
+	if audience != "" {
+		body["audience"] = audience
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+
+	url := "https://" + strings.TrimRight(creds.Domain, "/") + "/oauth/token"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("%w: %s: %s", errAuth0TokenEndpoint, resp.Status, strings.TrimSpace(string(raw)))
+	}
+
+	var result struct {
+		AccessToken string `json:"access_token"` //nolint:tagliatelle // Auth0 token response field name is RFC 6749.
+	}
+
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", err
+	}
+
+	if result.AccessToken == "" {
+		return "", errAuth0MissingToken
+	}
+
+	return result.AccessToken, nil
+}
+
+func envOrDefault(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+
+	return def
+}
+
+// auth0Env captures every Auth0-related environment variable the fixture
+// script consumes. Reading them once up front keeps the contract in one
+// place and lets the per-fixture helpers stay pure.
+//
+// Tokens that are minted by this script (AUTH0_VALID_JWT_TOKEN,
+// AUTH0_WRONG_AUDIENCE_JWT_TOKEN, AUTH0_WRONG_ISSUER_JWT_TOKEN,
+// AUTH0_OPAQUE_TOKEN, AUTH0_INACTIVE_USER_JWT_TOKEN) are intentionally not
+// read — Auth0 tokens expire and need re-minting every run.
+//
+// AUTH0_EXPIRED_JWT_TOKEN is the exception: once an Auth0 token has expired
+// it stays expired indefinitely, so the operator seeds it once via the
+// hack/auth0 helper and this script just passes the value through.
+//
+// Recognised environment variables:
+//
+//	AUTH0_DOMAIN                       tenant domain (e.g. nscale-dev.uk.auth0.com)
+//	AUTH0_AUDIENCE                     primary audience (matches --auth0-audience)
+//	AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET
+//	AUTH0_REALM                        defaults to Username-Password-Authentication
+//	AUTH0_SCOPE                        defaults to "openid profile email identity:token:exchange"
+//	AUTH0_USERNAME                     active user; also written as AUTH0_EXPECTED_SUBJECT
+//	AUTH0_PASSWORD
+//	AUTH0_INACTIVE_USERNAME, AUTH0_INACTIVE_PASSWORD
+//	AUTH0_WRONG_AUDIENCE               distinct audience on the same tenant
+//	AUTH0_WRONG_ISSUER_DOMAIN          separate tenant for wrong-issuer fixture
+//	AUTH0_WRONG_ISSUER_CLIENT_ID, AUTH0_WRONG_ISSUER_CLIENT_SECRET
+//	                                   (audience is shared with AUTH0_AUDIENCE)
+//	AUTH0_EXPIRED_JWT_TOKEN            operator-seeded; passed through verbatim
+type auth0Env struct {
+	Domain       string
+	Audience     string
+	ClientID     string
+	ClientSecret string
+	Realm        string
+	Scope        string
+
+	Username string
+	Password string
+
+	InactiveUsername string
+	InactivePassword string
+
+	WrongAudience string
+
+	WrongIssuerDomain       string
+	WrongIssuerClientID     string
+	WrongIssuerClientSecret string
+
+	ExpiredJWTToken string
+}
+
+func loadAuth0Env() auth0Env {
+	return auth0Env{
+		Domain:                  strings.TrimSpace(os.Getenv("AUTH0_DOMAIN")),
+		Audience:                os.Getenv("AUTH0_AUDIENCE"),
+		ClientID:                os.Getenv("AUTH0_CLIENT_ID"),
+		ClientSecret:            os.Getenv("AUTH0_CLIENT_SECRET"),
+		Realm:                   envOrDefault("AUTH0_REALM", "Username-Password-Authentication"),
+		Scope:                   envOrDefault("AUTH0_SCOPE", "openid profile email identity:token:exchange"),
+		Username:                os.Getenv("AUTH0_USERNAME"),
+		Password:                os.Getenv("AUTH0_PASSWORD"),
+		InactiveUsername:        os.Getenv("AUTH0_INACTIVE_USERNAME"),
+		InactivePassword:        os.Getenv("AUTH0_INACTIVE_PASSWORD"),
+		WrongAudience:           os.Getenv("AUTH0_WRONG_AUDIENCE"),
+		WrongIssuerDomain:       os.Getenv("AUTH0_WRONG_ISSUER_DOMAIN"),
+		WrongIssuerClientID:     os.Getenv("AUTH0_WRONG_ISSUER_CLIENT_ID"),
+		WrongIssuerClientSecret: os.Getenv("AUTH0_WRONG_ISSUER_CLIENT_SECRET"),
+		ExpiredJWTToken:         os.Getenv("AUTH0_EXPIRED_JWT_TOKEN"),
+	}
+}
+
+// mintAuth0Tokens produces fresh tokens for the fixture variables consumed by
+// the Auth0 integration tests. Tokens are always re-minted — any AUTH0_*_TOKEN
+// values present in the environment are intentionally ignored because Auth0
+// tokens expire.
+//
+// All fixtures use the password-realm grant. The realm, scope, username, and
+// password are shared across every fixture; only the inactive-user case
+// substitutes a different username/password (against the same tenant), and
+// the wrong-issuer case substitutes a different domain/client/audience
+// (against the same realm and user credentials, mirrored in that tenant).
+//
+// Each fixture whose required configuration is missing — or whose mint call
+// fails — is emitted with an empty value so the corresponding Ginkgo case
+// Skips cleanly at runtime.
+func mintAuth0Tokens(ctx context.Context) map[string]string {
+	env := loadAuth0Env()
+
+	out := map[string]string{
+		"AUTH0_VALID_JWT_TOKEN":          "",
+		"AUTH0_WRONG_AUDIENCE_JWT_TOKEN": "",
+		"AUTH0_EXPIRED_JWT_TOKEN":        env.ExpiredJWTToken,
+		"AUTH0_WRONG_ISSUER_JWT_TOKEN":   "",
+		"AUTH0_OPAQUE_TOKEN":             "",
+		"AUTH0_INACTIVE_USER_JWT_TOKEN":  "",
+		"AUTH0_EXPECTED_SUBJECT":         env.Username,
+	}
+
+	if env.ExpiredJWTToken == "" {
+		logf("AUTH0_EXPIRED_JWT_TOKEN not set; mint one via `go run ./hack/auth0` and export it before running fixtures")
+	}
+
+	if env.Domain == "" || env.ClientID == "" || env.ClientSecret == "" {
+		logf("Auth0 minting skipped: AUTH0_DOMAIN / AUTH0_CLIENT_ID / AUTH0_CLIENT_SECRET not all set")
+
+		return out
+	}
+
+	creds := auth0MintCreds{
+		Domain:       env.Domain,
+		ClientID:     env.ClientID,
+		ClientSecret: env.ClientSecret,
+		Realm:        env.Realm,
+		Scope:        env.Scope,
+	}
+
+	mintPrimaryAudienceFixtures(ctx, env, creds, out)
+	mintSameTenantVariantFixtures(ctx, env, creds, out)
+	mintWrongIssuerFixture(ctx, env, creds, out)
+
+	return out
+}
+
+// mintFixture is a small helper that does the per-token logging+error handling
+// dance so each call site is a single line. It returns "" on any failure so
+// the corresponding .env value is left blank and the Ginkgo case Skips.
+func mintFixture(ctx context.Context, name, audience, username, password string, c auth0MintCreds) string {
+	if username == "" || password == "" {
+		logf("%s: skipped (no user credentials)", name)
+
+		return ""
+	}
+
+	logf("Minting %s...", name)
+
+	token, err := auth0Mint(ctx, c, audience, username, password)
+	if err != nil {
+		logf("  %s mint failed: %v", name, err)
+
+		return ""
+	}
+
+	return token
+}
+
+// mintPrimaryAudienceFixtures mints the valid + inactive-user fixtures, both
+// against the primary audience configured on the identity server.
+func mintPrimaryAudienceFixtures(ctx context.Context, env auth0Env, creds auth0MintCreds, out map[string]string) {
+	if env.Audience == "" {
+		logf("AUTH0_AUDIENCE not set; skipping valid/inactive fixtures")
+
+		return
+	}
+
+	out["AUTH0_VALID_JWT_TOKEN"] = mintFixture(ctx, "AUTH0_VALID_JWT_TOKEN", env.Audience, env.Username, env.Password, creds)
+	out["AUTH0_INACTIVE_USER_JWT_TOKEN"] = mintFixture(ctx, "AUTH0_INACTIVE_USER_JWT_TOKEN", env.Audience, env.InactiveUsername, env.InactivePassword, creds)
+}
+
+// mintSameTenantVariantFixtures mints the wrong-audience + opaque fixtures.
+// Both reuse the primary tenant credentials — only the audience parameter
+// changes (and is empty for opaque).
+func mintSameTenantVariantFixtures(ctx context.Context, env auth0Env, creds auth0MintCreds, out map[string]string) {
+	if env.WrongAudience != "" {
+		out["AUTH0_WRONG_AUDIENCE_JWT_TOKEN"] = mintFixture(ctx, "AUTH0_WRONG_AUDIENCE_JWT_TOKEN", env.WrongAudience, env.Username, env.Password, creds)
+	} else {
+		logf("AUTH0_WRONG_AUDIENCE not set; skipping wrong-audience fixture")
+	}
+
+	out["AUTH0_OPAQUE_TOKEN"] = mintFixture(ctx, "AUTH0_OPAQUE_TOKEN", "", env.Username, env.Password, creds)
+}
+
+// mintWrongIssuerFixture mints against a separate Auth0 tenant so the token
+// carries an `iss` that does not match the identity server's configured
+// issuer. Audience, realm, scope, username, and password are inherited from
+// the primary creds — only the tenant-specific values (domain, client) come
+// from the AUTH0_WRONG_ISSUER_* env vars. The wrong-issuer tenant must
+// expose the same AUTH0_AUDIENCE identifier so the verifier reaches the
+// issuer check before short-circuiting on aud.
+func mintWrongIssuerFixture(ctx context.Context, env auth0Env, creds auth0MintCreds, out map[string]string) {
+	if env.WrongIssuerDomain == "" || env.WrongIssuerClientID == "" || env.WrongIssuerClientSecret == "" {
+		logf("AUTH0_WRONG_ISSUER_DOMAIN/CLIENT_ID/CLIENT_SECRET not all set; skipping wrong-issuer fixture")
+
+		return
+	}
+
+	wiCreds := auth0MintCreds{
+		Domain:       env.WrongIssuerDomain,
+		ClientID:     env.WrongIssuerClientID,
+		ClientSecret: env.WrongIssuerClientSecret,
+		Realm:        creds.Realm,
+		Scope:        creds.Scope,
+	}
+
+	out["AUTH0_WRONG_ISSUER_JWT_TOKEN"] = mintFixture(ctx, "AUTH0_WRONG_ISSUER_JWT_TOKEN",
+		env.Audience, env.Username, env.Password, wiCreds)
+}
+
 func main() {
 	baseURL := flag.String("base-url", os.Getenv("IDENTITY_BASE_URL"), "Identity service base URL")
 	namespace := flag.String("namespace", os.Getenv("IDENTITY_NAMESPACE"), "Kubernetes namespace where identity is deployed")
@@ -410,6 +695,8 @@ func main() {
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
 
+	auth0Vars := mintAuth0Tokens(ctx)
+
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
@@ -422,4 +709,16 @@ func main() {
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("USER_AUTH_TOKEN=%s\n", userToken)
+
+	for _, k := range []string{
+		"AUTH0_VALID_JWT_TOKEN",
+		"AUTH0_WRONG_AUDIENCE_JWT_TOKEN",
+		"AUTH0_EXPIRED_JWT_TOKEN",
+		"AUTH0_WRONG_ISSUER_JWT_TOKEN",
+		"AUTH0_OPAQUE_TOKEN",
+		"AUTH0_INACTIVE_USER_JWT_TOKEN",
+		"AUTH0_EXPECTED_SUBJECT",
+	} {
+		fmt.Printf("%s=%s\n", k, auth0Vars[k])
+	}
 }
