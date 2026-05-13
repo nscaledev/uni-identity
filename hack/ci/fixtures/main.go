@@ -448,6 +448,7 @@ func main() {
 	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID)
 	fmt.Printf("TEST_USER_GROUP_ID=%s\n", userGroupID)
 	fmt.Printf("TEST_USER_ID=%s\n", userID)
+	fmt.Printf("TEST_USER_SUBJECT_EMAIL=%s\n", ciFixtureUserSubject)
 	fmt.Printf("TEST_ADMIN_SA_ID=%s\n", adminSAID)
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)

@@ -408,23 +408,26 @@ var _ = Describe("Group Management", func() {
 // From nscale-auth0-tests: groups.spec.ts §5 — Subjects membership field.
 var _ = Describe("Group Subjects", func() {
 	Context("When managing group subjects", func() {
-		firstOrganizationUser := func() identityopenapi.UserRead {
-			users, err := client.ListUsers(ctx, config.OrgID)
-			if err != nil || len(users) == 0 {
-				Skip("No users available in organization to test legacy userIDs field")
+		fixtureUserID := func() string {
+			Expect(config.UserID).NotTo(BeEmpty(), "TEST_USER_ID must be set by integration fixtures")
+
+			return config.UserID
+		}
+
+		fixtureUserSubjectEmail := func() string {
+			Expect(config.UserSubjectEmail).NotTo(BeEmpty(), "TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+
+			return config.UserSubjectEmail
+		}
+
+		fixtureUserSubject := func() identityopenapi.Subject {
+			subjectEmail := fixtureUserSubjectEmail()
+
+			return identityopenapi.Subject{
+				Email:  &subjectEmail,
+				Id:     subjectEmail,
+				Issuer: config.BaseURL,
 			}
-
-			if config.UserID != "" {
-				for _, user := range users {
-					if user.Metadata.Id == config.UserID {
-						return user
-					}
-				}
-
-				Skip(fmt.Sprintf("Configured TEST_USER_ID %q not found in organization users", config.UserID))
-			}
-
-			return users[0]
 		}
 
 		expectInvalidGroupWrite := func(method, path string, payload identityopenapi.GroupWrite, expectedDescription string) {
@@ -476,12 +479,42 @@ var _ = Describe("Group Subjects", func() {
 			})
 		})
 
+		// §5.1b Create with a valid internal subject — userIDs auto-populated
+		Describe("Given a new group created with a valid internal subject", func() {
+			It("should create successfully with subjects populated and userIDs auto-populated", func() {
+				expectedUserID := fixtureUserID()
+				expectedSubject := fixtureUserSubject()
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{expectedSubject}).Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(groupID).NotTo(BeEmpty())
+				Expect(group.Spec.Subjects).NotTo(BeNil(),
+					"subjects field must be populated after create")
+				Expect(*group.Spec.Subjects).To(HaveLen(1))
+				Expect((*group.Spec.Subjects)[0].Id).To(Equal(expectedSubject.Id))
+				Expect((*group.Spec.Subjects)[0].Email).NotTo(BeNil(),
+					"subject email must round-trip after create")
+				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(*expectedSubject.Email))
+				Expect((*group.Spec.Subjects)[0].Issuer).To(Equal(expectedSubject.Issuer),
+					"subject issuer must round-trip after create")
+				Expect(group.Spec.UserIDs).NotTo(BeNil(),
+					"userIDs field should be present for compatibility")
+				Expect(*group.Spec.UserIDs).To(HaveLen(1),
+					"internal subjects should auto-populate exactly one userID")
+				Expect(*group.Spec.UserIDs).To(ConsistOf(expectedUserID),
+					"internal subjects should auto-populate the fixture userID")
+
+				GinkgoWriter.Printf("Created group with internal subject: %s (ID: %s)\n",
+					group.Metadata.Name, groupID)
+			})
+		})
+
 		// §5.2 Create with userIDs (legacy) — subjects auto-populated
 		Describe("Given a new group created with userIDs (legacy field)", func() {
 			It("should create successfully and subjects should be auto-populated", func() {
-				// userIDs are OrganizationUser object IDs — fetch a real one from the org.
-				user := firstOrganizationUser()
-				realUserID := user.Metadata.Id
+				realUserID := fixtureUserID()
+				expectedSubject := fixtureUserSubject()
 				payload := api.NewGroupPayload().WithUserIDs([]string{realUserID}).Build()
 				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
@@ -495,14 +528,14 @@ var _ = Describe("Group Subjects", func() {
 					"subjects must be auto-populated when group is created with userIDs")
 				Expect(*group.Spec.Subjects).To(HaveLen(1),
 					"response subjects must contain exactly one resolved subject")
-				Expect((*group.Spec.Subjects)[0].Id).To(Equal(user.Spec.Subject),
+				Expect((*group.Spec.Subjects)[0].Id).To(Equal(expectedSubject.Id),
 					"response subject ID must match the resolved user subject")
 				Expect((*group.Spec.Subjects)[0].Email).NotTo(BeNil(),
 					"response subject email must be populated from the resolved user")
-				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(user.Spec.Subject),
+				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(*expectedSubject.Email),
 					"response subject email must match the resolved user subject")
-				Expect((*group.Spec.Subjects)[0].Issuer).NotTo(BeEmpty(),
-					"response subject issuer must be populated for a resolved user")
+				Expect((*group.Spec.Subjects)[0].Issuer).To(Equal(expectedSubject.Issuer),
+					"response subject issuer must match the identity issuer")
 
 				GinkgoWriter.Printf("Created group with userIDs (legacy): %s (ID: %s)\n",
 					group.Metadata.Name, groupID)
@@ -537,7 +570,7 @@ var _ = Describe("Group Subjects", func() {
 				ciInvalidUserEmail := fmt.Sprintf("ci-invalid-user-create-%d@nscale.test", time.Now().UnixNano())
 				email := ciInvalidUserEmail
 				testSubject := identityopenapi.Subject{Id: ciInvalidUserEmail, Email: &email, Issuer: ""}
-				userID := firstOrganizationUser().Metadata.Id
+				userID := fixtureUserID()
 
 				payload := api.NewGroupPayload().
 					WithSubjects([]identityopenapi.Subject{testSubject}).
@@ -674,7 +707,7 @@ var _ = Describe("Group Subjects", func() {
 				ciInvalidUserEmail := fmt.Sprintf("ci-invalid-user-update-%d@nscale.test", time.Now().UnixNano())
 				email := ciInvalidUserEmail
 				testSubject := identityopenapi.Subject{Id: ciInvalidUserEmail, Email: &email, Issuer: ""}
-				userID := firstOrganizationUser().Metadata.Id
+				userID := fixtureUserID()
 
 				updatePayload := api.NewGroupPayload().
 					WithSubjects([]identityopenapi.Subject{testSubject}).
