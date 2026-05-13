@@ -20,6 +20,7 @@ limitations under the License.
 //   - an Organization
 //   - two Groups: one with the "administrator" role, one with the "user" role
 //   - a Project (members: both groups)
+//   - a User in the user group
 //   - two ServiceAccounts: one per group, each yielding a distinct bearer token
 //
 // The resulting tokens exercise both org-scoped (administrator) and
@@ -276,6 +277,31 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 	return id, token
 }
 
+// createUser creates an active user in the given groups and returns its organization user ID.
+func createUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, subject string, groupIDs []string) string {
+	logf("Creating user %q...", subject)
+
+	resp, err := ac.PostApiV1OrganizationsOrganizationIDUsersWithResponse(ctx, orgID, openapi.UserWrite{
+		Spec: openapi.UserSpec{
+			GroupIDs: groupIDs,
+			State:    openapi.Active,
+			Subject:  subject,
+		},
+	})
+	if err != nil {
+		fatalf("failed to create user %q: %v", subject, err)
+	}
+
+	if resp.JSON201 == nil {
+		fatalf("create user %q returned %s", subject, resp.Status())
+	}
+
+	id := resp.JSON201.Metadata.Id
+	logf("  user %q organization user ID: %s", subject, id)
+
+	return id
+}
+
 // waitForOrgNamespace polls until the organization controller has provisioned the backing namespace.
 func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgID string) {
 	logf("Waiting for Organization %s to be provisioned...", orgID)
@@ -406,7 +432,10 @@ func main() {
 	// Both groups are members so both service accounts can access project endpoints.
 	projectID := createProject(ctx, ac, orgID, "ci-test-project", []string{adminGroupID, userGroupID})
 
-	// ── Create ServiceAccounts ────────────────────────────────────────────────
+	// ── Create user and ServiceAccounts ───────────────────────────────────────
+	const ciFixtureUserSubject = "ci-user@nscale.test"
+
+	userID := createUser(ctx, ac, orgID, ciFixtureUserSubject, []string{userGroupID})
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
 
@@ -418,6 +447,8 @@ func main() {
 	fmt.Printf("API_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID)
 	fmt.Printf("TEST_USER_GROUP_ID=%s\n", userGroupID)
+	fmt.Printf("TEST_USER_ID=%s\n", userID)
+	fmt.Printf("TEST_USER_SUBJECT_EMAIL=%s\n", ciFixtureUserSubject)
 	fmt.Printf("TEST_ADMIN_SA_ID=%s\n", adminSAID)
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)
