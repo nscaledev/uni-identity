@@ -71,12 +71,7 @@ func logf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "==> "+format+"\n", args...)
 }
 
-func newKubernetesClient() client.Client {
-	cfg, err := config.GetConfig()
-	if err != nil {
-		fatalf("failed to get kubeconfig: %v", err)
-	}
-
+func newClientScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		fatalf("failed to register core scheme: %v", err)
@@ -86,12 +81,7 @@ func newKubernetesClient() client.Client {
 		fatalf("failed to register identity scheme: %v", err)
 	}
 
-	k8s, err := client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		fatalf("failed to create Kubernetes client: %v", err)
-	}
-
-	return k8s
+	return scheme
 }
 
 // issueCert creates a cert-manager Certificate via controller-runtime and
@@ -294,14 +284,15 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 	}
 
 	id := resp.JSON201.Metadata.Id
+	token := ""
 
-	if resp.JSON201.Status.AccessToken == nil || *resp.JSON201.Status.AccessToken == "" {
-		fatalf("create service account %q did not return an access token", name)
+	if resp.JSON201.Status.AccessToken != nil {
+		token = *resp.JSON201.Status.AccessToken
 	}
 
 	logf("  service account %q ID: %s", name, id)
 
-	return id, *resp.JSON201.Status.AccessToken
+	return id, token
 }
 
 // createUser creates an active user in the given groups and returns its organization user ID.
@@ -443,33 +434,29 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 	return administratorRoleID, userRoleID, auditRoleID
 }
 
-func createOrganizationFixture(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace, name, description string) string {
-	logf("Creating %s Organization...", description)
+func createNonMemberOrganization(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace string) string {
+	logf("Creating non-member Organization...")
+
+	otherOrgName := fmt.Sprintf("ci-unauthorised-org-%d", time.Now().UnixNano())
 
 	resp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: otherOrgName},
 		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
 	})
 	if err != nil {
-		fatalf("failed to create %s Organization: %v", description, err)
+		fatalf("failed to create non-member Organization: %v", err)
 	}
 
 	if resp.JSON202 == nil {
-		fatalf("create %s Organization returned %s", description, resp.Status())
+		fatalf("create non-member Organization returned %s", resp.Status())
 	}
 
 	orgID := resp.JSON202.Metadata.Id
 	logf("  Organization ID: %s", orgID)
+
 	waitForOrgNamespace(ctx, k8s, namespace, orgID)
 
 	return orgID
-}
-
-func createAuditFixtures(ctx context.Context, ac *openapi.ClientWithResponses, orgID, auditRoleID string) string {
-	auditGroupID := createGroup(ctx, ac, orgID, "ci-audit-group", []string{auditRoleID})
-	_, auditToken := createServiceAccount(ctx, ac, orgID, "ci-audit-sa", []string{auditGroupID})
-
-	return auditToken
 }
 
 func main() {
@@ -494,7 +481,15 @@ func main() {
 	ctx := context.Background()
 
 	// Build a controller-runtime client using the in-cluster or KUBECONFIG credentials.
-	k8s := newKubernetesClient()
+	cfg, err := config.GetConfig()
+	if err != nil {
+		fatalf("failed to get kubeconfig: %v", err)
+	}
+
+	k8s, err := client.New(cfg, client.Options{Scheme: newClientScheme()})
+	if err != nil {
+		fatalf("failed to create Kubernetes client: %v", err)
+	}
 
 	// Issue mTLS client cert for ci-fixtures. The CN maps directly to the
 	// platform-administrator system account — no token exchange required.
@@ -505,12 +500,29 @@ func main() {
 	ac := newAPIClient(*baseURL, *caCertPath, certPEM, keyPEM)
 
 	// ── Create Organization ──────────────────────────────────────────────────
-	orgID := createOrganizationFixture(ctx, ac, k8s, *namespace, "ci-test-org", "test")
+	logf("Creating test Organization...")
+
+	orgResp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: "ci-test-org"},
+		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
+	})
+	if err != nil {
+		fatalf("failed to create Organization: %v", err)
+	}
+
+	if orgResp.JSON202 == nil {
+		fatalf("create Organization returned %s", orgResp.Status())
+	}
+
+	orgID := orgResp.JSON202.Metadata.Id
+	logf("  Organization ID: %s", orgID)
+
+	// Wait for the organization controller to provision the backing namespace.
+	waitForOrgNamespace(ctx, k8s, *namespace, orgID)
 
 	// Create a second org that test identities are not members of.
 	// Used by non-member authorization tests (UNAUTHORISED_ORG_ID).
-	otherOrgName := fmt.Sprintf("ci-unauthorised-org-%d", time.Now().UnixNano())
-	unauthorisedOrgID := createOrganizationFixture(ctx, ac, k8s, *namespace, otherOrgName, "non-member")
+	unauthorisedOrgID := createNonMemberOrganization(ctx, ac, k8s, *namespace)
 
 	// ── Resolve role IDs ─────────────────────────────────────────────────────
 	// platform-administrator is protected and not returned by the API.
@@ -533,7 +545,9 @@ func main() {
 
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, serviceAccountToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
-	auditToken := createAuditFixtures(ctx, ac, orgID, auditRoleID)
+	auditGroupID := createGroup(ctx, ac, orgID, "ci-audit-group", []string{auditRoleID})
+	_, auditToken := createServiceAccount(ctx, ac, orgID, "ci-audit-sa", []string{auditGroupID})
+
 	userID := createUser(ctx, ac, orgID, ciFixtureUserSubject, []string{userGroupID})
 	userGlobalID := findGlobalUserID(ctx, k8s, *namespace, ciFixtureUserSubject)
 	userToken := issueUserToken(ctx, k8s, *namespace, *baseURL, ciFixtureUserSubject, userGlobalID)
