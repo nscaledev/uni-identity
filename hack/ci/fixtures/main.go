@@ -435,7 +435,7 @@ func main() {
 	// ── Create user and ServiceAccounts ───────────────────────────────────────
 	const ciFixtureUserSubject = "ci-user@nscale.test"
 
-	createUser(ctx, ac, orgID, ciFixtureUserSubject, []string{userGroupID})
+	userID := createUser(ctx, ac, orgID, ciFixtureUserSubject, []string{userGroupID})
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
 	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
 
@@ -447,6 +447,7 @@ func main() {
 	fmt.Printf("API_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID)
 	fmt.Printf("TEST_USER_GROUP_ID=%s\n", userGroupID)
+	fmt.Printf("TEST_USER_ID=%s\n", userID)
 	fmt.Printf("TEST_ADMIN_SA_ID=%s\n", adminSAID)
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)

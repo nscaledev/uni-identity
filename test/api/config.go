@@ -31,6 +31,7 @@ type TestConfig struct {
 	ProjectID    string
 	AdminGroupID string
 	UserGroupID  string
+	UserID       string
 	UserSAID     string
 }
 
@@ -76,6 +77,7 @@ func LoadTestConfig() (*TestConfig, error) {
 		ProjectID:    v.GetString("TEST_PROJECT_ID"),
 		AdminGroupID: v.GetString("TEST_ADMIN_GROUP_ID"),
 		UserGroupID:  v.GetString("TEST_USER_GROUP_ID"),
+		UserID:       v.GetString("TEST_USER_ID"),
 		UserSAID:     v.GetString("TEST_USER_SA_ID"),
 	}
 

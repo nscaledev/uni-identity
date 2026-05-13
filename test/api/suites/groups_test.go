@@ -414,6 +414,16 @@ var _ = Describe("Group Subjects", func() {
 				Skip("No users available in organization to test legacy userIDs field")
 			}
 
+			if config.UserID != "" {
+				for _, user := range users {
+					if user.Metadata.Id == config.UserID {
+						return user
+					}
+				}
+
+				Skip(fmt.Sprintf("Configured TEST_USER_ID %q not found in organization users", config.UserID))
+			}
+
 			return users[0]
 		}
 
