@@ -60,7 +60,65 @@ jobs:
       run: make integration-fixtures
 
     - name: Run API integration tests
+      id: api-tests
       run: make test-api-ci
+
+    - name: Analyze API test failures with Claude
+      if: always() && steps.api-tests.outcome == 'failure'
+      env:
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      run: |
+        if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+          {
+            echo "## API Integration Test Failure Analysis"
+            echo
+            echo "Claude analysis skipped because CLAUDE_CODE_OAUTH_TOKEN is not configured."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        if [ ! -s junit.xml ]; then
+          {
+            echo "## API Integration Test Failure Analysis"
+            echo
+            echo "Claude analysis skipped because junit.xml was not generated."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        if ! grep -Eq '<(failure|error)[ >]' junit.xml; then
+          {
+            echo "## API Integration Test Failure Analysis"
+            echo
+            echo "Claude analysis skipped because junit.xml does not contain failure or error elements."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        PROMPT=$(cat <<'EOF'
+        Analyze this Ginkgo JUnit XML from the identity API integration suite. Output markdown for a GitHub Actions step summary with:
+        - a '## API Integration Test Failure Analysis' heading
+        - a concise '### Failed Tests' table with columns Test, Error, Likely Cause
+        - a short '### Suggested Next Steps' list
+        Keep it specific to the failures shown and avoid generic advice.
+        EOF
+        )
+
+        OUTPUT=$(npx --yes @anthropic-ai/claude-code -p \
+          "$PROMPT" \
+          < junit.xml 2>/dev/null || true)
+
+        if [ -z "$OUTPUT" ]; then
+          {
+            echo "## API Integration Test Failure Analysis"
+            echo
+            echo "Claude did not return an analysis for junit.xml."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        printf '%s\n' "$OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+        exit 0
 
     - name: Upload test artifacts
       if: failure()
