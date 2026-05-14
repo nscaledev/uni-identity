@@ -177,9 +177,9 @@ This is a systemic property of the storage model, not just an isolated flaw in o
 
 - [`pkg/middleware`](../middleware/README.md), which establishes the trusted request context that
   handlers consume
-- [`../core/pkg/server`](../../../core/pkg/server/README.md), which documents the generic server
+- [`core/pkg/server`](https://github.com/nscaledev/uni-core/blob/main/pkg/server/README.md), which documents the generic server
   and request-processing foundation beneath identity's service-specific handler layer
-- [`../core/pkg/server/conversion`](../../../core/pkg/server/conversion/README.md), which provides
+- [`core/pkg/server/conversion`](https://github.com/nscaledev/uni-core/blob/main/pkg/server/conversion/README.md), which provides
   shared metadata and API/storage conversion helpers used heavily here
 - [`pkg/apis/unikorn/v1alpha1`](../apis/unikorn/v1alpha1/README.md), which defines the persisted
   resource contract the handlers read and write

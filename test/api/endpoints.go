@@ -30,6 +30,11 @@ func NewEndpoints() *Endpoints {
 	return &Endpoints{}
 }
 
+// GetUserinfo returns the endpoint for the userinfo endpoint.
+func (e *Endpoints) GetUserinfo() string {
+	return "/oauth2/v2/userinfo"
+}
+
 // ListOrganizations returns the endpoint for listing all organizations.
 func (e *Endpoints) ListOrganizations() string {
 	return "/api/v1/organizations"
@@ -117,6 +122,11 @@ func (e *Endpoints) GetUser(orgID, userID string) string {
 func (e *Endpoints) GetQuotas(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/quotas",
 		url.PathEscape(orgID))
+}
+
+// Token returns the OAuth2 token endpoint path.
+func (e *Endpoints) Token() string {
+	return "/oauth2/v2/token"
 }
 
 // ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.

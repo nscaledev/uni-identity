@@ -112,5 +112,5 @@ service-to-service scoping, and least-privilege delegated access behaviour.
 
 ## Related Documentation
 
-- [`pkg/rbac`](../../rbac/README.md), which consumes delegated identity and impersonation signals to
+- [`pkg/rbac`](../rbac/README.md), which consumes delegated identity and impersonation signals to
   compute effective authority

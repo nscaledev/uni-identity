@@ -57,6 +57,16 @@ func (e *Error) Error() string {
 	return e.description
 }
 
+// StatusCode returns the HTTP status associated with this OAuth2 error.
+func (e *Error) StatusCode() int {
+	return e.status
+}
+
+// Code returns the OAuth2 machine-readable error code.
+func (e *Error) Code() openapi.Oauth2ErrorError {
+	return e.code
+}
+
 // Write returns the error code and description to the client.
 func (e *Error) Write(w http.ResponseWriter, r *http.Request) {
 	// Log out any detail from the error that shouldn't be
