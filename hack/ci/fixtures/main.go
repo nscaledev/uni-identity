@@ -17,11 +17,11 @@ limitations under the License.
 // integration-fixtures bootstraps the minimum test resources for integration tests.
 // It uses controller-runtime to issue an mTLS client certificate, then
 // calls the identity HTTP API via the generated OpenAPI client to create:
-//   - an Organization
-//   - two Groups: one with the "administrator" role, one with the "user" role
+//   - two Organizations: one test org and one non-member org
+//   - three Groups: "administrator", "user", and "auditor"
 //   - a Project (members: both groups)
-//   - a User in the user group
-//   - two ServiceAccounts: one per group, each yielding a distinct bearer token
+//   - a user in the user group, yielding a federated bearer token
+//   - ServiceAccounts for admin, user, and audit groups, each yielding a distinct bearer token
 //
 // The resulting tokens exercise both org-scoped (administrator) and
 // project-scoped (user) RBAC paths in the main integration suite.
@@ -45,10 +45,15 @@ import (
 	"time"
 
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -64,6 +69,19 @@ func fatalf(format string, args ...interface{}) {
 
 func logf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "==> "+format+"\n", args...)
+}
+
+func newClientScheme() *runtime.Scheme {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		fatalf("failed to register core scheme: %v", err)
+	}
+
+	if err := unikornv1.AddToScheme(scheme); err != nil {
+		fatalf("failed to register identity scheme: %v", err)
+	}
+
+	return scheme
 }
 
 // issueCert creates a cert-manager Certificate via controller-runtime and
@@ -302,6 +320,58 @@ func createUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, sub
 	return id
 }
 
+func findGlobalUserID(ctx context.Context, k8s client.Client, namespace, subject string) string {
+	users := &unikornv1.UserList{}
+	if err := k8s.List(ctx, users, client.InNamespace(namespace)); err != nil {
+		fatalf("failed to list global users: %v", err)
+	}
+
+	for _, user := range users.Items {
+		if user.Spec.Subject == subject {
+			return user.Name
+		}
+	}
+
+	fatalf("global user for subject %q not found", subject)
+
+	return ""
+}
+
+func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, subject, globalUserID string) string {
+	issuer := handlercommon.IssuerValue{}
+	if err := issuer.Set(baseURL); err != nil {
+		fatalf("failed to parse issuer %q: %v", baseURL, err)
+	}
+
+	jwtIssuer := jose.NewJWTIssuer(k8s, namespace, &jose.Options{})
+	authenticator := oauth2.New(&oauth2.Options{
+		AccessTokenDuration:      time.Hour,
+		RefreshTokenDuration:     time.Hour,
+		TokenCacheSize:           8192,
+		CodeCacheSize:            8192,
+		AccountCreationCacheSize: 8192,
+	}, namespace, issuer, k8s, jwtIssuer, nil, nil)
+
+	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
+		Issuer:   issuer.URL,
+		Audience: issuer.Hostname,
+		Subject:  subject,
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			Provider: "ci-fixtures",
+			ClientID: "ci-fixtures",
+			UserID:   globalUserID,
+			Scope:    oauth2.NewScope("openid email profile"),
+		},
+		Interactive: true,
+	})
+	if err != nil {
+		fatalf("failed to issue user token for %q: %v", subject, err)
+	}
+
+	return tokens.AccessToken
+}
+
 // waitForOrgNamespace polls until the organization controller has provisioned the backing namespace.
 func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgID string) {
 	logf("Waiting for Organization %s to be provisioned...", orgID)
@@ -326,8 +396,11 @@ func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgI
 	}
 }
 
-// resolveRoles lists the organization roles and returns the IDs for administrator and user.
-func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string) {
+// resolveRoles lists organization roles and returns role IDs.
+// - administrator is required.
+// - user is required.
+// - auditor is required.
+func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string, string) {
 	logf("Resolving role IDs...")
 
 	rolesResp, err := ac.GetApiV1OrganizationsOrganizationIDRolesWithResponse(ctx, orgID)
@@ -349,10 +422,41 @@ func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 		fatalf("user role not found in org %s", orgID)
 	}
 
+	auditRoleID := findRole(rolesResp.JSON200, "auditor")
+	if auditRoleID == "" {
+		fatalf("auditor role not found in org %s", orgID)
+	}
+
 	logf("  administrator role ID: %s", administratorRoleID)
 	logf("  user role ID: %s", userRoleID)
+	logf("  auditor role ID: %s", auditRoleID)
 
-	return administratorRoleID, userRoleID
+	return administratorRoleID, userRoleID, auditRoleID
+}
+
+func createNonMemberOrganization(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace string) string {
+	logf("Creating non-member Organization...")
+
+	otherOrgName := fmt.Sprintf("ci-unauthorised-org-%d", time.Now().UnixNano())
+
+	resp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: otherOrgName},
+		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
+	})
+	if err != nil {
+		fatalf("failed to create non-member Organization: %v", err)
+	}
+
+	if resp.JSON202 == nil {
+		fatalf("create non-member Organization returned %s", resp.Status())
+	}
+
+	orgID := resp.JSON202.Metadata.Id
+	logf("  Organization ID: %s", orgID)
+
+	waitForOrgNamespace(ctx, k8s, namespace, orgID)
+
+	return orgID
 }
 
 func main() {
@@ -382,7 +486,7 @@ func main() {
 		fatalf("failed to get kubeconfig: %v", err)
 	}
 
-	k8s, err := client.New(cfg, client.Options{})
+	k8s, err := client.New(cfg, client.Options{Scheme: newClientScheme()})
 	if err != nil {
 		fatalf("failed to create Kubernetes client: %v", err)
 	}
@@ -416,10 +520,14 @@ func main() {
 	// Wait for the organization controller to provision the backing namespace.
 	waitForOrgNamespace(ctx, k8s, *namespace, orgID)
 
+	// Create a second org that test identities are not members of.
+	// Used by non-member authorization tests (UNAUTHORISED_ORG_ID).
+	unauthorisedOrgID := createNonMemberOrganization(ctx, ac, k8s, *namespace)
+
 	// ── Resolve role IDs ─────────────────────────────────────────────────────
 	// platform-administrator is protected and not returned by the API.
 	// We use administrator (org-scoped, full identity CRUD) and user (project-scoped).
-	administratorRoleID, userRoleID := resolveRoles(ctx, ac, orgID)
+	administratorRoleID, userRoleID, auditRoleID := resolveRoles(ctx, ac, orgID)
 
 	// ── Create Groups ─────────────────────────────────────────────────────────
 	// ci-admin-group: organization administrator — full identity CRUD at org scope.
@@ -435,14 +543,20 @@ func main() {
 	// ── Create user and ServiceAccounts ───────────────────────────────────────
 	const ciFixtureUserSubject = "ci-user@nscale.test"
 
-	userID := createUser(ctx, ac, orgID, ciFixtureUserSubject, []string{userGroupID})
 	adminSAID, adminToken := createServiceAccount(ctx, ac, orgID, "ci-admin-sa", []string{adminGroupID})
-	userSAID, userToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
+	userSAID, serviceAccountToken := createServiceAccount(ctx, ac, orgID, "ci-user-sa", []string{userGroupID})
+	auditGroupID := createGroup(ctx, ac, orgID, "ci-audit-group", []string{auditRoleID})
+	_, auditToken := createServiceAccount(ctx, ac, orgID, "ci-audit-sa", []string{auditGroupID})
+
+	userID := createUser(ctx, ac, orgID, ciFixtureUserSubject, []string{userGroupID})
+	userGlobalID := findGlobalUserID(ctx, k8s, *namespace, ciFixtureUserSubject)
+	userToken := issueUserToken(ctx, k8s, *namespace, *baseURL, ciFixtureUserSubject, userGlobalID)
 
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
 	fmt.Printf("TEST_ORG_ID=%s\n", orgID)
+	fmt.Printf("UNAUTHORISED_ORG_ID=%s\n", unauthorisedOrgID)
 	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID)
 	fmt.Printf("API_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID)
@@ -453,4 +567,6 @@ func main() {
 	fmt.Printf("TEST_USER_SA_ID=%s\n", userSAID)
 	fmt.Printf("ADMIN_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("USER_AUTH_TOKEN=%s\n", userToken)
+	fmt.Printf("SERVICE_ACCOUNT_TOKEN=%s\n", serviceAccountToken)
+	fmt.Printf("AUDIT_AUTH_TOKEN=%s\n", auditToken)
 }
