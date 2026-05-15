@@ -405,6 +405,234 @@ var _ = Describe("Group Management", func() {
 	})
 })
 
+var _ = Describe("Group Subject Compatibility", func() {
+	Context("When group subjects affect ACL permissions", func() {
+		type aclPermission struct {
+			endpoint  string
+			operation identityopenapi.AclOperation
+		}
+
+		groupCreatePermission := aclPermission{
+			endpoint:  "identity:groups",
+			operation: identityopenapi.Create,
+		}
+
+		BeforeEach(func() {
+			Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
+			Expect(adminClient).NotTo(BeNil(), "ADMIN_AUTH_TOKEN must be set by integration fixtures")
+			Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
+				"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+		})
+
+		findAdministratorRoleID := func() string {
+			roles, err := adminClient.ListRoles(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, role := range roles {
+				if role.Metadata.Name == "administrator" {
+					return role.Metadata.Id
+				}
+			}
+
+			Fail("administrator role must be available for ACL effect testing")
+
+			return ""
+		}
+
+		orgACLHasPermission := func(permission aclPermission) (bool, error) {
+			acl, err := userClient.GetOrganizationACL(ctx, config.OrgID)
+			if err != nil {
+				return false, err
+			}
+
+			if acl.Organization == nil || acl.Organization.Endpoints == nil {
+				return false, nil
+			}
+
+			for _, endpoint := range *acl.Organization.Endpoints {
+				if endpoint.Name != permission.endpoint {
+					continue
+				}
+
+				for _, operation := range endpoint.Operations {
+					if operation == permission.operation {
+						return true, nil
+					}
+				}
+
+				return false, nil
+			}
+
+			return false, nil
+		}
+
+		expectPermissionCondition := func(permission aclPermission, expected bool) {
+			hasPermission, err := orgACLHasPermission(permission)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hasPermission).To(Equal(expected),
+				"ACL permission %s/%s should be %t before test setup",
+				permission.endpoint, permission.operation, expected)
+		}
+
+		waitForPermissionCondition := func(permission aclPermission, expected bool) {
+			timeout := config.TestTimeout
+			if timeout > 2*time.Minute {
+				timeout = 2 * time.Minute
+			}
+
+			Eventually(func() bool {
+				hasPermission, err := orgACLHasPermission(permission)
+				Expect(err).NotTo(HaveOccurred())
+
+				return hasPermission == expected
+			}).WithTimeout(timeout).WithPolling(2*time.Second).Should(BeTrue(),
+				"ACL permission %s/%s should become %t", permission.endpoint, permission.operation, expected)
+		}
+
+		fixtureUserSubject := func() identityopenapi.Subject {
+			userinfo, err := userClient.GetUserinfo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
+			Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User),
+				"USER_AUTH_TOKEN must be a federated user token for subject ACL effect tests")
+			Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
+
+			email := userinfo.Sub
+
+			return identityopenapi.Subject{
+				Email:  &email,
+				Id:     userinfo.Sub,
+				Issuer: config.BaseURL,
+			}
+		}
+
+		createAdministratorSubjectGroup := func(permission aclPermission) (string, func()) {
+			administratorRoleID := findAdministratorRoleID()
+			subject := fixtureUserSubject()
+
+			group, err := adminClient.CreateGroup(ctx, config.OrgID,
+				api.NewGroupPayload().
+					WithRoleIDs([]string{administratorRoleID}).
+					WithSubjects([]identityopenapi.Subject{subject}).
+					Build())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(group.Metadata.Id).NotTo(BeEmpty())
+			Expect(group.Metadata.OrganizationId).To(Equal(config.OrgID))
+			Expect(group.Spec.RoleIDs).To(ConsistOf(administratorRoleID))
+			Expect(group.Spec.Subjects).NotTo(BeNil())
+			Expect(*group.Spec.Subjects).To(ConsistOf(subject))
+
+			groupID := group.Metadata.Id
+			deleted := false
+			markDeleted := func() {
+				deleted = true
+			}
+
+			DeferCleanup(func() {
+				if !deleted {
+					err := adminClient.DeleteGroup(ctx, config.OrgID, groupID)
+					if !errors.Is(err, coreclient.ErrResourceNotFound) {
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+
+				waitForPermissionCondition(permission, false)
+			})
+
+			return groupID, markDeleted
+		}
+
+		Describe("Given a group with an administrator role and the user's subject", func() {
+			It("should add the role's organization ACL permission to the user", func() {
+				permission := groupCreatePermission
+				expectPermissionCondition(permission, false)
+
+				groupID, _ := createAdministratorSubjectGroup(permission)
+
+				waitForPermissionCondition(permission, true)
+
+				GinkgoWriter.Printf("Group %s granted %s/%s to subject %s\n",
+					groupID, permission.endpoint, permission.operation, config.UserSubjectEmail)
+			})
+		})
+
+		Describe("Given a group that grants ACL permissions through the user's subject", func() {
+			It("should remove the role's organization ACL permission after the group is deleted", func() {
+				permission := groupCreatePermission
+				expectPermissionCondition(permission, false)
+
+				groupID, markDeleted := createAdministratorSubjectGroup(permission)
+
+				waitForPermissionCondition(permission, true)
+
+				Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
+				markDeleted()
+				waitForPermissionCondition(permission, false)
+
+				GinkgoWriter.Printf("Group %s deletion removed %s/%s from subject %s\n",
+					groupID, permission.endpoint, permission.operation, config.UserSubjectEmail)
+			})
+		})
+	})
+
+	Context("When validating groups with userIDs", func() {
+		Describe("Given all existing groups in the organization", func() {
+			It("should expose subjects for every group that has userIDs", func() {
+				Expect(config.UserGroupID).NotTo(BeEmpty(),
+					"TEST_USER_GROUP_ID must be set by integration fixtures")
+				Expect(config.UserID).NotTo(BeEmpty(), "TEST_USER_ID must be set by integration fixtures")
+				Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
+					"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+
+				groups, err := client.ListGroups(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+
+				foundGroupWithUserIDs := false
+				foundFixtureUserGroup := false
+
+				for _, group := range groups {
+					if group.Spec.UserIDs == nil || len(*group.Spec.UserIDs) == 0 {
+						continue
+					}
+
+					foundGroupWithUserIDs = true
+					Expect(group.Spec.Subjects).NotTo(BeNil(),
+						"group %s has userIDs but subjects is nil", group.Metadata.Id)
+					Expect(*group.Spec.Subjects).NotTo(BeEmpty(),
+						"group %s has userIDs but subjects is empty", group.Metadata.Id)
+					Expect(len(*group.Spec.Subjects)).To(BeNumerically(">=", len(*group.Spec.UserIDs)),
+						"group %s should not have fewer subjects than userIDs", group.Metadata.Id)
+
+					if group.Metadata.Id != config.UserGroupID {
+						continue
+					}
+
+					foundFixtureUserGroup = true
+					Expect(*group.Spec.UserIDs).To(ConsistOf(config.UserID),
+						"fixture user group should contain exactly TEST_USER_ID")
+					Expect(*group.Spec.Subjects).To(HaveLen(1),
+						"fixture user group should contain exactly one subject")
+
+					subject := (*group.Spec.Subjects)[0]
+					Expect(subject.Id).To(Equal(config.UserSubjectEmail),
+						"fixture user group subject ID should match TEST_USER_SUBJECT_EMAIL")
+					Expect(subject.Email).NotTo(BeNil(),
+						"fixture user group subject email should be populated")
+					Expect(*subject.Email).To(Equal(config.UserSubjectEmail),
+						"fixture user group subject email should match TEST_USER_SUBJECT_EMAIL")
+					Expect(subject.Issuer).To(Equal(config.BaseURL),
+						"fixture user group subject issuer should match the identity issuer")
+				}
+
+				Expect(foundGroupWithUserIDs).To(BeTrue(),
+					"integration fixtures must include at least one group with userIDs")
+				Expect(foundFixtureUserGroup).To(BeTrue(),
+					"TEST_USER_GROUP_ID should identify a group with TEST_USER_ID membership")
+			})
+		})
+	})
+})
+
 var _ = Describe("Group Subjects", func() {
 	Context("When managing group subjects", func() {
 		fixtureUserID := func() string {
