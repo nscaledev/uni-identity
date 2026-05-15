@@ -639,6 +639,24 @@ func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int,
 	return c.doFormRequest(ctx, http.MethodPost, path, c.exchangeForm(options), expectedStatus)
 }
 
+// GetJWKS returns the public JSON Web Key Set used to verify tokens issued by identity.
+func (c *APIClient) GetJWKS(ctx context.Context) (*identityopenapi.JwksResponse, error) {
+	path := c.endpoints.GetJWKS()
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("getting JWKS: %w", err)
+	}
+
+	var jwks identityopenapi.JwksResponse
+	if err := json.Unmarshal(respBody, &jwks); err != nil {
+		return nil, fmt.Errorf("unmarshaling JWKS: %w", err)
+	}
+
+	return &jwks, nil
+}
+
 // UpdateServiceAccount updates an existing service account.
 func (c *APIClient) UpdateServiceAccount(ctx context.Context, orgID, saID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.ServiceAccountRead, error) {
 	return putResource[identityopenapi.ServiceAccountWrite, identityopenapi.ServiceAccountRead](
