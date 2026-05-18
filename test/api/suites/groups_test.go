@@ -506,7 +506,7 @@ var _ = Describe("Group Subject Compatibility", func() {
 			}
 		}
 
-		createAdministratorSubjectGroup := func(permission aclPermission) (string, func()) {
+		createAdminGroupForUserSubjectWithCleanup := func(permission aclPermission) (string, func()) {
 			administratorRoleID := findAdministratorRoleID()
 			subject := fixtureUserSubject()
 
@@ -545,10 +545,13 @@ var _ = Describe("Group Subject Compatibility", func() {
 		Describe("Given a group with an administrator role and the user's subject", func() {
 			It("should add the role's organization ACL permission to the user", func() {
 				permission := groupCreatePermission
+				By("verifying the user does not already have group create permission")
 				expectPermissionCondition(permission, false)
 
-				groupID, _ := createAdministratorSubjectGroup(permission)
+				By("creating an administrator group for the user subject")
+				groupID, _ := createAdminGroupForUserSubjectWithCleanup(permission)
 
+				By("waiting for ACL permission to be granted")
 				waitForPermissionCondition(permission, true)
 
 				GinkgoWriter.Printf("Group %s granted %s/%s to subject %s\n",
@@ -559,14 +562,20 @@ var _ = Describe("Group Subject Compatibility", func() {
 		Describe("Given a group that grants ACL permissions through the user's subject", func() {
 			It("should remove the role's organization ACL permission after the group is deleted", func() {
 				permission := groupCreatePermission
+				By("verifying the user does not already have group create permission")
 				expectPermissionCondition(permission, false)
 
-				groupID, markDeleted := createAdministratorSubjectGroup(permission)
+				By("creating an administrator group for the user subject")
+				groupID, markDeleted := createAdminGroupForUserSubjectWithCleanup(permission)
 
+				By("waiting for ACL permission to be granted")
 				waitForPermissionCondition(permission, true)
 
+				By("deleting the group")
 				Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
 				markDeleted()
+
+				By("waiting for ACL permission to be revoked")
 				waitForPermissionCondition(permission, false)
 
 				GinkgoWriter.Printf("Group %s deletion removed %s/%s from subject %s\n",
@@ -600,6 +609,8 @@ var _ = Describe("Group Subject Compatibility", func() {
 						"group %s has userIDs but subjects is nil", group.Metadata.Id)
 					Expect(*group.Spec.Subjects).NotTo(BeEmpty(),
 						"group %s has userIDs but subjects is empty", group.Metadata.Id)
+					// Direct subjects can coexist with subjects resolved from userIDs, so the
+					// response may contain extra subjects but should never contain fewer.
 					Expect(len(*group.Spec.Subjects)).To(BeNumerically(">=", len(*group.Spec.UserIDs)),
 						"group %s should not have fewer subjects than userIDs", group.Metadata.Id)
 
