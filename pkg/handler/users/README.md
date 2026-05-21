@@ -22,7 +22,7 @@ inside the organization.
 
 User creation is not ordinary CRUD on one object.
 
-The client first gets or creates the global `User` identified by subject, then creates the
+The client first gets or creates the global `User` identified by subject, then gets or creates the
 organization-local `OrganizationUser` membership, then reconciles group membership inside that
 organization.
 
@@ -70,6 +70,9 @@ shape of the package.
 
 - global identity and organization membership are distinct layers and must not be collapsed into a
   single resource model
+- an organization must have at most one `OrganizationUser` membership for a given global `User`
+- repeated create requests reuse the existing `OrganizationUser` without mutating its state; callers
+  must use update to intentionally change organization-local state
 - organization membership changes must keep group membership consistent with the requested
   `groupIDs`
 - user read responses are assembled from global user state, organization membership state, and
