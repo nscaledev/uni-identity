@@ -88,6 +88,20 @@ var _ = Describe("RBAC Enforcement", func() {
 			})
 		})
 
+		Describe("Given a request to list groups in a non-member organization", func() {
+			It("should be denied with a forbidden response", func() {
+				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
+					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
+
+				resp, _, err := adminClient.DoRequest(ctx, http.MethodGet,
+					api.NewEndpoints().ListGroups(config.UnauthorisedOrgID), nil, http.StatusForbidden)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+			})
+		})
+
 		Describe("Given a request to list roles", func() {
 			It("should return all roles in the organization with complete metadata", func() {
 				roles, err := adminClient.ListRoles(ctx, config.OrgID)
