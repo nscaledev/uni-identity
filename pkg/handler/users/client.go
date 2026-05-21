@@ -52,6 +52,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -685,6 +686,51 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 	return resource, nil
 }
 
+func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organization *organizations.Meta, globalUserID string) (*unikornv1.OrganizationUser, error) {
+	selector := labels.SelectorFromSet(labels.Set{
+		constants.OrganizationLabel: organization.ID,
+		constants.UserLabel:         globalUserID,
+	})
+
+	result := &unikornv1.OrganizationUserList{}
+	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace, LabelSelector: selector}); err != nil {
+		return nil, fmt.Errorf("%w: failed to list organization users", err)
+	}
+
+	switch len(result.Items) {
+	case 0:
+		return nil, ErrReference
+	case 1:
+		return &result.Items[0], nil
+	default:
+		return nil, fmt.Errorf("%w: multiple organization users reference global user", coreerrors.ErrConsistency)
+	}
+}
+
+func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, globalUserID string) (*unikornv1.OrganizationUser, error) {
+	resource, err := c.getOrganizationUserByGlobalUserID(ctx, organization, globalUserID)
+	if err == nil {
+		// Create is idempotent: an existing membership is returned as-is. Call Update
+		// to intentionally change organization-local state.
+		return resource, nil
+	}
+
+	if !goerrors.Is(err, ErrReference) {
+		return nil, fmt.Errorf("%w: failed to create organization user", err)
+	}
+
+	resource, err = generateOrganizationUser(ctx, organization, request, globalUserID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.client.Create(ctx, resource); err != nil {
+		return nil, fmt.Errorf("%w: failed to create organization user", err)
+	}
+
+	return resource, nil
+}
+
 // Create makes a new user.  This creates a new user in an organization, but they
 // reference a unique user resource, so we need to get or create the underlying record
 // first, then add to the organization.
@@ -700,19 +746,14 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, err
 	}
 
-	// Create the organization user.
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	resource, err := generateOrganizationUser(ctx, organization, request, user.Name)
+	resource, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
 	if err != nil {
 		return nil, err
-	}
-
-	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, fmt.Errorf("%w: failed to create organization user", err)
 	}
 
 	groups, err := c.listGroups(ctx, organization)
