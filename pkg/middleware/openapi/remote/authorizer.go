@@ -200,7 +200,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 
 	userinfo := passportToUserinfo(claims)
 
-	if ttl := cacheTTL(claims, rawToken, time.Now()); ttl > 0 {
+	if ttl := cacheTTL(claims, time.Now()); ttl > 0 {
 		a.tokenCache.Add(cacheKey, userinfo, ttl)
 	}
 
@@ -264,36 +264,10 @@ func passportToUserinfo(claims *oauth2.PassportClaims) *identityapi.Userinfo {
 	return userinfo
 }
 
-// cacheTTL keeps cached identity within the earliest known token expiry,
+// cacheTTL keeps cached identity within the passport expiry set by identity,
 // leaving a small margin for clock skew.
-func cacheTTL(claims *oauth2.PassportClaims, sourceToken string, now time.Time) time.Duration {
-	earliest := claims.Expiry.Time()
-
-	if sourceExp, ok := sourceTokenExpiry(sourceToken); ok && sourceExp.Before(earliest) {
-		earliest = sourceExp
-	}
-
-	return earliest.Sub(now) - cacheTTLFudge
-}
-
-// sourceTokenExpiry returns exp for signed JWT source tokens. Non-JWT tokens
-// rely on the passport expiry set by identity.
-func sourceTokenExpiry(token string) (time.Time, bool) {
-	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES512})
-	if err != nil {
-		return time.Time{}, false
-	}
-
-	var claims jwt.Claims
-	if err := parsed.UnsafeClaimsWithoutVerification(&claims); err != nil {
-		return time.Time{}, false
-	}
-
-	if claims.Expiry == nil {
-		return time.Time{}, false
-	}
-
-	return claims.Expiry.Time(), true
+func cacheTTL(claims *oauth2.PassportClaims, now time.Time) time.Duration {
+	return claims.Expiry.Time().Sub(now) - cacheTTLFudge
 }
 
 // Authorize checks the request against the OpenAPI security scheme.

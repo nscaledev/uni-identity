@@ -41,7 +41,7 @@ import (
 
 // TestCacheTTL covers the cache expiry contract:
 //
-//	cache_ttl = min(passport.exp, source_token.exp) - now - fudge
+//	cache_ttl = passport.exp - now - fudge
 func TestCacheTTL(t *testing.T) {
 	t.Parallel()
 
@@ -77,7 +77,7 @@ func TestCacheTTL(t *testing.T) {
 				Claims: jwt.Claims{Expiry: jwt.NewNumericDate(tt.passportExp)},
 			}
 
-			got := cacheTTL(claims, "opaque-source-token", now)
+			got := cacheTTL(claims, now)
 			assert.Equal(t, tt.want, got)
 		})
 	}
