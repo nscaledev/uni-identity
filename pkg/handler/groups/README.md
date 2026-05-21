@@ -66,6 +66,7 @@ would drift.
 - protected roles must never be attached to a group
 - callers may only attach roles they are allowed to grant in that organization
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible
+- group membership and role/service-account ID lists are normalized to first-occurrence unique values
 - projects should not retain references to groups that no longer exist
 
 ## Caveats
