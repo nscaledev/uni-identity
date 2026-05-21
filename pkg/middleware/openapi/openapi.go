@@ -277,8 +277,8 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 			return err
 		}
 
-		// This call performs an OIDC userinfo call to authenticate the token
-		// with identity and to extract auditing information.
+		// This call authenticates the request and resolves the identity data
+		// used for audit, principal generation and RBAC lookup.
 		info, err := v.validateAuthentication(ctx, input)
 		if err != nil {
 			authInfo.err = err
@@ -452,7 +452,7 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	// If mTLS is in use, then the access token *may* be bound to the X.509 private key,
 	// but only in the case where a service is using a client credentials grant.
 	// As all services act on behalf of clients, we only want the client certificate to
-	// be propagated to the identity service during authentication (userinfo call) and
+	// be propagated to the identity service during authentication/token exchange and
 	// authorization (ACL call), otherwise you risk it being injected where it's not
 	// wanted.
 	authorizationCtx, err := authorization.ExtractClientCert(ctx, r.Header)

@@ -43,8 +43,11 @@ import (
 )
 
 const (
-	// PassportTTL is the lifetime of a passport token.
-	PassportTTL = 2 * time.Minute
+	// PassportTTL is the lifetime of a passport token. Sized to cover the
+	// worst-case operational lifetime of a request that uses it: three
+	// downstream hops at 15s per-hop API timeout plus 15s grace for clock
+	// skew and tail latency.
+	PassportTTL = 60 * time.Second
 
 	// PassportType distinguishes passport tokens from access tokens.
 	PassportType = "passport"
@@ -142,7 +145,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	subjectToken := *options.SubjectToken
 
-	userinfo, _, err := a.GetUserinfo(ctx, request, subjectToken)
+	userinfo, sourceClaims, err := a.GetUserinfo(ctx, request, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -192,6 +195,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 	}
 
 	now := time.Now()
+	expiry := passportExpiry(now, sourceClaims)
 	passportID := uuid.New().String()
 
 	claims := &PassportClaims{
@@ -202,7 +206,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 			Audience:  audience,
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
-			Expiry:    jwt.NewNumericDate(now.Add(PassportTTL)),
+			Expiry:    jwt.NewNumericDate(expiry),
 		},
 		Type:      PassportType,
 		Acctype:   authz.Acctype,
@@ -235,11 +239,21 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 	result := &openapi.Token{
 		TokenType:       "Bearer",
 		AccessToken:     passport,
-		ExpiresIn:       int(PassportTTL.Seconds()),
+		ExpiresIn:       int(expiry.Sub(now).Seconds()),
 		IssuedTokenType: stringPtr(PassportIssuedTokenType()),
 	}
 
 	return result, nil
+}
+
+func passportExpiry(now time.Time, sourceClaims *Claims) time.Time {
+	expiry := now.Add(PassportTTL)
+
+	if sourceClaims != nil && sourceClaims.Expiry != nil && sourceClaims.Expiry.Time().Before(expiry) {
+		return sourceClaims.Expiry.Time()
+	}
+
+	return expiry
 }
 
 func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string) error {
@@ -405,9 +419,8 @@ func normalizeExchangeUserinfoError(err error) error {
 // RFC 8693 §2.1 requires the request body to be
 // application/x-www-form-urlencoded; we enforce that explicitly so a caller
 // can't smuggle params via a query string under a JSON Content-Type. The
-// actor_token path is rejected because Phase 2 has no delegation flow — once
-// the spec MUSTs validation when actor_token is present, silently dropping
-// it would be a conformance gap.
+// actor_token path is rejected because delegation is not supported here; silently
+// dropping it would be a conformance gap.
 //
 // Note: audience and resource may appear multiple times per RFC 8693 §2.1,
 // but the typed model and form lookup here take only the first instance.

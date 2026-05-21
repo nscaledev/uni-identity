@@ -228,13 +228,23 @@ func TestExchangeFederatedUser(t *testing.T) {
 		},
 	})
 
+	var sourceClaims oauth2.Claims
+
+	require.NoError(t, env.jwtIssuer.DecodeJWEToken(
+		t.Context(),
+		token,
+		&sourceClaims,
+		jose.TokenTypeAccessToken,
+	))
+
 	req := exchangeRequest(t, token, nil)
 
 	result, err := env.authenticator.TokenExchange(nil, req)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	assert.Equal(t, 120, result.ExpiresIn)
+	assert.Positive(t, result.ExpiresIn)
+	assert.LessOrEqual(t, result.ExpiresIn, int(oauth2.PassportTTL.Seconds()))
 	assert.Equal(t, "Bearer", result.TokenType)
 	require.NotNil(t, result.IssuedTokenType)
 	assert.Equal(t, passportIssuedTokenType(), *result.IssuedTokenType)
@@ -252,8 +262,95 @@ func TestExchangeFederatedUser(t *testing.T) {
 	assert.Empty(t, claims.Audience, "aud must be empty when no audience or resource was requested")
 	assert.ElementsMatch(t, []string{"org1"}, claims.OrgIDs)
 
-	// Verify timing: exp should be iat + 120s.
-	assert.Equal(t, claims.IssuedAt.Time().Add(oauth2.PassportTTL), claims.Expiry.Time())
+	assert.False(t,
+		claims.Expiry.Time().After(sourceClaims.Expiry.Time()),
+		"passport expiry must not outlive the source access token expiry",
+	)
+	assert.False(t,
+		claims.Expiry.Time().After(claims.IssuedAt.Time().Add(oauth2.PassportTTL)),
+		"passport expiry must not exceed the configured passport TTL",
+	)
+}
+
+func TestExchangeCapsPassportExpiryAtSourceTokenExpiry(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1",
+			},
+			Status: unikornv1.OrganizationStatus{
+				Namespace: josetesting.Namespace + "-org1",
+			},
+		},
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+				Sessions: []unikornv1.UserSession{
+					{
+						ClientID: "test-client",
+					},
+				},
+			},
+		},
+		&unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1-user",
+				Labels: map[string]string{
+					constants.UserLabel:         "test-user",
+					constants.OrganizationLabel: "org1",
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{
+				State: unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	sourceTokenTTL := 20 * time.Second
+	tokens, err := env.authenticator.Issue(t.Context(), &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID:   "test-user",
+			ClientID: "test-client",
+			Scope:    oauth2.NewScope("openid email"),
+		},
+		Duration: &sourceTokenTTL,
+	})
+	require.NoError(t, err)
+
+	var sourceClaims oauth2.Claims
+
+	require.NoError(t, env.jwtIssuer.DecodeJWEToken(
+		t.Context(),
+		tokens.AccessToken,
+		&sourceClaims,
+		jose.TokenTypeAccessToken,
+	))
+
+	req := exchangeRequest(t, tokens.AccessToken, nil)
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	passportClaims := parsePassport(t, env, result.AccessToken)
+
+	assert.False(t,
+		passportClaims.Expiry.Time().After(sourceClaims.Expiry.Time()),
+		"passport expiry must not outlive the source access token expiry",
+	)
 }
 
 func TestExchangeWithOrgScope(t *testing.T) {
@@ -883,6 +980,15 @@ func TestExchangeHandlerSuccess(t *testing.T) {
 		},
 	})
 
+	var sourceClaims oauth2.Claims
+
+	require.NoError(t, env.jwtIssuer.DecodeJWEToken(
+		t.Context(),
+		token,
+		&sourceClaims,
+		jose.TokenTypeAccessToken,
+	))
+
 	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
 	require.NoError(t, err)
 
@@ -904,10 +1010,17 @@ func TestExchangeHandlerSuccess(t *testing.T) {
 
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&result))
 	assert.NotEmpty(t, result.AccessToken)
-	assert.Equal(t, 120, result.ExpiresIn)
+	assert.Positive(t, result.ExpiresIn)
+	assert.LessOrEqual(t, result.ExpiresIn, int(oauth2.PassportTTL.Seconds()))
 	assert.Equal(t, "Bearer", result.TokenType)
 	require.NotNil(t, result.IssuedTokenType)
 	assert.Equal(t, passportIssuedTokenType(), *result.IssuedTokenType)
+
+	claims := parsePassport(t, env, result.AccessToken)
+	assert.False(t,
+		claims.Expiry.Time().After(sourceClaims.Expiry.Time()),
+		"passport expiry must not outlive the source access token expiry",
+	)
 }
 
 func TestExchangeMalformedBody(t *testing.T) {

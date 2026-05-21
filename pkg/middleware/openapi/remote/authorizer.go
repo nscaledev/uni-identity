@@ -20,40 +20,54 @@ package authorizer
 
 import (
 	"context"
-	"encoding/json"
+	goerrors "errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/getkin/kin-openapi/openapi3filter"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
-	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
-	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/core/pkg/util/cache"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
-
-	"k8s.io/apimachinery/pkg/util/cache"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// Authorizer provides OpenAPI based authorization middleware.
+const (
+	tokenCacheSize = 4096
+
+	// cacheTTLFudge absorbs clock skew between identity and this middleware
+	// when deriving cache TTLs from passport expiry.
+	cacheTTLFudge = 10 * time.Second
+)
+
+// tokenCacheKey includes route scope because passports include requested
+// organization/project context in their claims.
+type tokenCacheKey struct {
+	token          string
+	organizationID string
+	projectID      string
+}
+
+// Authorizer provides OpenAPI based authorization middleware backed by remote
+// identity token exchange and ACL lookup.
 type Authorizer struct {
 	client        client.Client
 	options       *identityclient.Options
 	clientOptions *coreclient.HTTPClientOptions
 	httpClient    *http.Client
-	// tokenCache is used to enhance interaction as the validation is a
-	// very expensive operation.
-	tokenCache *cache.LRUExpireCache
+	exchange      TokenExchange
+	tokenCache    *cache.LRUExpireCache[tokenCacheKey, *identityapi.Userinfo]
 }
 
 var _ openapi.Authorizer = &Authorizer{}
@@ -65,21 +79,21 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		return nil, err
 	}
 
+	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *identityapi.Userinfo](tokenCacheSize)
+	tokenCache.ZeroCopy()
+
 	a := &Authorizer{
 		httpClient:    httpClient,
 		client:        client,
 		options:       options,
 		clientOptions: clientOptions,
-		// TODO: make this configurable, possibly even a shared flag with the
-		// authorizer to maintain consistency.
-		tokenCache: cache.NewLRUExpireCache(4096),
+		exchange:      NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
+		tokenCache:    tokenCache,
 	}
 
 	return a, nil
 }
 
-// getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
-// Authorization header.
 func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
@@ -112,7 +126,6 @@ func (t *requestMutatingTransport) RoundTrip(req *http.Request) (*http.Response,
 func getIdentityHTTPClient(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*http.Client, error) {
 	ctx := context.TODO()
 
-	// The identity client neatly wraps up TLS...
 	identity := identityclient.New(client, options, clientOptions)
 
 	baseClient, err := identity.HTTPClient(ctx)
@@ -120,9 +133,6 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 		return nil, err
 	}
 
-	// Whe need to mutate the request to do trace context propagation and
-	// client certificate propagation if it's a token bound to an X.509
-	// certificate.
 	mutator := func(req *http.Request) error {
 		if err := identityclient.TraceContextRequestMutator(req.Context(), req); err != nil {
 			return err
@@ -135,8 +145,6 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 		return nil
 	}
 
-	// But it doesn't do request mutation, so we have to slightly hack it by
-	// making a nested transport.
 	httpClient := &http.Client{
 		Transport: &requestMutatingTransport{
 			base:    baseClient.Transport,
@@ -147,10 +155,9 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 	return httpClient, nil
 }
 
-// authorizeOAuth2 checks APIs that require and oauth2 bearer token.
-//
-//nolint:cyclop
-func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
+// authorizeOAuth2 resolves a bearer token into the Userinfo-compatible
+// identity shape consumed by handlers.
+func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions) (*authorization.Info, error) {
 	ctx := r.Context()
 
 	authorizationScheme, rawToken, err := getHTTPAuthenticationScheme(r)
@@ -162,92 +169,147 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	if value, ok := a.tokenCache.Get(rawToken); ok {
-		claims, ok := value.(*identityapi.Userinfo)
-		if !ok {
-			return nil, fmt.Errorf("%w: invalid token cache data", coreerrors.ErrConsistency)
-		}
+	cacheKey := tokenCacheKey{
+		token:          rawToken,
+		organizationID: scope.organizationID,
+		projectID:      scope.projectID,
+	}
 
-		info := &authorization.Info{
+	if userinfo, ok := a.tokenCache.Get(cacheKey); ok {
+		return &authorization.Info{
 			Token:    rawToken,
-			Userinfo: claims,
-		}
-
-		return info, nil
+			Userinfo: userinfo,
+		}, nil
 	}
 
-	ctx = oidc.ClientContext(ctx, a.httpClient)
+	exchangeOptions := scope
 
-	// Perform userinfo call against the identity service that will validate the token
-	// and also return some information about the user that we can use for audit logging.
-	provider, err := oidc.NewProvider(ctx, a.options.Host())
+	passport, err := a.exchange.Exchange(ctx, rawToken, &exchangeOptions)
 	if err != nil {
-		return nil, fmt.Errorf("%w: oidc service discovery failed", err)
-	}
-
-	// Do the call manually here to allow us to extract the correct error code and
-	// headers, returned by identity.
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, provider.UserInfoEndpoint(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to create userinfo request", err)
-	}
-
-	request.Header.Set("Authorization", authorizationScheme+" "+rawToken)
-
-	response, err := a.httpClient.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to perform userinfo request", err)
-	}
-
-	defer response.Body.Close()
-
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to read userinfo response body", err)
-	}
-
-	if response.StatusCode != http.StatusOK {
-		// No not propagate this error type, we need to set the WWW-Authenticate
-		// header to point at this service's OIDC protected resource metadata page.
-		if response.StatusCode == http.StatusUnauthorized {
+		if goerrors.Is(err, ErrTokenExchangeUnauthorized) {
 			return nil, errors.AccessDenied(r, "token is invalid or has expired")
 		}
 
-		var err coreapi.Error
-
-		if err := json.Unmarshal(body, &err); err != nil {
-			return nil, fmt.Errorf("%w: failed to unmarshal userinfo error response", err)
-		}
-
-		return nil, errors.FromOpenAPIError(response.StatusCode, response.Header, &err)
+		return nil, errors.AccessDenied(r, "token exchange failed").WithValues("error", err.Error())
 	}
 
-	claims := &identityapi.Userinfo{}
-
-	if err := json.Unmarshal(body, claims); err != nil {
-		return nil, err
+	claims, err := decodePassportClaims(passport)
+	if err != nil {
+		return nil, errors.AccessDenied(r, "passport could not be decoded").WithValues("error", err.Error())
 	}
 
-	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
-	// could still be valid for months...
-	a.tokenCache.Add(rawToken, claims, time.Hour)
+	userinfo := passportToUserinfo(claims)
 
-	out := &authorization.Info{
+	if ttl := cacheTTL(claims, rawToken, time.Now()); ttl > 0 {
+		a.tokenCache.Add(cacheKey, userinfo, ttl)
+	}
+
+	return &authorization.Info{
 		Token:    rawToken,
-		Userinfo: claims,
+		Userinfo: userinfo,
+	}, nil
+}
+
+// decodePassportClaims parses exchange output and enforces the identity claims
+// needed to build authorization context. Signature verification is omitted
+// because the passport is consumed as a response from the trusted identity
+// service, not as an independently presented bearer credential.
+func decodePassportClaims(passport string) (*oauth2.PassportClaims, error) {
+	token, err := jwt.ParseSigned(passport, []jose.SignatureAlgorithm{jose.ES512})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPassportInvalid, err)
 	}
 
-	return out, nil
+	claims := &oauth2.PassportClaims{}
+	if err := token.UnsafeClaimsWithoutVerification(claims); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPassportInvalid, err)
+	}
+
+	if claims.Type != oauth2.PassportType {
+		return nil, fmt.Errorf("%w: unexpected token type %q", ErrPassportInvalid, claims.Type)
+	}
+
+	if claims.Subject == "" || claims.Expiry == nil {
+		return nil, fmt.Errorf("%w: passport missing required claims", ErrPassportInvalid)
+	}
+
+	// Acctype selects RBAC behavior; source preserves the token-family audit trail.
+	if claims.Acctype == "" || claims.Source == "" {
+		return nil, fmt.Errorf("%w: passport missing required identity metadata", ErrPassportInvalid)
+	}
+
+	if claims.Expiry.Time().Before(time.Now()) {
+		return nil, fmt.Errorf("%w: passport has expired", ErrPassportInvalid)
+	}
+
+	return claims, nil
+}
+
+// passportToUserinfo projects passport claims onto the existing handler-facing
+// identity shape.
+func passportToUserinfo(claims *oauth2.PassportClaims) *identityapi.Userinfo {
+	userinfo := &identityapi.Userinfo{
+		Sub: claims.Subject,
+		HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
+			Acctype: claims.Acctype,
+			OrgIds:  claims.OrgIDs,
+		},
+	}
+
+	if claims.Email != "" {
+		email := claims.Email
+		userinfo.Email = &email
+	}
+
+	return userinfo
+}
+
+// cacheTTL keeps cached identity within the earliest known token expiry,
+// leaving a small margin for clock skew.
+func cacheTTL(claims *oauth2.PassportClaims, sourceToken string, now time.Time) time.Duration {
+	earliest := claims.Expiry.Time()
+
+	if sourceExp, ok := sourceTokenExpiry(sourceToken); ok && sourceExp.Before(earliest) {
+		earliest = sourceExp
+	}
+
+	return earliest.Sub(now) - cacheTTLFudge
+}
+
+// sourceTokenExpiry returns exp for signed JWT source tokens. Non-JWT tokens
+// rely on the passport expiry set by identity.
+func sourceTokenExpiry(token string) (time.Time, bool) {
+	parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES512})
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	var claims jwt.Claims
+	if err := parsed.UnsafeClaimsWithoutVerification(&claims); err != nil {
+		return time.Time{}, false
+	}
+
+	if claims.Expiry == nil {
+		return time.Time{}, false
+	}
+
+	return claims.Expiry.Time(), true
 }
 
 // Authorize checks the request against the OpenAPI security scheme.
 func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInput) (*authorization.Info, error) {
 	if authentication.SecurityScheme.Type == "oauth2" {
-		return a.authorizeOAuth2(authentication.RequestValidationInput.Request)
+		return a.authorizeOAuth2(authentication.RequestValidationInput.Request, scopeFromPathParams(authentication.RequestValidationInput.PathParams))
 	}
 
 	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
+}
+
+func scopeFromPathParams(params map[string]string) tokenExchangeOptions {
+	return tokenExchangeOptions{
+		organizationID: params["organizationID"],
+		projectID:      params["projectID"],
+	}
 }
 
 type Getter string
@@ -272,7 +334,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 	}
 
 	if info.Token != "" {
-		options = append(options, identityapi.WithRequestEditorFn(func(ctx context.Context, req *http.Request) error {
+		options = append(options, identityapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
 			req.Header.Set("Authorization", "bearer "+info.Token)
 
 			return nil

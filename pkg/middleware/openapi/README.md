@@ -28,9 +28,12 @@ The package operates around two distinct trust paths.
 ### User To Service
 
 - the caller presents a bearer token
-- token validation establishes the actor identity
-- RBAC is resolved as that user or service account
-- principal information is generated from validated `userinfo` claims
+- token validation establishes the actor identity by exchanging the source
+  token for a UNI passport at identity's RFC 8693 token endpoint
+- RBAC is resolved as that user or service account, against the identity ACL
+  endpoint, exactly as before
+- principal information is derived from the passport claims and projected
+  onto the existing `userinfo` shape so handler code is unchanged
 
 ### Service To Service
 
@@ -62,11 +65,25 @@ The package has two important integration modes:
 
 - `local`, used by the identity service itself, where token validation and ACL resolution are handled
   directly against local `oauth2` and `rbac`
-- `remote`, used by other services, where bearer tokens are validated through identity and ACLs are
-  fetched back from identity over the service client path
+- `remote`, used by other services, where bearer tokens are exchanged at identity for a UNI passport
+  and ACLs are fetched back from identity over the service client path
 
 The shared `openapi` middleware layer defines the common request pipeline and the cache/propagation
 rules across both modes.
+
+### Remote Token Exchange
+
+The `remote` authorizer's bearer-token path is exchange-backed. On a cache miss it performs RFC 8693
+token exchange against identity's `/oauth2/v2/token` endpoint, decodes the returned passport claims
+(without local signature verification — trust is established by the channel, not by JWKS), and
+populates the existing `authorization.Info` and `userinfo` structures. The cached value is the
+passport-derived identity payload, and the per-entry TTL is derived from the passport's `exp` claim
+(bounded by the source token's `exp` where the source is a JWT) minus a 10 s clock-skew fudge.
+
+The exchange path fails closed: any rejection, malformed response, or transport failure surfaces as
+access-denied. There is no fallback to the legacy userinfo path. Passports are consumed in-process
+and are never forwarded on outbound calls — internal service-to-service communication continues to
+use mTLS plus `X-Principal` exactly as before.
 
 ## Ingress And Header Invariants
 
@@ -84,16 +101,14 @@ request model and should be treated as part of the security boundary, not merely
 - Some transitional behaviour still exists around principal extraction and historical propagation
   formats; these paths should be reviewed as deletion candidates rather than normalized into the
   long-term design.
-- Remote bearer-token validation still depends on identity round-trips plus caching today.
-- The planned passport-token model is expected to shift more validation toward local JWKS-backed JWS
-  verification in downstream services.
+- Remote bearer-token validation depends on an identity round-trip per cache miss; cache hits avoid
+  it. Phase 2 deliberately does not introduce downstream JWKS verification — the trust model for
+  passports remains channel-scoped to identity rather than signature-scoped per service.
 
 ## TODO
 
 - Remove the legacy principal extraction/verification fallback once all callers use the current
   propagation model.
-- Revisit remote bearer-token validation when passport tokens are available so downstream services can
-  validate locally against JWKS rather than always depending on identity round-trips.
 
 ## Related Documentation
 
