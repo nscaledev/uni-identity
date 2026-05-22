@@ -500,26 +500,6 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsWit
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1OrganizationsWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1OrganizationsWithResponse), varargs...)
 }
 
-// GetApiV1SignupWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1SignupWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetApiV1SignupResponse, error) {
-	m.ctrl.T.Helper()
-	varargs := []any{arg0}
-	for _, a := range arg1 {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "GetApiV1SignupWithResponse", varargs...)
-	ret0, _ := ret[0].(*openapi.GetApiV1SignupResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetApiV1SignupWithResponse indicates an expected call of GetApiV1SignupWithResponse.
-func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1SignupWithResponse(arg0 any, arg1 ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{arg0}, arg1...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1SignupWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1SignupWithResponse), varargs...)
-}
-
 // GetOauth2V2AuthorizationWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) GetOauth2V2AuthorizationWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetOauth2V2AuthorizationResponse, error) {
 	m.ctrl.T.Helper()

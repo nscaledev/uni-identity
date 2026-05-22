@@ -864,11 +864,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAcco
 }
 
 func (h *Handler) usersClient() *users.Client {
-	return users.New(h.client, h.namespace, h.issuer, h.options.Issuer, &h.options.Users)
-}
-
-func (h *Handler) GetApiV1Signup(w http.ResponseWriter, r *http.Request) {
-	h.usersClient().Signup(w, r)
+	return users.New(h.client, h.namespace, h.options.Issuer, &h.options.Users)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {

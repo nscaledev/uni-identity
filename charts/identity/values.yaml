@@ -414,31 +414,6 @@ ingress:
   # If true, will add the external DNS hostname annotation.
   externalDns: false
 
-smtp:
-  # SMTP host to connect to, absolutely must use SSMTP to guarantee the token is
-  # not exposed in plaintext.
-  # host: smtp-relay.gmail.com:465
-  
-  # Secret containing username and password fields for SMTP.  Refer to your provider's
-  # documentation fot enabling SMTP relays and generating passwords.
-  # credentialsSecret: unikorn-smtp-credentials
-
-signup:
-  # Enable email base signup flow, when enabled new users are added in the pending state.
-  # An Email is sent out to them to notify their addition with a link that transitions
-  # the user account to active/verfified.
-  # enabled: true
-
-  # Defines the litetime of a signup token.  Must be a valid Go duration string.
-  # tokenDuration: 24h
-  
-  # Define a config map that contains email verification subject and template
-  # fields.
-  # emailTemplateConfigMap: unikorn-email-verification-template-configmap
-
-  # Defines the redirect address when a user has verified their email account.
-  # verifiedRedirectURI: https://console.unikorn-cloud.org
-
 # Allows CORS to be configured/secured
 # cors:
 #   # Broswers must send requests from these origin servers, defaults to * if not set.

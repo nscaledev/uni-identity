@@ -167,21 +167,6 @@ paths:
           $ref: '#/components/responses/jwksResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
-  /api/v1/signup:
-    description: |-
-      As part of an email welcome based user onboarding experience this is the
-      link a user calls in order to validate their one-time token and transition
-      from a pending to active state.
-    get:
-      x-no-security-requirements: true
-      x-hidden: true
-      description: |-
-        Complete the user signup process.
-      responses:
-        302:
-          description: A redirect to the UI.
-        400:
-          $ref: '#/components/responses/signupErrorResponse'
   /api/v1/oauth2providers:
     description: |-
       Allows management of system scoped OAuth 2.0 providers.  The identity service
@@ -2626,11 +2611,6 @@ components:
               crv: P-521
               x: AGWAbuKBnn0qXsj8iddWhZj5-ZTM4F4d5rJeKbblOGVc-5nJNURsPb7k-MhEqr9QAi5jKnd7lkmkHU2mnalwsQPK
               y: AAepClWS8MoLLCzqMQ2bl3KwzF7eSYLhcSrsk8kYuRaNN45mnVuQsH43QOILEB5XXaHhySSRgVCamMwZWUwArv1k
-    signupErrorResponse:
-      description: |-
-        A dialog to explain a signup error.
-      content:
-        text/html: {}
     systemOauth2ProvidersResponse:
       description: |-
         A list of system provided OAuth 2.0 providers.

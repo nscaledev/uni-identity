@@ -294,23 +294,10 @@ type UserSpec struct {
 	Subject string `json:"subject"`
 	// State controls what the user is allowed to do.
 	State UserState `json:"state"`
-	// Signup is set when the user is being verified.
-	Signup *UserSignup `json:"signup,omitempty"`
 	// Sessions record active user sessions.
 	// +listType=map
 	// +listMapKey=clientID
 	Sessions []UserSession `json:"sessions,omitempty"`
-}
-
-type UserSignup struct {
-	// Token is used to store a time limited one use sign-up token
-	// in order to transition from the pending to active state.  It typically
-	// involves an email to notify the user they have been added.
-	Token string `json:"token"`
-	// ClientID remembers the oauth2 client that added the user in the first
-	// place so that we can link to per-client email templates and error
-	// handling dialogs.
-	ClientID string `json:"clientID"`
 }
 
 type UserSession struct {
