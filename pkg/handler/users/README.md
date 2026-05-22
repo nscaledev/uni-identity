@@ -57,15 +57,6 @@ The user read model is assembled from multiple sources:
 This is why list and get operations are more aggregation-oriented than most of the other handler
 clients.
 
-### Obsolete Signup / Email Verification Path
-
-The package still contains the built-in signup and email-verification path used by the local
-first-party authn flow.
-
-That path is now obsolete in the context of local development, testing, and third-party IdPs. It
-is therefore retained as removable legacy surface rather than as part of the intended long-term
-shape of the package.
-
 ## Invariants
 
 - global identity and organization membership are distinct layers and must not be collapsed into a
@@ -83,8 +74,6 @@ shape of the package.
 
 - The package is more stateful than most handler clients because create, update, and delete can
   touch users, organization users, and groups in one logical operation.
-- The built-in signup/email path is obsolete legacy surface and should not be treated as the
-  package's intended future direction.
 - Because group membership compatibility is maintained here as well as in the groups client,
   cross-client consistency matters more than local code shape.
 
@@ -94,7 +83,6 @@ shape of the package.
   and then reconcile groups, so membership state does not drift if later steps fail.
 - Revisit list resilience so an orphaned `OrganizationUser` -> `User` reference does not
   necessarily fail the entire organization user listing.
-- Remove the obsolete signup/email verification path.
 
 ## Related Documentation
 

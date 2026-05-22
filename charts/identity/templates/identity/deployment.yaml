@@ -35,36 +35,6 @@ spec:
           {{- $systemAccounts = append $systemAccounts (printf "%s=%s" $k (include "resource.id" $v)) }}
         {{- end }}
         - --system-account-roles-ids={{ join "," $systemAccounts }}
-        {{- with $signup := .Values.signup }}
-          {{- if $signup.enabled }}
-        - --user-email-verification
-          {{- end }}
-          {{- if $signup.tokenDuration }}
-        - --user-email-verification-token-duration={{ $signup.tokenDuration }}
-          {{- end }}
-          {{- if $signup.signupTemplateConfigMap }}
-        - --user-email-verification-template-configmap={{ $signup.signupTemplateConfigMap }}
-          {{- end }}
-        {{- end }}
-        {{- with $smtp := .Values.smtp -}}
-          {{- if $smtp.host }}
-        - --smtp-server={{ $smtp.host }}
-          {{- end }}
-          {{- if $smtp.credentialsSecret }}
-        - --smtp-credentials-secret={{ $smtp.credentialsSecret }}
-          {{- end }}
-        {{- end }}
-        {{- with $onboarding := .Values.onboarding }}
-          {{- if $onboarding.enabled }}
-        - --account-creation-enabled
-          {{- end }}
-          {{- with $webhook := $onboarding.webhook }}
-        - --account-creation-webhook-uri={{ $webhook.uri }}
-            {{- if $webhook.token }}
-        - --account-creation-webhook-token={{ $webhook.token }}
-            {{- end }}
-          {{- end }}
-        {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}

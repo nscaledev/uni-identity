@@ -32,10 +32,6 @@ var (
 	// the end user.
 	//go:embed login.html.tmpl
 	loginTemplate string
-
-	// welcomeEmail defines the HTML used to welcome a user to an organization.
-	//go:embed welcome-email.html.tmpl
-	welcomeEmailTemplate string
 )
 
 // Error renders a default error page.
@@ -68,26 +64,6 @@ func Login(state string) ([]byte, error) {
 
 	templateContext := map[string]any{
 		"state": state,
-	}
-
-	var buffer bytes.Buffer
-
-	if err := tmpl.Execute(&buffer, templateContext); err != nil {
-		return nil, err
-	}
-
-	return buffer.Bytes(), nil
-}
-
-// WelcomeEmail returns a default welcome email.
-func WelcomeEmail(verifyLink string) ([]byte, error) {
-	tmpl, err := template.New("welcome").Parse(welcomeEmailTemplate)
-	if err != nil {
-		return nil, err
-	}
-
-	templateContext := map[string]any{
-		"verifyLink": verifyLink,
 	}
 
 	var buffer bytes.Buffer

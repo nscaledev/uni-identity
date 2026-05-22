@@ -94,12 +94,11 @@ func setupPassportTestEnvWithRBACOptions(t *testing.T, rbacOptions *rbac.Options
 	}
 
 	authenticator := oauth2.New(&oauth2.Options{
-		AccessTokenDuration:      accessTokenDuration,
-		RefreshTokenDuration:     refreshTokenDuration,
-		TokenLeewayDuration:      accessTokenDuration,
-		TokenCacheSize:           1024,
-		CodeCacheSize:            1024,
-		AccountCreationCacheSize: 1024,
+		AccessTokenDuration:  accessTokenDuration,
+		RefreshTokenDuration: refreshTokenDuration,
+		TokenLeewayDuration:  accessTokenDuration,
+		TokenCacheSize:       1024,
+		CodeCacheSize:        1024,
 	}, josetesting.Namespace, issuerVal, cli, jwtIssuer, userDatabase, rbacInst)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)

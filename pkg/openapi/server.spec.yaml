@@ -115,22 +115,6 @@ paths:
       responses:
         '302':
           description: A redirect to the specified identity provider URI.
-  /oauth2/v2/onboard:
-    description: |-
-      If a user doesn't exist, we can offer them the option of creating a
-      new organization, this facilitates that flow.
-    post:
-      x-no-security-requirements: true
-      x-hidden: true
-      description: |-
-        Returns the user's chosen organization name back to the identity service
-        for creation of that organization, default user groups, and addition of
-        that user to a group to allow login.
-      requestBody:
-        $ref: '#/components/requestBodies/onboardRequest'
-      responses:
-        '302':
-          description: A redirect to the specified identity provider URI.
   /oauth2/v2/userinfo:
     description: |-
       Returns introspection information about an access token.
@@ -183,21 +167,6 @@ paths:
           $ref: '#/components/responses/jwksResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/main/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
-  /api/v1/signup:
-    description: |-
-      As part of an email welcome based user onboarding experience this is the
-      link a user calls in order to validate their one-time token and transition
-      from a pending to active state.
-    get:
-      x-no-security-requirements: true
-      x-hidden: true
-      description: |-
-        Complete the user signup process.
-      responses:
-        302:
-          description: A redirect to the UI.
-        400:
-          $ref: '#/components/responses/signupErrorResponse'
   /api/v1/oauth2providers:
     description: |-
       Allows management of system scoped OAuth 2.0 providers.  The identity service
@@ -1414,38 +1383,6 @@ components:
         state:
           description: The state string supplied by the authorization endpoint.
           type: string
-    onboardRequestOptions:
-      description: Onboard request options.
-      type: object
-      required:
-      - state
-      - organization_name
-      - group_name
-      properties:
-        state:
-          description: Server provided state.
-          type: string
-        organization_name:
-          description: The organization name.
-          type: string
-        organization_description:
-          description: A verbose organization description.
-          type: string
-          nullable: true
-        group_name:
-          description: An initial group name,
-          type: string
-        group_description:
-          description: A verbose initial group description.
-          type: string
-          nullable: true
-        roles:
-          description: A list of roles to grant the user.
-          type: array
-          nullable: true
-          items:
-            description: A role name.
-            type: string
     authorizationRequestOptions:
       description: OAuth 2.0/OIDC authorization endpoint request.
       type: object
@@ -2405,17 +2342,6 @@ components:
           example:
             state: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
             email: joe.bloggs@acme.com
-    onboardRequest:
-      description: Information necessary to create a new user and organization.
-      required: true
-      content:
-        application/x-www-form-urlencoded:
-          schema:
-            $ref: '#/components/schemas/onboardRequestOptions'
-          example:
-            state: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
-            organization_name: acme.com
-            group_name: administrators
     tokenRequest:
       description: OAuth 2.0 token request, consult the relevant OAuth2 and OIDC specifications for further details.
       required: true
@@ -2685,11 +2611,6 @@ components:
               crv: P-521
               x: AGWAbuKBnn0qXsj8iddWhZj5-ZTM4F4d5rJeKbblOGVc-5nJNURsPb7k-MhEqr9QAi5jKnd7lkmkHU2mnalwsQPK
               y: AAepClWS8MoLLCzqMQ2bl3KwzF7eSYLhcSrsk8kYuRaNN45mnVuQsH43QOILEB5XXaHhySSRgVCamMwZWUwArv1k
-    signupErrorResponse:
-      description: |-
-        A dialog to explain a signup error.
-      content:
-        text/html: {}
     systemOauth2ProvidersResponse:
       description: |-
         A list of system provided OAuth 2.0 providers.

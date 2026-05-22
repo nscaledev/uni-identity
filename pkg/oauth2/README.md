@@ -119,8 +119,6 @@ internal token shape consumed by downstream UNI services.
 
 - The package mixes protocol handling, provider integration, local session persistence, local user
   admission checks, and token issuance. It is not a narrow wrapper around an OAuth library.
-- Some onboarding, signup, and email-related codepaths are still present, but they are legacy side
-  material rather than the architectural center of the package.
 - The package reaches into higher-level local concepts such as user database lookups and RBAC-aware
   admission decisions, so it is intentionally not protocol-pure.
 - Service token support and passport token exchange are both transition-sensitive areas and should be

@@ -500,26 +500,6 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsWit
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1OrganizationsWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1OrganizationsWithResponse), varargs...)
 }
 
-// GetApiV1SignupWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV1SignupWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetApiV1SignupResponse, error) {
-	m.ctrl.T.Helper()
-	varargs := []any{arg0}
-	for _, a := range arg1 {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "GetApiV1SignupWithResponse", varargs...)
-	ret0, _ := ret[0].(*openapi.GetApiV1SignupResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetApiV1SignupWithResponse indicates an expected call of GetApiV1SignupWithResponse.
-func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1SignupWithResponse(arg0 any, arg1 ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{arg0}, arg1...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1SignupWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1SignupWithResponse), varargs...)
-}
-
 // GetOauth2V2AuthorizationWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) GetOauth2V2AuthorizationWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetOauth2V2AuthorizationResponse, error) {
 	m.ctrl.T.Helper()
@@ -1018,46 +998,6 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2LoginWithFor
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]any{arg0, arg1}, arg2...)
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostOauth2V2LoginWithFormdataBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostOauth2V2LoginWithFormdataBodyWithResponse), varargs...)
-}
-
-// PostOauth2V2OnboardWithBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostOauth2V2OnboardWithBodyWithResponse(arg0 context.Context, arg1 string, arg2 io.Reader, arg3 ...openapi.RequestEditorFn) (*openapi.PostOauth2V2OnboardResponse, error) {
-	m.ctrl.T.Helper()
-	varargs := []any{arg0, arg1, arg2}
-	for _, a := range arg3 {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "PostOauth2V2OnboardWithBodyWithResponse", varargs...)
-	ret0, _ := ret[0].(*openapi.PostOauth2V2OnboardResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// PostOauth2V2OnboardWithBodyWithResponse indicates an expected call of PostOauth2V2OnboardWithBodyWithResponse.
-func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2OnboardWithBodyWithResponse(arg0, arg1, arg2 any, arg3 ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{arg0, arg1, arg2}, arg3...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostOauth2V2OnboardWithBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostOauth2V2OnboardWithBodyWithResponse), varargs...)
-}
-
-// PostOauth2V2OnboardWithFormdataBodyWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) PostOauth2V2OnboardWithFormdataBodyWithResponse(arg0 context.Context, arg1 openapi.OnboardRequestOptions, arg2 ...openapi.RequestEditorFn) (*openapi.PostOauth2V2OnboardResponse, error) {
-	m.ctrl.T.Helper()
-	varargs := []any{arg0, arg1}
-	for _, a := range arg2 {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "PostOauth2V2OnboardWithFormdataBodyWithResponse", varargs...)
-	ret0, _ := ret[0].(*openapi.PostOauth2V2OnboardResponse)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// PostOauth2V2OnboardWithFormdataBodyWithResponse indicates an expected call of PostOauth2V2OnboardWithFormdataBodyWithResponse.
-func (mr *MockClientWithResponsesInterfaceMockRecorder) PostOauth2V2OnboardWithFormdataBodyWithResponse(arg0, arg1 any, arg2 ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{arg0, arg1}, arg2...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostOauth2V2OnboardWithFormdataBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostOauth2V2OnboardWithFormdataBodyWithResponse), varargs...)
 }
 
 // PostOauth2V2TokenWithBodyWithResponse mocks base method.

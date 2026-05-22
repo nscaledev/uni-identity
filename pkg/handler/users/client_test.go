@@ -118,7 +118,7 @@ func newUserTestFixtureWithObjects(t *testing.T, objects []client.Object, interc
 
 	return &userTestFixture{
 		client:      c,
-		usersClient: users.New(c, testNamespace, nil, issuer, &users.Options{}),
+		usersClient: users.New(c, testNamespace, issuer),
 	}
 }
 
