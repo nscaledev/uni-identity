@@ -301,7 +301,6 @@ Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/rele
 
 Typically your deployment will have a small select few engineers who are able to see and do
 everything, including creating organizations.
-At present self-signup is not part of the normal operating model.
 
 In the earlier `values.yaml` manifest, the following section was defined:
 
