@@ -133,6 +133,65 @@ func TestDecodePassportClaimsRejectsMalformed(t *testing.T) {
 	}
 }
 
+func TestValidatePassportTemporalClaims(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		claims  *oauth2.PassportClaims
+		wantErr string
+	}{
+		{
+			name: "expiry after now is valid",
+			claims: &oauth2.PassportClaims{
+				Claims: jwt.Claims{Expiry: jwt.NewNumericDate(now.Add(time.Second))},
+			},
+		},
+		{
+			name: "expiry before now is rejected",
+			claims: &oauth2.PassportClaims{
+				Claims: jwt.Claims{Expiry: jwt.NewNumericDate(now.Add(-time.Second))},
+			},
+			wantErr: "passport has expired",
+		},
+		{
+			name: "expiry equal to now is rejected",
+			claims: &oauth2.PassportClaims{
+				Claims: jwt.Claims{Expiry: jwt.NewNumericDate(now)},
+			},
+			wantErr: "passport has expired",
+		},
+		{
+			name: "not before after now is rejected",
+			claims: &oauth2.PassportClaims{
+				Claims: jwt.Claims{
+					Expiry:    jwt.NewNumericDate(now.Add(time.Minute)),
+					NotBefore: jwt.NewNumericDate(now.Add(time.Second)),
+				},
+			},
+			wantErr: "passport is not yet valid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validatePassportTemporalClaims(tt.claims, now)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrPassportInvalid)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 // TestAuthorizeRejectsExpiredPassport verifies stale exchange output is
 // rejected and not cached.
 func TestAuthorizeRejectsExpiredPassport(t *testing.T) {
@@ -284,7 +343,7 @@ func (e *recordingTokenExchange) recorded() []tokenExchangeCall {
 }
 
 func newTestAuthorizer(exchange TokenExchange) *Authorizer {
-	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *identityapi.Userinfo](16)
+	tokenCache := cache.NewLRUExpireCache[string, *oauth2.PassportClaims](16)
 
 	return &Authorizer{
 		exchange:   exchange,
@@ -391,9 +450,10 @@ func TestExchangePropagatesRouteScope(t *testing.T) {
 	}
 }
 
-// TestCacheIsolationByScope prevents one route scope from reusing another
-// scope's derived identity.
-func TestCacheIsolationByScope(t *testing.T) {
+// TestCacheKeyedByTokenOnly confirms the token cache stores passport claims by
+// bearer token. The cached value is later projected into the handler-facing
+// Userinfo shape, so route scope does not participate in the cache key.
+func TestCacheKeyedByTokenOnly(t *testing.T) {
 	t.Parallel()
 
 	passport := mintTestPassport(t, validTestPassportClaims())
@@ -417,8 +477,8 @@ func TestCacheIsolationByScope(t *testing.T) {
 		require.NotNil(t, info)
 	}
 
-	assert.Equal(t, int32(len(scopes)), exchange.calls.Load(), //nolint:gosec // small slice length, no overflow risk.
-		"each unique scope must hit exchange — none should be served from a sibling scope's cache entry")
+	assert.Equal(t, int32(1), exchange.calls.Load(),
+		"same bearer token should reuse cached passport claims across route scopes")
 }
 
 // TestCacheHitWithinScope confirms repeated requests at the same scope still

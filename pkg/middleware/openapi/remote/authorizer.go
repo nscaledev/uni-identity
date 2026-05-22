@@ -51,14 +51,6 @@ const (
 	cacheTTLFudge = 10 * time.Second
 )
 
-// tokenCacheKey includes route scope because passports include requested
-// organization/project context in their claims.
-type tokenCacheKey struct {
-	token          string
-	organizationID string
-	projectID      string
-}
-
 // Authorizer provides OpenAPI based authorization middleware backed by remote
 // identity token exchange and ACL lookup.
 type Authorizer struct {
@@ -67,7 +59,7 @@ type Authorizer struct {
 	clientOptions *coreclient.HTTPClientOptions
 	httpClient    *http.Client
 	exchange      TokenExchange
-	tokenCache    *cache.LRUExpireCache[tokenCacheKey, *identityapi.Userinfo]
+	tokenCache    *cache.LRUExpireCache[string, *oauth2.PassportClaims]
 }
 
 var _ openapi.Authorizer = &Authorizer{}
@@ -79,7 +71,7 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		return nil, err
 	}
 
-	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *identityapi.Userinfo](tokenCacheSize)
+	tokenCache := cache.NewLRUExpireCache[string, *oauth2.PassportClaims](tokenCacheSize)
 
 	a := &Authorizer{
 		httpClient:    httpClient,
@@ -168,16 +160,10 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	cacheKey := tokenCacheKey{
-		token:          rawToken,
-		organizationID: scope.organizationID,
-		projectID:      scope.projectID,
-	}
-
-	if userinfo, ok := a.tokenCache.Get(cacheKey); ok {
+	if claims, ok := a.tokenCache.Get(rawToken); ok {
 		return &authorization.Info{
 			Token:    rawToken,
-			Userinfo: userinfo,
+			Userinfo: passportToUserinfo(claims),
 		}, nil
 	}
 
@@ -203,7 +189,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 	userinfo := passportToUserinfo(claims)
 
 	if ttl := cacheTTL(claims, time.Now()); ttl > 0 {
-		a.tokenCache.Add(cacheKey, userinfo, ttl)
+		a.tokenCache.Add(rawToken, claims, ttl)
 	}
 
 	return &authorization.Info{
@@ -255,7 +241,7 @@ func decodePassportClaims(passport string) (*oauth2.PassportClaims, error) {
 // validatePassportTemporalClaims rejects both stale and premature exchange
 // output. exp ≤ now and nbf > now must both fail closed.
 func validatePassportTemporalClaims(claims *oauth2.PassportClaims, now time.Time) error {
-	if claims.Expiry.Time().Before(now) {
+	if !claims.Expiry.Time().After(now) {
 		return fmt.Errorf("%w: passport has expired", ErrPassportInvalid)
 	}
 

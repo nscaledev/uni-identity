@@ -77,8 +77,9 @@ The `remote` authorizer's bearer-token path is exchange-backed. On a cache miss 
 token exchange against identity's `/oauth2/v2/token` endpoint, decodes the returned passport claims
 (without local signature verification — trust is established by the channel, not by JWKS), and
 populates the existing `authorization.Info` and `userinfo` structures. The cached value is the
-passport-derived identity payload, and the per-entry TTL is derived from the passport's `exp` claim
-(bounded by the source token's `exp` where the source is a JWT) minus a 10 s clock-skew fudge.
+passport claims payload, and the per-entry TTL is derived from the passport's `exp` claim minus a
+10 s clock-skew fudge. Identity caps the passport expiry to the source token's expiry before
+minting it, so middleware does not need to parse the source token locally.
 
 The exchange path fails closed: rejected source tokens and transport failures surface as
 access-denied. A malformed or temporally invalid passport returned after a *successful* exchange
