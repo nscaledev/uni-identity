@@ -64,7 +64,7 @@ client. This facilitates token validation, revocation, single-use refresh tokens
 single-active session/token-chain model enforced by the service.
 
 Users can exist in multiple states: `active`, `suspended` meaning they cannot login, or `pending`
-to indicate the system is awaiting email verification in older compatibility flows.
+meaning the user has been placed on administrative hold by a platform administrator.
 
 ### Organization Users
 
@@ -289,14 +289,6 @@ Deploy:
 ```shell
 helm upgrade --install --namespace unikorn-identity uni-identity/uni-identity -f values.yaml
 ```
-
-### Legacy Signup And Verification
-
-Identity still contains older email-verification and signup flows for compatibility with historical
-deployments.
-
-These are no longer the main operating model and are generally not central to new deployments.
-If you still need them, you will need SMTP configured and the related Helm options enabled.
 
 ### Installing the Management Plugin
 

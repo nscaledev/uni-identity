@@ -116,7 +116,7 @@ func createUser(t *testing.T, c client.Client, id, subject string, groups []*uni
 		URL:      "https://identity.unikorn-cloud.org",
 		Hostname: "identity.unikorn-cloud.org",
 	}
-	userclient := users.New(c, testNamespace, iss, &users.Options{})
+	userclient := users.New(c, testNamespace, iss)
 
 	// this is needed because deep in the bowels of request handling, it's consulted in
 	// order to set some Kubernetes object metadata.

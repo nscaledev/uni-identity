@@ -278,7 +278,7 @@ const (
 	// UserStateActive means the user can authenticate.
 	UserStateActive UserState = "active"
 	// UserStatePending means the user is registered with the system
-	// but needs to complete some onboarding action e.g. security checks.
+	// but has been placed on administrative hold, e.g. pending security review.
 	UserStatePending UserState = "pending"
 	// UserStateSuspended means the user is not allowed to authenticate.
 	// But is still alive to maintain foreign key mappings e.g. groups.

@@ -25,8 +25,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/spf13/pflag"
-
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
@@ -45,14 +43,8 @@ import (
 )
 
 var (
-	ErrConfiguration = goerrors.New("configuration error")
-
 	ErrReference = goerrors.New("resource reference error")
 )
-
-type Options struct{}
-
-func (o *Options) AddFlags(_ *pflag.FlagSet) {}
 
 // Client is responsible for user management.
 type Client struct {
@@ -62,17 +54,14 @@ type Client struct {
 	client client.Client
 	// namespace is the namespace the identity service is running in.
 	namespace string
-	// options are any options to be passed to the handler.
-	options *Options
 }
 
 // New creates a new user client.
-func New(client client.Client, namespace string, issuer common.IssuerValue, options *Options) *Client {
+func New(client client.Client, namespace string, issuer common.IssuerValue) *Client {
 	return &Client{
 		issuer:    issuer,
 		client:    client,
 		namespace: namespace,
-		options:   options,
 	}
 }
 
