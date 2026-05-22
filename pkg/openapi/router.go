@@ -141,9 +141,6 @@ type ServerInterface interface {
 	// (PUT /api/v1/organizations/{organizationID}/users/{userID})
 	PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter)
 
-	// (GET /api/v1/signup)
-	GetApiV1Signup(w http.ResponseWriter, r *http.Request)
-
 	// (GET /oauth2/v2/authorization)
 	GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request)
 
@@ -155,9 +152,6 @@ type ServerInterface interface {
 
 	// (POST /oauth2/v2/login)
 	PostOauth2V2Login(w http.ResponseWriter, r *http.Request)
-
-	// (POST /oauth2/v2/onboard)
-	PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request)
 
 	// (POST /oauth2/v2/token)
 	PostOauth2V2Token(w http.ResponseWriter, r *http.Request)
@@ -410,11 +404,6 @@ func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.Res
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// (GET /api/v1/signup)
-func (_ Unimplemented) GetApiV1Signup(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
 // (GET /oauth2/v2/authorization)
 func (_ Unimplemented) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -432,11 +421,6 @@ func (_ Unimplemented) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {
 
 // (POST /oauth2/v2/login)
 func (_ Unimplemented) PostOauth2V2Login(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusNotImplemented)
-}
-
-// (POST /oauth2/v2/onboard)
-func (_ Unimplemented) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1922,20 +1906,6 @@ func (siw *ServerInterfaceWrapper) PutApiV1OrganizationsOrganizationIDUsersUserI
 	handler.ServeHTTP(w, r)
 }
 
-// GetApiV1Signup operation middleware
-func (siw *ServerInterfaceWrapper) GetApiV1Signup(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetApiV1Signup(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetOauth2V2Authorization operation middleware
 func (siw *ServerInterfaceWrapper) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 
@@ -1983,20 +1953,6 @@ func (siw *ServerInterfaceWrapper) PostOauth2V2Login(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostOauth2V2Login(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// PostOauth2V2Onboard operation middleware
-func (siw *ServerInterfaceWrapper) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.PostOauth2V2Onboard(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2302,9 +2258,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Put(options.BaseURL+"/api/v1/organizations/{organizationID}/users/{userID}", wrapper.PutApiV1OrganizationsOrganizationIDUsersUserID)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/api/v1/signup", wrapper.GetApiV1Signup)
-	})
-	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/oauth2/v2/authorization", wrapper.GetOauth2V2Authorization)
 	})
 	r.Group(func(r chi.Router) {
@@ -2315,9 +2268,6 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/oauth2/v2/login", wrapper.PostOauth2V2Login)
-	})
-	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/oauth2/v2/onboard", wrapper.PostOauth2V2Onboard)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/oauth2/v2/token", wrapper.PostOauth2V2Token)

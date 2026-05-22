@@ -72,8 +72,6 @@ type OAuth2ClientSpec struct {
 	LoginURI *string `json:"loginUri,omitempty"`
 	// ErrorURI is a URI to pass control to for error dialogs.
 	ErrorURI *string `json:"errorUri,omitempty"`
-	// OnboardingURI is a URI to pass control to for the onboarding dialogs.
-	OnboardingURI *string `json:"onboardingUri,omitempty"`
 }
 
 // OAuth2ClientStatus defines the status of the client.
@@ -153,7 +151,7 @@ type RoleList struct {
 // permssions should be create from the boolean union for any roles that apply
 // to a user.  Roles can optionally be scoped to an organization to allow
 // deep customization of roles and permissions within that organization, for
-// example the system management organization may have an onboarding role that
+// example the system management organization may have a provisioning role that
 // allows basic account creation before handing off to the user.
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -280,7 +278,7 @@ const (
 	// UserStateActive means the user can authenticate.
 	UserStateActive UserState = "active"
 	// UserStatePending means the user is registered with the system
-	// but needs to complete some onboarding action e.g. security checks.
+	// but has been placed on administrative hold, e.g. pending security review.
 	UserStatePending UserState = "pending"
 	// UserStateSuspended means the user is not allowed to authenticate.
 	// But is still alive to maintain foreign key mappings e.g. groups.
@@ -296,23 +294,10 @@ type UserSpec struct {
 	Subject string `json:"subject"`
 	// State controls what the user is allowed to do.
 	State UserState `json:"state"`
-	// Signup is set when the user is being verified.
-	Signup *UserSignup `json:"signup,omitempty"`
 	// Sessions record active user sessions.
 	// +listType=map
 	// +listMapKey=clientID
 	Sessions []UserSession `json:"sessions,omitempty"`
-}
-
-type UserSignup struct {
-	// Token is used to store a time limited one use sign-up token
-	// in order to transition from the pending to active state.  It typically
-	// involves an email to notify the user they have been added.
-	Token string `json:"token"`
-	// ClientID remembers the oauth2 client that added the user in the first
-	// place so that we can link to per-client email templates and error
-	// handling dialogs.
-	ClientID string `json:"clientID"`
 }
 
 type UserSession struct {

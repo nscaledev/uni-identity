@@ -345,11 +345,10 @@ func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, 
 
 	jwtIssuer := jose.NewJWTIssuer(k8s, namespace, &jose.Options{})
 	authenticator := oauth2.New(&oauth2.Options{
-		AccessTokenDuration:      time.Hour,
-		RefreshTokenDuration:     time.Hour,
-		TokenCacheSize:           8192,
-		CodeCacheSize:            8192,
-		AccountCreationCacheSize: 8192,
+		AccessTokenDuration:  time.Hour,
+		RefreshTokenDuration: time.Hour,
+		TokenCacheSize:       8192,
+		CodeCacheSize:        8192,
 	}, namespace, issuer, k8s, jwtIssuer, nil, nil)
 
 	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{

@@ -97,12 +97,11 @@ func TestTokens(t *testing.T) {
 	rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
 	options := &oauth2.Options{
-		AccessTokenDuration:      accessTokenDuration,
-		RefreshTokenDuration:     refreshTokenDuration,
-		TokenLeewayDuration:      accessTokenDuration,
-		TokenCacheSize:           1024,
-		CodeCacheSize:            1024,
-		AccountCreationCacheSize: 1024,
+		AccessTokenDuration:  accessTokenDuration,
+		RefreshTokenDuration: refreshTokenDuration,
+		TokenLeewayDuration:  accessTokenDuration,
+		TokenCacheSize:       1024,
+		CodeCacheSize:        1024,
 	}
 
 	issuerVal := handlercommon.IssuerValue{
@@ -375,12 +374,11 @@ func TestUserinfoCustomClaims(t *testing.T) {
 			}
 
 			authenticator := oauth2.New(&oauth2.Options{
-				AccessTokenDuration:      accessTokenDuration,
-				RefreshTokenDuration:     refreshTokenDuration,
-				TokenLeewayDuration:      accessTokenDuration,
-				TokenCacheSize:           1024,
-				CodeCacheSize:            1024,
-				AccountCreationCacheSize: 1024,
+				AccessTokenDuration:  accessTokenDuration,
+				RefreshTokenDuration: refreshTokenDuration,
+				TokenLeewayDuration:  accessTokenDuration,
+				TokenCacheSize:       1024,
+				CodeCacheSize:        1024,
 			}, josetesting.Namespace, issuerHost, client, issuer, userDatabase, rbac)
 
 			time.Sleep(2 * josetesting.RefreshPeriod)

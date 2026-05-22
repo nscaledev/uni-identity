@@ -94,9 +94,6 @@ fully encoded here:
 
 ## Caveats
 
-- the specification still contains historically layered surfaces such as older
-  onboarding and built-in login flows, so the contract reflects the live system
-  rather than only the preferred future architecture
 - because generated code dominates the package by line count, it is easy to
   under-document the package even though it is architecturally central
 - if higher-level docs drift from the schema, this package is the place where

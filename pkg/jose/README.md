@@ -76,9 +76,6 @@ Higher layers should not redefine those rules independently.
   The fallback was explicitly added in commit `a54875e3` and first shipped in `v1.4.1` on August 18,
   2025. With the default 90-day token/renewal window from the charts, the conservative safe-removal
   point was approximately November 16, 2025.
-- Some token types in this package support older onboarding or email-related flows. Those are not
-  the architectural center of the package and should not dominate its documentation.
-
 ## Cross-Repo Context
 
 The package exposes a JWKS-based trust model that can be consumed outside `identity` itself. Other

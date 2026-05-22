@@ -64,17 +64,6 @@ projectController:
 identity:
   host: identity.acme.org
 
-onboarding:
-  # Allows anonymous signups.  Be damn sure if you do this you are in control
-  # of quotas to prevent misuse!
-  enabled: false
-  # Webhook to invoke when a signup occurs.
-  # webhook:
-  #   # URI to POST account creation data to.
-  #   uri: https://onboard.namespace/some/path
-  #   # An optional bearer token for authentication.
-  #   token: f9b0c034-2316-4cda-918e-5d96dbaa8d82
-
 # Issuer related configuration.
 issuer:
   # maxTokenDurationDays defines the maximum length of time an issued JWT
@@ -96,8 +85,6 @@ issuer:
 #     errorURI: http://app.acme.org/error
 #     # An optional, trusted, home screen.
 #     homeURI: http://app.acme.org
-#     # An optional user onboarding dialog.
-#     onboardingURI: http://app.acme.org/onboard
 
 # A static list of registered oauth2 providers.
 # providers:
@@ -426,31 +413,6 @@ ingress:
 
   # If true, will add the external DNS hostname annotation.
   externalDns: false
-
-smtp:
-  # SMTP host to connect to, absolutely must use SSMTP to guarantee the token is
-  # not exposed in plaintext.
-  # host: smtp-relay.gmail.com:465
-  
-  # Secret containing username and password fields for SMTP.  Refer to your provider's
-  # documentation fot enabling SMTP relays and generating passwords.
-  # credentialsSecret: unikorn-smtp-credentials
-
-signup:
-  # Enable email base signup flow, when enabled new users are added in the pending state.
-  # An Email is sent out to them to notify their addition with a link that transitions
-  # the user account to active/verfified.
-  # enabled: true
-
-  # Defines the litetime of a signup token.  Must be a valid Go duration string.
-  # tokenDuration: 24h
-  
-  # Define a config map that contains email verification subject and template
-  # fields.
-  # emailTemplateConfigMap: unikorn-email-verification-template-configmap
-
-  # Defines the redirect address when a user has verified their email account.
-  # verifiedRedirectURI: https://console.unikorn-cloud.org
 
 # Allows CORS to be configured/secured
 # cors:
