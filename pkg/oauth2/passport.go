@@ -43,8 +43,11 @@ import (
 )
 
 const (
-	// PassportTTL is the lifetime of a passport token.
-	PassportTTL = 2 * time.Minute
+	// PassportTTL is the lifetime of a passport token. Sized to cover the
+	// worst-case operational lifetime of a request that uses it: three
+	// downstream hops at 15s per-hop API timeout plus 15s grace for clock
+	// skew and tail latency.
+	PassportTTL = 60 * time.Second
 
 	// PassportType distinguishes passport tokens from access tokens.
 	PassportType = "passport"
@@ -142,7 +145,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	subjectToken := *options.SubjectToken
 
-	userinfo, _, err := a.GetUserinfo(ctx, request, subjectToken)
+	userinfo, sourceClaims, err := a.GetUserinfo(ctx, request, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -191,8 +194,27 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		return nil, err
 	}
 
+	return a.mintPassport(ctx, userinfo, sourceClaims, audience, organizationID, projectID)
+}
+
+// mintPassport encodes the signed passport once scope authorisation has
+// completed. It also enforces the source-token expiry precondition: a passport
+// with expires_in ≤ 0 would be internally inconsistent, so the exchange fails
+// closed when the source token's exp is already at or before now.
+func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.Userinfo, sourceClaims *Claims, audience jwt.Audience, organizationID, projectID string) (*openapi.Token, error) {
+	log := log.FromContext(ctx)
+
 	now := time.Now()
+
+	expiry, err := passportExpiry(now, sourceClaims)
+	if err != nil {
+		log.Info("passport exchange failed: source token already expired")
+
+		return nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
+	}
+
 	passportID := uuid.New().String()
+	authz := userinfo.HttpsunikornCloudOrgauthz
 
 	claims := &PassportClaims{
 		Claims: jwt.Claims{
@@ -202,7 +224,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 			Audience:  audience,
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now),
-			Expiry:    jwt.NewNumericDate(now.Add(PassportTTL)),
+			Expiry:    jwt.NewNumericDate(expiry),
 		},
 		Type:      PassportType,
 		Acctype:   authz.Acctype,
@@ -232,14 +254,37 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		"passportID", passportID,
 	)
 
-	result := &openapi.Token{
+	return &openapi.Token{
 		TokenType:       "Bearer",
 		AccessToken:     passport,
-		ExpiresIn:       int(PassportTTL.Seconds()),
+		ExpiresIn:       int(expiry.Sub(now).Seconds()),
 		IssuedTokenType: stringPtr(PassportIssuedTokenType()),
+	}, nil
+}
+
+// passportExpiry returns the passport's exp claim, capped at the source token
+// expiry per the PRD rule that a passport must not outlive the credential it
+// was minted from. It fails closed when the source token's exp is already at
+// or before now: GetUserinfo may accept such a token via verification leeway,
+// but a passport with expires_in <= 0 is internally inconsistent and would be
+// rejected by downstream middleware regardless.
+func passportExpiry(now time.Time, sourceClaims *Claims) (time.Time, error) {
+	expiry := now.Add(PassportTTL)
+
+	if sourceClaims == nil || sourceClaims.Expiry == nil {
+		return expiry, nil
 	}
 
-	return result, nil
+	sourceExpiry := sourceClaims.Expiry.Time()
+	if !sourceExpiry.After(now) {
+		return time.Time{}, ErrSourceTokenExpired
+	}
+
+	if sourceExpiry.Before(expiry) {
+		return sourceExpiry, nil
+	}
+
+	return expiry, nil
 }
 
 func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string) error {
@@ -405,9 +450,8 @@ func normalizeExchangeUserinfoError(err error) error {
 // RFC 8693 §2.1 requires the request body to be
 // application/x-www-form-urlencoded; we enforce that explicitly so a caller
 // can't smuggle params via a query string under a JSON Content-Type. The
-// actor_token path is rejected because Phase 2 has no delegation flow — once
-// the spec MUSTs validation when actor_token is present, silently dropping
-// it would be a conformance gap.
+// actor_token path is rejected because delegation is not supported here; silently
+// dropping it would be a conformance gap.
 //
 // Note: audience and resource may appear multiple times per RFC 8693 §2.1,
 // but the typed model and form lookup here take only the first instance.
