@@ -80,7 +80,6 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 	}
 
 	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *identityapi.Userinfo](tokenCacheSize)
-	tokenCache.ZeroCopy()
 
 	a := &Authorizer{
 		httpClient:    httpClient,
@@ -190,12 +189,15 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 			return nil, errors.AccessDenied(r, "token is invalid or has expired")
 		}
 
-		return nil, errors.AccessDenied(r, "token exchange failed").WithValues("error", err.Error())
+		return nil, errors.AccessDenied(r, "token exchange failed").WithError(err)
 	}
 
 	claims, err := decodePassportClaims(passport)
 	if err != nil {
-		return nil, errors.AccessDenied(r, "passport could not be decoded").WithValues("error", err.Error())
+		// A malformed passport after a successful exchange is identity/middleware
+		// producing invalid output, not a user authorization decision. Surface it
+		// as a plain wrapped error so the top-level handler renders a 500.
+		return nil, fmt.Errorf("failed to decode exchange passport: %w", err)
 	}
 
 	userinfo := passportToUserinfo(claims)
@@ -211,9 +213,14 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 }
 
 // decodePassportClaims parses exchange output and enforces the identity claims
-// needed to build authorization context. Signature verification is omitted
-// because the passport is consumed as a response from the trusted identity
-// service, not as an independently presented bearer credential.
+// needed to build authorization context.
+//
+// UnsafeClaimsWithoutVerification is intentional: the passport is consumed as
+// exchange output over the trusted identity service channel, not accepted as
+// an independently presented bearer credential, so downstream JWKS verification
+// would only re-prove what the transport already guarantees. The structural and
+// temporal checks below still apply because identity may legitimately produce
+// claims this middleware cannot use.
 func decodePassportClaims(passport string) (*oauth2.PassportClaims, error) {
 	token, err := jwt.ParseSigned(passport, []jose.SignatureAlgorithm{jose.ES512})
 	if err != nil {
@@ -238,11 +245,25 @@ func decodePassportClaims(passport string) (*oauth2.PassportClaims, error) {
 		return nil, fmt.Errorf("%w: passport missing required identity metadata", ErrPassportInvalid)
 	}
 
-	if claims.Expiry.Time().Before(time.Now()) {
-		return nil, fmt.Errorf("%w: passport has expired", ErrPassportInvalid)
+	if err := validatePassportTemporalClaims(claims, time.Now()); err != nil {
+		return nil, err
 	}
 
 	return claims, nil
+}
+
+// validatePassportTemporalClaims rejects both stale and premature exchange
+// output. exp ≤ now and nbf > now must both fail closed.
+func validatePassportTemporalClaims(claims *oauth2.PassportClaims, now time.Time) error {
+	if claims.Expiry.Time().Before(now) {
+		return fmt.Errorf("%w: passport has expired", ErrPassportInvalid)
+	}
+
+	if claims.NotBefore != nil && claims.NotBefore.Time().After(now) {
+		return fmt.Errorf("%w: passport is not yet valid", ErrPassportInvalid)
+	}
+
+	return nil
 }
 
 // passportToUserinfo projects passport claims onto the existing handler-facing

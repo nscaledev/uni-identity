@@ -194,9 +194,27 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		return nil, err
 	}
 
+	return a.mintPassport(ctx, userinfo, sourceClaims, audience, organizationID, projectID)
+}
+
+// mintPassport encodes the signed passport once scope authorisation has
+// completed. It also enforces the source-token expiry precondition: a passport
+// with expires_in ≤ 0 would be internally inconsistent, so the exchange fails
+// closed when the source token's exp is already at or before now.
+func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.Userinfo, sourceClaims *Claims, audience jwt.Audience, organizationID, projectID string) (*openapi.Token, error) {
+	log := log.FromContext(ctx)
+
 	now := time.Now()
-	expiry := passportExpiry(now, sourceClaims)
+
+	expiry, err := passportExpiry(now, sourceClaims)
+	if err != nil {
+		log.Info("passport exchange failed: source token already expired")
+
+		return nil, errors.OAuth2AccessDenied("token validation failed").WithError(err)
+	}
+
 	passportID := uuid.New().String()
+	authz := userinfo.HttpsunikornCloudOrgauthz
 
 	claims := &PassportClaims{
 		Claims: jwt.Claims{
@@ -236,24 +254,37 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		"passportID", passportID,
 	)
 
-	result := &openapi.Token{
+	return &openapi.Token{
 		TokenType:       "Bearer",
 		AccessToken:     passport,
 		ExpiresIn:       int(expiry.Sub(now).Seconds()),
 		IssuedTokenType: stringPtr(PassportIssuedTokenType()),
-	}
-
-	return result, nil
+	}, nil
 }
 
-func passportExpiry(now time.Time, sourceClaims *Claims) time.Time {
+// passportExpiry returns the passport's exp claim, capped at the source token
+// expiry per the PRD rule that a passport must not outlive the credential it
+// was minted from. It fails closed when the source token's exp is already at
+// or before now: GetUserinfo may accept such a token via verification leeway,
+// but a passport with expires_in <= 0 is internally inconsistent and would be
+// rejected by downstream middleware regardless.
+func passportExpiry(now time.Time, sourceClaims *Claims) (time.Time, error) {
 	expiry := now.Add(PassportTTL)
 
-	if sourceClaims != nil && sourceClaims.Expiry != nil && sourceClaims.Expiry.Time().Before(expiry) {
-		return sourceClaims.Expiry.Time()
+	if sourceClaims == nil || sourceClaims.Expiry == nil {
+		return expiry, nil
 	}
 
-	return expiry
+	sourceExpiry := sourceClaims.Expiry.Time()
+	if !sourceExpiry.After(now) {
+		return time.Time{}, ErrSourceTokenExpired
+	}
+
+	if sourceExpiry.Before(expiry) {
+		return sourceExpiry, nil
+	}
+
+	return expiry, nil
 }
 
 func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string) error {

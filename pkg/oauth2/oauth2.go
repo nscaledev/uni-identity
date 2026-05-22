@@ -75,6 +75,7 @@ var (
 	ErrUnsupportedProviderType = goerrors.New("unhandled provider type")
 	ErrReference               = goerrors.New("resource reference error")
 	ErrUserNotDomainMapped     = goerrors.New("user is not domain mapped to an organization")
+	ErrSourceTokenExpired      = goerrors.New("source token has expired")
 )
 
 type Options struct {

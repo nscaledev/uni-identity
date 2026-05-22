@@ -106,6 +106,10 @@ func TestDecodePassportClaimsRejectsMalformed(t *testing.T) {
 			name:   "exp in the past",
 			mutate: func(c *oauth2.PassportClaims) { c.Expiry = jwt.NewNumericDate(time.Now().Add(-1 * time.Second)) },
 		},
+		{
+			name:   "nbf in the future",
+			mutate: func(c *oauth2.PassportClaims) { c.NotBefore = jwt.NewNumericDate(time.Now().Add(time.Minute)) },
+		},
 	}
 
 	for _, tt := range tests {
@@ -145,6 +149,29 @@ func TestAuthorizeRejectsExpiredPassport(t *testing.T) {
 	assert.Nil(t, info)
 
 	// A second identical request must also call exchange — nothing got cached.
+	info2, err := auth.Authorize(scopedAuthInput(t, "", ""))
+	require.Error(t, err)
+	assert.Nil(t, info2)
+	assert.Equal(t, int32(2), exchange.calls.Load(),
+		"a rejected passport must never populate the cache")
+}
+
+// TestAuthorizeRejectsNotYetValidPassport ensures a syntactically valid
+// passport whose nbf is still in the future is rejected. Temporal validation
+// must fail closed on both stale and premature exchange output.
+func TestAuthorizeRejectsNotYetValidPassport(t *testing.T) {
+	t.Parallel()
+
+	notYetValid := validTestPassportClaims()
+	notYetValid.NotBefore = jwt.NewNumericDate(time.Now().Add(time.Minute))
+
+	exchange := &recordingTokenExchange{passport: mintTestPassport(t, notYetValid)}
+	auth := newTestAuthorizer(exchange)
+
+	info, err := auth.Authorize(scopedAuthInput(t, "", ""))
+	require.Error(t, err)
+	assert.Nil(t, info)
+
 	info2, err := auth.Authorize(scopedAuthInput(t, "", ""))
 	require.Error(t, err)
 	assert.Nil(t, info2)
@@ -258,7 +285,6 @@ func (e *recordingTokenExchange) recorded() []tokenExchangeCall {
 
 func newTestAuthorizer(exchange TokenExchange) *Authorizer {
 	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *identityapi.Userinfo](16)
-	tokenCache.ZeroCopy()
 
 	return &Authorizer{
 		exchange:   exchange,

@@ -80,10 +80,14 @@ populates the existing `authorization.Info` and `userinfo` structures. The cache
 passport-derived identity payload, and the per-entry TTL is derived from the passport's `exp` claim
 (bounded by the source token's `exp` where the source is a JWT) minus a 10 s clock-skew fudge.
 
-The exchange path fails closed: any rejection, malformed response, or transport failure surfaces as
-access-denied. There is no fallback to the legacy userinfo path. Passports are consumed in-process
-and are never forwarded on outbound calls — internal service-to-service communication continues to
-use mTLS plus `X-Principal` exactly as before.
+The exchange path fails closed: rejected source tokens and transport failures surface as
+access-denied. A malformed or temporally invalid passport returned after a *successful* exchange
+response is treated as an internal failure (500) rather than access-denied, because that outcome
+reflects an identity-side defect, not a user authorization decision. Passport decoding rejects both
+expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There is no fallback to the legacy
+userinfo path. Passports are consumed in-process and are never forwarded on outbound calls —
+internal service-to-service communication continues to use mTLS plus `X-Principal` exactly as
+before.
 
 ## Ingress And Header Invariants
 

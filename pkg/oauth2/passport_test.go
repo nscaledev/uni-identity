@@ -68,6 +68,12 @@ func setupPassportTestEnv(t *testing.T, objects ...client.Object) *passportTestE
 func setupPassportTestEnvWithRBACOptions(t *testing.T, rbacOptions *rbac.Options, objects ...client.Object) *passportTestEnv {
 	t.Helper()
 
+	return setupPassportTestEnvWithOptions(t, rbacOptions, 0, objects...)
+}
+
+func setupPassportTestEnvWithOptions(t *testing.T, rbacOptions *rbac.Options, tokenVerificationLeeway time.Duration, objects ...client.Object) *passportTestEnv {
+	t.Helper()
+
 	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
@@ -97,6 +103,7 @@ func setupPassportTestEnvWithRBACOptions(t *testing.T, rbacOptions *rbac.Options
 		AccessTokenDuration:      accessTokenDuration,
 		RefreshTokenDuration:     refreshTokenDuration,
 		TokenLeewayDuration:      accessTokenDuration,
+		TokenVerificationLeeway:  tokenVerificationLeeway,
 		TokenCacheSize:           1024,
 		CodeCacheSize:            1024,
 		AccountCreationCacheSize: 1024,
@@ -351,6 +358,57 @@ func TestExchangeCapsPassportExpiryAtSourceTokenExpiry(t *testing.T) {
 		passportClaims.Expiry.Time().After(sourceClaims.Expiry.Time()),
 		"passport expiry must not outlive the source access token expiry",
 	)
+}
+
+// TestExchangeFailsClosedWhenSourceTokenExpired verifies that a source token
+// whose exp is at or before now produces a token validation failure rather
+// than a passport with a non-positive lifetime. GetUserinfo may legitimately
+// accept such a token inside token-verification-leeway, but the passport must
+// not outlive the credential it was minted from — so the exchange must fail.
+func TestExchangeFailsClosedWhenSourceTokenExpired(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnvWithOptions(t, nil, 30*time.Second,
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	// Issue a source token that is already expired but still inside the
+	// verification leeway window configured above.
+	shortTTL := 100 * time.Millisecond
+	tokens, err := env.authenticator.Issue(t.Context(), &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+		Duration: &shortTTL,
+	})
+	require.NoError(t, err)
+
+	time.Sleep(2 * shortTTL)
+
+	req := exchangeRequest(t, tokens.AccessToken, nil)
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "token validation failed")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
 }
 
 func TestExchangeWithOrgScope(t *testing.T) {
