@@ -151,7 +151,7 @@ type RoleList struct {
 // permssions should be create from the boolean union for any roles that apply
 // to a user.  Roles can optionally be scoped to an organization to allow
 // deep customization of roles and permissions within that organization, for
-// example the system management organization may have an onboarding role that
+// example the system management organization may have a provisioning role that
 // allows basic account creation before handing off to the user.
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
