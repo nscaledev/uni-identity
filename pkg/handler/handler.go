@@ -197,10 +197,6 @@ func (h *Handler) PostOauth2V2Login(w http.ResponseWriter, r *http.Request) {
 	h.oauth2.Login(w, r)
 }
 
-func (h *Handler) PostOauth2V2Onboard(w http.ResponseWriter, r *http.Request) {
-	h.oauth2.Onboard(w, r)
-}
-
 func (h *Handler) PostOauth2V2Token(w http.ResponseWriter, r *http.Request) {
 	result, err := h.oauth2.Token(w, r)
 	if err != nil {

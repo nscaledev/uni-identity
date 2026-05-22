@@ -64,10 +64,6 @@ spec:
               loginUri:
                 description: LoginURI is a URI to pass control to for login dialogs.
                 type: string
-              onboardingUri:
-                description: OnboardingURI is a URI to pass control to for the onboarding
-                  dialogs.
-                type: string
               redirectUri:
                 description: RedirectURI is the URI to pass control back to the client.
                 type: string

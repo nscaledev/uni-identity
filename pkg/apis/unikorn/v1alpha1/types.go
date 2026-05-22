@@ -72,8 +72,6 @@ type OAuth2ClientSpec struct {
 	LoginURI *string `json:"loginUri,omitempty"`
 	// ErrorURI is a URI to pass control to for error dialogs.
 	ErrorURI *string `json:"errorUri,omitempty"`
-	// OnboardingURI is a URI to pass control to for the onboarding dialogs.
-	OnboardingURI *string `json:"onboardingUri,omitempty"`
 }
 
 // OAuth2ClientStatus defines the status of the client.

@@ -501,10 +501,6 @@ const (
 	//nolint:gosec
 	TokenTypeLoginDialogState TokenType = "unikorn-cloud.org/logindialogstate+jwt"
 
-	// TokenTypeOnboardState is used to authorize an onboarding action.
-	//nolint:gosec
-	TokenTypeOnboardState TokenType = "unikorn-cloud.org/onboardingstate+jwt"
-
 	// TokenTypeRefreshToken is defined to prevent reuse in other contexts.
 	// This is only valid for a refresh token.
 	//nolint:gosec
