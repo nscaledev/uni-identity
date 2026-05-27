@@ -1283,6 +1283,71 @@ func TestExchangeHandlerInvalidTokenReturnsUnauthorized(t *testing.T) {
 	assert.Contains(t, oauthResp.ErrorDescription, "token validation failed")
 }
 
+func TestExchangeHandlerMissingGrantTypeDoesNotMintPassport(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
+		strings.NewReader(url.Values{
+			"subject_token":        {"token-value"},
+			"subject_token_type":   {oauth2.AccessTokenSubjectTokenType()},
+			"requested_token_type": {passportIssuedTokenType()},
+		}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+
+	h.PostOauth2V2Token(recorder, req)
+
+	resp := recorder.Result()
+	t.Cleanup(func() {
+		require.NoError(t, resp.Body.Close())
+	})
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var oauthResp openapi.Oauth2Error
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
+	assert.Equal(t, openapi.InvalidRequest, oauthResp.Error)
+	assert.Contains(t, oauthResp.ErrorDescription, "token grant type is not supported")
+}
+
+func TestExchangeHandlerWrongGrantTypeDoesNotMintPassport(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
+		strings.NewReader(url.Values{
+			"grant_type":           {"client_credentials"},
+			"subject_token":        {"token-value"},
+			"subject_token_type":   {oauth2.AccessTokenSubjectTokenType()},
+			"requested_token_type": {passportIssuedTokenType()},
+		}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+
+	h.PostOauth2V2Token(recorder, req)
+
+	resp := recorder.Result()
+	t.Cleanup(func() {
+		require.NoError(t, resp.Body.Close())
+	})
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var oauthResp openapi.Oauth2Error
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
+	assert.Equal(t, openapi.InvalidRequest, oauthResp.Error)
+	assert.Contains(t, oauthResp.ErrorDescription, "mTLS client verification failed")
+}
+
 func TestExchangeHandlerSuccess(t *testing.T) {
 	t.Parallel()
 

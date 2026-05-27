@@ -344,7 +344,7 @@ func (e *recordingTokenExchange) recorded() []tokenExchangeCall {
 }
 
 func newTestAuthorizer(exchange TokenExchange) *Authorizer {
-	tokenCache := cache.NewLRUExpireCache[string, *oauth2.PassportClaims](16)
+	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *oauth2.PassportClaims](16)
 
 	return &Authorizer{
 		exchange:   exchange,
@@ -451,10 +451,9 @@ func TestExchangePropagatesRouteScope(t *testing.T) {
 	}
 }
 
-// TestCacheKeyedByTokenOnly confirms the token cache stores passport claims by
-// bearer token. The cached value is later projected into the handler-facing
-// Userinfo shape, so route scope does not participate in the cache key.
-func TestCacheKeyedByTokenOnly(t *testing.T) {
+// TestCacheKeyIncludesRouteScope ensures every authorization scope is validated
+// by exchange before it can be served from cache.
+func TestCacheKeyIncludesRouteScope(t *testing.T) {
 	t.Parallel()
 
 	passport := mintTestPassport(t, validTestPassportClaims())
@@ -478,8 +477,8 @@ func TestCacheKeyedByTokenOnly(t *testing.T) {
 		require.NotNil(t, info)
 	}
 
-	assert.Equal(t, int32(1), exchange.calls.Load(),
-		"same bearer token should reuse cached passport claims across route scopes")
+	assert.Equal(t, int32(len(scopes)), exchange.calls.Load(),
+		"same bearer token must be exchanged separately for every org/project scope")
 }
 
 // stubTokenExchange returns a fixed error from Exchange.
