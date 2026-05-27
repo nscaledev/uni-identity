@@ -648,6 +648,12 @@ func (c *APIClient) ExchangePassportRawForm(ctx context.Context, expectedStatus 
 	return c.doFormRequest(ctx, http.MethodPost, path, form, expectedStatus)
 }
 
+// ExchangePassportRawPathForm performs a raw token request against a caller
+// supplied token path. Use this for protocol tests that include query params.
+func (c *APIClient) ExchangePassportRawPathForm(ctx context.Context, expectedStatus int, path string, form url.Values) (*http.Response, []byte, error) {
+	return c.doFormRequest(ctx, http.MethodPost, path, form, expectedStatus)
+}
+
 // GetJWKS fetches the OAuth2 JSON Web Key Set.
 func (c *APIClient) GetJWKS(ctx context.Context) (*identityopenapi.JwksResponse, error) {
 	path := c.endpoints.GetJWKS()

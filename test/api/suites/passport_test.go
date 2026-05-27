@@ -22,7 +22,6 @@ package suites
 
 import (
 	"encoding/json"
-	goerrors "errors"
 	"net/http"
 	"net/url"
 
@@ -32,7 +31,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
@@ -57,6 +55,14 @@ type passportClaims struct {
 
 func passportIssuedTokenType() string {
 	return "urn:nscale:params:oauth:token-type:passport"
+}
+
+func tokenExchangeGrantType() string {
+	return "urn:ietf:params:oauth:grant-type:token-exchange"
+}
+
+func accessTokenSubjectTokenType() string {
+	return "urn:ietf:params:oauth:token-type:access_token"
 }
 
 func decodePassportClaims(passport string) passportClaims {
@@ -126,6 +132,15 @@ func decodeExchangeOAuth2Error(respBody []byte) identityopenapi.Oauth2Error {
 	Expect(json.Unmarshal(respBody, &oauthErr)).To(Succeed())
 
 	return oauthErr
+}
+
+func expectExchangeOAuth2Error(respBody []byte, expected identityopenapi.Oauth2ErrorError, descriptionSubstring string) {
+	oauthErr := decodeExchangeOAuth2Error(respBody)
+	Expect(oauthErr.Error).To(Equal(expected))
+	if descriptionSubstring != "" {
+		Expect(oauthErr.ErrorDescription).To(ContainSubstring(descriptionSubstring))
+	}
+	Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
 }
 
 var _ = Describe("Passport Token Exchange", func() {
@@ -325,6 +340,30 @@ var _ = Describe("Passport Token Exchange", func() {
 			})
 		})
 
+		Describe("Given fixture user authentication for an unauthorized organization", func() {
+			BeforeEach(func() {
+				if userClient == nil {
+					Skip("USER_AUTH_TOKEN is required for user permission passport testing")
+				}
+				if config.UnauthorisedOrgID == "" {
+					Skip("UNAUTHORISED_ORG_ID is required for user permission passport testing")
+				}
+			})
+
+			It("should reject the exchange with an OAuth2 access_denied response", func() {
+				options := &identityopenapi.TokenRequestOptions{
+					XOrganizationId: &config.UnauthorisedOrgID,
+				}
+
+				resp, respBody, err := userClient.ExchangePassportRaw(ctx, 0, options)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+				expectExchangeOAuth2Error(respBody, identityopenapi.AccessDenied, "organization not in scope")
+			})
+		})
+
 		Describe("Given project scope without organization scope", func() {
 			It("should reject the exchange with an OAuth2 invalid_request response", func() {
 				options := &identityopenapi.TokenRequestOptions{
@@ -337,9 +376,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
-				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
-				Expect(oauthErr.ErrorDescription).To(ContainSubstring("x_organization_id must be specified"))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "x_organization_id must be specified")
 			})
 		})
 
@@ -356,9 +393,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
-				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
-				Expect(oauthErr.ErrorDescription).To(ContainSubstring("resource must be an absolute URI"))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "resource must be an absolute URI")
 			})
 		})
 
@@ -375,9 +410,25 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
-				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
-				Expect(oauthErr.ErrorDescription).To(ContainSubstring("requested_token_type is not supported"))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "requested_token_type is not supported")
+			})
+		})
+
+		Describe("Given an invalid source token", func() {
+			It("should return unauthorized access_denied without minting a passport", func() {
+				form := url.Values{
+					"grant_type":           {tokenExchangeGrantType()},
+					"subject_token":        {"not-a-valid-token"},
+					"subject_token_type":   {accessTokenSubjectTokenType()},
+					"requested_token_type": {passportIssuedTokenType()},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, http.StatusUnauthorized, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+				expectExchangeOAuth2Error(respBody, identityopenapi.AccessDenied, "token validation failed")
 			})
 		})
 
@@ -396,8 +447,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 
-				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
+				expectExchangeOAuth2Error(respBody, identityopenapi.AccessDenied, "")
 			})
 		})
 
@@ -407,17 +457,90 @@ var _ = Describe("Passport Token Exchange", func() {
 				unauthConfig.AuthToken = ""
 				unauthClient := api.NewAPIClientWithConfig(&unauthConfig)
 
-				_, respBody, err := unauthClient.ExchangePassportRaw(ctx, 200, nil)
+				resp, respBody, err := unauthClient.ExchangePassportRaw(ctx, http.StatusBadRequest, nil)
 
-				Expect(err).To(HaveOccurred())
-				Expect(goerrors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue(),
-					"Should return unexpected status code error for missing auth")
-
-				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
-				Expect(oauthErr.ErrorDescription).To(ContainSubstring("subject_token must be specified"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "subject_token must be specified")
 
 				GinkgoWriter.Printf("Expected error for missing authentication: %v\n", err)
+			})
+		})
+
+		Describe("Given a missing subject token type", func() {
+			It("should reject the request with an OAuth2 invalid_request response", func() {
+				form := url.Values{
+					"grant_type":           {tokenExchangeGrantType()},
+					"subject_token":        {config.AuthToken},
+					"requested_token_type": {passportIssuedTokenType()},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, http.StatusBadRequest, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "subject_token_type must be specified")
+			})
+		})
+
+		Describe("Given an unsupported subject token type", func() {
+			It("should reject the request with an OAuth2 invalid_request response", func() {
+				form := url.Values{
+					"grant_type":           {tokenExchangeGrantType()},
+					"subject_token":        {config.AuthToken},
+					"subject_token_type":   {"urn:ietf:params:oauth:token-type:id_token"},
+					"requested_token_type": {passportIssuedTokenType()},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, http.StatusBadRequest, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "subject_token_type is not supported")
+			})
+		})
+
+		Describe("Given token exchange parameters in the URL query", func() {
+			It("should reject the request with an OAuth2 invalid_request response", func() {
+				form := url.Values{
+					"grant_type":         {tokenExchangeGrantType()},
+					"subject_token":      {config.AuthToken},
+					"subject_token_type": {accessTokenSubjectTokenType()},
+				}
+				query := url.Values{
+					"subject_token": {"query-token-value"},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawPathForm(ctx, http.StatusBadRequest,
+					client.GetEndpoints().Token()+"?"+query.Encode(), form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "subject_token must be supplied in the form body")
+			})
+		})
+
+		Describe("Given actor token delegation parameters", func() {
+			It("should reject the request with an OAuth2 invalid_request response", func() {
+				form := url.Values{
+					"grant_type":           {tokenExchangeGrantType()},
+					"subject_token":        {config.AuthToken},
+					"subject_token_type":   {accessTokenSubjectTokenType()},
+					"requested_token_type": {passportIssuedTokenType()},
+					"actor_token":          {"actor-token"},
+					"actor_token_type":     {accessTokenSubjectTokenType()},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, http.StatusBadRequest, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "actor_token is not supported")
 			})
 		})
 
@@ -425,7 +548,7 @@ var _ = Describe("Passport Token Exchange", func() {
 			It("should reject the request without minting a passport", func() {
 				form := url.Values{
 					"subject_token":        {config.AuthToken},
-					"subject_token_type":   {"urn:ietf:params:oauth:token-type:access_token"},
+					"subject_token_type":   {accessTokenSubjectTokenType()},
 					"requested_token_type": {passportIssuedTokenType()},
 				}
 
@@ -435,10 +558,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
-				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
-				Expect(oauthErr.ErrorDescription).To(ContainSubstring("token grant type is not supported"))
-				Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "token grant type is not supported")
 			})
 		})
 
@@ -447,7 +567,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				form := url.Values{
 					"grant_type":           {"client_credentials"},
 					"subject_token":        {config.AuthToken},
-					"subject_token_type":   {"urn:ietf:params:oauth:token-type:access_token"},
+					"subject_token_type":   {accessTokenSubjectTokenType()},
 					"requested_token_type": {passportIssuedTokenType()},
 				}
 
@@ -457,10 +577,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
-				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
-				Expect(oauthErr.ErrorDescription).To(ContainSubstring("mTLS client verification failed"))
-				Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "mTLS client verification failed")
 			})
 		})
 	})
