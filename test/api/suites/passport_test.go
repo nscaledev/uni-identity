@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	goerrors "errors"
 	"net/http"
+	"net/url"
 
 	gojose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -202,6 +203,49 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("subject_token must be specified"))
 
 				GinkgoWriter.Printf("Expected error for missing authentication: %v\n", err)
+			})
+		})
+
+		Describe("Given a missing token-exchange grant type", func() {
+			It("should reject the request without minting a passport", func() {
+				form := url.Values{
+					"subject_token":        {config.AuthToken},
+					"subject_token_type":   {"urn:ietf:params:oauth:token-type:access_token"},
+					"requested_token_type": {passportIssuedTokenType()},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, http.StatusBadRequest, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+
+				oauthErr := decodeExchangeOAuth2Error(respBody)
+				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
+				Expect(oauthErr.ErrorDescription).To(ContainSubstring("token grant type is not supported"))
+				Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
+			})
+		})
+
+		Describe("Given a wrong grant type with exchange parameters", func() {
+			It("should not apply token-exchange semantics or mint a passport", func() {
+				form := url.Values{
+					"grant_type":           {"client_credentials"},
+					"subject_token":        {config.AuthToken},
+					"subject_token_type":   {"urn:ietf:params:oauth:token-type:access_token"},
+					"requested_token_type": {passportIssuedTokenType()},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, http.StatusBadRequest, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+
+				oauthErr := decodeExchangeOAuth2Error(respBody)
+				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
+				Expect(oauthErr.ErrorDescription).To(ContainSubstring("mTLS client verification failed"))
+				Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
 			})
 		})
 	})

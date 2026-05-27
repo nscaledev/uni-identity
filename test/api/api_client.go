@@ -639,6 +639,15 @@ func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int,
 	return c.doFormRequest(ctx, http.MethodPost, path, c.exchangeForm(options), expectedStatus)
 }
 
+// ExchangePassportRawForm performs a raw token request with caller-supplied
+// form parameters. Use this for protocol-negative tests that need malformed
+// or unsupported grant shapes.
+func (c *APIClient) ExchangePassportRawForm(ctx context.Context, expectedStatus int, form url.Values) (*http.Response, []byte, error) {
+	path := c.endpoints.Token()
+
+	return c.doFormRequest(ctx, http.MethodPost, path, form, expectedStatus)
+}
+
 // UpdateServiceAccount updates an existing service account.
 func (c *APIClient) UpdateServiceAccount(ctx context.Context, orgID, saID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.ServiceAccountRead, error) {
 	return putResource[identityopenapi.ServiceAccountWrite, identityopenapi.ServiceAccountRead](
