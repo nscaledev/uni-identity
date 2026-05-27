@@ -129,6 +129,11 @@ func (e *Endpoints) Token() string {
 	return "/oauth2/v2/token"
 }
 
+// GetJWKS returns the OAuth2 JWKS endpoint path.
+func (e *Endpoints) GetJWKS() string {
+	return "/oauth2/v2/jwks"
+}
+
 // ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.
 func (e *Endpoints) ListGlobalOauth2Providers() string {
 	return "/api/v1/oauth2providers"
