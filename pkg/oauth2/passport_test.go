@@ -1025,11 +1025,13 @@ func TestExchangeHandlerMissingGrantTypeDoesNotMintPassport(t *testing.T) {
 			"requested_token_type": {passportIssuedTokenType()},
 		}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
 	recorder := httptest.NewRecorder()
 
 	h.PostOauth2V2Token(recorder, req)
 
 	resp := recorder.Result()
+
 	t.Cleanup(func() {
 		require.NoError(t, resp.Body.Close())
 	})
@@ -1037,6 +1039,7 @@ func TestExchangeHandlerMissingGrantTypeDoesNotMintPassport(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	var oauthResp openapi.Oauth2Error
+
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
 	assert.Equal(t, openapi.InvalidRequest, oauthResp.Error)
 	assert.Contains(t, oauthResp.ErrorDescription, "token grant type is not supported")
@@ -1058,11 +1061,13 @@ func TestExchangeHandlerWrongGrantTypeDoesNotMintPassport(t *testing.T) {
 			"requested_token_type": {passportIssuedTokenType()},
 		}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
 	recorder := httptest.NewRecorder()
 
 	h.PostOauth2V2Token(recorder, req)
 
 	resp := recorder.Result()
+
 	t.Cleanup(func() {
 		require.NoError(t, resp.Body.Close())
 	})
@@ -1070,6 +1075,7 @@ func TestExchangeHandlerWrongGrantTypeDoesNotMintPassport(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	var oauthResp openapi.Oauth2Error
+
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
 	assert.Equal(t, openapi.InvalidRequest, oauthResp.Error)
 	assert.Contains(t, oauthResp.ErrorDescription, "mTLS client verification failed")
