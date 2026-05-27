@@ -477,7 +477,7 @@ func TestCacheKeyIncludesRouteScope(t *testing.T) {
 		require.NotNil(t, info)
 	}
 
-	assert.Equal(t, int32(len(scopes)), exchange.calls.Load(),
+	assert.EqualValues(t, len(scopes), exchange.calls.Load(),
 		"same bearer token must be exchanged separately for every org/project scope")
 }
 

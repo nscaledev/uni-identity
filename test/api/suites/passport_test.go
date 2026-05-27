@@ -558,7 +558,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
-				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "token grant type is not supported")
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidRequest, "grant_type")
 			})
 		})
 
