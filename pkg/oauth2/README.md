@@ -109,7 +109,9 @@ off the passport-verified principal.
 
 Token-endpoint refusals follow RFC 6749 §5.2:
 
-- subject-token failures (missing, expired, malformed, principal not active) → `401 access_denied`
+- malformed token-exchange requests (missing or unsupported `subject_token` fields) →
+  `400 invalid_request`
+- presented subject-token failures (expired, malformed, principal not active) → `401 access_denied`
 - scope failures (valid subject token, principal not a member of the requested org/project) →
   `400 invalid_scope`
 
