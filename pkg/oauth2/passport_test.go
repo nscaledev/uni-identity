@@ -514,6 +514,9 @@ func TestExchangeWithOrgScope(t *testing.T) {
 	assert.Equal(t, "project1", claims.ProjectID)
 }
 
+// TestExchangeInvalidProjectID exercises the token-endpoint layer directly via
+// Authenticator.TokenExchange. The remote middleware projects invalid_scope to
+// 403 at the API edge; that mapping is covered by the authorizer tests.
 func TestExchangeInvalidProjectID(t *testing.T) {
 	t.Parallel()
 
@@ -581,6 +584,8 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 	assert.Equal(t, openapi.InvalidScope, oauthErr.Code())
 }
 
+// TestExchangeInvalidOrganizationID exercises the token-endpoint layer
+// directly. See TestExchangeInvalidProjectID for the layer/contract note.
 func TestExchangeInvalidOrganizationID(t *testing.T) {
 	t.Parallel()
 
@@ -760,6 +765,8 @@ func TestExchangeServiceAccount(t *testing.T) {
 	assert.ElementsMatch(t, []string{"test-org"}, claims.OrgIDs)
 }
 
+// TestExchangeServiceAccountWrongOrganization exercises the token-endpoint
+// layer directly. See TestExchangeInvalidProjectID for the layer/contract note.
 func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 	t.Parallel()
 

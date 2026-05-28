@@ -117,8 +117,11 @@ func isInvalidScopeError(body []byte) bool {
 func decodeTokenExchangeResponse(resp *http.Response) (string, error) {
 	defer resp.Body.Close()
 
-	// Only 400 needs the body (RFC 6749 §5.2 error code). Cap the read
-	// here so the 200 path stream-decodes uncapped.
+	// The body is only needed on 400 — to distinguish RFC 6749 §5.2
+	// invalid_scope from other 400 error codes. The read is capped at
+	// errorBodySniffLimit (8 KiB) to bound exposure to a misbehaving or
+	// hostile upstream; the 200 path below stream-decodes uncapped so large
+	// passports (many org/project claims) are not truncated.
 	if resp.StatusCode == http.StatusBadRequest {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, errorBodySniffLimit))
 		if err != nil {

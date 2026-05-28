@@ -84,8 +84,12 @@ minting it, so middleware does not need to parse the source token locally.
 The exchange path fails closed. Token-endpoint responses project to the API edge as follows:
 
 - 401 (subject token rejected) → `access-denied` (401)
-- 400 `invalid_scope` (subject token valid, scope not granted) → `forbidden` (403)
-- All other non-2xx, including 5xx and transport failures → `access-denied` (401)
+- 400 with RFC 6749 §5.2 `error=invalid_scope` (subject token valid, scope not granted) →
+  `forbidden` (403)
+- All other non-2xx outcomes — including other 4xx (e.g. 400 with a different `error` code or a
+  malformed body), 5xx, transport failures, and timeouts — fall through to the catch-all
+  `access-denied` (401). This is the deliberate fail-closed default: the middleware refuses
+  ambiguous responses rather than guessing at intent.
 - Malformed or temporally invalid passport after a successful exchange → 500
 
 Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There

@@ -298,17 +298,22 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 		return errors.OAuth2InvalidScope("organization not in scope")
 	}
 
-	// System principals do not carry explicit organization memberships in OrgIds.
-	// Their effective scope is derived from RBAC's system-account path instead.
-	//
-	// User principals also defer to RBAC because platform-administrator subjects
-	// are authorised by RBAC even when they are not members of the scoped
-	// organization. Ordinary users outside the organization are rejected by
-	// rbac.GetACL and normalized back to an OAuth2 invalid_scope response.
+	// System and user principals defer to RBAC and are not rejected here:
+	//   - System principals do not carry explicit organization memberships
+	//     in OrgIds; their effective scope is derived from RBAC's
+	//     system-account path.
+	//   - User principals defer to RBAC because platform-administrator
+	//     subjects are authorised even when they are not members of the
+	//     scoped organization. Ordinary users outside the organization are
+	//     rejected downstream by rbac.GetACL, which the caller normalizes
+	//     into an OAuth2 invalid_scope response.
 	if authz.Acctype == openapi.System || authz.Acctype == openapi.User {
 		return nil
 	}
 
+	// Service accounts and other non-system/user principals carry an explicit
+	// organization membership list, so we can reject early on a mismatch
+	// without consulting RBAC.
 	if !slices.Contains(authz.OrgIds, organizationID) {
 		return errors.OAuth2InvalidScope("organization not in scope")
 	}
