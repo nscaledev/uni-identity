@@ -83,12 +83,15 @@ minting it, so middleware does not need to parse the source token locally.
 
 The exchange path fails closed. Token-endpoint responses project to the API edge as follows:
 
-- 401 (subject token rejected) → `access-denied` (401)
-- 400 with RFC 6749 §5.2 `error=invalid_scope` (subject token valid, scope not granted) →
-  `forbidden` (403)
-- All other non-2xx outcomes — including other 4xx (e.g. 400 with a different `error` code or a
-  malformed body), 5xx, transport failures, and timeouts — fall through to the catch-all
-  `access-denied` (401). This is the deliberate fail-closed default: the middleware refuses
+- 401 (subject token rejected, `ErrTokenExchangeUnauthorized`) → `access-denied` (401)
+- 400 with RFC 6749 §5.2 `error=invalid_scope` (subject token valid, scope not granted,
+  `ErrTokenExchangeForbidden`) → `forbidden` (403)
+- 5xx and transport/timeout failures (`ErrTokenExchangeUnavailable`) → `access-denied` (401),
+  via the catch-all. The middleware deliberately does not surface 502/503/504 to the caller: a
+  transient identity outage must not let a request through, and exposing the upstream status
+  would invite retries that defeat the fail-closed contract.
+- Any other non-2xx outcome — including 400 with a different `error` code, malformed bodies, and
+  unclassified 4xx — also falls through to `access-denied` (401). Same rationale: refuse
   ambiguous responses rather than guessing at intent.
 - Malformed or temporally invalid passport after a successful exchange → 500
 

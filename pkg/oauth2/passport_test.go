@@ -515,8 +515,11 @@ func TestExchangeWithOrgScope(t *testing.T) {
 }
 
 // TestExchangeInvalidProjectID exercises the token-endpoint layer directly via
-// Authenticator.TokenExchange. The remote middleware projects invalid_scope to
-// 403 at the API edge; that mapping is covered by the authorizer tests.
+// Authenticator.TokenExchange. The assertions below pin the contract at that
+// layer: HTTP 400 + RFC 6749 §5.2 error=invalid_scope. The remote middleware
+// projects that to 403 forbidden at the API edge — that hop is covered by
+// TestAuthorizeProjectsExchangeErrors in pkg/middleware/openapi/remote, not
+// here.
 func TestExchangeInvalidProjectID(t *testing.T) {
 	t.Parallel()
 
@@ -585,7 +588,9 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 }
 
 // TestExchangeInvalidOrganizationID exercises the token-endpoint layer
-// directly. See TestExchangeInvalidProjectID for the layer/contract note.
+// directly. The 400 + invalid_scope assertions are the token-endpoint
+// contract; the middleware's 403 projection is exercised by
+// TestAuthorizeProjectsExchangeErrors in pkg/middleware/openapi/remote.
 func TestExchangeInvalidOrganizationID(t *testing.T) {
 	t.Parallel()
 
@@ -766,7 +771,9 @@ func TestExchangeServiceAccount(t *testing.T) {
 }
 
 // TestExchangeServiceAccountWrongOrganization exercises the token-endpoint
-// layer directly. See TestExchangeInvalidProjectID for the layer/contract note.
+// layer directly. The 400 + invalid_scope assertions are the token-endpoint
+// contract; the middleware's 403 projection is exercised by
+// TestAuthorizeProjectsExchangeErrors in pkg/middleware/openapi/remote.
 func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 	t.Parallel()
 

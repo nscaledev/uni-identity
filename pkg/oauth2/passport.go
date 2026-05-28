@@ -287,13 +287,18 @@ func passportExpiry(now time.Time, sourceClaims *Claims) (time.Time, error) {
 	return expiry, nil
 }
 
+// validateOrganizationScope rejects an exchange request whose scoped
+// organization is not reachable by the calling principal. Every rejection
+// path returns OAuth2InvalidScope (HTTP 400, RFC 6749 §5.2); the remote
+// middleware projects that to 403 forbidden at the API edge.
 func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string) error {
 	if organizationID == "" {
 		return nil
 	}
 
 	// GetUserinfo normally populates authz for valid UNI tokens, but keep the
-	// nil guard so malformed or partially mocked callers still fail closed.
+	// nil guard so malformed or partially mocked callers fail closed with
+	// invalid_scope rather than panicking.
 	if authz == nil {
 		return errors.OAuth2InvalidScope("organization not in scope")
 	}
@@ -305,15 +310,18 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	//   - User principals defer to RBAC because platform-administrator
 	//     subjects are authorised even when they are not members of the
 	//     scoped organization. Ordinary users outside the organization are
-	//     rejected downstream by rbac.GetACL, which the caller normalizes
-	//     into an OAuth2 invalid_scope response.
+	//     rejected downstream by rbac.GetACL (ErrNotInOrganization), which
+	//     the ExchangePassport caller re-wraps as OAuth2InvalidScope — so
+	//     the resulting wire response is identical to the early reject
+	//     below.
 	if authz.Acctype == openapi.System || authz.Acctype == openapi.User {
 		return nil
 	}
 
 	// Service accounts and other non-system/user principals carry an explicit
 	// organization membership list, so we can reject early on a mismatch
-	// without consulting RBAC.
+	// without consulting RBAC. Same wire response (invalid_scope) as the
+	// deferred RBAC path above.
 	if !slices.Contains(authz.OrgIds, organizationID) {
 		return errors.OAuth2InvalidScope("organization not in scope")
 	}

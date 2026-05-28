@@ -517,6 +517,11 @@ func TestAuthorizeProjectsExchangeErrors(t *testing.T) {
 			exchangeErr:    ErrTokenExchangeFailed,
 			wantAccessDeny: true,
 		},
+		{
+			name:           "unavailable (5xx/transport) falls back to access denied",
+			exchangeErr:    ErrTokenExchangeUnavailable,
+			wantAccessDeny: true,
+		},
 	}
 
 	for _, tt := range tests {
