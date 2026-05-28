@@ -136,18 +136,14 @@ func OAuth2InvalidClient(description string) *Error {
 	return newError(http.StatusBadRequest, openapi.InvalidClient, description)
 }
 
-// OAuth2AccessDenied indicates the subject token itself was rejected
-// (bad/expired credential, inactive principal). Use OAuth2InvalidScope for
-// scope refusals against an otherwise-valid token — the remote middleware
-// dispatches on the 401/400 split to keep authn and authz failures
-// distinguishable end to end.
+// OAuth2AccessDenied tells the client the authentication failed e.g.
+// username/password are wrong, or a token has expired and needs reauthentication.
 func OAuth2AccessDenied(description string) *Error {
 	return newError(http.StatusUnauthorized, openapi.AccessDenied, description)
 }
 
-// OAuth2InvalidScope indicates the subject token is valid but the requested
-// organization/project scope is not granted to the principal. See RFC 6749
-// section 5.2.
+// OAuth2InvalidScope tells the client it doesn't have the necessary scope
+// to access the resource.
 func OAuth2InvalidScope(description string) *Error {
 	return newError(http.StatusBadRequest, openapi.InvalidScope, description)
 }

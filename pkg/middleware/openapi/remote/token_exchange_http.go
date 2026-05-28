@@ -17,7 +17,6 @@ limitations under the License.
 package authorizer
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -87,9 +86,8 @@ func tokenExchangeForm(sourceToken string, options *tokenExchangeOptions) url.Va
 	return form
 }
 
-// classifyTokenExchangeStatus maps a token-endpoint response to the sentinel
-// the authorizer dispatches on. body is only consulted on 400, where the
-// RFC 6749 §5.2 error code distinguishes scope refusal from other failures.
+// classifyTokenExchangeStatus maps a token-endpoint status to the sentinel
+// the authorizer dispatches on. body is only consulted on 400.
 func classifyTokenExchangeStatus(statusCode int, body []byte) error {
 	switch {
 	case statusCode == http.StatusUnauthorized:
@@ -106,8 +104,7 @@ func classifyTokenExchangeStatus(statusCode int, body []byte) error {
 }
 
 // isInvalidScopeError returns true only for a parseable RFC 6749 §5.2 body
-// whose error code is invalid_scope. Malformed bodies fall through to
-// ErrTokenExchangeFailed in the caller.
+// with error code invalid_scope. Malformed bodies fall through.
 func isInvalidScopeError(body []byte) bool {
 	var oauthErr oauth2ErrorBody
 	if err := json.Unmarshal(body, &oauthErr); err != nil {
@@ -120,19 +117,23 @@ func isInvalidScopeError(body []byte) bool {
 func decodeTokenExchangeResponse(resp *http.Response) (string, error) {
 	defer resp.Body.Close()
 
-	// Read once: the classifier needs the body on 400, the success path needs
-	// it for access_token, and the response stream can only be drained once.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, errorBodySniffLimit))
-	if err != nil {
-		return "", fmt.Errorf("%w: failed to read response body: %w", ErrTokenExchangeInvalidResponse, err)
+	// Only 400 needs the body (RFC 6749 §5.2 error code). Cap the read
+	// here so the 200 path stream-decodes uncapped.
+	if resp.StatusCode == http.StatusBadRequest {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, errorBodySniffLimit))
+		if err != nil {
+			return "", fmt.Errorf("%w: failed to read response body: %w", ErrTokenExchangeInvalidResponse, err)
+		}
+
+		return "", classifyTokenExchangeStatus(http.StatusBadRequest, body)
 	}
 
-	if err := classifyTokenExchangeStatus(resp.StatusCode, body); err != nil {
+	if err := classifyTokenExchangeStatus(resp.StatusCode, nil); err != nil {
 		return "", err
 	}
 
 	var responseBody tokenExchangeResponse
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&responseBody); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrTokenExchangeInvalidResponse, err)
 	}
 

@@ -573,6 +573,12 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 	_, err := env.authenticator.TokenExchange(nil, req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "project not in scope")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.StatusCode())
+	assert.Equal(t, openapi.InvalidScope, oauthErr.Code())
 }
 
 func TestExchangeInvalidOrganizationID(t *testing.T) {
@@ -636,6 +642,8 @@ func TestExchangeInvalidOrganizationID(t *testing.T) {
 	var oauthErr *oauth2errors.Error
 
 	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.StatusCode())
+	assert.Equal(t, openapi.InvalidScope, oauthErr.Code())
 }
 
 func TestExchangePlatformAdminUserWithOrganizationScopeOutsideMembership(t *testing.T) {
@@ -808,6 +816,8 @@ func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 	var oauthErr *oauth2errors.Error
 
 	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.StatusCode())
+	assert.Equal(t, openapi.InvalidScope, oauthErr.Code())
 }
 
 func TestExchangeSystemAccountWithOrganizationScope(t *testing.T) {

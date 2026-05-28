@@ -304,7 +304,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	// User principals also defer to RBAC because platform-administrator subjects
 	// are authorised by RBAC even when they are not members of the scoped
 	// organization. Ordinary users outside the organization are rejected by
-	// rbac.GetACL and normalized back to an OAuth2 access_denied response.
+	// rbac.GetACL and normalized back to an OAuth2 invalid_scope response.
 	if authz.Acctype == openapi.System || authz.Acctype == openapi.User {
 		return nil
 	}

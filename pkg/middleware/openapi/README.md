@@ -81,21 +81,12 @@ passport claims payload, and the per-entry TTL is derived from the passport's `e
 10 s clock-skew fudge. Identity caps the passport expiry to the source token's expiry before
 minting it, so middleware does not need to parse the source token locally.
 
-The exchange path fails closed and preserves the authentication vs. authorization distinction:
+The exchange path fails closed. Token-endpoint responses project to the API edge as follows:
 
-- A 401 from the token endpoint indicates the subject token itself was rejected (missing, expired,
-  malformed, principal not active). The middleware surfaces this as `access-denied` (401) with the
-  generic "token is invalid or has expired" description, so authentication failures cannot be
-  distinguished from "unknown principal" — both look identical to a caller.
-- A 400 with `error: "invalid_scope"` indicates the subject token is valid but the principal is not
-  authorized for the requested organization/project scope. The middleware surfaces this as
-  `forbidden` (403) at the API edge so refresh-loop logic does not treat a wrong-scope request as a
-  bad-token request, and so client UX can distinguish "you need to reauthenticate" from "you can't
-  do that".
-- Transport failures and 5xx responses surface as upstream unavailability.
-- A malformed or temporally invalid passport returned after a *successful* exchange response is
-  treated as an internal failure (500) rather than an authorization decision, because that outcome
-  reflects an identity-side defect.
+- 401 (subject token rejected) → `access-denied` (401)
+- 400 `invalid_scope` (subject token valid, scope not granted) → `forbidden` (403)
+- All other non-2xx, including 5xx and transport failures → `access-denied` (401)
+- Malformed or temporally invalid passport after a successful exchange → 500
 
 Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There
 is no fallback to the legacy userinfo path. Passports are consumed in-process and are never

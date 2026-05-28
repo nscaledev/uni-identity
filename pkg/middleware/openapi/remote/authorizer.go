@@ -175,8 +175,8 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 			return nil, errors.AccessDenied(r, "token is invalid or has expired")
 		}
 
-		// Scope refusal is authz, not authn — refresh-loop logic must not
-		// retry a wrong-scope request as if the token had expired.
+		// Scope refusal is authz; surface as 403 so callers do not retry
+		// as if the token had expired.
 		if goerrors.Is(err, ErrTokenExchangeForbidden) {
 			return nil, errors.HTTPForbidden("not authorized for the requested scope")
 		}

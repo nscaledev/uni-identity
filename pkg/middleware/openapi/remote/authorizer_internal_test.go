@@ -491,9 +491,8 @@ func (s *stubTokenExchange) Exchange(_ context.Context, _ string, _ *tokenExchan
 	return "", s.err
 }
 
-// TestAuthorizeProjectsExchangeErrors pins the mapping from exchange sentinels
-// to API-edge error shapes. The 401/403 split is load-bearing: refresh-loop
-// logic depends on it to tell "bad token" from "wrong scope" apart.
+// TestAuthorizeProjectsExchangeErrors pins the exchange-sentinel → API-edge
+// error mapping so the 401/403 split cannot silently regress.
 func TestAuthorizeProjectsExchangeErrors(t *testing.T) {
 	t.Parallel()
 
