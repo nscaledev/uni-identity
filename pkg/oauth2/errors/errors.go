@@ -145,7 +145,7 @@ func OAuth2AccessDenied(description string) *Error {
 // OAuth2InvalidScope tells the client it doesn't have the necessary scope
 // to access the resource.
 func OAuth2InvalidScope(description string) *Error {
-	return newError(http.StatusUnauthorized, openapi.InvalidScope, description)
+	return newError(http.StatusBadRequest, openapi.InvalidScope, description)
 }
 
 // oAuth2ServerError tells the client we are at fault, this should never be seen

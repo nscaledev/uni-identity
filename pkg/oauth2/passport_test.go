@@ -514,6 +514,12 @@ func TestExchangeWithOrgScope(t *testing.T) {
 	assert.Equal(t, "project1", claims.ProjectID)
 }
 
+// TestExchangeInvalidProjectID exercises the token-endpoint layer directly via
+// Authenticator.TokenExchange. The assertions below pin the contract at that
+// layer: HTTP 400 + RFC 6749 §5.2 error=invalid_scope. The remote middleware
+// projects that to 403 forbidden at the API edge — that hop is covered by
+// TestAuthorizeProjectsExchangeErrors in pkg/middleware/openapi/remote, not
+// here.
 func TestExchangeInvalidProjectID(t *testing.T) {
 	t.Parallel()
 
@@ -573,8 +579,18 @@ func TestExchangeInvalidProjectID(t *testing.T) {
 	_, err := env.authenticator.TokenExchange(nil, req)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "project not in scope")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.StatusCode())
+	assert.Equal(t, openapi.InvalidScope, oauthErr.Code())
 }
 
+// TestExchangeInvalidOrganizationID exercises the token-endpoint layer
+// directly. The 400 + invalid_scope assertions are the token-endpoint
+// contract; the middleware's 403 projection is exercised by
+// TestAuthorizeProjectsExchangeErrors in pkg/middleware/openapi/remote.
 func TestExchangeInvalidOrganizationID(t *testing.T) {
 	t.Parallel()
 
@@ -636,6 +652,8 @@ func TestExchangeInvalidOrganizationID(t *testing.T) {
 	var oauthErr *oauth2errors.Error
 
 	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.StatusCode())
+	assert.Equal(t, openapi.InvalidScope, oauthErr.Code())
 }
 
 func TestExchangePlatformAdminUserWithOrganizationScopeOutsideMembership(t *testing.T) {
@@ -752,6 +770,10 @@ func TestExchangeServiceAccount(t *testing.T) {
 	assert.ElementsMatch(t, []string{"test-org"}, claims.OrgIDs)
 }
 
+// TestExchangeServiceAccountWrongOrganization exercises the token-endpoint
+// layer directly. The 400 + invalid_scope assertions are the token-endpoint
+// contract; the middleware's 403 projection is exercised by
+// TestAuthorizeProjectsExchangeErrors in pkg/middleware/openapi/remote.
 func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 	t.Parallel()
 
@@ -808,6 +830,8 @@ func TestExchangeServiceAccountWrongOrganization(t *testing.T) {
 	var oauthErr *oauth2errors.Error
 
 	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, http.StatusBadRequest, oauthErr.StatusCode())
+	assert.Equal(t, openapi.InvalidScope, oauthErr.Code())
 }
 
 func TestExchangeSystemAccountWithOrganizationScope(t *testing.T) {
@@ -1291,7 +1315,7 @@ func TestExchangeRejectsNonFormContentType(t *testing.T) {
 	require.ErrorAs(t, err, &oauthErr)
 }
 
-func TestExchangeHandlerOutOfScopeOrganizationReturnsAccessDenied(t *testing.T) {
+func TestExchangeHandlerOutOfScopeOrganizationReturnsInvalidScope(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -1335,11 +1359,11 @@ func TestExchangeHandlerOutOfScopeOrganizationReturnsAccessDenied(t *testing.T) 
 		require.NoError(t, resp.Body.Close())
 	})
 
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	var oauthResp openapi.Oauth2Error
 
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
-	assert.Equal(t, openapi.AccessDenied, oauthResp.Error)
+	assert.Equal(t, openapi.InvalidScope, oauthResp.Error)
 	assert.Contains(t, oauthResp.ErrorDescription, "organization not in scope")
 }

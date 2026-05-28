@@ -147,7 +147,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		})
 
 		Describe("Given an out-of-scope organization", func() {
-			It("should reject the exchange with an OAuth2 access_denied response", func() {
+			It("should reject the exchange with an OAuth2 invalid_scope response", func() {
 				invalidOrgID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
 					XOrganizationId: &invalidOrgID,
@@ -157,16 +157,16 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
+				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidScope))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("organization not in scope"))
 			})
 		})
 
 		Describe("Given an invalid project scope", func() {
-			It("should reject the exchange with an OAuth2 access_denied response", func() {
+			It("should reject the exchange with an OAuth2 invalid_scope response", func() {
 				invalidProjectID := "00000000-0000-0000-0000-000000000000"
 				options := &identityopenapi.TokenRequestOptions{
 					XOrganizationId: &config.OrgID,
@@ -177,10 +177,10 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
 
 				oauthErr := decodeExchangeOAuth2Error(respBody)
-				Expect(oauthErr.Error).To(Equal(identityopenapi.AccessDenied))
+				Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidScope))
 				Expect(oauthErr.ErrorDescription).To(ContainSubstring("project not in scope"))
 			})
 		})

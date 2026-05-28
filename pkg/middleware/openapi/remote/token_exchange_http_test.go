@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,9 +61,21 @@ func TestExchangeClient(t *testing.T) {
 			expectErr: ErrTokenExchangeUnavailable,
 		},
 		{
-			name:      "returns failed sentinel on 400",
+			name:      "returns forbidden sentinel on 400 invalid_scope",
+			status:    http.StatusBadRequest,
+			body:      `{"error":"invalid_scope","error_description":"organization not in scope"}`,
+			expectErr: ErrTokenExchangeForbidden,
+		},
+		{
+			name:      "returns failed sentinel on other 400 oauth2 errors",
 			status:    http.StatusBadRequest,
 			body:      `{"error":"invalid_request"}`,
+			expectErr: ErrTokenExchangeFailed,
+		},
+		{
+			name:      "returns failed sentinel on 400 with malformed body",
+			status:    http.StatusBadRequest,
+			body:      `not-json`,
 			expectErr: ErrTokenExchangeFailed,
 		},
 		{
@@ -127,6 +140,28 @@ func TestExchangeClient(t *testing.T) {
 			assert.Equal(t, "passport-token", passport)
 		})
 	}
+}
+
+// Regression: the error-body sniff cap must not apply to 200 — passports
+// with many claims (e.g. long org_ids list) would otherwise be truncated.
+func TestExchangeClientDecodesLargeSuccessBody(t *testing.T) {
+	t.Parallel()
+
+	// Comfortably larger than errorBodySniffLimit (8 KiB).
+	largePassport := strings.Repeat("a", 32*1024)
+	body := fmt.Sprintf(`{"access_token":%q}`, largePassport)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, err := fmt.Fprint(w, body)
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+
+	client := NewHTTPTokenExchange(server.Client(), TokenExchangeURL(server.URL))
+	passport, err := client.Exchange(t.Context(), "raw-token", nil)
+	require.NoError(t, err)
+	assert.Equal(t, largePassport, passport)
 }
 
 func TestExchangeClientTimeout(t *testing.T) {

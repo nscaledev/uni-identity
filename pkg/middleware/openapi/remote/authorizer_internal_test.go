@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util/cache"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
@@ -479,6 +480,75 @@ func TestCacheKeyedByTokenOnly(t *testing.T) {
 
 	assert.Equal(t, int32(1), exchange.calls.Load(),
 		"same bearer token should reuse cached passport claims across route scopes")
+}
+
+// stubTokenExchange returns a fixed error from Exchange.
+type stubTokenExchange struct {
+	err error
+}
+
+func (s *stubTokenExchange) Exchange(_ context.Context, _ string, _ *tokenExchangeOptions) (string, error) {
+	return "", s.err
+}
+
+// TestAuthorizeProjectsExchangeErrors pins the exchange-sentinel → API-edge
+// error mapping so the 401/403 split cannot silently regress.
+func TestAuthorizeProjectsExchangeErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		exchangeErr    error
+		wantForbidden  bool
+		wantAccessDeny bool
+	}{
+		{
+			name:           "401 from exchange becomes access denied",
+			exchangeErr:    ErrTokenExchangeUnauthorized,
+			wantAccessDeny: true,
+		},
+		{
+			name:          "forbidden sentinel from exchange becomes 403",
+			exchangeErr:   ErrTokenExchangeForbidden,
+			wantForbidden: true,
+		},
+		{
+			name:           "generic exchange failure falls back to access denied",
+			exchangeErr:    ErrTokenExchangeFailed,
+			wantAccessDeny: true,
+		},
+		{
+			name:           "unavailable (5xx/transport) falls back to access denied",
+			exchangeErr:    ErrTokenExchangeUnavailable,
+			wantAccessDeny: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			auth := newTestAuthorizer(&stubTokenExchange{err: tt.exchangeErr})
+
+			info, err := auth.Authorize(scopedAuthInput(t, "org-1", ""))
+			require.Error(t, err)
+			require.Nil(t, info)
+
+			if tt.wantForbidden {
+				assert.True(t, coreerrors.IsForbidden(err),
+					"forbidden sentinel must surface as a 403 at the API edge; got %v", err)
+				assert.False(t, coreerrors.IsAccessDenied(err),
+					"forbidden must not be conflated with access-denied")
+			}
+
+			if tt.wantAccessDeny {
+				assert.True(t, coreerrors.IsAccessDenied(err),
+					"authentication failures must surface as 401 access_denied; got %v", err)
+				assert.False(t, coreerrors.IsForbidden(err),
+					"authentication failures must not surface as 403")
+			}
+		})
+	}
 }
 
 // TestCacheHitWithinScope confirms repeated requests at the same scope still

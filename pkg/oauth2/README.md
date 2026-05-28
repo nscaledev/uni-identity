@@ -107,6 +107,16 @@ embed an ACL. The exchange computes ACL only to authorize the requested organiza
 downstream services continue to resolve permissions through the normal remote authorizer path keyed
 off the passport-verified principal.
 
+Token-endpoint refusals follow RFC 6749 §5.2:
+
+- malformed token-exchange requests (missing or unsupported `subject_token` fields) →
+  `400 invalid_request`
+- presented subject-token failures (expired, malformed, principal not active) → `401 access_denied`
+- scope failures (valid subject token, principal not a member of the requested org/project) →
+  `400 invalid_scope`
+
+The remote middleware maps `invalid_scope` to `403 forbidden` at the API edge.
+
 Passport exchange is intentionally handled by the existing `/oauth2/v2/token` endpoint rather than a
 separate route. Token-exchange parameters must be form-encoded in the POST body so credentials are not
 accepted from URL query strings.

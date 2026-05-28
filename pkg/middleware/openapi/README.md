@@ -81,14 +81,24 @@ passport claims payload, and the per-entry TTL is derived from the passport's `e
 10 s clock-skew fudge. Identity caps the passport expiry to the source token's expiry before
 minting it, so middleware does not need to parse the source token locally.
 
-The exchange path fails closed: rejected source tokens and transport failures surface as
-access-denied. A malformed or temporally invalid passport returned after a *successful* exchange
-response is treated as an internal failure (500) rather than access-denied, because that outcome
-reflects an identity-side defect, not a user authorization decision. Passport decoding rejects both
-expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There is no fallback to the legacy
-userinfo path. Passports are consumed in-process and are never forwarded on outbound calls —
-internal service-to-service communication continues to use mTLS plus `X-Principal` exactly as
-before.
+The exchange path fails closed. Token-endpoint responses project to the API edge as follows:
+
+- 401 (subject token rejected, `ErrTokenExchangeUnauthorized`) → `access-denied` (401)
+- 400 with RFC 6749 §5.2 `error=invalid_scope` (subject token valid, scope not granted,
+  `ErrTokenExchangeForbidden`) → `forbidden` (403)
+- 5xx and transport/timeout failures (`ErrTokenExchangeUnavailable`) → `access-denied` (401),
+  via the catch-all. The middleware deliberately does not surface 502/503/504 to the caller: a
+  transient identity outage must not let a request through, and exposing the upstream status
+  would invite retries that defeat the fail-closed contract.
+- Any other non-2xx outcome — including 400 with a different `error` code, malformed bodies, and
+  unclassified 4xx — also falls through to `access-denied` (401). Same rationale: refuse
+  ambiguous responses rather than guessing at intent.
+- Malformed or temporally invalid passport after a successful exchange → 500
+
+Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There
+is no fallback to the legacy userinfo path. Passports are consumed in-process and are never
+forwarded on outbound calls — internal service-to-service communication continues to use mTLS plus
+`X-Principal` exactly as before.
 
 ## Ingress And Header Invariants
 

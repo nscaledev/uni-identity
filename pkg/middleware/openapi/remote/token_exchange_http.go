@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,6 +33,13 @@ const (
 	tokenExchangeSubjectToken = "urn:ietf:params:oauth:token-type:access_token"
 	//nolint:gosec // OAuth token type URNs, not credentials.
 	tokenExchangeRequestedPassport = "urn:nscale:params:oauth:token-type:passport"
+
+	// RFC 6749 §5.2 error code identity returns for scope refusal.
+	oauth2ErrorInvalidScope = "invalid_scope"
+
+	// Token-endpoint error bodies are small JSON; the cap bounds the
+	// classifier's exposure to a misbehaving or hostile upstream.
+	errorBodySniffLimit = 8 * 1024
 )
 
 // HTTPTokenExchange exchanges source access tokens through an OAuth2 token endpoint.
@@ -42,6 +50,12 @@ type HTTPTokenExchange struct {
 
 type tokenExchangeResponse struct {
 	AccessToken string `json:"access_token"` //nolint:tagliatelle
+}
+
+// oauth2ErrorBody is the subset of the RFC 6749 §5.2 error shape consulted by
+// the classifier.
+type oauth2ErrorBody struct {
+	Error string `json:"error"`
 }
 
 // NewHTTPTokenExchange builds a token exchanger that performs RFC 8693 token exchange over HTTP.
@@ -72,10 +86,14 @@ func tokenExchangeForm(sourceToken string, options *tokenExchangeOptions) url.Va
 	return form
 }
 
-func classifyTokenExchangeStatus(statusCode int) error {
+// classifyTokenExchangeStatus maps a token-endpoint status to the sentinel
+// the authorizer dispatches on. body is only consulted on 400.
+func classifyTokenExchangeStatus(statusCode int, body []byte) error {
 	switch {
 	case statusCode == http.StatusUnauthorized:
 		return ErrTokenExchangeUnauthorized
+	case statusCode == http.StatusBadRequest && isInvalidScopeError(body):
+		return ErrTokenExchangeForbidden
 	case statusCode >= http.StatusInternalServerError:
 		return fmt.Errorf("%w: status code %d", ErrTokenExchangeUnavailable, statusCode)
 	case statusCode != http.StatusOK:
@@ -85,23 +103,48 @@ func classifyTokenExchangeStatus(statusCode int) error {
 	}
 }
 
+// isInvalidScopeError returns true only for a parseable RFC 6749 §5.2 body
+// with error code invalid_scope. Malformed bodies fall through.
+func isInvalidScopeError(body []byte) bool {
+	var oauthErr oauth2ErrorBody
+	if err := json.Unmarshal(body, &oauthErr); err != nil {
+		return false
+	}
+
+	return oauthErr.Error == oauth2ErrorInvalidScope
+}
+
 func decodeTokenExchangeResponse(resp *http.Response) (string, error) {
 	defer resp.Body.Close()
 
-	if err := classifyTokenExchangeStatus(resp.StatusCode); err != nil {
+	// The body is only needed on 400 — to distinguish RFC 6749 §5.2
+	// invalid_scope from other 400 error codes. The read is capped at
+	// errorBodySniffLimit (8 KiB) to bound exposure to a misbehaving or
+	// hostile upstream; the 200 path below stream-decodes uncapped so large
+	// passports (many org/project claims) are not truncated.
+	if resp.StatusCode == http.StatusBadRequest {
+		body, err := io.ReadAll(io.LimitReader(resp.Body, errorBodySniffLimit))
+		if err != nil {
+			return "", fmt.Errorf("%w: failed to read response body: %w", ErrTokenExchangeInvalidResponse, err)
+		}
+
+		return "", classifyTokenExchangeStatus(http.StatusBadRequest, body)
+	}
+
+	if err := classifyTokenExchangeStatus(resp.StatusCode, nil); err != nil {
 		return "", err
 	}
 
-	var body tokenExchangeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	var responseBody tokenExchangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&responseBody); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrTokenExchangeInvalidResponse, err)
 	}
 
-	if body.AccessToken == "" {
+	if responseBody.AccessToken == "" {
 		return "", ErrTokenExchangeMissingAccessToken
 	}
 
-	return body.AccessToken, nil
+	return responseBody.AccessToken, nil
 }
 
 // Exchange performs the RFC 8693 form-post against the configured token endpoint
