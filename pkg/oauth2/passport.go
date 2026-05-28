@@ -179,7 +179,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 				"organizationID", organizationID,
 			)
 
-			return nil, errors.OAuth2AccessDenied("organization not in scope").WithError(err)
+			return nil, errors.OAuth2InvalidScope("organization not in scope").WithError(err)
 		}
 
 		log.Error(err, "passport exchange failed: ACL computation failed",
@@ -295,7 +295,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	// GetUserinfo normally populates authz for valid UNI tokens, but keep the
 	// nil guard so malformed or partially mocked callers still fail closed.
 	if authz == nil {
-		return errors.OAuth2AccessDenied("organization not in scope")
+		return errors.OAuth2InvalidScope("organization not in scope")
 	}
 
 	// System principals do not carry explicit organization memberships in OrgIds.
@@ -310,7 +310,7 @@ func validateOrganizationScope(authz *openapi.AuthClaims, organizationID string)
 	}
 
 	if !slices.Contains(authz.OrgIds, organizationID) {
-		return errors.OAuth2AccessDenied("organization not in scope")
+		return errors.OAuth2InvalidScope("organization not in scope")
 	}
 
 	return nil
@@ -604,7 +604,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 	// the requested organization. Without the membership check, callers could
 	// inject an arbitrary project ID into the passport claims.
 	if !projectInACL(projectID, acl) && !hasBroaderScope(acl, organizationID) {
-		return errors.OAuth2AccessDenied("project not in scope")
+		return errors.OAuth2InvalidScope("project not in scope")
 	}
 
 	ok, err := a.projectInOrganization(ctx, organizationID, projectID)
@@ -613,7 +613,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 	}
 
 	if !ok {
-		return errors.OAuth2AccessDenied("project not in scope")
+		return errors.OAuth2InvalidScope("project not in scope")
 	}
 
 	return nil

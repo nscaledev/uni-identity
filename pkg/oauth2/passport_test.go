@@ -1291,7 +1291,7 @@ func TestExchangeRejectsNonFormContentType(t *testing.T) {
 	require.ErrorAs(t, err, &oauthErr)
 }
 
-func TestExchangeHandlerOutOfScopeOrganizationReturnsAccessDenied(t *testing.T) {
+func TestExchangeHandlerOutOfScopeOrganizationReturnsInvalidScope(t *testing.T) {
 	t.Parallel()
 
 	env := setupPassportTestEnv(t,
@@ -1335,11 +1335,11 @@ func TestExchangeHandlerOutOfScopeOrganizationReturnsAccessDenied(t *testing.T) 
 		require.NoError(t, resp.Body.Close())
 	})
 
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	var oauthResp openapi.Oauth2Error
 
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
-	assert.Equal(t, openapi.AccessDenied, oauthResp.Error)
+	assert.Equal(t, openapi.InvalidScope, oauthResp.Error)
 	assert.Contains(t, oauthResp.ErrorDescription, "organization not in scope")
 }

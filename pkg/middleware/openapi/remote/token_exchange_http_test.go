@@ -60,9 +60,21 @@ func TestExchangeClient(t *testing.T) {
 			expectErr: ErrTokenExchangeUnavailable,
 		},
 		{
-			name:      "returns failed sentinel on 400",
+			name:      "returns forbidden sentinel on 400 invalid_scope",
+			status:    http.StatusBadRequest,
+			body:      `{"error":"invalid_scope","error_description":"organization not in scope"}`,
+			expectErr: ErrTokenExchangeForbidden,
+		},
+		{
+			name:      "returns failed sentinel on other 400 oauth2 errors",
 			status:    http.StatusBadRequest,
 			body:      `{"error":"invalid_request"}`,
+			expectErr: ErrTokenExchangeFailed,
+		},
+		{
+			name:      "returns failed sentinel on 400 with malformed body",
+			status:    http.StatusBadRequest,
+			body:      `not-json`,
 			expectErr: ErrTokenExchangeFailed,
 		},
 		{

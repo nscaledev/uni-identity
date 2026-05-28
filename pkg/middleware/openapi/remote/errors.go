@@ -22,6 +22,12 @@ var (
 	// ErrTokenExchangeUnauthorized maps rejected source tokens to 401.
 	ErrTokenExchangeUnauthorized = errors.New("token exchange unauthorized")
 
+	// ErrTokenExchangeForbidden signals a valid subject token whose principal
+	// is not authorized for the requested scope. Identity emits this as
+	// 400 invalid_scope (RFC 6749 §5.2); the middleware projects it as 403
+	// at the API edge.
+	ErrTokenExchangeForbidden = errors.New("token exchange forbidden")
+
 	// ErrTokenExchangeUnavailable classifies transport and upstream availability failures.
 	ErrTokenExchangeUnavailable = errors.New("token exchange unavailable")
 
