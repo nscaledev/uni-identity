@@ -17,6 +17,8 @@ limitations under the License.
 package oauth2_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -74,6 +76,19 @@ func setupPassportTestEnvWithRBACOptions(t *testing.T, rbacOptions *rbac.Options
 func setupPassportTestEnvWithOptions(t *testing.T, rbacOptions *rbac.Options, tokenVerificationLeeway time.Duration, objects ...client.Object) *passportTestEnv {
 	t.Helper()
 
+	return setupPassportTestEnvWithOAuth2Options(t, rbacOptions, &oauth2.Options{
+		AccessTokenDuration:     accessTokenDuration,
+		RefreshTokenDuration:    refreshTokenDuration,
+		TokenLeewayDuration:     accessTokenDuration,
+		TokenVerificationLeeway: tokenVerificationLeeway,
+		TokenCacheSize:          1024,
+		CodeCacheSize:           1024,
+	}, objects...)
+}
+
+func setupPassportTestEnvWithOAuth2Options(t *testing.T, rbacOptions *rbac.Options, oauth2Options *oauth2.Options, objects ...client.Object) *passportTestEnv {
+	t.Helper()
+
 	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
@@ -99,14 +114,7 @@ func setupPassportTestEnvWithOptions(t *testing.T, rbacOptions *rbac.Options, to
 		Hostname: "test.com",
 	}
 
-	authenticator := oauth2.New(&oauth2.Options{
-		AccessTokenDuration:     accessTokenDuration,
-		RefreshTokenDuration:    refreshTokenDuration,
-		TokenLeewayDuration:     accessTokenDuration,
-		TokenVerificationLeeway: tokenVerificationLeeway,
-		TokenCacheSize:          1024,
-		CodeCacheSize:           1024,
-	}, josetesting.Namespace, issuerVal, cli, jwtIssuer, userDatabase, rbacInst)
+	authenticator := oauth2.New(oauth2Options, josetesting.Namespace, issuerVal, cli, jwtIssuer, userDatabase, rbacInst)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
 
@@ -115,6 +123,93 @@ func setupPassportTestEnvWithOptions(t *testing.T, rbacOptions *rbac.Options, to
 		jwtIssuer:     jwtIssuer,
 		client:        cli,
 	}
+}
+
+type auth0TestIssuer struct {
+	server *httptest.Server
+	key    *rsa.PrivateKey
+}
+
+func newAuth0TestIssuer(t *testing.T) *auth0TestIssuer {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		publicKey := gojose.JSONWebKey{
+			Key:       &key.PublicKey,
+			KeyID:     "test-key",
+			Algorithm: string(gojose.RS256),
+			Use:       "sig",
+		}
+
+		require.NoError(t, json.NewEncoder(w).Encode(gojose.JSONWebKeySet{
+			Keys: []gojose.JSONWebKey{publicKey},
+		}))
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	return &auth0TestIssuer{
+		server: server,
+		key:    key,
+	}
+}
+
+func (i *auth0TestIssuer) issuer() string {
+	return i.server.URL + "/"
+}
+
+func (i *auth0TestIssuer) token(t *testing.T, audience, email string, expiry time.Time) string {
+	t.Helper()
+
+	verified := true
+
+	type auth0Claims struct {
+		jwt.Claims
+
+		Email         string `json:"email"`
+		EmailVerified *bool  `json:"email_verified"`
+		Authz         struct {
+			Acctype string   `json:"acctype"`
+			OrgIDs  []string `json:"orgIds"`
+		} `json:"https://unikorn-cloud.org/authz"`
+	}
+
+	claims := &auth0Claims{
+		Claims: jwt.Claims{
+			Issuer:    i.issuer(),
+			Subject:   "auth0|user",
+			Audience:  jwt.Audience{audience},
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now().Add(-1 * time.Second)),
+			Expiry:    jwt.NewNumericDate(expiry),
+		},
+		Email:         email,
+		EmailVerified: &verified,
+	}
+	claims.Authz.Acctype = "user"
+	claims.Authz.OrgIDs = []string{"auth0-org"}
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.RS256,
+			Key: gojose.JSONWebKey{
+				Key:   i.key,
+				KeyID: "test-key",
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	return token
 }
 
 func issueTestToken(t *testing.T, env *passportTestEnv, info *oauth2.IssueInfo) string {
@@ -275,6 +370,74 @@ func TestExchangeFederatedUser(t *testing.T) {
 	assert.False(t,
 		claims.Expiry.Time().After(claims.IssuedAt.Time().Add(oauth2.PassportTTL)),
 		"passport expiry must not exceed the configured passport TTL",
+	)
+}
+
+func TestExchangeAuth0User(t *testing.T) {
+	t.Parallel()
+
+	auth0Issuer := newAuth0TestIssuer(t)
+	auth0Audience := "https://identity.example.com"
+	sourceExpiry := time.Now().Add(45 * time.Second)
+
+	env := setupPassportTestEnvWithOAuth2Options(t, &rbac.Options{}, &oauth2.Options{
+		AccessTokenDuration:     accessTokenDuration,
+		RefreshTokenDuration:    refreshTokenDuration,
+		TokenLeewayDuration:     accessTokenDuration,
+		TokenVerificationLeeway: 0,
+		TokenCacheSize:          1024,
+		CodeCacheSize:           1024,
+		Auth0ExchangeIssuer:     auth0Issuer.issuer(),
+		Auth0ExchangeAudience:   auth0Audience,
+	}, &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org1",
+		},
+		Status: unikornv1.OrganizationStatus{
+			Namespace: josetesting.Namespace + "-org1",
+		},
+	}, &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "test-user",
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: "user@example.com",
+			State:   unikornv1.UserStateActive,
+		},
+	}, &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org1-user",
+			Labels: map[string]string{
+				constants.UserLabel:         "test-user",
+				constants.OrganizationLabel: "org1",
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	})
+
+	token := auth0Issuer.token(t, auth0Audience, "User@Example.COM", sourceExpiry)
+	req := exchangeRequest(t, token, nil)
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	claims := parsePassport(t, env, result.AccessToken)
+
+	assert.Equal(t, "passport", claims.Type)
+	assert.Equal(t, openapi.User, claims.Acctype)
+	assert.Equal(t, oauth2.PassportSourceAuth0, claims.Source)
+	assert.Equal(t, "user@example.com", claims.Subject)
+	assert.Equal(t, "user@example.com", claims.Email)
+	assert.ElementsMatch(t, []string{"org1"}, claims.OrgIDs, "UNI membership remains authoritative")
+	assert.False(t,
+		claims.Expiry.Time().After(sourceExpiry),
+		"passport expiry must not outlive the Auth0 source token expiry",
 	)
 }
 

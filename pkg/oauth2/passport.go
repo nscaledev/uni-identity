@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -35,6 +36,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -57,6 +59,9 @@ const (
 
 	// PassportSourceUNI indicates the source token was a UNI access token.
 	PassportSourceUNI = "uni"
+
+	// PassportSourceAuth0 indicates the source token was an Auth0 access token.
+	PassportSourceAuth0 = "auth0"
 )
 
 // ActorClaim is the RFC 8693 section 4.1 "act" claim. It identifies the
@@ -145,7 +150,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	subjectToken := *options.SubjectToken
 
-	userinfo, sourceClaims, err := a.GetUserinfo(ctx, request, subjectToken)
+	userinfo, sourceClaims, source, err := a.exchangeUserinfo(ctx, request, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -194,14 +199,74 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		return nil, err
 	}
 
-	return a.mintPassport(ctx, userinfo, sourceClaims, audience, organizationID, projectID)
+	return a.mintPassport(ctx, userinfo, sourceClaims, source, audience, organizationID, projectID)
+}
+
+func (a *Authenticator) exchangeUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, string, error) {
+	if isCompactJWS(token) && a.auth0Validator != nil {
+		userinfo, claims, err := a.getAuth0Userinfo(ctx, r, token)
+
+		return userinfo, claims, PassportSourceAuth0, err
+	}
+
+	userinfo, claims, err := a.GetUserinfo(ctx, r, token)
+
+	return userinfo, claims, PassportSourceUNI, err
+}
+
+func isCompactJWS(token string) bool {
+	return strings.Count(token, ".") == 2
+}
+
+func (a *Authenticator) getAuth0Userinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
+	user, err := a.auth0Validator.Validate(ctx, token)
+	if err != nil {
+		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
+	}
+
+	// Auth0 proves the human identity and that the UNI Action ran; UNI remains
+	// authoritative for active user state and organization membership.
+	orgIDs, err := a.userdb.GetOrganizationIDs(ctx, user.Email)
+	if err != nil {
+		if goerrors.Is(err, userdb.ErrResourceReference) {
+			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+		}
+
+		return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
+	}
+
+	verified := true
+	email := user.Email
+
+	userinfo := &openapi.Userinfo{
+		Sub:           user.Email,
+		Email:         &email,
+		EmailVerified: &verified,
+		HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+			Acctype: openapi.User,
+			OrgIds:  orgIDs,
+		},
+	}
+
+	sourceClaims := &Claims{
+		Claims: jwt.Claims{
+			Subject: user.Email,
+			Issuer:  a.options.Auth0ExchangeIssuer,
+			Audience: jwt.Audience{
+				a.options.Auth0ExchangeAudience,
+			},
+			Expiry: jwt.NewNumericDate(user.Expiry),
+		},
+	}
+
+	return userinfo, sourceClaims, nil
 }
 
 // mintPassport encodes the signed passport once scope authorisation has
 // completed. It also enforces the source-token expiry precondition: a passport
 // with expires_in ≤ 0 would be internally inconsistent, so the exchange fails
 // closed when the source token's exp is already at or before now.
-func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.Userinfo, sourceClaims *Claims, audience jwt.Audience, organizationID, projectID string) (*openapi.Token, error) {
+func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.Userinfo, sourceClaims *Claims, source string, audience jwt.Audience, organizationID, projectID string) (*openapi.Token, error) {
 	log := log.FromContext(ctx)
 
 	now := time.Now()
@@ -228,7 +293,7 @@ func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.User
 		},
 		Type:      PassportType,
 		Acctype:   authz.Acctype,
-		Source:    PassportSourceUNI,
+		Source:    source,
 		OrgIDs:    authz.OrgIds,
 		OrgID:     organizationID,
 		ProjectID: projectID,
@@ -249,7 +314,7 @@ func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.User
 
 	log.Info("passport exchanged",
 		"acctype", authz.Acctype,
-		"source", PassportSourceUNI,
+		"source", source,
 		"organizationID", organizationID,
 		"passportID", passportID,
 	)
