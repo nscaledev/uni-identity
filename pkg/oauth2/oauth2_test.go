@@ -109,7 +109,8 @@ func TestTokens(t *testing.T) {
 		Hostname: "foo.com",
 	}
 
-	authenticator := oauth2.New(options, josetesting.Namespace, issuerVal, client, issuer, userDatabase, rbac)
+	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, client, issuer, userDatabase, rbac)
+	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
 
@@ -373,13 +374,14 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				Hostname: tc.issueInfo.Audience, // setting this from the audience is somewhat arbitrary; but it's not under test here.
 			}
 
-			authenticator := oauth2.New(&oauth2.Options{
+			authenticator, err := oauth2.New(&oauth2.Options{
 				AccessTokenDuration:  accessTokenDuration,
 				RefreshTokenDuration: refreshTokenDuration,
 				TokenLeewayDuration:  accessTokenDuration,
 				TokenCacheSize:       1024,
 				CodeCacheSize:        1024,
 			}, josetesting.Namespace, issuerHost, client, issuer, userDatabase, rbac)
+			require.NoError(t, err)
 
 			time.Sleep(2 * josetesting.RefreshPeriod)
 

@@ -75,10 +75,13 @@ type tokenClaims struct {
 }
 
 // User is the validated identity extracted from an Auth0 access token.
+//
+// UNI membership is authoritative for organization scope, so the claimed
+// orgIds from the Auth0 token are intentionally not surfaced here — they are
+// only validated as a non-empty signal that the post-login Action ran.
 type User struct {
-	Email         string
-	Expiry        time.Time
-	ClaimedOrgIDs []string
+	Email  string
+	Expiry time.Time
 }
 
 // Validator validates Auth0 JWT access tokens using the tenant JWKS.
@@ -118,7 +121,11 @@ func (v *Validator) Validate(ctx context.Context, token string) (*User, error) {
 		return nil, ErrDisabled
 	}
 
-	idToken, err := v.getVerifier(ctx).Verify(ctx, token)
+	// getVerifier intentionally does not receive ctx: the keyset it builds is
+	// long-lived and must use a background context for JWKS refreshes. The
+	// per-request ctx is still applied to the Verify call below.
+	//nolint:contextcheck
+	idToken, err := v.getVerifier().Verify(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
@@ -158,13 +165,12 @@ func (v *Validator) Validate(ctx context.Context, token string) (*User, error) {
 	}
 
 	return &User{
-		Email:         email,
-		Expiry:        claims.Expiry.Time(),
-		ClaimedOrgIDs: claims.Authz.OrgIDs,
+		Email:  email,
+		Expiry: claims.Expiry.Time(),
 	}, nil
 }
 
-func (v *Validator) getVerifier(ctx context.Context) *gooidc.IDTokenVerifier {
+func (v *Validator) getVerifier() *gooidc.IDTokenVerifier {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
@@ -172,8 +178,11 @@ func (v *Validator) getVerifier(ctx context.Context) *gooidc.IDTokenVerifier {
 		return v.verifier
 	}
 
+	// The keyset outlives any single request and must refresh its JWKS cache
+	// when Auth0 rotates signing keys, so it gets a background context.
+	// Per-request cancellation still applies via the ctx passed to Verify.
 	jwksURL := strings.TrimRight(v.options.Issuer, "/") + "/.well-known/jwks.json"
-	keySet := gooidc.NewRemoteKeySet(ctx, jwksURL)
+	keySet := gooidc.NewRemoteKeySet(context.Background(), jwksURL)
 
 	v.verifier = gooidc.NewVerifier(v.options.Issuer, keySet, &gooidc.Config{
 		ClientID: v.options.Audience,

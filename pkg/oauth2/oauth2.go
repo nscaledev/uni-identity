@@ -106,7 +106,7 @@ type Options struct {
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.AccessTokenDuration, "access-token-duration", time.Hour, "Maximum time an access token can be active for.")
 	f.DurationVar(&o.RefreshTokenDuration, "refresh-token-duration", 0, "Maximum time a refresh token can be active for.")
-	f.DurationVar(&o.TokenVerificationLeeway, "token-verification-leeway", 0, "How mush leeway to permit for verification of token validity.")
+	f.DurationVar(&o.TokenVerificationLeeway, "token-verification-leeway", 0, "How much leeway to permit for verification of token validity.")
 	f.DurationVar(&o.TokenLeewayDuration, "token-leeway", time.Minute, "How long to remove from the provider token expiry to account for network and processing latency.")
 	f.IntVar(&o.TokenCacheSize, "token-cache-size", 8192, "How many token cache entries to allow.")
 	f.IntVar(&o.CodeCacheSize, "code-cache-size", 8192, "How many code cache entries to allow.")
@@ -147,14 +147,18 @@ type Authenticator struct {
 
 // New returns a new authenticator with required fields populated.
 // You must call AddFlags after this.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) *Authenticator {
+//
+// Returns an error if the Auth0 exchange options are partially specified
+// (e.g. issuer set without audience). When Auth0 exchange is fully unset the
+// returned authenticator simply has no Auth0 validator wired up.
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
 	auth0Validator, err := auth0.NewValidator(auth0.Options{
 		Issuer:                  options.Auth0ExchangeIssuer,
 		Audience:                options.Auth0ExchangeAudience,
 		TokenVerificationLeeway: options.TokenVerificationLeeway,
 	})
 	if err != nil && !goerrors.Is(err, auth0.ErrDisabled) {
-		panic(err)
+		return nil, err
 	}
 
 	return &Authenticator{
@@ -168,7 +172,7 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		tokenCache:     cache.NewLRUExpireCache(options.TokenCacheSize),
 		codeCache:      cache.NewLRUExpireCache(options.CodeCacheSize),
 		auth0Validator: auth0Validator,
-	}
+	}, nil
 }
 
 type Error string

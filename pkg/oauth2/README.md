@@ -125,6 +125,26 @@ This keeps room for alternate authentication frontends to complement this packag
 it: external authentication can happen outside identity, while identity remains the issuer of the
 internal token shape consumed by downstream UNI services.
 
+### Source-token types
+
+The `subject_token` presented to passport exchange may be either:
+
+- a UNI-issued access token, validated through `GetUserinfo` against the local user database, or
+- an Auth0 access-token JWT, validated through `pkg/oauth2/auth0` against the Auth0 tenant JWKS.
+
+The Auth0 path is opt-in and requires both `--auth0-exchange-issuer` and `--auth0-exchange-audience`
+to be set; partial configuration fails closed at startup. When only one of the two is set, the
+identity process refuses to start. When neither is set, Auth0 tokens are not accepted and the
+existing UNI path is unaffected.
+
+For Auth0 tokens, validation covers signature, issuer, audience, temporal claims, verified email,
+and the UNI authorization claim emitted by the Auth0 post-login Action (`acctype` and non-empty
+`orgIds`). The claimed `orgIds` are required as a signal that the Action ran but are intentionally
+not used as organization membership: UNI's user database remains authoritative for which
+organizations a principal belongs to. The minted passport's `source` claim records whether the
+exchange originated from a UNI or Auth0 subject token, and the passport expiry is capped at the
+source token's `exp` so a passport never outlives the proof of identity that produced it.
+
 ## Caveats
 
 - The package mixes protocol handling, provider integration, local session persistence, local user

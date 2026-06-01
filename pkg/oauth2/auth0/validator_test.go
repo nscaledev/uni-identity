@@ -154,7 +154,6 @@ func TestValidate(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "user@example.com", user.Email)
-	assert.ElementsMatch(t, []string{"org-1"}, user.ClaimedOrgIDs)
 	assert.True(t, user.Expiry.After(time.Now()))
 }
 
