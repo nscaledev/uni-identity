@@ -153,7 +153,7 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		Audience:                options.Auth0ExchangeAudience,
 		TokenVerificationLeeway: options.TokenVerificationLeeway,
 	})
-	if err != nil {
+	if err != nil && !goerrors.Is(err, auth0.ErrDisabled) {
 		panic(err)
 	}
 

@@ -67,9 +67,11 @@ type authzClaims struct {
 type tokenClaims struct {
 	jwt.Claims
 
-	Email         string      `json:"email"`
-	EmailVerified *bool       `json:"email_verified"`
-	Authz         authzClaims `json:"https://unikorn-cloud.org/authz"`
+	Email string `json:"email"`
+	//nolint:tagliatelle
+	EmailVerified *bool `json:"email_verified"`
+	//nolint:tagliatelle
+	Authz authzClaims `json:"https://unikorn-cloud.org/authz"`
 }
 
 // User is the validated identity extracted from an Auth0 access token.
@@ -89,9 +91,10 @@ type Validator struct {
 }
 
 // NewValidator returns a validator using the Auth0 tenant JWKS endpoint.
+// It returns ErrDisabled when no Auth0 exchange configuration is supplied.
 func NewValidator(options Options) (*Validator, error) {
 	if !options.Enabled() {
-		return nil, nil
+		return nil, ErrDisabled
 	}
 
 	if options.Issuer == "" || options.Audience == "" {

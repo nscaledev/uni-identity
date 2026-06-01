@@ -14,13 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package auth0
+package auth0_test
 
 import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -30,6 +29,8 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 )
 
 const validatorTestAudience = "https://identity.example.com"
@@ -54,7 +55,7 @@ func newValidatorTestIssuer(t *testing.T) *validatorTestIssuer {
 			Use:       "sig",
 		}
 
-		require.NoError(t, json.NewEncoder(w).Encode(gojose.JSONWebKeySet{
+		assert.NoError(t, json.NewEncoder(w).Encode(gojose.JSONWebKeySet{
 			Keys: []gojose.JSONWebKey{publicKey},
 		}))
 	})
@@ -72,12 +73,18 @@ func (i *validatorTestIssuer) issuer() string {
 	return i.server.URL + "/"
 }
 
+type testAuthzClaims struct {
+	Acctype string   `json:"acctype"`
+	OrgIDs  []string `json:"orgIds"`
+}
+
+//nolint:tagliatelle
 type testTokenClaims struct {
 	jwt.Claims
 
-	Email         string      `json:"email,omitempty"`
-	EmailVerified *bool       `json:"email_verified,omitempty"`
-	Authz         authzClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
+	Email         string          `json:"email,omitempty"`
+	EmailVerified *bool           `json:"email_verified,omitempty"`
+	Authz         testAuthzClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
 }
 
 func (i *validatorTestIssuer) token(t *testing.T, mutate func(*testTokenClaims)) string {
@@ -96,8 +103,8 @@ func (i *validatorTestIssuer) token(t *testing.T, mutate func(*testTokenClaims))
 		},
 		Email:         "User@Example.COM",
 		EmailVerified: &verified,
-		Authz: authzClaims{
-			Acctype: accountTypeUser,
+		Authz: testAuthzClaims{
+			Acctype: "user",
 			OrgIDs:  []string{"org-1"},
 		},
 	}
@@ -124,10 +131,10 @@ func (i *validatorTestIssuer) token(t *testing.T, mutate func(*testTokenClaims))
 	return token
 }
 
-func newTestValidator(t *testing.T, issuer string) *Validator {
+func newTestValidator(t *testing.T, issuer string) *auth0.Validator {
 	t.Helper()
 
-	validator, err := NewValidator(Options{
+	validator, err := auth0.NewValidator(auth0.Options{
 		Issuer:   issuer,
 		Audience: validatorTestAudience,
 	})
@@ -166,35 +173,35 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 			mutate: func(claims *testTokenClaims) {
 				claims.Issuer = "https://wrong.example.com/"
 			},
-			target: ErrInvalidToken,
+			target: auth0.ErrInvalidToken,
 		},
 		{
 			name: "wrong audience",
 			mutate: func(claims *testTokenClaims) {
 				claims.Audience = jwt.Audience{"https://wrong.example.com"}
 			},
-			target: ErrInvalidToken,
+			target: auth0.ErrInvalidToken,
 		},
 		{
 			name: "expired",
 			mutate: func(claims *testTokenClaims) {
 				claims.Expiry = jwt.NewNumericDate(time.Now().Add(-1 * time.Minute))
 			},
-			target: ErrInvalidToken,
+			target: auth0.ErrInvalidToken,
 		},
 		{
 			name: "not yet valid",
 			mutate: func(claims *testTokenClaims) {
 				claims.NotBefore = jwt.NewNumericDate(time.Now().Add(time.Minute))
 			},
-			target: ErrInvalidToken,
+			target: auth0.ErrInvalidToken,
 		},
 		{
 			name: "missing email",
 			mutate: func(claims *testTokenClaims) {
 				claims.Email = ""
 			},
-			target: ErrMissingEmail,
+			target: auth0.ErrMissingEmail,
 		},
 		{
 			name: "unverified email",
@@ -202,21 +209,21 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 				verified := false
 				claims.EmailVerified = &verified
 			},
-			target: ErrEmailUnverified,
+			target: auth0.ErrEmailUnverified,
 		},
 		{
 			name: "wrong account type",
 			mutate: func(claims *testTokenClaims) {
 				claims.Authz.Acctype = "service"
 			},
-			target: ErrInvalidAuthzClaim,
+			target: auth0.ErrInvalidAuthzClaim,
 		},
 		{
 			name: "empty org IDs",
 			mutate: func(claims *testTokenClaims) {
 				claims.Authz.OrgIDs = nil
 			},
-			target: ErrInvalidAuthzClaim,
+			target: auth0.ErrInvalidAuthzClaim,
 		},
 	}
 
@@ -228,7 +235,7 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 
 			_, err := validator.Validate(t.Context(), issuer.token(t, test.mutate))
 			require.Error(t, err)
-			assert.True(t, errors.Is(err, test.target), "expected %v, got %v", test.target, err)
+			assert.ErrorIs(t, err, test.target)
 		})
 	}
 }
@@ -236,7 +243,7 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 func TestNewValidatorRejectsPartialConfig(t *testing.T) {
 	t.Parallel()
 
-	validator, err := NewValidator(Options{Issuer: "https://tenant.auth0.com/"})
-	require.ErrorIs(t, err, ErrInvalidConfig)
+	validator, err := auth0.NewValidator(auth0.Options{Issuer: "https://tenant.auth0.com/"})
+	require.ErrorIs(t, err, auth0.ErrInvalidConfig)
 	assert.Nil(t, validator)
 }

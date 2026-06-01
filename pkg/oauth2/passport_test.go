@@ -145,7 +145,7 @@ func newAuth0TestIssuer(t *testing.T) *auth0TestIssuer {
 			Use:       "sig",
 		}
 
-		require.NoError(t, json.NewEncoder(w).Encode(gojose.JSONWebKeySet{
+		assert.NoError(t, json.NewEncoder(w).Encode(gojose.JSONWebKeySet{
 			Keys: []gojose.JSONWebKey{publicKey},
 		}))
 	})
@@ -168,6 +168,7 @@ func (i *auth0TestIssuer) token(t *testing.T, audience, email string, expiry tim
 
 	verified := true
 
+	//nolint:tagliatelle
 	type auth0Claims struct {
 		jwt.Claims
 
