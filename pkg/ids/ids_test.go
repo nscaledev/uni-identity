@@ -70,91 +70,217 @@ func TestParseProjectIDRejectsInvalid(t *testing.T) {
 	}
 }
 
-func TestOrganizationIDStringFormats(t *testing.T) {
+func TestStringFormats(t *testing.T) {
 	t.Parallel()
 
-	id := ids.MustParseOrganizationID(validUUID)
-
-	// Verify value receiver String() works correctly with fmt verbs.
-	if got := fmt.Sprintf("%s", id); got != validUUID { //nolint:staticcheck
-		t.Fatalf("fmt.Sprintf(%%s) = %q, want %q", got, validUUID)
+	// Verify value receiver String() works correctly with fmt verbs for all types.
+	// This guards against a regression where pointer-receiver-only String() causes
+	// fmt to fall back to raw byte-array formatting.
+	cases := []struct {
+		name string
+		s    string
+		v    string
+	}{
+		{
+			"OrganizationID",
+			fmt.Sprintf("%s", ids.MustParseOrganizationID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseOrganizationID(validUUID)),
+		},
+		{
+			"ProjectID",
+			fmt.Sprintf("%s", ids.MustParseProjectID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseProjectID(validUUID)),
+		},
+		{
+			"ServiceAccountID",
+			fmt.Sprintf("%s", ids.MustParseServiceAccountID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseServiceAccountID(validUUID)),
+		},
+		{
+			"UserID",
+			fmt.Sprintf("%s", ids.MustParseUserID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseUserID(validUUID)),
+		},
+		{
+			"GroupID",
+			fmt.Sprintf("%s", ids.MustParseGroupID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseGroupID(validUUID)),
+		},
+		{
+			"OAuth2ProviderID",
+			fmt.Sprintf("%s", ids.MustParseOAuth2ProviderID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseOAuth2ProviderID(validUUID)),
+		},
+		{
+			"AllocationID",
+			fmt.Sprintf("%s", ids.MustParseAllocationID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseAllocationID(validUUID)),
+		},
 	}
 
-	if got := fmt.Sprintf("%v", id); got != validUUID {
-		t.Fatalf("fmt.Sprintf(%%v) = %q, want %q", got, validUUID)
-	}
-}
+	for _, tc := range cases {
+		if tc.s != validUUID {
+			t.Errorf("%s: fmt.Sprintf(%%s) = %q, want %q", tc.name, tc.s, validUUID)
+		}
 
-func TestProjectIDStringFormats(t *testing.T) {
-	t.Parallel()
-
-	id := ids.MustParseProjectID(validUUID)
-
-	if got := fmt.Sprintf("%s", id); got != validUUID { //nolint:staticcheck
-		t.Fatalf("fmt.Sprintf(%%s) = %q, want %q", got, validUUID)
+		if tc.v != validUUID {
+			t.Errorf("%s: fmt.Sprintf(%%v) = %q, want %q", tc.name, tc.v, validUUID)
+		}
 	}
 }
 
 func TestMarshalText(t *testing.T) {
 	t.Parallel()
 
-	org := ids.MustParseOrganizationID(validUUID)
-
-	b, err := org.MarshalText()
-	if err != nil {
-		t.Fatalf("MarshalText returned unexpected error: %v", err)
+	type marshaler interface {
+		MarshalText() ([]byte, error)
 	}
 
-	if string(b) != validUUID {
-		t.Fatalf("MarshalText = %q, want %q", string(b), validUUID)
+	cases := []struct {
+		name  string
+		value marshaler
+	}{
+		{"OrganizationID", ids.MustParseOrganizationID(validUUID)},
+		{"ProjectID", ids.MustParseProjectID(validUUID)},
+		{"ServiceAccountID", ids.MustParseServiceAccountID(validUUID)},
+		{"UserID", ids.MustParseUserID(validUUID)},
+		{"GroupID", ids.MustParseGroupID(validUUID)},
+		{"OAuth2ProviderID", ids.MustParseOAuth2ProviderID(validUUID)},
+		{"AllocationID", ids.MustParseAllocationID(validUUID)},
 	}
 
-	proj := ids.MustParseProjectID(validUUID)
+	for _, tc := range cases {
+		b, err := tc.value.MarshalText()
+		if err != nil {
+			t.Errorf("%s: MarshalText returned unexpected error: %v", tc.name, err)
+			continue
+		}
 
-	b, err = proj.MarshalText()
-	if err != nil {
-		t.Fatalf("MarshalText returned unexpected error: %v", err)
-	}
-
-	if string(b) != validUUID {
-		t.Fatalf("MarshalText = %q, want %q", string(b), validUUID)
+		if string(b) != validUUID {
+			t.Errorf("%s: MarshalText = %q, want %q", tc.name, string(b), validUUID)
+		}
 	}
 }
 
 func TestUnmarshalTextRejectsInvalid(t *testing.T) {
 	t.Parallel()
 
-	var org ids.OrganizationID
-	if err := org.UnmarshalText([]byte(invalidUUID)); err == nil {
-		t.Fatal("UnmarshalText should reject non-UUID input")
+	type unmarshalTarget interface {
+		UnmarshalText(text []byte) error
 	}
 
-	var proj ids.ProjectID
-	if err := proj.UnmarshalText([]byte(invalidUUID)); err == nil {
-		t.Fatal("UnmarshalText should reject non-UUID input")
+	cases := []struct {
+		name   string
+		target unmarshalTarget
+	}{
+		{"OrganizationID", new(ids.OrganizationID)},
+		{"ProjectID", new(ids.ProjectID)},
+		{"ServiceAccountID", new(ids.ServiceAccountID)},
+		{"UserID", new(ids.UserID)},
+		{"GroupID", new(ids.GroupID)},
+		{"OAuth2ProviderID", new(ids.OAuth2ProviderID)},
+		{"AllocationID", new(ids.AllocationID)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if err := tc.target.UnmarshalText([]byte(invalidUUID)); err == nil {
+				t.Fatalf("%s.UnmarshalText should reject non-UUID input", tc.name)
+			}
+		})
 	}
 }
 
-func TestMustParseOrganizationIDPanics(t *testing.T) {
+func TestMustParsePanics(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("MustParseOrganizationID should panic on invalid UUID")
-		}
-	}()
+	cases := []struct {
+		name string
+		fn   func(string)
+	}{
+		{"MustParseOrganizationID", func(s string) { ids.MustParseOrganizationID(s) }},
+		{"MustParseProjectID", func(s string) { ids.MustParseProjectID(s) }},
+		{"MustParseServiceAccountID", func(s string) { ids.MustParseServiceAccountID(s) }},
+		{"MustParseUserID", func(s string) { ids.MustParseUserID(s) }},
+		{"MustParseGroupID", func(s string) { ids.MustParseGroupID(s) }},
+		{"MustParseOAuth2ProviderID", func(s string) { ids.MustParseOAuth2ProviderID(s) }},
+		{"MustParseAllocationID", func(s string) { ids.MustParseAllocationID(s) }},
+	}
 
-	ids.MustParseOrganizationID(invalidUUID)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			defer func() {
+				if r := recover(); r == nil {
+					t.Fatalf("%s should panic on invalid UUID", tc.name)
+				}
+			}()
+
+			tc.fn(invalidUUID)
+		})
+	}
 }
 
-func TestMustParseProjectIDPanics(t *testing.T) {
+func TestParseRoundTrips(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("MustParseProjectID should panic on invalid UUID")
-		}
-	}()
+	cases := []struct {
+		name string
+		fn   func(string) (string, error)
+	}{
+		{"ParseOrganizationID", func(s string) (string, error) {
+			v, err := ids.ParseOrganizationID(s)
+			return v.String(), err
+		}},
+		{"ParseProjectID", func(s string) (string, error) {
+			v, err := ids.ParseProjectID(s)
+			return v.String(), err
+		}},
+		{"ParseServiceAccountID", func(s string) (string, error) {
+			v, err := ids.ParseServiceAccountID(s)
+			return v.String(), err
+		}},
+		{"ParseUserID", func(s string) (string, error) {
+			v, err := ids.ParseUserID(s)
+			return v.String(), err
+		}},
+		{"ParseGroupID", func(s string) (string, error) {
+			v, err := ids.ParseGroupID(s)
+			return v.String(), err
+		}},
+		{"ParseOAuth2ProviderID", func(s string) (string, error) {
+			v, err := ids.ParseOAuth2ProviderID(s)
+			return v.String(), err
+		}},
+		{"ParseAllocationID", func(s string) (string, error) {
+			v, err := ids.ParseAllocationID(s)
+			return v.String(), err
+		}},
+	}
 
-	ids.MustParseProjectID(invalidUUID)
+	for _, tc := range cases {
+		t.Run(tc.name+"/valid", func(t *testing.T) {
+			t.Parallel()
+
+			got, err := tc.fn(validUUID)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if got != validUUID {
+				t.Fatalf("String() = %q, want %q", got, validUUID)
+			}
+		})
+
+		t.Run(tc.name+"/invalid", func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := tc.fn(invalidUUID); err == nil {
+				t.Fatal("expected error for invalid UUID, got nil")
+			}
+		})
+	}
 }

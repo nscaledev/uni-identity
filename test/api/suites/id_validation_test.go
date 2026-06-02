@@ -69,4 +69,74 @@ var _ = Describe("Path parameter ID validation", func() {
 			})
 		})
 	})
+
+	Context("When a group ID path parameter is not a valid UUID", func() {
+		Describe("Given a valid organization ID but non-UUID group ID", func() {
+			It("should reject the request with 400 before reaching the handler", func() {
+				path := client.GetEndpoints().GetGroup(config.OrgID, "not-a-uuid")
+
+				//nolint:bodyclose // DoRequest handles response body closing internally
+				_, body, err := client.DoRequest(ctx, http.MethodGet, path, nil, http.StatusBadRequest)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("invalid_request"))
+			})
+		})
+	})
+
+	Context("When a service account ID path parameter is not a valid UUID", func() {
+		Describe("Given a valid organization ID but non-UUID service account ID", func() {
+			It("should reject the request with 400 before reaching the handler", func() {
+				path := client.GetEndpoints().GetServiceAccount(config.OrgID, "not-a-uuid")
+
+				//nolint:bodyclose // DoRequest handles response body closing internally
+				_, body, err := client.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusBadRequest)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("invalid_request"))
+			})
+		})
+	})
+
+	Context("When a user ID path parameter is not a valid UUID", func() {
+		Describe("Given a valid organization ID but non-UUID user ID", func() {
+			It("should reject the request with 400 before reaching the handler", func() {
+				path := client.GetEndpoints().GetUser(config.OrgID, "not-a-uuid")
+
+				//nolint:bodyclose // DoRequest handles response body closing internally
+				_, body, err := client.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusBadRequest)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("invalid_request"))
+			})
+		})
+	})
+
+	Context("When an OAuth2 provider ID path parameter is not a valid UUID", func() {
+		Describe("Given a valid organization ID but non-UUID provider ID", func() {
+			It("should reject the request with 400 before reaching the handler", func() {
+				path := client.GetEndpoints().GetOauth2Provider(config.OrgID, "not-a-uuid")
+
+				//nolint:bodyclose // DoRequest handles response body closing internally
+				_, body, err := client.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusBadRequest)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("invalid_request"))
+			})
+		})
+	})
+
+	Context("When an allocation ID path parameter is not a valid UUID", func() {
+		Describe("Given valid organization and project IDs but a non-UUID allocation ID", func() {
+			It("should reject the request with 400 before reaching the handler", func() {
+				path := client.GetEndpoints().GetAllocation(config.OrgID, config.ProjectID, "not-a-uuid")
+
+				//nolint:bodyclose // DoRequest handles response body closing internally
+				_, body, err := client.DoRequest(ctx, http.MethodGet, path, nil, http.StatusBadRequest)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("invalid_request"))
+			})
+		})
+	})
 })

@@ -390,7 +390,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDOauth2providersProviderID(w
 		return
 	}
 
-	if err := oauth2providers.New(h.client, h.namespace).Update(r.Context(), organizationID.String(), providerID, request); err != nil {
+	if err := oauth2providers.New(h.client, h.namespace).Update(r.Context(), organizationID.String(), providerID.String(), request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -405,7 +405,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderI
 		return
 	}
 
-	if err := oauth2providers.New(h.client, h.namespace).Delete(r.Context(), organizationID.String(), providerID); err != nil {
+	if err := oauth2providers.New(h.client, h.namespace).Delete(r.Context(), organizationID.String(), providerID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -546,7 +546,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 		return
 	}
 
-	result, err := groups.New(h.client, h.namespace, h.options.Issuer).Get(r.Context(), organizationID.String(), groupID)
+	result, err := groups.New(h.client, h.namespace, h.options.Issuer).Get(r.Context(), organizationID.String(), groupID.String())
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -562,7 +562,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Res
 		return
 	}
 
-	if err := groups.New(h.client, h.namespace, h.options.Issuer).Delete(r.Context(), organizationID.String(), groupID); err != nil {
+	if err := groups.New(h.client, h.namespace, h.options.Issuer).Delete(r.Context(), organizationID.String(), groupID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -584,7 +584,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 		return
 	}
 
-	if err := groups.New(h.client, h.namespace, h.options.Issuer).Update(r.Context(), organizationID.String(), groupID, request); err != nil {
+	if err := groups.New(h.client, h.namespace, h.options.Issuer).Update(r.Context(), organizationID.String(), groupID.String(), request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -821,7 +821,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccou
 		return
 	}
 
-	result, err := h.serviceAccountsClient().Update(r.Context(), organizationID.String(), serviceAccountID, request)
+	result, err := h.serviceAccountsClient().Update(r.Context(), organizationID.String(), serviceAccountID.String(), request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -837,7 +837,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAc
 		return
 	}
 
-	if err := h.serviceAccountsClient().Delete(r.Context(), organizationID.String(), serviceAccountID); err != nil {
+	if err := h.serviceAccountsClient().Delete(r.Context(), organizationID.String(), serviceAccountID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -848,12 +848,12 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDServiceaccountsServiceAc
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDRotate(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, serviceAccountID openapi.ServiceAccountIDParameter) {
 	// NOTE: this allows regular RBAC based access or a service account to self rotate.
-	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Update, organizationID.String(), serviceAccountID); err != nil {
+	if err := allowServiceAccountOrSelfAccess(r.Context(), openapi.Update, organizationID.String(), serviceAccountID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	result, err := h.serviceAccountsClient().Rotate(r.Context(), organizationID.String(), serviceAccountID)
+	result, err := h.serviceAccountsClient().Rotate(r.Context(), organizationID.String(), serviceAccountID.String())
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -912,7 +912,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.Respo
 		return
 	}
 
-	if err := h.usersClient().Delete(r.Context(), organizationID.String(), userID); err != nil {
+	if err := h.usersClient().Delete(r.Context(), organizationID.String(), userID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -934,7 +934,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.Response
 		return
 	}
 
-	result, err := h.usersClient().Update(r.Context(), organizationID.String(), userID, request)
+	result, err := h.usersClient().Update(r.Context(), organizationID.String(), userID.String(), request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return

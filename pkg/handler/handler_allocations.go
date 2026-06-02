@@ -65,7 +65,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocat
 		return
 	}
 
-	if err := h.allocationsClient().Delete(r.Context(), organizationID.String(), projectID.String(), allocationID); err != nil {
+	if err := h.allocationsClient().Delete(r.Context(), organizationID.String(), projectID.String(), allocationID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -80,7 +80,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	result, err := h.allocationsClient().Get(r.Context(), organizationID.String(), projectID.String(), allocationID)
+	result, err := h.allocationsClient().Get(r.Context(), organizationID.String(), projectID.String(), allocationID.String())
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -103,7 +103,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	result, err := h.allocationsSyncClient().Update(r.Context(), organizationID.String(), projectID.String(), allocationID, request)
+	result, err := h.allocationsSyncClient().Update(r.Context(), organizationID.String(), projectID.String(), allocationID.String(), request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
