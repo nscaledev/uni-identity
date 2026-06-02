@@ -7,6 +7,7 @@ import (
 	"time"
 
 	externalRef0 "github.com/unikorn-cloud/core/pkg/openapi"
+	identityids "github.com/unikorn-cloud/identity/pkg/ids"
 )
 
 const (
@@ -454,6 +455,9 @@ type OpenidConfiguration struct {
 	UserinfoEndpoint string `json:"userinfo_endpoint"`
 }
 
+// OrganizationId An organization ID.
+type OrganizationId = identityids.OrganizationID
+
 // OrganizationRead An organization when read.
 type OrganizationRead struct {
 	// Metadata Metadata required by all resource reads.
@@ -507,6 +511,9 @@ type OrganizationWrite struct {
 
 // Organizations A list of organizations.
 type Organizations = []OrganizationRead
+
+// ProjectId A project ID.
+type ProjectId = identityids.ProjectID
 
 // ProjectRead A project when read.
 type ProjectRead struct {
@@ -907,11 +914,11 @@ type GroupidParameter = string
 // Oauth2ProvderIDParameter defines model for oauth2ProvderIDParameter.
 type Oauth2ProvderIDParameter = string
 
-// OrganizationIDParameter defines model for organizationIDParameter.
-type OrganizationIDParameter = string
+// OrganizationIDParameter An organization ID.
+type OrganizationIDParameter = OrganizationId
 
-// ProjectIDParameter defines model for projectIDParameter.
-type ProjectIDParameter = string
+// ProjectIDParameter A project ID.
+type ProjectIDParameter = ProjectId
 
 // ReferenceParameter defines model for referenceParameter.
 type ReferenceParameter = string

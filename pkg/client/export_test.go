@@ -14,16 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package client exposes internal References fields for white-box testing.
+// Package client exposes internal symbols for white-box testing.
 package client
 
 import (
 	"context"
 
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	crClient "sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// ParsePrincipalIDs exposes parsePrincipalIDs for unit testing.
+func ParsePrincipalIDs(p *principal.Principal) (ids.OrganizationID, ids.ProjectID, error) {
+	return parsePrincipalIDs(p)
+}
 
 // SetClientFactory replaces the HTTP client factory on r, allowing tests to
 // inject a mock without going through the full Kubernetes service-discovery path.

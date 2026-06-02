@@ -28,6 +28,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/manager"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -88,6 +89,20 @@ func getAllocationID(resource client.Object) (string, error) {
 	return id, nil
 }
 
+func parsePrincipalIDs(p *principal.Principal) (ids.OrganizationID, ids.ProjectID, error) {
+	orgID, err := ids.ParseOrganizationID(p.OrganizationID)
+	if err != nil {
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: invalid organization ID in principal", err)
+	}
+
+	projID, err := ids.ParseProjectID(p.ProjectID)
+	if err != nil {
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: invalid project ID in principal", err)
+	}
+
+	return orgID, projID, nil
+}
+
 // Create accepts a resource kind, creates an allocation for it with the requested
 // set of resources, and patches the allocation ID into the resource for tracking.
 // TODO: could we not just use the resource reference as eky, rather than messing with IDs?
@@ -99,12 +114,17 @@ func (r *Allocations) Create(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
+	orgID, projID, err := parsePrincipalIDs(userPrincipal)
+	if err != nil {
+		return err
+	}
+
 	reference, err := manager.GenerateResourceReference(r.client, resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := r.api.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, generateAllocation(reference, allocations))
+	response, err := r.api.PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsWithResponse(ctx, orgID, projID, generateAllocation(reference, allocations))
 	if err != nil {
 		return err
 	}
@@ -127,6 +147,11 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
+	orgID, projID, err := parsePrincipalIDs(userPrincipal)
+	if err != nil {
+		return err
+	}
+
 	reference, err := manager.GenerateResourceReference(r.client, resource)
 	if err != nil {
 		return err
@@ -137,7 +162,7 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID, generateAllocation(reference, allocations))
+	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, orgID, projID, allocationID, generateAllocation(reference, allocations))
 	if err != nil {
 		return err
 	}
@@ -158,12 +183,17 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 		return err
 	}
 
+	orgID, projID, err := parsePrincipalIDs(userPrincipal)
+	if err != nil {
+		return err
+	}
+
 	allocationID, err := getAllocationID(resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, userPrincipal.OrganizationID, userPrincipal.ProjectID, allocationID)
+	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, orgID, projID, allocationID)
 	if err != nil {
 		return err
 	}

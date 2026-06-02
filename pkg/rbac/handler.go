@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -188,7 +189,17 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 
 	// Access is granted via organization-scoped ACL, but the project ID is untrusted —
 	// verify it exists via the identity API.
-	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, organizationID, projectID)
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return errors.OAuth2InvalidRequest("invalid organization ID").WithError(err)
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return errors.OAuth2InvalidRequest("invalid project ID").WithError(err)
+	}
+
+	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, orgID, projID)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to verify project exists").WithError(err)
 	}

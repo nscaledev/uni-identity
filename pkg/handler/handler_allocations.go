@@ -37,7 +37,7 @@ func (h *Handler) allocationsSyncClient() *allocations.SyncClient {
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Create, organizationID, projectID); err != nil {
+	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Create, organizationID.String(), projectID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -49,7 +49,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocatio
 		return
 	}
 
-	result, err := h.allocationsSyncClient().Create(r.Context(), organizationID, projectID, request)
+	result, err := h.allocationsSyncClient().Create(r.Context(), organizationID.String(), projectID.String(), request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -60,12 +60,12 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocatio
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Delete, organizationID, projectID); err != nil {
+	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Delete, organizationID.String(), projectID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	if err := h.allocationsClient().Delete(r.Context(), organizationID, projectID, allocationID); err != nil {
+	if err := h.allocationsClient().Delete(r.Context(), organizationID.String(), projectID.String(), allocationID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -75,12 +75,12 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocat
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Read, organizationID, projectID); err != nil {
+	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Read, organizationID.String(), projectID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
-	result, err := h.allocationsClient().Get(r.Context(), organizationID, projectID, allocationID)
+	result, err := h.allocationsClient().Get(r.Context(), organizationID.String(), projectID.String(), allocationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -91,7 +91,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Update, organizationID, projectID); err != nil {
+	if err := rbac.AllowProjectScope(r.Context(), "identity:allocations", openapi.Update, organizationID.String(), projectID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -103,7 +103,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 		return
 	}
 
-	result, err := h.allocationsSyncClient().Update(r.Context(), organizationID, projectID, allocationID, request)
+	result, err := h.allocationsSyncClient().Update(r.Context(), organizationID.String(), projectID.String(), allocationID, request)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return

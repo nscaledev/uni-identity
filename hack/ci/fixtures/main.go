@@ -47,6 +47,7 @@ import (
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -224,7 +225,7 @@ func findRole(roles *openapi.RolesResponse, name string) string {
 func createGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, roleIDs []string) string {
 	logf("Creating group %q...", name)
 
-	resp, err := ac.PostApiV1OrganizationsOrganizationIDGroupsWithResponse(ctx, orgID, openapi.GroupWrite{
+	resp, err := ac.PostApiV1OrganizationsOrganizationIDGroupsWithResponse(ctx, ids.MustParseOrganizationID(orgID), openapi.GroupWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
 		Spec: openapi.GroupSpec{
 			RoleIDs:           roleIDs,
@@ -249,7 +250,7 @@ func createGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, na
 func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) string {
 	logf("Creating project %q...", name)
 
-	resp, err := ac.PostApiV1OrganizationsOrganizationIDProjectsWithResponse(ctx, orgID, openapi.ProjectWrite{
+	resp, err := ac.PostApiV1OrganizationsOrganizationIDProjectsWithResponse(ctx, ids.MustParseOrganizationID(orgID), openapi.ProjectWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
 		Spec:     openapi.ProjectSpec{GroupIDs: groupIDs},
 	})
@@ -271,7 +272,7 @@ func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, 
 func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) (string, string) {
 	logf("Creating service account %q...", name)
 
-	resp, err := ac.PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(ctx, orgID, openapi.ServiceAccountWrite{
+	resp, err := ac.PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(ctx, ids.MustParseOrganizationID(orgID), openapi.ServiceAccountWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
 		Spec:     openapi.ServiceAccountSpec{GroupIDs: groupIDs},
 	})
@@ -299,7 +300,7 @@ func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 func createUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, subject string, groupIDs []string) string {
 	logf("Creating user %q...", subject)
 
-	resp, err := ac.PostApiV1OrganizationsOrganizationIDUsersWithResponse(ctx, orgID, openapi.UserWrite{
+	resp, err := ac.PostApiV1OrganizationsOrganizationIDUsersWithResponse(ctx, ids.MustParseOrganizationID(orgID), openapi.UserWrite{
 		Spec: openapi.UserSpec{
 			GroupIDs: groupIDs,
 			State:    openapi.Active,
@@ -402,7 +403,7 @@ func waitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgI
 func resolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string, string) {
 	logf("Resolving role IDs...")
 
-	rolesResp, err := ac.GetApiV1OrganizationsOrganizationIDRolesWithResponse(ctx, orgID)
+	rolesResp, err := ac.GetApiV1OrganizationsOrganizationIDRolesWithResponse(ctx, ids.MustParseOrganizationID(orgID))
 	if err != nil {
 		fatalf("failed to list roles: %v", err)
 	}
