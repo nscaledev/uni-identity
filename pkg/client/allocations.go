@@ -157,9 +157,14 @@ func (r *Allocations) Update(ctx context.Context, resource client.Object, alloca
 		return err
 	}
 
-	allocationID, err := getAllocationID(resource)
+	allocationIDStr, err := getAllocationID(resource)
 	if err != nil {
 		return err
+	}
+
+	allocationID, err := ids.ParseAllocationID(allocationIDStr)
+	if err != nil {
+		return fmt.Errorf("%w: invalid allocation ID on resource", err)
 	}
 
 	response, err := r.api.PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, orgID, projID, allocationID, generateAllocation(reference, allocations))
@@ -188,9 +193,14 @@ func (r *Allocations) Delete(ctx context.Context, resource client.Object) error 
 		return err
 	}
 
-	allocationID, err := getAllocationID(resource)
+	allocationIDStr, err := getAllocationID(resource)
 	if err != nil {
 		return err
+	}
+
+	allocationID, err := ids.ParseAllocationID(allocationIDStr)
+	if err != nil {
+		return fmt.Errorf("%w: invalid allocation ID on resource", err)
 	}
 
 	response, err := r.api.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationIDWithResponse(ctx, orgID, projID, allocationID)

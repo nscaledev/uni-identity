@@ -1136,14 +1136,14 @@ components:
       description: A service account ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/serviceAccountId'
     userIDParameter:
       name: userID
       in: path
       description: A user ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/userId'
     projectIDParameter:
       name: projectID
       in: path
@@ -1157,21 +1157,21 @@ components:
       description: A unique group ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/groupId'
     oauth2ProvderIDParameter:
       name: providerID
       in: path
       description: An oauth2 provider ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/oauth2ProviderId'
     allocationIDParameter:
       name: allocationID
       in: path
       description: A resource allocation ID.
       required: true
       schema:
-        type: string
+        $ref: '#/components/schemas/allocationId'
     userEmailParameter:
       name: email
       in: query
@@ -1199,6 +1199,46 @@ components:
       type: string
       format: uuid
       x-go-type: identityids.ProjectID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    serviceAccountId:
+      description: A service account ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.ServiceAccountID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    userId:
+      description: A user ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.UserID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    groupId:
+      description: A group ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.GroupID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    oauth2ProviderId:
+      description: An OAuth2 provider ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.OAuth2ProviderID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    allocationId:
+      description: A resource allocation ID.
+      type: string
+      format: uuid
+      x-go-type: identityids.AllocationID
       x-go-type-import:
         name: identityids
         path: github.com/unikorn-cloud/identity/pkg/ids
