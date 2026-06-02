@@ -443,6 +443,90 @@ func TestExchangeAuth0User(t *testing.T) {
 	)
 }
 
+// TestExchangeFederatedUserWithAuth0Enabled is a regression test ensuring
+// that enabling Auth0 exchange does not break the existing UNI token path.
+// UNI access tokens are JWE (signed-then-encrypted, four dots), Auth0 tokens
+// are compact JWS (two dots), so the isCompactJWS discriminator must route
+// each to the correct verifier. If a future change ever caused UNI tokens to
+// be misrouted to the Auth0 validator they would fail at signature/issuer
+// validation and this test would fail.
+func TestExchangeFederatedUserWithAuth0Enabled(t *testing.T) {
+	t.Parallel()
+
+	auth0Issuer := newAuth0TestIssuer(t)
+
+	env := setupPassportTestEnvWithOAuth2Options(t, &rbac.Options{}, &oauth2.Options{
+		AccessTokenDuration:     accessTokenDuration,
+		RefreshTokenDuration:    refreshTokenDuration,
+		TokenLeewayDuration:     accessTokenDuration,
+		TokenVerificationLeeway: 0,
+		TokenCacheSize:          1024,
+		CodeCacheSize:           1024,
+		Auth0ExchangeIssuer:     auth0Issuer.issuer(),
+		Auth0ExchangeAudience:   "https://identity.example.com",
+	}, &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org1",
+		},
+		Status: unikornv1.OrganizationStatus{
+			Namespace: josetesting.Namespace + "-org1",
+		},
+	}, &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "test-user",
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: "user@example.com",
+			State:   unikornv1.UserStateActive,
+		},
+	}, &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org1-user",
+			Labels: map[string]string{
+				constants.UserLabel:         "test-user",
+				constants.OrganizationLabel: "org1",
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	})
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	// Sanity-check the test premise: the UNI access token is JWE (4 dots),
+	// not compact JWS, so isCompactJWS will return false and the Auth0
+	// validator never sees it.
+	require.Equal(t, 4, strings.Count(token, "."), "UNI access token should be JWE (4 dots)")
+
+	req := exchangeRequest(t, token, nil)
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	claims := parsePassport(t, env, result.AccessToken)
+
+	assert.Equal(t, "passport", claims.Type)
+	assert.Equal(t, openapi.User, claims.Acctype)
+	assert.Equal(t, oauth2.PassportSourceUNI, claims.Source,
+		"UNI tokens must continue to route through the UNI path when Auth0 is enabled")
+	assert.Equal(t, "user@example.com", claims.Subject)
+	assert.ElementsMatch(t, []string{"org1"}, claims.OrgIDs)
+}
+
 func TestExchangeCapsPassportExpiryAtSourceTokenExpiry(t *testing.T) {
 	t.Parallel()
 
