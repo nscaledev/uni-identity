@@ -29,6 +29,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -44,7 +45,7 @@ import (
 
 const (
 	testNamespace = "test-namespace"
-	testOrgID     = "test-org"
+	testOrgID     = "00000000-0000-4000-8000-000000000001"
 	testOrgNS     = "test-org-ns"
 
 	testIssuerURL  = "https://identity.unikorn-cloud.org"
@@ -185,7 +186,7 @@ func assertCreateUserError(t *testing.T, fixture *userTestFixture, target error)
 		},
 	}
 
-	_, err := fixture.usersClient.Create(ctx, testOrgID, request)
+	_, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, target)
@@ -208,10 +209,10 @@ func TestClient_Create(t *testing.T) {
 			},
 		}
 
-		first, err := fixture.usersClient.Create(ctx, testOrgID, request)
+		first, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
 		require.NoError(t, err)
 
-		second, err := fixture.usersClient.Create(ctx, testOrgID, request)
+		second, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
 		require.NoError(t, err)
 
 		assert.Equal(t, first.Metadata.Id, second.Metadata.Id)
@@ -250,7 +251,7 @@ func TestClient_Create(t *testing.T) {
 			},
 		}
 
-		first, err := fixture.usersClient.Create(ctx, testOrgID, firstRequest)
+		first, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), firstRequest)
 		require.NoError(t, err)
 
 		secondRequest := &openapi.UserWrite{
@@ -261,7 +262,7 @@ func TestClient_Create(t *testing.T) {
 			},
 		}
 
-		second, err := fixture.usersClient.Create(ctx, testOrgID, secondRequest)
+		second, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), secondRequest)
 		require.NoError(t, err)
 
 		assert.Equal(t, first.Metadata.Id, second.Metadata.Id)
@@ -312,7 +313,7 @@ func TestClient_Create(t *testing.T) {
 			},
 		}
 
-		_, err := fixture.usersClient.Create(ctx, testOrgID, request)
+		_, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
 
 		require.Error(t, err)
 		require.ErrorIs(t, err, coreerrors.ErrConsistency)

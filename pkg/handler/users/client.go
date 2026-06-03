@@ -33,6 +33,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -214,7 +215,7 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	out := &unikornv1.OrganizationUser{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID).WithLabel(constants.UserLabel, userID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID.String()).WithLabel(constants.UserLabel, userID).Get(),
 		Spec: unikornv1.OrganizationUserSpec{
 			State: generateUserState(in.Spec.State),
 		},
@@ -354,7 +355,7 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 
 func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organization *organizations.Meta, globalUserID string) (*unikornv1.OrganizationUser, error) {
 	selector := labels.SelectorFromSet(labels.Set{
-		constants.OrganizationLabel: organization.ID,
+		constants.OrganizationLabel: organization.ID.String(),
 		constants.UserLabel:         globalUserID,
 	})
 
@@ -400,7 +401,7 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 // Create makes a new user.  This creates a new user in an organization, but they
 // reference a unique user resource, so we need to get or create the underlying record
 // first, then add to the organization.
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	// Any accounts that aren't email based must use kubectl-unikorn to create them,
 	// e.g. users for unikorn services.
 	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
@@ -435,7 +436,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 }
 
 // List retrieves information about all users in the organization.
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Users, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -475,7 +476,7 @@ func (c *Client) patchOrganizationUser(ctx context.Context, updated, current *un
 
 // Update modifies any metadata for the user if it exists.  If a matching account
 // doesn't exist it raises an error.
-func (c *Client) Update(ctx context.Context, organizationID, userID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, userID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -527,7 +528,7 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 }
 
 // Delete removes the user and revokes the access token.
-func (c *Client) Delete(ctx context.Context, organizationID, userID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, userID string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err

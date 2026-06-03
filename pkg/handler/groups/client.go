@@ -30,6 +30,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
@@ -109,7 +110,7 @@ func convertList(in *unikornv1.GroupList) openapi.Groups {
 	return out
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Groups, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Groups, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -138,7 +139,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, grou
 	return result, nil
 }
 
-func (c *Client) Get(ctx context.Context, organizationID, groupID string) (*openapi.GroupRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, groupID string) (*openapi.GroupRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -338,7 +339,7 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, organization *o
 	return nil, nil, nil
 }
 
-func (c *Client) validateRoleIDs(ctx context.Context, organizationID string, roleIDs []string) ([]string, error) {
+func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.OrganizationID, roleIDs []string) ([]string, error) {
 	normalizedRoleIDs := deduplicateStrings(roleIDs)
 
 	// Validate roles exist.
@@ -382,7 +383,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 
 	// TODO: validate user and service account existence.
 	out := &unikornv1.Group{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID.String()).Get(),
 		Spec: unikornv1.GroupSpec{
 			Tags:              conversion.GenerateTagList(in.Metadata.Tags),
 			UserIDs:           userIDs,
@@ -399,7 +400,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 	return out, nil
 }
 
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.GroupWrite) (*openapi.GroupRead, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.GroupWrite) (*openapi.GroupRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -417,7 +418,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	return convert(resource), nil
 }
 
-func (c *Client) Update(ctx context.Context, organizationID, groupID string, request *openapi.GroupWrite) error {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, groupID string, request *openapi.GroupWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -453,7 +454,7 @@ func (c *Client) Update(ctx context.Context, organizationID, groupID string, req
 	return nil
 }
 
-func (c *Client) Delete(ctx context.Context, organizationID, groupID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, groupID string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
