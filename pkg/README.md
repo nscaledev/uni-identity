@@ -21,6 +21,7 @@ repository.
 
 - [apis/unikorn/v1alpha1](./apis/unikorn/v1alpha1/README.md)
 - [constants](./constants/README.md)
+- [ids](./ids/README.md)
 - [principal](./principal/README.md)
 - [userdb](./userdb/README.md)
 

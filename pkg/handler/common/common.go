@@ -26,6 +26,7 @@ import (
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -79,8 +80,8 @@ func projectSelector(organizationID, projectID string) (labels.Selector, error) 
 }
 
 // ProjectNamespace is shared by higher order services.
-func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, projectID string) (*corev1.Namespace, error) {
-	selector, err := projectSelector(organizationID, projectID)
+func ProjectNamespace(ctx context.Context, cli client.Client, organizationID ids.OrganizationID, projectID ids.ProjectID) (*corev1.Namespace, error) {
+	selector, err := projectSelector(organizationID.String(), projectID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +103,12 @@ func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, pr
 	return &resources.Items[0], nil
 }
 
-func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
+func (c *Client) ProjectNamespace(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) (*corev1.Namespace, error) {
 	return ProjectNamespace(ctx, c.client, organizationID, projectID)
 }
 
-func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv1.Quota, bool, error) {
-	selector, err := organizationSelector(organizationID)
+func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Quota, bool, error) {
+	selector, err := organizationSelector(organizationID.String())
 	if err != nil {
 		return nil, false, err
 	}
@@ -173,8 +174,8 @@ func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv
 	return quota, virtual, nil
 }
 
-func (c *Client) GetAllocations(ctx context.Context, organizationID string) (*unikornv1.AllocationList, error) {
-	selector, err := organizationSelector(organizationID)
+func (c *Client) GetAllocations(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.AllocationList, error) {
+	selector, err := organizationSelector(organizationID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +198,7 @@ func (c *Client) GetAllocations(ctx context.Context, organizationID string) (*un
 // argument, i.e. when updating the quotas, this will override the read from the organization.
 // If you pass in an allocation, i.e. when creating or updating an allocation, this will be
 // unioned with the organization's allocations, overriding an existing one if it exists.
-func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID string, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
+func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID ids.OrganizationID, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
 	// Handle the default quota.
 	if quota == nil {
 		temp, _, err := c.GetQuota(ctx, organizationID)

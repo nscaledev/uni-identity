@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -64,6 +65,13 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 	return operationAllowedByEndpoints(*acl.Global, endpoint, operation)
 }
 
+// AllowOrganizationScopeID is the typed variant of AllowOrganizationScope. Use this
+// when the caller holds an ids.OrganizationID; the string overload is retained for
+// callers in other repos that already deal in plain strings.
+func AllowOrganizationScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
+	return AllowOrganizationScope(ctx, endpoint, operation, organizationID.String())
+}
+
 // AllowOrganizationScope tries to allow the requested operation at the global scope, then
 // the organization scope.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
@@ -90,6 +98,11 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 	}
 
 	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — organization is not in this principal's accessible set", operation, endpoint))
+}
+
+// AllowProjectScopeID is the typed variant of AllowProjectScope.
+func AllowProjectScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	return AllowProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String())
 }
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
@@ -167,6 +180,11 @@ func isAllowedByProjectACL(ctx context.Context, endpoint string, operation opena
 // so this function additionally verifies the project exists via the identity API before
 // returning nil.  Global-scope callers (platform administrators) are exempt from this
 // check and their supplied project ID is trusted directly.
+//
+// The string-typed organizationID and projectID parameters are intentional: this function
+// is called by other repositories that pre-date the typed ID types and must remain
+// backward-compatible with those callers.  Callers within this repo that hold typed IDs
+// should call .String() before passing them here.
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
@@ -188,7 +206,17 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 
 	// Access is granted via organization-scoped ACL, but the project ID is untrusted —
 	// verify it exists via the identity API.
-	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, organizationID, projectID)
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return errors.OAuth2InvalidRequest("invalid organization ID").WithError(err)
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return errors.OAuth2InvalidRequest("invalid project ID").WithError(err)
+	}
+
+	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, orgID, projID)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to verify project exists").WithError(err)
 	}
@@ -207,7 +235,7 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 // AllowRole determines whether your ACL contains the same or higher privileges than
 // the role, which is then used to determine role visibility and limit privilege
 // escalation.
-func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string) error {
+func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
 			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
@@ -218,7 +246,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string)
 
 	for _, endpoint := range role.Spec.Scopes.Organization {
 		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
 			}
 		}
@@ -226,7 +254,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string)
 
 	for _, endpoint := range role.Spec.Scopes.Project {
 		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
 			}
 		}

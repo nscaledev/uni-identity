@@ -30,6 +30,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/groups"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -45,7 +46,7 @@ import (
 
 const (
 	testNamespace  = "test-namespace"
-	testOrgID      = "test-org"
+	testOrgID      = "00000000-0000-4000-8000-000000000001"
 	testOrgNS      = "test-org-ns"
 	testIssuerURL  = "https://identity.unikorn-cloud.org"
 	testIssuerHost = "identity.unikorn-cloud.org"
@@ -240,7 +241,7 @@ func TestUpdateGroupWithSubjects_PopulatesUserIDs(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -273,7 +274,7 @@ func TestUpdateGroupWithExternalSubjects_DoesNotPopulateUserIDs(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -308,7 +309,7 @@ func TestUpdateGroupWithMixedSubjects_PopulatesOnlyInternalUserIDs(t *testing.T)
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -340,7 +341,7 @@ func TestUpdateGroupWithNonMemberSubject_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject is not a member of the organization")
 	require.True(t, errors.IsBadRequest(err))
 }
@@ -361,7 +362,7 @@ func TestUpdateGroupWithNonExistentSubject_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
 	require.Error(t, err, "Should error when subject does not exist")
 	require.True(t, errors.IsBadRequest(err))
 }
@@ -377,7 +378,7 @@ func TestUpdateGroupWithUserIDs_PopulatesSubjects(t *testing.T) {
 
 	userIDs := openapi.StringList{orguserAliceID}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(nil, &userIDs))
 	require.NoError(t, err)
 
 	updatedGroup := f.getGroup(t)
@@ -405,7 +406,7 @@ func TestUpdateGroupWithInvalidUserID_ReturnsError(t *testing.T) {
 
 	userIDs := openapi.StringList{"nonexistent-orguser"}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, makeGroupUpdateRequest(nil, &userIDs))
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(nil, &userIDs))
 	require.Error(t, err, "Should error when UserID is invalid")
 	require.True(t, errors.IsBadRequest(err))
 }
@@ -453,7 +454,7 @@ func TestUpdateGroupWithMultipleUserIDs_PopulatesAllSubjects(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, updateRequest)
 	require.NoError(t, err)
 
 	// Fetch the updated group
@@ -514,7 +515,7 @@ func TestUpdateGroupWithBothSubjectsAndUserIDs_ReturnsError(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, updateRequest)
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, updateRequest)
 	require.Error(t, err, "Should error when both subjects and userIDs are provided")
 	require.True(t, errors.IsBadRequest(err))
 }
@@ -559,7 +560,7 @@ func TestUpdateGroup_DeduplicatesSpecFieldsBeforePersist(t *testing.T) {
 		},
 	}
 
-	err := f.groupsClient.Update(newContext(t), testOrgID, groupTestID, request)
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, request)
 	require.NoError(t, err)
 
 	stored := f.getGroup(t)
