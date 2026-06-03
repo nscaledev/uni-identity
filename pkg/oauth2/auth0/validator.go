@@ -67,9 +67,14 @@ type authzClaims struct {
 type tokenClaims struct {
 	jwt.Claims
 
-	Email string `json:"email"`
+	// Auth0 only emits the standard email claims on the ID token, and a
+	// PostLogin action cannot set bare (non-namespaced) claims on the access
+	// token, so the enrich-token-claims action surfaces them under the
+	// unikorn-cloud.org namespace where this access-token validator reads them.
 	//nolint:tagliatelle
-	EmailVerified *bool `json:"email_verified"`
+	Email string `json:"https://unikorn-cloud.org/email"`
+	//nolint:tagliatelle
+	EmailVerified *bool `json:"https://unikorn-cloud.org/email_verified"`
 	//nolint:tagliatelle
 	Authz authzClaims `json:"https://unikorn-cloud.org/authz"`
 }

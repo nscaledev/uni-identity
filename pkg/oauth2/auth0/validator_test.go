@@ -82,8 +82,8 @@ type testAuthzClaims struct {
 type testTokenClaims struct {
 	jwt.Claims
 
-	Email         string          `json:"email,omitempty"`
-	EmailVerified *bool           `json:"email_verified,omitempty"`
+	Email         string          `json:"https://unikorn-cloud.org/email,omitempty"`
+	EmailVerified *bool           `json:"https://unikorn-cloud.org/email_verified,omitempty"`
 	Authz         testAuthzClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
 }
 

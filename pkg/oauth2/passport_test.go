@@ -173,8 +173,8 @@ func (i *auth0TestIssuer) token(t *testing.T, audience, email string, expiry tim
 	type auth0Claims struct {
 		jwt.Claims
 
-		Email         string `json:"email"`
-		EmailVerified *bool  `json:"email_verified"`
+		Email         string `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool  `json:"https://unikorn-cloud.org/email_verified"`
 		Authz         struct {
 			Acctype string   `json:"acctype"`
 			OrgIDs  []string `json:"orgIds"`

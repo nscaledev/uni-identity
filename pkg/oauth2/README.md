@@ -139,7 +139,11 @@ existing UNI path is unaffected.
 
 For Auth0 tokens, validation covers signature, issuer, audience, temporal claims, verified email,
 and the UNI authorization claim emitted by the Auth0 post-login Action (`acctype` and non-empty
-`orgIds`). The claimed `orgIds` are required as a signal that the Action ran but are intentionally
+`orgIds`). Because Auth0 only places the standard `email`/`email_verified` claims on the ID token —
+and a post-login Action cannot set bare, non-namespaced claims on the access token — the Action
+surfaces them on the access token as the namespaced `https://unikorn-cloud.org/email` and
+`https://unikorn-cloud.org/email_verified` claims, which is where this validator reads them from.
+The claimed `orgIds` are required as a signal that the Action ran but are intentionally
 not used as organization membership: UNI's user database remains authoritative for which
 organizations a principal belongs to. The minted passport's `source` claim records whether the
 exchange originated from a UNI or Auth0 subject token, and the passport expiry is capped at the
