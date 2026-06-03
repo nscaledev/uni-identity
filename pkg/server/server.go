@@ -126,7 +126,11 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 
 	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
 	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2 := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
+	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
+
+	if err != nil {
+		return nil, err
+	}
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)

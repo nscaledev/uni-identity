@@ -42,6 +42,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/html"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/providers"
@@ -92,15 +93,25 @@ type Options struct {
 
 	// CodeCacheSize is used to set the number of authorization code in flight.
 	CodeCacheSize int
+
+	// Auth0ExchangeIssuer is the Auth0 tenant issuer accepted as a passport
+	// exchange source token issuer.
+	Auth0ExchangeIssuer string
+
+	// Auth0ExchangeAudience is the Auth0 API audience accepted for passport
+	// exchange source tokens.
+	Auth0ExchangeAudience string
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.AccessTokenDuration, "access-token-duration", time.Hour, "Maximum time an access token can be active for.")
 	f.DurationVar(&o.RefreshTokenDuration, "refresh-token-duration", 0, "Maximum time a refresh token can be active for.")
-	f.DurationVar(&o.TokenVerificationLeeway, "token-verification-leeway", 0, "How mush leeway to permit for verification of token validity.")
+	f.DurationVar(&o.TokenVerificationLeeway, "token-verification-leeway", 0, "How much leeway to permit for verification of token validity.")
 	f.DurationVar(&o.TokenLeewayDuration, "token-leeway", time.Minute, "How long to remove from the provider token expiry to account for network and processing latency.")
 	f.IntVar(&o.TokenCacheSize, "token-cache-size", 8192, "How many token cache entries to allow.")
 	f.IntVar(&o.CodeCacheSize, "code-cache-size", 8192, "How many code cache entries to allow.")
+	f.StringVar(&o.Auth0ExchangeIssuer, "auth0-exchange-issuer", "", "Auth0 tenant issuer accepted for passport token exchange.")
+	f.StringVar(&o.Auth0ExchangeAudience, "auth0-exchange-audience", "", "Auth0 API audience accepted for passport token exchange.")
 }
 
 // Authenticator provides Keystone authentication functionality.
@@ -129,22 +140,39 @@ type Authenticator struct {
 
 	// codeCache is used to protect against authorization code reuse.
 	codeCache *cache.LRUExpireCache
+
+	// auth0Validator validates Auth0 access tokens accepted by passport exchange.
+	auth0Validator *auth0.Validator
 }
 
 // New returns a new authenticator with required fields populated.
 // You must call AddFlags after this.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) *Authenticator {
-	return &Authenticator{
-		options:    options,
-		namespace:  namespace,
-		client:     client,
-		issuer:     issuer,
-		jwtIssuer:  jwtIssuer,
-		userdb:     userdb,
-		rbac:       rbac,
-		tokenCache: cache.NewLRUExpireCache(options.TokenCacheSize),
-		codeCache:  cache.NewLRUExpireCache(options.CodeCacheSize),
+//
+// Returns an error if the Auth0 exchange options are partially specified
+// (e.g. issuer set without audience). When Auth0 exchange is fully unset the
+// returned authenticator simply has no Auth0 validator wired up.
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
+	auth0Validator, err := auth0.NewValidator(auth0.Options{
+		Issuer:                  options.Auth0ExchangeIssuer,
+		Audience:                options.Auth0ExchangeAudience,
+		TokenVerificationLeeway: options.TokenVerificationLeeway,
+	})
+	if err != nil && !goerrors.Is(err, auth0.ErrDisabled) {
+		return nil, err
 	}
+
+	return &Authenticator{
+		options:        options,
+		namespace:      namespace,
+		client:         client,
+		issuer:         issuer,
+		jwtIssuer:      jwtIssuer,
+		userdb:         userdb,
+		rbac:           rbac,
+		tokenCache:     cache.NewLRUExpireCache(options.TokenCacheSize),
+		codeCache:      cache.NewLRUExpireCache(options.CodeCacheSize),
+		auth0Validator: auth0Validator,
+	}, nil
 }
 
 type Error string

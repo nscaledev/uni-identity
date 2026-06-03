@@ -24,6 +24,14 @@ spec:
         - --host=https://{{ include "unikorn.identity.host" . }}
         - --jose-tls-secret={{ .Release.Name }}-jose-tls
         - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
+        {{- with .Values.identity.auth0Exchange }}
+        {{- if .issuer }}
+        - --auth0-exchange-issuer={{ .issuer }}
+        {{- end }}
+        {{- if .audience }}
+        - --auth0-exchange-audience={{ .audience }}
+        {{- end }}
+        {{- end }}
         {{- $adminRoles := list }}
         {{- range $index, $name := .Values.platformAdministrators.roles }}
           {{- $adminRoles = append $adminRoles (include "resource.id" $name) }}

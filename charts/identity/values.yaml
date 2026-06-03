@@ -63,6 +63,11 @@ projectController:
 # oauth2 issuer etc.
 identity:
   host: identity.acme.org
+  # Auth0 access tokens from this issuer/audience may be exchanged for UNI
+  # passports. Leave unset to disable Auth0 token exchange.
+  auth0Exchange:
+    issuer: ~
+    audience: ~
 
 # Issuer related configuration.
 issuer:
