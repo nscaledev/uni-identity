@@ -68,7 +68,7 @@ jobs:
       run: make test-api-ci
 
     - name: Report API Test Results
-      uses: nscaledev/quality-tooling/.github/actions/test-results-report@feat/test-history-post-results
+      uses: nscaledev/quality-tooling/.github/actions/test-results-report@main
       if: ${{ !cancelled() && (steps.api-tests.outcome == 'success' || steps.api-tests.outcome == 'failure') }}
       with:
         test-results-path: test-results.json
