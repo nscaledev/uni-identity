@@ -149,6 +149,17 @@ organizations a principal belongs to. The minted passport's `source` claim recor
 exchange originated from a UNI or Auth0 subject token, and the passport expiry is capped at the
 source token's `exp` so a passport never outlives the proof of identity that produced it.
 
+Auth0 access tokens may be presented in two ways:
+
+1. As the `subject_token` to the RFC 8693 token-exchange endpoint (`/oauth2/v2/token`),
+   which returns a signed passport.
+2. Directly as a bearer token to local-authorizer-protected endpoints (`/api/v1/*`),
+   where they are dispatched to the Auth0 validator via `GetUserinfoFromBearer`.
+
+Both paths use the same validation and membership resolution. The second path is available
+only when Auth0 exchange is configured and avoids the token-exchange round-trip for user
+calls against the identity service itself.
+
 ## Caveats
 
 - The package mixes protocol handling, provider integration, local session persistence, local user
