@@ -214,6 +214,21 @@ func (a *Authenticator) exchangeUserinfo(ctx context.Context, r *http.Request, t
 	return userinfo, claims, PassportSourceUNI, err
 }
 
+// GetUserinfoFromBearer dispatches to the Auth0 validator for compact-JWS
+// tokens and to the UNI userinfo path for JWEs. Used by the local
+// authorizer so Auth0 access tokens can be presented as bearers directly
+// to /api/v1/... without going through the token-exchange endpoint first.
+// When Auth0 exchange is not configured (auth0Validator is nil), every
+// token routes to the UNI userinfo path — preserving pre-Auth0-exchange
+// behaviour for deployments that haven't opted in.
+func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
+	if isCompactJWS(token) && a.auth0Validator != nil {
+		return a.getAuth0Userinfo(ctx, r, token)
+	}
+
+	return a.GetUserinfo(ctx, r, token)
+}
+
 func isCompactJWS(token string) bool {
 	return strings.Count(token, ".") == 2
 }

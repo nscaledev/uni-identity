@@ -74,7 +74,12 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
+	// Dispatch by token shape: Auth0 access tokens (compact JWS) go
+	// through the Auth0 validator when --auth0-exchange-* is configured;
+	// UNI JWE access tokens follow the existing userinfo path. When Auth0
+	// exchange isn't configured this is identical to a bare GetUserinfo
+	// call.
+	userinfo, claims, err := a.authenticator.GetUserinfoFromBearer(r.Context(), r, token)
 	if err != nil {
 		return nil, err
 	}
