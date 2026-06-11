@@ -4,8 +4,9 @@ description: A Helm chart for deploying Unikorn's IdP
 
 type: application
 
-version: 1.17.2
-appVersion: 1.17.2
+# sentinel: patched at release time by release.yaml; overridden by --version for nightly builds
+version: 0.0.0
+appVersion: 0.0.0
 
 icon: https://raw.githubusercontent.com/unikorn-cloud/assets/main/images/logos/dark-on-light/icon.png
 
