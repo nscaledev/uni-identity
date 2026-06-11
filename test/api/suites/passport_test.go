@@ -350,7 +350,7 @@ var _ = Describe("Passport Token Exchange", func() {
 				}
 			})
 
-			It("should reject the exchange with an OAuth2 access_denied response", func() {
+			It("should reject the exchange with an OAuth2 invalid_scope response", func() {
 				options := &identityopenapi.TokenRequestOptions{
 					XOrganizationId: &config.UnauthorisedOrgID,
 				}
@@ -359,8 +359,8 @@ var _ = Describe("Passport Token Exchange", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp).NotTo(BeNil())
-				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
-				expectExchangeOAuth2Error(respBody, identityopenapi.AccessDenied, "organization not in scope")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				expectExchangeOAuth2Error(respBody, identityopenapi.InvalidScope, "organization not in scope")
 			})
 		})
 
