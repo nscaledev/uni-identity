@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,19 @@ import (
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
+
+// DefaultJWKSMinRefreshInterval is the default minimum interval between
+// requests to the upstream JWKS endpoint. It bounds the worst-case JWKS
+// fetch rate to one request per interval per process, which is well under
+// Auth0's documented per-tenant JWKS rate limit while still allowing
+// legitimate key rotations to be picked up promptly.
+const DefaultJWKSMinRefreshInterval = 60 * time.Second
+
+// jwksFetchTimeout bounds a single upstream JWKS fetch. go-oidc runs the
+// fetch in a goroutine detached from the per-request context and frees its
+// deduplication slot only when the fetch returns, so a fetch without a
+// deadline that hangs would wedge the key set permanently.
+const jwksFetchTimeout = 10 * time.Second
 
 const (
 	// AuthzClaimName is the UNI authorization context claim emitted by the
@@ -51,6 +65,15 @@ type Options struct {
 	Audience                  string
 	TokenVerificationLeeway   time.Duration
 	SupportedSigningAlgorithm string
+
+	// JWKSMinRefreshInterval is the minimum interval between requests to
+	// the upstream JWKS endpoint. go-oidc refetches the JWKS whenever no
+	// cached key verifies a token's signature, so without a bound, forged
+	// or unknown-kid tokens would drive one fetch per token and exhaust
+	// the tenant rate limit. Tokens demanding a refetch inside the
+	// interval are rejected without contacting Auth0. When zero,
+	// DefaultJWKSMinRefreshInterval is used.
+	JWKSMinRefreshInterval time.Duration
 }
 
 // Enabled reports whether Auth0 exchange validation has enough configuration
@@ -111,6 +134,10 @@ func NewValidator(options Options) (*Validator, error) {
 
 	if options.SupportedSigningAlgorithm == "" {
 		options.SupportedSigningAlgorithm = "RS256"
+	}
+
+	if options.JWKSMinRefreshInterval <= 0 {
+		options.JWKSMinRefreshInterval = DefaultJWKSMinRefreshInterval
 	}
 
 	return &Validator{
@@ -184,10 +211,20 @@ func (v *Validator) getVerifier() *gooidc.IDTokenVerifier {
 	}
 
 	// The keyset outlives any single request and must refresh its JWKS cache
-	// when Auth0 rotates signing keys, so it gets a background context.
-	// Per-request cancellation still applies via the ctx passed to Verify.
+	// when Auth0 rotates signing keys, so it gets a background context. The
+	// ctx passed to Verify only bounds how long a caller waits on an
+	// in-flight fetch; the fetch itself is bounded by the client timeout.
 	jwksURL := strings.TrimRight(v.options.Issuer, "/") + "/.well-known/jwks.json"
-	keySet := gooidc.NewRemoteKeySet(context.Background(), jwksURL)
+
+	// Throttle JWKS fetches at the HTTP layer so invalid tokens cannot
+	// drive one upstream request per token. See throttledTransport for
+	// the rationale. The keyset picks this client up from its context.
+	client := &http.Client{
+		Timeout:   jwksFetchTimeout,
+		Transport: newThrottledTransport(http.DefaultTransport, v.options.JWKSMinRefreshInterval, v.now),
+	}
+
+	keySet := gooidc.NewRemoteKeySet(gooidc.ClientContext(context.Background(), client), jwksURL)
 
 	v.verifier = gooidc.NewVerifier(v.options.Issuer, keySet, &gooidc.Config{
 		ClientID: v.options.Audience,

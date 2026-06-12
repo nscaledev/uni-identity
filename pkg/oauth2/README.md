@@ -160,6 +160,19 @@ Both paths use the same validation and membership resolution. The second path is
 only when Auth0 exchange is configured and avoids the token-exchange round-trip for user
 calls against the identity service itself.
 
+The Auth0 validator throttles upstream JWKS fetches with a minimum refresh interval,
+enforced by an HTTP transport wrapped around the `go-oidc` key set's client. The library
+refetches JWKS whenever no cached key verifies a token's signature — on unknown kids and
+on forged signatures over known kids alike — and only deduplicates concurrent refetches,
+so a stream of invalid tokens could otherwise drive one JWKS request per token and
+exhaust the Auth0 tenant rate limit. Tokens verified by cached keys never reach the
+transport; a token demanding a refetch inside the interval is rejected as invalid
+without contacting Auth0. The interval is configurable via
+`Options.JWKSMinRefreshInterval` and defaults to 60s. Each fetch is also bounded by a
+client timeout: `go-oidc` runs the fetch detached from the per-request context and
+deduplicates concurrent fetches against it, so an unbounded hung fetch would otherwise
+wedge the key set permanently.
+
 ## Caveats
 
 - The package mixes protocol handling, provider integration, local session persistence, local user

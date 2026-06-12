@@ -20,8 +20,11 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,21 +39,54 @@ import (
 const validatorTestAudience = "https://identity.example.com"
 
 type validatorTestIssuer struct {
-	server *httptest.Server
-	key    *rsa.PrivateKey
+	server      *httptest.Server
+	jwksFetches atomic.Int64
+
+	mu          sync.Mutex
+	generation  int
+	kid         string
+	key         *rsa.PrivateKey
+	attackerKey *rsa.PrivateKey
 }
 
-func newValidatorTestIssuer(t *testing.T) *validatorTestIssuer {
+// rotate replaces the issuer's signing key with a freshly generated one
+// under a new kid, mimicking an Auth0 signing key rotation.
+func (i *validatorTestIssuer) rotate(t *testing.T) {
 	t.Helper()
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.generation++
+	i.kid = fmt.Sprintf("test-key-%d", i.generation)
+	i.key = key
+}
+
+func (i *validatorTestIssuer) signingKey() (*rsa.PrivateKey, string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	return i.key, i.kid
+}
+
+func newValidatorTestIssuer(t *testing.T) *validatorTestIssuer {
+	t.Helper()
+
+	issuer := &validatorTestIssuer{}
+	issuer.rotate(t)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		issuer.jwksFetches.Add(1)
+
+		key, kid := issuer.signingKey()
+
 		publicKey := gojose.JSONWebKey{
 			Key:       &key.PublicKey,
-			KeyID:     "test-key",
+			KeyID:     kid,
 			Algorithm: string(gojose.RS256),
 			Use:       "sig",
 		}
@@ -60,13 +96,10 @@ func newValidatorTestIssuer(t *testing.T) *validatorTestIssuer {
 		}))
 	})
 
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
+	issuer.server = httptest.NewServer(mux)
+	t.Cleanup(issuer.server.Close)
 
-	return &validatorTestIssuer{
-		server: server,
-		key:    key,
-	}
+	return issuer
 }
 
 func (i *validatorTestIssuer) issuer() string {
@@ -88,6 +121,37 @@ type testTokenClaims struct {
 }
 
 func (i *validatorTestIssuer) token(t *testing.T, mutate func(*testTokenClaims)) string {
+	t.Helper()
+
+	key, kid := i.signingKey()
+
+	return i.signedToken(t, key, kid, mutate)
+}
+
+// forgedToken returns a token with well-formed claims that reuses the
+// issuer's advertised kid but is signed by a key the issuer does not hold.
+// The attacker key is generated lazily and reused across calls.
+func (i *validatorTestIssuer) forgedToken(t *testing.T) string {
+	t.Helper()
+
+	i.mu.Lock()
+
+	if i.attackerKey == nil {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+
+		i.attackerKey = key
+	}
+
+	attackerKey := i.attackerKey
+	i.mu.Unlock()
+
+	_, kid := i.signingKey()
+
+	return i.signedToken(t, attackerKey, kid, nil)
+}
+
+func (i *validatorTestIssuer) signedToken(t *testing.T, key *rsa.PrivateKey, kid string, mutate func(*testTokenClaims)) string {
 	t.Helper()
 
 	now := time.Now()
@@ -117,8 +181,8 @@ func (i *validatorTestIssuer) token(t *testing.T, mutate func(*testTokenClaims))
 		gojose.SigningKey{
 			Algorithm: gojose.RS256,
 			Key: gojose.JSONWebKey{
-				Key:   i.key,
-				KeyID: "test-key",
+				Key:   key,
+				KeyID: kid,
 			},
 		},
 		(&gojose.SignerOptions{}).WithType("at+jwt"),
@@ -237,6 +301,70 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 			assert.ErrorIs(t, err, test.target)
 		})
 	}
+}
+
+// TestValidateThrottlesForgedTokenJWKSFetches documents the JWKS DoS
+// mitigation. go-oidc refetches the JWKS whenever no cached key verifies a
+// token's signature, so without a bound, forged tokens reusing a known kid
+// would drive one Auth0 request per token and exhaust the tenant rate limit.
+// Within the refresh interval, forged tokens must be rejected without any
+// additional JWKS fetch, while legitimate tokens keep validating against the
+// cached key.
+func TestValidateThrottlesForgedTokenJWKSFetches(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+	validator := newTestValidator(t, issuer.issuer())
+
+	// Prime the key cache; this is the one permitted fetch in the window.
+	_, err := validator.Validate(t.Context(), issuer.token(t, nil))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), issuer.jwksFetches.Load())
+
+	for range 5 {
+		_, err := validator.Validate(t.Context(), issuer.forgedToken(t))
+		require.ErrorIs(t, err, auth0.ErrInvalidToken)
+	}
+
+	assert.Equal(t, int64(1), issuer.jwksFetches.Load())
+
+	// Legitimate traffic is unaffected by the throttle: the cached key
+	// verifies it without an upstream fetch.
+	_, err = validator.Validate(t.Context(), issuer.token(t, nil))
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), issuer.jwksFetches.Load())
+}
+
+// TestValidatePicksUpKeyRotation documents that the JWKS fetch throttle does
+// not break legitimate key rotation: once the refresh interval has elapsed,
+// a token signed by a rotated key triggers exactly one refetch and validates.
+func TestValidatePicksUpKeyRotation(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+
+	// A nanosecond interval keeps the throttle in the fetch path while
+	// guaranteeing the rotation happens after the window, without needing
+	// clock control. Within-window rejection is pinned by the forged-token
+	// and transport tests.
+	validator, err := auth0.NewValidator(auth0.Options{
+		Issuer:                 issuer.issuer(),
+		Audience:               validatorTestAudience,
+		JWKSMinRefreshInterval: time.Nanosecond,
+	})
+	require.NoError(t, err)
+
+	_, err = validator.Validate(t.Context(), issuer.token(t, nil))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), issuer.jwksFetches.Load())
+
+	issuer.rotate(t)
+
+	// The rotated kid is not in the key cache, so validation must refetch
+	// the JWKS, and exactly once.
+	_, err = validator.Validate(t.Context(), issuer.token(t, nil))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), issuer.jwksFetches.Load())
 }
 
 func TestNewValidatorRejectsPartialConfig(t *testing.T) {
