@@ -156,9 +156,19 @@ Auth0 access tokens may be presented in two ways:
 2. Directly as a bearer token to local-authorizer-protected endpoints (`/api/v1/*`),
    where they are dispatched to the Auth0 validator via `GetUserinfoFromBearer`.
 
-Both paths use the same validation and membership resolution. The second path is available
-only when Auth0 exchange is configured and avoids the token-exchange round-trip for user
-calls against the identity service itself.
+Both paths use the same validation and membership resolution, via one shared dispatcher
+(`dispatchUserinfo`). It routes on the JOSE header rather than a token's dot count: UNI
+access tokens are JWEs (an `enc` header) and resolve through the local userinfo path, while
+a JWS is treated as an Auth0 access token. A bearer that is neither — for example after an
+upstream access-token format change — is rejected outright and counted by
+`unikorn_identity_bearer_tokens_unroutable`, so such a change alerts quickly instead of
+surfacing as scattered generic 401s. (An empty bearer is the common client misconfiguration,
+not a format change, so it is rejected without counting.) Any unauthenticated caller can
+increment this counter
+with a garbage bearer, so alert on a sustained rise rather than isolated events and expect
+scanner noise. The second path is available only when Auth0 exchange
+is configured and avoids the token-exchange round-trip for user calls against the identity
+service itself.
 
 The Auth0 validator throttles upstream JWKS fetches with a minimum refresh interval,
 enforced by an HTTP transport wrapped around the `go-oidc` key set's client. The library
@@ -177,10 +187,11 @@ Each suppressed fetch increments the `unikorn_identity_auth0_jwks_refreshes_thro
 counter; a sustained rise is the refetch-storm attack signature and what to alert on. The
 throttled path also logs, but at most once per refresh interval — under a storm the
 throttle fires on nearly every request, so a per-request log would reproduce the flooding
-it prevents. The counter is only exported when the service runs with `--otlp-endpoint`
-set: core attaches the metrics reader only then, and the chart leaves the endpoint unset
-by default, so a default deployment records the metric but exports nothing and the alert
-cannot fire until that endpoint is configured.
+it prevents. Both this counter and `unikorn_identity_bearer_tokens_unroutable` are only
+exported when the service runs with `--otlp-endpoint` set: core attaches the metrics reader
+only then, and the chart leaves the endpoint unset by default, so a default deployment
+records the metrics but exports nothing and the alerts cannot fire until that endpoint is
+configured.
 
 ## Caveats
 

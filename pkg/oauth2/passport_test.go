@@ -456,11 +456,11 @@ func TestExchangeAuth0User(t *testing.T) {
 
 // TestExchangeFederatedUserWithAuth0Enabled is a regression test ensuring
 // that enabling Auth0 exchange does not break the existing UNI token path.
-// UNI access tokens are JWE (signed-then-encrypted, four dots), Auth0 tokens
-// are compact JWS (two dots), so the isCompactJWS discriminator must route
-// each to the correct verifier. If a future change ever caused UNI tokens to
-// be misrouted to the Auth0 validator they would fail at signature/issuer
-// validation and this test would fail.
+// UNI access tokens are JWEs (signed-then-encrypted) and Auth0 tokens are
+// JWS, so the dispatcher routes each to the correct verifier on its JOSE
+// header. If a future change ever caused UNI tokens to be misrouted to the
+// Auth0 validator they would fail at signature/issuer validation and this
+// test would fail.
 func TestExchangeFederatedUserWithAuth0Enabled(t *testing.T) {
 	t.Parallel()
 
@@ -479,11 +479,9 @@ func TestExchangeFederatedUserWithAuth0Enabled(t *testing.T) {
 		},
 	})
 
-	// Sanity-check the test premise: the UNI access token is JWE (4 dots),
-	// not compact JWS, so isCompactJWS will return false and the Auth0
-	// validator never sees it.
-	require.Equal(t, 4, strings.Count(token, "."), "UNI access token should be JWE (4 dots)")
-
+	// The UNI access token is a JWE, so the dispatcher routes it to the UNI
+	// path on its JOSE header and the Auth0 validator never sees it; the
+	// source assertion below confirms the routing.
 	req := exchangeRequest(t, token, nil)
 
 	result, err := env.authenticator.TokenExchange(nil, req)
@@ -1602,7 +1600,6 @@ func TestGetUserinfoFromBearerRoutesAuth0JWS(t *testing.T) {
 	env := setupAuth0PassportTestEnv(t, auth0Issuer)
 
 	token := auth0Issuer.token(t, auth0TestAudience, "User@Example.COM", time.Now().Add(45*time.Second))
-	require.Equal(t, 2, strings.Count(token, "."), "Auth0 access token should be compact JWS (2 dots)")
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
@@ -1643,7 +1640,6 @@ func TestGetUserinfoFromBearerRoutesUNIJWE(t *testing.T) {
 			Scope:  oauth2.NewScope("openid email"),
 		},
 	})
-	require.Equal(t, 4, strings.Count(token, "."), "UNI access token should be JWE (4 dots)")
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
@@ -1659,9 +1655,9 @@ func TestGetUserinfoFromBearerRoutesUNIJWE(t *testing.T) {
 }
 
 // TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled verifies that when
-// Auth0 exchange is unconfigured, every bearer (including compact JWS)
-// routes to the UNI userinfo path — preserving existing behaviour for
-// deployments that haven't opted in.
+// Auth0 exchange is unconfigured, a JWS bearer routes to the UNI userinfo
+// path — preserving existing behaviour for deployments that haven't opted in.
+// (Unroutable bearers are still rejected; see the dedicated tests.)
 func TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled(t *testing.T) {
 	t.Parallel()
 
@@ -1687,4 +1683,23 @@ func TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled(t *testing.T) {
 	_, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "token validation failed")
+}
+
+// TestGetUserinfoFromBearerRejectsUnroutableToken verifies that a bearer that
+// is neither a UNI JWE nor a JWS is rejected outright — handed to neither
+// validator — even when Auth0 exchange is configured. This is the loud,
+// counted counterpart to the silent generic 401 a misroute would produce, so
+// an upstream token-format change surfaces distinctly.
+func TestGetUserinfoFromBearerRejectsUnroutableToken(t *testing.T) {
+	t.Parallel()
+
+	auth0Issuer := newAuth0TestIssuer(t)
+
+	env := setupAuth0PassportTestEnv(t, auth0Issuer)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	_, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unrecognized bearer token format")
 }
