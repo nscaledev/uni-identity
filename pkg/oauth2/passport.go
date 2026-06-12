@@ -150,7 +150,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	subjectToken := *options.SubjectToken
 
-	userinfo, sourceClaims, source, err := a.exchangeUserinfo(ctx, request, subjectToken)
+	userinfo, sourceClaims, source, err := a.dispatchUserinfo(ctx, request, subjectToken)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -202,7 +202,16 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 	return a.mintPassport(ctx, userinfo, sourceClaims, source, audience, organizationID, projectID)
 }
 
-func (a *Authenticator) exchangeUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, string, error) {
+// dispatchUserinfo resolves a bearer token to userinfo and claims, routing
+// compact-JWS tokens to the Auth0 validator and everything else to the UNI
+// userinfo path, and reporting which path produced the result. When Auth0
+// exchange is not configured (auth0Validator is nil), every token routes to
+// the UNI path, preserving pre-Auth0-exchange behaviour for deployments that
+// haven't opted in.
+//
+// It is the single dispatch point shared by the token-exchange endpoint and
+// the local-authorizer bearer path, so the two cannot drift.
+func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, string, error) {
 	if isCompactJWS(token) && a.auth0Validator != nil {
 		userinfo, claims, err := a.getAuth0Userinfo(ctx, r, token)
 
@@ -214,19 +223,14 @@ func (a *Authenticator) exchangeUserinfo(ctx context.Context, r *http.Request, t
 	return userinfo, claims, PassportSourceUNI, err
 }
 
-// GetUserinfoFromBearer dispatches to the Auth0 validator for compact-JWS
-// tokens and to the UNI userinfo path for JWEs. Used by the local
-// authorizer so Auth0 access tokens can be presented as bearers directly
-// to /api/v1/... without going through the token-exchange endpoint first.
-// When Auth0 exchange is not configured (auth0Validator is nil), every
-// token routes to the UNI userinfo path — preserving pre-Auth0-exchange
-// behaviour for deployments that haven't opted in.
+// GetUserinfoFromBearer resolves an Auth0 or UNI bearer token presented
+// directly to the local authorizer (/api/v1/...), without the token-exchange
+// round-trip. It shares dispatchUserinfo with the exchange path and discards
+// the source label, which only that path needs.
 func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
-	if isCompactJWS(token) && a.auth0Validator != nil {
-		return a.getAuth0Userinfo(ctx, r, token)
-	}
+	userinfo, claims, _, err := a.dispatchUserinfo(ctx, r, token)
 
-	return a.GetUserinfo(ctx, r, token)
+	return userinfo, claims, err
 }
 
 func isCompactJWS(token string) bool {
