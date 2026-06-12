@@ -173,6 +173,15 @@ client timeout: `go-oidc` runs the fetch detached from the per-request context a
 deduplicates concurrent fetches against it, so an unbounded hung fetch would otherwise
 wedge the key set permanently.
 
+Each suppressed fetch increments the `unikorn_identity_auth0_jwks_refreshes_throttled`
+counter; a sustained rise is the refetch-storm attack signature and what to alert on. The
+throttled path also logs, but at most once per refresh interval — under a storm the
+throttle fires on nearly every request, so a per-request log would reproduce the flooding
+it prevents. The counter is only exported when the service runs with `--otlp-endpoint`
+set: core attaches the metrics reader only then, and the chart leaves the endpoint unset
+by default, so a default deployment records the metric but exports nothing and the alert
+cannot fire until that endpoint is configured.
+
 ## Caveats
 
 - The package mixes protocol handling, provider integration, local session persistence, local user

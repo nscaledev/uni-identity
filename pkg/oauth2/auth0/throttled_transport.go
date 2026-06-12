@@ -21,6 +21,10 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/metric"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // errJWKSRefreshThrottled is returned when a JWKS fetch is attempted before
@@ -47,20 +51,35 @@ type throttledTransport struct {
 	base        http.RoundTripper
 	minInterval time.Duration
 	now         func() time.Time
+	throttled   metric.Int64Counter
 
 	mu          sync.Mutex
 	lastRequest time.Time
+	// loggedThisWindow gates the throttled-path log to once per window: it
+	// is cleared when a fetch is forwarded and set on the first rejection
+	// thereafter. See RoundTrip for why per-request logging is unsafe here.
+	loggedThisWindow bool
 }
 
-func newThrottledTransport(base http.RoundTripper, minInterval time.Duration, now func() time.Time) *throttledTransport {
+func newThrottledTransport(base http.RoundTripper, minInterval time.Duration, now func() time.Time, meter metric.Meter) *throttledTransport {
 	if now == nil {
 		now = time.Now
 	}
+
+	// The error only reports an invalid instrument configuration; the name,
+	// description, and unit here are static, and the API returns a usable
+	// no-op counter regardless, so there is nothing actionable to handle.
+	throttled, _ := meter.Int64Counter(
+		"unikorn_identity_auth0_jwks_refreshes_throttled",
+		metric.WithDescription("Upstream JWKS fetches suppressed by the minimum-refresh-interval throttle."),
+		metric.WithUnit("{fetch}"),
+	)
 
 	return &throttledTransport{
 		base:        base,
 		minInterval: minInterval,
 		now:         now,
+		throttled:   throttled,
 	}
 }
 
@@ -68,13 +87,36 @@ func (t *throttledTransport) RoundTrip(req *http.Request) (*http.Response, error
 	t.mu.Lock()
 
 	if t.now().Sub(t.lastRequest) < t.minInterval {
+		firstInWindow := !t.loggedThisWindow
+		t.loggedThisWindow = true
 		t.mu.Unlock()
+
+		// Count every suppressed fetch so the metric reflects the true
+		// rate — a sustained spike is the refetch-storm attack signature.
+		t.throttled.Add(req.Context(), 1)
+
+		// Log at most once per window, though: when the throttle is
+		// absorbing a storm it fires on nearly every request, so a
+		// per-request log would reproduce the very flooding it prevents.
+		//
+		// req.Context() is the key set's background context (see
+		// getVerifier), not a per-request one, so it carries no
+		// request-scoped logger; this resolves to the process-global
+		// logger the server installs via SetupLogging.
+		if firstInWindow {
+			log.FromContext(req.Context()).Info(
+				"auth0 JWKS refresh throttled; suppressing refetches until the interval elapses",
+				"minInterval", t.minInterval.String(),
+			)
+		}
+
 		return nil, errJWKSRefreshThrottled
 	}
 
 	// The window is consumed whether or not the request succeeds, so a
 	// failing upstream is contacted at most once per interval.
 	t.lastRequest = t.now()
+	t.loggedThisWindow = false
 	t.mu.Unlock()
 
 	return t.base.RoundTrip(req)

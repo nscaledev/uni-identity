@@ -27,6 +27,9 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"go.opentelemetry.io/otel"
+
+	"github.com/unikorn-cloud/identity/pkg/constants"
 )
 
 // DefaultJWKSMinRefreshInterval is the default minimum interval between
@@ -221,7 +224,7 @@ func (v *Validator) getVerifier() *gooidc.IDTokenVerifier {
 	// the rationale. The keyset picks this client up from its context.
 	client := &http.Client{
 		Timeout:   jwksFetchTimeout,
-		Transport: newThrottledTransport(http.DefaultTransport, v.options.JWKSMinRefreshInterval, v.now),
+		Transport: newThrottledTransport(http.DefaultTransport, v.options.JWKSMinRefreshInterval, v.now, otel.Meter(constants.Application)),
 	}
 
 	keySet := gooidc.NewRemoteKeySet(gooidc.ClientContext(context.Background(), client), jwksURL)
