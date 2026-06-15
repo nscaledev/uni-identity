@@ -111,7 +111,7 @@ the explicit-opt-in we need for the trust model (see below).
 
 ### 2. Dispatch by issuer at exchange time
 
-Replace the current `if isCompactJWS && a.auth0Validator != nil` branch with:
+Replace the current JWS→Auth0 dispatch in `dispatchUserinfo` with:
 
 1. If the subject token is a compact JWS, peek at the unverified `iss` claim
    (header.payload split — *no signature trust yet*).

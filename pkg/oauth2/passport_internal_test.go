@@ -18,6 +18,7 @@ package oauth2
 
 import (
 	"context"
+	"encoding/base64"
 	goerrors "errors"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,8 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
@@ -700,4 +703,138 @@ func TestValidateTokenExchangeRequest(t *testing.T) {
 			assert.Contains(t, err.Error(), test.expectError)
 		})
 	}
+}
+
+func TestBearerTokenIsJWE(t *testing.T) {
+	t.Parallel()
+
+	header := func(claims string) string {
+		return base64.RawURLEncoding.EncodeToString([]byte(claims))
+	}
+
+	testCases := []struct {
+		name        string
+		token       string
+		expectJWE   bool
+		expectError bool
+	}{
+		{
+			name:      "JWS is not a JWE",
+			token:     header(`{"alg":"RS256","typ":"at+jwt"}`) + ".payload.signature",
+			expectJWE: false,
+		},
+		{
+			name:      "JWE detected by enc header",
+			token:     header(`{"alg":"A256GCMKW","enc":"A256GCM"}`) + ".key.iv.ciphertext.tag",
+			expectJWE: true,
+		},
+		{
+			name:        "opaque token has no header",
+			token:       "opaque-token",
+			expectError: true,
+		},
+		{
+			name:        "undecodable header",
+			token:       "!!!.payload.signature",
+			expectError: true,
+		},
+		{
+			name:        "unparseable header",
+			token:       header("not json") + ".payload.signature",
+			expectError: true,
+		},
+		{
+			name:        "header without alg is neither",
+			token:       header(`{"enc":"A256GCM"}`) + ".key.iv.ciphertext.tag",
+			expectError: true,
+		},
+		{
+			name:        "empty token",
+			token:       "",
+			expectError: true,
+		},
+		{
+			name:      "case-mismatched Enc is not treated as enc",
+			token:     header(`{"alg":"RS256","Enc":"A256GCM"}`) + ".payload.signature",
+			expectJWE: false,
+		},
+		{
+			name:        "case-mismatched ALG fails the alg check",
+			token:       header(`{"ALG":"RS256"}`) + ".payload.signature",
+			expectError: true,
+		},
+		{
+			name:        "JWS header with JWE segment count",
+			token:       header(`{"alg":"RS256"}`) + ".a.b.c.d",
+			expectError: true,
+		},
+		{
+			name:        "JWE header with JWS segment count",
+			token:       header(`{"alg":"A256GCMKW","enc":"A256GCM"}`) + ".payload.signature",
+			expectError: true,
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			isJWE, err := bearerTokenIsJWE(test.token)
+
+			if test.expectError {
+				require.ErrorIs(t, err, errUnrecognizedToken)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, test.expectJWE, isJWE)
+		})
+	}
+}
+
+// TestDispatchUserinfoCountsUnroutableTokens pins the metric contract the
+// README markets: every unroutable bearer increments unroutableTokens, while
+// an empty bearer (a benign client misconfiguration) does not. It also covers
+// the unroutable × no-Auth0-validator cell. The unroutable path short-circuits
+// before touching any other Authenticator field, so a bare struct literal with
+// only the counter set is sufficient and parallel-safe.
+func TestDispatchUserinfoCountsUnroutableTokens(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+
+	counter, err := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test").Int64Counter("unroutable")
+	require.NoError(t, err)
+
+	authenticator := &Authenticator{unroutableTokens: counter}
+	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
+
+	// An opaque bearer is unroutable: counted, the parse cause is attached to
+	// the returned error for logging, and no partial result leaks out.
+	userinfo, claims, source, err := authenticator.dispatchUserinfo(t.Context(), req, "opaque", dispatchSurfaceBearer)
+	require.ErrorIs(t, err, errUnrecognizedToken)
+	require.Nil(t, userinfo)
+	require.Nil(t, claims)
+	require.Empty(t, source)
+
+	// An empty bearer is rejected but must not pollute the format-change signal.
+	userinfo, claims, source, err = authenticator.dispatchUserinfo(t.Context(), req, "", dispatchSurfaceBearer)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, errUnrecognizedToken)
+	require.Nil(t, userinfo)
+	require.Nil(t, claims)
+	require.Empty(t, source)
+
+	var rm metricdata.ResourceMetrics
+
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	require.Len(t, rm.ScopeMetrics, 1)
+	require.Len(t, rm.ScopeMetrics[0].Metrics, 1)
+
+	sum, ok := rm.ScopeMetrics[0].Metrics[0].Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+
+	// Only the opaque token counted; the empty bearer did not.
+	assert.Equal(t, int64(1), sum.DataPoints[0].Value)
 }
