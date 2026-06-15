@@ -140,6 +140,9 @@ type ServerInterface interface {
 	// Update user
 	// (PUT /api/v1/organizations/{organizationID}/users/{userID})
 	PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter)
+	// Get the deployed service version
+	// (GET /api/version)
+	GetApiVersion(w http.ResponseWriter, r *http.Request)
 
 	// (GET /oauth2/v2/authorization)
 	GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request)
@@ -401,6 +404,12 @@ func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.
 // Update user
 // (PUT /api/v1/organizations/{organizationID}/users/{userID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Get the deployed service version
+// (GET /api/version)
+func (_ Unimplemented) GetApiVersion(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1906,6 +1915,26 @@ func (siw *ServerInterfaceWrapper) PutApiV1OrganizationsOrganizationIDUsersUserI
 	handler.ServeHTTP(w, r)
 }
 
+// GetApiVersion operation middleware
+func (siw *ServerInterfaceWrapper) GetApiVersion(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, Oauth2AuthenticationScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetApiVersion(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetOauth2V2Authorization operation middleware
 func (siw *ServerInterfaceWrapper) GetOauth2V2Authorization(w http.ResponseWriter, r *http.Request) {
 
@@ -2256,6 +2285,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/api/v1/organizations/{organizationID}/users/{userID}", wrapper.PutApiV1OrganizationsOrganizationIDUsersUserID)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/version", wrapper.GetApiVersion)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/oauth2/v2/authorization", wrapper.GetOauth2V2Authorization)

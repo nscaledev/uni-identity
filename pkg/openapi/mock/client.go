@@ -500,6 +500,26 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsWit
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1OrganizationsWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1OrganizationsWithResponse), varargs...)
 }
 
+// GetApiVersionWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) GetApiVersionWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetApiVersionResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0}
+	for _, a := range arg1 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "GetApiVersionWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.GetApiVersionResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetApiVersionWithResponse indicates an expected call of GetApiVersionWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiVersionWithResponse(arg0 any, arg1 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0}, arg1...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiVersionWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiVersionWithResponse), varargs...)
+}
+
 // GetOauth2V2AuthorizationWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) GetOauth2V2AuthorizationWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetOauth2V2AuthorizationResponse, error) {
 	m.ctrl.T.Helper()
