@@ -228,7 +228,11 @@ func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
+	// Dispatch on the JOSE header: a JWS (Auth0 access token) is validated by
+	// the Auth0 validator when --auth0-exchange-* is configured; a UNI JWE
+	// access token follows the existing userinfo path. Mirrors the local
+	// authorizer so a bearer accepted at /api/v1/... is also accepted here.
+	userinfo, _, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, parts[1])
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -252,7 +256,9 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, parts[1])
+		// Same JWS/JWE dispatch as the GET handler: accept Auth0 access tokens
+		// when --auth0-exchange-* is configured, UNI JWEs otherwise.
+		userinfo, _, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, parts[1])
 		if err != nil {
 			errors.HandleError(w, r, err)
 			return
@@ -269,7 +275,7 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userinfo, _, err := h.oauth2.GetUserinfo(r.Context(), r, r.Form.Get("access_token"))
+	userinfo, _, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, r.Form.Get("access_token"))
 	if err != nil {
 		errors.HandleError(w, r, errors.AccessDenied(r, "access token is invalid").WithError(err))
 		return
