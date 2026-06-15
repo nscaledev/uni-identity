@@ -18,6 +18,8 @@ package oauth2
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	goerrors "errors"
 	"fmt"
 	"mime"
@@ -29,6 +31,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -150,7 +154,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	subjectToken := *options.SubjectToken
 
-	userinfo, sourceClaims, source, err := a.exchangeUserinfo(ctx, request, subjectToken)
+	userinfo, sourceClaims, source, err := a.dispatchUserinfo(ctx, request, subjectToken, dispatchSurfaceExchange)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
@@ -202,8 +206,47 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 	return a.mintPassport(ctx, userinfo, sourceClaims, source, audience, organizationID, projectID)
 }
 
-func (a *Authenticator) exchangeUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, string, error) {
-	if isCompactJWS(token) && a.auth0Validator != nil {
+const (
+	// dispatchSurfaceBearer and dispatchSurfaceExchange label the two entry
+	// points that share dispatchUserinfo, tagging the unroutable metric and
+	// log so a firing alert can be triaged to the affected traffic.
+	dispatchSurfaceBearer   = "bearer"
+	dispatchSurfaceExchange = "exchange"
+)
+
+// dispatchUserinfo resolves a bearer token to userinfo and claims, routing on
+// the JOSE header: UNI access tokens are JWEs (an "enc" header) and resolve
+// through the local userinfo path, while a JWS is an Auth0 access token and
+// goes to the Auth0 validator. The result also reports which path produced it.
+//
+// Routing on the header rather than counting dots means an upstream switch to a
+// non-JWS access token can no longer silently misroute every Auth0 token to the
+// UNI path: a bearer that is neither a JWE nor a JWS is rejected outright and
+// counted, so a token-format change surfaces as an alertable signal instead of
+// a scatter of generic 401s. When Auth0 exchange is not configured
+// (auth0Validator is nil), a JWS falls back to the UNI path; an unroutable
+// bearer is still rejected, opted in or not, since a UNI access token is a JWE.
+//
+// surface names the entry point (bearer or exchange) for the unroutable metric
+// and log. It is the single dispatch point shared by the token-exchange
+// endpoint and the local-authorizer bearer path, so the two cannot drift.
+func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, token, surface string) (*openapi.Userinfo, *Claims, string, error) {
+	if token == "" {
+		// A missing bearer is the common client misconfiguration, not a
+		// token-format change, so reject it without polluting the counter.
+		return nil, nil, "", coreerrors.AccessDenied(r, "empty bearer token")
+	}
+
+	isJWE, err := bearerTokenIsJWE(token)
+	if err != nil {
+		a.unroutableTokens.Add(ctx, 1, metric.WithAttributes(attribute.String("surface", surface)))
+
+		log.FromContext(ctx).Info("rejecting unroutable bearer token", "surface", surface, "error", err)
+
+		return nil, nil, "", coreerrors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
+	}
+
+	if !isJWE && a.auth0Validator != nil {
 		userinfo, claims, err := a.getAuth0Userinfo(ctx, r, token)
 
 		return userinfo, claims, PassportSourceAuth0, err
@@ -214,8 +257,62 @@ func (a *Authenticator) exchangeUserinfo(ctx context.Context, r *http.Request, t
 	return userinfo, claims, PassportSourceUNI, err
 }
 
-func isCompactJWS(token string) bool {
-	return strings.Count(token, ".") == 2
+// GetUserinfoFromBearer resolves an Auth0 or UNI bearer token presented
+// directly to the local authorizer (/api/v1/...), without the token-exchange
+// round-trip. It shares dispatchUserinfo with the exchange path and discards
+// the source label, which only that path needs.
+func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
+	userinfo, claims, _, err := a.dispatchUserinfo(ctx, r, token, dispatchSurfaceBearer)
+
+	return userinfo, claims, err
+}
+
+// errUnrecognizedToken is returned by bearerTokenIsJWE when a bearer token is
+// neither a JWS nor a JWE — its JOSE header is absent, unparseable, or
+// inconsistent with the compact-serialization segment count.
+var errUnrecognizedToken = goerrors.New("bearer token is neither a JWS nor a JWE")
+
+// bearerTokenIsJWE reports whether token is a JWE (a UNI access token) rather
+// than a JWS (an Auth0 access token) by inspecting the protected JOSE header: a
+// JWE carries an "enc" content-encryption header, a JWS does not, and both carry
+// "alg". JOSE header names are case-sensitive (RFC 7515 §4), and the header type
+// is cross-checked against the segment count (JWS has 3 segments, JWE has 5) so
+// a stray header member cannot misroute a token. It returns errUnrecognizedToken
+// when the token is neither, which the dispatcher treats as unroutable.
+func bearerTokenIsJWE(token string) (bool, error) {
+	header, _, ok := strings.Cut(token, ".")
+	if !ok {
+		return false, fmt.Errorf("%w: not a compact JOSE serialization", errUnrecognizedToken)
+	}
+
+	raw, err := base64.RawURLEncoding.DecodeString(header)
+	if err != nil {
+		return false, fmt.Errorf("%w: undecodable header: %w", errUnrecognizedToken, err)
+	}
+
+	// encoding/json matches keys case-insensitively, but JOSE header names are
+	// case-sensitive, so decode to raw members and test exact keys.
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return false, fmt.Errorf("%w: unparseable header: %w", errUnrecognizedToken, err)
+	}
+
+	if _, ok := parsed["alg"]; !ok {
+		return false, fmt.Errorf("%w: header has no alg", errUnrecognizedToken)
+	}
+
+	_, isJWE := parsed["enc"]
+
+	segments := strings.Count(token, ".") + 1
+
+	switch {
+	case isJWE && segments != 5:
+		return false, fmt.Errorf("%w: JWE header with %d segments", errUnrecognizedToken, segments)
+	case !isJWE && segments != 3:
+		return false, fmt.Errorf("%w: JWS header with %d segments", errUnrecognizedToken, segments)
+	}
+
+	return isJWE, nil
 }
 
 func (a *Authenticator) getAuth0Userinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {

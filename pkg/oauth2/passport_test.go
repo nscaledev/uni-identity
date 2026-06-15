@@ -86,6 +86,56 @@ func setupPassportTestEnvWithOptions(t *testing.T, rbacOptions *rbac.Options, to
 	}, objects...)
 }
 
+// auth0TestAudience is the API audience used by Auth0-enabled passport tests.
+const auth0TestAudience = "https://identity.example.com"
+
+// setupAuth0PassportTestEnv builds a passport test env with Auth0 exchange
+// configured against the given test issuer and the standard org/user/orgUser
+// fixtures used by every Auth0 dispatch test.
+func setupAuth0PassportTestEnv(t *testing.T, auth0Issuer *auth0TestIssuer) *passportTestEnv {
+	t.Helper()
+
+	return setupPassportTestEnvWithOAuth2Options(t, &rbac.Options{}, &oauth2.Options{
+		AccessTokenDuration:     accessTokenDuration,
+		RefreshTokenDuration:    refreshTokenDuration,
+		TokenLeewayDuration:     accessTokenDuration,
+		TokenVerificationLeeway: 0,
+		TokenCacheSize:          1024,
+		CodeCacheSize:           1024,
+		Auth0ExchangeIssuer:     auth0Issuer.issuer(),
+		Auth0ExchangeAudience:   auth0TestAudience,
+	}, &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org1",
+		},
+		Status: unikornv1.OrganizationStatus{
+			Namespace: josetesting.Namespace + "-org1",
+		},
+	}, &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "test-user",
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: "user@example.com",
+			State:   unikornv1.UserStateActive,
+		},
+	}, &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org1-user",
+			Labels: map[string]string{
+				constants.UserLabel:         "test-user",
+				constants.OrganizationLabel: "org1",
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{
+			State: unikornv1.UserStateActive,
+		},
+	})
+}
+
 func setupPassportTestEnvWithOAuth2Options(t *testing.T, rbacOptions *rbac.Options, oauth2Options *oauth2.Options, objects ...client.Object) *passportTestEnv {
 	t.Helper()
 
@@ -379,50 +429,11 @@ func TestExchangeAuth0User(t *testing.T) {
 	t.Parallel()
 
 	auth0Issuer := newAuth0TestIssuer(t)
-	auth0Audience := "https://identity.example.com"
 	sourceExpiry := time.Now().Add(45 * time.Second)
 
-	env := setupPassportTestEnvWithOAuth2Options(t, &rbac.Options{}, &oauth2.Options{
-		AccessTokenDuration:     accessTokenDuration,
-		RefreshTokenDuration:    refreshTokenDuration,
-		TokenLeewayDuration:     accessTokenDuration,
-		TokenVerificationLeeway: 0,
-		TokenCacheSize:          1024,
-		CodeCacheSize:           1024,
-		Auth0ExchangeIssuer:     auth0Issuer.issuer(),
-		Auth0ExchangeAudience:   auth0Audience,
-	}, &unikornv1.Organization{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: josetesting.Namespace,
-			Name:      "org1",
-		},
-		Status: unikornv1.OrganizationStatus{
-			Namespace: josetesting.Namespace + "-org1",
-		},
-	}, &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: josetesting.Namespace,
-			Name:      "test-user",
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: "user@example.com",
-			State:   unikornv1.UserStateActive,
-		},
-	}, &unikornv1.OrganizationUser{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: josetesting.Namespace,
-			Name:      "org1-user",
-			Labels: map[string]string{
-				constants.UserLabel:         "test-user",
-				constants.OrganizationLabel: "org1",
-			},
-		},
-		Spec: unikornv1.OrganizationUserSpec{
-			State: unikornv1.UserStateActive,
-		},
-	})
+	env := setupAuth0PassportTestEnv(t, auth0Issuer)
 
-	token := auth0Issuer.token(t, auth0Audience, "User@Example.COM", sourceExpiry)
+	token := auth0Issuer.token(t, auth0TestAudience, "User@Example.COM", sourceExpiry)
 	req := exchangeRequest(t, token, nil)
 
 	result, err := env.authenticator.TokenExchange(nil, req)
@@ -445,55 +456,17 @@ func TestExchangeAuth0User(t *testing.T) {
 
 // TestExchangeFederatedUserWithAuth0Enabled is a regression test ensuring
 // that enabling Auth0 exchange does not break the existing UNI token path.
-// UNI access tokens are JWE (signed-then-encrypted, four dots), Auth0 tokens
-// are compact JWS (two dots), so the isCompactJWS discriminator must route
-// each to the correct verifier. If a future change ever caused UNI tokens to
-// be misrouted to the Auth0 validator they would fail at signature/issuer
-// validation and this test would fail.
+// UNI access tokens are JWEs (signed-then-encrypted) and Auth0 tokens are
+// JWS, so the dispatcher routes each to the correct verifier on its JOSE
+// header. If a future change ever caused UNI tokens to be misrouted to the
+// Auth0 validator they would fail at signature/issuer validation and this
+// test would fail.
 func TestExchangeFederatedUserWithAuth0Enabled(t *testing.T) {
 	t.Parallel()
 
 	auth0Issuer := newAuth0TestIssuer(t)
 
-	env := setupPassportTestEnvWithOAuth2Options(t, &rbac.Options{}, &oauth2.Options{
-		AccessTokenDuration:     accessTokenDuration,
-		RefreshTokenDuration:    refreshTokenDuration,
-		TokenLeewayDuration:     accessTokenDuration,
-		TokenVerificationLeeway: 0,
-		TokenCacheSize:          1024,
-		CodeCacheSize:           1024,
-		Auth0ExchangeIssuer:     auth0Issuer.issuer(),
-		Auth0ExchangeAudience:   "https://identity.example.com",
-	}, &unikornv1.Organization{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: josetesting.Namespace,
-			Name:      "org1",
-		},
-		Status: unikornv1.OrganizationStatus{
-			Namespace: josetesting.Namespace + "-org1",
-		},
-	}, &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: josetesting.Namespace,
-			Name:      "test-user",
-		},
-		Spec: unikornv1.UserSpec{
-			Subject: "user@example.com",
-			State:   unikornv1.UserStateActive,
-		},
-	}, &unikornv1.OrganizationUser{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: josetesting.Namespace,
-			Name:      "org1-user",
-			Labels: map[string]string{
-				constants.UserLabel:         "test-user",
-				constants.OrganizationLabel: "org1",
-			},
-		},
-		Spec: unikornv1.OrganizationUserSpec{
-			State: unikornv1.UserStateActive,
-		},
-	})
+	env := setupAuth0PassportTestEnv(t, auth0Issuer)
 
 	token := issueTestToken(t, env, &oauth2.IssueInfo{
 		Issuer:   "https://test.com",
@@ -506,11 +479,9 @@ func TestExchangeFederatedUserWithAuth0Enabled(t *testing.T) {
 		},
 	})
 
-	// Sanity-check the test premise: the UNI access token is JWE (4 dots),
-	// not compact JWS, so isCompactJWS will return false and the Auth0
-	// validator never sees it.
-	require.Equal(t, 4, strings.Count(token, "."), "UNI access token should be JWE (4 dots)")
-
+	// The UNI access token is a JWE, so the dispatcher routes it to the UNI
+	// path on its JOSE header and the Auth0 validator never sees it; the
+	// source assertion below confirms the routing.
 	req := exchangeRequest(t, token, nil)
 
 	result, err := env.authenticator.TokenExchange(nil, req)
@@ -1615,4 +1586,120 @@ func TestExchangeHandlerOutOfScopeOrganizationReturnsInvalidScope(t *testing.T) 
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&oauthResp))
 	assert.Equal(t, openapi.InvalidScope, oauthResp.Error)
 	assert.Contains(t, oauthResp.ErrorDescription, "organization not in scope")
+}
+
+// TestGetUserinfoFromBearerRoutesAuth0JWS verifies that a compact-JWS bearer
+// (Auth0 access token) is dispatched to the Auth0 validator when Auth0
+// exchange is configured, returning userinfo built from the Auth0 claims
+// rather than going through the UNI userinfo path.
+func TestGetUserinfoFromBearerRoutesAuth0JWS(t *testing.T) {
+	t.Parallel()
+
+	auth0Issuer := newAuth0TestIssuer(t)
+
+	env := setupAuth0PassportTestEnv(t, auth0Issuer)
+
+	token := auth0Issuer.token(t, auth0TestAudience, "User@Example.COM", time.Now().Add(45*time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	userinfo, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	require.NoError(t, err)
+	require.NotNil(t, userinfo)
+	require.NotNil(t, userinfo.Email)
+	require.NotNil(t, userinfo.EmailVerified)
+	require.NotNil(t, userinfo.HttpsunikornCloudOrgauthz)
+
+	// Auth0 path lowercases + trims the email and uses it as the subject;
+	// UNI membership is resolved from userdb (not from the Auth0 claim).
+	assert.Equal(t, "user@example.com", userinfo.Sub)
+	assert.Equal(t, "user@example.com", *userinfo.Email)
+	assert.True(t, *userinfo.EmailVerified)
+	assert.Equal(t, openapi.User, userinfo.HttpsunikornCloudOrgauthz.Acctype)
+	assert.ElementsMatch(t, []string{"org1"}, userinfo.HttpsunikornCloudOrgauthz.OrgIds,
+		"UNI userdb is authoritative for org membership on Auth0 bearers")
+}
+
+// TestGetUserinfoFromBearerRoutesUNIJWE verifies that a UNI JWE bearer
+// continues to route through the UNI userinfo path when Auth0 exchange is
+// configured. Regression guard: the dispatch must not steal UNI tokens.
+func TestGetUserinfoFromBearerRoutesUNIJWE(t *testing.T) {
+	t.Parallel()
+
+	auth0Issuer := newAuth0TestIssuer(t)
+
+	env := setupAuth0PassportTestEnv(t, auth0Issuer)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	userinfo, claims, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	require.NoError(t, err)
+	require.NotNil(t, userinfo)
+	require.NotNil(t, claims)
+
+	// UNI path populates claims.Type so the local authorizer's downstream
+	// switch can identify the principal kind; the Auth0 path leaves it empty.
+	assert.Equal(t, oauth2.TokenTypeFederated, claims.Type)
+	assert.Equal(t, "user@example.com", userinfo.Sub)
+}
+
+// TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled verifies that when
+// Auth0 exchange is unconfigured, a JWS bearer routes to the UNI userinfo
+// path — preserving existing behaviour for deployments that haven't opted in.
+// (Unroutable bearers are still rejected; see the dedicated tests.)
+func TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t, &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org1",
+		},
+		Status: unikornv1.OrganizationStatus{
+			Namespace: josetesting.Namespace + "-org1",
+		},
+	})
+
+	auth0Issuer := newAuth0TestIssuer(t)
+	token := auth0Issuer.token(t, "https://identity.example.com", "user@example.com", time.Now().Add(45*time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	// With auth0Validator == nil, the Auth0 JWS falls through to GetUserinfo
+	// which tries to decrypt it as a UNI JWE. That fails — the dispatch is
+	// correctly routing to the UNI path, even if the UNI path can't handle
+	// the token. The local authorizer's pre-Auth0 behaviour is preserved.
+	_, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "token validation failed")
+}
+
+// TestGetUserinfoFromBearerRejectsUnroutableToken verifies that a bearer that
+// is neither a UNI JWE nor a JWS is rejected outright — handed to neither
+// validator — even when Auth0 exchange is configured. This is the loud,
+// counted counterpart to the silent generic 401 a misroute would produce, so
+// an upstream token-format change surfaces distinctly.
+func TestGetUserinfoFromBearerRejectsUnroutableToken(t *testing.T) {
+	t.Parallel()
+
+	auth0Issuer := newAuth0TestIssuer(t)
+
+	env := setupAuth0PassportTestEnv(t, auth0Issuer)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	_, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unrecognized bearer token format")
 }

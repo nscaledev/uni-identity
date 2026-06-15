@@ -37,6 +37,7 @@ var _ = Describe("Service Version", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(version.Name).To(HavePrefix("unikorn-identity"))
+				// 0.0.0 is the Makefile default for unstamped local builds.
 				Expect(version.Version).To(SatisfyAny(
 					Equal("0.0.0"),
 					MatchRegexp(`^v\d+\.\d+\.\d+$`),

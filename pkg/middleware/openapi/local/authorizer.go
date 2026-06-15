@@ -74,7 +74,11 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
+	// Dispatch on the JOSE header: a JWS (Auth0 access token) goes through the
+	// Auth0 validator when --auth0-exchange-* is configured; a UNI JWE access
+	// token follows the existing userinfo path. A bearer that is neither — or
+	// empty — is rejected before either validator.
+	userinfo, claims, err := a.authenticator.GetUserinfoFromBearer(r.Context(), r, token)
 	if err != nil {
 		return nil, err
 	}
