@@ -49,7 +49,7 @@ match the same service-to-service trust model enforced on inbound requests.
 These packages show how the request pipeline is assembled, how the API layer
 applies read/modify/write and secure error-handling conventions, how the API
 wire contract is defined and consumed, how authenticated service version
-discovery is exposed through `GET /api/v2/version`, and how the service composes
+discovery is exposed through `GET /api/version`, and how the service composes
 the generic `core` server stack with identity-specific trust logic.
 
 ### Controllers And Provisioners

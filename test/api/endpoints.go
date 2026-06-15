@@ -131,7 +131,7 @@ func (e *Endpoints) Token() string {
 
 // Version returns the endpoint for reading the deployed service version.
 func (e *Endpoints) Version() string {
-	return "/api/v2/version"
+	return "/api/version"
 }
 
 // ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.

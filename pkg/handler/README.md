@@ -20,7 +20,7 @@ handler-level RBAC checks, reads request bodies, delegates to resource-specific 
 normalizes response/error handling. The real package behaviour lives in the per-resource handler
 clients beneath it.
 
-`GET /api/v2/version` is the exception to the resource-client pattern. It is an authenticated
+`GET /api/version` is the exception to the resource-client pattern. It is an authenticated
 service metadata endpoint that returns the running identity binary name and build version, sets
 `Cache-Control: no-cache`, and does not read or mutate persisted identity resources.
 
@@ -177,7 +177,7 @@ This is a systemic property of the storage model, not just an isolated flaw in o
   configuration for the built-in auth flow
 - [`quotas`](./quotas/README.md): organization-wide capacity contract
 - [`allocations`](./allocations/README.md): consumption ledger checked against quotas
-- `GET /api/v2/version`: authenticated deployment metadata for clients and CI gates that need to
+- `GET /api/version`: authenticated deployment metadata for clients and CI gates that need to
   identify the exact identity server build
 
 ## Related Documentation

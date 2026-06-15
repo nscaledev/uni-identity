@@ -500,24 +500,24 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsWit
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1OrganizationsWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1OrganizationsWithResponse), varargs...)
 }
 
-// GetApiV2VersionWithResponse mocks base method.
-func (m *MockClientWithResponsesInterface) GetApiV2VersionWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetApiV2VersionResponse, error) {
+// GetApiVersionWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) GetApiVersionWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetApiVersionResponse, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{arg0}
 	for _, a := range arg1 {
 		varargs = append(varargs, a)
 	}
-	ret := m.ctrl.Call(m, "GetApiV2VersionWithResponse", varargs...)
-	ret0, _ := ret[0].(*openapi.GetApiV2VersionResponse)
+	ret := m.ctrl.Call(m, "GetApiVersionWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.GetApiVersionResponse)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// GetApiV2VersionWithResponse indicates an expected call of GetApiV2VersionWithResponse.
-func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV2VersionWithResponse(arg0 any, arg1 ...any) *gomock.Call {
+// GetApiVersionWithResponse indicates an expected call of GetApiVersionWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiVersionWithResponse(arg0 any, arg1 ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	varargs := append([]any{arg0}, arg1...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV2VersionWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV2VersionWithResponse), varargs...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiVersionWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiVersionWithResponse), varargs...)
 }
 
 // GetOauth2V2AuthorizationWithResponse mocks base method.
