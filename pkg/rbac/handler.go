@@ -174,6 +174,11 @@ func isAllowedByProjectACL(ctx context.Context, endpoint string, operation opena
 	return false
 }
 
+// AllowProjectScopeCreateID is the typed variant of AllowProjectScopeCreate.
+func AllowProjectScopeCreateID(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	return AllowProjectScopeCreate(ctx, client, endpoint, operation, organizationID.String(), projectID.String())
+}
+
 // AllowProjectScopeCreate is like AllowProjectScope but intended for v2 create operations
 // where the project ID is supplied in the request body rather than the URL path.  When
 // access is granted via an organization-scoped ACL the project ID is untrusted user input,
@@ -183,8 +188,8 @@ func isAllowedByProjectACL(ctx context.Context, endpoint string, operation opena
 //
 // The string-typed organizationID and projectID parameters are intentional: this function
 // is called by other repositories that pre-date the typed ID types and must remain
-// backward-compatible with those callers.  Callers within this repo that hold typed IDs
-// should call .String() before passing them here.
+// backward-compatible with those callers.  Callers that hold typed IDs should prefer
+// AllowProjectScopeCreateID, which delegates here after converting to strings.
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
