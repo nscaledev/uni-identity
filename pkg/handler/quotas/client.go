@@ -85,13 +85,13 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	}
 
 	out := &unikornv1.Quota{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID.String()).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).Get(),
 		Spec: unikornv1.QuotaSpec{
 			Quotas: generateQuotaList(in.Quotas),
 		},
 	}
 
-	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
+	if err := common.SetIdentityMetadataOrganizationScope(ctx, &out.ObjectMeta, organization.ID); err != nil {
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
