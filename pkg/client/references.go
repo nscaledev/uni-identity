@@ -35,21 +35,38 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// getOrganizationAndProjectID extracts the organization and project IDs from a resource.
-func getOrganizationAndProjectID(resource client.Object) (string, string, error) {
+// organizationAndProjectID recovers the typed organization and project IDs that own a
+// resource. If the resource implements ids.ProjectScopeReader (region CRDs do) the typed
+// accessor is used directly; otherwise it falls back to parsing the standard organization
+// and project labels.
+func organizationAndProjectID(resource client.Object) (ids.OrganizationID, ids.ProjectID, error) {
+	if r, ok := resource.(ids.ProjectScopeReader); ok {
+		return r.OrganizationAndProjectID()
+	}
+
 	labels := resource.GetLabels()
 
 	organizationID, ok := labels[constants.OrganizationLabel]
 	if !ok {
-		return "", "", fmt.Errorf("%w: resource missing organization ID label", errors.ErrConsistency)
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: resource missing organization ID label", errors.ErrConsistency)
 	}
 
 	projectID, ok := labels[constants.ProjectLabel]
 	if !ok {
-		return "", "", fmt.Errorf("%w: resource missing project ID label", errors.ErrConsistency)
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: resource missing project ID label", errors.ErrConsistency)
 	}
 
-	return organizationID, projectID, nil
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: invalid organization ID on resource", err)
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: invalid project ID on resource", err)
+	}
+
+	return orgID, projID, nil
 }
 
 // References allows references to be added and removed on identity
@@ -95,19 +112,9 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 		return err
 	}
 
-	organizationID, projectID, err := getOrganizationAndProjectID(resource)
+	orgID, projID, err := organizationAndProjectID(resource)
 	if err != nil {
 		return err
-	}
-
-	orgID, err := ids.ParseOrganizationID(organizationID)
-	if err != nil {
-		return fmt.Errorf("%w: invalid organization ID on resource", err)
-	}
-
-	projID, err := ids.ParseProjectID(projectID)
-	if err != nil {
-		return fmt.Errorf("%w: invalid project ID on resource", err)
 	}
 
 	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, orgID, projID, url.PathEscape(reference))
@@ -138,19 +145,9 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 		return err
 	}
 
-	organizationID, projectID, err := getOrganizationAndProjectID(resource)
+	orgID, projID, err := organizationAndProjectID(resource)
 	if err != nil {
 		return err
-	}
-
-	orgID, err := ids.ParseOrganizationID(organizationID)
-	if err != nil {
-		return fmt.Errorf("%w: invalid organization ID on resource", err)
-	}
-
-	projID, err := ids.ParseProjectID(projectID)
-	if err != nil {
-		return fmt.Errorf("%w: invalid project ID on resource", err)
 	}
 
 	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, orgID, projID, url.PathEscape(reference))

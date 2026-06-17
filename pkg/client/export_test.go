@@ -32,6 +32,11 @@ func ParsePrincipalIDs(p *principal.Principal) (ids.OrganizationID, ids.ProjectI
 	return parsePrincipalIDs(p)
 }
 
+// OrganizationAndProjectID exposes organizationAndProjectID for unit testing.
+func OrganizationAndProjectID(resource crClient.Object) (ids.OrganizationID, ids.ProjectID, error) {
+	return organizationAndProjectID(resource)
+}
+
 // SetClientFactory replaces the HTTP client factory on r, allowing tests to
 // inject a mock without going through the full Kubernetes service-discovery path.
 func (r *References) SetClientFactory(f func(ctx context.Context, c crClient.Client, resource crClient.Object) (openapi.ClientWithResponsesInterface, error)) {

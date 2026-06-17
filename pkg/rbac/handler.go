@@ -72,6 +72,19 @@ func AllowOrganizationScopeID(ctx context.Context, endpoint string, operation op
 	return AllowOrganizationScope(ctx, endpoint, operation, organizationID.String())
 }
 
+// AllowOrganizationScopeReader is the variant of AllowOrganizationScope for callers that
+// hold a resource implementing ids.OrganizationScopeReader (e.g. a region CRD). It recovers
+// the organization ID from the resource. API handlers holding a path-parameter ID should use
+// AllowOrganizationScopeID instead.
+func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operation openapi.AclOperation, scope ids.OrganizationScopeReader) error {
+	organizationID, err := scope.OrganizationID()
+	if err != nil {
+		return err
+	}
+
+	return AllowOrganizationScopeID(ctx, endpoint, operation, organizationID)
+}
+
 // AllowOrganizationScope tries to allow the requested operation at the global scope, then
 // the organization scope.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
@@ -103,6 +116,19 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 // AllowProjectScopeID is the typed variant of AllowProjectScope.
 func AllowProjectScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
 	return AllowProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String())
+}
+
+// AllowProjectScopeReader is the variant of AllowProjectScope for callers that hold a resource
+// implementing ids.ProjectScopeReader (e.g. a region CRD). It recovers the organization and
+// project IDs from the resource. API handlers holding path-parameter IDs should use
+// AllowProjectScopeID instead.
+func AllowProjectScopeReader(ctx context.Context, endpoint string, operation openapi.AclOperation, scope ids.ProjectScopeReader) error {
+	organizationID, projectID, err := scope.OrganizationAndProjectID()
+	if err != nil {
+		return err
+	}
+
+	return AllowProjectScopeID(ctx, endpoint, operation, organizationID, projectID)
 }
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
@@ -177,6 +203,18 @@ func isAllowedByProjectACL(ctx context.Context, endpoint string, operation opena
 // AllowProjectScopeCreateID is the typed variant of AllowProjectScopeCreate.
 func AllowProjectScopeCreateID(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
 	return AllowProjectScopeCreate(ctx, client, endpoint, operation, organizationID.String(), projectID.String())
+}
+
+// AllowProjectScopeCreateReader is the variant of AllowProjectScopeCreate for callers that hold
+// a resource implementing ids.ProjectScopeReader. It recovers the organization and project IDs
+// from the resource.
+func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, scope ids.ProjectScopeReader) error {
+	organizationID, projectID, err := scope.OrganizationAndProjectID()
+	if err != nil {
+		return err
+	}
+
+	return AllowProjectScopeCreateID(ctx, client, endpoint, operation, organizationID, projectID)
 }
 
 // AllowProjectScopeCreate is like AllowProjectScope but intended for v2 create operations
