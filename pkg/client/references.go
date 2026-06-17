@@ -36,9 +36,13 @@ import (
 )
 
 // organizationAndProjectID recovers the typed organization and project IDs that own a
-// resource. If the resource implements ids.ProjectScopeReader (region CRDs do) the typed
-// accessor is used directly; otherwise it falls back to parsing the standard organization
-// and project labels.
+// resource. If the resource implements ids.ProjectScopeReader the typed accessor is used
+// directly; otherwise it parses the standard organization and project labels.
+//
+// The label path is a backwards-compatibility ramp, not a fallback to nowhere: resources
+// that have not yet adopted the ids.ProjectScopeReader accessors (and callers in repos that
+// pre-date it) keep working unchanged, while resources that do implement it are read through
+// the typed accessor. Both paths read the same labels, so they agree by construction.
 func organizationAndProjectID(resource client.Object) (ids.OrganizationID, ids.ProjectID, error) {
 	if r, ok := resource.(ids.ProjectScopeReader); ok {
 		return r.OrganizationAndProjectID()

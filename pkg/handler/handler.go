@@ -604,10 +604,15 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWri
 	ctx := r.Context()
 
 	// Apply RBAC after listing as a filter.  resource.Metadata.Id is sourced from the
-	// API response body (a plain string), not a path parameter, so use the string
-	// overload here; typed IDs for response bodies are out of scope for this change.
+	// API response body (a plain string), so parse it to a typed ID here; a malformed
+	// value from our own response should never happen and is filtered from the result.
 	result = slices.DeleteFunc(result, func(resource openapi.ProjectRead) bool {
-		return rbac.AllowProjectScope(ctx, "identity:projects", openapi.Read, organizationID.String(), resource.Metadata.Id) != nil
+		projectID, err := ids.ParseProjectID(resource.Metadata.Id)
+		if err != nil {
+			return true
+		}
+
+		return rbac.AllowProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID) != nil
 	})
 
 	h.setUncacheable(w)

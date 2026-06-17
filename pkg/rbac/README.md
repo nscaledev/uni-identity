@@ -55,7 +55,9 @@ Each scope check comes in three argument flavours so callers pass whatever they 
 without re-deriving it:
 
 - `AllowOrganizationScope` / `AllowProjectScope` / `AllowProjectScopeCreate` take plain `string`
-  IDs, retained for callers in other repositories that pre-date the typed ID types.
+  IDs. These are **deprecated** (marked `// Deprecated:` so tooling flags new use) but **retained
+  for backwards compatibility** — they are not slated for removal, since IDs sourced from API
+  response bodies and callers in repos that pre-date the typed ID types still need them.
 - `…ID` variants (`AllowOrganizationScopeID`, `AllowProjectScopeID`, `AllowProjectScopeCreateID`)
   take typed `ids.OrganizationID` / `ids.ProjectID`. **API handlers use these**, since the IDs
   arrive already decoded from URL path parameters.
