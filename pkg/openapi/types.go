@@ -7,6 +7,7 @@ import (
 	"time"
 
 	externalRef0 "github.com/unikorn-cloud/core/pkg/openapi"
+	identityids "github.com/unikorn-cloud/identity/pkg/ids"
 )
 
 const (
@@ -195,6 +196,9 @@ type AclProject struct {
 // AclProjectList A list of projects the subject is a member of.
 type AclProjectList = []AclProject
 
+// AllocationId A resource allocation ID.
+type AllocationId = identityids.AllocationID
+
 // AllocationRead An allocation of resources.
 type AllocationRead struct {
 	// Metadata Metadata required by project scoped resource reads.
@@ -295,6 +299,9 @@ type GrantType string
 // GroupIDs A list of group IDs.
 type GroupIDs = []string
 
+// GroupId A group ID.
+type GroupId = identityids.GroupID
+
 // GroupRead A group when read.
 type GroupRead struct {
 	// Metadata Metadata required by organization scoped resource reads.
@@ -363,6 +370,9 @@ type Oauth2Error struct {
 
 // Oauth2ErrorError A terse error string expanding on the HTTP error code. Errors are based on the OAuth 2.02 specification, but are expanded with proprietary status codes for APIs other than those specified by OAuth 2.02.
 type Oauth2ErrorError string
+
+// Oauth2ProviderId An OAuth2 provider ID.
+type Oauth2ProviderId = identityids.OAuth2ProviderID
 
 // Oauth2ProviderRead An OAuth 2.0 provider when read.
 type Oauth2ProviderRead struct {
@@ -454,6 +464,9 @@ type OpenidConfiguration struct {
 	UserinfoEndpoint string `json:"userinfo_endpoint"`
 }
 
+// OrganizationId An organization ID.
+type OrganizationId = identityids.OrganizationID
+
 // OrganizationRead An organization when read.
 type OrganizationRead struct {
 	// Metadata Metadata required by all resource reads.
@@ -507,6 +520,9 @@ type OrganizationWrite struct {
 
 // Organizations A list of organizations.
 type Organizations = []OrganizationRead
+
+// ProjectId A project ID.
+type ProjectId = identityids.ProjectID
 
 // ProjectRead A project when read.
 type ProjectRead struct {
@@ -640,6 +656,9 @@ type ServiceAccountCreate struct {
 	// Status A service account status.
 	Status ServiceAccountStatus `json:"status"`
 }
+
+// ServiceAccountId A service account ID.
+type ServiceAccountId = identityids.ServiceAccountID
 
 // ServiceAccountRead A service account.
 type ServiceAccountRead struct {
@@ -789,6 +808,9 @@ type TokenRequestOptions struct {
 	XProjectId *string `json:"x_project_id"`
 }
 
+// UserId A user ID.
+type UserId = identityids.UserID
+
 // UserRead A user read object.
 type UserRead struct {
 	// Metadata Metadata required by organization scoped resource reads.
@@ -898,32 +920,32 @@ type UserinfoRequestOptions struct {
 // Users A list of users.
 type Users = []UserRead
 
-// AllocationIDParameter defines model for allocationIDParameter.
-type AllocationIDParameter = string
+// AllocationIDParameter A resource allocation ID.
+type AllocationIDParameter = AllocationId
 
-// GroupidParameter defines model for groupidParameter.
-type GroupidParameter = string
+// GroupidParameter A group ID.
+type GroupidParameter = GroupId
 
-// Oauth2ProvderIDParameter defines model for oauth2ProvderIDParameter.
-type Oauth2ProvderIDParameter = string
+// Oauth2ProvderIDParameter An OAuth2 provider ID.
+type Oauth2ProvderIDParameter = Oauth2ProviderId
 
-// OrganizationIDParameter defines model for organizationIDParameter.
-type OrganizationIDParameter = string
+// OrganizationIDParameter An organization ID.
+type OrganizationIDParameter = OrganizationId
 
-// ProjectIDParameter defines model for projectIDParameter.
-type ProjectIDParameter = string
+// ProjectIDParameter A project ID.
+type ProjectIDParameter = ProjectId
 
 // ReferenceParameter defines model for referenceParameter.
 type ReferenceParameter = string
 
-// ServiceAccountIDParameter defines model for serviceAccountIDParameter.
-type ServiceAccountIDParameter = string
+// ServiceAccountIDParameter A service account ID.
+type ServiceAccountIDParameter = ServiceAccountId
 
 // UserEmailParameter defines model for userEmailParameter.
 type UserEmailParameter = string
 
-// UserIDParameter defines model for userIDParameter.
-type UserIDParameter = string
+// UserIDParameter A user ID.
+type UserIDParameter = UserId
 
 // AclResponse A list of access control scopes and permissions.
 type AclResponse = Acl

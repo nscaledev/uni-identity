@@ -11,6 +11,7 @@ It is where the identity API turns:
 - authenticated and authorized request context
 - OpenAPI request/response models
 - persisted CRD-backed storage
+- service build metadata
 
 into resource-specific behaviour.
 
@@ -18,6 +19,10 @@ At the top level, [`handler.go`](./handler.go) is mostly transport glue: it perf
 handler-level RBAC checks, reads request bodies, delegates to resource-specific clients, and
 normalizes response/error handling. The real package behaviour lives in the per-resource handler
 clients beneath it.
+
+`GET /api/version` is the exception to the resource-client pattern. It is an authenticated
+service metadata endpoint that returns the running identity binary name and build version, sets
+`Cache-Control: no-cache`, and does not read or mutate persisted identity resources.
 
 ## Shared Handler Model
 
@@ -172,6 +177,8 @@ This is a systemic property of the storage model, not just an isolated flaw in o
   configuration for the built-in auth flow
 - [`quotas`](./quotas/README.md): organization-wide capacity contract
 - [`allocations`](./allocations/README.md): consumption ledger checked against quotas
+- `GET /api/version`: authenticated deployment metadata for clients and CI gates that need to
+  identify the exact identity server build
 
 ## Related Documentation
 

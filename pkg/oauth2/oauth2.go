@@ -35,10 +35,13 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/uuid"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/oauth2"
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/html"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -143,6 +146,10 @@ type Authenticator struct {
 
 	// auth0Validator validates Auth0 access tokens accepted by passport exchange.
 	auth0Validator *auth0.Validator
+
+	// unroutableTokens counts bearer tokens that classify as neither a UNI
+	// access token (JWE) nor a JWS, e.g. after an upstream token-format change.
+	unroutableTokens metric.Int64Counter
 }
 
 // New returns a new authenticator with required fields populated.
@@ -161,17 +168,27 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		return nil, err
 	}
 
+	// The error only reports an invalid instrument configuration; the name,
+	// description, and unit are static and the API returns a usable no-op
+	// counter regardless, so there is nothing actionable to handle.
+	unroutableTokens, _ := otel.Meter(constants.Application).Int64Counter(
+		"unikorn_identity_bearer_tokens_unroutable",
+		metric.WithDescription("Bearer tokens that are neither a UNI access token (JWE) nor a JWS."),
+		metric.WithUnit("{token}"),
+	)
+
 	return &Authenticator{
-		options:        options,
-		namespace:      namespace,
-		client:         client,
-		issuer:         issuer,
-		jwtIssuer:      jwtIssuer,
-		userdb:         userdb,
-		rbac:           rbac,
-		tokenCache:     cache.NewLRUExpireCache(options.TokenCacheSize),
-		codeCache:      cache.NewLRUExpireCache(options.CodeCacheSize),
-		auth0Validator: auth0Validator,
+		options:          options,
+		namespace:        namespace,
+		client:           client,
+		issuer:           issuer,
+		jwtIssuer:        jwtIssuer,
+		userdb:           userdb,
+		rbac:             rbac,
+		tokenCache:       cache.NewLRUExpireCache(options.TokenCacheSize),
+		codeCache:        cache.NewLRUExpireCache(options.CodeCacheSize),
+		auth0Validator:   auth0Validator,
+		unroutableTokens: unroutableTokens,
 	}, nil
 }
 

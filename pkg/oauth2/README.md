@@ -149,6 +149,50 @@ organizations a principal belongs to. The minted passport's `source` claim recor
 exchange originated from a UNI or Auth0 subject token, and the passport expiry is capped at the
 source token's `exp` so a passport never outlives the proof of identity that produced it.
 
+Auth0 access tokens may be presented in two ways:
+
+1. As the `subject_token` to the RFC 8693 token-exchange endpoint (`/oauth2/v2/token`),
+   which returns a signed passport.
+2. Directly as a bearer token to local-authorizer-protected endpoints (`/api/v1/*`),
+   where they are dispatched to the Auth0 validator via `GetUserinfoFromBearer`.
+
+Both paths use the same validation and membership resolution, via one shared dispatcher
+(`dispatchUserinfo`). It routes on the JOSE header rather than a token's dot count: UNI
+access tokens are JWEs (an `enc` header) and resolve through the local userinfo path, while
+a JWS is treated as an Auth0 access token. A bearer that is neither — for example after an
+upstream access-token format change — is rejected outright and counted by
+`unikorn_identity_bearer_tokens_unroutable`, so such a change alerts quickly instead of
+surfacing as scattered generic 401s. (An empty bearer is the common client misconfiguration,
+not a format change, so it is rejected without counting.) Any unauthenticated caller can
+increment this counter
+with a garbage bearer, so alert on a sustained rise rather than isolated events and expect
+scanner noise. The second path is available only when Auth0 exchange
+is configured and avoids the token-exchange round-trip for user calls against the identity
+service itself.
+
+The Auth0 validator throttles upstream JWKS fetches with a minimum refresh interval,
+enforced by an HTTP transport wrapped around the `go-oidc` key set's client. The library
+refetches JWKS whenever no cached key verifies a token's signature — on unknown kids and
+on forged signatures over known kids alike — and only deduplicates concurrent refetches,
+so a stream of invalid tokens could otherwise drive one JWKS request per token and
+exhaust the Auth0 tenant rate limit. Tokens verified by cached keys never reach the
+transport; a token demanding a refetch inside the interval is rejected as invalid
+without contacting Auth0. The interval is configurable via
+`Options.JWKSMinRefreshInterval` and defaults to 60s. Each fetch is also bounded by a
+client timeout: `go-oidc` runs the fetch detached from the per-request context and
+deduplicates concurrent fetches against it, so an unbounded hung fetch would otherwise
+wedge the key set permanently.
+
+Each suppressed fetch increments the `unikorn_identity_auth0_jwks_refreshes_throttled`
+counter; a sustained rise is the refetch-storm attack signature and what to alert on. The
+throttled path also logs, but at most once per refresh interval — under a storm the
+throttle fires on nearly every request, so a per-request log would reproduce the flooding
+it prevents. Both this counter and `unikorn_identity_bearer_tokens_unroutable` are only
+exported when the service runs with `--otlp-endpoint` set: core attaches the metrics reader
+only then, and the chart leaves the endpoint unset by default, so a default deployment
+records the metrics but exports nothing and the alerts cannot fire until that endpoint is
+configured.
+
 ## Caveats
 
 - The package mixes protocol handling, provider integration, local session persistence, local user

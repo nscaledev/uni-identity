@@ -31,6 +31,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -56,10 +57,10 @@ type fixture struct {
 
 const (
 	testNamespace = "test-namespace"
-	testOrgID     = "test-org"
+	testOrgID     = "00000000-0000-4000-8000-000000000001"
 	testOrgNS     = "test-org-ns"
 
-	altOrgID = "alt-org-id"
+	altOrgID = "00000000-0000-4000-8000-000000000002"
 	altOrgNS = "alt-namespace"
 
 	userAliceSubject = "alice@example.com"
@@ -121,7 +122,7 @@ func createUser(t *testing.T, c client.Client, id, subject string, groups []*uni
 	// this is needed because deep in the bowels of request handling, it's consulted in
 	// order to set some Kubernetes object metadata.
 	ctx := newContext(t)
-	_, err := userclient.Create(ctx, testOrgID, &openapi.UserWrite{
+	_, err := userclient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
 		Metadata: &coreopenapi.ResourceWriteMetadata{
 			Name: id,
 		},

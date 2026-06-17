@@ -30,6 +30,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/util"
 	identityv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/client"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
 
@@ -71,8 +72,8 @@ func newTestResource() crClient.Object {
 			Name:      "test-resource",
 			Namespace: "test-ns",
 			Labels: map[string]string{
-				constants.OrganizationLabel: "test-org",
-				constants.ProjectLabel:      "test-project",
+				constants.OrganizationLabel: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+				constants.ProjectLabel:      "550e8400-e29b-41d4-a716-446655440000",
 			},
 		},
 	}
@@ -101,7 +102,7 @@ func TestAddReferenceToProject(t *testing.T) {
 			setup: func(m *openapiMock.MockClientWithResponsesInterface) {
 				m.EXPECT().
 					PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(
-						gomock.Any(), "test-org", "test-project", gomock.Any(),
+						gomock.Any(), ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479"), ids.MustParseProjectID("550e8400-e29b-41d4-a716-446655440000"), gomock.Any(),
 					).
 					Return(&openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse{
 						HTTPResponse: &http.Response{StatusCode: http.StatusCreated},
@@ -114,7 +115,7 @@ func TestAddReferenceToProject(t *testing.T) {
 			setup: func(m *openapiMock.MockClientWithResponsesInterface) {
 				m.EXPECT().
 					PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(
-						gomock.Any(), "test-org", "test-project", gomock.Any(),
+						gomock.Any(), ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479"), ids.MustParseProjectID("550e8400-e29b-41d4-a716-446655440000"), gomock.Any(),
 					).
 					Return(&openapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse{
 						HTTPResponse: &http.Response{StatusCode: http.StatusCreated},
@@ -127,7 +128,7 @@ func TestAddReferenceToProject(t *testing.T) {
 			setup: func(m *openapiMock.MockClientWithResponsesInterface) {
 				m.EXPECT().
 					PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(
-						gomock.Any(), "test-org", "test-project", gomock.Any(),
+						gomock.Any(), ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479"), ids.MustParseProjectID("550e8400-e29b-41d4-a716-446655440000"), gomock.Any(),
 					).
 					Return(nil, errConnectionRefused)
 			},
@@ -173,7 +174,7 @@ func TestRemoveReferenceFromProject(t *testing.T) {
 			setup: func(m *openapiMock.MockClientWithResponsesInterface) {
 				m.EXPECT().
 					DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(
-						gomock.Any(), "test-org", "test-project", gomock.Any(),
+						gomock.Any(), ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479"), ids.MustParseProjectID("550e8400-e29b-41d4-a716-446655440000"), gomock.Any(),
 					).
 					Return(&openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse{
 						HTTPResponse: &http.Response{StatusCode: http.StatusNoContent},
@@ -186,7 +187,7 @@ func TestRemoveReferenceFromProject(t *testing.T) {
 			setup: func(m *openapiMock.MockClientWithResponsesInterface) {
 				m.EXPECT().
 					DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(
-						gomock.Any(), "test-org", "test-project", gomock.Any(),
+						gomock.Any(), ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479"), ids.MustParseProjectID("550e8400-e29b-41d4-a716-446655440000"), gomock.Any(),
 					).
 					Return(&openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse{
 						HTTPResponse: &http.Response{StatusCode: http.StatusNoContent},
@@ -199,7 +200,7 @@ func TestRemoveReferenceFromProject(t *testing.T) {
 			setup: func(m *openapiMock.MockClientWithResponsesInterface) {
 				m.EXPECT().
 					DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(
-						gomock.Any(), "test-org", "test-project", gomock.Any(),
+						gomock.Any(), ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479"), ids.MustParseProjectID("550e8400-e29b-41d4-a716-446655440000"), gomock.Any(),
 					).
 					Return(&openapi.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceResponse{
 						HTTPResponse: &http.Response{StatusCode: http.StatusNotFound},
@@ -212,7 +213,7 @@ func TestRemoveReferenceFromProject(t *testing.T) {
 			setup: func(m *openapiMock.MockClientWithResponsesInterface) {
 				m.EXPECT().
 					DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(
-						gomock.Any(), "test-org", "test-project", gomock.Any(),
+						gomock.Any(), ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479"), ids.MustParseProjectID("550e8400-e29b-41d4-a716-446655440000"), gomock.Any(),
 					).
 					Return(nil, errConnectionRefused)
 			},

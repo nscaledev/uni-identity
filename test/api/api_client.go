@@ -29,6 +29,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
@@ -65,6 +66,24 @@ func (c *APIClient) GetEndpoints() *Endpoints {
 // This is useful for tests that need direct access to the endpoint path.
 func (c *APIClient) GetListOrganizationsPath() string {
 	return c.endpoints.ListOrganizations()
+}
+
+// GetVersion gets the deployed identity service version.
+func (c *APIClient) GetVersion(ctx context.Context) (*coreapi.ServiceVersionRead, error) {
+	path := c.endpoints.Version()
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("getting service version: %w", err)
+	}
+
+	var version coreapi.ServiceVersionRead
+	if err := json.Unmarshal(respBody, &version); err != nil {
+		return nil, fmt.Errorf("unmarshaling service version: %w", err)
+	}
+
+	return &version, nil
 }
 
 // NewAPIClient creates a new Identity API client.

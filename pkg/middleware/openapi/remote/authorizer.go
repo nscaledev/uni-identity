@@ -34,6 +34,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util/cache"
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -343,13 +344,13 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		}))
 	}
 
-	client, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
+	rawClient, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to create identity client", err)
 	}
 
 	if organizationID == "" {
-		response, err := client.GetApiV1AclWithResponse(ctx)
+		response, err := rawClient.GetApiV1AclWithResponse(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
 		}
@@ -361,7 +362,12 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		return response.JSON200, nil
 	}
 
-	response, err := client.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, organizationID)
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid organization ID %q", err, organizationID)
+	}
+
+	response, err := rawClient.GetApiV1OrganizationsOrganizationIDAclWithResponse(ctx, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to perform ACL get call", err)
 	}

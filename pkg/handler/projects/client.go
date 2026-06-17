@@ -29,6 +29,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -78,7 +79,7 @@ func convertList(in *unikornv1.ProjectList) openapi.Projects {
 	return out
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Projects, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Projects, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -111,7 +112,7 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, proj
 	return result, nil
 }
 
-func (c *Client) Get(ctx context.Context, organizationID, projectID string) (*openapi.ProjectRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID string) (*openapi.ProjectRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -127,7 +128,7 @@ func (c *Client) Get(ctx context.Context, organizationID, projectID string) (*op
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ProjectWrite) (*unikornv1.Project, error) {
 	out := &unikornv1.Project{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID.String()).Get(),
 		Spec: unikornv1.ProjectSpec{
 			Tags:     conversion.GenerateTagList(in.Metadata.Tags),
 			GroupIDs: in.Spec.GroupIDs,
@@ -154,7 +155,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 }
 
 // Create creates the implicit project indentified by the JTW claims.
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.ProjectWrite) (*openapi.ProjectRead, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.ProjectWrite) (*openapi.ProjectRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -172,7 +173,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 	return convert(resource), nil
 }
 
-func (c *Client) Update(ctx context.Context, organizationID, projectID string, request *openapi.ProjectWrite) error {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID string, request *openapi.ProjectWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -209,7 +210,7 @@ func (c *Client) Update(ctx context.Context, organizationID, projectID string, r
 }
 
 // Delete deletes the project.
-func (c *Client) Delete(ctx context.Context, organizationID, projectID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, projectID string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -235,7 +236,7 @@ func (c *Client) Delete(ctx context.Context, organizationID, projectID string) e
 
 // ReferenceCreate adds a external reference to the project that blocks deletion
 // until it has been removed.
-func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID, reference string) error {
+func (c *Client) ReferenceCreate(ctx context.Context, organizationID ids.OrganizationID, projectID, reference string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -266,7 +267,7 @@ func (c *Client) ReferenceCreate(ctx context.Context, organizationID, projectID,
 }
 
 // ReferenceDelete removes an external reference from the project.
-func (c *Client) ReferenceDelete(ctx context.Context, organizationID, projectID, reference string) error {
+func (c *Client) ReferenceDelete(ctx context.Context, organizationID ids.OrganizationID, projectID, reference string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err

@@ -64,6 +64,31 @@ the primary authoring surface:
 - every endpoint should have a meaningful `description` explaining what the user
   is doing, how the operation works, and any important caveats
 
+## Core Schema Pinning
+
+All `$ref` URLs in `server.spec.yaml` and the import mapping in `config.yaml`
+reference a **pinned release tag** of `unikorn-cloud/core` rather than `main`.
+This is intentional: pointing at `main` causes `schema.go` (which embeds the
+fully-resolved spec) to change whenever the upstream core schema moves,
+producing spurious diffs in otherwise unrelated pull requests.
+
+When bumping the `github.com/unikorn-cloud/core` dependency version, update the
+pinned tag in both files to match:
+
+```sh
+# replace v1.x.y with the new release tag
+OLD=v1.x.y
+NEW=v1.a.b
+sed -i "s|unikorn-cloud/core/${OLD}/|unikorn-cloud/core/${NEW}/|g" \
+    pkg/openapi/server.spec.yaml \
+    pkg/openapi/config.yaml
+make validate   # regenerates schema.go and verifies the spec resolves cleanly
+```
+
+Commit the updated spec files, `config.yaml`, regenerated `schema.go`, and the
+`go.mod`/`go.sum` changes together in one commit so the dependency and its
+schema reference stay in sync.
+
 ## Invariants And Guard Rails
 
 - `server.spec.yaml` is the source of truth; generated code is derivative
@@ -76,6 +101,8 @@ the primary authoring surface:
 - shared platform API primitives are imported from
   [`core/pkg/openapi`](https://github.com/nscaledev/uni-core/blob/main/pkg/openapi/README.md),
   rather than being redefined here
+- the core schema reference must be pinned to a release tag, not `main` — see
+  [Core Schema Pinning](#core-schema-pinning) above
 
 ## Semantics That Live Elsewhere
 

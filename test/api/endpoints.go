@@ -100,6 +100,7 @@ func (e *Endpoints) ListServiceAccounts(orgID string) string {
 }
 
 // GetServiceAccount returns the endpoint for a specific service account.
+// Used for PUT and DELETE — the server does not expose a GET /serviceaccounts/{saID} route.
 func (e *Endpoints) GetServiceAccount(orgID, saID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/serviceaccounts/%s",
 		url.PathEscape(orgID), url.PathEscape(saID))
@@ -134,6 +135,11 @@ func (e *Endpoints) GetJWKS() string {
 	return "/oauth2/v2/jwks"
 }
 
+// Version returns the endpoint for reading the deployed service version.
+func (e *Endpoints) Version() string {
+	return "/api/version"
+}
+
 // ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.
 func (e *Endpoints) ListGlobalOauth2Providers() string {
 	return "/api/v1/oauth2providers"
@@ -150,4 +156,10 @@ func (e *Endpoints) ListOauth2Providers(orgID string) string {
 func (e *Endpoints) GetOauth2Provider(orgID, providerID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/oauth2providers/%s",
 		url.PathEscape(orgID), url.PathEscape(providerID))
+}
+
+// GetAllocation returns the endpoint for a specific allocation.
+func (e *Endpoints) GetAllocation(orgID, projectID, allocationID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/projects/%s/allocations/%s",
+		url.PathEscape(orgID), url.PathEscape(projectID), url.PathEscape(allocationID))
 }
