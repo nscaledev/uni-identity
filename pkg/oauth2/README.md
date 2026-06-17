@@ -149,26 +149,33 @@ organizations a principal belongs to. The minted passport's `source` claim recor
 exchange originated from a UNI or Auth0 subject token, and the passport expiry is capped at the
 source token's `exp` so a passport never outlives the proof of identity that produced it.
 
-Auth0 access tokens may be presented in two ways:
+Auth0 access tokens may be presented in three ways:
 
 1. As the `subject_token` to the RFC 8693 token-exchange endpoint (`/oauth2/v2/token`),
    which returns a signed passport.
 2. Directly as a bearer token to local-authorizer-protected endpoints (`/api/v1/*`),
-   where they are dispatched to the Auth0 validator via `GetUserinfoFromBearer`.
+   where the local authorizer dispatches them via `GetUserinfoFromBearer`.
+3. Directly as a bearer token — or as the `access_token` form parameter — to the
+   OIDC-advertised userinfo endpoint (`/oauth2/v2/userinfo`, both `GET` and `POST`),
+   which dispatches via the same `GetUserinfoFromBearer` and returns the resolved
+   userinfo claims.
 
-Both paths use the same validation and membership resolution, via one shared dispatcher
+All three paths use the same validation and membership resolution, via one shared dispatcher
 (`dispatchUserinfo`). It routes on the JOSE header rather than a token's dot count: UNI
 access tokens are JWEs (an `enc` header) and resolve through the local userinfo path, while
 a JWS is treated as an Auth0 access token. A bearer that is neither — for example after an
 upstream access-token format change — is rejected outright and counted by
 `unikorn_identity_bearer_tokens_unroutable`, so such a change alerts quickly instead of
 surfacing as scattered generic 401s. (An empty bearer is the common client misconfiguration,
-not a format change, so it is rejected without counting.) Any unauthenticated caller can
+not a format change, so it is rejected without counting.) The two direct-bearer surfaces (the
+local authorizer and the userinfo endpoint) share the metric's `surface="bearer"` label,
+while token exchange reports `surface="exchange"`. Any unauthenticated caller can
 increment this counter
 with a garbage bearer, so alert on a sustained rise rather than isolated events and expect
-scanner noise. The second path is available only when Auth0 exchange
-is configured and avoids the token-exchange round-trip for user calls against the identity
-service itself.
+scanner noise. The two direct-bearer surfaces accept Auth0 tokens only when Auth0 exchange
+is configured, and avoid the token-exchange round-trip for user calls against the identity
+service itself; UNI access tokens resolve on the userinfo endpoint regardless of Auth0
+configuration, as they always have.
 
 The Auth0 validator throttles upstream JWKS fetches with a minimum refresh interval,
 enforced by an HTTP transport wrapped around the `go-oidc` key set's client. The library
