@@ -207,9 +207,12 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 }
 
 const (
-	// dispatchSurfaceBearer and dispatchSurfaceExchange label the two entry
-	// points that share dispatchUserinfo, tagging the unroutable metric and
-	// log so a firing alert can be triaged to the affected traffic.
+	// dispatchSurfaceBearer and dispatchSurfaceExchange label the entry points
+	// that share dispatchUserinfo, tagging the unroutable metric and log so a
+	// firing alert can be triaged to the affected traffic. Both direct-bearer
+	// call sites — the local authorizer (/api/v1/*) and the OIDC userinfo
+	// endpoint (/oauth2/v2/userinfo) — report "bearer"; token exchange reports
+	// "exchange".
 	dispatchSurfaceBearer   = "bearer"
 	dispatchSurfaceExchange = "exchange"
 )
@@ -258,9 +261,10 @@ func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, t
 }
 
 // GetUserinfoFromBearer resolves an Auth0 or UNI bearer token presented
-// directly to the local authorizer (/api/v1/...), without the token-exchange
-// round-trip. It shares dispatchUserinfo with the exchange path and discards
-// the source label, which only that path needs.
+// directly — to the local authorizer (/api/v1/...) or to the OIDC userinfo
+// endpoint (/oauth2/v2/userinfo) — without the token-exchange round-trip. It
+// shares dispatchUserinfo with the exchange path and discards the source
+// label, which only that path needs.
 func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
 	userinfo, claims, _, err := a.dispatchUserinfo(ctx, r, token, dispatchSurfaceBearer)
 
