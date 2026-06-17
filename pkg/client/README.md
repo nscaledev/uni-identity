@@ -81,6 +81,11 @@ This is an important forward-looking deletion mechanism because it is based on
 explicit dependency registration rather than only namespace-local descendant
 discovery.
 
+`References` recovers the typed organization and project IDs that own the target
+resource via [`ids.ProjectScopeReader`](../ids/README.md) when the resource
+implements it (region CRDs do), falling back to parsing the standard
+organization/project labels otherwise.
+
 ### Allocations
 
 `Allocations` wraps the identity quota/allocation API used by API handlers and

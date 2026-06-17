@@ -51,6 +51,21 @@ project permissions remain the narrowest scope.
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 
+Each scope check comes in three argument flavours so callers pass whatever they already hold,
+without re-deriving it:
+
+- `AllowOrganizationScope` / `AllowProjectScope` / `AllowProjectScopeCreate` take plain `string`
+  IDs, retained for callers in other repositories that pre-date the typed ID types.
+- `…ID` variants (`AllowOrganizationScopeID`, `AllowProjectScopeID`, `AllowProjectScopeCreateID`)
+  take typed `ids.OrganizationID` / `ids.ProjectID`. **API handlers use these**, since the IDs
+  arrive already decoded from URL path parameters.
+- `…Reader` variants (`AllowOrganizationScopeReader`, `AllowProjectScopeReader`,
+  `AllowProjectScopeCreateReader`) take a resource implementing `ids.OrganizationScopeReader` /
+  `ids.ProjectScopeReader` and recover the IDs from it. **Callers holding a CRD use these** — the
+  label-read-and-parse happens in one place behind the interface rather than at every call.
+
+Rule of thumb: path-parameter handler → `…ID`; you have a CRD object in hand → `…Reader`.
+
 ## Actor Model
 
 The package distinguishes three important actor classes:

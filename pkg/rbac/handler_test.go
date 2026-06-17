@@ -18,6 +18,7 @@ limitations under the License.
 package rbac_test
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -201,6 +202,67 @@ func TestUnscopedACL(t *testing.T) {
 			}
 		})
 	}
+}
+
+var errScope = errors.New("scope accessor failed")
+
+// scopeStub stands in for a CRD that reports its scope via the ids scope-reader
+// interfaces, returning fixed IDs (or an error) for the reader-variant tests.
+type scopeStub struct {
+	orgID  ids.OrganizationID
+	projID ids.ProjectID
+	err    error
+}
+
+func (s scopeStub) OrganizationID() (ids.OrganizationID, error) {
+	return s.orgID, s.err
+}
+
+func (s scopeStub) OrganizationAndProjectID() (ids.OrganizationID, ids.ProjectID, error) {
+	return s.orgID, s.projID, s.err
+}
+
+func TestScopeReaderVariants(t *testing.T) {
+	t.Parallel()
+
+	acl := aclFixture()
+	orgID := ids.MustParseOrganizationID(organizationID)
+	projID := ids.MustParseProjectID(projectID)
+
+	t.Run("AllowOrganizationScopeReader allows via organization privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowOrganizationScopeReader(rbac.NewContext(t.Context(), acl), resourceType1, openapi.Read, scopeStub{orgID: orgID})
+		require.NoError(t, err)
+	})
+
+	t.Run("AllowOrganizationScopeReader denies wrong privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowOrganizationScopeReader(rbac.NewContext(t.Context(), acl), resourceType1, openapi.Create, scopeStub{orgID: orgID})
+		require.Error(t, err)
+	})
+
+	t.Run("AllowProjectScopeReader allows via project privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowProjectScopeReader(rbac.NewContext(t.Context(), acl), resourceType2, openapi.Read, scopeStub{orgID: orgID, projID: projID})
+		require.NoError(t, err)
+	})
+
+	t.Run("AllowProjectScopeReader denies wrong privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowProjectScopeReader(rbac.NewContext(t.Context(), acl), resourceType2, openapi.Create, scopeStub{orgID: orgID, projID: projID})
+		require.Error(t, err)
+	})
+
+	t.Run("accessor error propagates", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowProjectScopeReader(rbac.NewContext(t.Context(), acl), resourceType2, openapi.Read, scopeStub{err: errScope})
+		require.ErrorIs(t, err, errScope)
+	})
 }
 
 const (

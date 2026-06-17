@@ -79,6 +79,74 @@ func newTestResource() crClient.Object {
 	}
 }
 
+const (
+	testOrgID  = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	testProjID = "550e8400-e29b-41d4-a716-446655440000"
+)
+
+// scopeReaderResource is a resource that reports its scope via the typed
+// ids.ProjectScopeReader interface rather than via labels. Embedding *Project
+// makes it a crClient.Object; the accessor methods return fixed IDs.
+type scopeReaderResource struct {
+	*identityv1.Project
+}
+
+func (scopeReaderResource) OrganizationID() (ids.OrganizationID, error) {
+	return ids.MustParseOrganizationID(testOrgID), nil
+}
+
+func (scopeReaderResource) OrganizationAndProjectID() (ids.OrganizationID, ids.ProjectID, error) {
+	return ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjID), nil
+}
+
+func TestOrganizationAndProjectID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reads via ProjectScopeReader interface", func(t *testing.T) {
+		t.Parallel()
+
+		// No labels at all: the typed accessor must be used, not label parsing.
+		resource := scopeReaderResource{&identityv1.Project{}}
+
+		orgID, projID, err := client.OrganizationAndProjectID(resource)
+		require.NoError(t, err)
+		require.Equal(t, ids.MustParseOrganizationID(testOrgID), orgID)
+		require.Equal(t, ids.MustParseProjectID(testProjID), projID)
+	})
+
+	t.Run("falls back to label parsing", func(t *testing.T) {
+		t.Parallel()
+
+		orgID, projID, err := client.OrganizationAndProjectID(newTestResource())
+		require.NoError(t, err)
+		require.Equal(t, ids.MustParseOrganizationID(testOrgID), orgID)
+		require.Equal(t, ids.MustParseProjectID(testProjID), projID)
+	})
+
+	t.Run("missing label errors", func(t *testing.T) {
+		t.Parallel()
+
+		_, _, err := client.OrganizationAndProjectID(&identityv1.Project{})
+		require.Error(t, err)
+	})
+
+	t.Run("invalid label value errors", func(t *testing.T) {
+		t.Parallel()
+
+		resource := &identityv1.Project{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					constants.OrganizationLabel: "not-a-uuid",
+					constants.ProjectLabel:      testProjID,
+				},
+			},
+		}
+
+		_, _, err := client.OrganizationAndProjectID(resource)
+		require.Error(t, err)
+	})
+}
+
 // newTestReferences creates a References with the given mock injected as the HTTP client factory.
 func newTestReferences(mock openapi.ClientWithResponsesInterface) *client.References {
 	r := client.NewReferences(util.ServiceDescriptor{}, nil, nil)
