@@ -78,6 +78,29 @@ That distinction allows downstream services to answer questions like:
 - where does it live?
 - who should quota or billing be attributed to?
 
+## Principal Enrichment
+
+`EnrichUserPrincipal{Organization,Project}Scope*()` fill the context principal's organization (and
+project) **attribution**, but **only when the principal does not already carry an organization**.
+Mirroring the [`pkg/rbac`](../rbac/README.md) scope helpers, each comes in two flavours so callers
+pass whatever they already hold:
+
+- `…ScopeID` takes typed `ids.OrganizationID` / `ids.ProjectID` — for callers holding a decoded
+  path parameter at create time, before a resource implementing the interface exists.
+- `…ScopeReader` takes a resource implementing the [`ids`](../ids/README.md) scope-reader
+  interfaces and recovers the IDs from it; it delegates to the `…ScopeID` primitive.
+
+That guard is deliberate and reflects the attribution-vs-placement distinction above:
+
+- In the common v2 path the organization/project come from the request body or a parent resource,
+  so the context principal arrives without an organization and is filled here.
+- When a principal was propagated from an upstream system service (mTLS, `X-Principal`) it may
+  already carry the originating organization. That is authoritative attribution and must not be
+  overwritten by the resource's *placement* organization, so enrichment is skipped.
+
+These helpers are the typed home for what downstream services previously did with a bespoke
+per-repo helper.
+
 ## Caveats
 
 - Attribution does not imply visibility. A principal may be the correct audit or billing subject
