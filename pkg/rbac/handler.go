@@ -87,6 +87,12 @@ func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operatio
 
 // AllowOrganizationScope tries to allow the requested operation at the global scope, then
 // the organization scope.
+//
+// Deprecated: prefer the typed AllowOrganizationScopeID (for path-parameter IDs) or
+// AllowOrganizationScopeReader (for a resource implementing ids.OrganizationScopeReader).
+// This string overload is retained for backwards compatibility with callers that still
+// deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
+// and is not slated for removal.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
 	if AllowGlobalScope(ctx, endpoint, operation) == nil {
 		return nil
@@ -133,6 +139,12 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 
 // AllowProjectScope tries to allow the requested operation at the global scope, then
 // the organization scope, and finally at the project scope.
+//
+// Deprecated: prefer the typed AllowProjectScopeID (for path-parameter IDs) or
+// AllowProjectScopeReader (for a resource implementing ids.ProjectScopeReader). This
+// string overload is retained for backwards compatibility with callers that still deal
+// in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
+// is not slated for removal.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
 		return nil
@@ -224,10 +236,11 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 // returning nil.  Global-scope callers (platform administrators) are exempt from this
 // check and their supplied project ID is trusted directly.
 //
-// The string-typed organizationID and projectID parameters are intentional: this function
-// is called by other repositories that pre-date the typed ID types and must remain
-// backward-compatible with those callers.  Callers that hold typed IDs should prefer
-// AllowProjectScopeCreateID, which delegates here after converting to strings.
+// Deprecated: prefer the typed AllowProjectScopeCreateID (for path-parameter IDs) or
+// AllowProjectScopeCreateReader (for a resource implementing ids.ProjectScopeReader). This
+// string overload is retained for backwards compatibility with callers that pre-date the
+// typed ID types and is not slated for removal; the typed variants delegate here after
+// converting to strings.
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
