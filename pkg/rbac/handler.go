@@ -92,7 +92,7 @@ func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operatio
 // AllowOrganizationScopeReader (for a resource implementing ids.OrganizationScopeReader).
 // This string overload is retained for backwards compatibility with callers that still
 // deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
-// and is not slated for removal.
+// and will be removed once those callers have migrated.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
 	if AllowGlobalScope(ctx, endpoint, operation) == nil {
 		return nil
@@ -144,7 +144,7 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 // AllowProjectScopeReader (for a resource implementing ids.ProjectScopeReader). This
 // string overload is retained for backwards compatibility with callers that still deal
 // in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
-// is not slated for removal.
+// will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
 		return nil
@@ -239,8 +239,8 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 // Deprecated: prefer the typed AllowProjectScopeCreateID (for path-parameter IDs) or
 // AllowProjectScopeCreateReader (for a resource implementing ids.ProjectScopeReader). This
 // string overload is retained for backwards compatibility with callers that pre-date the
-// typed ID types and is not slated for removal; the typed variants delegate here after
-// converting to strings.
+// typed ID types and will be removed once those callers have migrated; the typed variants
+// delegate here after converting to strings.
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.

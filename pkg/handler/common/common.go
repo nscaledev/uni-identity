@@ -264,7 +264,46 @@ func checkQuotaConsistency(quota *unikornv1.Quota, allocations *unikornv1.Alloca
 	return nil
 }
 
+// SetIdentityMetadataOrganizationScope stamps the organization placement label from a typed
+// ID and then sets the identity attribution metadata (see SetIdentityMetadata).
+//
+// Prefer this over conversion.NewObjectMetadata(...).WithOrganization(organizationID.String()):
+// core's builder is necessarily string-based (core cannot import pkg/ids without a circular
+// dependency), so calling it forces a .String() at the call site. This keeps the typed ID to
+// the lowest layer and stamps placement plus attribution scope in a single call.
+func SetIdentityMetadataOrganizationScope(ctx context.Context, meta *metav1.ObjectMeta, organizationID ids.OrganizationID) error {
+	if meta.Labels == nil {
+		meta.Labels = map[string]string{}
+	}
+
+	meta.Labels[constants.OrganizationLabel] = organizationID.String()
+
+	return SetIdentityMetadata(ctx, meta)
+}
+
+// SetIdentityMetadataProjectScope stamps the organization and project placement labels from
+// typed IDs and then sets the identity attribution metadata (see SetIdentityMetadata).
+//
+// Prefer this over conversion.NewObjectMetadata(...).WithOrganization(...).WithProject(...) for
+// the same reason as SetIdentityMetadataOrganizationScope: it keeps the typed IDs to the lowest
+// layer rather than forcing .String() at the call site.
+func SetIdentityMetadataProjectScope(ctx context.Context, meta *metav1.ObjectMeta, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	if meta.Labels == nil {
+		meta.Labels = map[string]string{}
+	}
+
+	meta.Labels[constants.OrganizationLabel] = organizationID.String()
+	meta.Labels[constants.ProjectLabel] = projectID.String()
+
+	return SetIdentityMetadata(ctx, meta)
+}
+
 // SetIdentityMetadata sets identity specific metadata on a resource during generation.
+//
+// This sets attribution only (creator and principal scope). For resources that also carry
+// placement labels prefer SetIdentityMetadataOrganizationScope or
+// SetIdentityMetadataProjectScope, which set the placement organization/project from typed IDs
+// in the same call.
 func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {

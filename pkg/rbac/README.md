@@ -56,8 +56,9 @@ without re-deriving it:
 
 - `AllowOrganizationScope` / `AllowProjectScope` / `AllowProjectScopeCreate` take plain `string`
   IDs. These are **deprecated** (marked `// Deprecated:` so tooling flags new use) but **retained
-  for backwards compatibility** — they are not slated for removal, since IDs sourced from API
-  response bodies and callers in repos that pre-date the typed ID types still need them.
+  for backwards compatibility** while callers that still deal in plain strings (IDs sourced from
+  API response bodies, and repos that pre-date the typed ID types) migrate; they will be removed
+  once that is done.
 - `…ID` variants (`AllowOrganizationScopeID`, `AllowProjectScopeID`, `AllowProjectScopeCreateID`)
   take typed `ids.OrganizationID` / `ids.ProjectID`. **API handlers use these**, since the IDs
   arrive already decoded from URL path parameters.

@@ -131,14 +131,14 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.Oauth2ProviderWrite) (*unikornv1.OAuth2Provider, error) {
 	out := &unikornv1.OAuth2Provider{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID.String()).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).Get(),
 		Spec: unikornv1.OAuth2ProviderSpec{
 			Issuer:   in.Spec.Issuer,
 			ClientID: in.Spec.ClientID,
 		},
 	}
 
-	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
+	if err := common.SetIdentityMetadataOrganizationScope(ctx, &out.ObjectMeta, organization.ID); err != nil {
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 

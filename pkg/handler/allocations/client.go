@@ -126,14 +126,14 @@ func generateAllocationList(in openapi.ResourceAllocationList) []unikornv1.Resou
 
 func generate(ctx context.Context, namespace *corev1.Namespace, organizationID ids.OrganizationID, projectID ids.ProjectID, in *openapi.AllocationWrite) (*unikornv1.Allocation, error) {
 	out := &unikornv1.Allocation{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, namespace.Name).WithOrganization(organizationID.String()).WithProject(projectID.String()).WithLabel(constants.ReferencedResourceKindLabel, in.Spec.Kind).WithLabel(constants.ReferencedResourceIDLabel, in.Spec.Id).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, namespace.Name).WithLabel(constants.ReferencedResourceKindLabel, in.Spec.Kind).WithLabel(constants.ReferencedResourceIDLabel, in.Spec.Id).Get(),
 		Spec: unikornv1.AllocationSpec{
 			Tags:        conversion.GenerateTagList(in.Metadata.Tags),
 			Allocations: generateAllocationList(in.Spec.Allocations),
 		},
 	}
 
-	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
+	if err := common.SetIdentityMetadataProjectScope(ctx, &out.ObjectMeta, organizationID, projectID); err != nil {
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
