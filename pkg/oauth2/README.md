@@ -132,22 +132,50 @@ The `subject_token` presented to passport exchange may be either:
 - a UNI-issued access token, validated through `GetUserinfo` against the local user database, or
 - an Auth0 access-token JWT, validated through `pkg/oauth2/auth0` against the Auth0 tenant JWKS.
 
-The Auth0 path is opt-in and requires both `--auth0-exchange-issuer` and `--auth0-exchange-audience`
-to be set; partial configuration fails closed at startup. When only one of the two is set, the
-identity process refuses to start. When neither is set, Auth0 tokens are not accepted and the
-existing UNI path is unaffected.
+#### The external IdP must issue transparent JWS access tokens, never opaque ones
 
-For Auth0 tokens, validation covers signature, issuer, audience, temporal claims, verified email,
-and the UNI authorization claim emitted by the Auth0 post-login Action (`acctype` and non-empty
-`orgIds`). Because Auth0 only places the standard `email`/`email_verified` claims on the ID token —
-and a post-login Action cannot set bare, non-namespaced claims on the access token — the Action
-surfaces them on the access token as the namespaced `https://unikorn-cloud.org/email` and
+A third-party IdP must be configured to issue **transparent, signed (JWS) access tokens** — for
+Auth0 this means registering each resource server as an Auth0 API so tokens carry that API's
+identifier as their audience. Opaque access tokens (a bare reference with no locally verifiable
+structure, such as the token Auth0 mints for the userinfo endpoint alone) must **never** be used,
+and this is not a stylistic preference:
+
+- A JWS is verified **locally** at every resource server against cached JWKS — signature, issuer,
+  audience, algorithm and expiry — with no per-request call to the IdP. An invalid JWS fails
+  signature verification locally, before any upstream call.
+- An opaque token carries nothing to verify, so the only way to validate it is to call the IdP's
+  introspection endpoint **on every request**. That makes the external IdP a synchronous dependency
+  of every authenticated request and a denial-of-service amplifier: a flood of syntactically
+  plausible but invalid opaque tokens drives one introspection call each, exhausting the tenant rate
+  limit and risking IP blacklisting by the IdP.
+
+The validator enforces this by construction: it accepts only a JOSE-serialised JWS (the token
+router rejects anything that is neither a JWS nor a UNI JWE outright), and it pins the audience and
+algorithm explicitly. There is deliberately no opaque/introspection code path for production
+third-party tokens.
+
+The third-party path is opt-in and requires both `--oidc-issuer` and `--oidc-audience` to be set;
+partial configuration fails closed at startup. When only one of the two is set, the identity
+process refuses to start. When neither is set, third-party tokens are not accepted and the existing
+UNI path is unaffected. The same flags and `auth0.Options` configure local validation in the remote
+middleware that downstream resource servers run, so identity and the resource servers validate the
+same issuer/audience.
+
+For third-party (Auth0) tokens, validation is performed with **go-jose directly** — not an OIDC
+ID-token verifier, whose audience defaults do not match access-token validation — and covers the
+signature, issuer, audience, a pinned signature-algorithm allowlist (the token header `alg` is
+never trusted to select the method), temporal claims including expiry, and a verified email.
+Principal type is discriminated from Auth0's `gty` grant-type claim: a `client-credentials` grant is
+a machine principal and is rejected, because the third-party IdP is for users only; type is never
+inferred from the subject string. Crucially, **no authorization claim is read from the token** —
+organisation membership and RBAC are owned by UNI and resolved against its own graph, never
+asserted by a foreign IdP. Because Auth0 only places the standard `email`/`email_verified` claims on
+the ID token — and a post-login Action cannot set bare, non-namespaced claims on the access token —
+the Action surfaces them on the access token as the namespaced `https://unikorn-cloud.org/email` and
 `https://unikorn-cloud.org/email_verified` claims, which is where this validator reads them from.
-The claimed `orgIds` are required as a signal that the Action ran but are intentionally
-not used as organization membership: UNI's user database remains authoritative for which
-organizations a principal belongs to. The minted passport's `source` claim records whether the
-exchange originated from a UNI or Auth0 subject token, and the passport expiry is capped at the
-source token's `exp` so a passport never outlives the proof of identity that produced it.
+The minted passport's `source` claim records whether the exchange originated from a UNI or Auth0
+subject token, and the passport expiry is capped at the source token's `exp` so a passport never
+outlives the proof of identity that produced it.
 
 Auth0 access tokens may be presented in three ways:
 
@@ -177,18 +205,16 @@ is configured, and avoid the token-exchange round-trip for user calls against th
 service itself; UNI access tokens resolve on the userinfo endpoint regardless of Auth0
 configuration, as they always have.
 
-The Auth0 validator throttles upstream JWKS fetches with a minimum refresh interval,
-enforced by an HTTP transport wrapped around the `go-oidc` key set's client. The library
-refetches JWKS whenever no cached key verifies a token's signature — on unknown kids and
-on forged signatures over known kids alike — and only deduplicates concurrent refetches,
-so a stream of invalid tokens could otherwise drive one JWKS request per token and
-exhaust the Auth0 tenant rate limit. Tokens verified by cached keys never reach the
-transport; a token demanding a refetch inside the interval is rejected as invalid
-without contacting Auth0. The interval is configurable via
-`Options.JWKSMinRefreshInterval` and defaults to 60s. Each fetch is also bounded by a
-client timeout: `go-oidc` runs the fetch detached from the per-request context and
-deduplicates concurrent fetches against it, so an unbounded hung fetch would otherwise
-wedge the key set permanently.
+The third-party validator throttles upstream JWKS fetches with a minimum refresh interval,
+enforced by an HTTP transport wrapped around the JWKS cache's client. The cache refetches the
+JWKS only when a token presents a key ID absent from the cache; concurrent refreshes are
+coalesced into a single fetch (one in-flight refresh per issuer), and a kid still absent after
+exactly one refetch is rejected, never retried. A stream of unknown-kid tokens could otherwise
+drive one JWKS request per token and exhaust the Auth0 tenant rate limit. Tokens verified by
+cached keys never reach the transport; a token demanding a refetch inside the interval is
+rejected as invalid without contacting Auth0. The interval is configurable via
+`Options.JWKSMinRefreshInterval` and defaults to 60s. Each fetch is also bounded by a client
+timeout so a hung fetch cannot wedge the key set.
 
 Each suppressed fetch increments the `unikorn_identity_auth0_jwks_refreshes_throttled`
 counter; a sustained rise is the refetch-storm attack signature and what to alert on. The

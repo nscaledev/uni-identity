@@ -20,15 +20,12 @@ package authorizer
 
 import (
 	"context"
-	goerrors "errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
-	"github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
@@ -37,7 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
-	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/bearer"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -47,71 +44,49 @@ import (
 const (
 	tokenCacheSize = 4096
 
-	// cacheTTLFudge absorbs clock skew between identity and this middleware
-	// when deriving cache TTLs from passport expiry.
-	cacheTTLFudge = 10 * time.Second
+	// userinfoCacheTTL bounds how long a Unikorn-token userinfo result is
+	// trusted without re-checking. The userinfo call is the service-token
+	// revocation point, so this is the staleness budget: a revoked or expired
+	// token continues to authenticate from cache for at most this long. It is
+	// short for that reason, and the path fails closed — once the entry
+	// expires, a request cannot proceed unless identity confirms the token
+	// afresh. The third-party (local JWKS) path is not cached at all; it is a
+	// cheap local check run on every request.
+	userinfoCacheTTL = 60 * time.Second
 )
 
-// Authorizer provides OpenAPI based authorization middleware backed by remote
-// identity token exchange and ACL lookup.
+// Authorizer provides OpenAPI based authorization middleware. It authenticates
+// bearer tokens locally — third-party (Auth0) tokens against the issuer JWKS,
+// and Unikorn-issued tokens via the identity userinfo endpoint — and resolves
+// ACLs back from identity.
 type Authorizer struct {
 	client        client.Client
 	options       *identityclient.Options
 	clientOptions *coreclient.HTTPClientOptions
 	httpClient    *http.Client
-	exchange      TokenExchange
-	tokenCache    *cache.LRUExpireCache[tokenCacheKey, *oauth2.PassportClaims]
+	auth          *AuthenticationInfo
+	tokenCache    *cache.LRUExpireCache[string, *identityapi.Userinfo]
 }
 
 var _ openapi.Authorizer = &Authorizer{}
 
-type tokenCacheKey struct {
-	sourceToken    string
-	organizationID string
-	projectID      string
-}
-
-func newTokenCacheKey(sourceToken string, scope tokenExchangeOptions) tokenCacheKey {
-	return tokenCacheKey{
-		sourceToken:    sourceToken,
-		organizationID: scope.organizationID,
-		projectID:      scope.projectID,
-	}
-}
-
 // NewAuthorizer returns a new authorizer with required parameters.
-func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*Authorizer, error) {
+func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, auth *AuthenticationInfo) (*Authorizer, error) {
 	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
 	if err != nil {
 		return nil, err
 	}
-
-	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *oauth2.PassportClaims](tokenCacheSize)
 
 	a := &Authorizer{
 		httpClient:    httpClient,
 		client:        client,
 		options:       options,
 		clientOptions: clientOptions,
-		exchange:      NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
-		tokenCache:    tokenCache,
+		auth:          auth,
+		tokenCache:    cache.NewLRUExpireCache[string, *identityapi.Userinfo](tokenCacheSize),
 	}
 
 	return a, nil
-}
-
-func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return "", "", errors.AccessDenied(r, "authorization header missing")
-	}
-
-	parts := strings.Split(header, " ")
-	if len(parts) != 2 {
-		return "", "", errors.AccessDenied(r, "authorization header malformed")
-	}
-
-	return parts[0], parts[1], nil
 }
 
 type requestMutatingTransport struct {
@@ -161,12 +136,13 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 	return httpClient, nil
 }
 
-// authorizeOAuth2 resolves a bearer token into the Userinfo-compatible
-// identity shape consumed by handlers.
-func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions) (*authorization.Info, error) {
-	ctx := r.Context()
-
-	authorizationScheme, rawToken, err := getHTTPAuthenticationScheme(r)
+// authorizeOAuth2 resolves a bearer token into the Userinfo-compatible identity
+// shape consumed by handlers. It authenticates the token locally, routing on
+// the JOSE header: a JWS is a third-party (Auth0) access token validated
+// against the issuer JWKS, and a JWE is a Unikorn access token resolved via the
+// identity userinfo endpoint. A bearer that is neither is rejected.
+func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
+	authorizationScheme, rawToken, err := authorization.GetHTTPAuthenticationScheme(r)
 	if err != nil {
 		return nil, err
 	}
@@ -175,150 +151,114 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	cacheKey := newTokenCacheKey(rawToken, scope)
-	if claims, ok := a.tokenCache.Get(cacheKey); ok {
+	isJWE, err := bearer.IsJWE(rawToken)
+	if err != nil {
+		return nil, errors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
+	}
+
+	// A JWS is a third-party access token: validate it fully locally against
+	// the issuer JWKS when a third-party IdP is configured. When it is not, a
+	// JWS falls through to the Unikorn userinfo path, which rejects it — a
+	// Unikorn access token is a JWE.
+	if !isJWE && a.auth != nil && a.auth.thirdParty != nil {
+		return a.authorizeThirdParty(r, rawToken)
+	}
+
+	return a.authorizeUnikorn(r, rawToken)
+}
+
+// authorizeThirdParty validates a federated user token locally and projects it
+// onto the handler-facing identity shape. Authentication yields the subject
+// only: organisation membership and RBAC are resolved later against our own
+// graph via GetACL, never read from the foreign token, so no OrgIds are set
+// here.
+func (a *Authorizer) authorizeThirdParty(r *http.Request, token string) (*authorization.Info, error) {
+	user, err := a.auth.thirdParty.Validate(r.Context(), token)
+	if err != nil {
+		return nil, errors.AccessDenied(r, "token validation failed").WithError(err)
+	}
+
+	verified := true
+	email := user.Email
+
+	return &authorization.Info{
+		Token: token,
+		Userinfo: &identityapi.Userinfo{
+			Sub:           user.Email,
+			Email:         &email,
+			EmailVerified: &verified,
+			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
+				Acctype: identityapi.User,
+			},
+		},
+	}, nil
+}
+
+// authorizeUnikorn resolves a Unikorn-issued token (user or service account)
+// via the identity userinfo endpoint. The result is cached for a short
+// staleness budget because the call is a network round-trip plus a JWE decrypt
+// at identity; the path fails closed once the entry expires.
+func (a *Authorizer) authorizeUnikorn(r *http.Request, token string) (*authorization.Info, error) {
+	if userinfo, ok := a.tokenCache.Get(token); ok {
 		return &authorization.Info{
-			Token:    rawToken,
-			Userinfo: passportToUserinfo(claims),
+			Token:    token,
+			Userinfo: userinfo,
 		}, nil
 	}
 
-	exchangeOptions := scope
-
-	passport, err := a.exchange.Exchange(ctx, rawToken, &exchangeOptions)
+	userinfo, err := a.fetchUserinfo(r, token)
 	if err != nil {
-		if goerrors.Is(err, ErrTokenExchangeUnauthorized) {
-			return nil, errors.AccessDenied(r, "token is invalid or has expired")
-		}
-
-		// Scope refusal is authz; surface as 403 so callers do not retry
-		// as if the token had expired.
-		if goerrors.Is(err, ErrTokenExchangeForbidden) {
-			return nil, errors.HTTPForbidden("not authorized for the requested scope")
-		}
-
-		return nil, errors.AccessDenied(r, "token exchange failed").WithError(err)
+		return nil, err
 	}
 
-	claims, err := decodePassportClaims(passport)
-	if err != nil {
-		// A malformed passport after a successful exchange is identity/middleware
-		// producing invalid output, not a user authorization decision. Surface it
-		// as a plain wrapped error so the top-level handler renders a 500.
-		return nil, fmt.Errorf("failed to decode exchange passport: %w", err)
-	}
-
-	userinfo := passportToUserinfo(claims)
-
-	if ttl := cacheTTL(claims, time.Now()); ttl > 0 {
-		a.tokenCache.Add(cacheKey, claims, ttl)
-	}
+	a.tokenCache.Add(token, userinfo, userinfoCacheTTL)
 
 	return &authorization.Info{
-		Token:    rawToken,
+		Token:    token,
 		Userinfo: userinfo,
 	}, nil
 }
 
-// decodePassportClaims parses exchange output and enforces the identity claims
-// needed to build authorization context.
-//
-// UnsafeClaimsWithoutVerification is intentional: the passport is consumed as
-// exchange output over the trusted identity service channel, not accepted as
-// an independently presented bearer credential, so downstream JWKS verification
-// would only re-prove what the transport already guarantees. The structural and
-// temporal checks below still apply because identity may legitimately produce
-// claims this middleware cannot use.
-func decodePassportClaims(passport string) (*oauth2.PassportClaims, error) {
-	token, err := jwt.ParseSigned(passport, []jose.SignatureAlgorithm{jose.ES512})
+// fetchUserinfo introspects a Unikorn token at the identity userinfo endpoint.
+// It fails closed: any non-200 outcome, including transport failure, denies the
+// request rather than letting it through on an ambiguous response.
+func (a *Authorizer) fetchUserinfo(r *http.Request, token string) (*identityapi.Userinfo, error) {
+	ctx := r.Context()
+
+	options := []identityapi.ClientOption{
+		identityapi.WithHTTPClient(a.httpClient),
+		identityapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+			req.Header.Set("Authorization", "bearer "+token)
+
+			return nil
+		}),
+	}
+
+	rawClient, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrPassportInvalid, err)
+		return nil, fmt.Errorf("%w: failed to create identity client", err)
 	}
 
-	claims := &oauth2.PassportClaims{}
-	if err := token.UnsafeClaimsWithoutVerification(claims); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrPassportInvalid, err)
+	response, err := rawClient.GetOauth2V2UserinfoWithResponse(ctx)
+	if err != nil {
+		// A transport or upstream failure must not let the request through.
+		return nil, errors.AccessDenied(r, "token validation unavailable").WithError(err)
 	}
 
-	if claims.Type != oauth2.PassportType {
-		return nil, fmt.Errorf("%w: unexpected token type %q", ErrPassportInvalid, claims.Type)
+	if response.StatusCode() != http.StatusOK {
+		return nil, errors.AccessDenied(r, "token is invalid or has expired").WithValues("status", response.StatusCode())
 	}
 
-	if claims.Subject == "" || claims.Expiry == nil {
-		return nil, fmt.Errorf("%w: passport missing required claims", ErrPassportInvalid)
-	}
-
-	// Acctype selects RBAC behavior; source preserves the token-family audit trail.
-	if claims.Acctype == "" || claims.Source == "" {
-		return nil, fmt.Errorf("%w: passport missing required identity metadata", ErrPassportInvalid)
-	}
-
-	if err := validatePassportTemporalClaims(claims, time.Now()); err != nil {
-		return nil, err
-	}
-
-	return claims, nil
-}
-
-// validatePassportTemporalClaims rejects both stale and premature exchange
-// output. exp ≤ now and nbf > now must both fail closed.
-func validatePassportTemporalClaims(claims *oauth2.PassportClaims, now time.Time) error {
-	if !claims.Expiry.Time().After(now) {
-		return fmt.Errorf("%w: passport has expired", ErrPassportInvalid)
-	}
-
-	if claims.NotBefore != nil && claims.NotBefore.Time().After(now) {
-		return fmt.Errorf("%w: passport is not yet valid", ErrPassportInvalid)
-	}
-
-	return nil
-}
-
-// passportToUserinfo projects passport claims onto the existing handler-facing
-// identity shape.
-func passportToUserinfo(claims *oauth2.PassportClaims) *identityapi.Userinfo {
-	userinfo := &identityapi.Userinfo{
-		Sub: claims.Subject,
-		HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
-			Acctype: claims.Acctype,
-			OrgIds:  claims.OrgIDs,
-		},
-	}
-
-	if claims.Email != "" {
-		email := claims.Email
-		userinfo.Email = &email
-	}
-
-	return userinfo
-}
-
-// cacheTTL keeps cached identity within the passport expiry set by identity,
-// leaving a small margin for clock skew.
-func cacheTTL(claims *oauth2.PassportClaims, now time.Time) time.Duration {
-	return claims.Expiry.Time().Sub(now) - cacheTTLFudge
+	return response.JSON200, nil
 }
 
 // Authorize checks the request against the OpenAPI security scheme.
 func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInput) (*authorization.Info, error) {
 	if authentication.SecurityScheme.Type == "oauth2" {
-		return a.authorizeOAuth2(authentication.RequestValidationInput.Request, scopeFromPathParams(authentication.RequestValidationInput.PathParams))
+		return a.authorizeOAuth2(authentication.RequestValidationInput.Request)
 	}
 
 	return nil, errors.OAuth2InvalidRequest("authorization scheme unsupported").WithValues("scheme", authentication.SecurityScheme.Type)
-}
-
-func scopeFromPathParams(params map[string]string) tokenExchangeOptions {
-	return tokenExchangeOptions{
-		organizationID: params["organizationID"],
-		projectID:      params["projectID"],
-	}
-}
-
-type Getter string
-
-func (a Getter) Get(_ context.Context) (string, error) {
-	return string(a), nil
 }
 
 // GetACL retrieves access control information from the subject identified

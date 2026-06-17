@@ -47,25 +47,9 @@ func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Author
 	}
 }
 
-// getHTTPAuthenticationScheme grabs the scheme and token from the HTTP
-// Authorization header.
-func getHTTPAuthenticationScheme(r *http.Request) (string, string, error) {
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		return "", "", errors.AccessDenied(r, "authorization header missing")
-	}
-
-	parts := strings.Split(header, " ")
-	if len(parts) != 2 {
-		return "", "", errors.AccessDenied(r, "authorization header malformed")
-	}
-
-	return parts[0], parts[1], nil
-}
-
 // authorizeOAuth2 checks APIs that require and oauth2 bearer token.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
-	authorizationScheme, token, err := getHTTPAuthenticationScheme(r)
+	authorizationScheme, token, err := authorization.GetHTTPAuthenticationScheme(r)
 	if err != nil {
 		return nil, err
 	}
@@ -74,10 +58,10 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	// Dispatch on the JOSE header: a JWS (Auth0 access token) goes through the
-	// Auth0 validator when --auth0-exchange-* is configured; a UNI JWE access
-	// token follows the existing userinfo path. A bearer that is neither — or
-	// empty — is rejected before either validator.
+	// Dispatch on the JOSE header: a JWS (third-party access token) goes through
+	// the OIDC validator when --oidc-* is configured; a UNI JWE access token
+	// follows the existing userinfo path. A bearer that is neither — or empty —
+	// is rejected before either validator.
 	userinfo, claims, err := a.authenticator.GetUserinfoFromBearer(r.Context(), r, token)
 	if err != nil {
 		return nil, err

@@ -17,6 +17,8 @@ limitations under the License.
 package auth0_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
@@ -106,18 +108,13 @@ func (i *validatorTestIssuer) issuer() string {
 	return i.server.URL + "/"
 }
 
-type testAuthzClaims struct {
-	Acctype string   `json:"acctype"`
-	OrgIDs  []string `json:"orgIds"`
-}
-
 //nolint:tagliatelle
 type testTokenClaims struct {
 	jwt.Claims
 
-	Email         string          `json:"https://unikorn-cloud.org/email,omitempty"`
-	EmailVerified *bool           `json:"https://unikorn-cloud.org/email_verified,omitempty"`
-	Authz         testAuthzClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
+	GrantType     string `json:"gty,omitempty"`
+	Email         string `json:"https://unikorn-cloud.org/email,omitempty"`
+	EmailVerified *bool  `json:"https://unikorn-cloud.org/email_verified,omitempty"`
 }
 
 func (i *validatorTestIssuer) token(t *testing.T, mutate func(*testTokenClaims)) string {
@@ -151,15 +148,13 @@ func (i *validatorTestIssuer) forgedToken(t *testing.T) string {
 	return i.signedToken(t, attackerKey, kid, nil)
 }
 
-func (i *validatorTestIssuer) signedToken(t *testing.T, key *rsa.PrivateKey, kid string, mutate func(*testTokenClaims)) string {
-	t.Helper()
-
+func defaultTestClaims(issuer string) *testTokenClaims {
 	now := time.Now()
 	verified := true
 
-	claims := &testTokenClaims{
+	return &testTokenClaims{
 		Claims: jwt.Claims{
-			Issuer:   i.issuer(),
+			Issuer:   issuer,
 			Subject:  "auth0|user",
 			Audience: jwt.Audience{validatorTestAudience},
 			IssuedAt: jwt.NewNumericDate(now),
@@ -167,11 +162,13 @@ func (i *validatorTestIssuer) signedToken(t *testing.T, key *rsa.PrivateKey, kid
 		},
 		Email:         "User@Example.COM",
 		EmailVerified: &verified,
-		Authz: testAuthzClaims{
-			Acctype: "user",
-			OrgIDs:  []string{"org-1"},
-		},
 	}
+}
+
+func (i *validatorTestIssuer) signedToken(t *testing.T, key *rsa.PrivateKey, kid string, mutate func(*testTokenClaims)) string {
+	t.Helper()
+
+	claims := defaultTestClaims(i.issuer())
 
 	if mutate != nil {
 		mutate(claims)
@@ -190,6 +187,34 @@ func (i *validatorTestIssuer) signedToken(t *testing.T, key *rsa.PrivateKey, kid
 	require.NoError(t, err)
 
 	token, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	return token
+}
+
+// esSignedToken signs a well-formed claim set with ES256 under a throwaway EC
+// key. The validator pins RS256, so this must be rejected at parse time before
+// any key lookup — proving the algorithm allowlist is enforced and the token
+// header's alg cannot select the verification method.
+func (i *validatorTestIssuer) esSignedToken(t *testing.T) string {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.ES256,
+			Key: gojose.JSONWebKey{
+				Key:   key,
+				KeyID: "es-key",
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	token, err := jwt.Signed(signer).Claims(defaultTestClaims(i.issuer())).Serialize()
 	require.NoError(t, err)
 
 	return token
@@ -219,6 +244,21 @@ func TestValidate(t *testing.T) {
 
 	assert.Equal(t, "user@example.com", user.Email)
 	assert.True(t, user.Expiry.After(time.Now()))
+}
+
+// TestValidateAcceptsTokenWithoutAuthzClaim pins that the validator no longer
+// requires a unikorn-cloud.org/authz claim: organisation membership and RBAC
+// are resolved against our own graph, never read from the foreign token. The
+// default token carries no authz claim.
+func TestValidateAcceptsTokenWithoutAuthzClaim(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+	validator := newTestValidator(t, issuer.issuer())
+
+	user, err := validator.Validate(t.Context(), issuer.token(t, nil))
+	require.NoError(t, err)
+	assert.Equal(t, "user@example.com", user.Email)
 }
 
 func TestValidateRejectsInvalidClaims(t *testing.T) {
@@ -275,18 +315,14 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 			target: auth0.ErrEmailUnverified,
 		},
 		{
-			name: "wrong account type",
+			// A client-credentials grant is a machine principal: the
+			// third-party IdP is for users only, so it is rejected on the
+			// grant type, never allowed to masquerade as a user.
+			name: "client-credentials grant",
 			mutate: func(claims *testTokenClaims) {
-				claims.Authz.Acctype = "service"
+				claims.GrantType = "client-credentials"
 			},
-			target: auth0.ErrInvalidAuthzClaim,
-		},
-		{
-			name: "empty org IDs",
-			mutate: func(claims *testTokenClaims) {
-				claims.Authz.OrgIDs = nil
-			},
-			target: auth0.ErrInvalidAuthzClaim,
+			target: auth0.ErrNotAUser,
 		},
 	}
 
@@ -303,13 +339,27 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsDisallowedAlgorithm pins the algorithm allowlist: a token
+// signed with an algorithm other than the configured RS256 is rejected at
+// parse time, before any key lookup, so the token header's alg can never
+// select the verification method (none / alg-substitution defence).
+func TestValidateRejectsDisallowedAlgorithm(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+	validator := newTestValidator(t, issuer.issuer())
+
+	_, err := validator.Validate(t.Context(), issuer.esSignedToken(t))
+	require.ErrorIs(t, err, auth0.ErrInvalidToken)
+
+	// Rejection happened at parse time: the JWKS was never fetched.
+	assert.Equal(t, int64(0), issuer.jwksFetches.Load())
+}
+
 // TestValidateThrottlesForgedTokenJWKSFetches documents the JWKS DoS
-// mitigation. go-oidc refetches the JWKS whenever no cached key verifies a
-// token's signature, so without a bound, forged tokens reusing a known kid
-// would drive one Auth0 request per token and exhaust the tenant rate limit.
-// Within the refresh interval, forged tokens must be rejected without any
-// additional JWKS fetch, while legitimate tokens keep validating against the
-// cached key.
+// mitigation. A token forged under a known kid is rejected by the cached
+// key without any refetch, and the throttle bounds refetches besides, so a
+// stream of forged tokens cannot drive one upstream request per token.
 func TestValidateThrottlesForgedTokenJWKSFetches(t *testing.T) {
 	t.Parallel()
 
@@ -328,8 +378,8 @@ func TestValidateThrottlesForgedTokenJWKSFetches(t *testing.T) {
 
 	assert.Equal(t, int64(1), issuer.jwksFetches.Load())
 
-	// Legitimate traffic is unaffected by the throttle: the cached key
-	// verifies it without an upstream fetch.
+	// Legitimate traffic is unaffected: the cached key verifies it without an
+	// upstream fetch.
 	_, err = validator.Validate(t.Context(), issuer.token(t, nil))
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), issuer.jwksFetches.Load())

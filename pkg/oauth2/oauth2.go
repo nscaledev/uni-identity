@@ -97,13 +97,11 @@ type Options struct {
 	// CodeCacheSize is used to set the number of authorization code in flight.
 	CodeCacheSize int
 
-	// Auth0ExchangeIssuer is the Auth0 tenant issuer accepted as a passport
-	// exchange source token issuer.
-	Auth0ExchangeIssuer string
-
-	// Auth0ExchangeAudience is the Auth0 API audience accepted for passport
-	// exchange source tokens.
-	Auth0ExchangeAudience string
+	// OIDC configures local validation of third-party (federated user) access
+	// tokens against the issuer JWKS. Hard-coded to Auth0 behaviour for now;
+	// disabled when unset. The same config and flags are used by the remote
+	// middleware in downstream resource servers.
+	OIDC auth0.Options
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
@@ -113,8 +111,7 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.TokenLeewayDuration, "token-leeway", time.Minute, "How long to remove from the provider token expiry to account for network and processing latency.")
 	f.IntVar(&o.TokenCacheSize, "token-cache-size", 8192, "How many token cache entries to allow.")
 	f.IntVar(&o.CodeCacheSize, "code-cache-size", 8192, "How many code cache entries to allow.")
-	f.StringVar(&o.Auth0ExchangeIssuer, "auth0-exchange-issuer", "", "Auth0 tenant issuer accepted for passport token exchange.")
-	f.StringVar(&o.Auth0ExchangeAudience, "auth0-exchange-audience", "", "Auth0 API audience accepted for passport token exchange.")
+	o.OIDC.AddFlags(f)
 }
 
 // Authenticator provides Keystone authentication functionality.
@@ -155,16 +152,17 @@ type Authenticator struct {
 // New returns a new authenticator with required fields populated.
 // You must call AddFlags after this.
 //
-// Returns an error if the Auth0 exchange options are partially specified
-// (e.g. issuer set without audience). When Auth0 exchange is fully unset the
-// returned authenticator simply has no Auth0 validator wired up.
+// Returns an error if the third-party OIDC options are partially specified
+// (e.g. issuer set without audience). When they are fully unset the returned
+// authenticator simply has no third-party validator wired up.
 func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
-	auth0Validator, err := auth0.NewValidator(auth0.Options{
-		Issuer:                  options.Auth0ExchangeIssuer,
-		Audience:                options.Auth0ExchangeAudience,
-		TokenVerificationLeeway: options.TokenVerificationLeeway,
-	})
-	if err != nil && !goerrors.Is(err, auth0.ErrDisabled) {
+	// The third-party OIDC validator shares the platform's verification leeway;
+	// the rest of its config (issuer/audience) comes from the OIDC flags.
+	oidcOptions := options.OIDC
+	oidcOptions.TokenVerificationLeeway = options.TokenVerificationLeeway
+
+	auth0Validator, err := auth0.NewValidatorOrNil(oidcOptions)
+	if err != nil {
 		return nil, err
 	}
 

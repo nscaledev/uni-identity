@@ -28,21 +28,18 @@ import (
 )
 
 // errJWKSRefreshThrottled is returned when a JWKS fetch is attempted before
-// the minimum refresh interval has elapsed since the last attempt. It is
-// unexported because go-oidc wraps keyset errors with %v, so callers above
-// the verifier could never match it with errors.Is anyway.
+// the minimum refresh interval has elapsed since the last attempt.
 var errJWKSRefreshThrottled = errors.New("auth0 JWKS refresh throttled")
 
 // throttledTransport bounds the rate of upstream JWKS fetches.
 //
-// go-oidc's RemoteKeySet fetches the JWKS whenever no cached key verifies a
-// token's signature — for unknown kids and for forged signatures over known
-// kids alike — and only deduplicates concurrent fetches. A stream of invalid
-// tokens can therefore drive one HTTP request per token and exhaust the JWKS
-// endpoint's rate limit. Throttling at the HTTP layer bounds every fetch
-// trigger to one upstream request per minInterval: tokens that verify
-// against a cached key never reach this transport, and anything that demands
-// a refetch inside the window fails verification without contacting Auth0.
+// The keySet refetches the JWKS whenever a token presents a key ID absent from
+// the cache. A stream of unknown-kid tokens could therefore drive one HTTP
+// request per token and exhaust the JWKS endpoint's rate limit. Throttling at
+// the HTTP layer bounds every fetch trigger to one upstream request per
+// minInterval: tokens that verify against a cached key never reach this
+// transport, and anything that demands a refetch inside the window fails
+// verification without contacting Auth0.
 //
 // After a legitimate Auth0 key rotation, the first token demanding a refetch
 // fetches as normal (or waits out at most one window under attack), and the

@@ -39,6 +39,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -102,8 +103,10 @@ func setupAuth0PassportTestEnv(t *testing.T, auth0Issuer *auth0TestIssuer) *pass
 		TokenVerificationLeeway: 0,
 		TokenCacheSize:          1024,
 		CodeCacheSize:           1024,
-		Auth0ExchangeIssuer:     auth0Issuer.issuer(),
-		Auth0ExchangeAudience:   auth0TestAudience,
+		OIDC: auth0.Options{
+			Issuer:   auth0Issuer.issuer(),
+			Audience: auth0TestAudience,
+		},
 	}, &unikornv1.Organization{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: josetesting.Namespace,

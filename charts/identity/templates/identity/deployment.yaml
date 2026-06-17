@@ -24,12 +24,12 @@ spec:
         - --host=https://{{ include "unikorn.identity.host" . }}
         - --jose-tls-secret={{ .Release.Name }}-jose-tls
         - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
-        {{- with .Values.identity.auth0Exchange }}
+        {{- with .Values.identity.oidc }}
         {{- if .issuer }}
-        - --auth0-exchange-issuer={{ .issuer }}
+        - --oidc-issuer={{ .issuer }}
         {{- end }}
         {{- if .audience }}
-        - --auth0-exchange-audience={{ .audience }}
+        - --oidc-audience={{ .audience }}
         {{- end }}
         {{- end }}
         {{- $adminRoles := list }}

@@ -63,9 +63,10 @@ projectController:
 # oauth2 issuer etc.
 identity:
   host: identity.acme.org
-  # Auth0 access tokens from this issuer/audience may be exchanged for UNI
-  # passports. Leave unset to disable Auth0 token exchange.
-  auth0Exchange:
+  # Third-party OIDC access tokens from this issuer/audience are validated
+  # locally (against the issuer JWKS) as federated user tokens. Leave unset to
+  # disable third-party token validation. Hard-coded to Auth0 behaviour for now.
+  oidc:
     issuer: ~
     audience: ~
 

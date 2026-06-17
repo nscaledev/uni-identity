@@ -18,7 +18,6 @@ package oauth2
 
 import (
 	"context"
-	"encoding/base64"
 	goerrors "errors"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +32,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/bearer"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
@@ -705,93 +705,6 @@ func TestValidateTokenExchangeRequest(t *testing.T) {
 	}
 }
 
-func TestBearerTokenIsJWE(t *testing.T) {
-	t.Parallel()
-
-	header := func(claims string) string {
-		return base64.RawURLEncoding.EncodeToString([]byte(claims))
-	}
-
-	testCases := []struct {
-		name        string
-		token       string
-		expectJWE   bool
-		expectError bool
-	}{
-		{
-			name:      "JWS is not a JWE",
-			token:     header(`{"alg":"RS256","typ":"at+jwt"}`) + ".payload.signature",
-			expectJWE: false,
-		},
-		{
-			name:      "JWE detected by enc header",
-			token:     header(`{"alg":"A256GCMKW","enc":"A256GCM"}`) + ".key.iv.ciphertext.tag",
-			expectJWE: true,
-		},
-		{
-			name:        "opaque token has no header",
-			token:       "opaque-token",
-			expectError: true,
-		},
-		{
-			name:        "undecodable header",
-			token:       "!!!.payload.signature",
-			expectError: true,
-		},
-		{
-			name:        "unparseable header",
-			token:       header("not json") + ".payload.signature",
-			expectError: true,
-		},
-		{
-			name:        "header without alg is neither",
-			token:       header(`{"enc":"A256GCM"}`) + ".key.iv.ciphertext.tag",
-			expectError: true,
-		},
-		{
-			name:        "empty token",
-			token:       "",
-			expectError: true,
-		},
-		{
-			name:      "case-mismatched Enc is not treated as enc",
-			token:     header(`{"alg":"RS256","Enc":"A256GCM"}`) + ".payload.signature",
-			expectJWE: false,
-		},
-		{
-			name:        "case-mismatched ALG fails the alg check",
-			token:       header(`{"ALG":"RS256"}`) + ".payload.signature",
-			expectError: true,
-		},
-		{
-			name:        "JWS header with JWE segment count",
-			token:       header(`{"alg":"RS256"}`) + ".a.b.c.d",
-			expectError: true,
-		},
-		{
-			name:        "JWE header with JWS segment count",
-			token:       header(`{"alg":"A256GCMKW","enc":"A256GCM"}`) + ".payload.signature",
-			expectError: true,
-		},
-	}
-
-	for _, test := range testCases {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			isJWE, err := bearerTokenIsJWE(test.token)
-
-			if test.expectError {
-				require.ErrorIs(t, err, errUnrecognizedToken)
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, test.expectJWE, isJWE)
-		})
-	}
-}
-
 // TestDispatchUserinfoCountsUnroutableTokens pins the metric contract the
 // README markets: every unroutable bearer increments unroutableTokens, while
 // an empty bearer (a benign client misconfiguration) does not. It also covers
@@ -812,7 +725,7 @@ func TestDispatchUserinfoCountsUnroutableTokens(t *testing.T) {
 	// An opaque bearer is unroutable: counted, the parse cause is attached to
 	// the returned error for logging, and no partial result leaks out.
 	userinfo, claims, source, err := authenticator.dispatchUserinfo(t.Context(), req, "opaque", dispatchSurfaceBearer)
-	require.ErrorIs(t, err, errUnrecognizedToken)
+	require.ErrorIs(t, err, bearer.ErrUnrecognized)
 	require.Nil(t, userinfo)
 	require.Nil(t, claims)
 	require.Empty(t, source)
@@ -820,7 +733,7 @@ func TestDispatchUserinfoCountsUnroutableTokens(t *testing.T) {
 	// An empty bearer is rejected but must not pollute the format-change signal.
 	userinfo, claims, source, err = authenticator.dispatchUserinfo(t.Context(), req, "", dispatchSurfaceBearer)
 	require.Error(t, err)
-	require.NotErrorIs(t, err, errUnrecognizedToken)
+	require.NotErrorIs(t, err, bearer.ErrUnrecognized)
 	require.Nil(t, userinfo)
 	require.Nil(t, claims)
 	require.Empty(t, source)

@@ -18,16 +18,21 @@ limitations under the License.
 package authorizer_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
+	gojose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 
@@ -40,6 +45,7 @@ import (
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
@@ -61,15 +67,15 @@ const (
 	certificateName = "jose-tls"
 )
 
-// TestRemoteFederatedTokenAuthentication tests authentication via remote identity service.
+// TestRemoteFederatedTokenAuthentication tests that a Unikorn-issued token is
+// authenticated by an introspection (userinfo) call to identity.
 func TestRemoteFederatedTokenAuthentication(t *testing.T) {
 	t.Parallel()
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
 
-	// Create test request
 	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
@@ -78,48 +84,76 @@ func TestRemoteFederatedTokenAuthentication(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, info)
 	require.Equal(t, testSubject, info.Userinfo.Sub)
+	require.Equal(t, int32(1), server.Called.Load())
 }
 
-// TestRemoteTokenCaching tests that tokens are cached properly.
+// TestRemoteTokenCaching tests that the userinfo introspection result is cached
+// so a repeated token does not re-hit identity.
 func TestRemoteTokenCaching(t *testing.T) {
 	t.Parallel()
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
 
-	// First request
 	req1 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req1.Header.Set("Authorization", "Bearer "+accessToken)
 
 	info1, err := auth.Authorize(authInput(req1))
-
 	require.NoError(t, err)
 	require.NotNil(t, info1)
 
-	// Second request with same token (should hit cache)
 	req2 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req2.Header.Set("Authorization", "Bearer "+accessToken)
 
 	info2, err := auth.Authorize(authInput(req2))
-
 	require.NoError(t, err)
 	require.NotNil(t, info2)
 	require.Equal(t, info1.Userinfo.Sub, info2.Userinfo.Sub)
 	require.Equal(t, int32(1), server.Called.Load())
 }
 
-// TestRemoteInvalidToken tests authentication with an invalid token.
+// TestRemoteThirdPartyTokenAuthenticatedLocally tests that a third-party (Auth0)
+// JWS access token is validated fully locally against the issuer JWKS, with no
+// call to the identity service — the core Phase 1 property for the third-party
+// path.
+func TestRemoteThirdPartyTokenAuthenticatedLocally(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, _ := setupTestEnvironment(t)
+
+	idp := newThirdPartyIssuer(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), &auth0.Options{
+		Issuer:   idp.issuer(),
+		Audience: thirdPartyAudience,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+	req.Header.Set("Authorization", "Bearer "+idp.token(t))
+
+	info, err := auth.Authorize(authInput(req))
+
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	require.Equal(t, thirdPartyEmail, info.Userinfo.Sub)
+	require.NotNil(t, info.Userinfo.HttpsunikornCloudOrgauthz)
+	require.Equal(t, "user", string(info.Userinfo.HttpsunikornCloudOrgauthz.Acctype))
+	// Authentication did not consult identity: the third-party path is local.
+	require.Equal(t, int32(0), server.Called.Load())
+}
+
+// TestRemoteInvalidRequest tests authentication failures.
 func TestRemoteInvalidRequest(t *testing.T) {
 	t.Parallel()
 
 	k8sClient, server, _ := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
 
 	requestMutators := map[string]func(*http.Request){
 		"missing token": func(*http.Request) {},
-		"invalid token": func(req *http.Request) {
+		"unrecognized token": func(req *http.Request) {
 			req.Header.Set("Authorization", "Bearer invalid-token")
 		},
 		"unauthorized token": func(req *http.Request) {
@@ -148,13 +182,11 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
 
-	// Create test request
 	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	// Test Authorize with unsupported scheme
 	authInput := &openapi3filter.AuthenticationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{
 			Request: req,
@@ -175,34 +207,30 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 
 type server struct {
 	*mtlstest.MTLSServer
-	Called *atomic.Int32 // used to check that cache is used rather than repeating calls
+	Called *atomic.Int32 // counts identity userinfo introspection calls
 }
 
-// setupTestEnvironment creates a test environment with necessary K8s resources and identity server.
+// setupTestEnvironment creates a test environment with necessary K8s resources
+// and an identity server that serves the userinfo introspection endpoint.
 func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	t.Helper()
 
-	// Create K8s scheme and client
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	// We need to create the mTLS server early so we can use its certificates
-	// in the K8s secrets. However, we need the authenticator to create the
-	// handler, so we'll use a placeholder handler first.
 	var authenticator *oauth2.Authenticator
-	// Similarly, the handler needs the server URL, so declare first and assign after.
+
 	var mtlsServer *mtlstest.MTLSServer
 
 	var called atomic.Int32
 
-	// Create mTLS server with handler
 	var err error
+
 	mtlsServer, err = mtlstest.NewMTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			u := mtlsServer.URL()
-			// OIDC discovery endpoint
 			config := map[string]interface{}{
 				"issuer":                 u,
 				"userinfo_endpoint":      u + "/oauth2/v2/userinfo",
@@ -214,17 +242,23 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(config)
 
-		case "/oauth2/v2/token":
+		case "/oauth2/v2/userinfo":
 			called.Add(1)
 
-			result, err := authenticator.Token(w, r)
+			_, token, err := splitBearer(r)
+			if err != nil {
+				oauth2errors.HandleError(w, r, oauth2errors.OAuth2AccessDenied("missing bearer"))
+				return
+			}
+
+			userinfo, _, err := authenticator.GetUserinfoFromBearer(r.Context(), r, token)
 			if err != nil {
 				oauth2errors.HandleError(w, r, err)
 				return
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(result)
+			_ = json.NewEncoder(w).Encode(userinfo)
 
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -233,7 +267,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	require.NoError(t, err)
 	t.Cleanup(mtlsServer.Close)
 
-	// Create signing key secret (for JWT signing)
 	signingSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
@@ -245,7 +278,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		},
 	}
 
-	// Create client certificate secret (for mTLS)
 	clientCertSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
@@ -270,7 +302,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		},
 	}
 
-	// Create signing key resource
 	signingKey := &unikornv1.SigningKey{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
@@ -283,7 +314,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		},
 	}
 
-	// Create test user
 	user := &unikornv1.User{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
@@ -295,7 +325,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		},
 	}
 
-	// Create test service account
 	serviceAccount := &unikornv1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace + "-org",
@@ -313,16 +342,13 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			signingKey, user, serviceAccount).
 		Build()
 
-	// Create JWT issuer
 	issuer := jose.NewJWTIssuer(fakeClient, testNamespace, &jose.Options{
 		IssuerSecretName: certificateName,
 	})
 
-	// Create RBAC
 	rbacOptions := &rbac.Options{}
 	rbacClient := rbac.New(fakeClient, testNamespace, rbacOptions)
 
-	// Create oauth2 authenticator
 	oauth2Options := &oauth2.Options{
 		AccessTokenDuration: time.Hour,
 		TokenCacheSize:      10,
@@ -340,11 +366,10 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, userdb, rbacClient)
 	require.NoError(t, err)
 
-	// Issue a test token
 	ctx := t.Context()
 	issueInfo := &oauth2.IssueInfo{
 		Issuer:   mtlsServer.URL(),
-		Audience: u.Host, // the issuer is https://..., but the audience is the host.
+		Audience: u.Host,
 		Subject:  testSubject,
 		Type:     oauth2.TokenTypeFederated,
 		Federated: &oauth2.FederatedClaims{
@@ -363,6 +388,19 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	return fakeClient, &server{mtlsServer, &called}, accessToken
 }
 
+func splitBearer(r *http.Request) (string, string, error) {
+	return authorizationSchemeParts(r.Header.Get("Authorization"))
+}
+
+func authorizationSchemeParts(header string) (string, string, error) {
+	parts := strings.Split(header, " ")
+	if len(parts) != 2 {
+		return "", "", oauth2errors.OAuth2AccessDenied("malformed authorization header")
+	}
+
+	return parts[0], parts[1], nil
+}
+
 // The fields are all unexported, and the only way to set them is with flags. So,
 // flags we use.
 func createIdentityOptions(t *testing.T, host string) *identityclient.Options {
@@ -371,7 +409,6 @@ func createIdentityOptions(t *testing.T, host string) *identityclient.Options {
 	flags := pflag.NewFlagSet("test-identity-options", pflag.PanicOnError)
 	options := identityclient.NewOptions()
 	options.AddFlags(flags)
-	// there is a brittle dependence here on the service name prefix ("identity") being correct
 	require.NoError(t, flags.Set("identity-host", host))
 	require.NoError(t, flags.Set("identity-ca-secret-namespace", testNamespace))
 	require.NoError(t, flags.Set("identity-ca-secret-name", "ca-cert"))
@@ -385,20 +422,26 @@ func createCoreClientOptions(t *testing.T) *coreclient.HTTPClientOptions {
 	options := &coreclient.HTTPClientOptions{}
 	flags := pflag.NewFlagSet("test-http-options", pflag.PanicOnError)
 	options.AddFlags(flags)
-	// Configure client certificate for mTLS; these flags are defined in uni-core/pkg/client
 	require.NoError(t, flags.Set("client-certificate-namespace", testNamespace))
 	require.NoError(t, flags.Set("client-certificate-name", "client-cert"))
 
 	return options
 }
 
-func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string) *authorizer.Authorizer {
+func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string, oidc *auth0.Options) *authorizer.Authorizer {
 	t.Helper()
 
 	identityOptions := createIdentityOptions(t, issuer)
 	clientOptions := createCoreClientOptions(t)
 
-	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
+	if oidc == nil {
+		oidc = &auth0.Options{}
+	}
+
+	auth, err := authorizer.NewAuthenticationInfo(oidc)
+	require.NoError(t, err)
+
+	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions, auth)
 	require.NoError(t, err)
 
 	return a
@@ -423,7 +466,6 @@ func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
 
 	unauthNamespace := "unauthorised"
 
-	// Create a separate signing key secret with the unauthorized server's keys
 	unauthorizedSigningSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: unauthNamespace,
@@ -447,17 +489,103 @@ func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
 		},
 	}
 
-	// Create a separate k8s client with the unauthorized keys
 	unauthorizedClient := fake.NewClientBuilder().
 		WithScheme(k8sClient.Scheme()).
 		WithObjects(unauthorizedSigningSecret, unauthorizedSigningKey).
 		Build()
 
-	// Create issuer with the separate key
 	unauthorizedIssuer := jose.NewJWTIssuer(unauthorizedClient, unauthNamespace, &jose.Options{
 		IssuerSecretName: unauthorizedSigningSecret.Name,
 	})
 	token, err := unauthorizedIssuer.EncodeJWT(t.Context(), map[string]any{"iss": "https://unknown.example.com"})
+	require.NoError(t, err)
+
+	return token
+}
+
+// ---- third-party (Auth0-style) JWKS issuer for local-validation tests
+
+const (
+	thirdPartyAudience = "https://identity.example.com"
+	thirdPartyEmail    = "alice@customer.com"
+)
+
+type thirdPartyIssuer struct {
+	server *httptest.Server
+	key    *rsa.PrivateKey
+	kid    string
+}
+
+func newThirdPartyIssuer(t *testing.T) *thirdPartyIssuer {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	idp := &thirdPartyIssuer{
+		key: key,
+		kid: "third-party-key",
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		jwk := gojose.JSONWebKey{
+			Key:       &key.PublicKey,
+			KeyID:     idp.kid,
+			Algorithm: string(gojose.RS256),
+			Use:       "sig",
+		}
+
+		_ = json.NewEncoder(w).Encode(gojose.JSONWebKeySet{Keys: []gojose.JSONWebKey{jwk}})
+	})
+
+	idp.server = httptest.NewServer(mux)
+	t.Cleanup(idp.server.Close)
+
+	return idp
+}
+
+func (i *thirdPartyIssuer) issuer() string {
+	return i.server.URL + "/"
+}
+
+func (i *thirdPartyIssuer) token(t *testing.T) string {
+	t.Helper()
+
+	verified := true
+	now := time.Now()
+
+	//nolint:tagliatelle
+	claims := struct {
+		jwt.Claims
+
+		Email         string `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool  `json:"https://unikorn-cloud.org/email_verified"`
+	}{
+		Claims: jwt.Claims{
+			Issuer:   i.issuer(),
+			Subject:  "auth0|alice",
+			Audience: jwt.Audience{thirdPartyAudience},
+			IssuedAt: jwt.NewNumericDate(now),
+			Expiry:   jwt.NewNumericDate(now.Add(time.Minute)),
+		},
+		Email:         thirdPartyEmail,
+		EmailVerified: &verified,
+	}
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.RS256,
+			Key: gojose.JSONWebKey{
+				Key:   i.key,
+				KeyID: i.kid,
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
 	require.NoError(t, err)
 
 	return token
