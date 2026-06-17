@@ -31,6 +31,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
@@ -135,7 +136,7 @@ func (c *Client) generateAccessToken(ctx context.Context, organization *organiza
 		Subject:  serviceAccountID,
 		Type:     oauth2.TokenTypeServiceAccount,
 		ServiceAccount: &oauth2.ServiceAccountClaims{
-			OrganizationID: organization.ID,
+			OrganizationID: organization.ID.String(),
 		},
 		// TODO: allow the client to override this, but keep it capped to
 		// some server controlled value.
@@ -154,7 +155,7 @@ func (c *Client) generateAccessToken(ctx context.Context, organization *organiza
 // a new access token.
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ServiceAccountWrite) (*unikornv1.ServiceAccount, error) {
 	out := &unikornv1.ServiceAccount{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID.String()).Get(),
 		Spec: unikornv1.ServiceAccountSpec{
 			Tags: conversion.GenerateTagList(in.Metadata.Tags),
 		},
@@ -240,7 +241,7 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 }
 
 // Create makes a new service account and issues an access token.
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountCreate, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountCreate, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -268,7 +269,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 }
 
 // Get retrieves information about a service account.
-func (c *Client) Get(ctx context.Context, organizationID, serviceAccountID string) (*openapi.ServiceAccountRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string) (*openapi.ServiceAccountRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -288,7 +289,7 @@ func (c *Client) Get(ctx context.Context, organizationID, serviceAccountID strin
 }
 
 // List retrieves information about all service accounts in the organization.
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.ServiceAccounts, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.ServiceAccounts, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -310,7 +311,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Servi
 
 // Update modifies any metadata for the service account if it exists.  If a matching account
 // doesn't exist it raises an error.
-func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountRead, error) {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -361,7 +362,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 
 // Rotate is a special version of Update where everything about the resource is preserved
 // with the exception of the access token.
-func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID string) (*openapi.ServiceAccountCreate, error) {
+func (c *Client) Rotate(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string) (*openapi.ServiceAccountCreate, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -400,7 +401,7 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 }
 
 // Delete removes the service account and revokes the access token.
-func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err

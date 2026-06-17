@@ -24,6 +24,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
@@ -64,7 +65,7 @@ func convertList(in unikornv1.RoleList) openapi.Roles {
 	return out
 }
 
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Roles, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Roles, error) {
 	var result unikornv1.RoleList
 
 	if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: c.namespace}); err != nil {

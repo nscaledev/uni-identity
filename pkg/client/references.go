@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/manager"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -99,7 +100,17 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 		return err
 	}
 
-	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return fmt.Errorf("%w: invalid organization ID on resource", err)
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return fmt.Errorf("%w: invalid project ID on resource", err)
+	}
+
+	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, orgID, projID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}
@@ -132,7 +143,17 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 		return err
 	}
 
-	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return fmt.Errorf("%w: invalid organization ID on resource", err)
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return fmt.Errorf("%w: invalid project ID on resource", err)
+	}
+
+	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, orgID, projID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}
