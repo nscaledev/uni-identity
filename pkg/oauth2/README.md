@@ -85,146 +85,26 @@ can consume directly.
 
 ## Service Authentication Direction
 
-Historically, client credentials tokens were used as the service-to-service authentication and
-authorization mechanism, bound to X.509 client certificates.
+Service-to-service authentication is mTLS plus a propagated principal (`X-Principal`), not a token
+grant. The historical `client_credentials`/`svc` token path has been removed; this package no longer
+issues service-to-service tokens.
 
-That model is now transitional:
+## Token Issuance and Introspection
 
-- it was workable, but operationally messy
-- it has been superseded by direct mTLS identity derived from the client certificate common name
+The token endpoint issues UNI access tokens via the `authorization_code` and `refresh_token` grants
+only. UNI access tokens are JWEs that only the issuer can decrypt; `GetUserinfo` introspects them
+locally (decrypt, verify, and confirm the session / service-account record) and is what the OIDC
+`/oauth2/v2/userinfo` endpoint serves. There is no token-exchange / passport flow.
 
-The `client_credentials` path is therefore still part of the package, but it is not the preferred
-long-term service-to-service model.
+Authentication produces a **subject and account type only**. Organisation membership is
+authorisation data, owned by UNI and resolved by [`pkg/rbac`](../rbac/README.md) from the subject
+with request context — it is never enriched onto the userinfo or read from a token.
 
-## Token Exchange
-
-The token endpoint implements the RFC 8693 token-exchange grant for UNI passports.
-
-In the current flow, a caller presents a validated UNI access token as the `subject_token` and identity
-issues a short-lived signed passport JWT. The passport records the source identity, account type,
-organization context, optional project context, and requested audience/resource values. It does not
-embed an ACL. The exchange computes ACL only to authorize the requested organization/project scope;
-downstream services continue to resolve permissions through the normal remote authorizer path keyed
-off the passport-verified principal.
-
-Token-endpoint refusals follow RFC 6749 §5.2:
-
-- malformed token-exchange requests (missing or unsupported `subject_token` fields) →
-  `400 invalid_request`
-- presented subject-token failures (expired, malformed, principal not active) → `401 access_denied`
-- scope failures (valid subject token, principal not a member of the requested org/project) →
-  `400 invalid_scope`
-
-The remote middleware maps `invalid_scope` to `403 forbidden` at the API edge.
-
-Passport exchange is intentionally handled by the existing `/oauth2/v2/token` endpoint rather than a
-separate route. Token-exchange parameters must be form-encoded in the POST body so credentials are not
-accepted from URL query strings.
-
-This keeps room for alternate authentication frontends to complement this package rather than replace
-it: external authentication can happen outside identity, while identity remains the issuer of the
-internal token shape consumed by downstream UNI services.
-
-### Source-token types
-
-The `subject_token` presented to passport exchange may be either:
-
-- a UNI-issued access token, validated through `GetUserinfo` against the local user database, or
-- an Auth0 access-token JWT, validated through `pkg/oauth2/auth0` against the Auth0 tenant JWKS.
-
-#### The external IdP must issue transparent JWS access tokens, never opaque ones
-
-A third-party IdP must be configured to issue **transparent, signed (JWS) access tokens** — for
-Auth0 this means registering each resource server as an Auth0 API so tokens carry that API's
-identifier as their audience. Opaque access tokens (a bare reference with no locally verifiable
-structure, such as the token Auth0 mints for the userinfo endpoint alone) must **never** be used,
-and this is not a stylistic preference:
-
-- A JWS is verified **locally** at every resource server against cached JWKS — signature, issuer,
-  audience, algorithm and expiry — with no per-request call to the IdP. An invalid JWS fails
-  signature verification locally, before any upstream call.
-- An opaque token carries nothing to verify, so the only way to validate it is to call the IdP's
-  introspection endpoint **on every request**. That makes the external IdP a synchronous dependency
-  of every authenticated request and a denial-of-service amplifier: a flood of syntactically
-  plausible but invalid opaque tokens drives one introspection call each, exhausting the tenant rate
-  limit and risking IP blacklisting by the IdP.
-
-The validator enforces this by construction: it accepts only a JOSE-serialised JWS (the token
-router rejects anything that is neither a JWS nor a UNI JWE outright), and it pins the audience and
-algorithm explicitly. There is deliberately no opaque/introspection code path for production
-third-party tokens.
-
-The third-party path is opt-in and requires both `--oidc-issuer` and `--oidc-audience` to be set;
-partial configuration fails closed at startup. When only one of the two is set, the identity
-process refuses to start. When neither is set, third-party tokens are not accepted and the existing
-UNI path is unaffected. The same flags and `auth0.Options` configure local validation in the remote
-middleware that downstream resource servers run, so identity and the resource servers validate the
-same issuer/audience.
-
-For third-party (Auth0) tokens, validation is performed with **go-jose directly** — not an OIDC
-ID-token verifier, whose audience defaults do not match access-token validation — and covers the
-signature, issuer, audience, a pinned signature-algorithm allowlist (the token header `alg` is
-never trusted to select the method), temporal claims including expiry, and a verified email.
-Principal type is discriminated from Auth0's `gty` grant-type claim: a `client-credentials` grant is
-a machine principal and is rejected, because the third-party IdP is for users only; type is never
-inferred from the subject string. Crucially, **no authorization claim is read from the token** —
-organisation membership and RBAC are owned by UNI and resolved against its own graph, never
-asserted by a foreign IdP. Because Auth0 only places the standard `email`/`email_verified` claims on
-the ID token — and a post-login Action cannot set bare, non-namespaced claims on the access token —
-the Action surfaces them on the access token as the namespaced `https://unikorn-cloud.org/email` and
-`https://unikorn-cloud.org/email_verified` claims, which is where this validator reads them from.
-The minted passport's `source` claim records whether the exchange originated from a UNI or Auth0
-subject token, and the passport expiry is capped at the source token's `exp` so a passport never
-outlives the proof of identity that produced it.
-
-Auth0 access tokens may be presented in three ways:
-
-1. As the `subject_token` to the RFC 8693 token-exchange endpoint (`/oauth2/v2/token`),
-   which returns a signed passport.
-2. Directly as a bearer token to local-authorizer-protected endpoints (`/api/v1/*`),
-   where the local authorizer dispatches them via `GetUserinfoFromBearer`.
-3. Directly as a bearer token — or as the `access_token` form parameter — to the
-   OIDC-advertised userinfo endpoint (`/oauth2/v2/userinfo`, both `GET` and `POST`),
-   which dispatches via the same `GetUserinfoFromBearer` and returns the resolved
-   userinfo claims.
-
-All three paths use the same validation and membership resolution, via one shared dispatcher
-(`dispatchUserinfo`). It routes on the JOSE header rather than a token's dot count: UNI
-access tokens are JWEs (an `enc` header) and resolve through the local userinfo path, while
-a JWS is treated as an Auth0 access token. A bearer that is neither — for example after an
-upstream access-token format change — is rejected outright and counted by
-`unikorn_identity_bearer_tokens_unroutable`, so such a change alerts quickly instead of
-surfacing as scattered generic 401s. (An empty bearer is the common client misconfiguration,
-not a format change, so it is rejected without counting.) The two direct-bearer surfaces (the
-local authorizer and the userinfo endpoint) share the metric's `surface="bearer"` label,
-while token exchange reports `surface="exchange"`. Any unauthenticated caller can
-increment this counter
-with a garbage bearer, so alert on a sustained rise rather than isolated events and expect
-scanner noise. The two direct-bearer surfaces accept Auth0 tokens only when Auth0 exchange
-is configured, and avoid the token-exchange round-trip for user calls against the identity
-service itself; UNI access tokens resolve on the userinfo endpoint regardless of Auth0
-configuration, as they always have.
-
-The third-party validator throttles upstream JWKS fetches with a minimum refresh interval,
-enforced by an HTTP transport wrapped around the JWKS cache's client. The cache refetches the
-JWKS only when a token presents a key ID absent from the cache; concurrent refreshes are
-coalesced into a single fetch (one in-flight refresh per issuer), and a kid still absent after
-exactly one refetch is rejected, never retried. A stream of unknown-kid tokens could otherwise
-drive one JWKS request per token and exhaust the Auth0 tenant rate limit. Tokens verified by
-cached keys never reach the transport; a token demanding a refetch inside the interval is
-rejected as invalid without contacting Auth0. The interval is configurable via
-`Options.JWKSMinRefreshInterval` and defaults to 60s. Each fetch is also bounded by a client
-timeout so a hung fetch cannot wedge the key set.
-
-Each suppressed fetch increments the `unikorn_identity_auth0_jwks_refreshes_throttled`
-counter; a sustained rise is the refetch-storm attack signature and what to alert on. The
-throttled path also logs, but at most once per refresh interval — under a storm the
-throttle fires on nearly every request, so a per-request log would reproduce the flooding
-it prevents. Both this counter and `unikorn_identity_bearer_tokens_unroutable` are only
-exported when the service runs with `--otlp-endpoint` set: core attaches the metrics reader
-only then, and the chart leaves the endpoint unset by default, so a default deployment
-records the metrics but exports nothing and the alerts cannot fire until that endpoint is
-configured.
+Validation of **third-party (Auth0) access tokens** is not an issuance concern and lives outside
+this package, in [`pkg/middleware/openapi/idp`](../middleware/openapi/idp); the JOSE-shape routing
+that decides UNI-JWE-vs-third-party-JWS lives in
+[`pkg/middleware/openapi/bearer`](../middleware/openapi/bearer). Both authorizers
+([`pkg/middleware/openapi`](../middleware/openapi/README.md)) consume them.
 
 ## Caveats
 

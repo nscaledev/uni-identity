@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/unikorn-cloud/identity/pkg/oauth2/bearer"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/bearer"
 )
 
 func TestIsJWE(t *testing.T) {

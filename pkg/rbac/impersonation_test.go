@@ -22,10 +22,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -70,13 +73,118 @@ func impersonate(t *testing.T, f fixture, userSubject string) *openapi.Acl {
 	t.Helper()
 
 	acl, err := getACLForSystemAccount(t, f.rbac, impersonationServiceCN, &principal.Principal{
-		Type:            openapi.User,
-		Actor:           userSubject,
-		OrganizationIDs: []string{testOrgID},
+		Type:  openapi.User,
+		Actor: userSubject,
 	}, true)
 	require.NoError(t, err)
 
 	return acl
+}
+
+// TestImpersonation_DoesNotLeakOtherOrganizations is the confused-deputy
+// regression: a principal is strictly scoped to one organization, so a service
+// impersonating a user *in one organization* must never reach that user's
+// permissions in any *other* organization, even when the service's own ACL is a
+// global superset. Eve is a developer in both testOrgID and altOrgID; the
+// impersonated request is scoped to testOrgID, so altOrgID must not appear.
+func TestImpersonation_DoesNotLeakOtherOrganizations(t *testing.T) {
+	t.Parallel()
+
+	_, c := setupTestEnvironment(t)
+	ctx := t.Context()
+
+	// A registered impersonation service with a broad global ACL, so the
+	// intersection cannot mask a leak.
+	serviceRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: roleImpersonationService},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+					{Name: "project:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+					{Name: "project:deploy", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Update}},
+				},
+			},
+		},
+	}
+	require.NoError(t, c.Create(ctx, serviceRole))
+
+	const (
+		eveID      = "user-eve"
+		eveSubject = "eve@example.com"
+	)
+
+	// Eve is a developer in testOrgID (via the standard fixture group)...
+	createUser(t, c, eveID, eveSubject, []*unikornv1.Group{{ObjectMeta: metav1.ObjectMeta{Name: groupDevelopers}}})
+
+	// The global user resource name is what OrganizationUser membership is keyed
+	// on; resolve it rather than assuming the display name.
+	eveUser, err := userdb.NewUserDatabase(c, testNamespace).GetActiveUser(ctx, eveSubject)
+	require.NoError(t, err)
+
+	// ...and also an active member, with developer permissions, in altOrgID.
+	require.NoError(t, c.Create(ctx, &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: altOrgNS,
+			Name:      "orguser-eve-alt",
+			Labels: map[string]string{
+				constants.UserLabel:         eveUser.Name,
+				constants.OrganizationLabel: altOrgID,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+	}))
+	require.NoError(t, c.Create(ctx, &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{Namespace: altOrgNS, Name: "alt-developers"},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs:  []string{roleDeveloperID},
+			Subjects: []unikornv1.GroupSubject{{ID: eveSubject}},
+		},
+	}))
+
+	rbacClient := rbac.New(c, testNamespace, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{impersonationServiceCN: roleImpersonationService},
+	})
+
+	// Sanity: Eve's own unscoped ACL really does include altOrgID, so the
+	// confinement assertion below is meaningful and not vacuous.
+	directInfo := &authorization.Info{
+		Userinfo: &openapi.Userinfo{Sub: eveSubject, HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.User}},
+	}
+	directACL, err := rbacClient.GetACL(authorization.NewContext(ctx, directInfo), "")
+	require.NoError(t, err)
+	require.NotNil(t, directACL.Organizations)
+	require.True(t, orgListContains(directACL.Organizations, altOrgID),
+		"sanity: Eve must directly hold permissions in altOrgID")
+
+	// Impersonated, scoped to testOrgID: altOrgID must not appear anywhere.
+	impersonated, err := getACLForSystemAccount(t, rbacClient, impersonationServiceCN,
+		&principal.Principal{Type: openapi.User, Actor: eveSubject, OrganizationID: testOrgID}, true)
+	require.NoError(t, err)
+
+	if impersonated.Organizations != nil {
+		require.False(t, orgListContains(impersonated.Organizations, altOrgID),
+			"impersonation leaked the actor's other organization")
+	}
+
+	if impersonated.Organization != nil {
+		require.NotEqual(t, altOrgID, impersonated.Organization.Id,
+			"impersonation leaked the actor's other organization as the scoped org")
+	}
+}
+
+func orgListContains(orgs *openapi.AclOrganizationList, id string) bool {
+	if orgs == nil {
+		return false
+	}
+
+	for _, o := range *orgs {
+		if o.Id == id {
+			return true
+		}
+	}
+
+	return false
 }
 
 // TestImpersonation_ServiceHasGlobalSuperset_UserACLPassesThroughUnchanged verifies

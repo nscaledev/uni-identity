@@ -42,10 +42,11 @@ import (
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/idp"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
-	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
@@ -122,15 +123,15 @@ func TestRemoteThirdPartyTokenAuthenticatedLocally(t *testing.T) {
 
 	k8sClient, server, _ := setupTestEnvironment(t)
 
-	idp := newThirdPartyIssuer(t)
+	tpIssuer := newThirdPartyIssuer(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), &auth0.Options{
-		Issuer:   idp.issuer(),
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), &idp.Options{
+		Issuer:   tpIssuer.issuer(),
 		Audience: thirdPartyAudience,
 	})
 
 	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
-	req.Header.Set("Authorization", "Bearer "+idp.token(t))
+	req.Header.Set("Authorization", "Bearer "+tpIssuer.token(t))
 
 	info, err := auth.Authorize(authInput(req))
 
@@ -251,7 +252,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 				return
 			}
 
-			userinfo, _, err := authenticator.GetUserinfoFromBearer(r.Context(), r, token)
+			userinfo, _, err := authenticator.GetUserinfo(r.Context(), r, token)
 			if err != nil {
 				oauth2errors.HandleError(w, r, err)
 				return
@@ -428,17 +429,17 @@ func createCoreClientOptions(t *testing.T) *coreclient.HTTPClientOptions {
 	return options
 }
 
-func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string, oidc *auth0.Options) *authorizer.Authorizer {
+func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string, oidc *idp.Options) *authorizer.Authorizer {
 	t.Helper()
 
 	identityOptions := createIdentityOptions(t, issuer)
 	clientOptions := createCoreClientOptions(t)
 
 	if oidc == nil {
-		oidc = &auth0.Options{}
+		oidc = &idp.Options{}
 	}
 
-	auth, err := authorizer.NewAuthenticationInfo(oidc)
+	auth, err := openapimiddleware.NewAuthenticationInfo(oidc)
 	require.NoError(t, err)
 
 	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions, auth)

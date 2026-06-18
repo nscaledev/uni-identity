@@ -22,10 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
 
 	"github.com/onsi/ginkgo/v2"
 
@@ -47,14 +44,6 @@ type APIClient struct {
 	*coreclient.APIClient
 	config    *TestConfig
 	endpoints *Endpoints
-}
-
-func tokenExchangeGrantType() string {
-	return "urn:ietf:params:oauth:grant-type:token-exchange"
-}
-
-func accessTokenSubjectTokenType() string {
-	return "urn:ietf:params:oauth:token-type:access_token"
 }
 
 // GetEndpoints returns the endpoints helper for direct path access in tests.
@@ -552,140 +541,6 @@ func putResource[Req, R any](c *APIClient, ctx context.Context, path, resourceID
 	var result R
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("unmarshaling updated %s: %w", resourceKind, err)
-	}
-
-	return &result, nil
-}
-
-func (c *APIClient) exchangeForm(options *identityopenapi.TokenRequestOptions) url.Values {
-	form := url.Values{}
-
-	form.Set("grant_type", tokenExchangeGrantType())
-	form.Set("subject_token_type", accessTokenSubjectTokenType())
-
-	if c.config.AuthToken != "" {
-		form.Set("subject_token", c.config.AuthToken)
-	}
-
-	if options == nil {
-		return form
-	}
-
-	if options.RequestedTokenType != nil {
-		form.Set("requested_token_type", *options.RequestedTokenType)
-	}
-
-	if options.Audience != nil {
-		form.Set("audience", *options.Audience)
-	}
-
-	if options.Resource != nil {
-		form.Set("resource", *options.Resource)
-	}
-
-	if options.XOrganizationId != nil {
-		form.Set("x_organization_id", *options.XOrganizationId)
-	}
-
-	if options.XProjectId != nil {
-		form.Set("x_project_id", *options.XProjectId)
-	}
-
-	return form
-}
-
-// doFormRequest sends an application/x-www-form-urlencoded request. The shared
-// core test client always applies application/json when a body is present, so
-// OAuth2 form endpoints need a local path that sets the correct content type.
-func (c *APIClient) doFormRequest(ctx context.Context, path string, form url.Values, expectedStatus int) (*http.Response, []byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.config.BaseURL, "/")+path, strings.NewReader(form.Encode()))
-	if err != nil {
-		return nil, nil, fmt.Errorf("creating form request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	if c.config.AuthToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.config.AuthToken)
-	}
-
-	httpClient := &http.Client{Timeout: c.config.RequestTimeout}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("doing form request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return resp, nil, fmt.Errorf("reading form response body: %w", err)
-	}
-
-	if expectedStatus > 0 && resp.StatusCode != expectedStatus {
-		return resp, respBody, fmt.Errorf("expected %d, got %d, body: %s: %w",
-			expectedStatus, resp.StatusCode, string(respBody), coreclient.ErrUnexpectedStatusCode)
-	}
-
-	return resp, respBody, nil
-}
-
-// ExchangePassport exchanges an access token for a passport JWT via the RFC 8693 grant.
-// The options parameter is optional; pass nil for an unscoped exchange.
-func (c *APIClient) ExchangePassport(ctx context.Context, options *identityopenapi.TokenRequestOptions) (*identityopenapi.Token, error) {
-	path := c.endpoints.Token()
-
-	//nolint:bodyclose // DoRequest handles response body closing internally
-	_, respBody, err := c.doFormRequest(ctx, path, c.exchangeForm(options), http.StatusOK)
-	if err != nil {
-		return nil, fmt.Errorf("exchanging passport: %w", err)
-	}
-
-	var result identityopenapi.Token
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("unmarshaling token exchange result: %w", err)
-	}
-
-	return &result, nil
-}
-
-// ExchangePassportRaw performs a raw token-exchange request returning the HTTP response
-// and body bytes. Use this for testing error scenarios where the response may not
-// be a valid token result.
-func (c *APIClient) ExchangePassportRaw(ctx context.Context, expectedStatus int, options *identityopenapi.TokenRequestOptions) (*http.Response, []byte, error) {
-	path := c.endpoints.Token()
-
-	return c.doFormRequest(ctx, path, c.exchangeForm(options), expectedStatus)
-}
-
-// ExchangePassportRawForm performs a raw token request with caller-supplied
-// form parameters. Use this for protocol-negative tests that need malformed
-// or unsupported grant shapes.
-func (c *APIClient) ExchangePassportRawForm(ctx context.Context, expectedStatus int, form url.Values) (*http.Response, []byte, error) {
-	path := c.endpoints.Token()
-
-	return c.doFormRequest(ctx, path, form, expectedStatus)
-}
-
-// ExchangePassportRawPathForm performs a raw token request against a caller
-// supplied token path. Use this for protocol tests that include query params.
-func (c *APIClient) ExchangePassportRawPathForm(ctx context.Context, expectedStatus int, path string, form url.Values) (*http.Response, []byte, error) {
-	return c.doFormRequest(ctx, path, form, expectedStatus)
-}
-
-// GetJWKS fetches the OAuth2 JSON Web Key Set.
-func (c *APIClient) GetJWKS(ctx context.Context) (*identityopenapi.JwksResponse, error) {
-	path := c.endpoints.GetJWKS()
-
-	//nolint:bodyclose // DoRequest handles response body closing internally
-	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
-	if err != nil {
-		return nil, fmt.Errorf("getting JWKS: %w", err)
-	}
-
-	var result identityopenapi.JwksResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("unmarshaling JWKS: %w", err)
 	}
 
 	return &result, nil

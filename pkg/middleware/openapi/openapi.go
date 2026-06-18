@@ -33,7 +33,6 @@ import (
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/spf13/pflag"
 
-	"github.com/unikorn-cloud/core/pkg/client"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
@@ -351,25 +350,20 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
 // principal information from the request itself.
 func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, userinfo *identityapi.Userinfo) context.Context {
-	var (
-		organizationIDs []string
-		principalType   = identityapi.User
-	)
+	principalType := identityapi.User
 
-	if userinfo.HttpsunikornCloudOrgauthz != nil {
-		organizationIDs = userinfo.HttpsunikornCloudOrgauthz.OrgIds
-
-		if userinfo.HttpsunikornCloudOrgauthz.Acctype == identityapi.Service {
-			principalType = identityapi.Service
-		}
+	if userinfo.HttpsunikornCloudOrgauthz != nil && userinfo.HttpsunikornCloudOrgauthz.Acctype == identityapi.Service {
+		principalType = identityapi.Service
 	}
 
+	// The principal carries the subject (Actor) and type only; organization
+	// membership is authorization data resolved by rbac from the subject, never
+	// propagated on the principal.
 	p := &principal.Principal{
-		OrganizationID:  params["organizationID"],
-		OrganizationIDs: organizationIDs,
-		ProjectID:       params["projectID"],
-		Type:            principalType,
-		Actor:           userinfo.Sub,
+		OrganizationID: params["organizationID"],
+		ProjectID:      params["projectID"],
+		Type:           principalType,
+		Actor:          userinfo.Sub,
 	}
 
 	return principal.NewContext(ctx, p)
@@ -387,26 +381,7 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 	data, err := base64.RawURLEncoding.DecodeString(header)
 	if err != nil {
-		// TODO: fallback, delete me... I am VERY slow.
-		// Use the certificate of the service that actually called us.
-		// The one in the context is used to propagate token binding information.
-		certRaw, err := util.GetClientCertificateHeader(r.Header)
-		if err != nil {
-			return nil, err
-		}
-
-		certificate, err := util.GetClientCertificate(certRaw)
-		if err != nil {
-			return nil, err
-		}
-
-		p := &principal.Principal{}
-
-		if err := client.VerifyAndDecode(p, header, certificate); err != nil {
-			return nil, err
-		}
-
-		return principal.NewContext(ctx, p), nil
+		return nil, fmt.Errorf("%w: principal header is not valid base64: %w", ErrHeader, err)
 	}
 
 	p := &principal.Principal{}

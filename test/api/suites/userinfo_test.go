@@ -71,56 +71,6 @@ var _ = Describe("Userinfo", func() {
 				GinkgoWriter.Printf("acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
 			})
 
-			It("should include a non-empty orgIds list in the custom authz claims", func() {
-				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
-					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
-
-				userinfo, err := client.GetUserinfo(ctx)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(BeEmpty(),
-					"orgIds must contain at least one organisation ID")
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
-					"authz claims must not include organizations outside the token scope")
-
-				GinkgoWriter.Printf("orgIds count: %d\n",
-					len(userinfo.HttpsunikornCloudOrgauthz.OrgIds))
-			})
-
-			It("should return orgIds that are consistent with the organizations list", func() {
-				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
-					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
-
-				userinfo, err := client.GetUserinfo(ctx)
-
-				Expect(err).NotTo(HaveOccurred())
-				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
-
-				orgs, err := client.ListOrganizations(ctx)
-				Expect(err).NotTo(HaveOccurred())
-
-				var orgIDs []string
-				for _, org := range orgs {
-					orgIDs = append(orgIDs, org.Metadata.Id)
-				}
-
-				Expect(orgIDs).To(ContainElement(config.OrgID))
-				Expect(orgIDs).NotTo(ContainElement(config.UnauthorisedOrgID),
-					"organizations list must not include organizations outside the token scope")
-
-				expectedOrgIDs := make([]interface{}, 0, len(orgIDs))
-				for _, orgID := range orgIDs {
-					expectedOrgIDs = append(expectedOrgIDs, orgID)
-				}
-
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ConsistOf(expectedOrgIDs...),
-					"orgIds in authz claims must exactly match the organizations list")
-
-				GinkgoWriter.Printf("orgIds from claims: %v match organizations list\n",
-					userinfo.HttpsunikornCloudOrgauthz.OrgIds)
-			})
 		})
 
 		Describe("Given no authentication", func() {
@@ -152,10 +102,6 @@ var _ = Describe("Userinfo", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
 				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User))
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
-
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
-					"user authz claims must not include organizations the user is not a member of")
 				Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
 				Expect(userinfo.Email).NotTo(BeNil())
 				Expect(*userinfo.Email).To(Equal(config.UserSubjectEmail))
@@ -178,9 +124,6 @@ var _ = Describe("Userinfo", func() {
 				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
 				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.Service))
 				Expect(userinfo.Sub).To(Equal(config.UserSAID))
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).To(ContainElement(config.OrgID))
-				Expect(userinfo.HttpsunikornCloudOrgauthz.OrgIds).NotTo(ContainElement(config.UnauthorisedOrgID),
-					"service-account authz claims must not include organizations outside the token scope")
 				GinkgoWriter.Printf("Service account acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
 			})
 		})

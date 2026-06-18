@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package auth0_test
+package idp_test
 
 import (
 	"crypto/ecdsa"
@@ -35,7 +35,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/idp"
 )
 
 const validatorTestAudience = "https://identity.example.com"
@@ -220,10 +220,10 @@ func (i *validatorTestIssuer) esSignedToken(t *testing.T) string {
 	return token
 }
 
-func newTestValidator(t *testing.T, issuer string) *auth0.Validator {
+func newTestValidator(t *testing.T, issuer string) *idp.Validator {
 	t.Helper()
 
-	validator, err := auth0.NewValidator(auth0.Options{
+	validator, err := idp.NewValidator(idp.Options{
 		Issuer:   issuer,
 		Audience: validatorTestAudience,
 	})
@@ -276,35 +276,35 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 			mutate: func(claims *testTokenClaims) {
 				claims.Issuer = "https://wrong.example.com/"
 			},
-			target: auth0.ErrInvalidToken,
+			target: idp.ErrInvalidToken,
 		},
 		{
 			name: "wrong audience",
 			mutate: func(claims *testTokenClaims) {
 				claims.Audience = jwt.Audience{"https://wrong.example.com"}
 			},
-			target: auth0.ErrInvalidToken,
+			target: idp.ErrInvalidToken,
 		},
 		{
 			name: "expired",
 			mutate: func(claims *testTokenClaims) {
 				claims.Expiry = jwt.NewNumericDate(time.Now().Add(-1 * time.Minute))
 			},
-			target: auth0.ErrInvalidToken,
+			target: idp.ErrInvalidToken,
 		},
 		{
 			name: "not yet valid",
 			mutate: func(claims *testTokenClaims) {
 				claims.NotBefore = jwt.NewNumericDate(time.Now().Add(time.Minute))
 			},
-			target: auth0.ErrInvalidToken,
+			target: idp.ErrInvalidToken,
 		},
 		{
 			name: "missing email",
 			mutate: func(claims *testTokenClaims) {
 				claims.Email = ""
 			},
-			target: auth0.ErrMissingEmail,
+			target: idp.ErrMissingEmail,
 		},
 		{
 			name: "unverified email",
@@ -312,7 +312,7 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 				verified := false
 				claims.EmailVerified = &verified
 			},
-			target: auth0.ErrEmailUnverified,
+			target: idp.ErrEmailUnverified,
 		},
 		{
 			// A client-credentials grant is a machine principal: the
@@ -322,7 +322,7 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 			mutate: func(claims *testTokenClaims) {
 				claims.GrantType = "client-credentials"
 			},
-			target: auth0.ErrNotAUser,
+			target: idp.ErrNotAUser,
 		},
 	}
 
@@ -350,7 +350,7 @@ func TestValidateRejectsDisallowedAlgorithm(t *testing.T) {
 	validator := newTestValidator(t, issuer.issuer())
 
 	_, err := validator.Validate(t.Context(), issuer.esSignedToken(t))
-	require.ErrorIs(t, err, auth0.ErrInvalidToken)
+	require.ErrorIs(t, err, idp.ErrInvalidToken)
 
 	// Rejection happened at parse time: the JWKS was never fetched.
 	assert.Equal(t, int64(0), issuer.jwksFetches.Load())
@@ -373,7 +373,7 @@ func TestValidateThrottlesForgedTokenJWKSFetches(t *testing.T) {
 
 	for range 5 {
 		_, err := validator.Validate(t.Context(), issuer.forgedToken(t))
-		require.ErrorIs(t, err, auth0.ErrInvalidToken)
+		require.ErrorIs(t, err, idp.ErrInvalidToken)
 	}
 
 	assert.Equal(t, int64(1), issuer.jwksFetches.Load())
@@ -397,7 +397,7 @@ func TestValidatePicksUpKeyRotation(t *testing.T) {
 	// guaranteeing the rotation happens after the window, without needing
 	// clock control. Within-window rejection is pinned by the forged-token
 	// and transport tests.
-	validator, err := auth0.NewValidator(auth0.Options{
+	validator, err := idp.NewValidator(idp.Options{
 		Issuer:                 issuer.issuer(),
 		Audience:               validatorTestAudience,
 		JWKSMinRefreshInterval: time.Nanosecond,
@@ -420,7 +420,7 @@ func TestValidatePicksUpKeyRotation(t *testing.T) {
 func TestNewValidatorRejectsPartialConfig(t *testing.T) {
 	t.Parallel()
 
-	validator, err := auth0.NewValidator(auth0.Options{Issuer: "https://tenant.auth0.com/"})
-	require.ErrorIs(t, err, auth0.ErrInvalidConfig)
+	validator, err := idp.NewValidator(idp.Options{Issuer: "https://tenant.idp.com/"})
+	require.ErrorIs(t, err, idp.ErrInvalidConfig)
 	assert.Nil(t, validator)
 }

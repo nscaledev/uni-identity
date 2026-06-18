@@ -23,8 +23,6 @@ import "github.com/unikorn-cloud/identity/pkg/openapi"
 type Principal struct {
 	// OrganizationID of the originating request (optional).
 	OrganizationID string `json:"organizationId,omitempty"`
-	// OrganizationIDs records the full set of organizations the actor can access.
-	OrganizationIDs []string `json:"organizationIds,omitempty"`
 	// ProjectID of the originating request (optional).
 	ProjectID string `json:"projectId,omitempty"`
 	// Type of the originating actor. This reuses the OpenAPI auth claim values.

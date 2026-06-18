@@ -34,7 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
-	"github.com/unikorn-cloud/identity/pkg/oauth2/bearer"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/bearer"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -64,14 +64,14 @@ type Authorizer struct {
 	options       *identityclient.Options
 	clientOptions *coreclient.HTTPClientOptions
 	httpClient    *http.Client
-	auth          *AuthenticationInfo
+	auth          *openapi.AuthenticationInfo
 	tokenCache    *cache.LRUExpireCache[string, *identityapi.Userinfo]
 }
 
 var _ openapi.Authorizer = &Authorizer{}
 
 // NewAuthorizer returns a new authorizer with required parameters.
-func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, auth *AuthenticationInfo) (*Authorizer, error) {
+func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, auth *openapi.AuthenticationInfo) (*Authorizer, error) {
 	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
 	if err != nil {
 		return nil, err
@@ -160,7 +160,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	// the issuer JWKS when a third-party IdP is configured. When it is not, a
 	// JWS falls through to the Unikorn userinfo path, which rejects it — a
 	// Unikorn access token is a JWE.
-	if !isJWE && a.auth != nil && a.auth.thirdParty != nil {
+	if !isJWE && a.auth != nil && a.auth.ThirdParty() != nil {
 		return a.authorizeThirdParty(r, rawToken)
 	}
 
@@ -173,7 +173,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 // graph via GetACL, never read from the foreign token, so no OrgIds are set
 // here.
 func (a *Authorizer) authorizeThirdParty(r *http.Request, token string) (*authorization.Info, error) {
-	user, err := a.auth.thirdParty.Validate(r.Context(), token)
+	user, err := a.auth.ThirdParty().Validate(r.Context(), token)
 	if err != nil {
 		return nil, errors.AccessDenied(r, "token validation failed").WithError(err)
 	}

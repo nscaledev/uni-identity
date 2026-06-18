@@ -24,30 +24,59 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	middleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/bearer"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/util"
 )
 
-// Authorizer provides OpenAPI based authorization middleware.
+// Authorizer provides OpenAPI based authorization middleware for the identity
+// service itself. It authenticates bearer tokens in-process — third-party
+// (Auth0) tokens against the issuer JWKS, Unikorn-issued tokens by local
+// decryption — and resolves ACLs directly against rbac. It produces a subject
+// and account type only; organization membership is resolved by rbac.
 type Authorizer struct {
 	authenticator *oauth2.Authenticator
 	rbac          *rbac.RBAC
+	auth          *middleware.AuthenticationInfo
+
+	// unroutableTokens counts bearer tokens that are neither a UNI access token
+	// (JWE) nor a JWS, e.g. after an upstream token-format change.
+	unroutableTokens metric.Int64Counter
 }
 
+var _ middleware.Authorizer = &Authorizer{}
+
 // NewAuthorizer returns a new authorizer with required parameters.
-func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC) *Authorizer {
+func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC, auth *middleware.AuthenticationInfo) *Authorizer {
+	// The error only reports an invalid instrument configuration; the API
+	// returns a usable no-op counter regardless, so there is nothing actionable
+	// to handle.
+	unroutableTokens, _ := otel.Meter(constants.Application).Int64Counter(
+		"unikorn_identity_bearer_tokens_unroutable",
+		metric.WithDescription("Bearer tokens that are neither a UNI access token (JWE) nor a JWS."),
+		metric.WithUnit("{token}"),
+	)
+
 	return &Authorizer{
-		authenticator: authenticator,
-		rbac:          rbac,
+		authenticator:    authenticator,
+		rbac:             rbac,
+		auth:             auth,
+		unroutableTokens: unroutableTokens,
 	}
 }
 
-// authorizeOAuth2 checks APIs that require and oauth2 bearer token.
+// authorizeOAuth2 authenticates an oauth2 bearer token, routing on the JOSE
+// header: a JWS is a third-party (Auth0) access token validated locally against
+// the issuer JWKS; a JWE is a Unikorn access token decrypted in-process. A
+// bearer that is neither is rejected and counted.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	authorizationScheme, token, err := authorization.GetHTTPAuthenticationScheme(r)
 	if err != nil {
@@ -58,11 +87,52 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	// Dispatch on the JOSE header: a JWS (third-party access token) goes through
-	// the OIDC validator when --oidc-* is configured; a UNI JWE access token
-	// follows the existing userinfo path. A bearer that is neither — or empty —
-	// is rejected before either validator.
-	userinfo, claims, err := a.authenticator.GetUserinfoFromBearer(r.Context(), r, token)
+	isJWE, err := bearer.IsJWE(token)
+	if err != nil {
+		a.unroutableTokens.Add(r.Context(), 1)
+
+		return nil, errors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
+	}
+
+	// A JWS is a third-party access token: validate it locally against the
+	// issuer JWKS when a third-party IdP is configured. Without one, a JWS falls
+	// through to the UNI path, which rejects it (a UNI token is a JWE).
+	if !isJWE && a.auth != nil && a.auth.ThirdParty() != nil {
+		return a.authorizeThirdParty(r, token)
+	}
+
+	return a.authorizeUnikorn(r, token)
+}
+
+// authorizeThirdParty validates a federated user token locally. It yields the
+// subject only; organization membership and RBAC are resolved by rbac from the
+// subject, never read from the foreign token.
+func (a *Authorizer) authorizeThirdParty(r *http.Request, token string) (*authorization.Info, error) {
+	user, err := a.auth.ThirdParty().Validate(r.Context(), token)
+	if err != nil {
+		return nil, errors.AccessDenied(r, "token validation failed").WithError(err)
+	}
+
+	verified := true
+	email := user.Email
+
+	return &authorization.Info{
+		Token: token,
+		Userinfo: &openapi.Userinfo{
+			Sub:           user.Email,
+			Email:         &email,
+			EmailVerified: &verified,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: openapi.User,
+			},
+		},
+	}, nil
+}
+
+// authorizeUnikorn resolves a Unikorn-issued token (user or service account) by
+// in-process decryption and verification.
+func (a *Authorizer) authorizeUnikorn(r *http.Request, token string) (*authorization.Info, error) {
+	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
 	if err != nil {
 		return nil, err
 	}
@@ -77,30 +147,6 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		info.ClientID = claims.Federated.ClientID
 	case oauth2.TokenTypeServiceAccount:
 		info.ServiceAccount = true
-	// TODO: delete me, services should use mTLS alone.
-	case oauth2.TokenTypeService:
-		// All API requests will ultimately end up here as service call back
-		// into the identity service to validate the token presented to the API.
-		// If the token is bound to a certificate, we also expect the client
-		// certificate to be presented by the first client in the chain and
-		// propagated here.
-		certPEM, err := authorization.ClientCertFromContext(r.Context())
-		if err != nil {
-			return nil, errors.AccessDenied(r, "client certificate not present for bound token").WithError(err)
-		}
-
-		certificate, err := util.GetClientCertificate(certPEM)
-		if err != nil {
-			return nil, errors.AccessDenied(r, "client certificate parse error").WithError(err)
-		}
-
-		thumbprint := util.GetClientCertifcateThumbprint(certificate)
-
-		if thumbprint != claims.Service.X509Thumbprint {
-			return nil, errors.AccessDenied(r, "client certificate mismatch for bound token")
-		}
-
-		info.SystemAccount = true
 	}
 
 	return info, nil

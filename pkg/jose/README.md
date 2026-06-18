@@ -64,18 +64,12 @@ Higher layers should not redefine those rules independently.
   leader election, and the `SigningKey` resource.
 - Signing and encryption material are intentionally coupled. That is a pragmatic design here, but
   it should not be mistaken for a generic best-practice template.
-- The package contains a transition compatibility path for decrypting older `ECDH_ES` tokens even
-  though new token issue had already switched to `A256GCMKW`.
-- `ECDH_ES` was an expedient choice when originally written, but it is not an acceptable steady-state
-  issue model here. Anyone with the public key material from JWKS can encrypt their own token
-  payloads. The only reason the decode fallback is tolerable as a migration aid is that ES512
-  signatures are still enforced on the nested token.
-- That `ECDH_ES` path is a bounded, one-way migration aid for already-issued tokens, not a permanent
-  design requirement or mixed ongoing algorithm support.
-  `A256GCMKW` issuance landed in commit `194bc975` and first shipped in `v1.4.0` on July 31, 2025.
-  The fallback was explicitly added in commit `a54875e3` and first shipped in `v1.4.1` on August 18,
-  2025. With the default 90-day token/renewal window from the charts, the conservative safe-removal
-  point was approximately November 16, 2025.
+- Access tokens are signed (ES512) then encrypted under a symmetric key (`A256GCMKW`) that the issuer
+  alone holds, so no other party can mint or decrypt one. The algorithms are pinned at decode via the
+  standard `jwt.ParseSignedAndEncrypted`. The historical one-way `ECDH_ES` decrypt fallback — a
+  bounded migration aid whose safe-removal window (≈November 16, 2025) has passed — has been removed;
+  there is no mixed-algorithm support.
+
 ## Cross-Repo Context
 
 The package exposes a JWKS-based trust model that can be consumed outside `identity` itself. Other

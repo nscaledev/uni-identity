@@ -36,6 +36,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/idp"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -69,6 +70,10 @@ type Server struct {
 
 	// OpenAPIOptions are for OpenAPI processing.
 	OpenAPIOptions openapimiddleware.Options
+
+	// IDPOptions configures local validation of third-party (federated user)
+	// access tokens (the --oidc-* flags). Disabled when unset.
+	IDPOptions idp.Options
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -80,6 +85,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
+	s.IDPOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
@@ -132,8 +138,16 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
-	// Setup middleware.
-	authorizer := local.NewAuthorizer(oauth2, rbac)
+	// Setup middleware. The third-party OIDC validator shares the platform's
+	// verification leeway; its issuer/audience come from the --oidc-* flags.
+	s.IDPOptions.TokenVerificationLeeway = s.OAuth2Options.TokenVerificationLeeway
+
+	authInfo, err := openapimiddleware.NewAuthenticationInfo(&s.IDPOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	authorizer := local.NewAuthorizer(oauth2, rbac, authInfo)
 	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
 	audit := audit.New(constants.Application, constants.Version)
 

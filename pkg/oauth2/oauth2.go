@@ -35,17 +35,13 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/google/uuid"
 	"github.com/spf13/pflag"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/oauth2"
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
-	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/html"
 	"github.com/unikorn-cloud/identity/pkg/jose"
-	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/providers"
@@ -53,7 +49,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
-	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/utils/ptr"
@@ -96,12 +91,6 @@ type Options struct {
 
 	// CodeCacheSize is used to set the number of authorization code in flight.
 	CodeCacheSize int
-
-	// OIDC configures local validation of third-party (federated user) access
-	// tokens against the issuer JWKS. Hard-coded to Auth0 behaviour for now;
-	// disabled when unset. The same config and flags are used by the remote
-	// middleware in downstream resource servers.
-	OIDC auth0.Options
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
@@ -111,7 +100,6 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.TokenLeewayDuration, "token-leeway", time.Minute, "How long to remove from the provider token expiry to account for network and processing latency.")
 	f.IntVar(&o.TokenCacheSize, "token-cache-size", 8192, "How many token cache entries to allow.")
 	f.IntVar(&o.CodeCacheSize, "code-cache-size", 8192, "How many code cache entries to allow.")
-	o.OIDC.AddFlags(f)
 }
 
 // Authenticator provides Keystone authentication functionality.
@@ -140,53 +128,21 @@ type Authenticator struct {
 
 	// codeCache is used to protect against authorization code reuse.
 	codeCache *cache.LRUExpireCache
-
-	// auth0Validator validates Auth0 access tokens accepted by passport exchange.
-	auth0Validator *auth0.Validator
-
-	// unroutableTokens counts bearer tokens that classify as neither a UNI
-	// access token (JWE) nor a JWS, e.g. after an upstream token-format change.
-	unroutableTokens metric.Int64Counter
 }
 
 // New returns a new authenticator with required fields populated.
 // You must call AddFlags after this.
-//
-// Returns an error if the third-party OIDC options are partially specified
-// (e.g. issuer set without audience). When they are fully unset the returned
-// authenticator simply has no third-party validator wired up.
 func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
-	// The third-party OIDC validator shares the platform's verification leeway;
-	// the rest of its config (issuer/audience) comes from the OIDC flags.
-	oidcOptions := options.OIDC
-	oidcOptions.TokenVerificationLeeway = options.TokenVerificationLeeway
-
-	auth0Validator, err := auth0.NewValidatorOrNil(oidcOptions)
-	if err != nil {
-		return nil, err
-	}
-
-	// The error only reports an invalid instrument configuration; the name,
-	// description, and unit are static and the API returns a usable no-op
-	// counter regardless, so there is nothing actionable to handle.
-	unroutableTokens, _ := otel.Meter(constants.Application).Int64Counter(
-		"unikorn_identity_bearer_tokens_unroutable",
-		metric.WithDescription("Bearer tokens that are neither a UNI access token (JWE) nor a JWS."),
-		metric.WithUnit("{token}"),
-	)
-
 	return &Authenticator{
-		options:          options,
-		namespace:        namespace,
-		client:           client,
-		issuer:           issuer,
-		jwtIssuer:        jwtIssuer,
-		userdb:           userdb,
-		rbac:             rbac,
-		tokenCache:       cache.NewLRUExpireCache(options.TokenCacheSize),
-		codeCache:        cache.NewLRUExpireCache(options.CodeCacheSize),
-		auth0Validator:   auth0Validator,
-		unroutableTokens: unroutableTokens,
+		options:    options,
+		namespace:  namespace,
+		client:     client,
+		issuer:     issuer,
+		jwtIssuer:  jwtIssuer,
+		userdb:     userdb,
+		rbac:       rbac,
+		tokenCache: cache.NewLRUExpireCache(options.TokenCacheSize),
+		codeCache:  cache.NewLRUExpireCache(options.CodeCacheSize),
 	}, nil
 }
 
@@ -1334,67 +1290,22 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 	return result, nil
 }
 
-// TokenClientCredentials issues a token if the client credentials are valid.  We only support
-// mTLS based authentication.
-// TODO: delete me, services should use mTLS alone.
-func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
-	certPEM, err := util.GetClientCertificateHeader(r.Header)
-	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("mTLS client verification failed").WithError(err)
-	}
-
-	certificate, err := util.GetClientCertificate(certPEM)
-	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("mTLS certificate validation failed").WithError(err)
-	}
-
-	thumbprint := util.GetClientCertifcateThumbprint(certificate)
-
-	info := &IssueInfo{
-		Issuer:   a.getInternalIssuer(),
-		Audience: a.getAudience(),
-		Subject:  certificate.Subject.CommonName,
-		Type:     TokenTypeService,
-		Service: &ServiceClaims{
-			X509Thumbprint: thumbprint,
-		},
-	}
-
-	tokens, err := a.Issue(r.Context(), info)
-	if err != nil {
-		return nil, err
-	}
-
-	result := &openapi.Token{
-		TokenType:   "Bearer",
-		AccessToken: tokens.AccessToken,
-		ExpiresIn:   int(time.Until(tokens.Expiry).Seconds()),
-	}
-
-	return result, nil
-}
-
 // Token issues an OAuth2 access token from the provided authorization code.
 func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
 	if err := r.ParseForm(); err != nil {
 		return nil, errors.OAuth2InvalidRequest("failed to parse form data: " + err.Error())
 	}
 
-	// We support 4 grant types:
+	// We support 2 grant types:
 	// * "authorization_code" is used by all humans in the system
 	// * "refresh_token" is used by anyone to get a new access token
-	// * "client_credentials" is used by other services for IPC
-	// * "urn:ietf:params:oauth:grant-type:token-exchange" (RFC 8693) is used to
-	//   exchange a validated source token for a signed UNI passport
+	// Service-to-service authentication uses mTLS plus a propagated principal,
+	// not a token grant.
 	switch openapi.GrantType(r.Form.Get("grant_type")) {
 	case openapi.AuthorizationCode:
 		return a.TokenAuthorizationCode(w, r)
 	case openapi.RefreshToken:
 		return a.TokenRefreshToken(w, r)
-	case openapi.ClientCredentials:
-		return a.TokenClientCredentials(w, r)
-	case openapi.UrnIetfParamsOauthGrantTypeTokenExchange:
-		return a.TokenExchange(w, r)
 	}
 
 	return nil, errors.OAuth2InvalidRequest("token grant type is not supported")
@@ -1420,6 +1331,9 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		HttpsunikornCloudOrgauthz: authz,
 	}
 
+	// Authentication yields the subject and account type only. Organisation
+	// membership is authorisation data, resolved by RBAC from the subject — it
+	// is never enriched onto the userinfo here.
 	switch claims.Type {
 	case TokenTypeFederated:
 		if slices.Contains(claims.Federated.Scope, "email") {
@@ -1428,25 +1342,8 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 		}
 
 		authz.Acctype = openapi.User
-
-		orgs, err := a.userdb.GetOrganizationIDs(ctx, claims.Subject)
-		if err != nil {
-			if goerrors.Is(err, userdb.ErrResourceReference) {
-				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
-			}
-
-			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
-		}
-
-		if orgs != nil {
-			authz.OrgIds = orgs
-		}
 	case TokenTypeServiceAccount:
 		authz.Acctype = openapi.Service
-		authz.OrgIds = []string{claims.ServiceAccount.OrganizationID}
-	case TokenTypeService:
-		authz.Acctype = openapi.System
-		authz.OrgIds = []string{}
 	}
 
 	return userinfo, claims, nil

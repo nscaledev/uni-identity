@@ -14,34 +14,34 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package authorizer
+package openapi
 
 import (
-	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/idp"
 )
 
-// AuthenticationInfo describes how this resource server authenticates the
-// bearer tokens it is presented:
+// AuthenticationInfo describes how a resource server authenticates the bearer
+// tokens it is presented. It is shared by both authorizers:
 //
-//   - Unikorn-issued tokens (users and service accounts) are the fallback and
-//     are resolved via the identity service's userinfo endpoint (introspection
-//     and the service-token revocation point). This needs no state here.
+//   - Unikorn-issued tokens (users and service accounts) are the fallback. The
+//     local authorizer decrypts them in-process; the remote authorizer resolves
+//     them via identity's userinfo endpoint. Neither needs state here.
 //   - An optional third-party IdP (users only) is validated fully locally
-//     against its JWKS. thirdParty is nil when no third-party IdP is configured.
+//     against its JWKS. ThirdParty returns nil when none is configured.
 //
 // The provider behaviour is hard-coded to Auth0 for now; the configuration
-// (auth0.Options, with its shared --oidc-* flags) is kept generic so a
-// different issuer is a config change rather than a reshape.
+// (idp.Options, with its shared --oidc-* flags) is kept generic so a different
+// issuer is a config change rather than a reshape.
 type AuthenticationInfo struct {
-	thirdParty *auth0.Validator
+	thirdParty *idp.Validator
 }
 
 // NewAuthenticationInfo builds the authentication info from the third-party
 // OIDC options. When they are unset, the resource server accepts only
 // Unikorn-issued tokens; when partially set, an error is returned.
-func NewAuthenticationInfo(oidc *auth0.Options) (*AuthenticationInfo, error) {
+func NewAuthenticationInfo(oidc *idp.Options) (*AuthenticationInfo, error) {
 	// Provider behaviour is hard-coded to Auth0 for now.
-	validator, err := auth0.NewValidatorOrNil(*oidc)
+	validator, err := idp.NewValidatorOrNil(*oidc)
 	if err != nil {
 		return nil, err
 	}
@@ -49,4 +49,10 @@ func NewAuthenticationInfo(oidc *auth0.Options) (*AuthenticationInfo, error) {
 	return &AuthenticationInfo{
 		thirdParty: validator,
 	}, nil
+}
+
+// ThirdParty returns the third-party IdP validator, or nil when no third-party
+// IdP is configured (in which case only Unikorn-issued tokens are accepted).
+func (a *AuthenticationInfo) ThirdParty() *idp.Validator {
+	return a.thirdParty
 }

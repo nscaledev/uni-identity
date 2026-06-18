@@ -66,19 +66,21 @@ that keeps those two models separate while presenting handlers with one normaliz
 
 The package has two important integration modes:
 
-- `local`, used by the identity service itself, where token validation and ACL resolution are handled
-  directly against local `oauth2` and `rbac`
-- `remote`, used by other services, where bearer tokens are validated locally (third-party tokens
-  against the issuer JWKS) or by an introspection call to identity (Unikorn tokens via `userinfo`),
-  and ACLs are fetched back from identity over the service client path
+- `local`, used by the identity service itself, where third-party tokens are validated locally
+  against the issuer JWKS, Unikorn tokens are decrypted/introspected in-process via `oauth2`, and
+  ACLs are resolved in-process via `rbac`
+- `remote`, used by other services, where third-party tokens are validated locally against the
+  issuer JWKS, Unikorn tokens are introspected by an RPC to identity's `userinfo` endpoint, and ACLs
+  are fetched back from identity over the service client path
 
-The shared `openapi` middleware layer defines the common request pipeline and the cache/propagation
-rules across both modes. The two authorizers share the third-party OIDC validator
-([`pkg/oauth2/auth0`](../../oauth2/auth0)), the token-shape router
-([`pkg/oauth2/bearer`](../../oauth2/bearer)) and the `Authorization` header parser
-([`authorization.GetHTTPAuthenticationScheme`](../authorization)); the only real difference between
-them is that the `local` authorizer executes `userinfo` and `GetACL` in-process, while the `remote`
-authorizer reaches them by RPC.
+The shared `openapi` middleware layer defines the common request pipeline, the cache/propagation
+rules, and the `AuthenticationInfo` both authorizers carry. They share the third-party OIDC
+validator ([`idp`](idp)), the token-shape router ([`bearer`](bearer)) and the `Authorization` header
+parser ([`authorization.GetHTTPAuthenticationScheme`](../authorization)). Both produce a **subject
+and account type only** — organisation membership is resolved by `rbac` from the subject, never
+carried on the userinfo or principal. The only real difference between them is that the `local`
+authorizer executes `userinfo` and `GetACL` in-process, while the `remote` authorizer reaches them
+by RPC.
 
 ### Distributed Local Validation
 
@@ -115,17 +117,11 @@ request model and should be treated as part of the security boundary, not merely
 ## Caveats
 
 - This package contains real trust-boundary logic, not just glue code.
-- Some transitional behaviour still exists around principal extraction and historical propagation
-  formats; these paths should be reviewed as deletion candidates rather than normalized into the
-  long-term design.
+- Principal propagation is a single format: the `X-Principal` header carries a base64url-encoded JSON
+  principal. There is no longer a certificate-based extraction fallback.
 - Remote third-party (Auth0) validation is fully local against the issuer JWKS and makes no identity
   round-trip. Remote Unikorn-token validation depends on a `userinfo` introspection round-trip per
   cache miss (cache hits avoid it) and fails closed past the staleness budget.
-
-## TODO
-
-- Remove the legacy principal extraction/verification fallback once all callers use the current
-  propagation model.
 
 ## Related Documentation
 
