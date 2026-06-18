@@ -7,7 +7,9 @@ This package is the cryptographic trust anchor for identity, primarily for `pkg/
 The package owns two tightly related responsibilities:
 
 - signing-key lifecycle management
-- JOSE/JWT/JWE issue and verification primitives
+- JOSE/JWT issue and verification primitives, both signed (JWS, `EncodeJWS`/`DecodeJWS` — used for
+  transparent access tokens) and signed-then-encrypted (JWE, `EncodeJWEToken`/`DecodeJWEToken` —
+  used for identity-internal artifacts)
 
 Its primary consumer is `pkg/oauth2`, which relies on it to issue and validate the tokens used
 by the identity service. It is also general enough to issue JWTs for other audiences that can

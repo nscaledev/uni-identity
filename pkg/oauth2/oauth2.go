@@ -1312,28 +1312,39 @@ func (a *Authenticator) Token(w http.ResponseWriter, r *http.Request) (*openapi.
 }
 
 // GetUserinfo does access token introspection.
-func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
-	verifyInfo := &VerifyInfo{
+// VerifyAccessToken verifies a presented access token — a legacy JWE or a JWS —
+// is from us, for us, in date, and backed by a live (un-revoked) session, and
+// returns its claims. It is the shared verification step behind both userinfo
+// introspection and the identity service's own local authorizer, which builds
+// its principal directly from the returned claims.
+func (a *Authenticator) VerifyAccessToken(ctx context.Context, r *http.Request, token string) (*Claims, error) {
+	claims, err := a.Verify(ctx, &VerifyInfo{
 		Issuer:   a.getInternalIssuer(),
 		Audience: a.getAudience(),
 		Token:    token,
-	}
-
-	// Check the token is from us, for us, and in date.
-	claims, err := a.Verify(ctx, verifyInfo)
+	})
 	if err != nil {
-		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
+		return nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
-	authz := &openapi.AuthClaims{}
+	return claims, nil
+}
+
+func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
+	claims, err := a.VerifyAccessToken(ctx, r, token)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	userinfo := &openapi.Userinfo{
-		Sub:                       claims.Subject,
-		HttpsunikornCloudOrgauthz: authz,
+		Sub: claims.Subject,
 	}
 
 	// Authentication yields the subject and account type only. Organisation
 	// membership is authorisation data, resolved by RBAC from the subject — it
-	// is never enriched onto the userinfo here.
+	// is never enriched onto the userinfo here. The account type is published so
+	// a resource server introspecting an opaque (legacy JWE) token can recover
+	// it — a transparent JWS carries it in its own claims.
 	switch claims.Type {
 	case TokenTypeFederated:
 		if slices.Contains(claims.Federated.Scope, "email") {
@@ -1341,9 +1352,9 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 			userinfo.EmailVerified = ptr.To(true)
 		}
 
-		authz.Acctype = openapi.User
+		userinfo.Acctype = ptr.To(openapi.User)
 	case TokenTypeServiceAccount:
-		authz.Acctype = openapi.Service
+		userinfo.Acctype = ptr.To(openapi.Service)
 	}
 
 	return userinfo, claims, nil

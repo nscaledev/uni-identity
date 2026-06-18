@@ -19,8 +19,6 @@ package principal
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -48,12 +46,16 @@ func Injector(cli client.Client, options *coreclient.HTTPClientOptions) func(con
 			return err
 		}
 
-		data, err := json.Marshal(principal)
+		// Sign the principal as a JWS, keyed off this service's X.509 client
+		// certificate, so the receiver can verify a trusted service minted it and
+		// an end user cannot forge their own. A raw base64 header would carry no
+		// such integrity.
+		value, err := options.EncodeAndSign(ctx, cli, principal)
 		if err != nil {
 			return err
 		}
 
-		r.Header.Set(Header, base64.RawURLEncoding.EncodeToString(data))
+		r.Header.Set(Header, value)
 
 		if ImpersonateFromContext(ctx) {
 			r.Header.Set(ImpersonateHeader, "true")
@@ -103,7 +105,7 @@ func FromResource(resource metav1.Object) (*Principal, error) {
 	principal := &Principal{
 		OrganizationID: organizationID,
 		ProjectID:      projectID,
-		Actor:          actor,
+		Subject:        actor,
 	}
 
 	return principal, nil

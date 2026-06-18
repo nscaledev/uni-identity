@@ -24,6 +24,18 @@ type Component struct {
 
 type Actor struct {
 	Subject string `json:"subject"`
+	// Issuer is the identity provider that authenticated the subject (the token
+	// issuer, or a marker for non-token identities).
+	Issuer string `json:"issuer,omitempty"`
+	// Delegate is the authenticated caller that performed the request on the
+	// subject's behalf, present only for an impersonated/delegated call.
+	Delegate *Delegate `json:"delegate,omitempty"`
+}
+
+// Delegate is the party that performed a request on another subject's behalf.
+type Delegate struct {
+	Subject string `json:"subject"`
+	Issuer  string `json:"issuer,omitempty"`
 }
 
 type Resource struct {

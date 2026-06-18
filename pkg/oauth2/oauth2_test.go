@@ -284,8 +284,8 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				assert.Nil(t, userinfo.EmailVerified)
 			}
 
-			require.NotNil(t, userinfo.HttpsunikornCloudOrgauthz)
-			assert.Equal(t, tc.expectedType, userinfo.HttpsunikornCloudOrgauthz.Acctype)
+			require.NotNil(t, userinfo.Acctype)
+			assert.Equal(t, tc.expectedType, *userinfo.Acctype)
 		})
 	}
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -124,14 +125,27 @@ func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handle
 		return
 	}
 
+	// The authenticated caller (info) performs the request. On an impersonated
+	// call it does so on behalf of a different principal: attribute the event to
+	// that principal and record the caller as the delegate, so the trail names
+	// both — otherwise an impersonated action would be logged against the
+	// relaying service rather than the user it acted as.
+	actor := &Actor{Subject: info.Subject, Issuer: info.Issuer}
+
+	if principal.ImpersonateFromContext(r.Context()) {
+		if p, err := principal.FromContext(r.Context()); err == nil {
+			actor.Delegate = &Delegate{Subject: actor.Subject, Issuer: actor.Issuer}
+			actor.Subject = p.Subject
+			actor.Issuer = p.Issuer
+		}
+	}
+
 	logParams := []any{
 		"component", &Component{
 			Name:    l.application,
 			Version: l.version,
 		},
-		"actor", &Actor{
-			Subject: info.Userinfo.Sub,
-		},
+		"actor", actor,
 		"operation", &Operation{
 			Verb: r.Method,
 		},

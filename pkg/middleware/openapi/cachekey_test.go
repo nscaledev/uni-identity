@@ -35,16 +35,16 @@ func TestACLCacheKey(t *testing.T) {
 	// header is audit-only and RBAC still resolves against the authenticated
 	// caller.
 	directInfo := &authorization.Info{
-		Userinfo: &identityapi.Userinfo{
-			Sub: "user-1",
+		Principal: &principal.Principal{
+			Subject: "user-1",
 		},
 	}
 
 	serviceInfo := &authorization.Info{
-		Userinfo: &identityapi.Userinfo{
-			Sub: "compute-service",
+		Principal: &principal.Principal{
+			Subject: "compute-service",
+			Type:    identityapi.System,
 		},
-		SystemAccount: true,
 	}
 
 	t.Run("DirectIncludesOrganizationScope", func(t *testing.T) {
@@ -65,7 +65,7 @@ func TestACLCacheKey(t *testing.T) {
 		t.Parallel()
 
 		ctx := principal.NewContext(t.Context(), &principal.Principal{
-			Actor: "someone-else",
+			Subject: "someone-else",
 		})
 
 		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
@@ -78,7 +78,7 @@ func TestACLCacheKey(t *testing.T) {
 		t.Parallel()
 
 		ctx := principal.NewContext(t.Context(), &principal.Principal{
-			Actor: "user-1",
+			Subject: "user-1",
 		})
 		ctx = principal.NewImpersonateContext(ctx)
 
@@ -97,15 +97,15 @@ func TestACLCacheKey(t *testing.T) {
 		t.Parallel()
 
 		ctx := principal.NewContext(t.Context(), &principal.Principal{
-			Actor: "user-1",
+			Subject: "user-1",
 		})
 		ctx = principal.NewImpersonateContext(ctx)
 
 		otherServiceInfo := &authorization.Info{
-			Userinfo: &identityapi.Userinfo{
-				Sub: "region-service",
+			Principal: &principal.Principal{
+				Subject: "region-service",
+				Type:    identityapi.System,
 			},
-			SystemAccount: true,
 		}
 
 		computeKey, err := aclCacheKey(ctx, serviceInfo, "org-1")
@@ -123,7 +123,7 @@ func TestACLCacheKey(t *testing.T) {
 		t.Parallel()
 
 		ctx := principal.NewContext(t.Context(), &principal.Principal{
-			Actor: "user-1",
+			Subject: "user-1",
 		})
 		ctx = principal.NewImpersonateContext(ctx)
 

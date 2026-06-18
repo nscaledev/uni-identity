@@ -18,7 +18,12 @@ Its main responsibilities are:
 
 ## Invariants
 
-- `Info` is the canonical request-local authorization payload.
+- `Info` is the canonical request-local authorization payload: the authenticated identity (a
+  [`pkg/principal.Principal`](../../principal/README.md) — the `Subject` the request is performed as,
+  its account `Type`, and the `Issuer` that vouched for it) plus the raw access token, retained so
+  the remote authorizer can relay it as the bearer on its `GetACL` call. A service account is
+  `Type == openapi.Service`; there is no separate flag. Identity only — organisation membership is
+  resolved later by `rbac` from the subject, never carried here.
 - Authorization facts are set once by trusted middleware and then consumed downstream.
 - The propagated client certificate is carried verbatim from the trusted ingress/service chain
   headers and is used primarily for certificate-bound token handling.

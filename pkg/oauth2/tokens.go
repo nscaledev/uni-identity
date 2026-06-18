@@ -30,6 +30,7 @@ import (
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/bearer"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -210,7 +211,10 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 		ServiceAccount: info.ServiceAccount,
 	}
 
-	at, err := a.jwtIssuer.EncodeJWEToken(ctx, atClaims, jose.TokenTypeAccessToken)
+	// Access tokens are signed JWS (transparent: resource servers verify them
+	// locally against the published JWKS). Refresh tokens stay JWE — they are
+	// identity-internal and never presented to a resource server.
+	at, err := a.jwtIssuer.EncodeJWS(ctx, atClaims, jose.TokenTypeAccessToken)
 	if err != nil {
 		return nil, err
 	}
@@ -281,11 +285,17 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 		return claims, nil
 	}
 
-	// Parse and verify the claims with the public key.
+	// Parse and verify the claims with the public key. New access tokens are
+	// JWS; legacy ones are JWE and remain valid until they rotate out, so decode
+	// either shape.
 	claims := &Claims{}
 
-	if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
-		return nil, fmt.Errorf("failed to decrypt claims: %w", err)
+	if isJWE, _ := bearer.IsJWE(info.Token); isJWE {
+		if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
+			return nil, fmt.Errorf("failed to decrypt claims: %w", err)
+		}
+	} else if err := a.jwtIssuer.DecodeJWS(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
+		return nil, fmt.Errorf("failed to verify claims: %w", err)
 	}
 
 	// Verify the claims.

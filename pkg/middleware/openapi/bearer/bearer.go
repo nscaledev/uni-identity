@@ -15,10 +15,11 @@ limitations under the License.
 */
 
 // Package bearer inspects the shape of a bearer token so a resource server can
-// route it to the correct verification strategy: a UNI access token is a JWE,
-// a third-party (Auth0) access token is a JWS. It is a leaf package with no
-// dependency on the identity server internals, so the remote middleware can
-// route tokens without importing the full oauth2 package.
+// route it to the correct verification strategy. A legacy UNI access token is a
+// JWE (routed by shape); a JWS — whether UNI-issued or third-party — is routed
+// by its issuer claim. It is a leaf package with no dependency on the identity
+// server internals, so the middleware can route tokens without importing the
+// heavy oauth2 package.
 package bearer
 
 import (
@@ -27,7 +28,18 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
+
+// routingSignatureAlgorithms are the JWS algorithms the platform issues (ES512)
+// or accepts from an external issuer (RS256). Reading a JWS's issuer for routing
+// parses under this allowlist; the resolver re-pins the algorithm per issuer
+// before trusting anything.
+//
+//nolint:gochecknoglobals
+var routingSignatureAlgorithms = []jose.SignatureAlgorithm{jose.ES512, jose.RS256}
 
 // ErrUnrecognized is returned when a bearer token is neither a JWS nor a JWE —
 // its JOSE header is absent, unparseable, or inconsistent with the
@@ -82,4 +94,29 @@ func IsJWE(token string) (bool, error) {
 	}
 
 	return isJWE, nil
+}
+
+// UnverifiedIssuer reads the "iss" claim from a JWS WITHOUT verifying the
+// signature, using go-jose. The name is deliberate: the returned issuer is an
+// untrusted routing hint only. The resolver re-checks the issuer and re-verifies
+// the signature against that issuer's trusted JWKS before any claim is acted on,
+// so reading the claim here does not establish trust — it only selects which
+// trusted configuration to verify against. It returns ErrUnrecognized for a
+// non-JWS (e.g. a JWE, whose payload is encrypted) or a payload with no iss.
+func UnverifiedIssuer(token string) (string, error) {
+	parsed, err := jwt.ParseSigned(token, routingSignatureAlgorithms)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrUnrecognized, err)
+	}
+
+	claims := jwt.Claims{}
+	if err := parsed.UnsafeClaimsWithoutVerification(&claims); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrUnrecognized, err)
+	}
+
+	if claims.Issuer == "" {
+		return "", fmt.Errorf("%w: payload has no iss", ErrUnrecognized)
+	}
+
+	return claims.Issuer, nil
 }

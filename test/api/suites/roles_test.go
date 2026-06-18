@@ -54,17 +54,17 @@ var _ = Describe("Role Management", func() {
 						"Role provisioning status should not be empty")
 					Expect(role.Metadata.ProvisioningStatus).To(BeElementOf(
 						coreopenapi.ResourceProvisioningStatusProvisioning,
-					coreopenapi.ResourceProvisioningStatusProvisioned,
-					coreopenapi.ResourceProvisioningStatusDeprovisioning,
-					coreopenapi.ResourceProvisioningStatusError),
+						coreopenapi.ResourceProvisioningStatusProvisioned,
+						coreopenapi.ResourceProvisioningStatusDeprovisioning,
+						coreopenapi.ResourceProvisioningStatusError),
 						"Role provisioning status should be valid")
 
 					Expect(role.Metadata.HealthStatus).NotTo(BeEmpty(),
 						"Role health status should not be empty")
 					Expect(role.Metadata.HealthStatus).To(BeElementOf(
-					coreopenapi.ResourceHealthStatusHealthy,
-					coreopenapi.ResourceHealthStatusDegraded,
-					coreopenapi.ResourceHealthStatusError),
+						coreopenapi.ResourceHealthStatusHealthy,
+						coreopenapi.ResourceHealthStatusDegraded,
+						coreopenapi.ResourceHealthStatusError),
 						"Role health status should be valid")
 
 					description := "No description"

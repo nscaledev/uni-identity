@@ -138,11 +138,19 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
-	// Setup middleware. The third-party OIDC validator shares the platform's
-	// verification leeway; its issuer/audience come from the --oidc-* flags.
+	// Setup middleware. UNI-issued JWS access tokens are verified in-process
+	// against our own keys; the resolver is configured only with the external
+	// OIDC issuer (when set), whose issuer/audience come from the --oidc-* flags
+	// and which shares the platform's verification leeway. The platform issuer
+	// URL is the routing key for our own tokens.
 	s.IDPOptions.TokenVerificationLeeway = s.OAuth2Options.TokenVerificationLeeway
 
-	authInfo, err := openapimiddleware.NewAuthenticationInfo(&s.IDPOptions)
+	var issuers []idp.IssuerConfig
+	if s.IDPOptions.Enabled() {
+		issuers = append(issuers, s.IDPOptions.IssuerConfig())
+	}
+
+	authInfo, err := openapimiddleware.NewAuthenticationInfo(s.HandlerOptions.Issuer.URL, issuers...)
 	if err != nil {
 		return nil, err
 	}

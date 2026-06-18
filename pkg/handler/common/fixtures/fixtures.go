@@ -40,14 +40,15 @@ const (
 // for a handler unit test.
 func HandlerContextFixture(ctx context.Context, flags int) context.Context {
 	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: TokenActor,
+		Principal: &principal.Principal{
+			Type:    openapi.User,
+			Subject: TokenActor,
 		},
 	}
 
 	p := &principal.Principal{
-		Type:  openapi.User,
-		Actor: PrincipalActor,
+		Type:    openapi.User,
+		Subject: PrincipalActor,
 	}
 
 	if flags&(WithOrganization|WithProject) != 0 {

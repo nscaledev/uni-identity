@@ -227,13 +227,10 @@ type AllocationWrite struct {
 	Spec AllocationSpec `json:"spec"`
 }
 
-// AuthClaims Custom claims for authorisation, specific to UNI
-type AuthClaims struct {
-	// Acctype Denotes the type of account represented. This is non-standard claim.
-	Acctype AuthClaimsAcctype `json:"acctype"`
-}
-
-// AuthClaimsAcctype Denotes the type of account represented. This is non-standard claim.
+// AuthClaimsAcctype The type of account represented. This is a non-standard claim. It is
+// published on userinfo so a resource server introspecting an opaque
+// (legacy JWE) access token can recover the account type that a transparent
+// JWS carries in its own claims.
 type AuthClaimsAcctype string
 
 // AuthMethod Supported authentication methods.
@@ -802,6 +799,12 @@ type UserWrite struct {
 
 // Userinfo Access token introspection data.
 type Userinfo struct {
+	// Acctype The type of account represented. This is a non-standard claim. It is
+	// published on userinfo so a resource server introspecting an opaque
+	// (legacy JWE) access token can recover the account type that a transparent
+	// JWS carries in its own claims.
+	Acctype *AuthClaimsAcctype `json:"acctype,omitempty"`
+
 	// Birthdate The users' birth date formatted according to ISO8601.  The year portion may be 0000 if they choose not to reveal they are really old.
 	Birthdate *time.Time `json:"birthdate,omitempty"`
 
@@ -819,9 +822,6 @@ type Userinfo struct {
 
 	// GivenName The user's forename.
 	GivenName *string `json:"given_name,omitempty"`
-
-	// HttpsunikornCloudOrgauthz Custom claims for authorisation, specific to UNI
-	HttpsunikornCloudOrgauthz *AuthClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
 
 	// Locale The user's RFC5646 language tag.
 	Locale *string `json:"locale,omitempty"`

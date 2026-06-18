@@ -62,13 +62,13 @@ var _ = Describe("Userinfo", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(userinfo).NotTo(BeNil())
-				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil(),
+				Expect(userinfo.Acctype).NotTo(BeNil(),
 					"https://unikorn-cloud.org/authz claim must be present")
 
-				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.Service),
+				Expect(*userinfo.Acctype).To(Equal(identityopenapi.Service),
 					"default fixture token should be a service-account token")
 
-				GinkgoWriter.Printf("acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
+				GinkgoWriter.Printf("acctype: %s\n", *userinfo.Acctype)
 			})
 
 		})
@@ -100,13 +100,13 @@ var _ = Describe("Userinfo", func() {
 			It("should report acctype 'user' in the authz claims", func() {
 				userinfo, err := userClient.GetUserinfo(ctx)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
-				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User))
+				Expect(userinfo.Acctype).NotTo(BeNil())
+				Expect(*userinfo.Acctype).To(Equal(identityopenapi.User))
 				Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
 				Expect(userinfo.Email).NotTo(BeNil())
 				Expect(*userinfo.Email).To(Equal(config.UserSubjectEmail))
 
-				GinkgoWriter.Printf("User acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
+				GinkgoWriter.Printf("User acctype: %s\n", *userinfo.Acctype)
 			})
 		})
 
@@ -121,10 +121,10 @@ var _ = Describe("Userinfo", func() {
 			It("should report acctype 'service' in the authz claims", func() {
 				userinfo, err := serviceAccountClient.GetUserinfo(ctx)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
-				Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.Service))
+				Expect(userinfo.Acctype).NotTo(BeNil())
+				Expect(*userinfo.Acctype).To(Equal(identityopenapi.Service))
 				Expect(userinfo.Sub).To(Equal(config.UserSAID))
-				GinkgoWriter.Printf("Service account acctype: %s\n", userinfo.HttpsunikornCloudOrgauthz.Acctype)
+				GinkgoWriter.Printf("Service account acctype: %s\n", *userinfo.Acctype)
 			})
 		})
 	})

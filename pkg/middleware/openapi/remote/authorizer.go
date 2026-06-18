@@ -35,6 +35,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/bearer"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/idp"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -75,6 +76,15 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
 	if err != nil {
 		return nil, err
+	}
+
+	// The resolver verifies a UNI JWS against the platform issuer's published
+	// JWKS, which lives on the identity service. Give that issuer the same
+	// CA/mTLS-aware transport we use for userinfo/GetACL so the JWKS can be
+	// fetched when identity is behind a private CA; third-party issuers keep the
+	// default (public-CA) transport.
+	if auth != nil && auth.Resolver() != nil {
+		auth.Resolver().SetIssuerTransport(auth.UNIIssuer(), httpClient.Transport)
 	}
 
 	a := &Authorizer{
@@ -136,11 +146,11 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 	return httpClient, nil
 }
 
-// authorizeOAuth2 resolves a bearer token into the Userinfo-compatible identity
-// shape consumed by handlers. It authenticates the token locally, routing on
-// the JOSE header: a JWS is a third-party (Auth0) access token validated
-// against the issuer JWKS, and a JWE is a Unikorn access token resolved via the
-// identity userinfo endpoint. A bearer that is neither is rejected.
+// authorizeOAuth2 authenticates a bearer token. It routes on shape and issuer:
+// a JWE is a legacy Unikorn access token (introspected at identity, opaque to
+// us); a JWS is verified locally against its issuer's JWKS — fail fast, the
+// principal comes from the token — and, when it is one of ours, additionally
+// session-checked at identity.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	authorizationScheme, rawToken, err := authorization.GetHTTPAuthenticationScheme(r)
 	if err != nil {
@@ -156,54 +166,100 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, errors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
 	}
 
-	// A JWS is a third-party access token: validate it fully locally against
-	// the issuer JWKS when a third-party IdP is configured. When it is not, a
-	// JWS falls through to the Unikorn userinfo path, which rejects it — a
-	// Unikorn access token is a JWE.
-	if !isJWE && a.auth != nil && a.auth.ThirdParty() != nil {
-		return a.authorizeThirdParty(r, rawToken)
+	// A legacy Unikorn JWE is opaque to us: introspect it at identity. These age
+	// out as sessions rotate to JWS.
+	if isJWE {
+		return a.authorizeUnikornLegacy(r, rawToken)
 	}
 
-	return a.authorizeUnikorn(r, rawToken)
+	// A JWS carries a readable issuer; verify it locally against that issuer's
+	// JWKS and build the principal from the token claims.
+	issuer, err := bearer.UnverifiedIssuer(rawToken)
+	if err != nil {
+		return nil, errors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
+	}
+
+	principal, err := a.resolve(r, rawToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Our own tokens additionally get the session/revocation check at identity:
+	// required for (long-lived) service accounts, applied to all UNI tokens for
+	// now. External tokens carry no UNI session.
+	if issuer == a.auth.UNIIssuer() {
+		if err := a.checkSession(r, rawToken); err != nil {
+			return nil, err
+		}
+	}
+
+	return openapi.InfoFromPrincipal(rawToken, principal), nil
 }
 
-// authorizeThirdParty validates a federated user token locally and projects it
-// onto the handler-facing identity shape. Authentication yields the subject
-// only: organisation membership and RBAC are resolved later against our own
-// graph via GetACL, never read from the foreign token, so no OrgIds are set
-// here.
-func (a *Authorizer) authorizeThirdParty(r *http.Request, token string) (*authorization.Info, error) {
-	user, err := a.auth.ThirdParty().Validate(r.Context(), token)
+// resolve verifies a JWS locally against the trusted issuer's JWKS and maps it
+// to a principal, failing fast (no network call) on a bad signature, an
+// untrusted issuer, or invalid claims.
+func (a *Authorizer) resolve(r *http.Request, token string) (*idp.Principal, error) {
+	if a.auth == nil || a.auth.Resolver() == nil {
+		return nil, errors.AccessDenied(r, "no trusted token issuers are configured")
+	}
+
+	principal, err := a.auth.Resolver().Resolve(r.Context(), token)
 	if err != nil {
 		return nil, errors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
-	verified := true
-	email := user.Email
-
-	return &authorization.Info{
-		Token: token,
-		Userinfo: &identityapi.Userinfo{
-			Sub:           user.Email,
-			Email:         &email,
-			EmailVerified: &verified,
-			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
-				Acctype: identityapi.User,
-			},
-		},
-	}, nil
+	return principal, nil
 }
 
-// authorizeUnikorn resolves a Unikorn-issued token (user or service account)
-// via the identity userinfo endpoint. The result is cached for a short
-// staleness budget because the call is a network round-trip plus a JWE decrypt
-// at identity; the path fails closed once the entry expires.
-func (a *Authorizer) authorizeUnikorn(r *http.Request, token string) (*authorization.Info, error) {
+// infoFromUserinfo builds the authentication identity from a legacy JWE's
+// userinfo introspection. The token is opaque to us, so unlike the JWS path —
+// where the account type comes from the verified token claims — the type is read
+// from identity's introspection response (the only channel that can recover it).
+// An introspection with no account type is rejected rather than defaulted: the
+// account type is always definite by the time it reaches a handler.
+func (a *Authorizer) infoFromUserinfo(r *http.Request, token string, userinfo *identityapi.Userinfo) (*authorization.Info, error) {
+	if userinfo.Acctype == nil {
+		return nil, errors.AccessDenied(r, "token introspection returned no account type")
+	}
+
+	p := &principal.Principal{
+		Subject: userinfo.Sub,
+		Type:    *userinfo.Acctype,
+		// A JWE is UNI by construction and introspection cannot return `iss`, so
+		// the issuer is the platform issuer.
+		Issuer: a.auth.UNIIssuer(),
+	}
+
+	return &authorization.Info{Principal: p, Token: token}, nil
+}
+
+// checkSession confirms a Unikorn token is a live, un-revoked session by
+// introspecting it at identity's userinfo endpoint (cached, fails closed). The
+// principal is already established locally from the token; this is purely the
+// session/revocation gate (required for long-lived service accounts).
+func (a *Authorizer) checkSession(r *http.Request, token string) error {
+	if _, ok := a.tokenCache.Get(token); ok {
+		return nil
+	}
+
+	userinfo, err := a.fetchUserinfo(r, token)
+	if err != nil {
+		return err
+	}
+
+	a.tokenCache.Add(token, userinfo, userinfoCacheTTL)
+
+	return nil
+}
+
+// authorizeUnikornLegacy resolves a legacy Unikorn JWE access token via the
+// identity userinfo endpoint. The result is cached for a short staleness budget
+// because the call is a network round-trip plus a JWE decrypt at identity; the
+// path fails closed once the entry expires.
+func (a *Authorizer) authorizeUnikornLegacy(r *http.Request, token string) (*authorization.Info, error) {
 	if userinfo, ok := a.tokenCache.Get(token); ok {
-		return &authorization.Info{
-			Token:    token,
-			Userinfo: userinfo,
-		}, nil
+		return a.infoFromUserinfo(r, token, userinfo)
 	}
 
 	userinfo, err := a.fetchUserinfo(r, token)
@@ -213,10 +269,7 @@ func (a *Authorizer) authorizeUnikorn(r *http.Request, token string) (*authoriza
 
 	a.tokenCache.Add(token, userinfo, userinfoCacheTTL)
 
-	return &authorization.Info{
-		Token:    token,
-		Userinfo: userinfo,
-	}, nil
+	return a.infoFromUserinfo(r, token, userinfo)
 }
 
 // fetchUserinfo introspects a Unikorn token at the identity userinfo endpoint.

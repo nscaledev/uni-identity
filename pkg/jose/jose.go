@@ -478,6 +478,73 @@ func (i *JWTIssuer) DecodeJWT(ctx context.Context, tokenString string, claims an
 	return nil
 }
 
+// EncodeJWS signs (but does not encrypt) a set of claims, tagging the protected
+// header with the token type (RFC 9068 uses "at+jwt" for access tokens). Unlike
+// EncodeJWEToken the result is transparent: any holder of the issuer's published
+// JWKS can verify the signature and read the claims locally, which is what lets
+// resource servers validate access tokens without an introspection round-trip.
+func (i *JWTIssuer) EncodeJWS(ctx context.Context, claims any, tokenType TokenType) (string, error) {
+	_, priv, err := i.GetPrimaryKey(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get key pair: %w", err)
+	}
+
+	signingKey := jose.SigningKey{
+		Algorithm: jose.ES512,
+		Key:       priv,
+	}
+
+	signerOptions := (&jose.SignerOptions{}).WithType(jose.ContentType(tokenType))
+
+	signer, err := jose.NewSigner(signingKey, signerOptions)
+	if err != nil {
+		return "", fmt.Errorf("failed to create signer: %w", err)
+	}
+
+	return jwt.Signed(signer).Claims(claims).Serialize()
+}
+
+// DecodeJWS verifies a JWS produced by EncodeJWS against the issuer's signing
+// keys and checks the token type. The accepted algorithm is pinned to ES512;
+// the header alg is never trusted to select the verification method.
+func (i *JWTIssuer) DecodeJWS(ctx context.Context, tokenString string, claims any, tokenType TokenType) error {
+	token, err := jwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{jose.ES512})
+	if err != nil {
+		return err
+	}
+
+	if len(token.Headers) != 1 {
+		return fmt.Errorf("%w: jwt doesn't have exactly one header", ErrJOSE)
+	}
+
+	header := token.Headers[0]
+
+	t, ok := header.ExtraHeaders["typ"].(string)
+	if !ok {
+		return fmt.Errorf("%w: typ header not present", ErrTokenVerification)
+	}
+
+	if t != string(tokenType) {
+		return fmt.Errorf("%w: typ header incorrect", ErrTokenVerification)
+	}
+
+	keyID := header.KeyID
+	if keyID == "" {
+		return fmt.Errorf("%w: jwt doesn't have a kid set", ErrJOSE)
+	}
+
+	pub, _, err := i.GetKeyByID(ctx, keyID)
+	if err != nil {
+		return err
+	}
+
+	if err := token.Claims(pub, claims); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // TokenType is used to define the specific use of a token.
 type TokenType string
 

@@ -63,13 +63,13 @@ func newContext(t *testing.T) context.Context {
 	t.Helper()
 
 	ctx := authorization.NewContext(t.Context(), &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: "test-subject",
+		Principal: &principal.Principal{
+			Subject: "test-subject",
 		},
 	})
 
 	ctx = principal.NewContext(ctx, &principal.Principal{
-		Actor: "test-principal",
+		Subject: "test-principal",
 	})
 
 	return ctx

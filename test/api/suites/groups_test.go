@@ -492,8 +492,8 @@ var _ = Describe("Group Subject Compatibility", func() {
 		fixtureUserSubject := func() identityopenapi.Subject {
 			userinfo, err := userClient.GetUserinfo(ctx)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
-			Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User),
+			Expect(userinfo.Acctype).NotTo(BeNil())
+			Expect(*userinfo.Acctype).To(Equal(identityopenapi.User),
 				"USER_AUTH_TOKEN must be a federated user token for subject ACL effect tests")
 			Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
 

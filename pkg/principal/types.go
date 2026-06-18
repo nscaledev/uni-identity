@@ -19,16 +19,23 @@ package principal
 
 import "github.com/unikorn-cloud/identity/pkg/openapi"
 
-// Principal records information about what user insigated a request.
+// Principal records the identity that instigated a request. The subject is who
+// the request is performed as and attributed to; the issuer is the identity
+// provider that vouched for that subject. The party actually performing an
+// impersonated request (the "actor" in RFC 8693 terms) and who approved it are a
+// separate, as-yet-unmodelled delegation-provenance concern.
 type Principal struct {
 	// OrganizationID of the originating request (optional).
 	OrganizationID string `json:"organizationId,omitempty"`
 	// ProjectID of the originating request (optional).
 	ProjectID string `json:"projectId,omitempty"`
-	// Type of the originating actor. This reuses the OpenAPI auth claim values.
+	// Type of the subject. This reuses the OpenAPI auth claim values.
 	Type openapi.AuthClaimsAcctype `json:"type,omitempty"`
-	// Actor of the originating request, this may be an email address
-	// for an end-user, a service identifier for a system service, or
-	// the service account name.
-	Actor string `json:"actor,omitempty"`
+	// Subject the request is performed as: an email address for an end-user, a
+	// service identifier for a system service, or the service account name.
+	Subject string `json:"subject,omitempty"`
+	// Issuer is the identity provider that authenticated the subject — the token
+	// `iss`, or a marker for non-token (e.g. X.509) identities. Carried for audit
+	// provenance.
+	Issuer string `json:"issuer,omitempty"`
 }

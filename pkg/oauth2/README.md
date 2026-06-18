@@ -92,19 +92,25 @@ issues service-to-service tokens.
 ## Token Issuance and Introspection
 
 The token endpoint issues UNI access tokens via the `authorization_code` and `refresh_token` grants
-only. UNI access tokens are JWEs that only the issuer can decrypt; `GetUserinfo` introspects them
-locally (decrypt, verify, and confirm the session / service-account record) and is what the OIDC
-`/oauth2/v2/userinfo` endpoint serves. There is no token-exchange / passport flow.
+only. A UNI access token is a **signed JWS** (`at+jwt`, ES512): transparent, so a resource server
+can verify it locally against the published JWKS and read its claims. Refresh tokens, authorization
+codes and login state stay **JWE** — they are identity-internal and never presented to a resource
+server. Legacy JWE access tokens issued before this change remain accepted until they rotate out.
+`Verify` decodes either shape (`bearer.IsJWE`), then applies the same claim validation and session /
+service-account check; `GetUserinfo` builds on it and is what the OIDC `/oauth2/v2/userinfo` endpoint
+serves.
 
 Authentication produces a **subject and account type only**. Organisation membership is
 authorisation data, owned by UNI and resolved by [`pkg/rbac`](../rbac/README.md) from the subject
-with request context — it is never enriched onto the userinfo or read from a token.
+with request context — it is never read from a token. The subject and type come from the verified
+token; `userinfo` additionally publishes the account type (a flat `acctype` field) purely so a
+resource server introspecting an **opaque legacy JWE** can recover it.
 
 Validation of **third-party (Auth0) access tokens** is not an issuance concern and lives outside
-this package, in [`pkg/middleware/openapi/idp`](../middleware/openapi/idp); the JOSE-shape routing
-that decides UNI-JWE-vs-third-party-JWS lives in
-[`pkg/middleware/openapi/bearer`](../middleware/openapi/bearer). Both authorizers
-([`pkg/middleware/openapi`](../middleware/openapi/README.md)) consume them.
+this package, in [`pkg/middleware/openapi/idp`](../middleware/openapi/idp), now a generic
+multi-issuer JWS resolver (UNI and Auth0 are two issuer configs). Routing — JWE-vs-JWS by shape, then
+JWS by its unverified issuer — lives in [`pkg/middleware/openapi/bearer`](../middleware/openapi/bearer).
+Both authorizers ([`pkg/middleware/openapi`](../middleware/openapi/README.md)) consume them.
 
 ## Caveats
 

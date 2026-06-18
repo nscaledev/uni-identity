@@ -368,7 +368,7 @@ var _ = Describe("Service Account Management", func() {
 					}
 
 					return true
-				}).WithTimeout(config.TestTimeout).WithPolling(2 * time.Second).Should(BeTrue(),
+				}).WithTimeout(config.TestTimeout).WithPolling(2*time.Second).Should(BeTrue(),
 					"deleted service account %s should be removed from list", saID)
 
 				GinkgoWriter.Printf("Verified service account %s is deleted\n", saID)

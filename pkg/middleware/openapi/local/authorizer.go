@@ -34,21 +34,25 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/bearer"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
 
 // Authorizer provides OpenAPI based authorization middleware for the identity
-// service itself. It authenticates bearer tokens in-process — third-party
-// (Auth0) tokens against the issuer JWKS, Unikorn-issued tokens by local
-// decryption — and resolves ACLs directly against rbac. It produces a subject
-// and account type only; organization membership is resolved by rbac.
+// service itself. It authenticates bearer tokens in-process — Unikorn-issued
+// tokens (a JWS verified against our in-cluster keys, or a legacy JWE decrypted
+// in-process) and third-party tokens (a JWS verified against the issuer JWKS) —
+// and resolves ACLs directly against rbac. The principal (subject + account
+// type) comes from the verified token; organization membership is resolved by
+// rbac.
 type Authorizer struct {
 	authenticator *oauth2.Authenticator
 	rbac          *rbac.RBAC
 	auth          *middleware.AuthenticationInfo
 
 	// unroutableTokens counts bearer tokens that are neither a UNI access token
-	// (JWE) nor a JWS, e.g. after an upstream token-format change.
+	// (JWE) nor a JWS from a trusted issuer, e.g. after an upstream token-format
+	// change or a token from an unconfigured issuer.
 	unroutableTokens metric.Int64Counter
 }
 
@@ -73,10 +77,12 @@ func NewAuthorizer(authenticator *oauth2.Authenticator, rbac *rbac.RBAC, auth *m
 	}
 }
 
-// authorizeOAuth2 authenticates an oauth2 bearer token, routing on the JOSE
-// header: a JWS is a third-party (Auth0) access token validated locally against
-// the issuer JWKS; a JWE is a Unikorn access token decrypted in-process. A
-// bearer that is neither is rejected and counted.
+// authorizeOAuth2 authenticates an oauth2 bearer token. It routes on shape and
+// issuer: a JWE is a legacy Unikorn access token, decrypted in-process; a JWS is
+// routed on its (unverified) issuer — one of ours is verified against our
+// in-cluster keys, a trusted third-party issuer against its JWKS via the
+// resolver. A token that is neither, or one from an unconfigured issuer, is
+// rejected and counted.
 func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, error) {
 	authorizationScheme, token, err := authorization.GetHTTPAuthenticationScheme(r)
 	if err != nil {
@@ -94,62 +100,69 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 		return nil, errors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
 	}
 
-	// A JWS is a third-party access token: validate it locally against the
-	// issuer JWKS when a third-party IdP is configured. Without one, a JWS falls
-	// through to the UNI path, which rejects it (a UNI token is a JWE).
-	if !isJWE && a.auth != nil && a.auth.ThirdParty() != nil {
+	// A legacy Unikorn JWE is opaque and ours by construction: decrypt and verify
+	// it in-process. These age out as sessions rotate to JWS.
+	if isJWE {
+		return a.authorizeUnikorn(r, token)
+	}
+
+	issuer, err := bearer.UnverifiedIssuer(token)
+	if err != nil {
+		a.unroutableTokens.Add(r.Context(), 1)
+
+		return nil, errors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
+	}
+
+	// Our own JWS: verify against our in-cluster keys (and the session check).
+	if a.auth != nil && issuer == a.auth.UNIIssuer() {
+		return a.authorizeUnikorn(r, token)
+	}
+
+	// A JWS from a configured third-party issuer: verify against its JWKS.
+	if a.auth != nil && a.auth.Resolver().Trusts(issuer) {
 		return a.authorizeThirdParty(r, token)
 	}
 
-	return a.authorizeUnikorn(r, token)
+	a.unroutableTokens.Add(r.Context(), 1)
+
+	return nil, errors.AccessDenied(r, "bearer token issuer is not trusted").WithValues("issuer", issuer)
 }
 
-// authorizeThirdParty validates a federated user token locally. It yields the
-// subject only; organization membership and RBAC are resolved by rbac from the
+// authorizeThirdParty verifies a third-party JWS locally against its issuer's
+// JWKS and maps it to a principal via that issuer's claim transform. It carries
+// identity only; organization membership and RBAC are resolved by rbac from the
 // subject, never read from the foreign token.
 func (a *Authorizer) authorizeThirdParty(r *http.Request, token string) (*authorization.Info, error) {
-	user, err := a.auth.ThirdParty().Validate(r.Context(), token)
+	p, err := a.auth.Resolver().Resolve(r.Context(), token)
 	if err != nil {
 		return nil, errors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
-	verified := true
-	email := user.Email
-
-	return &authorization.Info{
-		Token: token,
-		Userinfo: &openapi.Userinfo{
-			Sub:           user.Email,
-			Email:         &email,
-			EmailVerified: &verified,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.User,
-			},
-		},
-	}, nil
+	return middleware.InfoFromPrincipal(token, p), nil
 }
 
 // authorizeUnikorn resolves a Unikorn-issued token (user or service account) by
-// in-process decryption and verification.
+// in-process verification — a JWS against our in-cluster keys, a legacy JWE by
+// decryption — including the live-session check. The principal comes from the
+// verified token claims.
 func (a *Authorizer) authorizeUnikorn(r *http.Request, token string) (*authorization.Info, error) {
-	userinfo, claims, err := a.authenticator.GetUserinfo(r.Context(), r, token)
+	claims, err := a.authenticator.VerifyAccessToken(r.Context(), r, token)
 	if err != nil {
 		return nil, err
 	}
 
-	info := &authorization.Info{
-		Token:    token,
-		Userinfo: userinfo,
-	}
+	p := &principal.Principal{Subject: claims.Subject, Issuer: claims.Issuer}
 
 	switch claims.Type {
 	case oauth2.TokenTypeFederated:
-		info.ClientID = claims.Federated.ClientID
+		p.Type = openapi.User
 	case oauth2.TokenTypeServiceAccount:
-		info.ServiceAccount = true
+		p.Type = openapi.Service
+	default:
+		return nil, errors.AccessDenied(r, "token has an unrecognised account type").WithValues("type", string(claims.Type))
 	}
 
-	return info, nil
+	return &authorization.Info{Principal: p, Token: token}, nil
 }
 
 // Authorize checks the request against the OpenAPI security scheme.

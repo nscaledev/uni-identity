@@ -45,6 +45,7 @@ var (
 	ErrWrongOrganizationCount = goerrors.New("service account is not bound to exactly one organization")
 	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
 	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
+	ErrInvalidAccountType     = goerrors.New("unknown account type")
 )
 
 type Options struct {
@@ -877,12 +878,12 @@ func intersectACL(userACL *openapi.Acl, serviceACL *openapi.Acl) *openapi.Acl {
 // end-user's ACL and the service's own ACL (confused deputy prevention).
 func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID string) (*openapi.Acl, error) {
 	p, err := principal.FromContext(ctx)
-	if err != nil || !principal.ImpersonateFromContext(ctx) || p.Actor == "" {
+	if err != nil || !principal.ImpersonateFromContext(ctx) || p.Subject == "" {
 		return r.processSystemAccountACL(ctx, subject)
 	}
 
 	// The impersonated principal's organization membership is resolved from its
-	// subject (p.Actor) by the ACL path below — never carried on the principal.
+	// subject (p.Subject) by the ACL path below — never carried on the principal.
 	principalACL, err := r.processImpersonatedPrincipalACL(ctx, p, organizationID)
 	if err != nil {
 		return nil, err
@@ -901,10 +902,10 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 	case openapi.User:
 		// A principal is strictly scoped to one organization: confine the
 		// impersonated user's ACL to it, never the user's full membership.
-		return r.scopedUserACL(ctx, p.Actor, organizationID)
+		return r.scopedUserACL(ctx, p.Subject, organizationID)
 	case openapi.Service:
 		// Service accounts are already bound to their single home organization.
-		return r.processServiceAccountACL(ctx, p.Actor, organizationID)
+		return r.processServiceAccountACL(ctx, p.Subject, organizationID)
 	case openapi.System:
 		return nil, fmt.Errorf("%w: %q", ErrInvalidPrincipalType, p.Type)
 	default:
@@ -921,26 +922,21 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 		return nil, err
 	}
 
-	var (
-		userinfo    = info.Userinfo
-		subject     = userinfo.Sub
-		accountType = openapi.User
-	)
+	subject := info.Subject
 
-	authz := userinfo.HttpsunikornCloudOrgauthz
-	if authz != nil {
-		accountType = authz.Acctype
-	}
-
-	if accountType == openapi.System {
+	// The account type is decided once, at authentication, and is always exactly
+	// one of the known kinds. There is no defaulting here — an unknown kind is a
+	// hard error, never a silent fall-through to a user.
+	switch info.Type {
+	case openapi.System:
 		return r.getSystemAccountACL(ctx, subject, organizationID)
-	}
-
-	if accountType == openapi.Service {
+	case openapi.Service:
 		return r.processServiceAccountACL(ctx, subject, organizationID)
+	case openapi.User:
+		return r.processUserAccountACL(ctx, subject, organizationID)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrInvalidAccountType, info.Type)
 	}
-
-	return r.processUserAccountACL(ctx, subject, organizationID)
 }
 
 func (r *RBAC) NewSuperContext(ctx context.Context) (context.Context, error) {

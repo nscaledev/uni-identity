@@ -17,9 +17,13 @@ limitations under the License.
 package bearer_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"testing"
 
+	gojose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -111,4 +115,62 @@ func TestIsJWE(t *testing.T) {
 			assert.Equal(t, test.expectJWE, isJWE)
 		})
 	}
+}
+
+// signRS256 signs claims into a compact JWS — the shape UnverifiedIssuer reads
+// the issuer from without verifying the signature.
+func signRS256(t *testing.T, claims any) string {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{Algorithm: gojose.RS256, Key: key},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	return token
+}
+
+func TestUnverifiedIssuer(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ReadsIssuerFromValidJWS", func(t *testing.T) {
+		t.Parallel()
+
+		token := signRS256(t, jwt.Claims{Issuer: "https://issuer.example.com", Subject: "sub"})
+
+		issuer, err := bearer.UnverifiedIssuer(token)
+		require.NoError(t, err)
+		assert.Equal(t, "https://issuer.example.com", issuer)
+	})
+
+	t.Run("RejectsJWSWithoutIssuer", func(t *testing.T) {
+		t.Parallel()
+
+		token := signRS256(t, jwt.Claims{Subject: "sub"})
+
+		_, err := bearer.UnverifiedIssuer(token)
+		require.ErrorIs(t, err, bearer.ErrUnrecognized)
+	})
+
+	t.Run("RejectsNonJWS", func(t *testing.T) {
+		t.Parallel()
+
+		// A JWE-shaped (five-segment) token has no readable JWS payload.
+		_, err := bearer.UnverifiedIssuer("a.b.c.d.e")
+		require.ErrorIs(t, err, bearer.ErrUnrecognized)
+	})
+
+	t.Run("RejectsGarbage", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := bearer.UnverifiedIssuer("not-a-token")
+		require.ErrorIs(t, err, bearer.ErrUnrecognized)
+	})
 }

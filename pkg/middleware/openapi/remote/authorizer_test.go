@@ -75,7 +75,7 @@ func TestRemoteFederatedTokenAuthentication(t *testing.T) {
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
+	auth := createRemoteAuthorizer(t, k8sClient, server, nil)
 
 	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -84,7 +84,7 @@ func TestRemoteFederatedTokenAuthentication(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, info)
-	require.Equal(t, testSubject, info.Userinfo.Sub)
+	require.Equal(t, testSubject, info.Subject)
 	require.Equal(t, int32(1), server.Called.Load())
 }
 
@@ -95,7 +95,7 @@ func TestRemoteTokenCaching(t *testing.T) {
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
+	auth := createRemoteAuthorizer(t, k8sClient, server, nil)
 
 	req1 := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req1.Header.Set("Authorization", "Bearer "+accessToken)
@@ -110,7 +110,7 @@ func TestRemoteTokenCaching(t *testing.T) {
 	info2, err := auth.Authorize(authInput(req2))
 	require.NoError(t, err)
 	require.NotNil(t, info2)
-	require.Equal(t, info1.Userinfo.Sub, info2.Userinfo.Sub)
+	require.Equal(t, info1.Subject, info2.Subject)
 	require.Equal(t, int32(1), server.Called.Load())
 }
 
@@ -125,7 +125,7 @@ func TestRemoteThirdPartyTokenAuthenticatedLocally(t *testing.T) {
 
 	tpIssuer := newThirdPartyIssuer(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), &idp.Options{
+	auth := createRemoteAuthorizer(t, k8sClient, server, &idp.Options{
 		Issuer:   tpIssuer.issuer(),
 		Audience: thirdPartyAudience,
 	})
@@ -137,9 +137,8 @@ func TestRemoteThirdPartyTokenAuthenticatedLocally(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, info)
-	require.Equal(t, thirdPartyEmail, info.Userinfo.Sub)
-	require.NotNil(t, info.Userinfo.HttpsunikornCloudOrgauthz)
-	require.Equal(t, "user", string(info.Userinfo.HttpsunikornCloudOrgauthz.Acctype))
+	require.Equal(t, thirdPartyEmail, info.Subject)
+	require.Equal(t, "user", string(info.Type))
 	// Authentication did not consult identity: the third-party path is local.
 	require.Equal(t, int32(0), server.Called.Load())
 }
@@ -150,7 +149,7 @@ func TestRemoteInvalidRequest(t *testing.T) {
 
 	k8sClient, server, _ := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
+	auth := createRemoteAuthorizer(t, k8sClient, server, nil)
 
 	requestMutators := map[string]func(*http.Request){
 		"missing token": func(*http.Request) {},
@@ -183,7 +182,7 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 
 	k8sClient, server, accessToken := setupTestEnvironment(t)
 
-	auth := createRemoteAuthorizer(t, k8sClient, server.URL(), nil)
+	auth := createRemoteAuthorizer(t, k8sClient, server, nil)
 
 	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -208,7 +207,8 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 
 type server struct {
 	*mtlstest.MTLSServer
-	Called *atomic.Int32 // counts identity userinfo introspection calls
+	Called  *atomic.Int32 // counts identity userinfo introspection calls
+	JWKSURL string        // public, unauthenticated JWKS endpoint (plain HTTP)
 }
 
 // setupTestEnvironment creates a test environment with necessary K8s resources
@@ -347,6 +347,22 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		IssuerSecretName: certificateName,
 	})
 
+	// Identity publishes its JWKS unauthenticated at a public endpoint; in
+	// production a resource server fetches it over the default transport like any
+	// OIDC issuer. The mTLS test server uses a self-signed cert the resolver's
+	// transport won't trust, so serve the (public) key set over plain HTTP.
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys, _, err := issuer.GetJSONWebKeySet(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(keys)
+	}))
+	t.Cleanup(jwksServer.Close)
+
 	rbacOptions := &rbac.Options{}
 	rbacClient := rbac.New(fakeClient, testNamespace, rbacOptions)
 
@@ -359,7 +375,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	u, _ := url.Parse(mtlsServer.URL())
 	iss := handlercommon.IssuerValue{
 		URL:      mtlsServer.URL(),
-		Hostname: u.Host,
+		Hostname: u.Hostname(),
 	}
 
 	userdb := userdb.NewUserDatabase(fakeClient, testNamespace)
@@ -370,7 +386,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	ctx := t.Context()
 	issueInfo := &oauth2.IssueInfo{
 		Issuer:   mtlsServer.URL(),
-		Audience: u.Host,
+		Audience: u.Hostname(),
 		Subject:  testSubject,
 		Type:     oauth2.TokenTypeFederated,
 		Federated: &oauth2.FederatedClaims{
@@ -386,7 +402,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	require.NotNil(t, tokens)
 	accessToken := tokens.AccessToken
 
-	return fakeClient, &server{mtlsServer, &called}, accessToken
+	return fakeClient, &server{mtlsServer, &called, jwksServer.URL}, accessToken
 }
 
 func splitBearer(r *http.Request) (string, string, error) {
@@ -429,17 +445,28 @@ func createCoreClientOptions(t *testing.T) *coreclient.HTTPClientOptions {
 	return options
 }
 
-func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string, oidc *idp.Options) *authorizer.Authorizer {
+func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, srv *server, oidc *idp.Options) *authorizer.Authorizer {
 	t.Helper()
 
-	identityOptions := createIdentityOptions(t, issuer)
+	identityOptions := createIdentityOptions(t, srv.URL())
 	clientOptions := createCoreClientOptions(t)
 
-	if oidc == nil {
-		oidc = &idp.Options{}
+	u, err := url.Parse(srv.URL())
+	require.NoError(t, err)
+
+	// The platform issuer is our own; the resolver verifies a UNI JWS against the
+	// published JWKS. In a test that endpoint is served over plain HTTP (see
+	// setupTestEnvironment), so point the UNI config at it.
+	uni := openapimiddleware.UNIIssuerConfig(srv.URL(), u.Hostname())
+	uni.JWKSURL = srv.JWKSURL
+
+	issuers := []idp.IssuerConfig{uni}
+
+	if oidc != nil && oidc.Enabled() {
+		issuers = append(issuers, oidc.IssuerConfig())
 	}
 
-	auth, err := openapimiddleware.NewAuthenticationInfo(oidc)
+	auth, err := openapimiddleware.NewAuthenticationInfo(srv.URL(), issuers...)
 	require.NoError(t, err)
 
 	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions, auth)

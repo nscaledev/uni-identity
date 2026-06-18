@@ -73,8 +73,8 @@ func impersonate(t *testing.T, f fixture, userSubject string) *openapi.Acl {
 	t.Helper()
 
 	acl, err := getACLForSystemAccount(t, f.rbac, impersonationServiceCN, &principal.Principal{
-		Type:  openapi.User,
-		Actor: userSubject,
+		Type:    openapi.User,
+		Subject: userSubject,
 	}, true)
 	require.NoError(t, err)
 
@@ -149,7 +149,7 @@ func TestImpersonation_DoesNotLeakOtherOrganizations(t *testing.T) {
 	// Sanity: Eve's own unscoped ACL really does include altOrgID, so the
 	// confinement assertion below is meaningful and not vacuous.
 	directInfo := &authorization.Info{
-		Userinfo: &openapi.Userinfo{Sub: eveSubject, HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.User}},
+		Principal: &principal.Principal{Subject: eveSubject, Type: openapi.User},
 	}
 	directACL, err := rbacClient.GetACL(authorization.NewContext(ctx, directInfo), "")
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestImpersonation_DoesNotLeakOtherOrganizations(t *testing.T) {
 
 	// Impersonated, scoped to testOrgID: altOrgID must not appear anywhere.
 	impersonated, err := getACLForSystemAccount(t, rbacClient, impersonationServiceCN,
-		&principal.Principal{Type: openapi.User, Actor: eveSubject, OrganizationID: testOrgID}, true)
+		&principal.Principal{Type: openapi.User, Subject: eveSubject, OrganizationID: testOrgID}, true)
 	require.NoError(t, err)
 
 	if impersonated.Organizations != nil {

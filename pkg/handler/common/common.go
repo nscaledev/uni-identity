@@ -314,14 +314,14 @@ func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 		meta.Annotations = map[string]string{}
 	}
 
-	meta.Annotations[constants.CreatorAnnotation] = info.Userinfo.Sub
+	meta.Annotations[constants.CreatorAnnotation] = info.Subject
 
 	principal, err := principal.FromContext(ctx)
 	if err != nil {
 		return err
 	}
 
-	meta.Annotations[constants.CreatorPrincipalAnnotation] = principal.Actor
+	meta.Annotations[constants.CreatorPrincipalAnnotation] = principal.Subject
 
 	if principal.OrganizationID != "" {
 		if meta.Labels == nil {

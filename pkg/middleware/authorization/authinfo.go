@@ -22,26 +22,21 @@ import (
 	"fmt"
 
 	"github.com/unikorn-cloud/core/pkg/errors"
-	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 )
 
-// Info contains all the information we can derive from an
-// access token.
+// Info is the authenticated identity derived from a request's credentials. It is
+// the principal (the actor's subject and account type) plus the raw access
+// token. The principal is the single internal identity shape — the same type
+// that is propagated to downstream services — and it carries identity only:
+// organisation membership and RBAC are resolved later from the actor, never read
+// from the token. A service account is identified by `Type == openapi.Service`
+// (there is no separate flag); the X.509 system path sets `Type == openapi.System`.
 type Info struct {
-	// Token is a copy of the access token made available to handlers.
+	*principal.Principal
+	// Token is the raw access token, retained so the remote authorizer can
+	// relay it as the bearer when calling the identity GetACL endpoint.
 	Token string
-	// Userinfo is a parsed version of the token, used primarily for
-	// auditing etc.
-	Userinfo *openapi.Userinfo
-	// ClientID optionally records the oauth2 client that initiated
-	// the session, and can be used to route errors to the correct
-	// endpoint.
-	ClientID string
-	// SystemAccount means this belongs to a system account that is
-	// authenticated with X.509.
-	SystemAccount bool
-	// ServiceAccount means this belongs explicitly to a service account.
-	ServiceAccount bool
 }
 
 type keyType int

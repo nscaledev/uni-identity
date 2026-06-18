@@ -164,7 +164,7 @@ func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, 
 func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
 	// If you aren't looking at yourself, then you need global read permissions, you cannot
 	// go probing for other users or organizations, massive data breach!
-	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
+	if info.Subject != email {
 		if err := rbac.AllowGlobalScope(ctx, "identity:users", openapi.Read); err != nil {
 			return nil, errors.HTTPForbidden("user not permitted to read users globally").WithError(err)
 		}
@@ -184,8 +184,8 @@ func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabas
 		return nil, fmt.Errorf("%w: userinfo is not set", err)
 	}
 
-	if info.ServiceAccount {
-		account, err := userdb.GetServiceAccount(ctx, info.Userinfo.Sub)
+	if info.Type == openapi.Service {
+		account, err := userdb.GetServiceAccount(ctx, info.Subject)
 		if err != nil {
 			return nil, errors.HTTPForbidden("service account not found").WithError(err)
 		}
@@ -201,7 +201,7 @@ func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabas
 			return nil, err
 		}
 	} else {
-		user, err = userdb.GetActiveUser(ctx, info.Userinfo.Sub)
+		user, err = userdb.GetActiveUser(ctx, info.Subject)
 		if err != nil {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}

@@ -736,7 +736,7 @@ func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclO
 		return fmt.Errorf("%w: unable to get authorization info", err)
 	}
 
-	if info.ServiceAccount && (serviceAccountID == "" || info.Userinfo.Sub == serviceAccountID) {
+	if info.Type == openapi.Service && (serviceAccountID == "" || info.Subject == serviceAccountID) {
 		return nil
 	}
 
@@ -758,12 +758,12 @@ func filterServiceAccounts(ctx context.Context, organizationID ids.OrganizationI
 		return fmt.Errorf("%w: unable to get authorization info", err)
 	}
 
-	if !info.ServiceAccount {
+	if info.Type != openapi.Service {
 		return nil
 	}
 
 	*serviceAccounts = slices.DeleteFunc(*serviceAccounts, func(serviceAccount openapi.ServiceAccountRead) bool {
-		return serviceAccount.Metadata.Id != info.Userinfo.Sub
+		return serviceAccount.Metadata.Id != info.Subject
 	})
 
 	return nil

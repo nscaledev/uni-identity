@@ -202,3 +202,63 @@ func TestJWEIssue(t *testing.T) {
 	require.Error(t, issuer.DecodeJWEToken(ctx, token1, &decodedClaims, jose.TokenTypeAccessToken))
 	require.NoError(t, issuer.DecodeJWEToken(ctx, token2, &decodedClaims, jose.TokenTypeAccessToken))
 }
+
+// TestJWSIssue tests that a signed (JWS) access token round-trips through
+// Encode/DecodeJWS across key rotations, and that a token-type mismatch is
+// rejected.
+func TestJWSIssue(t *testing.T) {
+	t.Parallel()
+
+	client := fake.NewClientBuilder().WithScheme(getScheme(t)).Build()
+
+	josetesting.RotateCertificate(t, client)
+
+	options := &jose.Options{
+		IssuerSecretName: josetesting.KeySecretName,
+		RotationPeriod:   josetesting.RefreshPeriod,
+	}
+
+	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, options)
+
+	ctx := t.Context()
+
+	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
+
+	// Wait for the primary key to be rotated in.
+	time.Sleep(josetesting.RefreshPeriod * 2)
+
+	claims := &TestClaims{
+		Foo: "bar",
+	}
+
+	// Check the token can be issued and validates, with its claims intact.
+	token1, err := issuer.EncodeJWS(ctx, claims, jose.TokenTypeAccessToken)
+	require.NoError(t, err)
+
+	var decodedClaims TestClaims
+
+	require.NoError(t, issuer.DecodeJWS(ctx, token1, &decodedClaims, jose.TokenTypeAccessToken))
+	require.Equal(t, "bar", decodedClaims.Foo)
+
+	// A token presented as the wrong type (mismatched "typ" header) is rejected.
+	require.Error(t, issuer.DecodeJWS(ctx, token1, &decodedClaims, jose.TokenTypeRefreshToken))
+
+	// Rotate the key, check the existing token and a new one validate.
+	josetesting.RotateCertificate(t, client)
+
+	time.Sleep(josetesting.RefreshPeriod * 2)
+
+	token2, err := issuer.EncodeJWS(ctx, claims, jose.TokenTypeAccessToken)
+	require.NoError(t, err)
+
+	require.NoError(t, issuer.DecodeJWS(ctx, token1, &decodedClaims, jose.TokenTypeAccessToken))
+	require.NoError(t, issuer.DecodeJWS(ctx, token2, &decodedClaims, jose.TokenTypeAccessToken))
+
+	// Do it again, the first token shouldn't work any more, but the second one should.
+	josetesting.RotateCertificate(t, client)
+
+	time.Sleep(josetesting.RefreshPeriod * 2)
+
+	require.Error(t, issuer.DecodeJWS(ctx, token1, &decodedClaims, jose.TokenTypeAccessToken))
+	require.NoError(t, issuer.DecodeJWS(ctx, token2, &decodedClaims, jose.TokenTypeAccessToken))
+}

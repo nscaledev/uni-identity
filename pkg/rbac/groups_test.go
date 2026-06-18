@@ -93,13 +93,13 @@ func newContext(t *testing.T) context.Context {
 	t.Helper()
 
 	ctx := authorization.NewContext(t.Context(), &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: "test-subject",
+		Principal: &principal.Principal{
+			Subject: "test-subject",
 		},
 	})
 
 	ctx = principal.NewContext(ctx, &principal.Principal{
-		Actor: "test-principal",
+		Subject: "test-principal",
 	})
 
 	return ctx
@@ -386,11 +386,9 @@ func getACLForUser(t *testing.T, rbacClient *rbac.RBAC, subject string) *openapi
 
 	// Create authorization info with user subject
 	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: subject,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.User,
-			},
+		Principal: &principal.Principal{
+			Subject: subject,
+			Type:    openapi.User,
 		},
 	}
 
@@ -662,11 +660,9 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 	// Build an ACL for userAliceSubject ("alice@example.com") who is a member
 	// of this group via the OrganizationUser resource name in UserIDs.
 	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: userAliceSubject,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.User,
-			},
+		Principal: &principal.Principal{
+			Subject: userAliceSubject,
+			Type:    openapi.User,
 		},
 	}
 
@@ -693,12 +689,7 @@ func TestUser_WrongOrganization(t *testing.T) {
 	f, _ := setupTestEnvironment(t)
 
 	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: userAliceSubject,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.User,
-			},
-		},
+		Principal: &principal.Principal{Subject: userAliceSubject, Type: openapi.User},
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
@@ -714,12 +705,7 @@ func getACLForServiceAccount(t *testing.T, rbacClient *rbac.RBAC, subject string
 
 	// Create authorization info for service account
 	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: subject,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.Service,
-			},
-		},
+		Principal: &principal.Principal{Subject: subject, Type: openapi.Service},
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
@@ -816,12 +802,7 @@ func TestServiceAccount_WrongOrganization(t *testing.T) {
 	f, _ := setupTestEnvironment(t)
 
 	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: f.serviceAccountAlphaID,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.Service,
-			},
-		},
+		Principal: &principal.Principal{Subject: f.serviceAccountAlphaID, Type: openapi.Service},
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
@@ -840,13 +821,7 @@ func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN strin
 	t.Helper()
 
 	info := &authorization.Info{
-		Userinfo: &openapi.Userinfo{
-			Sub: serviceCN,
-			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
-				Acctype: openapi.System,
-			},
-		},
-		SystemAccount: true,
+		Principal: &principal.Principal{Subject: serviceCN, Type: openapi.System},
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
@@ -864,8 +839,8 @@ func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN strin
 
 func impersonatedPrincipal(subject string, accountType openapi.AuthClaimsAcctype) *principal.Principal {
 	return &principal.Principal{
-		Actor: subject,
-		Type:  accountType,
+		Subject: subject,
+		Type:    accountType,
 	}
 }
 
@@ -949,7 +924,7 @@ func TestSystemAccountWithEmptyActorFallsBackToSystemACL(t *testing.T) {
 	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
 		OrganizationID: testOrgID,
 		Type:           openapi.User,
-		Actor:          "",
+		Subject:        "",
 	}, true)
 	require.Error(t, err)
 }
@@ -1012,7 +987,7 @@ func TestSystemAccountWithMissingPrincipalTypeFailsClosed(t *testing.T) {
 	})
 
 	_, err := getACLForSystemAccount(t, f.rbac, "compute-service", &principal.Principal{
-		Actor: f.serviceAccountAlphaID,
+		Subject: f.serviceAccountAlphaID,
 	}, true)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, rbac.ErrInvalidPrincipalType)

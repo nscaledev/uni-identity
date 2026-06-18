@@ -143,4 +143,3 @@ var _ = Describe("Organization Discovery", func() {
 		})
 	})
 })
-

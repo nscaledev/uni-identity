@@ -68,8 +68,9 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 
 			// Inject mock authorization info (required for SetIdentityMetadata)
 			authInfo := &authorization.Info{
-				Userinfo: &openapi.Userinfo{
-					Sub: "test-user", // Mock user subject
+				Principal: &principal.Principal{
+					Type:    openapi.User,
+					Subject: "test-user", // Mock user subject
 				},
 			}
 			ctx = authorization.NewContext(ctx, authInfo)
@@ -77,7 +78,7 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 			// Inject mock principal info (required for SetIdentityMetadata)
 			principalInfo := &principal.Principal{
 				Type:           openapi.User,
-				Actor:          "test-user",
+				Subject:        "test-user",
 				OrganizationID: orgID,
 			}
 			ctx = principal.NewContext(ctx, principalInfo)
