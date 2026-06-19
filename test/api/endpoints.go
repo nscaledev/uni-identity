@@ -130,6 +130,11 @@ func (e *Endpoints) Token() string {
 	return "/oauth2/v2/token"
 }
 
+// GetJWKS returns the OAuth2 JWKS endpoint path.
+func (e *Endpoints) GetJWKS() string {
+	return "/oauth2/v2/jwks"
+}
+
 // Version returns the endpoint for reading the deployed service version.
 func (e *Endpoints) Version() string {
 	return "/api/version"

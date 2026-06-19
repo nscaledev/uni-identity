@@ -60,10 +60,24 @@ type Authorizer struct {
 	clientOptions *coreclient.HTTPClientOptions
 	httpClient    *http.Client
 	exchange      TokenExchange
-	tokenCache    *cache.LRUExpireCache[string, *oauth2.PassportClaims]
+	tokenCache    *cache.LRUExpireCache[tokenCacheKey, *oauth2.PassportClaims]
 }
 
 var _ openapi.Authorizer = &Authorizer{}
+
+type tokenCacheKey struct {
+	sourceToken    string
+	organizationID string
+	projectID      string
+}
+
+func newTokenCacheKey(sourceToken string, scope tokenExchangeOptions) tokenCacheKey {
+	return tokenCacheKey{
+		sourceToken:    sourceToken,
+		organizationID: scope.organizationID,
+		projectID:      scope.projectID,
+	}
+}
 
 // NewAuthorizer returns a new authorizer with required parameters.
 func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*Authorizer, error) {
@@ -72,7 +86,7 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		return nil, err
 	}
 
-	tokenCache := cache.NewLRUExpireCache[string, *oauth2.PassportClaims](tokenCacheSize)
+	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *oauth2.PassportClaims](tokenCacheSize)
 
 	a := &Authorizer{
 		httpClient:    httpClient,
@@ -161,7 +175,8 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 		return nil, errors.AccessDenied(r, "authorization scheme not allowed").WithValues("scheme", authorizationScheme)
 	}
 
-	if claims, ok := a.tokenCache.Get(rawToken); ok {
+	cacheKey := newTokenCacheKey(rawToken, scope)
+	if claims, ok := a.tokenCache.Get(cacheKey); ok {
 		return &authorization.Info{
 			Token:    rawToken,
 			Userinfo: passportToUserinfo(claims),
@@ -196,7 +211,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 	userinfo := passportToUserinfo(claims)
 
 	if ttl := cacheTTL(claims, time.Now()); ttl > 0 {
-		a.tokenCache.Add(rawToken, claims, ttl)
+		a.tokenCache.Add(cacheKey, claims, ttl)
 	}
 
 	return &authorization.Info{
