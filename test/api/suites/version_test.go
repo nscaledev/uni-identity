@@ -23,6 +23,8 @@ package suites
 import (
 	"net/http"
 
+	"github.com/Masterminds/semver/v3"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -37,11 +39,11 @@ var _ = Describe("Service Version", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(version.Name).To(HavePrefix("unikorn-identity"))
-				// 0.0.0 is the Makefile default for unstamped local builds.
-				Expect(version.Version).To(SatisfyAny(
-					Equal("0.0.0"),
-					MatchRegexp(`^v\d+\.\d+\.\d+$`),
-				))
+				// Releases are stamped with a semver tag, dev builds with a Go
+				// pseudo-version (e.g. v0.0.0-20260624115013-59dc5a97ce0b), and
+				// unstamped local builds default to 0.0.0; all are valid semver.
+				_, semverErr := semver.NewVersion(version.Version)
+				Expect(semverErr).NotTo(HaveOccurred(), "service version %q is not valid semver", version.Version)
 
 				GinkgoWriter.Printf("Identity service version: %s %s\n", version.Name, version.Version)
 			})
