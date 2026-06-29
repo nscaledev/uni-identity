@@ -111,12 +111,27 @@ cannot exercise permissions that either side lacks.
 - Some pragmatic compatibility behaviour exists around scoped lookups and transition paths, so
   security-sensitive changes here should be reviewed in terms of end-to-end actor behaviour rather
   than local code shape alone.
+- Role permission sets must be distributed *consistently across the role hierarchy*. Because
+  grantability requires the caller to hold every permission a role contains (with project-scoped
+  endpoints promoted to an organization-scope check), granting a service's endpoints to a lower
+  role such as `user` or `reader` *without also granting them to the organization `administrator`*
+  silently makes that lower role non-grantable and invisible to administrators. Any new service
+  endpoint added to the roles in `charts/identity/values.yaml` must be added to every role that
+  should be able to grant it — not just the leaf roles that consume it.
+- The `application:*` endpoints (`application:applications`, `application:applicationsets`) were
+  removed because the application service was never implemented and never will be — they were dead
+  configuration. The removal also fixed a live bug: they were present on `platform-administrator`,
+  `user`, and `reader` but absent from the organization `administrator`, which broke administrator
+  grantability of `user`/`reader`. They are gone for good; there is no service to grant access to.
 
 ## TODO
 
 - Re-check places where globally scoped callers are allowed to skip existence verification for
   user-supplied scoped resource identifiers, especially create paths that accept project IDs in the
   request body.
+- Add test coverage for role grantability/visibility across the role hierarchy. The `application:*`
+  regression went unnoticed because nothing asserts that every non-protected role remains grantable
+  by the organization `administrator`; a guard test over the role definitions would have caught it.
 
 ## Relationship To Other Packages
 
