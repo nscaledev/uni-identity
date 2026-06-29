@@ -182,8 +182,6 @@ roles:
         storage:objectstorageclasses: [create,read,update,delete]
         storage:objectstorageendpoints: [create,read,update,delete]
         storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
-        application:applications: [create,read,update,delete]
-        application:applicationsets: [create,read,update,delete]
   region-service:
     decription: Region service
     protected: true
@@ -335,8 +333,6 @@ roles:
         kubernetes:virtualclusters: [create,read,update,delete]
         compute:instances: [create,read,update,delete]
         compute:clusters: [create,read,update,delete]
-        application:applications: [read]
-        application:applicationsets: [create,read,update,delete]
   # A reader can view projects they are a member of and view
   # kubernetes clusters.
   reader:
@@ -368,8 +364,6 @@ roles:
         kubernetes:virtualclusters: [read]
         compute:instances: [read]
         compute:clusters: [read]
-        application:applications: [read]
-        application:applicationsets: [read]
 
 # Optional additional roles that can be injected alongside the defaults.
 # Shape matches the roles map below. Same names will raise an error.
