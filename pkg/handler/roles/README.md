@@ -65,6 +65,11 @@ API behaviour: if the caller cannot legally delegate a role, the role is omitted
   definitions.
 - The current role source is still centrally administered even though the longer-term model is
   expected to allow organization-local custom roles.
+- A role becomes invisible here the moment any single permission it contains is not held by the
+  caller. This makes the list silently sensitive to gaps in the role definitions: if a service's
+  endpoints are added to `user`/`reader` but omitted from the organization `administrator`, those
+  roles vanish from an administrator's view. See the `pkg/rbac` caveats on consistent permission
+  distribution across the hierarchy.
 
 ## Related Documentation
 
