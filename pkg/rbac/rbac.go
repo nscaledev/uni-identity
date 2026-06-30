@@ -23,12 +23,14 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 
 	"github.com/spf13/pflag"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -45,18 +47,82 @@ var (
 	ErrWrongOrganizationCount = goerrors.New("expected exactly one organization ID")
 	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
 	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
+	ErrBareAdminSubject       = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to issuer::subject")
 )
+
+// PlatformAdministratorSubject binds an admin subject to the issuer that must
+// have authenticated it, closing the cross-issuer confused deputy.
+type PlatformAdministratorSubject struct {
+	Issuer  string
+	Subject string
+}
+
+// PlatformAdministratorSubjectsValue parses repeated issuer::subject flags. A
+// bare value (no "::") defaults the issuer to the UNI sentinel for backward
+// compatibility with single-issuer deployments.
+type PlatformAdministratorSubjectsValue []PlatformAdministratorSubject
+
+var _ pflag.Value = (*PlatformAdministratorSubjectsValue)(nil)
+
+func (v *PlatformAdministratorSubjectsValue) Set(value string) error {
+	iss, sub, ok := strings.Cut(value, "::")
+	if !ok {
+		*v = append(*v, PlatformAdministratorSubject{Issuer: idconstants.UNISentinel, Subject: value})
+
+		return nil
+	}
+
+	// Stored verbatim: the issuer must match the `iss` the IdP emits exactly
+	// (OIDC §3.1.3.7), the same string that lands in the passport src_iss.
+	*v = append(*v, PlatformAdministratorSubject{Issuer: iss, Subject: sub})
+
+	return nil
+}
+
+func (v *PlatformAdministratorSubjectsValue) String() string {
+	parts := make([]string, 0, len(*v))
+
+	for _, entry := range *v {
+		if entry.Issuer == idconstants.UNISentinel {
+			parts = append(parts, entry.Subject)
+		} else {
+			parts = append(parts, entry.Issuer+"::"+entry.Subject)
+		}
+	}
+
+	return strings.Join(parts, ",")
+}
+
+func (*PlatformAdministratorSubjectsValue) Type() string { return "issuer::subject" }
 
 type Options struct {
 	PlatformAdministratorRoleIDs  []string
-	PlatformAdministratorSubjects []string
+	PlatformAdministratorSubjects []PlatformAdministratorSubject
 	SystemAccountRoleIDs          map[string]string
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringSliceVar(&o.PlatformAdministratorRoleIDs, "platform-administrator-role-ids", nil, "Platform administrator role ID.")
-	f.StringSliceVar(&o.PlatformAdministratorSubjects, "platform-administrator-subjects", nil, "Platform administrators.")
+	f.Var((*PlatformAdministratorSubjectsValue)(&o.PlatformAdministratorSubjects), "platform-administrator-subjects", "Platform administrators as issuer::subject (bare value = UNI issuer).")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
+}
+
+// Validate enforces the migration gate: if any trusted non-UNI issuer exists
+// and any admin entry is still in bare (UNI-sentinel) form, refuse to start so
+// a single-issuer admin list cannot be silently exploited once a second issuer
+// is trusted.
+func (o *Options) Validate(trustedNonUNIIssuers []string) error {
+	if len(trustedNonUNIIssuers) == 0 {
+		return nil
+	}
+
+	for _, s := range o.PlatformAdministratorSubjects {
+		if s.Issuer == idconstants.UNISentinel {
+			return fmt.Errorf("%w: %q", ErrBareAdminSubject, s.Subject)
+		}
+	}
+
+	return nil
 }
 
 // RBAC contains all the scoping rules for services across the platform.
@@ -630,7 +696,7 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 // a member of and adds their permissions to the ACL.
 //
 //nolint:cyclop,nestif
-func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	if authz == nil {
 		return nil, ErrNoAuthz
 	}
@@ -642,7 +708,9 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, organizationI
 
 	acl := &openapi.Acl{}
 
-	if slices.Contains(r.options.PlatformAdministratorSubjects, subject) {
+	if slices.ContainsFunc(r.options.PlatformAdministratorSubjects, func(p PlatformAdministratorSubject) bool {
+		return p.Issuer == srcIss && strings.EqualFold(strings.TrimSpace(p.Subject), strings.TrimSpace(subject))
+	}) {
 		if err := accumulateGlobalPermissions(acl, r.options.PlatformAdministratorRoleIDs, roles); err != nil {
 			return nil, err
 		}
@@ -860,7 +928,10 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal.Principal, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	switch p.Type {
 	case openapi.User:
-		return r.processUserAccountACL(ctx, p.Actor, organizationID, authz)
+		// For impersonated principals the srcIss is not yet propagated through the
+		// X-Principal header; default to the UNI sentinel. See srcIssOrUNISentinel's
+		// doc comment for why this default is safe.
+		return r.processUserAccountACL(ctx, p.Actor, idconstants.UNISentinel, organizationID, authz)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
 	case openapi.System:
@@ -868,6 +939,21 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrInvalidPrincipalType, p.Type)
 	}
+}
+
+// srcIssOrUNISentinel returns srcIss unchanged if set, otherwise the UNI sentinel.
+// This default is safe only because Options.Validate's migration gate forbids any
+// UNI-sentinel admin entry once a non-UNI issuer is trusted — so a subject with no
+// propagated srcIss (old in-flight passports, impersonated principals, non-external
+// paths) can never inherit a UNI admin grant it shouldn't have. See
+// TestSrcIssDefaultMatchesMigrationGateSentinel, which pins the coupling between
+// this constant and the gate's constant.
+func srcIssOrUNISentinel(srcIss string) string {
+	if srcIss == "" {
+		return idconstants.UNISentinel
+	}
+
+	return srcIss
 }
 
 // GetACL returns a granular set of permissions for a user based on their scope.
@@ -898,7 +984,10 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 		return r.processServiceAccountACL(ctx, subject, organizationID, authz)
 	}
 
-	return r.processUserAccountACL(ctx, subject, organizationID, authz)
+	// See srcIssOrUNISentinel's doc comment for why an empty src_iss default is safe.
+	srcIss := srcIssOrUNISentinel(info.SrcIss)
+
+	return r.processUserAccountACL(ctx, subject, srcIss, organizationID, authz)
 }
 
 func (r *RBAC) NewSuperContext(ctx context.Context) (context.Context, error) {
