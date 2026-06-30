@@ -34,6 +34,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -211,7 +212,7 @@ func newAuth0TestIssuer(t *testing.T) *auth0TestIssuer {
 }
 
 func (i *auth0TestIssuer) issuer() string {
-	return i.server.URL + "/"
+	return i.server.URL
 }
 
 func (i *auth0TestIssuer) token(t *testing.T, audience, email string, expiry time.Time) string {
@@ -444,7 +445,7 @@ func TestExchangeAuth0User(t *testing.T) {
 
 	assert.Equal(t, "passport", claims.Type)
 	assert.Equal(t, openapi.User, claims.Acctype)
-	assert.Equal(t, oauth2.PassportSourceAuth0, claims.Source)
+	assert.Equal(t, "auth0-legacy", claims.Source)
 	assert.Equal(t, "user@example.com", claims.Subject)
 	assert.Equal(t, "user@example.com", claims.Email)
 	assert.ElementsMatch(t, []string{"org1"}, claims.OrgIDs, "UNI membership remains authoritative")
@@ -880,7 +881,7 @@ func TestExchangePlatformAdminUserWithOrganizationScopeOutsideMembership(t *test
 	t.Parallel()
 
 	env := setupPassportTestEnvWithRBACOptions(t, &rbac.Options{
-		PlatformAdministratorSubjects: []string{"user@example.com"},
+		PlatformAdministratorSubjects: []rbac.PlatformAdministratorSubject{{Issuer: idconstants.UNISentinel, Subject: "user@example.com"}},
 		PlatformAdministratorRoleIDs:  []string{"platform-admin"},
 	}, &unikornv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1659,6 +1660,68 @@ func TestExchangeHandlerOutOfScopeOrganizationReturnsInvalidScope(t *testing.T) 
 	assert.Contains(t, oauthResp.ErrorDescription, "organization not in scope")
 }
 
+func TestExchangePassportSetsSrcIssForUNI(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t,
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1",
+			},
+			Status: unikornv1.OrganizationStatus{
+				Namespace: josetesting.Namespace + "-org1",
+			},
+		},
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "test-user",
+			},
+			Spec: unikornv1.UserSpec{
+				Subject: "user@example.com",
+				State:   unikornv1.UserStateActive,
+			},
+		},
+		&unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: josetesting.Namespace,
+				Name:      "org1-user",
+				Labels: map[string]string{
+					constants.UserLabel:         "test-user",
+					constants.OrganizationLabel: "org1",
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{
+				State: unikornv1.UserStateActive,
+			},
+		},
+	)
+
+	token := issueTestToken(t, env, &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  "user@example.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID: "test-user",
+			Scope:  oauth2.NewScope("openid email"),
+		},
+	})
+
+	req := exchangeRequest(t, token, nil)
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	claims := parsePassport(t, env, result.AccessToken)
+
+	if claims.SrcIss != oauth2.PassportSourceUNI {
+		t.Fatalf("SrcIss = %q, want %q", claims.SrcIss, oauth2.PassportSourceUNI)
+	}
+}
+
 // TestGetUserinfoFromBearerRoutesAuth0JWS verifies that a compact-JWS bearer
 // (Auth0 access token) is dispatched to the Auth0 validator when Auth0
 // exchange is configured, returning userinfo built from the Auth0 claims
@@ -1674,7 +1737,7 @@ func TestGetUserinfoFromBearerRoutesAuth0JWS(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	userinfo, _, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.NoError(t, err)
 	require.NotNil(t, userinfo)
 	require.NotNil(t, userinfo.Email)
@@ -1714,7 +1777,7 @@ func TestGetUserinfoFromBearerRoutesUNIJWE(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, claims, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	userinfo, claims, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.NoError(t, err)
 	require.NotNil(t, userinfo)
 	require.NotNil(t, claims)
@@ -1747,13 +1810,16 @@ func TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	// With auth0Validator == nil, the Auth0 JWS falls through to GetUserinfo
-	// which tries to decrypt it as a UNI JWE. That fails — the dispatch is
-	// correctly routing to the UNI path, even if the UNI path can't handle
-	// the token. The local authorizer's pre-Auth0 behaviour is preserved.
-	_, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	// With no trusted OAuth2Provider registered for the token's issuer,
+	// peekIssuer succeeds but validatorForIssuer returns nil (unknown
+	// issuer). The dispatch rejects with "untrusted token issuer" — a JWS from
+	// an unknown issuer is rejected, not silently routed to the UNI path.
+	userinfo, claims, srcIss, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "token validation failed")
+	assert.Contains(t, err.Error(), "untrusted token issuer")
+	assert.Nil(t, userinfo)
+	assert.Nil(t, claims)
+	assert.Empty(t, srcIss)
 }
 
 // TestGetUserinfoFromBearerRejectsUnroutableToken verifies that a bearer that
@@ -1770,7 +1836,10 @@ func TestGetUserinfoFromBearerRejectsUnroutableToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	_, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
+	userinfo, claims, srcIss, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized bearer token format")
+	assert.Nil(t, userinfo)
+	assert.Nil(t, claims)
+	assert.Empty(t, srcIss)
 }

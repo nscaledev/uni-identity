@@ -42,6 +42,11 @@ type Info struct {
 	SystemAccount bool
 	// ServiceAccount means this belongs explicitly to a service account.
 	ServiceAccount bool
+	// SrcIss is the issuer URL (verbatim, as the IdP emits it) that authenticated
+	// the principal (PassportSourceUNI sentinel for UNI-local). The platform-admin
+	// fast-path matches (SrcIss, Subject); an unset value must never match an
+	// external admin entry (fail closed).
+	SrcIss string
 }
 
 type keyType int

@@ -36,6 +36,7 @@ import (
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util/cache"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
@@ -547,6 +548,45 @@ func TestAuthorizeProjectsExchangeErrors(t *testing.T) {
 					"authentication failures must not surface as 403")
 			}
 		})
+	}
+}
+
+// withSrcIss returns a PassportClaims with the given src_iss set, built from
+// the canonical valid test claims. It is the option function for mintTestPassport
+// in tests that must assert SrcIss propagation.
+func withSrcIss(srcIss string) *oauth2.PassportClaims {
+	c := validTestPassportClaims()
+	c.SrcIss = srcIss
+
+	return c
+}
+
+// runRemoteAuthorizer creates a minimal Authorizer backed by a recordingTokenExchange
+// that returns passport, runs Authorize against it, and returns the resulting Info.
+func runRemoteAuthorizer(t *testing.T, claims *oauth2.PassportClaims) *authorization.Info {
+	t.Helper()
+
+	passport := mintTestPassport(t, claims)
+	exchange := &recordingTokenExchange{passport: passport}
+	auth := newTestAuthorizer(exchange)
+
+	info, err := auth.Authorize(scopedAuthInput(t, "", ""))
+	require.NoError(t, err)
+	require.NotNil(t, info)
+
+	return info
+}
+
+// TestRemoteAuthorizerPropagatesSrcIss verifies that src_iss from the decoded
+// passport claims is threaded through to authorization.Info.SrcIss.
+func TestRemoteAuthorizerPropagatesSrcIss(t *testing.T) {
+	t.Parallel()
+
+	const want = "https://staff.auth0.com"
+
+	info := runRemoteAuthorizer(t, withSrcIss(want))
+	if info.SrcIss != want {
+		t.Fatalf("Info.SrcIss = %q, want %q", info.SrcIss, want)
 	}
 }
 
