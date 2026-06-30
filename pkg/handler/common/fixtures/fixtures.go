@@ -21,6 +21,7 @@ import (
 	"context"
 
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 )
@@ -43,6 +44,7 @@ func HandlerContextFixture(ctx context.Context, flags int) context.Context {
 		Userinfo: &openapi.Userinfo{
 			Sub: TokenActor,
 		},
+		SrcIss: oauth2.PassportSourceUNI,
 	}
 
 	p := &principal.Principal{

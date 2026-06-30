@@ -26,6 +26,12 @@ import (
 	"github.com/unikorn-cloud/core/pkg/util"
 )
 
+// UNISentinel is the non-URL sentinel used as the issuer for tokens authenticated
+// directly by the UNI identity service (UNI-local access tokens), as opposed to
+// tokens from an external IdP. It is deliberately not a valid URL so it can never
+// collide with a real OIDC issuer in a trust decision.
+const UNISentinel = "uni"
+
 var (
 	// Application is the application name.
 	//nolint:gochecknoglobals
