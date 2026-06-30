@@ -34,10 +34,16 @@ import (
 )
 
 // GinkgoLogger implements the Logger interface for Ginkgo tests.
-type GinkgoLogger struct{}
+type GinkgoLogger struct {
+	captureOnly bool
+}
 
 func (g *GinkgoLogger) Printf(format string, args ...interface{}) {
-	ginkgo.GinkgoWriter.Printf(format, args...)
+	if !g.captureOnly {
+		ginkgo.GinkgoWriter.Printf(format, args...)
+	}
+
+	networkCapture.printf(format, args...)
 }
 
 // APIClient wraps the core API client with identity-specific methods.
@@ -88,9 +94,15 @@ func NewAPIClientWithConfig(config *TestConfig) *APIClient {
 
 // common constructor logic.
 func newAPIClientWithConfig(config *TestConfig, baseURL string) *APIClient {
-	coreClient := coreclient.NewAPIClient(baseURL, config.AuthToken, config.RequestTimeout, &GinkgoLogger{})
-	coreClient.SetLogRequests(config.LogRequests)
-	coreClient.SetLogResponses(config.LogResponses)
+	logRequests := config.LogRequests || NetworkCaptureEnabled()
+	logResponses := config.LogResponses || NetworkCaptureEnabled()
+	logger := &GinkgoLogger{
+		captureOnly: NetworkCaptureEnabled() && !config.LogRequests && !config.LogResponses,
+	}
+
+	coreClient := coreclient.NewAPIClient(baseURL, config.AuthToken, config.RequestTimeout, logger)
+	coreClient.SetLogRequests(logRequests)
+	coreClient.SetLogResponses(logResponses)
 
 	return &APIClient{
 		APIClient: coreClient,

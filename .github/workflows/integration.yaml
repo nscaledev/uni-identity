@@ -61,7 +61,18 @@ jobs:
 
     - name: Run API integration tests
       id: api-tests
+      env:
+        CAPTURE_NETWORK_LOGS: 'true'
+        NETWORK_LOG_DIR: ${{ github.workspace }}/test-artifacts/network
       run: make test-api-ci
+
+    - name: Upload API network logs
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-network-logs
+        path: test-artifacts/network
+        if-no-files-found: ignore
 
     - name: Analyze API test failures with Claude
       if: always() && steps.api-tests.outcome == 'failure'

@@ -17,6 +17,7 @@ test/api/suites/junit.xml
 test/e2e/junit.xml
 test/e2e/test-results.json
 test/**/*.test
+test-artifacts/
 junit.xml
 test-results.json
 
