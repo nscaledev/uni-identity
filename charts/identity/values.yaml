@@ -109,6 +109,26 @@ issuer:
 #     # The client ID and secret, sourced as a secret.
 #     # They must have the keys "id" and "secret",
 #     clientSecretName: my-client-secret-secret
+#
+#   # Preferred replacement for the deprecated --auth0-exchange-issuer /
+#   # --auth0-exchange-audience flags. Declare an OAuth2Provider with a
+#   # bearerTrust block; the existing template renders it automatically.
+#   # The 'type' field is intentionally absent: bearerTrust-only providers
+#   # do not participate in the interactive OIDC login flow.
+#   auth0-legacy:
+#     description: Auth0 bearer-token trust (replaces auth0-exchange flags)
+#     issuer: https://your-tenant.auth0.com/
+#     bearerTrust:
+#       # audience must match the aud claim in the Auth0 access token.
+#       audience: https://your-api-audience/
+#       # Optional: permit subjects with no UNI user record.
+#       # allowExternalIdentity: false
+#       # Optional: skip the email_verified check (default: false = require verified).
+#       # skipEmailVerification: false
+#       # Optional: require the https://unikorn-cloud.org/authz claim (default: false).
+#       # requireAuthzClaim: false
+#       # Optional: restrict accepted signing algorithms (default: [RS256]).
+#       # signingAlgorithms: [RS256]
 
 # platformAdministratorRole is a role that can be implicitly added to users
 # and service accounts.
