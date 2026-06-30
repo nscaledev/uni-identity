@@ -29,12 +29,16 @@ The package enforces several important security rules:
 - a caller may only grant a role if the caller already holds all permissions contained in that role
 - when a system service acts as an impersonated principal, the effective ACL is the intersection of
   the principal's ACL and the service's ACL
+- platform-administrator matching is issuer-qualified: a subject is only recognized as a
+  platform administrator when the token's `src_iss` matches the registered issuer entry
 
 Those rules prevent several different forms of privilege escalation:
 
 - user-facing exposure of internal platform roles
 - granting permissions the caller does not personally hold
 - confused-deputy expansion through service-to-service calls
+- cross-issuer confused-deputy: an external IdP cannot impersonate a UNI-local admin subject, and
+  a UNI-local admin subject cannot be promoted to admin via an external token
 
 ## Scope Model
 
@@ -149,6 +153,28 @@ When a system account carries an impersonated principal, RBAC does not simply sw
 principal's ACL. Instead, it intersects the principal ACL with the system account ACL so the service
 cannot exercise permissions that either side lacks.
 
+### Platform-administrator issuer-aware fast-path
+
+User account ACL resolution includes a fast-path for platform administrators. The match is on the
+pair `(srcIss, subject)` where `srcIss` is the issuer URL (verbatim, as the IdP emits it) carried in
+the passport's `src_iss` claim (or the `"uni"` sentinel for UNI-local tokens). The match is an exact
+string comparison against each `PlatformAdministratorSubject` entry registered via
+`--platform-administrator-subjects`; the configured issuer must equal the emitted `iss` exactly
+(for Auth0, including the trailing slash).
+
+Platform-administrator subjects must be registered in `issuer::subject` form when any non-UNI
+bearer-trust provider is configured. A bare subject (no `::` prefix) defaults the issuer to the
+UNI sentinel, which is safe in single-issuer deployments because the sentinel is deliberately not
+a valid URL and cannot be forged by an external token.
+
+**`Options.Validate` is a startup-only, advisory migration gate.** When called during startup with
+the list of non-UNI issuers currently present in the operator namespace, it rejects
+startup if any admin entry is still in bare (UNI-sentinel) form. This prevents a single-issuer
+admin list from being silently exploitable once a second issuer is trusted. However, this gate is
+bypassable: a `bearerTrust` CRD created at runtime after startup is not checked by `Options.Validate`.
+The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match in
+`processUserAccountACL`. Operators must not rely on `Options.Validate` as the sole protection.
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
@@ -160,6 +186,11 @@ cannot exercise permissions that either side lacks.
 - Group membership is the main route from actors to roles.
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
+- Platform-administrator matching is always issuer-qualified at runtime via `(srcIss, subject)`.
+  `Options.Validate` is a startup-only advisory gate; it does not replace the runtime control.
+- The confused-deputy invariant: a system service acting as an impersonated principal cannot hold
+  permissions that either the principal's ACL or the service's ACL denies. The ACL intersection
+  enforces this regardless of which IdP authenticated the principal.
 
 ## Caveats
 
