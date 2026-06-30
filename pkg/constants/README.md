@@ -12,6 +12,11 @@ The package is the single source of truth for process-level build metadata:
 
 That metadata is operationally important, not decorative.
 
+It also defines `UNISentinel` — the non-URL issuer sentinel (`"uni"`) marking
+UNI-locally-authenticated tokens. It lives here (a dependency-free leaf) so `oauth2` and `rbac` can
+both reference it without an import cycle, letting issuer trust decisions distinguish UNI-local
+tokens from external-IdP tokens.
+
 It is used to:
 
 - identify the running binary in logging and service descriptors

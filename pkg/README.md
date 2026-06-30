@@ -39,6 +39,8 @@ identity storage layout.
 These packages define how identity issues and validates tokens, how it resolves
 effective authority, and how internal callers construct outbound requests that
 match the same service-to-service trust model enforced on inbound requests.
+Issuer trust decisions match the token `iss` verbatim (exact string compare, per
+OIDC §3.1.3.7) — there is no issuer normalization.
 
 ### Middleware, Handlers, And Server Composition
 
