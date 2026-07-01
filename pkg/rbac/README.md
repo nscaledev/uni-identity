@@ -69,6 +69,67 @@ without re-deriving it:
 
 Rule of thumb: path-parameter handler → `…ID`; you have a CRD object in hand → `…Reader`.
 
+## Built-in Roles
+
+The role catalogue is defined in `charts/identity/values.yaml` and rendered into `Role`
+resources by `charts/identity/templates/roles.yaml`. That values file is the single
+source of truth; `pkg/rbac` resolves those roles but never invents them. There are two
+families.
+
+### Protected (platform) roles
+
+Roles marked `protected: true` are internal-only: never returned by the user-facing role
+list and never grantable through the API. They are bound solely via Helm values at
+deployment time.
+
+- `platform-administrator` — global CRUD over every resource; can act in any organization
+  or project.
+- `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
+  accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
+  only the global permissions the corresponding service actually exercises;
+  over-permissioning here is a security defect.
+
+### User-facing roles
+
+These carry `organization` and/or `project` scope blocks and are the roles an
+administrator grants to groups.
+
+| Role | organization block | project block |
+| --- | --- | --- |
+| `administrator` | full CRUD across identity, region, storage, Kubernetes and compute | — |
+| `auditor` | read-only across all of the above | — |
+| `user` | org-wide reads, plus `region:images` create/delete | CRUD on workloads: networks, load balancers, security groups, file storage, object storage, SSH CAs, clusters, instances |
+| `reader` | org-wide reads (`region:images` read only) | read-only on those same workloads |
+
+`administrator` and `auditor` hold all their authority at organization scope. `user` and
+`reader` keep a thin organization-wide read baseline but place their real workload
+authority in the project block, so it applies only to the projects their group is linked
+to.
+
+### Grant relationships
+
+A caller may grant a role only if they already hold every permission it contains, at the
+grant's scope or broader (`AllowRole`, with the downward scope flow described above).
+Because a grant hands out a subset of what the caller already holds, the built-in roles
+form a superset lattice:
+
+```
+administrator ─┬─ auditor ─── reader
+               └─ user ────── reader
+```
+
+- `administrator` can grant every user-facing role.
+- `auditor` (read-only) can grant `reader` (also read-only) but not `user`, which needs
+  write verbs `auditor` lacks.
+- `user` can grant `reader` — the same project scope with fewer verbs (downscoping) — but
+  not `auditor`, which needs `identity:*` reads `user` lacks.
+- `reader` can grant only `reader`.
+
+`user` and `auditor` are incomparable, and neither can grant `administrator`. This lattice
+is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from the parsed
+chart values for every ordered role pair, asserting each allowed edge and rejecting every
+non-edge.
+
 ## Actor Model
 
 The package distinguishes three important actor classes:
@@ -111,13 +172,17 @@ cannot exercise permissions that either side lacks.
 - Some pragmatic compatibility behaviour exists around scoped lookups and transition paths, so
   security-sensitive changes here should be reviewed in terms of end-to-end actor behaviour rather
   than local code shape alone.
-- Role permission sets must be distributed *consistently across the role hierarchy*. Because
-  grantability requires the caller to hold every permission a role contains (with project-scoped
-  endpoints promoted to an organization-scope check), granting a service's endpoints to a lower
-  role such as `user` or `reader` *without also granting them to the organization `administrator`*
-  silently makes that lower role non-grantable and invisible to administrators. Any new service
-  endpoint added to the roles in `charts/identity/values.yaml` must be added to every role that
-  should be able to grant it — not just the leaf roles that consume it.
+- Role permission sets must be distributed *consistently across the role hierarchy*.
+  Grantability requires the caller to hold every permission a role contains at the same
+  scope or broader (`AllowRole`; project-scoped endpoints are satisfied by project, then
+  organization, then global authority — not flattened to an organization-only check).
+  Granting a service's endpoints to a lower role such as `user` or `reader` *without also
+  granting them to every role above it in the grant lattice* — `administrator` for any
+  operation, and `auditor` for reads — silently makes that lower role non-grantable and
+  invisible to those roles. Any new endpoint added to a role in
+  `charts/identity/values.yaml` must be added to every role that should be able to grant
+  it, not just the leaf roles that consume it. `TestBuiltinRoleGrantability` enforces this
+  over the parsed chart values.
 - The `application:*` endpoints (`application:applications`, `application:applicationsets`) were
   removed because the application service was never implemented and never will be — they were dead
   configuration. The removal also fixed a live bug: they were present on `platform-administrator`,
@@ -129,9 +194,6 @@ cannot exercise permissions that either side lacks.
 - Re-check places where globally scoped callers are allowed to skip existence verification for
   user-supplied scoped resource identifiers, especially create paths that accept project IDs in the
   request body.
-- Add test coverage for role grantability/visibility across the role hierarchy. The `application:*`
-  regression went unnoticed because nothing asserts that every non-protected role remains grantable
-  by the organization `administrator`; a guard test over the role definitions would have caught it.
 
 ## Relationship To Other Packages
 
