@@ -69,7 +69,9 @@ API behaviour: if the caller cannot legally delegate a role, the role is omitted
   caller. This makes the list silently sensitive to gaps in the role definitions: if a service's
   endpoints are added to `user`/`reader` but omitted from the organization `administrator`, those
   roles vanish from an administrator's view. See the `pkg/rbac` caveats on consistent permission
-  distribution across the hierarchy.
+  distribution across the hierarchy, the built-in role catalogue and grant lattice documented
+  there, and the `TestBuiltinRoleGrantability` guard that pins those relationships to
+  `charts/identity/values.yaml`.
 
 ## Related Documentation
 
