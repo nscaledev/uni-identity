@@ -60,6 +60,46 @@ spec:
                 description: AuthorizationURI is used when OIDC (discovery) is not
                   available.
                 type: string
+              bearerTrust:
+                description: |-
+                  BearerTrust, when present, opts this provider in as a trusted source of
+                  bearer access tokens (token exchange, /api/v1/* and /oauth2/v2/userinfo).
+                  A nil value means not trusted for bearer tokens; presence is the opt-in.
+                  Federation configuration alone never confers bearer trust.
+                properties:
+                  allowExternalIdentity:
+                    description: |-
+                      AllowExternalIdentity accepts a subject with no UNI user record (with an
+                      empty orgIds set) instead of rejecting it. Defaults false.
+                    type: boolean
+                  audience:
+                    description: |-
+                      Audience is required in the token's aud claim (by membership). It guards
+                      against replay of tokens minted for unrelated audiences.
+                    type: string
+                  requireAuthzClaim:
+                    description: |-
+                      RequireAuthzClaim requires the https://unikorn-cloud.org/authz claim to
+                      be present and well-shaped. Defaults false (tolerate a missing claim).
+                      Claimed orgIds are discarded regardless.
+                    type: boolean
+                  signingAlgorithms:
+                    description: |-
+                      SigningAlgorithms lists permitted JWS algorithms; empty defaults to
+                      [RS256]. Only asymmetric algorithms are allowed; none/HMAC are rejected
+                      at trust-list build time.
+                    items:
+                      type: string
+                    type: array
+                  skipEmailVerification:
+                    description: |-
+                      SkipEmailVerification opts out of the email_verified check. Defaults
+                      false (verify). Inverted polarity matches the repo's optional-bool idiom
+                      (zero value = safe default), avoiding a *bool.
+                    type: boolean
+                required:
+                - audience
+                type: object
               clientID:
                 description: ClientID is the assigned client identifier.
                 type: string

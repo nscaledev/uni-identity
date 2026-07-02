@@ -18,12 +18,17 @@ package oauth2
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
+	"encoding/json"
 	goerrors "errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	gojose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,8 +38,10 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -811,19 +818,15 @@ func TestDispatchUserinfoCountsUnroutableTokens(t *testing.T) {
 
 	// An opaque bearer is unroutable: counted, the parse cause is attached to
 	// the returned error for logging, and no partial result leaks out.
-	userinfo, claims, source, err := authenticator.dispatchUserinfo(t.Context(), req, "opaque", dispatchSurfaceBearer)
+	res, err := authenticator.dispatchUserinfo(t.Context(), req, "opaque", dispatchSurfaceBearer)
 	require.ErrorIs(t, err, errUnrecognizedToken)
-	require.Nil(t, userinfo)
-	require.Nil(t, claims)
-	require.Empty(t, source)
+	require.Nil(t, res)
 
 	// An empty bearer is rejected but must not pollute the format-change signal.
-	userinfo, claims, source, err = authenticator.dispatchUserinfo(t.Context(), req, "", dispatchSurfaceBearer)
+	res, err = authenticator.dispatchUserinfo(t.Context(), req, "", dispatchSurfaceBearer)
 	require.Error(t, err)
 	require.NotErrorIs(t, err, errUnrecognizedToken)
-	require.Nil(t, userinfo)
-	require.Nil(t, claims)
-	require.Empty(t, source)
+	require.Nil(t, res)
 
 	var rm metricdata.ResourceMetrics
 
@@ -837,4 +840,637 @@ func TestDispatchUserinfoCountsUnroutableTokens(t *testing.T) {
 
 	// Only the opaque token counted; the empty bearer did not.
 	assert.Equal(t, int64(1), sum.DataPoints[0].Value)
+}
+
+// ── externalUserinfo tests ────────────────────────────────────────────────────
+//
+// externalUserinfo is the shared implementation for all bearer-trust paths.
+// These tests exercise the AllowExternalIdentity branch and confirm the reject
+// path is preserved when the flag is false.
+//
+// externalUserinfoTestIssuer is a minimal JWKS-backed OIDC issuer that produces
+// RS256-signed access tokens recognised by auth0.Validator. It mirrors the
+// auth0TestIssuer helper in passport_test.go (package oauth2_test) but lives in
+// the internal-test package so we can call externalUserinfo directly.
+
+const (
+	// emailNotInUserDB is an email address that is deliberately absent from
+	// every externalUserinfo test environment's user database.
+	emailNotInUserDB = "external@example.com"
+
+	// externalTestAudience is the audience used by externalUserinfo tests.
+	externalTestAudience = "https://external-idp.example.com"
+)
+
+type externalUserinfoTestIssuer struct {
+	server *httptest.Server
+	key    *rsa.PrivateKey
+}
+
+func newExternalUserinfoTestIssuer(t *testing.T) *externalUserinfoTestIssuer {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		pub := gojose.JSONWebKey{
+			Key:       &key.PublicKey,
+			KeyID:     "test-key",
+			Algorithm: string(gojose.RS256),
+			Use:       "sig",
+		}
+
+		assert.NoError(t, json.NewEncoder(w).Encode(gojose.JSONWebKeySet{
+			Keys: []gojose.JSONWebKey{pub},
+		}))
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	return &externalUserinfoTestIssuer{server: srv, key: key}
+}
+
+func (i *externalUserinfoTestIssuer) issuer() string { return i.server.URL }
+
+// token mints a minimal RS256 access token accepted by the validator. The
+// authz claim is intentionally omitted — RequireAuthzClaim is left false
+// for these tests so the focus stays on the AllowExternalIdentity branch.
+func (i *externalUserinfoTestIssuer) token(t *testing.T, audience, email string, expiry time.Time) string {
+	t.Helper()
+
+	verified := true
+
+	//nolint:tagliatelle
+	type tokenClaims struct {
+		jwt.Claims
+
+		Email         string `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool  `json:"https://unikorn-cloud.org/email_verified"`
+	}
+
+	claims := &tokenClaims{
+		Claims: jwt.Claims{
+			Issuer:    i.issuer(),
+			Subject:   "sub|" + email,
+			Audience:  jwt.Audience{audience},
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now().Add(-1 * time.Second)),
+			Expiry:    jwt.NewNumericDate(expiry),
+		},
+		Email:         email,
+		EmailVerified: &verified,
+	}
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.RS256,
+			Key: gojose.JSONWebKey{
+				Key:   i.key,
+				KeyID: "test-key",
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	tok, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	return tok
+}
+
+// externalUserinfoTestConfig accumulates options for the externalUserinfo test
+// helpers below.
+type externalUserinfoTestConfig struct {
+	allowExternalIdentity bool
+}
+
+type externalUserinfoOpt func(*externalUserinfoTestConfig)
+
+func withAllowExternalIdentity(v bool) externalUserinfoOpt {
+	return func(c *externalUserinfoTestConfig) { c.allowExternalIdentity = v }
+}
+
+// buildExternalUserinfoEnv constructs a minimal Authenticator backed by a fake
+// client and a real JWKS server; the user database contains no record for
+// emailNotInUserDB. opts control the synthesized BearerTrustSpec.
+func buildExternalUserinfoEnv(t *testing.T, opts ...externalUserinfoOpt) (*Authenticator, *externalUserinfoTestIssuer, *unikornv1.BearerTrustSpec, *auth0.Validator) {
+	t.Helper()
+
+	cfg := &externalUserinfoTestConfig{}
+	for _, o := range opts {
+		o(cfg)
+	}
+
+	// Use a fresh scheme; we only need unikornv1 types for the fake client.
+	s := runtime.NewScheme()
+	require.NoError(t, scheme.AddToScheme(s))
+	require.NoError(t, unikornv1.AddToScheme(s))
+
+	cli := fake.NewClientBuilder().WithScheme(s).Build()
+
+	udb := userdb.NewUserDatabase(cli, passportTestNamespace)
+
+	a := &Authenticator{
+		client:    cli,
+		namespace: passportTestNamespace,
+		userdb:    udb,
+	}
+
+	iss := newExternalUserinfoTestIssuer(t)
+
+	v, err := auth0.NewValidator(auth0.Options{
+		Issuer:                iss.issuer(),
+		Audience:              externalTestAudience,
+		SkipEmailVerification: false,
+		RequireAuthzClaim:     false,
+	})
+	require.NoError(t, err)
+
+	trust := &unikornv1.BearerTrustSpec{
+		Audience:              externalTestAudience,
+		AllowExternalIdentity: cfg.allowExternalIdentity,
+	}
+
+	return a, iss, trust, v
+}
+
+// tryExternalUserinfo invokes externalUserinfo and returns its results.
+func tryExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) (*openapi.Userinfo, *Claims, error) {
+	t.Helper()
+
+	a, iss, trust, v := buildExternalUserinfoEnv(t, opts...)
+
+	tok := iss.token(t, externalTestAudience, emailNotInUserDB, time.Now().Add(30*time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
+
+	return a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
+}
+
+// mustExternalUserinfo calls tryExternalUserinfo and requires no error.
+func mustExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) *openapi.Userinfo {
+	t.Helper()
+
+	ui, _, err := tryExternalUserinfo(t, opts...)
+	require.NoError(t, err)
+
+	return ui
+}
+
+func TestExternalUserinfoAllowExternalIdentity(t *testing.T) {
+	t.Parallel()
+
+	// No UNI user record for the email; AllowExternalIdentity=true → empty
+	// orgIds accepted without error.
+	ui := mustExternalUserinfo(t, withAllowExternalIdentity(true))
+
+	require.NotNil(t, ui.HttpsunikornCloudOrgauthz)
+
+	// Must be a non-nil empty slice: orgIds is non-nullable in the userinfo
+	// OpenAPI schema, so a nil slice (JSON null) fails response validation.
+	require.NotNil(t, ui.HttpsunikornCloudOrgauthz.OrgIds)
+	assert.Empty(t, ui.HttpsunikornCloudOrgauthz.OrgIds)
+
+	require.NotNil(t, ui.Email)
+	assert.Equal(t, emailNotInUserDB, *ui.Email)
+}
+
+func TestExternalUserinfoRejectsUnknownWhenNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	// No UNI user record and AllowExternalIdentity=false → must be rejected.
+	if _, _, err := tryExternalUserinfo(t, withAllowExternalIdentity(false)); err == nil {
+		t.Fatal("expected reject for unknown user when AllowExternalIdentity is false")
+	}
+}
+
+func TestExternalUserinfoStampsIssuer(t *testing.T) {
+	t.Parallel()
+
+	// sourceClaims.Issuer must equal the verbatim issuer so srcIssForSource can
+	// embed the correct src_iss in the resulting passport.
+	a, iss, trust, v := buildExternalUserinfoEnv(t, withAllowExternalIdentity(true))
+
+	tok := iss.token(t, externalTestAudience, emailNotInUserDB, time.Now().Add(30*time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
+
+	_, sourceClaims, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
+	require.NoError(t, err)
+	require.NotNil(t, sourceClaims)
+
+	assert.Equal(t, iss.issuer(), sourceClaims.Issuer, "sourceClaims.Issuer must be the verbatim issuer")
+}
+
+// newPassportInternalAuthenticatorWithOpts builds a minimal Authenticator
+// wired to a fake client, with options and unroutableTokens initialised so
+// dispatchUserinfo can be called directly.
+func newPassportInternalAuthenticatorWithOpts(t *testing.T, opts *Options, objects ...client.Object) *Authenticator {
+	t.Helper()
+
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(objects...).Build()
+
+	counter, err := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewManualReader())).
+		Meter("test").Int64Counter("test_unroutable_" + t.Name())
+	require.NoError(t, err)
+
+	return &Authenticator{
+		client:           cli,
+		namespace:        passportTestNamespace,
+		options:          opts,
+		validatorCache:   newValidatorCache(opts.ValidatorCacheSize),
+		unroutableTokens: counter,
+	}
+}
+
+func TestDispatchUnknownIssuerRejected(t *testing.T) {
+	t.Parallel()
+
+	// Build an authenticator with one trusted provider for a DIFFERENT issuer
+	// than what the JWS token will claim.
+	trustedProvider := &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: passportTestNamespace,
+			Name:      "trusted",
+		},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer: "https://trusted.example.com",
+			BearerTrust: &unikornv1.BearerTrustSpec{
+				Audience: "https://api.example.com",
+			},
+		},
+	}
+
+	a := newPassportInternalAuthenticatorWithOpts(t, &Options{
+		ValidatorCacheSize: 64,
+	}, trustedProvider)
+
+	// Build a JWS from an untrusted issuer (not "https://trusted.example.com").
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{Algorithm: gojose.RS256, Key: key},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	claims := jwt.Claims{
+		Issuer:   "https://untrusted.example.com",
+		Subject:  "user@example.com",
+		Audience: jwt.Audience{"https://api.example.com"},
+		IssuedAt: jwt.NewNumericDate(time.Now()),
+		Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	}
+
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	_, err = a.dispatchUserinfo(t.Context(), req, token, "bearer")
+	require.Error(t, err, "expected reject for unknown issuer")
+}
+
+func TestDispatchCacheNotReadySurfaces503(t *testing.T) {
+	t.Parallel()
+
+	// Create a client that fails on List (simulating cache not synced).
+	cli := fake.NewClientBuilder().
+		WithScheme(getPassportInternalScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				return ErrCacheNotReady
+			},
+		}).
+		Build()
+
+	authenticator := &Authenticator{
+		client:         cli,
+		namespace:      passportTestNamespace,
+		options:        &Options{ValidatorCacheSize: 64},
+		validatorCache: newValidatorCache(64),
+	}
+
+	// Build a JWS from an external issuer.
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{Algorithm: gojose.RS256, Key: key},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	claims := jwt.Claims{
+		Issuer:   "https://external.example.com",
+		Subject:  "user@example.com",
+		Audience: jwt.Audience{"https://api.example.com"},
+		IssuedAt: jwt.NewNumericDate(time.Now()),
+		Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+	}
+
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v2/userinfo", nil)
+
+	_, err = authenticator.dispatchUserinfo(t.Context(), req, token, "bearer")
+	require.Error(t, err)
+
+	// Check that the error has 503 status code.
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	require.Equal(t, http.StatusServiceUnavailable, oauthErr.StatusCode(), "expected 503 Service Unavailable")
+}
+
+func TestDirectBearerExternalDoesNotInheritUNIAdmin(t *testing.T) {
+	t.Parallel()
+
+	// Build a JWS from an external issuer; the dispatch must return
+	// SrcIss = the external issuer (verbatim), NOT the UNI sentinel.
+
+	// Set up a mock JWKS server so the external token validates.
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		publicKey := gojose.JSONWebKey{
+			Key:       &key.PublicKey,
+			KeyID:     "test-key",
+			Algorithm: string(gojose.RS256),
+			Use:       "sig",
+		}
+		assert.NoError(t, json.NewEncoder(w).Encode(gojose.JSONWebKeySet{Keys: []gojose.JSONWebKey{publicKey}}))
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	externalIssuer := server.URL
+
+	trustedProvider := &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: passportTestNamespace,
+			Name:      "external-provider",
+		},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer: externalIssuer,
+			BearerTrust: &unikornv1.BearerTrustSpec{
+				Audience:              "https://api.example.com",
+				AllowExternalIdentity: true,
+			},
+		},
+	}
+
+	a := newPassportInternalAuthenticatorWithOpts(t, &Options{
+		TokenVerificationLeeway: 0,
+		ValidatorCacheSize:      64,
+	}, trustedProvider)
+
+	// Also wire a userdb so externalUserinfo can call GetOrganizationIDs.
+	a.userdb = userdb.NewUserDatabase(
+		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
+		passportTestNamespace,
+	)
+
+	// Build the JWS token.
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.RS256,
+			Key: gojose.JSONWebKey{
+				Key:   key,
+				KeyID: "test-key",
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	//nolint:tagliatelle
+	type extClaims struct {
+		jwt.Claims
+		Email         string `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool  `json:"https://unikorn-cloud.org/email_verified"`
+	}
+
+	verified := true
+	tokenClaims := &extClaims{
+		Claims: jwt.Claims{
+			Issuer:   externalIssuer,
+			Subject:  "admin@x",
+			Audience: jwt.Audience{"https://api.example.com"},
+			IssuedAt: jwt.NewNumericDate(time.Now()),
+			Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+		Email:         "admin@x",
+		EmailVerified: &verified,
+	}
+
+	token, err := jwt.Signed(signer).Claims(tokenClaims).Serialize()
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	res, err := a.dispatchUserinfo(t.Context(), req, token, "bearer")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	if res.SrcIss == PassportSourceUNI {
+		t.Fatal("external bearer must not resolve to UNI sentinel (fail-open)")
+	}
+}
+
+// TestDispatchMultipleTrustedIssuers exercises the multi-issuer guarantee: with
+// two bearerTrust providers configured simultaneously, each pinned to its own
+// JWKS, a token from either issuer validates and is routed to its own validator,
+// while a token claiming one issuer but signed by the other's key is rejected
+// (per-issuer JWKS isolation).
+func TestDispatchMultipleTrustedIssuers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audA  = "https://api-a.example.com"
+		audB  = "https://api-b.example.com"
+		email = "user@example.com"
+	)
+
+	issuerA := newExternalUserinfoTestIssuer(t)
+	issuerB := newExternalUserinfoTestIssuer(t)
+
+	providerA := &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "issuer-a"},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer:      issuerA.issuer(),
+			BearerTrust: &unikornv1.BearerTrustSpec{Audience: audA, AllowExternalIdentity: true},
+		},
+	}
+
+	providerB := &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "issuer-b"},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer:      issuerB.issuer(),
+			BearerTrust: &unikornv1.BearerTrustSpec{Audience: audB, AllowExternalIdentity: true},
+		},
+	}
+
+	a := newPassportInternalAuthenticatorWithOpts(t, &Options{
+		TokenVerificationLeeway: 0,
+		ValidatorCacheSize:      64,
+	}, providerA, providerB)
+
+	// Empty userdb + AllowExternalIdentity=true → happy path resolves to empty orgIds.
+	a.userdb = userdb.NewUserDatabase(
+		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
+		passportTestNamespace,
+	)
+
+	t.Run("issuer A token validates and stamps issuer A", func(t *testing.T) {
+		t.Parallel()
+
+		tok := issuerA.token(t, audA, email, time.Now().Add(time.Hour))
+		req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+		res, err := a.dispatchUserinfo(t.Context(), req, tok, "bearer")
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		require.Equal(t, issuerA.issuer(), res.SrcIss)
+	})
+
+	t.Run("issuer B token validates and stamps issuer B", func(t *testing.T) {
+		t.Parallel()
+
+		tok := issuerB.token(t, audB, email, time.Now().Add(time.Hour))
+		req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+		res, err := a.dispatchUserinfo(t.Context(), req, tok, "bearer")
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		require.Equal(t, issuerB.issuer(), res.SrcIss)
+	})
+
+	t.Run("token claiming issuer A but signed by issuer B key is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// iss=A with A's correct audience, so the only thing that can fail is the
+		// signature: dispatch routes to validator A, which fetches A's JWKS and
+		// cannot verify a token signed by B's key.
+		signer, err := gojose.NewSigner(
+			gojose.SigningKey{
+				Algorithm: gojose.RS256,
+				Key:       gojose.JSONWebKey{Key: issuerB.key, KeyID: "test-key"},
+			},
+			(&gojose.SignerOptions{}).WithType("at+jwt"),
+		)
+		require.NoError(t, err)
+
+		verified := true
+
+		//nolint:tagliatelle
+		type extClaims struct {
+			jwt.Claims
+
+			Email         string `json:"https://unikorn-cloud.org/email"`
+			EmailVerified *bool  `json:"https://unikorn-cloud.org/email_verified"`
+		}
+
+		claims := &extClaims{
+			Claims: jwt.Claims{
+				Issuer:   issuerA.issuer(),
+				Subject:  "sub|" + email,
+				Audience: jwt.Audience{audA},
+				IssuedAt: jwt.NewNumericDate(time.Now()),
+				Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			},
+			Email:         email,
+			EmailVerified: &verified,
+		}
+
+		tok, err := jwt.Signed(signer).Claims(claims).Serialize()
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+		_, err = a.dispatchUserinfo(t.Context(), req, tok, "bearer")
+		require.Error(t, err, "token signed by a foreign key must fail issuer A's JWKS check")
+	})
+}
+
+// TestDispatchTrailingSlashIssuer is the real-Auth0 regression guard: the
+// provider issuer and the token `iss` both carry a trailing slash (as Auth0
+// emits). Dispatch selection and token verification both match the issuer
+// verbatim, and the slash-bearing issuer is stamped onto src_iss unchanged.
+// In-process issuers default to no trailing slash, which is why the original
+// unit tests missed this.
+func TestDispatchTrailingSlashIssuer(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audience = "https://api.example.com"
+		email    = "user@example.com"
+	)
+
+	iss := newExternalUserinfoTestIssuer(t)
+	slashIssuer := iss.issuer() + "/" // as a real Auth0 tenant is configured/emits
+
+	provider := &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "staff"},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer:      slashIssuer,
+			BearerTrust: &unikornv1.BearerTrustSpec{Audience: audience, AllowExternalIdentity: true},
+		},
+	}
+
+	a := newPassportInternalAuthenticatorWithOpts(t, &Options{
+		TokenVerificationLeeway: 0,
+		ValidatorCacheSize:      64,
+	}, provider)
+	a.userdb = userdb.NewUserDatabase(
+		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
+		passportTestNamespace,
+	)
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{Algorithm: gojose.RS256, Key: gojose.JSONWebKey{Key: iss.key, KeyID: "test-key"}},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	verified := true
+
+	//nolint:tagliatelle
+	type extClaims struct {
+		jwt.Claims
+
+		Email         string `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool  `json:"https://unikorn-cloud.org/email_verified"`
+	}
+
+	claims := &extClaims{
+		Claims: jwt.Claims{
+			Issuer:   slashIssuer,
+			Subject:  "sub|" + email,
+			Audience: jwt.Audience{audience},
+			IssuedAt: jwt.NewNumericDate(time.Now()),
+			Expiry:   jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+		Email:         email,
+		EmailVerified: &verified,
+	}
+
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	res, err := a.dispatchUserinfo(t.Context(), req, token, "bearer")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Equal(t, slashIssuer, res.SrcIss) // verbatim — trailing slash preserved
 }

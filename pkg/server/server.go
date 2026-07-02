@@ -20,6 +20,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	chi "github.com/go-chi/chi/v5"
@@ -31,6 +32,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -132,6 +134,18 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
+	// Startup migration gate: validate the RBAC admin list against the set of
+	// trusted non-UNI issuers known at startup. This is advisory — runtime CRD
+	// creation bypasses it; the issuer-aware match in validatorForIssuer is the
+	// real control — but it catches the most common misconfiguration (bare admin
+	// entry added before migrating to issuer::subject format) before the server
+	// accepts traffic.
+	trustedNonUNIIssuers := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace, s.OAuth2Options.Auth0ExchangeIssuer)
+
+	if err := s.RBACOptions.Validate(trustedNonUNIIssuers); err != nil {
+		return nil, fmt.Errorf("startup migration gate: %w", err)
+	}
+
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
 	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
@@ -162,4 +176,53 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	}
 
 	return server, nil
+}
+
+// computeTrustedNonUNIIssuers returns the issuers (verbatim) of all
+// BearerTrust-enabled OAuth2Providers in the identity namespace, plus the
+// legacy Auth0 flag issuer if set, minus the UNI sentinel. The result is
+// used by the startup migration gate only; the runtime issuer-match in
+// validatorForIssuer is the real control.
+//
+// A List failure (e.g. informer cache not yet warm) is treated as non-fatal:
+// the gate is skipped and returns an empty slice so startup is not blocked.
+// The runtime validatorForIssuer call is the real gate.
+func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace, auth0LegacyIssuer string) []string {
+	var providers unikornv1.OAuth2ProviderList
+
+	if err := cli.List(ctx, &providers, &client.ListOptions{Namespace: namespace}); err != nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+
+	var result []string
+
+	add := func(raw string) {
+		if raw == "" || raw == constants.UNISentinel {
+			return
+		}
+
+		if _, ok := seen[raw]; ok {
+			return
+		}
+
+		seen[raw] = struct{}{}
+
+		result = append(result, raw)
+	}
+
+	for i := range providers.Items {
+		p := &providers.Items[i]
+
+		if p.Spec.BearerTrust != nil && p.Namespace == namespace {
+			add(p.Spec.Issuer)
+		}
+	}
+
+	if auth0LegacyIssuer != "" {
+		add(auth0LegacyIssuer)
+	}
+
+	return result
 }

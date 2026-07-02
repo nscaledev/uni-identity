@@ -132,6 +132,36 @@ type OAuth2ProviderSpec struct {
 	AuthorizationURI *string `json:"authorizationURI,omitempty"`
 	// TokenURI is used when OIDC (discovery) is not available.
 	TokenURI *string `json:"tokenURI,omitempty"`
+	// BearerTrust, when present, opts this provider in as a trusted source of
+	// bearer access tokens (token exchange, /api/v1/* and /oauth2/v2/userinfo).
+	// A nil value means not trusted for bearer tokens; presence is the opt-in.
+	// Federation configuration alone never confers bearer trust.
+	BearerTrust *BearerTrustSpec `json:"bearerTrust,omitempty"`
+}
+
+// BearerTrustSpec configures acceptance of this provider's access tokens on
+// uni-identity's bearer surfaces. Validation of cross-field rules (e.g.
+// audience required, asymmetric-only algorithms) is performed at runtime when
+// the trust list is built, not via CRD markers — this repo uses no CEL.
+type BearerTrustSpec struct {
+	// Audience is required in the token's aud claim (by membership). It guards
+	// against replay of tokens minted for unrelated audiences.
+	Audience string `json:"audience"`
+	// AllowExternalIdentity accepts a subject with no UNI user record (with an
+	// empty orgIds set) instead of rejecting it. Defaults false.
+	AllowExternalIdentity bool `json:"allowExternalIdentity,omitempty"`
+	// SkipEmailVerification opts out of the email_verified check. Defaults
+	// false (verify). Inverted polarity matches the repo's optional-bool idiom
+	// (zero value = safe default), avoiding a *bool.
+	SkipEmailVerification bool `json:"skipEmailVerification,omitempty"`
+	// RequireAuthzClaim requires the https://unikorn-cloud.org/authz claim to
+	// be present and well-shaped. Defaults false (tolerate a missing claim).
+	// Claimed orgIds are discarded regardless.
+	RequireAuthzClaim bool `json:"requireAuthzClaim,omitempty"`
+	// SigningAlgorithms lists permitted JWS algorithms; empty defaults to
+	// [RS256]. Only asymmetric algorithms are allowed; none/HMAC are rejected
+	// at trust-list build time.
+	SigningAlgorithms []string `json:"signingAlgorithms,omitempty"`
 }
 
 // OAuth2ProviderStatus defines the status of the server.

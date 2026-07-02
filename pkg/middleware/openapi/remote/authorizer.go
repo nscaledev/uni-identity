@@ -180,6 +180,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 		return &authorization.Info{
 			Token:    rawToken,
 			Userinfo: passportToUserinfo(claims),
+			SrcIss:   claims.SrcIss,
 		}, nil
 	}
 
@@ -217,6 +218,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 	return &authorization.Info{
 		Token:    rawToken,
 		Userinfo: userinfo,
+		SrcIss:   claims.SrcIss,
 	}, nil
 }
 
