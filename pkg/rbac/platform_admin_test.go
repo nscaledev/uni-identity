@@ -43,11 +43,26 @@ func TestPlatformAdminSubjectsValueParse(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The chart renders every subject into a single comma-joined flag
+	// (StringSliceVar heritage) — one Set call must yield one entry per
+	// segment, mixed bare and qualified.
+	if err := v.Set("mixed@nscale.com,https://other.example.com/::other@nscale.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The chart renders an empty subjects list as an empty flag value; it
+	// must not become a phantom entry.
+	if err := v.Set(""); err != nil {
+		t.Fatal(err)
+	}
+
 	got := []rbac.PlatformAdministratorSubject(v)
 	want := []rbac.PlatformAdministratorSubject{
 		// stored verbatim — no lowercasing or trailing-slash stripping
 		{Issuer: "https://Staff.Auth0.com/", Subject: "admin@nscale.com"},
 		{Issuer: constants.UNISentinel, Subject: "legacy@nscale.com"},
+		{Issuer: constants.UNISentinel, Subject: "mixed@nscale.com"},
+		{Issuer: "https://other.example.com/", Subject: "other@nscale.com"},
 	}
 
 	if !reflect.DeepEqual(got, want) {
@@ -263,7 +278,7 @@ func TestOptionsValidateMigrationGate(t *testing.T) {
 		},
 	}
 
-	// a non-UNI trusted issuer exists AND a bare admin entry → refuse.
+	// a non-UNI trusted issuer exists AND a bare admin entry → report.
 	if err := opts.Validate([]string{"https://staff.auth0.com"}); err == nil {
 		t.Fatal("expected migration-gate error, got nil")
 	}

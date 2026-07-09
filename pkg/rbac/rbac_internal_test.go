@@ -23,10 +23,12 @@ import (
 )
 
 // TestSrcIssDefaultMatchesMigrationGateSentinel pins the coupling between the
-// empty-SrcIss default (srcIssOrUNISentinel) and the sentinel that
-// Options.Validate's migration gate checks against (idconstants.UNISentinel).
-// If either side changes independently, this test fails and calls attention
-// to the other side needing the same change.
+// empty-SrcIss default (srcIssOrUNISentinel) and the sentinel used for bare
+// admin entries (idconstants.UNISentinel). Subjects with no propagated srcIss
+// must land on the sentinel so they match only bare/sentinel admin entries —
+// the legacy semantic deliberately reproduced by expandBareAdminSubjects in
+// pkg/server. If either side changes independently, this test fails and calls
+// attention to the other side needing the same change.
 func TestSrcIssDefaultMatchesMigrationGateSentinel(t *testing.T) {
 	t.Parallel()
 
