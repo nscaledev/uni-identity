@@ -243,6 +243,17 @@ SAML/API-keys/workload until prioritized.
   publish on failure** — keep last-good and alarm, never fail-open on a broken or
   well-formed-but-hostile bundle. Each publish records provenance (source `Role` CRD
   versions + hash) and emits an audit event.
+- **Deployment hardening (from A1 review) — deferred decisions:**
+  - *Policies-ConfigMap ownership is unresolved.* Helm creates the ConfigMap empty
+    and the A3 controller writes it; `helm upgrade --force`, rollback, or GitOps
+    pruning can wipe controller-written policies. Resolve at A3 (likely: the
+    controller owns the object outright and the chart stops templating it).
+  - *CPU sizing:* the sidecar sits on the synchronous auth hot path; size its
+    resources with load data at the A5/A12 cutover.
+  - *Native sidecar* (initContainer + `restartPolicy: Always`) fixes termination
+    ordering but requires k8s ≥ 1.29 — an A12 cutover question.
+  - *Image digest pinning* is a platform-wide supply-chain convention question,
+    not a one-image fix.
 - **Enforcement path:** services call `pkg/rbac`; for other services `remote` calls
   identity's `/authorization/check`; identity dials the local Cerbos. A request's
   checks are **batched** (≈one call per request, like today's one ACL fetch);
