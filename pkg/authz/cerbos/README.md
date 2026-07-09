@@ -7,13 +7,75 @@ in [docs/cerbos-authorization-migration-design.md](../../../docs/cerbos-authoriz
 replacing homegrown access-decision evaluation in [rbac](../rbac/README.md)
 with policies evaluated by a central Cerbos PDP.
 
-Currently it contains one package:
+It contains:
 
+- the package root — a thin gRPC [client](#the-client) for the PDP, which
+  runs as a [sidecar](#the-sidecar) of the identity server.
 - [generate](#the-generate-package) — a pure function converting `Role` custom
   resources into Cerbos policy documents.
 
-The Cerbos client and the controller that reconciles generated policies into
-the PDP arrive with later migration tasks.
+The controller that reconciles generated policies into the PDP arrives with a
+later migration task (A3).
+
+## The Client
+
+`New(options *Options)` constructs a client for the PDP sidecar
+(`--cerbos-endpoint`, default `localhost:3593` — plaintext gRPC, since the
+sidecar shares the pod's network namespace).  It validates static
+configuration, wrapping failures in the `ErrOptions` sentinel (distinct from
+the runtime `ErrUnavailable` taxonomy): endpoints whose host is not loopback
+are refused (the PDP is an unauthenticated same-pod sidecar by design — a
+remote PDP would need mTLS and revisits this), as are non-positive check
+timeouts (a zero value would insta-deny every check while the sidecar looks
+healthy).  Construction is otherwise lazy: the underlying gRPC channel
+connects on first use, so `New` succeeding says nothing about sidecar
+liveness — pod readiness gates on the sidecar's own health probe instead.
+
+- `CheckResources(ctx, principal, batch)` passes the SDK types through
+  verbatim (request construction — principals, resources, binding strings —
+  is the A4 request builder's job) and applies a per-call deadline
+  (`--cerbos-check-timeout`, default 2s).
+- `Healthy(ctx)` performs a `ServerInfo` round-trip, the cheapest
+  connectivity probe the API offers.
+
+**Fail-closed contract**: every failure to obtain a decision — connection
+refused, deadline expiry, server error — returns an error wrapping the static
+`ErrUnavailable` sentinel, never a response.  The client never fabricates an
+allow or deny; the decision layer (A5) maps the sentinel to deny.  On the
+response side the SDK's `IsAllowed` returns false for missing actions,
+missing resources and errored results, so an allow is only reachable through
+an explicit `EFFECT_ALLOW`.  Explicit timeout→deny metrics and decision audit
+logging arrive with A10.
+
+The integration test (`make test-cerbos-client`, Docker-dependent like `make
+validate-policies` and therefore not part of `test-unit`) runs the pinned
+Cerbos image with a hand-written allow/deny policy under `testdata/` and pins
+all of the above, including that the image works under the chart's security
+constraints (non-root user, read-only root filesystem).
+
+## The Sidecar
+
+`charts/identity` runs Cerbos as an always-on sidecar of the identity server
+pod, image pinned to `CERBOS_VERSION` in the Makefile:
+
+- configuration comes from the `<release>-cerbos-config` ConfigMap: HTTP on
+  3592 and gRPC on 3593 bound to loopback only (the PDP is unauthenticated
+  and must never bind pod interfaces), disk storage watching `/policies`,
+  telemetry disabled, and no admin API (M1 forbids it; the disk driver does
+  not support it).  Cerbos reads this config only at startup, so a checksum
+  annotation on the pod template rolls the pods on config changes; the
+  policies ConfigMap is deliberately not annotated (it is live-watched).
+- policies come from the `<release>-cerbos-policies` ConfigMap, mounted
+  read-only at `/policies`.  It ships empty — Cerbos boots with an empty
+  policy directory and serves deny-by-default — and is populated by the A3
+  policy controller, nothing else.
+- readiness and liveness exec the in-image `cerbos healthcheck` binary
+  against the mounted config (the loopback binding puts the HTTP endpoint out
+  of the kubelet's reach), so the pod only becomes Ready once the PDP is
+  serving.  Unit tests pin the integration-test fixtures to the chart: the
+  test config must match the chart's except the listen addresses (docker
+  port-publishing cannot reach container-loopback) and the test execs the
+  chart's exact probe command.
 
 ## The generate Package
 

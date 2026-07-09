@@ -1,0 +1,12 @@
+# Policy store for the Cerbos PDP sidecar, mounted read-only at /policies.
+# Deliberately EMPTY: Cerbos 0.53.0 boots with an empty policy directory
+# ("Found 0 executable policies") and serves deny-by-default, so the sidecar
+# is safe before any policies exist.  The policy reconciliation controller
+# (migration task A3) populates this ConfigMap from Role resources; nothing
+# else writes to it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-cerbos-policies
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}

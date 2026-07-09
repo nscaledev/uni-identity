@@ -31,6 +31,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
+	"github.com/unikorn-cloud/identity/pkg/authz/cerbos"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
@@ -67,8 +68,15 @@ type Server struct {
 	// RBACOptions are for RBAC related things.
 	RBACOptions rbac.Options
 
+	// CerbosOptions configure the client for the Cerbos PDP sidecar.
+	CerbosOptions cerbos.Options
+
 	// OpenAPIOptions are for OpenAPI processing.
 	OpenAPIOptions openapimiddleware.Options
+
+	// Cerbos is the client for the Cerbos PDP sidecar; consumers arrive
+	// with the authorization decision layer (migration task A5).
+	Cerbos *cerbos.Client
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -79,6 +87,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.OAuth2Options.AddFlags(flags)
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
+	s.CerbosOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
 }
 
@@ -126,6 +135,18 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 
 	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
 	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
+
+	// The Cerbos PDP client is lazy: no connection is attempted until the
+	// first RPC, so construction is safe before the sidecar is ready (an
+	// eager connectivity check here would race the pod's own sidecar;
+	// readiness is the sidecar health probe's job).  Consumers of the
+	// client arrive with the decision layer (migration task A5).
+	cerbosClient, err := cerbos.New(&s.CerbosOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	s.Cerbos = cerbosClient
 	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
 
 	if err != nil {
