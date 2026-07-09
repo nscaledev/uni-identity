@@ -57,24 +57,34 @@ type PlatformAdministratorSubject struct {
 	Subject string
 }
 
-// PlatformAdministratorSubjectsValue parses repeated issuer::subject flags. A
-// bare value (no "::") defaults the issuer to the UNI sentinel for backward
-// compatibility with single-issuer deployments.
+// PlatformAdministratorSubjectsValue parses repeated or comma-joined
+// issuer::subject flags. A bare value (no "::") defaults the issuer to the UNI
+// sentinel for backward compatibility with single-issuer deployments.
 type PlatformAdministratorSubjectsValue []PlatformAdministratorSubject
 
 var _ pflag.Value = (*PlatformAdministratorSubjectsValue)(nil)
 
 func (v *PlatformAdministratorSubjectsValue) Set(value string) error {
-	iss, sub, ok := strings.Cut(value, "::")
-	if !ok {
-		*v = append(*v, PlatformAdministratorSubject{Issuer: idconstants.UNISentinel, Subject: value})
+	// Comma-splitting preserves compatibility with the StringSliceVar this
+	// flag replaced: the chart renders every subject into one comma-joined
+	// flag. Empty segments (e.g. the chart's render of an empty subjects
+	// list) are skipped rather than stored as phantom entries.
+	for _, value := range strings.Split(value, ",") {
+		if value == "" {
+			continue
+		}
 
-		return nil
+		iss, sub, ok := strings.Cut(value, "::")
+		if !ok {
+			*v = append(*v, PlatformAdministratorSubject{Issuer: idconstants.UNISentinel, Subject: value})
+
+			continue
+		}
+
+		// Stored verbatim: the issuer must match the `iss` the IdP emits exactly
+		// (OIDC §3.1.3.7), the same string that lands in the passport src_iss.
+		*v = append(*v, PlatformAdministratorSubject{Issuer: iss, Subject: sub})
 	}
-
-	// Stored verbatim: the issuer must match the `iss` the IdP emits exactly
-	// (OIDC §3.1.3.7), the same string that lands in the passport src_iss.
-	*v = append(*v, PlatformAdministratorSubject{Issuer: iss, Subject: sub})
 
 	return nil
 }
@@ -107,10 +117,11 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
 }
 
-// Validate enforces the migration gate: if any trusted non-UNI issuer exists
-// and any admin entry is still in bare (UNI-sentinel) form, refuse to start so
-// a single-issuer admin list cannot be silently exploited once a second issuer
-// is trusted.
+// Validate reports whether the admin list still needs migrating: any bare
+// (UNI-sentinel) entry while a non-UNI issuer is trusted. Advisory only — the
+// caller logs the result rather than refusing to start; bare entries can
+// never match a CRD-declared issuer, so the runtime issuer-match in
+// processUserAccountACL remains the security control.
 func (o *Options) Validate(trustedNonUNIIssuers []string) error {
 	if len(trustedNonUNIIssuers) == 0 {
 		return nil
@@ -942,12 +953,14 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 }
 
 // srcIssOrUNISentinel returns srcIss unchanged if set, otherwise the UNI sentinel.
-// This default is safe only because Options.Validate's migration gate forbids any
-// UNI-sentinel admin entry once a non-UNI issuer is trusted — so a subject with no
-// propagated srcIss (old in-flight passports, impersonated principals, non-external
-// paths) can never inherit a UNI admin grant it shouldn't have. See
-// TestSrcIssDefaultMatchesMigrationGateSentinel, which pins the coupling between
-// this constant and the gate's constant.
+// This default is safe because external tokens always carry a real src_iss stamped
+// at validation, so they can never resolve to the sentinel; the consumers that do
+// hit the empty default (passports minted by pre-src_iss code during a rolling
+// upgrade, impersonated principals — see processImpersonatedPrincipalACL — and
+// other non-external paths) match only sentinel admin entries, which is the
+// intended legacy semantic deliberately reproduced by expandBareAdminSubjects in
+// pkg/server. See TestSrcIssDefaultMatchesMigrationGateSentinel, which pins the
+// coupling between this default and the sentinel constant.
 func srcIssOrUNISentinel(srcIss string) string {
 	if srcIss == "" {
 		return idconstants.UNISentinel

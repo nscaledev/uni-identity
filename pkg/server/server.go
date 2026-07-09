@@ -20,7 +20,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	chi "github.com/go-chi/chi/v5"
@@ -45,6 +44,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type Server struct {
@@ -127,6 +127,18 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	}
 
 	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
+
+	// On main, bare admin entries matched from any authentication path. Mirror
+	// them onto the legacy Auth0 issuer so both pre-existing paths (UNI login,
+	// Auth0 exchange) keep matching; bare entries can never match a
+	// CRD-declared issuer, so this preserves behaviour without widening trust.
+	// Ordering invariant: this MUST run before rbac.New and before the
+	// migration warning below — were the warning evaluated first, or the
+	// expansion dropped while the gate stays advisory, Auth0-path admins would
+	// silently lose access with no loud signal. Remove together with the
+	// deprecated auth0-exchange flags.
+	s.RBACOptions.PlatformAdministratorSubjects = expandBareAdminSubjects(s.RBACOptions.PlatformAdministratorSubjects, s.OAuth2Options.Auth0ExchangeIssuer)
+
 	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
 	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
 
@@ -134,16 +146,13 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
-	// Startup migration gate: validate the RBAC admin list against the set of
-	// trusted non-UNI issuers known at startup. This is advisory — runtime CRD
-	// creation bypasses it; the issuer-aware match in validatorForIssuer is the
-	// real control — but it catches the most common misconfiguration (bare admin
-	// entry added before migrating to issuer::subject format) before the server
-	// accepts traffic.
-	trustedNonUNIIssuers := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace, s.OAuth2Options.Auth0ExchangeIssuer)
-
-	if err := s.RBACOptions.Validate(trustedNonUNIIssuers); err != nil {
-		return nil, fmt.Errorf("startup migration gate: %w", err)
+	// Migration nudge: bare admin entries can never match a CRD-declared
+	// issuer (the runtime issuer-match in validatorForIssuer is the real
+	// control), so an unmigrated admin list is hygiene, not a vulnerability —
+	// warn, don't block boot. A hard failure here would fire at an unrelated
+	// pod restart long after the first bearerTrust CRD was created.
+	if err := s.RBACOptions.Validate(computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)); err != nil {
+		log.FromContext(context.TODO()).Info("platform-administrator-subjects migration pending", "error", err)
 	}
 
 	// Setup middleware.
@@ -178,16 +187,38 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	return server, nil
 }
 
+// expandBareAdminSubjects mirrors bare (UNI-sentinel) admin entries onto the
+// legacy Auth0 issuer, reproducing the issuer-unaware matching that existed
+// before entries were issuer-qualified. The mirror is a concrete
+// issuer-qualified entry for an already-trusted issuer, so it grants nothing
+// that the old issuer-blind match didn't; CRD-declared issuers are never
+// added.
+func expandBareAdminSubjects(subjects []rbac.PlatformAdministratorSubject, legacyIssuer string) []rbac.PlatformAdministratorSubject {
+	if legacyIssuer == "" || legacyIssuer == constants.UNISentinel {
+		return subjects
+	}
+
+	// Safe to append while ranging: range captures the slice header once.
+	for _, s := range subjects {
+		if s.Issuer == constants.UNISentinel {
+			subjects = append(subjects, rbac.PlatformAdministratorSubject{Issuer: legacyIssuer, Subject: s.Subject})
+		}
+	}
+
+	return subjects
+}
+
 // computeTrustedNonUNIIssuers returns the issuers (verbatim) of all
-// BearerTrust-enabled OAuth2Providers in the identity namespace, plus the
-// legacy Auth0 flag issuer if set, minus the UNI sentinel. The result is
-// used by the startup migration gate only; the runtime issuer-match in
-// validatorForIssuer is the real control.
+// BearerTrust-enabled OAuth2Providers in the identity namespace, minus the
+// UNI sentinel. The legacy Auth0 flag issuer is deliberately excluded: bare
+// admin entries are mirrored onto it by expandBareAdminSubjects, so its
+// presence alone leaves nothing to migrate. The result feeds the advisory
+// migration warning only; the runtime issuer-match in validatorForIssuer is
+// the real control.
 //
 // A List failure (e.g. informer cache not yet warm) is treated as non-fatal:
-// the gate is skipped and returns an empty slice so startup is not blocked.
-// The runtime validatorForIssuer call is the real gate.
-func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace, auth0LegacyIssuer string) []string {
+// the check is skipped and returns an empty slice so startup is not blocked.
+func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace string) []string {
 	var providers unikornv1.OAuth2ProviderList
 
 	if err := cli.List(ctx, &providers, &client.ListOptions{Namespace: namespace}); err != nil {
@@ -218,10 +249,6 @@ func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespa
 		if p.Spec.BearerTrust != nil && p.Namespace == namespace {
 			add(p.Spec.Issuer)
 		}
-	}
-
-	if auth0LegacyIssuer != "" {
-		add(auth0LegacyIssuer)
 	}
 
 	return result
