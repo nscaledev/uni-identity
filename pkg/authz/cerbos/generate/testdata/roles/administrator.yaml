@@ -1,0 +1,71 @@
+# Transcribed from charts/identity/values.yaml (roles.administrator).
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000003
+  labels:
+    unikorn-cloud.org/name: administrator
+spec:
+  scopes:
+    organization:
+      - name: identity:organizations
+        operations: [read, update]
+      - name: identity:oauth2providers
+        operations: [create, read, update, delete]
+      - name: identity:serviceaccounts
+        operations: [create, read, update, delete]
+      - name: identity:users
+        operations: [create, read, update, delete]
+      - name: identity:roles
+        operations: [create, read, update, delete]
+      - name: identity:groups
+        operations: [create, read, update, delete]
+      - name: identity:projects
+        operations: [create, read, update, delete]
+      - name: identity:quotas
+        operations: [read]
+      - name: region:regions
+        operations: [read]
+      - name: region:networks:v2
+        operations: [create, read, update, delete]
+      - name: region:loadbalancers:v2
+        operations: [create, read, update, delete]
+      - name: region:filestorage:v2
+        operations: [create, read, update, delete]
+      - name: region:filestorageclass:v2
+        operations: [read]
+      - name: storage:objectstorageclasses
+        operations: [read]
+      - name: storage:objectstorageendpoints
+        operations: [create, read, update, delete]
+      - name: storage:objectstorageendpoints/accesskeys
+        operations: [create, read, update, delete]
+      - name: region:flavors
+        operations: [read]
+      - name: region:images
+        operations: [read, create, delete]
+      - name: region:securitygroups:v2
+        operations: [create, read, update, delete]
+      - name: region:sshcertificateauthorities:v2
+        operations: [create, read, delete]
+      - name: kubernetes:regions
+        operations: [read]
+      - name: kubernetes:flavors
+        operations: [read]
+      - name: kubernetes:images
+        operations: [read]
+      - name: kubernetes:clusters
+        operations: [create, read, update, delete]
+      - name: kubernetes:virtualclusters
+        operations: [create, read, update, delete]
+      - name: compute:regions
+        operations: [read]
+      - name: compute:flavors
+        operations: [read]
+      - name: compute:images
+        operations: [read]
+      - name: compute:instances
+        operations: [create, read, update, delete]
+      - name: compute:clusters
+        operations: [create, read, update, delete]

@@ -1,0 +1,18 @@
+# Transcribed from k8s-deploy-unikorn charts/unikorn/templates/uni/identity.yaml
+# (additionalRoles.reservation-capacity-reader).  Open-vocabulary endpoints
+# (reservation:*) owned by an out-of-repo service, with both organization and
+# project buckets.  The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000103
+  labels:
+    unikorn-cloud.org/name: reservation-capacity-reader
+spec:
+  scopes:
+    organization:
+      - name: reservation:reservation-units
+        operations: [read]
+    project:
+      - name: reservation:reservations
+        operations: [read]

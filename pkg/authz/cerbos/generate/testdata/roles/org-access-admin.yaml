@@ -1,0 +1,32 @@
+# Transcribed from k8s-deploy-unikorn charts/unikorn/templates/uni/ai-services.yaml
+# (Role org-access-admin).  Open-vocabulary endpoints (envir:*) owned by an
+# out-of-repo service; the generator must pass them through opaquely.
+# The metadata.name is a fixed placeholder UUID (the source manifest uses a real
+# UUID; a placeholder is used here for consistency with the other fixtures).
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000102
+  labels:
+    unikorn-cloud.org/name: org-access-admin
+spec:
+  scopes:
+    organization:
+      - name: envir:organization
+        operations: [create, read, update, delete]
+      - name: envir:project
+        operations: [create, read, update, delete]
+      - name: envir:environment-manager
+        operations: [create, read, update, delete]
+      - name: envir:resource-manager
+        operations: [create, read, update, delete]
+      - name: envir:product-catalog
+        operations: [create, read, update, delete]
+      - name: envir:product-configurator
+        operations: [create, read, update, delete]
+      - name: envir:product-deployer
+        operations: [create, read, update, delete]
+      - name: envir:dependency-manager
+        operations: [create, read, update, delete]
+      - name: envir:application
+        operations: [create, read, update, delete]

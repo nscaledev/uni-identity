@@ -1,0 +1,97 @@
+# Transcribed from charts/identity/values.yaml (roles.platform-administrator).
+# The metadata.name is a fixed placeholder UUID; in a live cluster the Role CR
+# name is a generated UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000001
+  labels:
+    unikorn-cloud.org/name: platform-administrator
+spec:
+  protected: true
+  scopes:
+    global:
+      - name: identity:organizations
+        operations: [create, read, update, delete]
+      - name: identity:oauth2providers
+        operations: [create, read, update, delete]
+      - name: identity:roles
+        operations: [create, read, update, delete]
+      - name: identity:serviceaccounts
+        operations: [create, read, update, delete]
+      - name: identity:users
+        operations: [create, read, update, delete]
+      - name: identity:groups
+        operations: [create, read, update, delete]
+      - name: identity:projects
+        operations: [create, read, update, delete]
+      - name: identity:projects/references
+        operations: [create, read, update, delete]
+      - name: identity:quotas
+        operations: [create, read, update, delete]
+      - name: identity:allocations
+        operations: [create, read, update, delete]
+      - name: region:regions
+        operations: [create, read, update, delete]
+      - name: region:flavors
+        operations: [create, read, update, delete]
+      - name: region:images
+        operations: [create, read, update, delete]
+      - name: region:externalnetworks
+        operations: [create, read, update, delete]
+      - name: region:identities
+        operations: [create, read, update, delete]
+      - name: region:identities/references
+        operations: [create, read, update, delete]
+      - name: region:networks
+        operations: [create, read, update, delete]
+      - name: region:networks/references
+        operations: [create, read, update, delete]
+      - name: region:networks:v2
+        operations: [create, read, update, delete]
+      - name: region:networks:v2/references
+        operations: [create, read, update, delete]
+      - name: region:loadbalancers:v2
+        operations: [create, read, update, delete]
+      - name: region:securitygroups
+        operations: [create, read, update, delete]
+      - name: region:securitygroups:v2
+        operations: [create, read, update, delete]
+      - name: region:servers
+        operations: [create, read, update, delete]
+      - name: region:servers:v2
+        operations: [create, read, update, delete]
+      - name: region:filestorage:v2
+        operations: [create, read, update, delete]
+      - name: region:filestorageclass:v2
+        operations: [create, read, update, delete]
+      - name: region:sshcertificateauthorities:v2
+        operations: [create, read, delete]
+      - name: kubernetes:regions
+        operations: [create, read, update, delete]
+      - name: kubernetes:flavors
+        operations: [create, read, update, delete]
+      - name: kubernetes:images
+        operations: [create, read, update, delete]
+      - name: kubernetes:clustermanagers
+        operations: [create, read, update, delete]
+      - name: kubernetes:clusters
+        operations: [create, read, update, delete]
+      - name: kubernetes:virtualclusters
+        operations: [create, read, update, delete]
+      - name: compute:regions
+        operations: [create, read, update, delete]
+      - name: compute:flavors
+        operations: [create, read, update, delete]
+      - name: compute:images
+        operations: [create, read, update, delete]
+      - name: compute:instances
+        operations: [create, read, update, delete]
+      - name: compute:clusters
+        operations: [create, read, update, delete]
+      - name: storage:objectstorageclasses
+        operations: [create, read, update, delete]
+      - name: storage:objectstorageendpoints
+        operations: [create, read, update, delete]
+      - name: storage:objectstorageendpoints/accesskeys
+        operations: [create, read, update, delete]

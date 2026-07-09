@@ -1,0 +1,71 @@
+# Transcribed from charts/identity/values.yaml (roles.auditor).
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000004
+  labels:
+    unikorn-cloud.org/name: auditor
+spec:
+  scopes:
+    organization:
+      - name: identity:organizations
+        operations: [read]
+      - name: identity:oauth2providers
+        operations: [read]
+      - name: identity:serviceaccounts
+        operations: [read]
+      - name: identity:users
+        operations: [read]
+      - name: identity:roles
+        operations: [read]
+      - name: identity:groups
+        operations: [read]
+      - name: identity:projects
+        operations: [read]
+      - name: identity:quotas
+        operations: [read]
+      - name: region:regions
+        operations: [read]
+      - name: region:networks:v2
+        operations: [read]
+      - name: region:loadbalancers:v2
+        operations: [read]
+      - name: region:filestorage:v2
+        operations: [read]
+      - name: region:filestorageclass:v2
+        operations: [read]
+      - name: storage:objectstorageclasses
+        operations: [read]
+      - name: storage:objectstorageendpoints
+        operations: [read]
+      - name: storage:objectstorageendpoints/accesskeys
+        operations: [read]
+      - name: region:flavors
+        operations: [read]
+      - name: region:images
+        operations: [read]
+      - name: region:securitygroups:v2
+        operations: [read]
+      - name: region:sshcertificateauthorities:v2
+        operations: [read]
+      - name: kubernetes:regions
+        operations: [read]
+      - name: kubernetes:flavors
+        operations: [read]
+      - name: kubernetes:images
+        operations: [read]
+      - name: kubernetes:clusters
+        operations: [read]
+      - name: kubernetes:virtualclusters
+        operations: [read]
+      - name: compute:regions
+        operations: [read]
+      - name: compute:flavors
+        operations: [read]
+      - name: compute:images
+        operations: [read]
+      - name: compute:instances
+        operations: [read]
+      - name: compute:clusters
+        operations: [read]

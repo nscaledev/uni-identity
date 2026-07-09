@@ -1,0 +1,84 @@
+# Hand-written Cerbos test fixtures for the generated store (NOT generator
+# output).  Principal bindings use the byte-exact binding-string contract
+# (<roleID>#global | <roleID>#org#<orgID> | <roleID>#project#<orgID>#<projectID>);
+# the role UUIDs are the fixture placeholders from ../../../roles/.
+principals:
+  # platform-administrator, global.
+  platform_admin:
+    id: platform-admin
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000001#global"]
+
+  # region-service, global (create+delete but not read on
+  # identity:projects/references — the no-verb-subsumption case).
+  region_service:
+    id: region-service
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000002#global"]
+
+  # administrator bound to org-acme.
+  admin_acme:
+    id: admin@acme
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000003#org#org-acme"]
+
+  # administrator bound to a DIFFERENT org (tenant isolation must deny).
+  admin_other:
+    id: admin@other
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000003#org#org-other"]
+
+  # auditor (read-only) bound to org-acme.
+  auditor_acme:
+    id: auditor@acme
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000004#org#org-acme"]
+
+  # reader bound to a single project (project bucket must not flow up).
+  reader_proj1:
+    id: reader@proj-1
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000006#project#org-acme#proj-1"]
+
+  # synthetic-update-only bound to org-acme (update must not imply read).
+  updater_acme:
+    id: updater@acme
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000201#org#org-acme"]
+
+  # auditor + synthetic-update-only (the additive-union case).
+  auditor_updater_acme:
+    id: auditor-updater@acme
+    roles: ["principal"]
+    attr:
+      bindings:
+        - "00000000-0000-0000-0000-000000000004#org#org-acme"
+        - "00000000-0000-0000-0000-000000000201#org#org-acme"
+
+  # fleet-operator (open-vocabulary radar:*) bound to org-acme.
+  fleet_acme:
+    id: fleet@acme
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000101#org#org-acme"]
+
+  # org-access-admin (open-vocabulary envir:*) bound to org-acme.
+  envir_admin_acme:
+    id: envir-admin@acme
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000102#org#org-acme"]
+
+  # org-access-admin bound to a DIFFERENT org (open-vocab tenant isolation).
+  envir_admin_other:
+    id: envir-admin@other
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000102#org#org-other"]

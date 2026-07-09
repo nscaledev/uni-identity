@@ -1,0 +1,21 @@
+# Transcribed from k8s-deploy-unikorn charts/unikorn/values.yaml
+# (additionalRoles.fleet-operator).  Open-vocabulary endpoints (radar:*) owned by
+# an out-of-repo service; the generator must pass them through opaquely.
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000101
+  labels:
+    unikorn-cloud.org/name: fleet-operator
+spec:
+  scopes:
+    organization:
+      - name: radar:repairstats
+        operations: [create, read]
+      - name: radar:resourcestats
+        operations: [read]
+      - name: radar:announcements
+        operations: [read]
+      - name: radar:topology
+        operations: [read]
