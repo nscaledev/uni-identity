@@ -65,6 +65,8 @@ jobs:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     - name: Validate Cerbos Policy Store
       run: make validate-policies
+    - name: Test Cerbos Client
+      run: make test-cerbos-client
   ProviderContractVerification:
     runs-on: ubuntu-latest
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-contract-tests') }}

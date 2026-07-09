@@ -163,8 +163,25 @@ test-unit:
 # and run the hand-written policy test suites.  Requires Docker, so this is
 # deliberately not part of test-unit; CI runs it alongside the unit tests.
 .PHONY: validate-policies
-validate-policies:
+validate-policies: validate-cerbos-version
 	docker run --rm -v $(CURDIR)/pkg/authz/cerbos/generate/testdata/store:/policies:ro ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) compile /policies
+
+# The pinned Cerbos version appears in three places; if they drift, CI tests
+# a different PDP than the chart deploys.
+.PHONY: validate-cerbos-version
+validate-cerbos-version:
+	@if ! grep -q 'default "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' charts/identity/templates/identity/deployment.yaml || \
+	    ! grep -q 'defaultImage = "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' pkg/authz/cerbos/client_integration_test.go; then \
+		echo "Cerbos version drift: CERBOS_VERSION in the Makefile ($(CERBOS_VERSION)), the image default tag in charts/identity/templates/identity/deployment.yaml, and defaultImage in pkg/authz/cerbos/client_integration_test.go must all match."; \
+		exit 1; \
+	fi
+
+# Integration-test the Cerbos gRPC client against the pinned Cerbos image
+# with a hand-written allow/deny policy.  Requires Docker, so this is
+# deliberately not part of test-unit; CI runs it alongside the unit tests.
+.PHONY: test-cerbos-client
+test-cerbos-client:
+	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/authz/cerbos/
 
 # Build a binary and install it.
 $(PREFIX)/%: $(BINDIR)/%
