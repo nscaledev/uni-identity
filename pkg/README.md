@@ -34,6 +34,7 @@ identity storage layout.
 - [jose](./jose/README.md)
 - [oauth2](./oauth2/README.md)
 - [rbac](./rbac/README.md)
+- [authz/cerbos](./authz/cerbos/README.md)
 - [client](./client/README.md)
 
 These packages define how identity issues and validates tokens, how it resolves
