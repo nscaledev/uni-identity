@@ -110,14 +110,24 @@ matching the token's `iss`) and `subject` is the email address of the administra
 --platform-administrator-subjects https://my-idp.example.com/::admin@example.com
 ```
 
+Multiple administrators may be given as repeated flags or as a single comma-separated value —
+the Helm chart renders `platformAdministrators.subjects` as the latter.
+
 For UNI-local tokens (access tokens issued by the UNI identity service itself), the issuer is the
 `uni` sentinel and a bare subject without the `::` prefix is equivalent.
 
-The issuer component is mandatory when any non-UNI bearer trust is configured. A deployment that
-has at least one `bearerTrust` provider and still carries a bare admin subject will fail the
-startup validation gate (`Options.Validate`). However, this gate is advisory and can be bypassed
-by creating a `bearerTrust` CRD at runtime after startup; the always-on runtime control is the
-issuer-qualified match in `processUserAccountACL`.
+Bare entries carry legacy-compatible semantics: while the deprecated `--auth0-exchange-issuer`
+flag is set, each bare entry is mirrored at server construction onto that flag's issuer, so it
+matches both UNI-login and Auth0-exchange sessions — exactly the issuer-unaware behaviour that
+predates issuer qualification. A bare entry never matches a CRD-declared `bearerTrust` issuer.
+Migration to explicit `issuer::subject` form is therefore recommended but not forced: a
+deployment that has at least one `bearerTrust` provider and still carries a bare admin subject
+logs a startup warning (`Options.Validate`) and continues to boot. The always-on runtime control
+is the issuer-qualified match in `processUserAccountACL`.
+
+Note the mirror copies the flag value verbatim: a flag issuer lacking Auth0's canonical trailing
+slash will not match the emitted `iss` — the same match-`iss`-verbatim rule stated above for the
+`issuer::subject` syntax applies to the flag too.
 
 ## Invariants
 
