@@ -236,18 +236,32 @@ SAML/API-keys/workload until prioritized.
   Admin API, no Hub in M1** — those are only needed for runtime *tenant* authoring
   (M2) or fleet distribution (B). This keeps M1's footprint to "identity + a
   sidecar + a controller."
+  - *Reload gap (verified at A3, design-impacting):* plain `watchForChanges`
+    does **not** see content-only ConfigMap updates — the kubelet swaps a hidden
+    `..data` symlink (`atomic_writer.go`) and Cerbos's dirwatch drops hidden-name
+    events and only reloads the exact visible paths in an event batch
+    (cerbos@v0.53.0 `internal/storage/disk/dirwatch.go`), so a same-key content
+    update never reloads. *Resolution:* the controller publishes every file under
+    a **content-hash-suffixed key** (`<base>-<sha256[:8]>.yaml`): changed content
+    swaps keys, which surfaces as visible delete+create events the watcher does
+    reload (deletes processed first — no duplicate-definition window); unchanged
+    files keep identical keys. See `pkg/authz/cerbos/README.md`.
 - **Policy-delivery trust:** the ConfigMap/volume the sidecar reads *is* the
   effective authorization policy — least privilege applies. Only the controller's
   ServiceAccount may write it; identity/sidecar mount it read-only. The controller
   MUST `cerbos compile` (test-suite pass) each generated bundle and **refuse to
   publish on failure** — keep last-good and alarm, never fail-open on a broken or
-  well-formed-but-hostile bundle. Each publish records provenance (source `Role` CRD
-  versions + hash) and emits an audit event.
+  well-formed-but-hostile bundle. *(A3 ships this: exec'd pinned-binary gate,
+  refusal keeps last-good + warning event + classified error log; published keys
+  embed content hashes and publishes are logged. Richer provenance/audit records
+  ride with A10's audit work.)*
 - **Deployment hardening (from A1 review) — deferred decisions:**
-  - *Policies-ConfigMap ownership is unresolved.* Helm creates the ConfigMap empty
-    and the A3 controller writes it; `helm upgrade --force`, rollback, or GitOps
-    pruning can wipe controller-written policies. Resolve at A3 (likely: the
-    controller owns the object outright and the chart stops templating it).
+  - *Policies-ConfigMap ownership.* ✅ **RESOLVED at A3: controller-owned
+    outright; the chart no longer templates the ConfigMap.** The sidecar mounts
+    it as an `optional` volume (deny-by-default until first publish; the kubelet
+    back-fills the volume once it appears), and a wiped/pruned ConfigMap is
+    self-healing — the next reconcile re-gates and recreates it from the Roles.
+    `helm uninstall` orphans it (labels, no ownerReferences/GC).
   - *CPU sizing:* the sidecar sits on the synchronous auth hot path; size its
     resources with load data at the A5/A12 cutover.
   - *Native sidecar* (initContainer + `restartPolicy: Always`) fixes termination
