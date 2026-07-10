@@ -67,6 +67,7 @@ func convert(in *unikornv1.OAuth2Provider) *openapi.Oauth2ProviderRead {
 	out := &openapi.Oauth2ProviderRead{
 		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
 		Spec: openapi.Oauth2ProviderSpec{
+			Issuer:   in.Spec.Issuer,
 			ClientID: in.Spec.ClientID,
 		},
 	}

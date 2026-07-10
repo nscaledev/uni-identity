@@ -36,7 +36,9 @@ import (
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -62,10 +64,8 @@ const (
 	PassportIssuer = "uni-identity"
 
 	// PassportSourceUNI indicates the source token was a UNI access token.
-	PassportSourceUNI = "uni"
-
-	// PassportSourceAuth0 indicates the source token was an Auth0 access token.
-	PassportSourceAuth0 = "auth0"
+	// It aliases constants.UNISentinel so all existing references continue to compile.
+	PassportSourceUNI = constants.UNISentinel
 )
 
 // ActorClaim is the RFC 8693 section 4.1 "act" claim. It identifies the
@@ -100,6 +100,12 @@ type PassportClaims struct {
 	// ProjectID is the current project context from the exchange request.
 	//nolint:tagliatelle
 	ProjectID string `json:"project_id,omitempty"`
+	// SrcIss is the issuer URL (verbatim, as the IdP emits it) that authenticated
+	// the subject, or the PassportSourceUNI sentinel for UNI-local tokens. It is
+	// the security-load-bearing issuer for the platform-admin match; Source
+	// stays a coarse audit label.
+	//nolint:tagliatelle
+	SrcIss string `json:"src_iss"`
 	// Actor expresses delegation per RFC 8693 section 4.1; omitted when the
 	// passport's subject is itself the acting party.
 	Actor *ActorClaim `json:"act,omitempty"`
@@ -154,19 +160,20 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 
 	subjectToken := *options.SubjectToken
 
-	userinfo, sourceClaims, source, err := a.dispatchUserinfo(ctx, request, subjectToken, dispatchSurfaceExchange)
+	res, err := a.dispatchUserinfo(ctx, request, subjectToken, dispatchSurfaceExchange)
 	if err != nil {
 		log.Info("passport exchange failed: token validation failed")
 
 		return nil, normalizeExchangeUserinfoError(err)
 	}
 
-	authz := userinfo.HttpsunikornCloudOrgauthz
+	authz := res.Userinfo.HttpsunikornCloudOrgauthz
 
 	// Set up authorization context so rbac.GetACL can read it.
 	authCtx := authorization.NewContext(ctx, &authorization.Info{
 		Token:    subjectToken,
-		Userinfo: userinfo,
+		Userinfo: res.Userinfo,
+		SrcIss:   res.SrcIss,
 	})
 
 	organizationID, projectID := requestedScope(options)
@@ -203,7 +210,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		return nil, err
 	}
 
-	return a.mintPassport(ctx, userinfo, sourceClaims, source, audience, organizationID, projectID)
+	return a.mintPassport(ctx, res.Userinfo, res.Claims, res.Source, audience, organizationID, projectID)
 }
 
 const (
@@ -217,27 +224,33 @@ const (
 	dispatchSurfaceExchange = "exchange"
 )
 
+// dispatchResult is the resolved identity for a bearer token.
+type dispatchResult struct {
+	Userinfo *openapi.Userinfo
+	Claims   *Claims
+	Source   string // passport audit label (provider name or PassportSourceUNI)
+	SrcIss   string // issuer URL (verbatim), or the UNI sentinel
+}
+
 // dispatchUserinfo resolves a bearer token to userinfo and claims, routing on
 // the JOSE header: UNI access tokens are JWEs (an "enc" header) and resolve
-// through the local userinfo path, while a JWS is an Auth0 access token and
-// goes to the Auth0 validator. The result also reports which path produced it.
+// through the local userinfo path; a JWS is an external access token from a
+// trusted OAuth2Provider and is dispatched to the matching per-provider
+// validator. The result also reports which path produced it via Source and
+// SrcIss.
 //
 // Routing on the header rather than counting dots means an upstream switch to a
-// non-JWS access token can no longer silently misroute every Auth0 token to the
-// UNI path: a bearer that is neither a JWE nor a JWS is rejected outright and
-// counted, so a token-format change surfaces as an alertable signal instead of
-// a scatter of generic 401s. When Auth0 exchange is not configured
-// (auth0Validator is nil), a JWS falls back to the UNI path; an unroutable
-// bearer is still rejected, opted in or not, since a UNI access token is a JWE.
+// non-JWS access token can no longer silently misroute every external token to
+// the UNI path: a bearer that is neither a JWE nor a JWS is rejected outright
+// and counted, so a token-format change surfaces as an alertable signal instead
+// of a scatter of generic 401s.
 //
 // surface names the entry point (bearer or exchange) for the unroutable metric
 // and log. It is the single dispatch point shared by the token-exchange
 // endpoint and the local-authorizer bearer path, so the two cannot drift.
-func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, token, surface string) (*openapi.Userinfo, *Claims, string, error) {
+func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, token, surface string) (*dispatchResult, error) {
 	if token == "" {
-		// A missing bearer is the common client misconfiguration, not a
-		// token-format change, so reject it without polluting the counter.
-		return nil, nil, "", coreerrors.AccessDenied(r, "empty bearer token")
+		return nil, coreerrors.AccessDenied(r, "empty bearer token")
 	}
 
 	isJWE, err := bearerTokenIsJWE(token)
@@ -246,35 +259,88 @@ func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, t
 
 		log.FromContext(ctx).Info("rejecting unroutable bearer token", "surface", surface, "error", err)
 
-		return nil, nil, "", coreerrors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
+		return nil, coreerrors.AccessDenied(r, "unrecognized bearer token format").WithError(err)
 	}
 
-	if !isJWE && a.auth0Validator != nil {
-		userinfo, claims, err := a.getAuth0Userinfo(ctx, r, token)
+	if !isJWE {
+		rawIss, err := peekIssuer(token)
+		if err != nil {
+			a.unroutableTokens.Add(ctx, 1, metric.WithAttributes(attribute.String("surface", surface), attribute.String("reason", "unparseable_iss")))
 
-		return userinfo, claims, PassportSourceAuth0, err
+			return nil, coreerrors.AccessDenied(r, "unparseable token issuer").WithError(err)
+		}
+
+		res, err := a.validatorForIssuer(ctx, rawIss)
+		if goerrors.Is(err, ErrUnknownIssuer) {
+			a.unroutableTokens.Add(ctx, 1, metric.WithAttributes(attribute.String("surface", surface), attribute.String("reason", "unknown_issuer")))
+
+			return nil, coreerrors.AccessDenied(r, "untrusted token issuer")
+		}
+
+		if err != nil {
+			return nil, a.handleValidatorError(ctx, r, err, surface)
+		}
+
+		ui, claims, err := a.externalUserinfo(ctx, r, token, rawIss, res.Trust, res.Validator)
+		if err != nil {
+			return nil, err
+		}
+
+		return &dispatchResult{Userinfo: ui, Claims: claims, Source: res.ProviderName, SrcIss: rawIss}, nil
 	}
 
-	userinfo, claims, err := a.GetUserinfo(ctx, r, token)
+	ui, claims, err := a.GetUserinfo(ctx, r, token)
+	if err != nil {
+		return nil, err
+	}
 
-	return userinfo, claims, PassportSourceUNI, err
+	return &dispatchResult{Userinfo: ui, Claims: claims, Source: PassportSourceUNI, SrcIss: PassportSourceUNI}, nil
 }
 
-// GetUserinfoFromBearer resolves an Auth0 or UNI bearer token presented
+// handleValidatorError returns the appropriate error response for validatorForIssuer failures.
+// If the provider cache is not yet synced, it returns 503 Service Unavailable (transient).
+// Otherwise, it returns 401 Unauthorized (issuer not trusted).
+func (a *Authenticator) handleValidatorError(ctx context.Context, r *http.Request, err error, surface string) error {
+	if goerrors.Is(err, ErrCacheNotReady) {
+		log.FromContext(ctx).Info("provider cache not ready", "surface", surface)
+		return errors.OAuth2ServiceUnavailable("identity service warming up").WithError(err)
+	}
+
+	return coreerrors.AccessDenied(r, "issuer trust unavailable").WithError(err)
+}
+
+// GetUserinfoFromBearer resolves an external or UNI bearer token presented
 // directly — to the local authorizer (/api/v1/...) or to the OIDC userinfo
 // endpoint (/oauth2/v2/userinfo) — without the token-exchange round-trip. It
-// shares dispatchUserinfo with the exchange path and discards the source
-// label, which only that path needs.
-func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
-	userinfo, claims, _, err := a.dispatchUserinfo(ctx, r, token, dispatchSurfaceBearer)
+// shares dispatchUserinfo with the exchange path and returns the
+// src_iss alongside userinfo and claims.
+func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, string, error) {
+	res, err := a.dispatchUserinfo(ctx, r, token, dispatchSurfaceBearer)
+	if err != nil {
+		return nil, nil, "", err
+	}
 
-	return userinfo, claims, err
+	return res.Userinfo, res.Claims, res.SrcIss, nil
 }
 
 // errUnrecognizedToken is returned by bearerTokenIsJWE when a bearer token is
 // neither a JWS nor a JWE — its JOSE header is absent, unparseable, or
 // inconsistent with the compact-serialization segment count.
 var errUnrecognizedToken = goerrors.New("bearer token is neither a JWS nor a JWE")
+
+var (
+	// errTokenTooFewSegments is returned by peekIssuer when the compact
+	// token has fewer than two dot-separated segments.
+	errTokenTooFewSegments = goerrors.New("token has fewer than 2 segments")
+
+	// errPayloadTooLarge is returned by peekIssuer when the decoded
+	// JWT payload exceeds the size bound.
+	errPayloadTooLarge = goerrors.New("JWT payload exceeds size limit")
+
+	// errMissingIssClaim is returned by peekIssuer when the JWT payload
+	// does not contain a non-empty "iss" claim.
+	errMissingIssClaim = goerrors.New("token has no iss claim")
+)
 
 // bearerTokenIsJWE reports whether token is a JWE (a UNI access token) rather
 // than a JWS (an Auth0 access token) by inspecting the protected JOSE header: a
@@ -319,21 +385,87 @@ func bearerTokenIsJWE(token string) (bool, error) {
 	return isJWE, nil
 }
 
-func (a *Authenticator) getAuth0Userinfo(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, error) {
-	user, err := a.auth0Validator.Validate(ctx, token)
+// peekIssuer extracts the "iss" claim verbatim from the payload of a
+// compact-serialized JWT (JWS) without signature verification. It reads segment
+// index 1 (0-based) — the payload — which is distinct from bearerTokenIsJWE,
+// which reads segment index 0 (the JOSE header). The decoded payload is bounded
+// at 8 KiB to limit allocations. Returns an error when the token is not
+// splittable, the payload is not base64url-decodable, or the JSON does not
+// contain a non-empty "iss" string. The issuer is used as-is for provider
+// dispatch (exact string match against spec.issuer) — no normalization.
+func peekIssuer(token string) (string, error) {
+	const maxPayloadBytes = 8 * 1024
+
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return "", errTokenTooFewSegments
+	}
+
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("payload base64 decode: %w", err)
+	}
+
+	if len(raw) > maxPayloadBytes {
+		return "", errPayloadTooLarge
+	}
+
+	var payload struct {
+		Iss string `json:"iss"`
+	}
+
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", fmt.Errorf("payload JSON: %w", err)
+	}
+
+	if payload.Iss == "" {
+		return "", errMissingIssClaim
+	}
+
+	return payload.Iss, nil
+}
+
+// externalUserinfo validates an external bearer token using the supplied
+// validator, resolves UNI organization membership, and builds the userinfo and
+// source-claims pair. It is the single implementation for all bearer-trust
+// paths; dispatchUserinfo wires it for every JWS path via validatorForIssuer.
+//
+// When the email is not found in the UNI user database (ErrResourceReference)
+// and trust.AllowExternalIdentity is true, the subject is accepted with an
+// empty orgIds slice — RBAC decides what it can reach. If AllowExternalIdentity
+// is false, the request is rejected with the same error message as the prior
+// unconditional rejection, preserving the existing wire contract.
+//
+// sourceClaims.Issuer is stamped with rawIss (the verbatim issuer the IdP
+// emitted, as resolved by validatorForIssuer) so that srcIssForSource can compute
+// the correct src_iss for the resulting passport regardless of which provider
+// produced the claims.
+func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, token, rawIss string, trust *unikornv1.BearerTrustSpec, v *auth0.Validator) (*openapi.Userinfo, *Claims, error) {
+	user, err := v.Validate(ctx, token)
 	if err != nil {
 		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
-	// Auth0 proves the human identity and that the UNI Action ran; UNI remains
-	// authoritative for active user state and organization membership.
+	// UNI remains authoritative for active user state and organization
+	// membership. Claimed orgIds from the external token are discarded.
 	orgIDs, err := a.userdb.GetOrganizationIDs(ctx, user.Email)
 	if err != nil {
 		if goerrors.Is(err, userdb.ErrResourceReference) {
-			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
-		}
+			if !trust.AllowExternalIdentity {
+				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+			}
 
-		return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
+			orgIDs = nil // accepted with no memberships; authority decided by RBAC
+		} else {
+			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
+		}
+	}
+
+	// orgIds is a non-nullable array in the userinfo OpenAPI schema; a nil slice
+	// serializes to JSON null and fails response validation (panic → 502). An
+	// external identity with no UNI memberships must surface as an empty list.
+	if orgIDs == nil {
+		orgIDs = []string{}
 	}
 
 	verified := true
@@ -351,16 +483,25 @@ func (a *Authenticator) getAuth0Userinfo(ctx context.Context, r *http.Request, t
 
 	sourceClaims := &Claims{
 		Claims: jwt.Claims{
-			Subject: user.Email,
-			Issuer:  a.options.Auth0ExchangeIssuer,
-			Audience: jwt.Audience{
-				a.options.Auth0ExchangeAudience,
-			},
-			Expiry: jwt.NewNumericDate(user.Expiry),
+			Subject:  user.Email,
+			Issuer:   rawIss,
+			Audience: jwt.Audience{trust.Audience},
+			Expiry:   jwt.NewNumericDate(user.Expiry),
 		},
 	}
 
 	return userinfo, sourceClaims, nil
+}
+
+// srcIssForSource resolves the src_iss stamped on a passport. The UNI-local path
+// uses a fixed sentinel (a UNI access token's iss is not guaranteed to be an HTTPS
+// URL); external paths use the verbatim issuer already resolved by the dispatcher.
+func srcIssForSource(rawIssuer, source string) string {
+	if source == PassportSourceUNI {
+		return PassportSourceUNI
+	}
+
+	return rawIssuer
 }
 
 // mintPassport encodes the signed passport once scope authorisation has
@@ -395,6 +536,7 @@ func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.User
 		Type:      PassportType,
 		Acctype:   authz.Acctype,
 		Source:    source,
+		SrcIss:    srcIssForSource(sourceClaims.Issuer, source),
 		OrgIDs:    authz.OrgIds,
 		OrgID:     organizationID,
 		ProjectID: projectID,

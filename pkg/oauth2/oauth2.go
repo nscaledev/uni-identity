@@ -45,7 +45,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/html"
 	"github.com/unikorn-cloud/identity/pkg/jose"
-	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/providers"
@@ -97,6 +96,11 @@ type Options struct {
 	// CodeCacheSize is used to set the number of authorization code in flight.
 	CodeCacheSize int
 
+	// ValidatorCacheSize controls how many per-provider auth0.Validator instances
+	// are kept in the LRU cache. Each entry holds a built validator keyed by
+	// provider name + spec fingerprint.
+	ValidatorCacheSize int
+
 	// Auth0ExchangeIssuer is the Auth0 tenant issuer accepted as a passport
 	// exchange source token issuer.
 	Auth0ExchangeIssuer string
@@ -113,8 +117,11 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.TokenLeewayDuration, "token-leeway", time.Minute, "How long to remove from the provider token expiry to account for network and processing latency.")
 	f.IntVar(&o.TokenCacheSize, "token-cache-size", 8192, "How many token cache entries to allow.")
 	f.IntVar(&o.CodeCacheSize, "code-cache-size", 8192, "How many code cache entries to allow.")
+	f.IntVar(&o.ValidatorCacheSize, "validator-cache-size", 64, "How many per-provider validator cache entries to allow.")
 	f.StringVar(&o.Auth0ExchangeIssuer, "auth0-exchange-issuer", "", "Auth0 tenant issuer accepted for passport token exchange.")
 	f.StringVar(&o.Auth0ExchangeAudience, "auth0-exchange-audience", "", "Auth0 API audience accepted for passport token exchange.")
+	_ = f.MarkDeprecated("auth0-exchange-issuer", "configure an OAuth2Provider with a bearerTrust block instead")
+	_ = f.MarkDeprecated("auth0-exchange-audience", "configure an OAuth2Provider with a bearerTrust block instead")
 }
 
 // Authenticator provides Keystone authentication functionality.
@@ -144,8 +151,10 @@ type Authenticator struct {
 	// codeCache is used to protect against authorization code reuse.
 	codeCache *cache.LRUExpireCache
 
-	// auth0Validator validates Auth0 access tokens accepted by passport exchange.
-	auth0Validator *auth0.Validator
+	// validatorCache memoizes built *auth0.Validator instances, keyed by provider
+	// name + spec fingerprint. Trust membership is never read from this cache;
+	// only the already-matched validator is memoized here.
+	validatorCache *cache.LRUExpireCache
 
 	// unroutableTokens counts bearer tokens that classify as neither a UNI
 	// access token (JWE) nor a JWS, e.g. after an upstream token-format change.
@@ -153,21 +162,12 @@ type Authenticator struct {
 }
 
 // New returns a new authenticator with required fields populated.
-// You must call AddFlags after this.
-//
-// Returns an error if the Auth0 exchange options are partially specified
-// (e.g. issuer set without audience). When Auth0 exchange is fully unset the
-// returned authenticator simply has no Auth0 validator wired up.
+// It constructs the authenticator with the validator cache and initializes metrics.
+// Per-provider validators are built lazily by validatorForIssuer when a passport
+// is validated. Deprecated --auth0-exchange-{issuer,audience} flags feed a synthetic
+// auth0-legacy provider for backward compatibility; new deployments should use
+// OAuth2Provider bearerTrust blocks instead.
 func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
-	auth0Validator, err := auth0.NewValidator(auth0.Options{
-		Issuer:                  options.Auth0ExchangeIssuer,
-		Audience:                options.Auth0ExchangeAudience,
-		TokenVerificationLeeway: options.TokenVerificationLeeway,
-	})
-	if err != nil && !goerrors.Is(err, auth0.ErrDisabled) {
-		return nil, err
-	}
-
 	// The error only reports an invalid instrument configuration; the name,
 	// description, and unit are static and the API returns a usable no-op
 	// counter regardless, so there is nothing actionable to handle.
@@ -176,6 +176,11 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		metric.WithDescription("Bearer tokens that are neither a UNI access token (JWE) nor a JWS."),
 		metric.WithUnit("{token}"),
 	)
+
+	validatorCacheSize := options.ValidatorCacheSize
+	if validatorCacheSize <= 0 {
+		validatorCacheSize = 64
+	}
 
 	return &Authenticator{
 		options:          options,
@@ -187,7 +192,7 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		rbac:             rbac,
 		tokenCache:       cache.NewLRUExpireCache(options.TokenCacheSize),
 		codeCache:        cache.NewLRUExpireCache(options.CodeCacheSize),
-		auth0Validator:   auth0Validator,
+		validatorCache:   newValidatorCache(validatorCacheSize),
 		unroutableTokens: unroutableTokens,
 	}, nil
 }

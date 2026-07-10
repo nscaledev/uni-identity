@@ -234,6 +234,11 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 
 		info := &authorization.Info{
 			SystemAccount: true,
+			// SrcIss is intentionally empty for the mTLS system-account path.
+			// System accounts are authorized via the acctype==system branch in rbac.GetACL
+			// and dispatched to getSystemAccountACL, never reaching the user platform-admin
+			// fast-path that consumes SrcIss. The empty value is fail-closed: cannot match
+			// an external admin entry.
 			Userinfo: &identityapi.Userinfo{
 				Sub: certificate.Subject.CommonName,
 				HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{

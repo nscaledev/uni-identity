@@ -26,6 +26,7 @@ import (
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"go.opentelemetry.io/otel"
 
@@ -64,10 +65,27 @@ var (
 
 // Options configures Auth0 access-token validation for passport exchange.
 type Options struct {
-	Issuer                    string
-	Audience                  string
-	TokenVerificationLeeway   time.Duration
-	SupportedSigningAlgorithm string
+	Issuer                  string
+	Audience                string
+	TokenVerificationLeeway time.Duration
+
+	// SupportedSigningAlgorithms is the list of asymmetric signing algorithms
+	// accepted when verifying the token signature. When empty, defaults to
+	// ["RS256"]. Every entry must be an asymmetric algorithm; symmetric
+	// algorithms (e.g. HS256) and "none" are rejected at construction time.
+	SupportedSigningAlgorithms []string
+
+	// SkipEmailVerification disables the email_verified check. When false
+	// (the default) tokens with an unverified or missing email_verified claim
+	// are rejected. Set to true only for providers that do not emit the claim.
+	SkipEmailVerification bool
+
+	// RequireAuthzClaim gates the UNI authorization-context checks. When
+	// false (the default) the https://unikorn-cloud.org/authz claim is
+	// tolerated as missing or zero-valued and acctype defaults to "user".
+	// When true the claim must be present with acctype=="user" and at least
+	// one orgId.
+	RequireAuthzClaim bool
 
 	// JWKSMinRefreshInterval is the minimum interval between requests to
 	// the upstream JWKS endpoint. go-oidc refetches the JWKS whenever no
@@ -124,6 +142,22 @@ type Validator struct {
 	verifier *gooidc.IDTokenVerifier
 }
 
+// isAsymmetricAlg reports whether alg is one of the accepted asymmetric
+// signing algorithms. Symmetric algorithms (e.g. HS256) and the "none"
+// pseudo-algorithm are not permitted for external-token validation.
+func isAsymmetricAlg(alg string) bool {
+	switch jose.SignatureAlgorithm(alg) {
+	case jose.RS256, jose.RS384, jose.RS512,
+		jose.ES256, jose.ES384, jose.ES512,
+		jose.PS256, jose.PS384, jose.PS512:
+		return true
+	case jose.EdDSA, jose.HS256, jose.HS384, jose.HS512:
+		return false
+	}
+
+	return false
+}
+
 // NewValidator returns a validator using the Auth0 tenant JWKS endpoint.
 // It returns ErrDisabled when no Auth0 exchange configuration is supplied.
 func NewValidator(options Options) (*Validator, error) {
@@ -135,8 +169,14 @@ func NewValidator(options Options) (*Validator, error) {
 		return nil, fmt.Errorf("%w: issuer and audience must both be specified", ErrInvalidConfig)
 	}
 
-	if options.SupportedSigningAlgorithm == "" {
-		options.SupportedSigningAlgorithm = "RS256"
+	if len(options.SupportedSigningAlgorithms) == 0 {
+		options.SupportedSigningAlgorithms = []string{"RS256"}
+	}
+
+	for _, alg := range options.SupportedSigningAlgorithms {
+		if !isAsymmetricAlg(alg) {
+			return nil, fmt.Errorf("%w: signing algorithm %q is not asymmetric", ErrInvalidConfig, alg)
+		}
 	}
 
 	if options.JWKSMinRefreshInterval <= 0 {
@@ -147,6 +187,41 @@ func NewValidator(options Options) (*Validator, error) {
 		options: options,
 		now:     time.Now,
 	}, nil
+}
+
+// validateEmail checks the email claim is present and, unless
+// SkipEmailVerification is set, that the address is verified.
+func (v *Validator) validateEmail(claims *tokenClaims) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(claims.Email))
+	if email == "" {
+		return "", ErrMissingEmail
+	}
+
+	if !v.options.SkipEmailVerification {
+		if claims.EmailVerified == nil || !*claims.EmailVerified {
+			return "", ErrEmailUnverified
+		}
+	}
+
+	return email, nil
+}
+
+// validateAuthzClaim checks the UNI authorization context claim when
+// RequireAuthzClaim is enabled.
+func (v *Validator) validateAuthzClaim(claims *tokenClaims) error {
+	if !v.options.RequireAuthzClaim {
+		return nil
+	}
+
+	if claims.Authz.Acctype != accountTypeUser {
+		return fmt.Errorf("%w: acctype must be %q", ErrInvalidAuthzClaim, accountTypeUser)
+	}
+
+	if len(claims.Authz.OrgIDs) == 0 {
+		return fmt.Errorf("%w: orgIds must not be empty", ErrInvalidAuthzClaim)
+	}
+
+	return nil
 }
 
 // Validate verifies the token signature, issuer, audience, temporal claims,
@@ -182,21 +257,13 @@ func (v *Validator) Validate(ctx context.Context, token string) (*User, error) {
 		return nil, fmt.Errorf("%w: failed to validate claims: %w", ErrInvalidToken, err)
 	}
 
-	email := strings.ToLower(strings.TrimSpace(claims.Email))
-	if email == "" {
-		return nil, ErrMissingEmail
+	email, err := v.validateEmail(claims)
+	if err != nil {
+		return nil, err
 	}
 
-	if claims.EmailVerified == nil || !*claims.EmailVerified {
-		return nil, ErrEmailUnverified
-	}
-
-	if claims.Authz.Acctype != accountTypeUser {
-		return nil, fmt.Errorf("%w: acctype must be %q", ErrInvalidAuthzClaim, accountTypeUser)
-	}
-
-	if len(claims.Authz.OrgIDs) == 0 {
-		return nil, fmt.Errorf("%w: orgIds must not be empty", ErrInvalidAuthzClaim)
+	if err := v.validateAuthzClaim(claims); err != nil {
+		return nil, err
 	}
 
 	return &User{
@@ -217,6 +284,8 @@ func (v *Validator) getVerifier() *gooidc.IDTokenVerifier {
 	// when Auth0 rotates signing keys, so it gets a background context. The
 	// ctx passed to Verify only bounds how long a caller waits on an
 	// in-flight fetch; the fetch itself is bounded by the client timeout.
+	// TrimRight so a trailing-slash issuer (Auth0 emits `iss` with one) doesn't
+	// produce a "…//.well-known/jwks.json" URL.
 	jwksURL := strings.TrimRight(v.options.Issuer, "/") + "/.well-known/jwks.json"
 
 	// Throttle JWKS fetches at the HTTP layer so invalid tokens cannot
@@ -230,11 +299,9 @@ func (v *Validator) getVerifier() *gooidc.IDTokenVerifier {
 	keySet := gooidc.NewRemoteKeySet(gooidc.ClientContext(context.Background(), client), jwksURL)
 
 	v.verifier = gooidc.NewVerifier(v.options.Issuer, keySet, &gooidc.Config{
-		ClientID: v.options.Audience,
-		SupportedSigningAlgs: []string{
-			v.options.SupportedSigningAlgorithm,
-		},
-		SkipExpiryCheck: true,
+		ClientID:             v.options.Audience,
+		SupportedSigningAlgs: v.options.SupportedSigningAlgorithms,
+		SkipExpiryCheck:      true,
 	})
 
 	return v.verifier
