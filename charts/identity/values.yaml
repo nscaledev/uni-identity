@@ -450,4 +450,5 @@ ingress:
 #   maxAge: 86400
 
 # Sets the OTLP endpoint for shipping spans.
-# otlpEndpoint: jaeger-collector.default:4318
+# otlp:
+#   endpoint: jaeger-collector.default:4318

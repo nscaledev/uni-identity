@@ -20,6 +20,7 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"time"
 
 	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
 
@@ -34,8 +35,9 @@ import (
 // to allow/deny.  Only the local in-process PDP client path exists today; the
 // PolicyDecisionPoint seam is where A8 slots the remote transport
 // (/authorization/check) for services without a sidecar.  Decision audit
-// logging and metrics (including explicit unavailability counters) arrive
-// with A10 — deliberately not built here.
+// logging and metrics live in decision_log.go (A10), hooked at the CheckMany
+// choke point below so every consumer — Check, allowCoarse, and A8's remote
+// handler alike — is observed, pre-PDP fail-closed denials included.
 
 // The decision error taxonomy.  All three failure classes are DENY-shaped —
 // a caller treating any non-nil error as a deny is always fail-closed — but
@@ -131,22 +133,41 @@ func (r *RBAC) Check(ctx context.Context, resource Resource, action openapi.AclO
 // verdicts in request order.  The error taxonomy matches Check, except plain
 // policy denies are the false entries rather than an error.
 func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, error) {
+	start := time.Now()
+
+	allowed, response, err := r.decide(ctx, checks)
+
+	// Shadow evaluations ride this same funnel via a marked shallow engine
+	// copy (shadow.go) but must not pollute the served-decision audit stream
+	// or counter — shadow has its own divergence/failure taxonomy.  The PDP
+	// latency histogram, recorded inside decide, IS shared deliberately:
+	// transport health is path-independent.
+	if !r.shadowEvaluation {
+		r.recordDecisions(ctx, checks, allowed, response, err, time.Since(start))
+	}
+
+	return allowed, err
+}
+
+// decide is CheckMany's evaluation body, additionally returning the raw PDP
+// response so the decision records can carry the in-band policy correlate.
+func (r *RBAC) decide(ctx context.Context, checks []CheckRequest) ([]bool, *sdk.CheckResourcesResponse, error) {
 	if err := refuseImpersonation(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if r.pdp == nil {
-		return nil, fmt.Errorf("%w: no PDP client configured", ErrDecisionUnavailable)
+		return nil, nil, fmt.Errorf("%w: no PDP client configured", ErrDecisionUnavailable)
 	}
 
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
 	bindings, err := r.ResolveBindings(ctx, info)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
 	// The principal is keyed by the same subject string the resolver keyed
@@ -154,7 +175,7 @@ func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, er
 	// BuildPrincipal): the request is still sent and every check denies.
 	checkPrincipal, err := cerbos.BuildPrincipal(info.Userinfo.Sub, bindings)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
 	entries := make([]cerbos.BatchEntry, len(checks))
@@ -162,7 +183,7 @@ func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, er
 	for i, check := range checks {
 		resource, err := cerbos.BuildResource(check.Resource.Kind, check.Resource.ID, check.Resource.OrganizationID, check.Resource.ProjectID)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+			return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 		}
 
 		entries[i] = cerbos.BatchEntry{Resource: resource, Actions: []openapi.AclOperation{check.Action}}
@@ -170,15 +191,26 @@ func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, er
 
 	batch, err := cerbos.BuildBatch(entries)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
+
+	// The histogram is recorded tightly around the PDP round trip — no
+	// resolution, no result mapping — success and failure alike: a call that
+	// burned the whole --cerbos-check-timeout is exactly the signal this
+	// instrument exists to surface.
+	pdpStart := time.Now()
 
 	response, err := r.pdp.CheckResources(ctx, checkPrincipal, batch)
+
+	r.pdpLatency.Record(ctx, time.Since(pdpStart).Seconds())
+
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrDecisionUnavailable, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrDecisionUnavailable, err)
 	}
 
-	return mapResults(checks, entries, response)
+	allowed, err := mapResults(checks, entries, response)
+
+	return allowed, response, err
 }
 
 // mapResults maps the PDP response onto the request order.  CheckResources

@@ -18,8 +18,6 @@ package rbac_test
 
 import (
 	"context"
-	"log/slog"
-	"sync"
 	"testing"
 
 	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
@@ -42,6 +40,10 @@ import (
 // are "divergence", failures to obtain a verdict are "evaluation failure",
 // and the two must never blur — a PDP restart must not read as policy
 // divergence.
+//
+// Shadow records emit through the request-scoped logr logger, so tests
+// capture them with the shared context-seeded sink (logCapture, see
+// decisionlog_test.go) — no global logger state, parallel-safe.
 
 // The exact log messages are the shadow-phase observability contract (A12's
 // cutover gate consumes them); duplicated from shadow.go deliberately so a
@@ -50,84 +52,6 @@ const (
 	shadowDivergenceMessage = "cerbos shadow divergence"
 	shadowFailureMessage    = "cerbos shadow evaluation failure"
 )
-
-// shadowLogCapture is a minimal slog.Handler recording every record emitted
-// while installed as the default logger.  Safe for concurrent emitters; the
-// shadow comparator never uses WithAttrs/WithGroup so both are identity.
-type shadowLogCapture struct {
-	mu      sync.Mutex
-	records []slog.Record
-}
-
-func (c *shadowLogCapture) Enabled(context.Context, slog.Level) bool {
-	return true
-}
-
-func (c *shadowLogCapture) Handle(_ context.Context, record slog.Record) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.records = append(c.records, record.Clone())
-
-	return nil
-}
-
-func (c *shadowLogCapture) WithAttrs([]slog.Attr) slog.Handler {
-	return c
-}
-
-func (c *shadowLogCapture) WithGroup(string) slog.Handler {
-	return c
-}
-
-// messages returns the captured records carrying the given message, filtering
-// out unrelated records other code may emit through the default logger.
-func (c *shadowLogCapture) messages(message string) []slog.Record {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	var out []slog.Record
-
-	for _, record := range c.records {
-		if record.Message == message {
-			out = append(out, record)
-		}
-	}
-
-	return out
-}
-
-// captureShadowLogs installs a recording default logger for the duration of
-// the test.  The default logger is process-global, so tests using this helper
-// must NOT call t.Parallel(): serial tests never overlap with each other or
-// with (parked) parallel tests.
-func captureShadowLogs(t *testing.T) *shadowLogCapture {
-	t.Helper()
-
-	capture := &shadowLogCapture{}
-	previous := slog.Default()
-
-	slog.SetDefault(slog.New(capture))
-
-	t.Cleanup(func() {
-		slog.SetDefault(previous)
-	})
-
-	return capture
-}
-
-// recordAttrs flattens a record's attributes for assertion.
-func recordAttrs(record slog.Record) map[string]string {
-	out := map[string]string{}
-
-	record.Attrs(func(attr slog.Attr) bool {
-		out[attr.Key] = attr.Value.String()
-
-		return true
-	})
-
-	return out
-}
 
 // stampedPDP decorates another PDP, stamping the in-band per-result policy
 // metadata a real PDP returns, so the divergence log's policy correlate is
@@ -159,12 +83,12 @@ func (panicPDP) CheckResources(context.Context, *sdk.Principal, *sdk.ResourceBat
 }
 
 // shadowContext builds the exact context shape the middleware produces in
-// shadow mode: authorization info (for the Cerbos side), an ACL (for the
-// legacy walk) and the seeded engine.
-func shadowContext(t *testing.T, engine *rbac.RBAC, acl *openapi.Acl) context.Context {
+// shadow mode: the request-scoped logger (the capture), authorization info
+// (for the Cerbos side), an ACL (for the legacy walk) and the seeded engine.
+func shadowContext(t *testing.T, capture *logCapture, engine *rbac.RBAC, acl *openapi.Acl) context.Context {
 	t.Helper()
 
-	return rbac.NewEngineContext(rbac.NewContext(aliceContext(t), acl), engine)
+	return rbac.NewEngineContext(rbac.NewContext(capture.into(aliceContext(t)), acl), engine)
 }
 
 func TestShadowEngineModeFlag(t *testing.T) {
@@ -186,14 +110,15 @@ func TestShadowEngineModeFlag(t *testing.T) {
 	require.Equal(t, rbac.EngineShadow, options.AuthorizationEngine)
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowAgreementIsSilent(t *testing.T) {
-	capture := captureShadowLogs(t)
+	t.Parallel()
+
+	capture := &logCapture{}
 
 	// Allow-agreement: the ACL grants the operation and the PDP allows it.
 	pdp := &capturePDP{allow: true}
 	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
-	ctx := shadowContext(t, engine, globalACL("candy", openapi.Read))
+	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read))
 	require.Equal(t, 1, pdp.calls, "exactly one PDP call per shadowed check")
@@ -227,7 +152,7 @@ func TestShadowAgreementIsSilent(t *testing.T) {
 	// Deny-agreement: the ACL lacks the operation and the PDP denies it.
 	denyPDP := &capturePDP{}
 	denyEngine := newDispatchEngine(t, rbac.EngineShadow, denyPDP)
-	denyCtx := shadowContext(t, denyEngine, globalACL("candy", openapi.Read))
+	denyCtx := shadowContext(t, capture, denyEngine, globalACL("candy", openapi.Read))
 
 	err := rbac.AllowGlobalScope(denyCtx, "candy", openapi.Delete)
 	require.True(t, coreerrors.IsForbidden(err))
@@ -237,9 +162,10 @@ func TestShadowAgreementIsSilent(t *testing.T) {
 	require.Empty(t, capture.messages(shadowFailureMessage), "agreement must not log evaluation failure")
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowDivergenceCerbosAllows(t *testing.T) {
-	capture := captureShadowLogs(t)
+	t.Parallel()
+
+	capture := &logCapture{}
 
 	// The PDP allows what the ACL does not grant: a divergence, with the
 	// legacy DENY still served.
@@ -248,7 +174,7 @@ func TestShadowDivergenceCerbosAllows(t *testing.T) {
 		policyVersion: "default",
 		policyScope:   "acme",
 	})
-	ctx := shadowContext(t, engine, globalACL("candy", openapi.Read))
+	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 
 	err := rbac.AllowOrganizationScope(ctx, "candy", openapi.Delete, parityOrgA)
 	require.True(t, coreerrors.IsForbidden(err), "the served verdict must be the legacy deny")
@@ -258,7 +184,7 @@ func TestShadowDivergenceCerbosAllows(t *testing.T) {
 
 	// The full record, and NOTHING but the record: the closed field set is
 	// the guarantee no token or credential material can ride along.
-	attrs := recordAttrs(records[0])
+	attrs := logAttrs(t, records[0])
 	require.Len(t, attrs, 11)
 	require.Equal(t, parityAliceSubject, attrs["subject"])
 	require.Equal(t, "user", attrs["actor_type"])
@@ -275,15 +201,16 @@ func TestShadowDivergenceCerbosAllows(t *testing.T) {
 	require.Empty(t, capture.messages(shadowFailureMessage))
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowDivergenceCerbosDenies(t *testing.T) {
-	capture := captureShadowLogs(t)
+	t.Parallel()
+
+	capture := &logCapture{}
 
 	// The PDP denies what the ACL grants: a divergence, with the legacy
 	// ALLOW still served.
 	pdp := &capturePDP{}
 	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
-	ctx := shadowContext(t, engine, globalACL("candy", openapi.Read))
+	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read), "the served verdict must be the legacy allow")
 	require.Equal(t, 1, pdp.calls)
@@ -291,7 +218,7 @@ func TestShadowDivergenceCerbosDenies(t *testing.T) {
 	records := capture.messages(shadowDivergenceMessage)
 	require.Len(t, records, 1)
 
-	attrs := recordAttrs(records[0])
+	attrs := logAttrs(t, records[0])
 	require.Equal(t, "allow", attrs["legacy_verdict"])
 	require.Equal(t, "deny", attrs["cerbos_verdict"])
 	require.Equal(t, "policy_denied", attrs["cerbos_class"])
@@ -299,17 +226,20 @@ func TestShadowDivergenceCerbosDenies(t *testing.T) {
 	require.Empty(t, capture.messages(shadowFailureMessage))
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowEvaluationFailureIsNotDivergence(t *testing.T) {
+	t.Parallel()
+
 	// The taxonomy split this test pins is what keeps A12's zero-divergence
 	// gate honest: a PDP outage (or restart) during the shadow phase is infra
 	// signal and must NEVER register as policy divergence.
 	t.Run("PDPUnavailable", func(t *testing.T) {
-		capture := captureShadowLogs(t)
+		t.Parallel()
+
+		capture := &logCapture{}
 
 		pdp := &capturePDP{err: errFakeTransport}
 		engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
-		ctx := shadowContext(t, engine, globalACL("candy", openapi.Read))
+		ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 
 		require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read), "a PDP outage must not alter the served legacy verdict")
 
@@ -317,14 +247,16 @@ func TestShadowEvaluationFailureIsNotDivergence(t *testing.T) {
 
 		records := capture.messages(shadowFailureMessage)
 		require.Len(t, records, 1)
-		require.Equal(t, "decision_unavailable", recordAttrs(records[0])["cerbos_class"])
+		require.Equal(t, "decision_unavailable", logAttrs(t, records[0])["cerbos_class"])
 	})
 
 	t.Run("NoPDPConfigured", func(t *testing.T) {
-		capture := captureShadowLogs(t)
+		t.Parallel()
+
+		capture := &logCapture{}
 
 		engine := newDispatchEngine(t, rbac.EngineShadow, nil)
-		ctx := shadowContext(t, engine, globalACL("candy", openapi.Read))
+		ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 
 		require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read))
 
@@ -332,17 +264,19 @@ func TestShadowEvaluationFailureIsNotDivergence(t *testing.T) {
 
 		records := capture.messages(shadowFailureMessage)
 		require.Len(t, records, 1)
-		require.Equal(t, "decision_unavailable", recordAttrs(records[0])["cerbos_class"])
+		require.Equal(t, "decision_unavailable", logAttrs(t, records[0])["cerbos_class"])
 	})
 
 	t.Run("ResolutionFailure", func(t *testing.T) {
-		capture := captureShadowLogs(t)
+		t.Parallel()
+
+		capture := &logCapture{}
 
 		// No authorization info in the context: the legacy walk still serves
 		// from the ACL while the Cerbos side fails before the PDP is asked.
 		pdp := &capturePDP{allow: true}
 		engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
-		ctx := rbac.NewEngineContext(rbac.NewContext(t.Context(), globalACL("candy", openapi.Read)), engine)
+		ctx := rbac.NewEngineContext(rbac.NewContext(capture.into(t.Context()), globalACL("candy", openapi.Read)), engine)
 
 		require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read))
 		require.Zero(t, pdp.calls, "resolution fails before the PDP is asked")
@@ -351,16 +285,17 @@ func TestShadowEvaluationFailureIsNotDivergence(t *testing.T) {
 
 		records := capture.messages(shadowFailureMessage)
 		require.Len(t, records, 1)
-		require.Equal(t, "resolution_failed", recordAttrs(records[0])["cerbos_class"])
+		require.Equal(t, "resolution_failed", logAttrs(t, records[0])["cerbos_class"])
 	})
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowPanicIsRecovered(t *testing.T) {
-	capture := captureShadowLogs(t)
+	t.Parallel()
+
+	capture := &logCapture{}
 
 	engine := newDispatchEngine(t, rbac.EngineShadow, panicPDP{})
-	ctx := shadowContext(t, engine, globalACL("candy", openapi.Read))
+	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 
 	// The zero-behaviour-change contract under the worst case: a panicking
 	// shadow evaluation must never escape the dispatcher, and both legacy
@@ -375,15 +310,16 @@ func TestShadowPanicIsRecovered(t *testing.T) {
 	records := capture.messages(shadowFailureMessage)
 	require.Len(t, records, 2)
 
-	attrs := recordAttrs(records[0])
+	attrs := logAttrs(t, records[0])
 	require.Equal(t, "panic", attrs["cerbos_class"])
 	require.Contains(t, attrs["panic"], "deliberate test panic")
 	require.NotEmpty(t, attrs["stack"])
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowImpersonatedSkipsComparison(t *testing.T) {
-	capture := captureShadowLogs(t)
+	t.Parallel()
+
+	capture := &logCapture{}
 
 	pdp := &capturePDP{allow: true}
 	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
@@ -392,7 +328,7 @@ func TestShadowImpersonatedSkipsComparison(t *testing.T) {
 	// impersonation marker, and a non-empty actor.  Until the A14 dual-check
 	// the Cerbos path has no impersonation story, so such requests are
 	// excluded from the comparison entirely: no PDP call, no log.
-	ctx := shadowContext(t, engine, globalACL("candy", openapi.Read))
+	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 	ctx = principal.NewContext(ctx, &principal.Principal{Actor: "impersonated@example.com", Type: openapi.User})
 	ctx = principal.NewImpersonateContext(ctx)
 
@@ -405,7 +341,7 @@ func TestShadowImpersonatedSkipsComparison(t *testing.T) {
 
 	// Predicate parity with the legacy detection: the marker WITHOUT an
 	// actor is not impersonation, so the comparison runs.
-	ctx = shadowContext(t, engine, globalACL("candy", openapi.Read))
+	ctx = shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 	ctx = principal.NewContext(ctx, &principal.Principal{Type: openapi.User})
 	ctx = principal.NewImpersonateContext(ctx)
 
@@ -413,9 +349,10 @@ func TestShadowImpersonatedSkipsComparison(t *testing.T) {
 	require.Equal(t, 1, pdp.calls)
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowAbsentEngineTakesPlainLegacy(t *testing.T) {
-	capture := captureShadowLogs(t)
+	t.Parallel()
+
+	capture := &logCapture{}
 
 	// A shadow-mode engine EXISTS (the server configured one) but was never
 	// seeded into this context: the structural absence rule applies exactly
@@ -423,7 +360,7 @@ func TestShadowAbsentEngineTakesPlainLegacy(t *testing.T) {
 	pdp := &capturePDP{allow: true}
 	newDispatchEngine(t, rbac.EngineShadow, pdp)
 
-	ctx := rbac.NewContext(aliceContext(t), globalACL("candy", openapi.Read))
+	ctx := rbac.NewContext(capture.into(aliceContext(t)), globalACL("candy", openapi.Read))
 
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read))
 	require.Error(t, rbac.AllowGlobalScope(ctx, "wibble", openapi.Read))
@@ -433,19 +370,20 @@ func TestShadowAbsentEngineTakesPlainLegacy(t *testing.T) {
 	require.Empty(t, capture.messages(shadowFailureMessage))
 }
 
-//nolint:paralleltest // captureShadowLogs swaps the process-global default logger.
 func TestShadowCreateAndRoleStayUnshadowed(t *testing.T) {
-	capture := captureShadowLogs(t)
+	t.Parallel()
+
+	capture := &logCapture{}
 
 	// AllowProjectScopeCreate and AllowRole are never shadowed — their Cerbos
 	// stories are A9 and A16 respectively: zero PDP calls, zero shadow logs.
 	pdp := &capturePDP{}
 	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
 
-	ctx := shadowContext(t, engine, globalACL("candy", openapi.Create))
+	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Create))
 	require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID))
 
-	roleCtx := rbac.NewEngineContext(rbac.NewContext(aliceContext(t), aclFixture()), engine)
+	roleCtx := rbac.NewEngineContext(rbac.NewContext(capture.into(aliceContext(t)), aclFixture()), engine)
 
 	role := &unikornv1.Role{
 		Spec: unikornv1.RoleSpec{

@@ -21,10 +21,10 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"log/slog"
 	"slices"
 
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
@@ -78,14 +79,30 @@ type RBAC struct {
 	// (injected via WithCerbos; see check.go).  It is legal for it to be
 	// nil — decisions then fail closed with ErrDecisionUnavailable.
 	pdp PolicyDecisionPoint
+
+	// decisions counts served Cerbos-path decisions and pdpLatency times the
+	// CheckResources round trip (see decision_log.go and check.go).  Both are
+	// no-op unless metrics are exported (--otlp-endpoint).
+	decisions  metric.Int64Counter
+	pdpLatency metric.Float64Histogram
+
+	// shadowEvaluation marks the shallow engine copy shadowCompare rides
+	// through Check/CheckMany: such evaluations must emit no decision
+	// records and no decision-counter increments (shadow.go owns that
+	// path's taxonomy).  Never set on a served engine.
+	shadowEvaluation bool
 }
 
 // New creates a new RBAC client.
 func New(client client.Client, namespace string, options *Options) *RBAC {
+	decisions, pdpLatency := newDecisionInstruments()
+
 	return &RBAC{
-		client:    client,
-		namespace: namespace,
-		options:   options,
+		client:     client,
+		namespace:  namespace,
+		options:    options,
+		decisions:  decisions,
+		pdpLatency: pdpLatency,
 	}
 }
 
@@ -111,7 +128,7 @@ func (r *RBAC) groupSubjectFilter(ctx context.Context, subject string) func(unik
 		if len(group.Spec.UserIDs) > 0 {
 			if orgUserName, err := r.resolveOrganizationUserName(ctx, group.Namespace, subject); err == nil {
 				if slices.Contains(group.Spec.UserIDs, orgUserName) {
-					slog.Warn("group matched via deprecated userIDs field, migration to subjects required",
+					log.FromContext(ctx).Info("group matched via deprecated userIDs field, migration to subjects required",
 						"group", group.Name, "namespace", group.Namespace, "userID", orgUserName)
 
 					return false

@@ -19,13 +19,13 @@ package rbac
 import (
 	"context"
 	goerrors "errors"
-	"log/slog"
 	"runtime/debug"
 
 	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
 
-	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // This file is the A7 shadow-mode comparator: with --authorization-engine
@@ -44,6 +44,12 @@ import (
 //     (ErrDecisionUnavailable, ErrResolutionFailed, or a recovered panic).
 //     This is infra signal, triaged separately: a PDP restart during the
 //     shadow phase must never register as policy divergence.
+//
+// Records emit through the request-scoped logr logger (log.FromContext) into
+// the shared zap JSON stream, trace-correlated by the core OTel middleware —
+// the same sink as A10's decision records (decision_log.go).  logr has no
+// warn level; both record classes emit at Info so they are unconditionally
+// visible, which the A12 gate requires.
 //
 // Synchronous comparison is deliberate: deterministic, testable, and bounded
 // by the PDP client's --cerbos-check-timeout.  Shadow is an opt-in validation
@@ -97,10 +103,10 @@ func (r *RBAC) shadowCompare(ctx context.Context, resource Resource, operation o
 
 	defer func() {
 		if value := recover(); value != nil {
-			slog.WarnContext(ctx, shadowFailureMessage, append(attrs,
-				slog.String("cerbos_class", "panic"),
-				slog.Any("panic", value),
-				slog.String("stack", string(debug.Stack())))...)
+			log.FromContext(ctx).Info(shadowFailureMessage, append(attrs,
+				"cerbos_class", "panic",
+				"panic", value,
+				"stack", string(debug.Stack()))...)
 		}
 	}()
 
@@ -113,7 +119,13 @@ func (r *RBAC) shadowCompare(ctx context.Context, resource Resource, operation o
 	// stays nil so Check fails closed exactly as it would in cerbos mode.
 	capture := &capturingPDP{next: r.pdp}
 
+	// The marker keeps this evaluation out of the served-decision audit
+	// records and counter (decision_log.go): shadow's own taxonomy below is
+	// the observability for this path.  The shared PDP latency histogram
+	// still records — transport health is path-independent.
 	shadow := *r
+	shadow.shadowEvaluation = true
+
 	if r.pdp != nil {
 		shadow.pdp = capture
 	}
@@ -132,44 +144,37 @@ func (r *RBAC) shadowCompare(ctx context.Context, resource Resource, operation o
 
 		version, scope := shadowPolicyCorrelate(capture.response)
 
-		slog.WarnContext(ctx, shadowDivergenceMessage, append(attrs,
-			slog.String("cerbos_verdict", shadowVerdict(cerbosAllowed)),
-			slog.String("cerbos_class", shadowClass(err)),
-			slog.String("policy_version", version),
-			slog.String("policy_scope", scope))...)
+		log.FromContext(ctx).Info(shadowDivergenceMessage, append(attrs,
+			"cerbos_verdict", shadowVerdict(cerbosAllowed),
+			"cerbos_class", shadowClass(err),
+			"policy_version", version,
+			"policy_scope", scope)...)
 	default:
 		// No verdict was obtained (unavailability, resolution failure or an
 		// unclassified error): infra signal, NEVER divergence — A12's
 		// zero-divergence gate must not be poisoned by a PDP restart.
-		slog.WarnContext(ctx, shadowFailureMessage, append(attrs,
-			slog.String("cerbos_class", shadowClass(err)),
-			slog.Any("error", err))...)
+		log.FromContext(ctx).Info(shadowFailureMessage, append(attrs,
+			"cerbos_class", shadowClass(err),
+			"error", err)...)
 	}
 }
 
 // shadowAttrs assembles the fields common to both shadow log classes.  The
 // field set is CLOSED and credential-free by construction: only the subject
-// identifier and account type are read from the authorization info, never
+// identifier and account type are read from the authorization info
+// (decisionSubject, the same closed read the decision log uses), never
 // tokens or claims.
 func shadowAttrs(ctx context.Context, resource Resource, operation openapi.AclOperation, legacyAllowed bool) []any {
-	var subject, actorType string
-
-	if info, err := authorization.FromContext(ctx); err == nil && info.Userinfo != nil {
-		subject = info.Userinfo.Sub
-
-		if authz := info.Userinfo.HttpsunikornCloudOrgauthz; authz != nil {
-			actorType = string(authz.Acctype)
-		}
-	}
+	subject, actorType := decisionSubject(ctx)
 
 	return []any{
-		slog.String("subject", subject),
-		slog.String("actor_type", actorType),
-		slog.String("endpoint", resource.Kind),
-		slog.String("operation", string(operation)),
-		slog.String("organization_id", resource.OrganizationID),
-		slog.String("project_id", resource.ProjectID),
-		slog.String("legacy_verdict", shadowVerdict(legacyAllowed)),
+		"subject", subject,
+		"actor_type", actorType,
+		"endpoint", resource.Kind,
+		"operation", string(operation),
+		"organization_id", resource.OrganizationID,
+		"project_id", resource.ProjectID,
+		"legacy_verdict", shadowVerdict(legacyAllowed),
 	}
 }
 

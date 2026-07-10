@@ -50,8 +50,11 @@ allow or deny; the decision API (`rbac.Check`/`CheckMany`, see
 [pkg/rbac](../rbac/README.md)) maps the sentinel to its deny-shaped
 `ErrDecisionUnavailable`.  On the response side the SDK's `IsAllowed` returns
 false for missing actions, missing resources and errored results, so an allow
-is only reachable through an explicit `EFFECT_ALLOW`.  Explicit timeout→deny
-metrics and decision audit logging arrive with A10.
+is only reachable through an explicit `EFFECT_ALLOW`.  The A10 decision
+observability — audit records and metrics for every served outcome, timeouts
+included — lives at the `CheckMany` choke point in pkg/rbac (`decision_log.go`),
+NOT here: a client decorator would miss the pre-PDP fail-closed denials, and
+the client deliberately stays log-free.
 
 The integration test (`make test-cerbos-client`, Docker-dependent like `make
 validate-policies` and therefore not part of `test-unit`) runs the pinned

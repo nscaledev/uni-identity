@@ -205,8 +205,10 @@ scope, resource ID always the coarse `*`).
   legacy walk produces — call sites branch on `err == nil` and the error mapper on the
   HTTP status — with the fail-closed sentinel (`ErrPolicyDenied`,
   `ErrDecisionUnavailable`, `ErrResolutionFailed`) still visible via `errors.Is` for A7's
-  comparator and A10's metrics. A PDP outage is therefore a deny, indistinguishable to
-  callers from a policy deny until A10 adds the distinguishing metrics.
+  comparator and A10's observability. A PDP outage is therefore a deny that callers
+  cannot tell from a policy deny — deliberately — while operators can, via the decision
+  records' `reason` field and the decision counter's `class` attribute (see
+  [Decision observability](#decision-observability-a10)).
 - **Impersonated requests always take the legacy path regardless of mode** (the same
   predicate the confused-deputy intersection uses): the Cerbos decision API refuses them
   outright until the A14 dual-check, and failing them closed would break
@@ -235,12 +237,71 @@ scope, resource ID always the coarse `*`).
   **Fail-closed**: every failure is a deny, with a distinct static error per failure class —
   `ErrPolicyDenied` (explicit policy deny), `ErrDecisionUnavailable` (no PDP client injected
   via `WithCerbos`, transport failure, malformed response), `ErrResolutionFailed` (missing
-  authorization info, resolver or request-construction failure). Decision audit logging and
-  metrics arrive with A10.
+  authorization info, resolver or request-construction failure). Every served evaluation is
+  audited and counted at the `CheckMany` choke point (see
+  [Decision observability](#decision-observability-a10)).
 - **Impersonated requests are refused outright** (`ErrImpersonationNotSupported`): the
   confused-deputy intersection has no Cerbos equivalent until A14, and resolving the calling
   service's own subject would answer for the wrong identity. A7's shadow comparator must
   exclude or annotate impersonated requests until A14 lands.
+
+### Decision observability (A10)
+
+Every SERVED Cerbos-path decision is audited and counted at the `CheckMany` choke point
+(`decision_log.go`): `Check` wraps `CheckMany`, cerbos-mode `allowCoarse` wraps `Check`, and
+A8's remote `/authorization/check` handler will land on `CheckMany` too — so remote decisions
+inherit these records with no further work. Hooking the choke point rather than decorating
+the PDP client is deliberate: the pre-PDP fail-closed denials (no client configured,
+resolution failures, refused impersonation) are decisions and must be observed. Two
+owner-flagged deviations from the migration plan's file table: **`decision_log` lives in
+`pkg/rbac`, not `pkg/authz/cerbos`** (the plan row predates A5 placing the decision layer
+here — the choke point and every record input live in this package, and the PDP client knows
+nothing about subjects and stays log-free), and **the "policy version/hash" field is emitted
+through the same A15 seam the shadow comparator uses** (empty against today's PDP; upgraded
+in place when A15 builds the policy-store hash).
+
+**The decision log.** One record per `(resource, action)` entry of the batch — the flat,
+greppable shape; a batch-wide failure denies every entry, so every entry gets a record with
+the shared reason class. The message constant is `authorization decision` (load-bearing:
+dashboards grep it, unit tests duplicate it so a rename breaks them). Records emit through
+the request-scoped logr logger (`log.FromContext`) into the shared zap JSON stream
+(`SetupLogging`); the core OTel middleware seeds that logger with the request's
+traceID/spanID, so records are trace-correlated automatically — that is the design's
+"correlation id", with no explicit field. Levels mirror the core logging middleware's
+convention (4xx unconditional, `V(1)` otherwise): **denies at Info unconditionally, allows
+at `V(1)`** — this satisfies the design's "every decision" with allows visible at raised
+verbosity. Fields (closed set, credential-free — only `Sub` and `Acctype` are read from the
+authorization info, NEVER tokens/passports/claims): `subject`, `actor_type`, `endpoint`,
+`resource_id` (empty for coarse checks), `operation`, `organization_id`, `project_id`,
+`decision` (`allow|deny`), `reason` (`policy|unavailable|resolution|impersonation`, derived
+from the sentinel taxonomy via `errors.Is` — `policy` covers both verdicts, the rest are the
+fail-closed classes), `policy_version`/`policy_scope` (the A15-seam correlate, only claimed
+when a verdict was obtained), and `latency` (the whole decision: resolution + PDP + mapping).
+
+**Metrics.**
+
+| Instrument | Type | Attributes / boundaries |
+| --- | --- | --- |
+| `unikorn_identity_authz_decisions_total` | `Int64Counter` | `decision=allow\|deny`, `class=policy\|unavailable\|resolution\|impersonation` — the vocabulary is CLOSED; subject/endpoint attributes would be an open-vocabulary cardinality explosion |
+| `unikorn_identity_authz_pdp_latency` | `Float64Histogram` (the repo's first) | unit `s`; explicit sub-second buckets `0.0005 … 2` sized for localhost gRPC, top buckets making `--cerbos-check-timeout` expiries visible |
+
+The counter increments at the same per-entry classification point as the log. The histogram
+is recorded tightly around the PDP `CheckResources` round trip only (no resolution, no
+mapping), success and failure alike. Instruments export **only when the server runs with
+`--otlp-endpoint`** (metrics are pushed over OTLP; no `/metrics` endpoint exists) — without
+it the recordings are silently dropped.
+
+**Shadow evaluations are excluded.** They ride the same `CheckMany` funnel via a marked
+shallow engine copy (`shadowCompare`), and the marker suppresses their decision records and
+counter increments: shadow's signal is A7's own divergence/failure records, which A12's gate
+consumes. Only the PDP latency histogram is shared — transport health is path-independent.
+
+**Shadow sink fix (with A10).** The A7 shadow records (and the deprecated-`userIDs` group
+warning) previously emitted through bare `slog` — Go's default TEXT handler on stderr,
+outside the zap JSON stream and without trace correlation. Both now emit through
+`log.FromContext` into the same sink as the decision records (logr has no warn level; shadow
+records emit at Info so they stay unconditionally visible). Message constants and field sets
+are unchanged.
 
 `make test-cerbos-decisions` (Docker-dependent, so not part of `test-unit`) runs the
 decision-parity integration test: from one fixture dataset it computes every verdict through

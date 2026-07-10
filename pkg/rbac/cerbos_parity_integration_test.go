@@ -360,12 +360,12 @@ func TestCerbosDecisionParity(t *testing.T) {
 	// A7 shadow comparator, half one: with the PARITY store, shadow mode
 	// must serve exactly the legacy verdicts across the whole matrix and log
 	// ZERO divergences (and, against a healthy PDP with resolvable subjects,
-	// zero evaluation failures).  Serial (no t.Parallel): the log capture
-	// swaps the process-global default logger.
-	//
-	//nolint:paralleltest
+	// zero evaluation failures).  The capture rides the request context
+	// (logCapture, decisionlog_test.go), so the subtest is parallel-safe.
 	t.Run("ShadowModeParityStoreLogsNoDivergence", func(t *testing.T) {
-		capture := captureShadowLogs(t)
+		t.Parallel()
+
+		capture := &logCapture{}
 
 		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
 			PlatformAdministratorSubjects: []string{parityAdminSubject},
@@ -381,7 +381,7 @@ func TestCerbosDecisionParity(t *testing.T) {
 			}
 
 			legacy := legacyVerdict(t, fx.rbac, tc)
-			served := shadowFacadeVerdict(t, fx, engine, tc)
+			served := shadowFacadeVerdict(t, fx, capture, engine, tc)
 
 			require.Equal(t, legacy, served, "shadow mode must serve the legacy verdict (case %s)", tc.name)
 		}
@@ -394,11 +394,11 @@ func TestCerbosDecisionParity(t *testing.T) {
 	// generated store with ONE extra allow the legacy fixture lacks — must
 	// produce EXACTLY the corresponding divergence, carrying the full field
 	// set, while the served verdict STAYS legacy's even on the divergent
-	// cell.  Serial for the same reason as above.
-	//
-	//nolint:paralleltest
+	// cell.
 	t.Run("ShadowModeDetectsInjectedDivergence", func(t *testing.T) {
-		capture := captureShadowLogs(t)
+		t.Parallel()
+
+		capture := &logCapture{}
 
 		divergentEndpoint := startParityCerbos(t, writeDivergentParityStore(t, fx))
 
@@ -418,7 +418,7 @@ func TestCerbosDecisionParity(t *testing.T) {
 			}
 
 			legacy := legacyVerdict(t, fx.rbac, tc)
-			served := shadowFacadeVerdict(t, fx, engine, tc)
+			served := shadowFacadeVerdict(t, fx, capture, engine, tc)
 
 			require.Equal(t, legacy, served, "the served verdict must STAY legacy even where the stores diverge (case %s)", tc.name)
 		}
@@ -428,7 +428,7 @@ func TestCerbosDecisionParity(t *testing.T) {
 
 		// The injected extra allow flips exactly the UserOrgUngrantedOp cell:
 		// alice, identity:groups delete at organization scope in org A.
-		attrs := recordAttrs(divergences[0])
+		attrs := logAttrs(t, divergences[0])
 		require.Equal(t, parityAliceSubject, attrs["subject"])
 		require.Equal(t, "user", attrs["actor_type"])
 		require.Equal(t, "identity:groups", attrs["endpoint"])
@@ -452,12 +452,13 @@ func TestCerbosDecisionParity(t *testing.T) {
 }
 
 // shadowFacadeVerdict serves one matrix case through the Allow* facade with a
-// shadow-mode engine seeded, exactly as the middleware wires a request: an
-// ACL for the legacy walk, authorization info for the Cerbos side.
-func shadowFacadeVerdict(t *testing.T, fx *parityFixture, engine *rbac.RBAC, tc parityCase) bool {
+// shadow-mode engine seeded, exactly as the middleware wires a request: a
+// request-scoped logger (the capture), an ACL for the legacy walk, and
+// authorization info for the Cerbos side.
+func shadowFacadeVerdict(t *testing.T, fx *parityFixture, capture *logCapture, engine *rbac.RBAC, tc parityCase) bool {
 	t.Helper()
 
-	ctx := authorization.NewContext(t.Context(), tc.info)
+	ctx := authorization.NewContext(capture.into(t.Context()), tc.info)
 
 	acl, err := fx.rbac.GetACL(ctx, tc.organizationID)
 	require.NoError(t, err)
