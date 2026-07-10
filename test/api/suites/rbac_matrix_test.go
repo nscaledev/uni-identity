@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
@@ -412,6 +413,62 @@ var _ = Describe("RBAC Enforcement", func() {
 
 				expectUserRequestForbidden(http.MethodDelete,
 					api.NewEndpoints().GetOauth2Provider(config.OrgID, providerID), nil)
+			})
+		})
+
+		// The cells below extend the matrix's (endpoint, operation) breadth
+		// (A11).  In shadow mode (the CI default, hack/ci/test-values.yaml)
+		// every cell in this suite doubles as traffic for the divergence gate
+		// (hack/ci/divergence-gate): each decision is also evaluated by the
+		// Cerbos PDP and any disagreement is logged for the gate to fail on,
+		// so breadth here is gate coverage, not just RBAC coverage.
+
+		Describe("Given a request to list allocations", func() {
+			It("should be denied with a forbidden response", func() {
+				expectUserRequestForbidden(http.MethodGet,
+					api.NewEndpoints().ListAllocations(config.OrgID, config.ProjectID), nil)
+			})
+		})
+
+		Describe("Given a request to create an allocation", func() {
+			It("should be denied with a forbidden response", func() {
+				payload := identityopenapi.AllocationWrite{
+					Metadata: coreopenapi.ResourceWriteMetadata{
+						Name: "rbac-matrix-denied-allocation",
+					},
+					Spec: identityopenapi.AllocationSpec{
+						Id:   "00000000-0000-0000-0000-000000000000",
+						Kind: "kubernetescluster",
+						Allocations: identityopenapi.ResourceAllocationList{
+							{Kind: "clusters", Committed: 1},
+						},
+					},
+				}
+
+				expectUserRequestForbidden(http.MethodPost,
+					api.NewEndpoints().ListAllocations(config.OrgID, config.ProjectID), payload)
+			})
+		})
+
+		Describe("Given a request to create a project", func() {
+			It("should be denied with a forbidden response", func() {
+				expectUserRequestForbidden(http.MethodPost,
+					api.NewEndpoints().ListProjects(config.OrgID),
+					api.NewProjectPayload().Build())
+			})
+		})
+
+		Describe("Given a request to delete a project", func() {
+			It("should be denied with a forbidden response", func() {
+				// A fresh project so a broken denial cannot take the shared
+				// fixture project down with it.
+				_, projectID := api.CreateProjectWithCleanup(adminClient, ctx, config,
+					api.NewProjectPayload().Build())
+
+				api.WaitForProjectProvisioned(adminClient, ctx, config, projectID)
+
+				expectUserRequestForbidden(http.MethodDelete,
+					api.NewEndpoints().GetProject(config.OrgID, projectID), nil)
 			})
 		})
 	})

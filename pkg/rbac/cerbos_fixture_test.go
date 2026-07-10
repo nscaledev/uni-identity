@@ -99,6 +99,17 @@ const (
 	// resolves through the User → OrganizationUser chain.
 	parityUserCarol    = "parity-user-carol"
 	parityOrgUserCarol = "parity-orguser-carol"
+
+	// Open-vocabulary (A11) additions: frank holds radar:*/envir:* roles
+	// transcribed from the real deployment repo via parityGroupOpenVocab,
+	// which project Z links for the project-scope grants (a NEW project so
+	// the existing X/Y cells stay untouched).  See parityRoles for the
+	// transcription provenance.
+	parityRoleFleetOperator      = "prole-fleet-operator"
+	parityRoleEnvirProjectViewer = "prole-envir-project-viewer"
+	parityGroupOpenVocab         = "parity-group-openvocab"
+	parityProjectZ               = "parity-project-z"
+	parityFrankSubject           = "parity-frank@example.com"
 )
 
 type parityFixture struct {
@@ -145,6 +156,29 @@ func parityRoles() []unikornv1.Role {
 		}),
 		role(parityRoleAuditor, unikornv1.RoleScopes{
 			Organization: []unikornv1.RoleScope{scope("identity:auditlogs", unikornv1.Read)},
+		}),
+		// Open-vocabulary shapes transcribed from the real deployment repo
+		// (~/go/src/k8s-deploy-unikorn): parityRoleFleetOperator mirrors the
+		// fleet-operator role's radar:* org scopes
+		// (charts/unikorn/values.yaml, identity.additionalRoles), and
+		// parityRoleEnvirProjectViewer mirrors the envir project-viewer Role
+		// CR (charts/unikorn/templates/uni/ai-services.yaml,
+		// unikorn-cloud.org/name: project-viewer): org-scope catalog read
+		// plus project-scope read-only envir grants.
+		role(parityRoleFleetOperator, unikornv1.RoleScopes{
+			Organization: []unikornv1.RoleScope{
+				scope("radar:repairstats", unikornv1.Create, unikornv1.Read),
+				scope("radar:resourcestats", unikornv1.Read),
+			},
+		}),
+		role(parityRoleEnvirProjectViewer, unikornv1.RoleScopes{
+			Organization: []unikornv1.RoleScope{scope("envir:product-catalog", unikornv1.Read)},
+			Project: []unikornv1.RoleScope{
+				scope("envir:environment-manager", unikornv1.Read),
+				scope("envir:product-configurator", unikornv1.Read),
+				scope("envir:product-deployer", unikornv1.Read),
+				scope("envir:dependency-manager", unikornv1.Read),
+			},
 		}),
 	}
 }
@@ -203,6 +237,12 @@ func parityGroups() []unikornv1.Group {
 			RoleIDs:  []string{parityRoleAuditor},
 			Subjects: subjects(parityAliceSubject),
 		}),
+		// Frank's open-vocabulary bindings (A11): radar:* at org scope,
+		// envir:* mixed org/project — project Z links this group.
+		group(parityOrgANS, parityGroupOpenVocab, unikornv1.GroupSpec{
+			RoleIDs:  []string{parityRoleFleetOperator, parityRoleEnvirProjectViewer},
+			Subjects: subjects(parityFrankSubject),
+		}),
 	}
 }
 
@@ -246,6 +286,10 @@ func newParityFixture(t *testing.T) *parityFixture {
 		// scopes, mirroring real data where linkage and grants are disjoint.
 		project(parityOrgANS, parityProjectX, parityOrgA, parityGroupDevs, parityGroupDevsDup, parityGroupAdmins, parityGroupGhost),
 		project(parityOrgANS, parityProjectY, parityOrgA, parityGroupLegacy),
+		// Project Z carries the open-vocabulary project-scope grants: a NEW
+		// project so the existing X/Y linkage (and every cell derived from
+		// it) stays byte-identical.
+		project(parityOrgANS, parityProjectZ, parityOrgA, parityGroupOpenVocab),
 
 		// Carol's User → OrganizationUser chain for the deprecated UserIDs
 		// fallback (resolveOrganizationUserName).

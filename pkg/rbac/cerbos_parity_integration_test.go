@@ -165,6 +165,23 @@ func parityCases() []parityCase {
 		// User erin: her group references a role that does not exist — a
 		// hard consistency error on both sides.
 		{name: "UserBrokenRoleReference", info: parityUserInfo(parityErinSubject, parityOrgA), organizationID: parityOrgA, endpoint: "identity:groups", operation: openapi.Read, wantLegacyError: true, wantResolveError: true},
+
+		// User frank: open-vocabulary roles (radar:*/envir:*) transcribed
+		// from the real deployment repo (~/go/src/k8s-deploy-unikorn) — the
+		// Go-side proof (A11) that decision parity holds beyond this repo's
+		// built-in vocabulary, which is exactly what the generator exists
+		// for.  Frank is an org-B member with NO org-B bindings, so the
+		// wrong-org cell is a clean policy deny on both sides (alice's
+		// UserWrongOrg pattern, not bob's ErrNotInOrganization one).
+		{name: "UserOpenVocabOrgGranted", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, endpoint: "radar:repairstats", operation: openapi.Create, expectAllow: true},
+		{name: "UserOpenVocabOrgGrantedSecondEndpoint", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, endpoint: "radar:resourcestats", operation: openapi.Read, expectAllow: true},
+		{name: "UserOpenVocabOrgUngrantedOp", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, endpoint: "radar:resourcestats", operation: openapi.Create},
+		{name: "UserOpenVocabWrongOrg", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgB, endpoint: "radar:repairstats", operation: openapi.Create},
+		{name: "UserOpenVocabOrgGrantFlowsToProject", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, projectID: parityProjectZ, endpoint: "envir:product-catalog", operation: openapi.Read, expectAllow: true},
+		{name: "UserOpenVocabProjectGranted", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, projectID: parityProjectZ, endpoint: "envir:environment-manager", operation: openapi.Read, expectAllow: true},
+		{name: "UserOpenVocabProjectUngrantedOp", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, projectID: parityProjectZ, endpoint: "envir:environment-manager", operation: openapi.Create},
+		{name: "UserOpenVocabWrongProject", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, projectID: parityProjectX, endpoint: "envir:environment-manager", operation: openapi.Read},
+		{name: "UserOpenVocabProjectGrantNotAtOrg", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, endpoint: "envir:environment-manager", operation: openapi.Read},
 	}
 }
 
