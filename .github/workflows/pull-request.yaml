@@ -67,6 +67,8 @@ jobs:
       run: make validate-policies
     - name: Test Cerbos Client
       run: make test-cerbos-client
+    - name: Test Cerbos Policy Controller
+      run: make test-cerbos-controller
   ProviderContractVerification:
     runs-on: ubuntu-latest
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-contract-tests') }}
