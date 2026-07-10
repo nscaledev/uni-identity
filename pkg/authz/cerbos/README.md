@@ -251,3 +251,56 @@ labels, not ownerReferences).  Consequences:
 - The end-to-end "apply a Role, watch a decision flip" assertion needs the
   kind stack to reach the loopback PDP, which no harness supports yet: it is
   deliberately deferred to the kind-parity migration task (A11).
+
+## The Request Builder
+
+`request.go` is the pure half of request construction: resolved bindings +
+resource + actions → the SDK types `CheckResources` sends.  It is
+deliberately ONLY that — the Kubernetes-reading resolver that turns group
+memberships into `RoleBinding` values (living against `pkg/rbac` ground
+truth) and the decision API that maps responses (and `ErrUnavailable`) to
+allow/deny are A5; the impersonation dual-check is A14; and the
+`AllowProjectScopeCreate` orchestration is A5/A9.  The builder is
+actor-class-agnostic: it renders whatever bindings it is given, and the
+actor-class shapes (user, platform admin, service account, system account)
+are pinned as table tests for the A5 resolver to reference.
+
+`BuildPrincipal(subjectID, bindings)` renders the [binding-string
+contract](#the-binding-string-contract-cross-component-invariant) into the
+principal's `bindings` attribute — **list form**, which the committed policy
+fixtures pin (a map keyed by binding for O(1) CEL lookup is a possible M2
+performance change, but it is a wire-shape change: the fixtures and every
+generated CEL condition must move together).  Bindings are deduplicated and
+sorted, so semantically identical inputs yield byte-identical requests
+(caching and logging determinism).  The static parent role `principal` is
+MANDATORY: every generated derived role declares `parentRoles: [principal]`,
+so a request without it denies everything.
+
+`BuildResource(kind, id, organizationID, projectID)` encodes scope by
+attribute **absence**, never by empty values:
+
+| Check level | `organization` attr | `project` attr |
+|---|---|---|
+| global | absent | absent |
+| org | present | **absent** |
+| project | present | present |
+
+**Warning**: the `project` attribute on an org-level check must be ABSENT,
+not empty — a present-and-matching value would let project bindings activate
+(flow-up).  The no-flow-up invariant depends on this absence.  A project
+check activates global + matching-org + matching-project bindings in one
+request: the Go three-level cascade collapses into a single Cerbos check.
+
+An empty resource id becomes `CoarseResourceID` (`"*"`): the engine proto
+requires a non-empty id (`min_len 1`), and the constant is pinned because it
+is part of the future A15 decision-cache key.  `BuildBatch` fails loudly
+where the SDK's `ResourceBatch.Add` silently no-ops (nil resources, empty
+action lists) — a silently empty batch would be an authorization request that
+checks nothing.  Actions are `openapi.AclOperation` values passed through
+verbatim, deduplicated and sorted.
+
+The fixtures-parity tests (`request_parity_test.go`) parse the committed
+policy-suite fixtures under `generate/testdata/store/tests/testdata/` and
+prove the builder reproduces every fixture principal and resource
+byte-for-byte — including attribute-key absence — so the builder and the
+CI-validated policy suite cannot drift apart silently.
