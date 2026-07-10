@@ -65,7 +65,7 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringSliceVar(&o.PlatformAdministratorRoleIDs, "platform-administrator-role-ids", nil, "Platform administrator role ID.")
 	f.StringSliceVar(&o.PlatformAdministratorSubjects, "platform-administrator-subjects", nil, "Platform administrators.")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
-	f.Var(&o.AuthorizationEngine, "authorization-engine", "Authorization engine serving Allow* enforcement decisions (legacy or cerbos).")
+	f.Var(&o.AuthorizationEngine, "authorization-engine", "Authorization engine serving Allow* enforcement decisions (legacy, shadow or cerbos).")
 }
 
 // RBAC contains all the scoping rules for services across the platform.

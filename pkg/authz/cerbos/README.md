@@ -269,9 +269,12 @@ decision API that maps responses (and `ErrUnavailable`) to allow/deny is
 `rbac.Check`/`rbac.CheckMany` (both documented in
 [pkg/rbac](../rbac/README.md)); the impersonation dual-check is A14 — until
 it lands the decision API refuses impersonated requests outright with
-`ErrImpersonationNotSupported`, so **A7's shadow comparator must exclude or
-annotate impersonated requests**; and the `AllowProjectScopeCreate`
-orchestration follows with A9.  The builder is actor-class-agnostic: it
+`ErrImpersonationNotSupported`, so **the A7 shadow comparator skips
+impersonated requests entirely** (no PDP call, no divergence log; see the
+shadow-mode notes in [pkg/rbac](../rbac/README.md) — in particular the
+divergence-vs-evaluation-failure split A12's cutover gate reads, and the
+policy correlate that A15's policy-hash signal upgrades); and the
+`AllowProjectScopeCreate` orchestration follows with A9.  The builder is actor-class-agnostic: it
 renders whatever bindings it is given, and the actor-class shapes (user,
 platform admin, service account, system account) are pinned as table tests
 which the resolver's own tests mirror.

@@ -30,19 +30,25 @@ import (
 // This file is the A6 dual-path dispatch seam: the Allow* facade can serve
 // its decisions either from the legacy in-process ACL walk (handler.go) or
 // from the Cerbos decision API (check.go), selected by an engine seeded into
-// the request context.  The legacy path is retained verbatim — A7's shadow
-// comparator needs it live, and it only goes at the A12 cutover.
+// the request context.  The legacy path is retained verbatim — the A7 shadow
+// comparator (shadow.go) runs it live alongside the Cerbos path — and it
+// only goes at the A12 cutover.
 
 // ErrInvalidEngineMode rejects engine mode values outside the whitelist.
 var ErrInvalidEngineMode = goerrors.New("invalid authorization engine mode")
 
-// EngineMode selects which engine serves Allow* decisions.  A7 adds
-// EngineShadow; A12 adds per-kind authoritative flags on top.
+// EngineMode selects which engine serves Allow* decisions.  A12 adds
+// per-kind authoritative flags on top.
 type EngineMode string
 
 const (
 	// EngineLegacy serves decisions from the local ACL walk.  The default.
 	EngineLegacy EngineMode = "legacy"
+
+	// EngineShadow serves decisions from the local ACL walk while ALSO
+	// evaluating the Cerbos path and logging verdict divergence (see
+	// shadow.go).  The served verdict is always legacy's.
+	EngineShadow EngineMode = "shadow"
 
 	// EngineCerbos serves decisions from the Cerbos PDP via Check/CheckMany.
 	EngineCerbos EngineMode = "cerbos"
@@ -54,8 +60,8 @@ var _ pflag.Value = (*EngineMode)(nil)
 func (m *EngineMode) Set(value string) error {
 	mode := EngineMode(value)
 
-	if mode != EngineLegacy && mode != EngineCerbos {
-		return fmt.Errorf("%w: %q (valid values: %s, %s)", ErrInvalidEngineMode, value, EngineLegacy, EngineCerbos)
+	if mode != EngineLegacy && mode != EngineShadow && mode != EngineCerbos {
+		return fmt.Errorf("%w: %q (valid values: %s, %s, %s)", ErrInvalidEngineMode, value, EngineLegacy, EngineShadow, EngineCerbos)
 	}
 
 	*m = mode
@@ -99,8 +105,8 @@ func EngineFromContext(ctx context.Context) *RBAC {
 // legacy for a missing or unset option (downstream services never register
 // the flag).
 func (r *RBAC) mode() EngineMode {
-	if r.options != nil && r.options.AuthorizationEngine == EngineCerbos {
-		return EngineCerbos
+	if r.options != nil && (r.options.AuthorizationEngine == EngineCerbos || r.options.AuthorizationEngine == EngineShadow) {
+		return r.options.AuthorizationEngine
 	}
 
 	return EngineLegacy

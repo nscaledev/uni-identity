@@ -61,7 +61,7 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 		return engine.allowCoarse(ctx, Resource{Kind: endpoint}, operation)
 	}
 
-	return allowGlobalScopeLegacy(ctx, endpoint, operation)
+	return shadowed(ctx, Resource{Kind: endpoint}, operation, allowGlobalScopeLegacy(ctx, endpoint, operation))
 }
 
 // allowGlobalScopeLegacy is the legacy local ACL walk, retained verbatim for
@@ -111,7 +111,7 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID}, operation)
 	}
 
-	return allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID)
+	return shadowed(ctx, Resource{Kind: endpoint, OrganizationID: organizationID}, operation, allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID))
 }
 
 // allowOrganizationScopeLegacy is the legacy local ACL walk, retained
@@ -174,7 +174,7 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation)
 	}
 
-	return allowProjectScopeLegacy(ctx, endpoint, operation, organizationID, projectID)
+	return shadowed(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation, allowProjectScopeLegacy(ctx, endpoint, operation, organizationID, projectID))
 }
 
 // allowProjectScopeLegacy is the legacy local ACL walk, retained verbatim

@@ -93,7 +93,8 @@ identity:
     issuer: ~
     audience: ~
   # Authorization engine serving RBAC enforcement (Allow*) decisions:
-  # "legacy" (the in-process ACL walk) or "cerbos" (the PDP sidecar).
+  # "legacy" (the in-process ACL walk), "shadow" (serve legacy, also evaluate
+  # the PDP and log verdict divergence) or "cerbos" (the PDP sidecar).
   # Leave unset for the default (legacy).
   authorizationEngine: ~
 

@@ -169,6 +169,38 @@ scope, resource ID always the coarse `*`).
   — every downstream service (they never construct an `RBAC`), `NewSuperContext`, and
   every ACL-only test context — always take the legacy path by construction. That
   absence-default is the migration's compatibility contract.
+- **Shadow mode (`--authorization-engine=shadow`, task A7, `shadow.go`)** evaluates BOTH
+  paths synchronously for every dispatched scope check and **serves the legacy verdict
+  unconditionally**: nothing the shadow evaluation does — a policy deny, a PDP outage, a
+  timeout, even a panic — can alter the served verdict (the comparison is
+  recover-wrapped; a shadow failure is a log line, never a request failure). Disagreement
+  is logged in two DISTINCT classes, and the split is load-bearing for A12's cutover gate:
+  - `cerbos shadow divergence` — the PDP produced a **verdict** and it differs from
+    legacy's. Comparison is on allow/deny alone, never on error message strings
+    (cerbos-path denials carry a generic message by design). Fields: subject, actor type,
+    endpoint, operation, organization/project IDs, both verdicts, the Cerbos sentinel
+    class, and the policy correlate.
+  - `cerbos shadow evaluation failure` — **no verdict** was obtained
+    (`ErrDecisionUnavailable`, `ErrResolutionFailed`, or a recovered panic). This is infra
+    signal, never policy-parity signal: **A12's gate reads "zero divergence" as zero
+    VERDICT divergences, with evaluation failures triaged separately**, so a PDP restart
+    during the shadow phase cannot masquerade as policy divergence.
+
+  The **policy correlate** is currently the in-band per-result policy version/scope the
+  SDK response carries (plus the record's timestamp) — a deliberate deviation from the
+  plan's "policy hash", which does not exist at identity yet. Note the PDP echoes the
+  *requested* version/scope, which identity's version-less coarse checks leave empty; the
+  A15 policy-hash signal (built for cache invalidation) upgrades this correlate in place
+  (`shadowPolicyCorrelate` in `shadow.go` is the seam) so a divergence pins the exact
+  store revision it was observed against.
+
+  Exclusions: **impersonated requests are skipped entirely** (no PDP call, no log — the
+  same predicate the legacy confused-deputy intersection uses) until A14, and
+  `AllowProjectScopeCreate`/`AllowRole` are never shadowed (see below). Costs: shadow is
+  an opt-in validation phase, not steady state — every dispatched check pays bindings
+  resolution plus a PDP round trip **on top of** the legacy walk, and during a PDP outage
+  each check additionally waits up to `--cerbos-check-timeout` before failing the shadow
+  evaluation (the served verdict is unaffected either way).
 - **Deny-shape parity.** Cerbos-path denials surface as the same `HTTPForbidden` form the
   legacy walk produces — call sites branch on `err == nil` and the error mapper on the
   HTTP status — with the fail-closed sentinel (`ErrPolicyDenied`,
@@ -215,7 +247,10 @@ decision-parity integration test: from one fixture dataset it computes every ver
 both the legacy pipeline (`GetACL` + `Allow*`) and the Cerbos path (generated policies served
 by the pinned image), and requires verdict equality across a matrix of all four actor classes,
 all three scope levels, and the negative cases. A divergence there is an authorization bug in
-the migration, never something to special-case.
+the migration, never something to special-case. The same run exercises the shadow comparator
+end to end: against the parity store the matrix must log zero divergences, and against a
+deliberately-divergent store (one extra generated allow the legacy fixture lacks) exactly that
+one divergence must be detected — with the legacy verdict still served on the divergent cell.
 
 ## Invariants
 

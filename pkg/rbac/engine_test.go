@@ -144,7 +144,7 @@ func TestEngineModeFlag(t *testing.T) {
 
 		mode := rbac.EngineLegacy
 
-		err := mode.Set("shadow")
+		err := mode.Set("bogus")
 		require.Error(t, err)
 		require.ErrorContains(t, err, "legacy")
 		require.ErrorContains(t, err, "cerbos")

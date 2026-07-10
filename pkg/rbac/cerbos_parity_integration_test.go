@@ -46,6 +46,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/authz/cerbos"
 	"github.com/unikorn-cloud/identity/pkg/authz/cerbos/generate"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
@@ -355,6 +356,166 @@ func TestCerbosDecisionParity(t *testing.T) {
 			})
 		}
 	})
+
+	// A7 shadow comparator, half one: with the PARITY store, shadow mode
+	// must serve exactly the legacy verdicts across the whole matrix and log
+	// ZERO divergences (and, against a healthy PDP with resolvable subjects,
+	// zero evaluation failures).  Serial (no t.Parallel): the log capture
+	// swaps the process-global default logger.
+	//
+	//nolint:paralleltest
+	t.Run("ShadowModeParityStoreLogsNoDivergence", func(t *testing.T) {
+		capture := captureShadowLogs(t)
+
+		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
+			PlatformAdministratorSubjects: []string{parityAdminSubject},
+			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+			SystemAccountRoleIDs:          map[string]string{paritySystemCN: parityRoleGlobalAdmin},
+			AuthorizationEngine:           rbac.EngineShadow,
+		}).WithCerbos(client)
+
+		for _, tc := range cases {
+			// The middleware rejects these before any Allow* runs.
+			if tc.wantLegacyError {
+				continue
+			}
+
+			legacy := legacyVerdict(t, fx.rbac, tc)
+			served := shadowFacadeVerdict(t, fx, engine, tc)
+
+			require.Equal(t, legacy, served, "shadow mode must serve the legacy verdict (case %s)", tc.name)
+		}
+
+		require.Empty(t, capture.messages(shadowDivergenceMessage), "the parity store must produce ZERO divergences")
+		require.Empty(t, capture.messages(shadowFailureMessage), "a healthy PDP must produce zero evaluation failures")
+	})
+
+	// A7 shadow comparator, half two: a deliberately-divergent store — the
+	// generated store with ONE extra allow the legacy fixture lacks — must
+	// produce EXACTLY the corresponding divergence, carrying the full field
+	// set, while the served verdict STAYS legacy's even on the divergent
+	// cell.  Serial for the same reason as above.
+	//
+	//nolint:paralleltest
+	t.Run("ShadowModeDetectsInjectedDivergence", func(t *testing.T) {
+		capture := captureShadowLogs(t)
+
+		divergentEndpoint := startParityCerbos(t, writeDivergentParityStore(t, fx))
+
+		divergentClient, err := cerbos.New(&cerbos.Options{Endpoint: divergentEndpoint, CheckTimeout: 5 * time.Second})
+		require.NoError(t, err)
+
+		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
+			PlatformAdministratorSubjects: []string{parityAdminSubject},
+			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+			SystemAccountRoleIDs:          map[string]string{paritySystemCN: parityRoleGlobalAdmin},
+			AuthorizationEngine:           rbac.EngineShadow,
+		}).WithCerbos(divergentClient)
+
+		for _, tc := range cases {
+			if tc.wantLegacyError {
+				continue
+			}
+
+			legacy := legacyVerdict(t, fx.rbac, tc)
+			served := shadowFacadeVerdict(t, fx, engine, tc)
+
+			require.Equal(t, legacy, served, "the served verdict must STAY legacy even where the stores diverge (case %s)", tc.name)
+		}
+
+		divergences := capture.messages(shadowDivergenceMessage)
+		require.Len(t, divergences, 1, "exactly the one injected divergence must be detected")
+
+		// The injected extra allow flips exactly the UserOrgUngrantedOp cell:
+		// alice, identity:groups delete at organization scope in org A.
+		attrs := recordAttrs(divergences[0])
+		require.Equal(t, parityAliceSubject, attrs["subject"])
+		require.Equal(t, "user", attrs["actor_type"])
+		require.Equal(t, "identity:groups", attrs["endpoint"])
+		require.Equal(t, "delete", attrs["operation"])
+		require.Equal(t, parityOrgA, attrs["organization_id"])
+		require.Empty(t, attrs["project_id"])
+		require.Equal(t, "deny", attrs["legacy_verdict"])
+		require.Equal(t, "allow", attrs["cerbos_verdict"])
+		require.Equal(t, "allowed", attrs["cerbos_class"])
+
+		// The policy correlate is carried, but the PDP echoes the REQUESTED
+		// policy version/scope, which identity's coarse checks leave unset
+		// (the server-default version applies) — so both are empty against a
+		// real PDP until A15's policy-hash signal upgrades the correlate.
+		// The unit tests prove non-empty values are plumbed through.
+		require.Contains(t, attrs, "policy_version")
+		require.Contains(t, attrs, "policy_scope")
+
+		require.Empty(t, capture.messages(shadowFailureMessage))
+	})
+}
+
+// shadowFacadeVerdict serves one matrix case through the Allow* facade with a
+// shadow-mode engine seeded, exactly as the middleware wires a request: an
+// ACL for the legacy walk, authorization info for the Cerbos side.
+func shadowFacadeVerdict(t *testing.T, fx *parityFixture, engine *rbac.RBAC, tc parityCase) bool {
+	t.Helper()
+
+	ctx := authorization.NewContext(t.Context(), tc.info)
+
+	acl, err := fx.rbac.GetACL(ctx, tc.organizationID)
+	require.NoError(t, err)
+
+	ctx = rbac.NewEngineContext(rbac.NewContext(ctx, acl), engine)
+
+	switch {
+	case tc.projectID != "":
+		return rbac.AllowProjectScope(ctx, tc.endpoint, tc.operation, tc.organizationID, tc.projectID) == nil
+	case tc.organizationID != "":
+		return rbac.AllowOrganizationScope(ctx, tc.endpoint, tc.operation, tc.organizationID) == nil
+	default:
+		return rbac.AllowGlobalScope(ctx, tc.endpoint, tc.operation) == nil
+	}
+}
+
+// writeDivergentParityStore generates a policy store from a MUTATED copy of
+// the fixture roles — parityRoleOrgAdmin additionally grants identity:groups
+// delete at organization scope, an extra allow the legacy fixture lacks — so
+// exactly one matrix verdict (UserOrgUngrantedOp) flips on the Cerbos side.
+func writeDivergentParityStore(t *testing.T, fx *parityFixture) string {
+	t.Helper()
+
+	roles := make([]unikornv1.Role, len(fx.roles))
+
+	mutated := false
+
+	for i := range fx.roles {
+		role := fx.roles[i].DeepCopy()
+
+		if role.Name == parityRoleOrgAdmin {
+			for j := range role.Spec.Scopes.Organization {
+				if role.Spec.Scopes.Organization[j].Name == "identity:groups" {
+					role.Spec.Scopes.Organization[j].Operations = append(role.Spec.Scopes.Organization[j].Operations, unikornv1.Delete)
+					mutated = true
+				}
+			}
+		}
+
+		roles[i] = *role
+	}
+
+	require.True(t, mutated, "the fixture no longer carries the scope the divergence is injected into")
+
+	output, err := generate.Generate(roles)
+	require.NoError(t, err)
+
+	files, err := output.Files()
+	require.NoError(t, err)
+
+	dir := parityStoreDir(t)
+
+	for name, data := range files {
+		//nolint:gosec // the store must be readable by the container's non-root cerbos user.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0o644))
+	}
+
+	return dir
 }
 
 // writeParityStore generates the Cerbos policy store from the SAME fixture
