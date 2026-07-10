@@ -119,7 +119,9 @@ func (b RoleBinding) BindingString() (string, error) {
 // semantically identical inputs produce byte-identical requests
 // (deterministic requests aid caching and logging); an invalid binding is a
 // loud error, never silently dropped — a dropped binding would be a silently
-// narrowed grant.
+// narrowed grant.  An empty bindings slice is valid and deny-safe: the
+// attribute is present but empty, and the generated CEL `in` conditions are
+// false on an empty list.
 func BuildPrincipal(subjectID string, bindings []RoleBinding) (*sdk.Principal, error) {
 	if subjectID == "" {
 		return nil, fmt.Errorf("%w: subject ID is empty", ErrInvalidPrincipal)

@@ -134,19 +134,21 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	}
 
 	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
-	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
 
 	// The Cerbos PDP client is lazy: no connection is attempted until the
 	// first RPC, so construction is safe before the sidecar is ready (an
 	// eager connectivity check here would race the pod's own sidecar;
-	// readiness is the sidecar health probe's job).  Consumers of the
-	// client arrive with the decision layer (migration task A5).
+	// readiness is the sidecar health probe's job).  It backs the decision
+	// API (rbac.Check/CheckMany); enforcement call sites migrate to that
+	// API with A6.
 	cerbosClient, err := cerbos.New(&s.CerbosOptions)
 	if err != nil {
 		return nil, err
 	}
 
 	s.Cerbos = cerbosClient
+
+	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions).WithCerbos(cerbosClient)
 	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, issuer, userdb, rbac)
 
 	if err != nil {

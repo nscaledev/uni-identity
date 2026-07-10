@@ -64,6 +64,11 @@ type RBAC struct {
 	client    client.Client
 	namespace string
 	options   *Options
+
+	// pdp is the Cerbos policy decision point used by Check/CheckMany
+	// (injected via WithCerbos; see check.go).  It is legal for it to be
+	// nil — decisions then fail closed with ErrDecisionUnavailable.
+	pdp PolicyDecisionPoint
 }
 
 // New creates a new RBAC client.

@@ -16,6 +16,12 @@ It contains:
 - [controller](#the-policy-controller) — the reconciling policy controller
   publishing generated policies to the sidecar's policy store ConfigMap.
 
+The layers built on top of this tree live in [pkg/rbac](../rbac/README.md):
+the bindings resolver (`ResolveBindings`) that turns group memberships into
+the [request builder](#the-request-builder)'s `RoleBinding` values, and the
+decision API (`Check`/`CheckMany`) that sends requests through the client and
+maps responses to allow/deny.
+
 ## The Client
 
 `New(options *Options)` constructs a client for the PDP sidecar
@@ -40,11 +46,12 @@ liveness — pod readiness gates on the sidecar's own health probe instead.
 **Fail-closed contract**: every failure to obtain a decision — connection
 refused, deadline expiry, server error — returns an error wrapping the static
 `ErrUnavailable` sentinel, never a response.  The client never fabricates an
-allow or deny; the decision layer (A5) maps the sentinel to deny.  On the
-response side the SDK's `IsAllowed` returns false for missing actions,
-missing resources and errored results, so an allow is only reachable through
-an explicit `EFFECT_ALLOW`.  Explicit timeout→deny metrics and decision audit
-logging arrive with A10.
+allow or deny; the decision API (`rbac.Check`/`CheckMany`, see
+[pkg/rbac](../rbac/README.md)) maps the sentinel to its deny-shaped
+`ErrDecisionUnavailable`.  On the response side the SDK's `IsAllowed` returns
+false for missing actions, missing resources and errored results, so an allow
+is only reachable through an explicit `EFFECT_ALLOW`.  Explicit timeout→deny
+metrics and decision audit logging arrive with A10.
 
 The integration test (`make test-cerbos-client`, Docker-dependent like `make
 validate-policies` and therefore not part of `test-unit`) runs the pinned
@@ -257,13 +264,17 @@ labels, not ownerReferences).  Consequences:
 `request.go` is the pure half of request construction: resolved bindings +
 resource + actions → the SDK types `CheckResources` sends.  It is
 deliberately ONLY that — the Kubernetes-reading resolver that turns group
-memberships into `RoleBinding` values (living against `pkg/rbac` ground
-truth) and the decision API that maps responses (and `ErrUnavailable`) to
-allow/deny are A5; the impersonation dual-check is A14; and the
-`AllowProjectScopeCreate` orchestration is A5/A9.  The builder is
-actor-class-agnostic: it renders whatever bindings it is given, and the
-actor-class shapes (user, platform admin, service account, system account)
-are pinned as table tests for the A5 resolver to reference.
+memberships into `RoleBinding` values is `rbac.ResolveBindings`, and the
+decision API that maps responses (and `ErrUnavailable`) to allow/deny is
+`rbac.Check`/`rbac.CheckMany` (both documented in
+[pkg/rbac](../rbac/README.md)); the impersonation dual-check is A14 — until
+it lands the decision API refuses impersonated requests outright with
+`ErrImpersonationNotSupported`, so **A7's shadow comparator must exclude or
+annotate impersonated requests**; and the `AllowProjectScopeCreate`
+orchestration follows with A9.  The builder is actor-class-agnostic: it
+renders whatever bindings it is given, and the actor-class shapes (user,
+platform admin, service account, system account) are pinned as table tests
+which the resolver's own tests mirror.
 
 `BuildPrincipal(subjectID, bindings)` renders the [binding-string
 contract](#the-binding-string-contract-cross-component-invariant) into the

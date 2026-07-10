@@ -18,8 +18,9 @@ limitations under the License.
 // a sidecar of the identity server (see charts/identity).  It owns connection
 // construction, per-call deadlines and the fail-closed error contract, and
 // nothing else: request construction (principals, resources, binding strings)
-// is the A4 request builder's job, decision mapping and batching arrive with
-// the A5 decision layer, and decision audit logging and metrics with A10.
+// is the request builder's job (request.go), decision mapping and batching
+// live in pkg/rbac (Check/CheckMany), and decision audit logging and metrics
+// arrive with A10.
 package cerbos
 
 import (
@@ -34,9 +35,9 @@ import (
 
 // ErrUnavailable wraps every failure to obtain a decision from the PDP:
 // transport errors, per-call deadline expiry and server-side failures alike.
-// The client NEVER fabricates an allow or deny; the decision layer (A5) maps
-// this sentinel to deny — fail closed.  Explicit timeout→deny metrics and
-// decision audit logging arrive with A10.
+// The client NEVER fabricates an allow or deny; pkg/rbac's decision layer
+// maps this sentinel to deny — fail closed.  Explicit timeout→deny metrics
+// and decision audit logging arrive with A10.
 var ErrUnavailable = errors.New("cerbos PDP unavailable")
 
 // ErrOptions is returned by New for invalid static configuration.  It is

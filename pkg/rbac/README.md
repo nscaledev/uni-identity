@@ -149,6 +149,44 @@ When a system account carries an impersonated principal, RBAC does not simply sw
 principal's ACL. Instead, it intersects the principal ACL with the system account ACL so the service
 cannot exercise permissions that either side lacks.
 
+## The Cerbos Decision Path (migration)
+
+Alongside the legacy ACL pipeline, this package carries the Cerbos decision path from the
+authorization migration (see
+[docs/cerbos-authorization-migration-design.md](../../docs/cerbos-authorization-migration-design.md)
+and [pkg/authz/cerbos](../authz/cerbos/README.md)). It is not yet wired into enforcement — the
+`Allow*` functions still evaluate ACLs locally; call sites migrate with A6.
+
+- `ResolveBindings(ctx, info)` converts the authenticated subject into the `(role, scope)`
+  binding tuples the Cerbos request builder renders. Every branch deliberately mirrors a
+  specific legacy ACL-accumulation path — including the odd ones: the silent skip of
+  unprovisioned organizations for users (but a hard error for service accounts), the
+  service-account org-mismatch fallthrough ported as-is, the hard error for a group
+  referencing a missing role next to the silent skip of a project referencing a missing
+  group. Bindings resolve across **all** of the subject's organizations (the legacy `Allow*`
+  functions read the plural `acl.Organizations` built across all orgs), and the resolver
+  never reads `Role.Spec.Scopes` — the generated policies decide what each binding grants.
+  Decision parity with the legacy pipeline is the M1 cutover contract; behavioural fixes
+  (e.g. the fallthrough's information-leak TODO) are deliberately deferred to post-cutover.
+- `Check(ctx, resource, action)` / `CheckMany(ctx, checks)` are the decision API: resolve
+  bindings, build ONE batched `CheckResources` request, map per-resource `IsAllowed`.
+  **Fail-closed**: every failure is a deny, with a distinct static error per failure class —
+  `ErrPolicyDenied` (explicit policy deny), `ErrDecisionUnavailable` (no PDP client injected
+  via `WithCerbos`, transport failure, malformed response), `ErrResolutionFailed` (missing
+  authorization info, resolver or request-construction failure). Decision audit logging and
+  metrics arrive with A10.
+- **Impersonated requests are refused outright** (`ErrImpersonationNotSupported`): the
+  confused-deputy intersection has no Cerbos equivalent until A14, and resolving the calling
+  service's own subject would answer for the wrong identity. A7's shadow comparator must
+  exclude or annotate impersonated requests until A14 lands.
+
+`make test-cerbos-decisions` (Docker-dependent, so not part of `test-unit`) runs the
+decision-parity integration test: from one fixture dataset it computes every verdict through
+both the legacy pipeline (`GetACL` + `Allow*`) and the Cerbos path (generated policies served
+by the pinned image), and requires verdict equality across a matrix of all four actor classes,
+all three scope levels, and the negative cases. A divergence there is an authorization bug in
+the migration, never something to special-case.
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
@@ -212,3 +250,5 @@ cannot exercise permissions that either side lacks.
   signals consumed here
 - [`pkg/apis/unikorn/v1alpha1`](../apis/unikorn/v1alpha1/README.md), which defines the stored role,
   group, organization, project, user, and service-account resources this package resolves
+- [`pkg/authz/cerbos`](../authz/cerbos/README.md), which provides the PDP client, policy
+  generator and request builder behind the Cerbos decision path
