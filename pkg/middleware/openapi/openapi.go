@@ -486,6 +486,19 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 		ctx = authorization.NewContext(ctx, authInfo.info)
 		ctx = rbac.NewContext(ctx, authInfo.acl)
 
+		// Seed the Cerbos-capable decision engine for the Allow* facade's
+		// dual-path dispatch when the authorizer can supply one (see
+		// DecisionEngineProvider).  This is the single production seeding
+		// point — deliberately here, next to the ACL, on the context the
+		// handlers actually receive (the derived context getACL hands to
+		// GetACL is discarded).  Contexts without an engine always take
+		// the legacy path.
+		if provider, ok := v.authorizer.(DecisionEngineProvider); ok {
+			if engine := provider.DecisionEngine(); engine != nil {
+				ctx = rbac.NewEngineContext(ctx, engine)
+			}
+		}
+
 		// Trusted clients using mTLS must provide principal information in the headers.
 		// Other clients (UI/CLI) generate principal information from token introspection
 		// data.

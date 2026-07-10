@@ -51,12 +51,21 @@ type Options struct {
 	PlatformAdministratorRoleIDs  []string
 	PlatformAdministratorSubjects []string
 	SystemAccountRoleIDs          map[string]string
+
+	// AuthorizationEngine selects which engine serves the Allow* facade's
+	// decisions (see engine.go).  Defaults to legacy; only the identity
+	// server registers the flag, so it never exists downstream — and even
+	// there dispatch additionally requires an engine-seeded context.
+	AuthorizationEngine EngineMode
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
+	o.AuthorizationEngine = EngineLegacy
+
 	f.StringSliceVar(&o.PlatformAdministratorRoleIDs, "platform-administrator-role-ids", nil, "Platform administrator role ID.")
 	f.StringSliceVar(&o.PlatformAdministratorSubjects, "platform-administrator-subjects", nil, "Platform administrators.")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
+	f.Var(&o.AuthorizationEngine, "authorization-engine", "Authorization engine serving Allow* enforcement decisions (legacy or cerbos).")
 }
 
 // RBAC contains all the scoping rules for services across the platform.

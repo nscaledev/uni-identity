@@ -39,6 +39,9 @@ spec:
         - --auth0-exchange-audience={{ .audience }}
         {{- end }}
         {{- end }}
+        {{- with .Values.identity.authorizationEngine }}
+        - --authorization-engine={{ . }}
+        {{- end }}
         {{- $adminRoles := list }}
         {{- range $index, $name := .Values.platformAdministrators.roles }}
           {{- $adminRoles = append $adminRoles (include "resource.id" $name) }}

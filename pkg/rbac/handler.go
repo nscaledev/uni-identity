@@ -56,6 +56,17 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 
 // AllowGlobalScope tries to allow the requested operation at the global scope.
 func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
+	if engine := engineForDispatch(ctx); engine != nil {
+		// Coarse global check: Kind only, no scope attributes, coarse ID.
+		return engine.allowCoarse(ctx, Resource{Kind: endpoint}, operation)
+	}
+
+	return allowGlobalScopeLegacy(ctx, endpoint, operation)
+}
+
+// allowGlobalScopeLegacy is the legacy local ACL walk, retained verbatim for
+// the A7 shadow comparison; it goes at the A12 cutover.
+func allowGlobalScopeLegacy(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
 	acl := FromContext(ctx)
 
 	if acl.Global == nil {
@@ -94,7 +105,19 @@ func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operatio
 // deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
 // and will be removed once those callers have migrated.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
-	if AllowGlobalScope(ctx, endpoint, operation) == nil {
+	if engine := engineForDispatch(ctx); engine != nil {
+		// Coarse organization check: the project attribute stays ABSENT —
+		// the generated policies' no-flow-up invariant depends on that.
+		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID}, operation)
+	}
+
+	return allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID)
+}
+
+// allowOrganizationScopeLegacy is the legacy local ACL walk, retained
+// verbatim for the A7 shadow comparison; it goes at the A12 cutover.
+func allowOrganizationScopeLegacy(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
+	if allowGlobalScopeLegacy(ctx, endpoint, operation) == nil {
 		return nil
 	}
 
@@ -146,7 +169,18 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 // in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
 // will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
+	if engine := engineForDispatch(ctx); engine != nil {
+		// Coarse project check: both scope attributes set.
+		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation)
+	}
+
+	return allowProjectScopeLegacy(ctx, endpoint, operation, organizationID, projectID)
+}
+
+// allowProjectScopeLegacy is the legacy local ACL walk, retained verbatim
+// for the A7 shadow comparison; it goes at the A12 cutover.
+func allowProjectScopeLegacy(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	if allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID) == nil {
 		return nil
 	}
 
@@ -241,6 +275,12 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 // string overload is retained for backwards compatibility with callers that pre-date the
 // typed ID types and will be removed once those callers have migrated; the typed variants
 // delegate here after converting to strings.
+//
+// NOTE: this function deliberately does NOT dispatch to the Cerbos engine —
+// nested scope checks included.  Its orchestration (project-scope grant
+// implies verified existence; organization-scope grant demands a live
+// project-existence verification) is entangled with legacy ACL structure,
+// and its Cerbos equivalent is task A9 (see pkg/authz/cerbos/README.md).
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
@@ -249,14 +289,14 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 	}
 
 	// Check whether a global or organization-scoped ACL grants access.
-	if err := AllowOrganizationScope(ctx, endpoint, operation, organizationID); err != nil {
+	if err := allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID); err != nil {
 		return err
 	}
 
 	// Global-scope callers are platform administrators with unconditional trust.
 	// Skip the identity API call: the compute service account may not hold
 	// identity:projects/Read, and global admins are already fully trusted.
-	if AllowGlobalScope(ctx, endpoint, operation) == nil {
+	if allowGlobalScopeLegacy(ctx, endpoint, operation) == nil {
 		return nil
 	}
 
@@ -315,7 +355,7 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 // is relaxed to organization scope, this "any project" acceptance would become a
 // cross-project escalation and must be tightened to a specific target project.
 func allowGrantProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
-	if AllowOrganizationScopeID(ctx, endpoint, operation, organizationID) == nil {
+	if allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID.String()) == nil {
 		return nil
 	}
 
@@ -358,10 +398,15 @@ func allowGrantProjectScope(ctx context.Context, endpoint string, operation open
 // The project case is why granting is subset-preserving rather than escalation-prone: a
 // caller may only ever grant a role whose permissions they already hold at the grant's
 // scope or broader.
+//
+// NOTE: this function deliberately does NOT dispatch to the Cerbos engine —
+// nested scope checks included.  Grantability walks the raw ACL structure
+// (allowGrantProjectScope's any-project acceptance has no coarse-check
+// equivalent) and stays thin-Go by design; its parity story is task A16.
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
-			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
+			if err := allowGlobalScopeLegacy(ctx, endpoint.Name, convertOperation(operation)); err != nil {
 				return err
 			}
 		}
@@ -369,7 +414,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 
 	for _, endpoint := range role.Spec.Scopes.Organization {
 		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+			if err := allowOrganizationScopeLegacy(ctx, endpoint.Name, convertOperation(operation), organizationID.String()); err != nil {
 				return err
 			}
 		}

@@ -39,6 +39,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -287,6 +288,72 @@ func TestCerbosDecisionParity(t *testing.T) {
 		allowed, err := fx.rbac.CheckMany(ctx, checks)
 		require.NoError(t, err)
 		require.Equal(t, expected, allowed)
+	})
+
+	// A6 facade parity: representative cells re-run THROUGH the Allow*
+	// facade — legacy exactly as legacyVerdict computes it, Cerbos via an
+	// engine-seeded context in cerbos mode — proving the dispatch plumbing
+	// itself does not distort decisions.  The engine is a cerbos-mode RBAC
+	// over the same fixture data and PDP.
+	t.Run("AllowFacadeAgreesInCerbosMode", func(t *testing.T) {
+		t.Parallel()
+
+		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
+			PlatformAdministratorSubjects: []string{parityAdminSubject},
+			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+			SystemAccountRoleIDs:          map[string]string{paritySystemCN: parityRoleGlobalAdmin},
+			AuthorizationEngine:           rbac.EngineCerbos,
+		}).WithCerbos(client)
+
+		// One representative allow and deny per scope level across the
+		// actor classes; wantLegacyError cells are excluded (the middleware
+		// rejects those requests before any Allow* runs).
+		selected := []string{
+			"AdminGlobalGranted",
+			"AdminGlobalUngrantedOp",
+			"SystemOrgFlowDown",
+			"ServiceAccountOrgUngrantedOp",
+			"ServiceAccountProjectGranted",
+			"UserOrgGranted",
+			"UserWrongOrg",
+			"UserOrgGrantFlowsToProject",
+			"UserProjectGranted",
+			"UserWrongProject",
+		}
+
+		for _, tc := range cases {
+			if !slices.Contains(selected, tc.name) {
+				continue
+			}
+
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				legacy := legacyVerdict(t, fx.rbac, tc)
+
+				ctx := rbac.NewEngineContext(authorization.NewContext(t.Context(), tc.info), engine)
+
+				var err error
+
+				switch {
+				case tc.projectID != "":
+					err = rbac.AllowProjectScope(ctx, tc.endpoint, tc.operation, tc.organizationID, tc.projectID)
+				case tc.organizationID != "":
+					err = rbac.AllowOrganizationScope(ctx, tc.endpoint, tc.operation, tc.organizationID)
+				default:
+					err = rbac.AllowGlobalScope(ctx, tc.endpoint, tc.operation)
+				}
+
+				// Only a genuine policy deny counts as deny — an outage or
+				// resolver failure must fail the test loudly rather than
+				// masquerade as deny parity.
+				if err != nil {
+					require.ErrorIs(t, err, rbac.ErrPolicyDenied, "the facade denied for a non-policy reason: %v", err)
+				}
+
+				require.Equal(t, legacy, err == nil, "FACADE PARITY VIOLATION: legacy=%v cerbos-facade=%v — escalate, do not special-case", legacy, err == nil)
+			})
+		}
 	})
 }
 

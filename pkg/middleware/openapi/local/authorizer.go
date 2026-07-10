@@ -136,3 +136,10 @@ func (a *Authorizer) Authorize(authentication *openapi3filter.AuthenticationInpu
 func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*openapi.Acl, error) {
 	return a.rbac.GetACL(ctx, organizationID)
 }
+
+// DecisionEngine implements the middleware's optional DecisionEngineProvider
+// interface: the returned RBAC (whose PDP client backs rbac.Check/CheckMany)
+// is seeded into handler contexts for the Allow* facade's dual-path dispatch.
+func (a *Authorizer) DecisionEngine() *rbac.RBAC {
+	return a.rbac
+}

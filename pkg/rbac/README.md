@@ -154,8 +154,38 @@ cannot exercise permissions that either side lacks.
 Alongside the legacy ACL pipeline, this package carries the Cerbos decision path from the
 authorization migration (see
 [docs/cerbos-authorization-migration-design.md](../../docs/cerbos-authorization-migration-design.md)
-and [pkg/authz/cerbos](../authz/cerbos/README.md)). It is not yet wired into enforcement — the
-`Allow*` functions still evaluate ACLs locally; call sites migrate with A6.
+and [pkg/authz/cerbos](../authz/cerbos/README.md)). Since A6 the `Allow*` facade is
+**dual-path**: behind the unchanged signatures each scope check either walks the local ACL
+(the legacy path, retained verbatim for A7's shadow comparison and removed only at the A12
+cutover) or asks the PDP a coarse question (`Resource{Kind}` for global, `+OrganizationID`
+for organization — the project attribute deliberately absent — and both IDs for project
+scope, resource ID always the coarse `*`).
+
+- **Dispatch is a structural fail-safe, not a configuration one.** The Cerbos path serves
+  only when a decision engine was seeded into the request context (`NewEngineContext`,
+  done by the openapi middleware when its authorizer implements `DecisionEngineProvider`)
+  AND that engine's mode (`Options.AuthorizationEngine`, the identity server's
+  `--authorization-engine` flag, default `legacy`) is `cerbos`. Contexts without an engine
+  — every downstream service (they never construct an `RBAC`), `NewSuperContext`, and
+  every ACL-only test context — always take the legacy path by construction. That
+  absence-default is the migration's compatibility contract.
+- **Deny-shape parity.** Cerbos-path denials surface as the same `HTTPForbidden` form the
+  legacy walk produces — call sites branch on `err == nil` and the error mapper on the
+  HTTP status — with the fail-closed sentinel (`ErrPolicyDenied`,
+  `ErrDecisionUnavailable`, `ErrResolutionFailed`) still visible via `errors.Is` for A7's
+  comparator and A10's metrics. A PDP outage is therefore a deny, indistinguishable to
+  callers from a policy deny until A10 adds the distinguishing metrics.
+- **Impersonated requests always take the legacy path regardless of mode** (the same
+  predicate the confused-deputy intersection uses): the Cerbos decision API refuses them
+  outright until the A14 dual-check, and failing them closed would break
+  service-to-service impersonation.
+- **`AllowProjectScopeCreate` and `AllowRole` stay legacy-only, nested checks included**:
+  Create's live project-existence orchestration moves to Cerbos with A9, and `AllowRole`'s
+  grantability walk stays thin-Go by design (A16 owns its parity story).
+- **Costs, accepted until later tasks**: the middleware still resolves the legacy ACL for
+  every request even in cerbos mode (the double-resolution goes with A12/A17), and
+  per-item filter loops over `Allow*` become N single-check PDP calls (the localhost
+  sidecar answers sub-millisecond; A15 adds caching).
 
 - `ResolveBindings(ctx, info)` converts the authenticated subject into the `(role, scope)`
   binding tuples the Cerbos request builder renders. Every branch deliberately mirrors a

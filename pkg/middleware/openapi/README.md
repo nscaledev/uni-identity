@@ -71,6 +71,20 @@ The package has two important integration modes:
 The shared `openapi` middleware layer defines the common request pipeline and the cache/propagation
 rules across both modes.
 
+### The Decision-Engine Crossing (authorization migration)
+
+The middleware is the single production point that seeds the Cerbos-capable decision engine
+into handler contexts for `pkg/rbac`'s dual-path `Allow*` dispatch. `DecisionEngineProvider`
+is an **optional** interface asserted against the configured `Authorizer` at request handling
+time — deliberately not part of the `Authorizer` interface, so the generated mock and any
+external implementer keep compiling and their requests structurally take the legacy path.
+The `local` authorizer implements it (identity's own `RBAC`, whose PDP client backs
+`rbac.Check`/`CheckMany`); the `remote` authorizer gains it with A8. Seeding happens next to
+the ACL context on the context handlers actually receive, and is unconditional on engine
+mode — whether the engine actually serves decisions is the dispatch predicate's job (see
+[`pkg/rbac`](../../rbac/README.md)). Until A12/A17 the per-request ACL resolution above
+still runs even when the engine serves, so cerbos mode carries both resolution costs.
+
 ### Remote Token Exchange
 
 The `remote` authorizer's bearer-token path is exchange-backed. On a cache miss it performs RFC 8693

@@ -92,6 +92,10 @@ identity:
   auth0Exchange:
     issuer: ~
     audience: ~
+  # Authorization engine serving RBAC enforcement (Allow*) decisions:
+  # "legacy" (the in-process ACL walk) or "cerbos" (the PDP sidecar).
+  # Leave unset for the default (legacy).
+  authorizationEngine: ~
 
 # Issuer related configuration.
 issuer:
