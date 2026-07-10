@@ -72,6 +72,17 @@ projectController:
       cpu: 100m
       memory: 100Mi
 
+# Policy controller specific configuration.
+policyController:
+  # Allows override of the image.
+  image:
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+
 # Sets the DNS hosts, X.509 certificate subject alternative names and
 # oauth2 issuer etc.
 identity:

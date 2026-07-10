@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-policy-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+rules:
+# Read role definitions (my job is to compile them into Cerbos policies).
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - roles
+  verbs:
+  - list
+  - get
+  - watch

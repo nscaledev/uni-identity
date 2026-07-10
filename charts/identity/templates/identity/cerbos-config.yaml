@@ -2,7 +2,8 @@
 # read-only at /config.  The admin API is deliberately NOT enabled: M1 of the
 # authorization migration forbids it, and the disk driver does not support it
 # anyway — the policy store is only ever written through the policies
-# ConfigMap.
+# ConfigMap, which the policy controller owns and publishes at runtime (this
+# chart does not template it; see pkg/authz/cerbos/README.md).
 apiVersion: v1
 kind: ConfigMap
 metadata:

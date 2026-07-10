@@ -15,9 +15,10 @@ spec:
         app: {{ .Release.Name }}-server
       annotations:
         # Cerbos reads config.yaml only at startup, so config changes must
-        # roll the pods.  The policies ConfigMap is deliberately NOT
-        # annotated: it is live-watched (watchForChanges), and restarting
-        # pods on policy writes would be wrong.
+        # roll the pods.  The policy store ConfigMap (owned and published at
+        # runtime by the policy controller, not templated by this chart) is
+        # deliberately NOT annotated: it is live-watched (watchForChanges),
+        # and restarting pods on policy writes would be wrong.
         checksum/cerbos-config: {{ include (print $.Template.BasePath "/identity/cerbos-config.yaml") . | sha256sum }}
     spec:
       containers:
@@ -119,6 +120,12 @@ spec:
       - name: cerbos-policies
         configMap:
           name: {{ .Release.Name }}-cerbos-policies
+          # The policy controller owns, creates and publishes this ConfigMap
+          # at runtime; the chart does not template it.  optional lets the
+          # pod start before the first publish — Cerbos serves
+          # deny-by-default from the empty directory, and the kubelet
+          # back-fills the volume once the ConfigMap appears.
+          optional: true
       - name: cerbos-tmp
         emptyDir: {}
       - name: cerbos-cache

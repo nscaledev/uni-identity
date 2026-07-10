@@ -13,9 +13,8 @@ It contains:
   runs as a [sidecar](#the-sidecar) of the identity server.
 - [generate](#the-generate-package) — a pure function converting `Role` custom
   resources into Cerbos policy documents.
-
-The controller that reconciles generated policies into the PDP arrives with a
-later migration task (A3).
+- [controller](#the-policy-controller) — the reconciling policy controller
+  publishing generated policies to the sidecar's policy store ConfigMap.
 
 ## The Client
 
@@ -66,9 +65,12 @@ pod, image pinned to `CERBOS_VERSION` in the Makefile:
   annotation on the pod template rolls the pods on config changes; the
   policies ConfigMap is deliberately not annotated (it is live-watched).
 - policies come from the `<release>-cerbos-policies` ConfigMap, mounted
-  read-only at `/policies`.  It ships empty — Cerbos boots with an empty
-  policy directory and serves deny-by-default — and is populated by the A3
-  policy controller, nothing else.
+  read-only at `/policies` as an `optional` volume.  The chart does not
+  template the ConfigMap: the [policy controller](#the-policy-controller)
+  owns, creates and publishes it at runtime, nothing else writes it.  Before
+  the first publish the volume is an empty directory and Cerbos serves
+  deny-by-default; the kubelet back-fills the volume once the ConfigMap
+  appears.
 - readiness and liveness exec the in-image `cerbos healthcheck` binary
   against the mounted config (the loopback binding puts the HTTP endpoint out
   of the kubelet's reach), so the pod only becomes Ready once the PDP is
@@ -81,8 +83,8 @@ pod, image pinned to `CERBOS_VERSION` in the Makefile:
 
 `generate.Generate(roles []unikornv1.Role) (*Output, error)` converts Role CRs
 into two document shapes, exposed both as typed documents and as serialized
-files (`Output.Files()`, relative path → YAML) for the future policy
-controller to write:
+files (`Output.Files()`, relative path → YAML) for the policy controller to
+publish:
 
 - **One shared derived-roles document** (`uni_roles`): one definition per
   (Role CR, non-empty scope bucket), named `role_<roleID>_<bucket>` with
@@ -160,3 +162,92 @@ so it has no representation in policy output.
   hand-written behavioural suite under `generate/testdata/store/tests/`,
   which encodes flow-down, no flow-up, tenant isolation, exact-operation
   matching, additive union, and open-vocabulary endpoints.
+
+## The Policy Controller
+
+`controller` is the domain logic behind the `unikorn-policy-controller`
+binary (thin factory in `pkg/controllers/policy`; see
+[pkg/controllers](../../controllers/README.md)).  It handles GitOps-applied
+*and* manually-applied `Role` CRs identically: any Role create, spec update
+or delete collapses into one synthetic reconcile request that regenerates the
+whole store.
+
+Each reconcile:
+
+1. lists the `Role` CRs in the identity namespace (`--namespace`) and runs
+   [generate](#the-generate-package) over them — the store is always rebuilt
+   from source, never patched;
+2. skips out immediately if the existing ConfigMap already holds exactly the
+   generated content (the hash-suffixed key set encodes content, so this is
+   cheap);
+3. otherwise materializes the candidate store in `/tmp` and runs the
+   **compile gate**: it exec's the vendored pinned `cerbos compile` binary
+   (`--cerbos-binary`, baked into the controller image by
+   `docker/unikorn-policy-controller/Dockerfile` from the same pinned image
+   the sidecar runs — the `validate-cerbos-version` guard covers the pin);
+4. publishes to the ConfigMap named by `--cerbos-policies-configmap` only on
+   exit 0.
+
+**Compile-gate semantics (fail-closed)**: exit 3 (compile failure) and exit 4
+(policy test failure) are classified into distinct error sentinels
+(`ErrCompileFailed`, `ErrTestsFailed`); those, any other non-zero exit, any
+gate I/O error, and any generation error all REFUSE publication — the
+ConfigMap is left untouched so the sidecar keeps serving the last-good store,
+a warning event (`PolicyStoreRejected`) is emitted on the ConfigMap, and the
+error is logged and returned for retry with backoff.  There is no code path
+that publishes an unvetted store.  The gate never passes `--skip-tests`.
+
+### The Hash-Suffixed Key Scheme (load-bearing)
+
+Every generated file `<base>.yaml` is published under the ConfigMap key
+`<base>-<sha256[:8]>.yaml` (first 8 hex characters of the content hash).
+This is mandatory, not cosmetic: the kubelet updates ConfigMap volumes by
+atomically swapping a hidden `..data` symlink (kubernetes
+`pkg/volume/util/atomic_writer.go`), and Cerbos's disk watcher drops
+hidden-name events and only reloads the exact visible paths in an event batch
+(cerbos@v0.53.0 `internal/storage/disk/dirwatch.go`) — so a content update
+under an unchanged key is **never** reloaded.  With hash-suffixed keys,
+changed content swaps keys, which the kubelet surfaces as visible symlink
+delete+create events the watcher does reload; deletions are processed before
+creations, so a key swap has no duplicate-definition window.  Unchanged files
+keep byte-identical keys: no events, no reload needed.
+
+**Publish latency**: a published change reaches the PDP after the kubelet's
+volume sync (~1 minute by default) plus Cerbos's 2s reload cooldown.  Fine
+for M1's role-edit cadence; revisit if policy changes ever need to be
+near-instant.
+
+### ConfigMap Ownership (operational notes)
+
+The controller owns the policy store ConfigMap outright and marks it
+`app.kubernetes.io/managed-by: unikorn-policy-controller` (repo convention is
+labels, not ownerReferences).  Consequences:
+
+- a missing ConfigMap (including the one-time A1→A3 `helm upgrade` deleting
+  the previously chart-templated one, rollbacks, or GitOps pruning) is
+  self-healing: the next reconcile re-gates and recreates it from the Roles;
+- `helm uninstall` does **not** delete it — labels give no garbage
+  collection, so the orphaned ConfigMap must be removed manually if the
+  release is gone for good;
+- the chart's RBAC scopes writes to this single object (the effective
+  authorization policy — least privilege), and only the controller's
+  ServiceAccount holds them.
+
+### Controller Testing
+
+- Fake-client unit tests pin the reconcile contract: byte-exact publishes
+  under hash-suffixed keys, unchanged-content no-ops, gate refusals keeping
+  last-good, Role deletion shrinking the store (the watch predicate passing
+  delete events is itself pinned by a unit test in `pkg/controllers/policy`),
+  and NotFound recreation.
+- `make test-cerbos-controller` (Docker-dependent like `make
+  validate-policies`, so not part of `test-unit`) extracts the pinned binary
+  from the image via `docker create`/`docker cp` and runs the real gate:
+  a generated store compiles (exit 0), a broken policy is classified as exit
+  3, and the hash-key scheme emits stable, valid ConfigMap keys.  On
+  non-Linux hosts the Linux binary cannot exec, so the same gate code drives
+  the pinned image via `docker run` instead; CI always tests the direct-exec
+  path production uses.
+- The end-to-end "apply a Role, watch a decision flip" assertion needs the
+  kind stack to reach the loopback PDP, which no harness supports yet: it is
+  deliberately deferred to the kind-parity migration task (A11).
