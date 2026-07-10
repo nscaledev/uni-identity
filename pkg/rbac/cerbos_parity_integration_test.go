@@ -24,7 +24,10 @@ limitations under the License.
 // pinned image, queried through ResolveBindings + Check) — and requires them
 // to be EQUAL across a matrix of {platform admin, user, service account,
 // system account} × {global, org, project} × {granted op, ungranted op,
-// wrong org, wrong project, unknown endpoint, resolution failure}.
+// wrong org, wrong project, unknown endpoint, resolution failure}, plus the
+// impersonated cells (A14): a registered system account impersonating the
+// fixture user and service account, the legacy intersectACL oracle against
+// the dual check.
 //
 // A mismatch here is an authorization bug in the migration (or a genuine
 // legacy quirk the resolver failed to replicate): escalate it, never
@@ -51,6 +54,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/authz/cerbos/generate"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
 
@@ -85,6 +89,19 @@ type parityCase struct {
 	// policy verdict (the resolver errors): the fail-closed deny must come
 	// from ErrResolutionFailed, not the PDP.
 	wantResolveError bool
+
+	// impersonated, when set, marks the cell as an impersonated request
+	// (A14): both sides evaluate with this principal in context plus the
+	// impersonation marker — the legacy side through GetACL's
+	// confused-deputy intersection, the Cerbos side through the dual check.
+	impersonated *principal.Principal
+
+	// wantImpersonationRefused marks cells where the Cerbos side refuses the
+	// impersonated principal TYPE pre-PDP (ErrImpersonationNotSupported) —
+	// paired with wantLegacyError, where legacy hard-errors with
+	// ErrInvalidPrincipalType: both error-shaped, same deny verdict,
+	// different mechanism.
+	wantImpersonationRefused bool
 }
 
 //nolint:funlen
@@ -182,7 +199,81 @@ func parityCases() []parityCase {
 		{name: "UserOpenVocabProjectUngrantedOp", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, projectID: parityProjectZ, endpoint: "envir:environment-manager", operation: openapi.Create},
 		{name: "UserOpenVocabWrongProject", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, projectID: parityProjectX, endpoint: "envir:environment-manager", operation: openapi.Read},
 		{name: "UserOpenVocabProjectGrantNotAtOrg", info: parityUserInfo(parityFrankSubject, parityOrgA, parityOrgB), organizationID: parityOrgA, endpoint: "envir:environment-manager", operation: openapi.Read},
+
+		// Impersonated cells (A14): the acting service is the registered
+		// system account paritySystemImpersonatorCN (global-only role, like
+		// every system account — see the fixture), impersonating the fixture
+		// user (alice) and service account (sa-1).  The legacy oracle is
+		// GetACL over an impersonated context — the byte-untouched
+		// intersectACL/getSystemAccountACL path — against the dual check's
+		// AND of two single-principal evaluations.
+		//
+		// Allowed-by-both: the principal holds the grant and the acting
+		// service's GLOBAL allow-list covers it.  The project-scope cell is
+		// the flow-down witness: the service side allows a project-scoped
+		// resource from a GLOBAL binding alone — the structural property the
+		// dual-check equivalence proof requires of the generated policies.
+		{name: "ImpersonatedUserOrgAllowedByBoth", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedUser(parityAliceSubject, parityOrgA), organizationID: parityOrgA, endpoint: "identity:groups", operation: openapi.Read, expectAllow: true},
+		{name: "ImpersonatedUserProjectFlowDownAllowedByBoth", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedUser(parityAliceSubject, parityOrgA), organizationID: parityOrgA, projectID: parityProjectX, endpoint: "identity:groups", operation: openapi.Read, expectAllow: true},
+		// Denied-by-service-only, the NARROWING proof: the principal holds
+		// the operation (alice has identity:groups update, sa-1 has
+		// compute:clusters delete) but the service's global allow-list lacks
+		// it — the confused deputy the intersection exists to stop.
+		{name: "ImpersonatedUserDeniedByServiceOnly", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedUser(parityAliceSubject, parityOrgA), organizationID: parityOrgA, endpoint: "identity:groups", operation: openapi.Update},
+		// Denied-by-principal-only: the service could (compute:clusters
+		// read is on its allow-list) but alice holds no compute grant.
+		{name: "ImpersonatedUserDeniedByPrincipalOnly", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedUser(parityAliceSubject, parityOrgA), organizationID: parityOrgA, projectID: parityProjectX, endpoint: "compute:clusters", operation: openapi.Read},
+		// Wrong org, mechanism asymmetry (a): legacy hard-errors — the
+		// request-scoped processUserAccountACL returns ErrNotInOrganization
+		// for an org outside the principal's claims — while the Cerbos
+		// resolver is request-scope-free and denies through policy (no org-B
+		// binding matches).  Same deny verdict, different mechanism: the
+		// UserProjectWrongOrg precedent.
+		{name: "ImpersonatedUserWrongOrg", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedUser(parityAliceSubject, parityOrgA), organizationID: parityOrgB, endpoint: "identity:groups", operation: openapi.Read, wantLegacyError: true},
+
+		// The impersonated SERVICE ACCOUNT (sa-1, home org A).
+		{name: "ImpersonatedServiceOrgAllowedByBoth", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedService(paritySA1, parityOrgA), organizationID: parityOrgA, endpoint: "identity:projects", operation: openapi.Read, expectAllow: true},
+		{name: "ImpersonatedServiceProjectAllowedByBoth", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedService(paritySA1, parityOrgA), organizationID: parityOrgA, projectID: parityProjectX, endpoint: "compute:clusters", operation: openapi.Create, expectAllow: true},
+		{name: "ImpersonatedServiceDeniedByServiceOnly", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedService(paritySA1, parityOrgA), organizationID: parityOrgA, projectID: parityProjectX, endpoint: "compute:clusters", operation: openapi.Delete},
+		{name: "ImpersonatedServiceDeniedByPrincipalOnly", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedService(paritySA1, parityOrgA), organizationID: parityOrgA, endpoint: "identity:groups", operation: openapi.Read},
+		// Wrong org, service-type quirk (b): NO legacy error here — the
+		// org-mismatch FALLTHROUGH (processServiceAccountACL swallows
+		// ErrNotInOrganization) leaves the home-org grants in the unscoped
+		// list and the org-B check denies on both sides.
+		{name: "ImpersonatedServiceWrongOrgFallthrough", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedService(paritySA1, parityOrgA), organizationID: parityOrgB, endpoint: "identity:projects", operation: openapi.Read},
+
+		// System-impersonation error parity: a System principal cannot be
+		// impersonated on either side — legacy hard-errors with
+		// ErrInvalidPrincipalType, the Cerbos type gate refuses pre-PDP with
+		// ErrImpersonationNotSupported.  Both error-shaped denies, encoded
+		// exactly like the wantLegacyError precedent.
+		{name: "ImpersonatedSystemRefusedByBoth", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: &principal.Principal{Actor: paritySystemCN, Type: openapi.System, OrganizationIDs: []string{parityOrgA}}, organizationID: parityOrgA, endpoint: "identity:groups", operation: openapi.Read, wantLegacyError: true, wantImpersonationRefused: true},
 	}
+}
+
+// impersonatedUser builds the propagated principal for an impersonated
+// user-account actor, the shape generatePrincipal propagates through the
+// X-Principal header.
+func impersonatedUser(subject string, orgIDs ...string) *principal.Principal {
+	return &principal.Principal{Actor: subject, Type: openapi.User, OrganizationIDs: orgIDs}
+}
+
+// impersonatedService builds the propagated principal for an impersonated
+// service-account actor.
+func impersonatedService(subject string, orgIDs ...string) *principal.Principal {
+	return &principal.Principal{Actor: subject, Type: openapi.Service, OrganizationIDs: orgIDs}
+}
+
+// impersonationContext seeds a case's impersonated principal and the
+// impersonation marker, mirroring the middleware's context shape (the
+// getACLForSystemAccount pattern from groups_test.go); direct cells pass
+// through unchanged.
+func impersonationContext(ctx context.Context, tc parityCase) context.Context {
+	if tc.impersonated == nil {
+		return ctx
+	}
+
+	return principal.NewImpersonateContext(principal.NewContext(ctx, tc.impersonated))
 }
 
 // legacyVerdict computes the legacy allow/deny for a case exactly as the
@@ -192,7 +283,7 @@ func parityCases() []parityCase {
 func legacyVerdict(t *testing.T, r *rbac.RBAC, tc parityCase) bool {
 	t.Helper()
 
-	ctx := authorization.NewContext(t.Context(), tc.info)
+	ctx := impersonationContext(authorization.NewContext(t.Context(), tc.info), tc)
 
 	acl, err := r.GetACL(ctx, tc.organizationID)
 	if err != nil {
@@ -216,13 +307,14 @@ func legacyVerdict(t *testing.T, r *rbac.RBAC, tc parityCase) bool {
 }
 
 // cerbosVerdict computes the Cerbos allow/deny for a case via Check.  Only a
-// clean policy deny (or, for wantResolveError cases, a resolution failure)
-// counts as deny: anything else — crucially PDP unavailability — fails the
-// test loudly so an outage can never masquerade as successful deny parity.
+// clean policy deny (or, for wantResolveError/wantImpersonationRefused
+// cases, the matching pre-PDP refusal) counts as deny: anything else —
+// crucially PDP unavailability — fails the test loudly so an outage can
+// never masquerade as successful deny parity.
 func cerbosVerdict(t *testing.T, r *rbac.RBAC, tc parityCase) bool {
 	t.Helper()
 
-	ctx := authorization.NewContext(t.Context(), tc.info)
+	ctx := impersonationContext(authorization.NewContext(t.Context(), tc.info), tc)
 
 	resource := rbac.Resource{Kind: tc.endpoint, OrganizationID: tc.organizationID, ProjectID: tc.projectID}
 
@@ -231,8 +323,13 @@ func cerbosVerdict(t *testing.T, r *rbac.RBAC, tc parityCase) bool {
 	switch {
 	case err == nil:
 		return true
+	case goerrors.Is(err, rbac.ErrImpersonationNotSupported):
+		require.True(t, tc.wantImpersonationRefused, "unexpected impersonation refusal: %v", err)
+
+		return false
 	case goerrors.Is(err, rbac.ErrPolicyDenied):
 		require.False(t, tc.wantResolveError, "expected a resolution failure, got a policy deny")
+		require.False(t, tc.wantImpersonationRefused, "expected an impersonation refusal, got a policy deny")
 
 		return false
 	case goerrors.Is(err, rbac.ErrResolutionFailed):
@@ -319,7 +416,10 @@ func TestCerbosDecisionParity(t *testing.T) {
 		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
 			PlatformAdministratorSubjects: []string{parityAdminSubject},
 			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
-			SystemAccountRoleIDs:          map[string]string{paritySystemCN: parityRoleGlobalAdmin},
+			SystemAccountRoleIDs: map[string]string{
+				paritySystemCN:             parityRoleGlobalAdmin,
+				paritySystemImpersonatorCN: parityRoleImpersonator,
+			},
 			AuthorizationEngine:           rbac.EngineCerbos,
 		}).WithCerbos(client)
 
@@ -387,7 +487,10 @@ func TestCerbosDecisionParity(t *testing.T) {
 		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
 			PlatformAdministratorSubjects: []string{parityAdminSubject},
 			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
-			SystemAccountRoleIDs:          map[string]string{paritySystemCN: parityRoleGlobalAdmin},
+			SystemAccountRoleIDs: map[string]string{
+				paritySystemCN:             parityRoleGlobalAdmin,
+				paritySystemImpersonatorCN: parityRoleImpersonator,
+			},
 			AuthorizationEngine:           rbac.EngineShadow,
 		}).WithCerbos(client)
 
@@ -425,7 +528,10 @@ func TestCerbosDecisionParity(t *testing.T) {
 		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
 			PlatformAdministratorSubjects: []string{parityAdminSubject},
 			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
-			SystemAccountRoleIDs:          map[string]string{paritySystemCN: parityRoleGlobalAdmin},
+			SystemAccountRoleIDs: map[string]string{
+				paritySystemCN:             parityRoleGlobalAdmin,
+				paritySystemImpersonatorCN: parityRoleImpersonator,
+			},
 			AuthorizationEngine:           rbac.EngineShadow,
 		}).WithCerbos(divergentClient)
 
@@ -471,11 +577,14 @@ func TestCerbosDecisionParity(t *testing.T) {
 // shadowFacadeVerdict serves one matrix case through the Allow* facade with a
 // shadow-mode engine seeded, exactly as the middleware wires a request: a
 // request-scoped logger (the capture), an ACL for the legacy walk, and
-// authorization info for the Cerbos side.
+// authorization info for the Cerbos side — plus, for impersonated cells, the
+// propagated principal and the impersonation marker (so the legacy walk
+// serves the intersection ACL and the shadow comparison runs the dual
+// check).
 func shadowFacadeVerdict(t *testing.T, fx *parityFixture, capture *logCapture, engine *rbac.RBAC, tc parityCase) bool {
 	t.Helper()
 
-	ctx := authorization.NewContext(capture.into(t.Context()), tc.info)
+	ctx := impersonationContext(authorization.NewContext(capture.into(t.Context()), tc.info), tc)
 
 	acl, err := fx.rbac.GetACL(ctx, tc.organizationID)
 	require.NoError(t, err)

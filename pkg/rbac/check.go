@@ -32,12 +32,16 @@ import (
 
 // This file is the Cerbos decision API (migration task A5): resolve the
 // subject's bindings, build one CheckResources request, and map the response
-// to allow/deny.  Only the local in-process PDP client path exists today; the
-// PolicyDecisionPoint seam is where A8 slots the remote transport
-// (/authorization/check) for services without a sidecar.  Decision audit
-// logging and metrics live in decision_log.go (A10), hooked at the CheckMany
-// choke point below so every consumer — Check, allowCoarse, and A8's remote
-// handler alike — is observed, pre-PDP fail-closed denials included.
+// to allow/deny.  Impersonated requests are served by the A14 dual check —
+// two AND-ed single-principal evaluations, the impersonated principal and
+// the acting service (decideImpersonated) — replacing the legacy
+// confused-deputy ACL intersection.  Only the local in-process PDP client
+// path exists today; the PolicyDecisionPoint seam is where A8 slots the
+// remote transport (/authorization/check) for services without a sidecar.
+// Decision audit logging and metrics live in decision_log.go (A10), hooked
+// at the CheckMany choke point below so every consumer — Check, allowCoarse,
+// and A8's remote handler alike — is observed, pre-PDP fail-closed denials
+// included.
 
 // The decision error taxonomy.  All three failure classes are DENY-shaped —
 // a caller treating any non-nil error as a deny is always fail-closed — but
@@ -58,11 +62,14 @@ var (
 	// and request-construction errors.
 	ErrResolutionFailed = goerrors.New("authorization binding resolution failed")
 
-	// ErrImpersonationNotSupported is returned for any request carrying an
-	// impersonation principal: the legacy confused-deputy intersection
-	// (getSystemAccountACL) has no Cerbos equivalent until A14, so such
-	// requests fail closed rather than being resolved as the WRONG subject
-	// (the calling service instead of the impersonated principal).
+	// ErrImpersonationNotSupported is returned for an impersonated request
+	// whose principal carries an invalid or unsupported TYPE: System,
+	// unknown or empty (see impersonationTypeGate).  NARROWED with A14 —
+	// valid User/Service impersonations are served by the dual check
+	// (decideImpersonated) and no longer land here.  The sentinel (and its
+	// "impersonation" decision-record/counter class) is retained under the
+	// narrowed meaning: the class vocabulary is closed and renames are
+	// breaking (see decision_log.go and pkg/rbac/README.md).
 	ErrImpersonationNotSupported = goerrors.New("impersonated requests are not supported by the cerbos decision path")
 )
 
@@ -129,9 +136,11 @@ func (r *RBAC) Check(ctx context.Context, resource Resource, action openapi.AclO
 }
 
 // CheckMany evaluates several (resource, action) pairs in ONE CheckResources
-// call — the design's one-call-per-request batching — returning per-check
-// verdicts in request order.  The error taxonomy matches Check, except plain
-// policy denies are the false entries rather than an error.
+// call PER PRINCIPAL — the design's one-call-per-request batching; direct
+// requests make one call, impersonated requests two (one per side of the
+// A14 dual check) — returning per-check verdicts in request order.  The
+// error taxonomy matches Check, except plain policy denies are the false
+// entries rather than an error.
 func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, error) {
 	start := time.Now()
 
@@ -151,9 +160,17 @@ func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, er
 
 // decide is CheckMany's evaluation body, additionally returning the raw PDP
 // response so the decision records can carry the in-band policy correlate.
+// Direct requests are one single-principal evaluation; impersonated requests
+// (the legacy detection predicate, type-gated) are the A14 dual check.
 func (r *RBAC) decide(ctx context.Context, checks []CheckRequest) ([]bool, *sdk.CheckResourcesResponse, error) {
-	if err := refuseImpersonation(ctx); err != nil {
-		return nil, nil, err
+	impersonated := impersonationFromContext(ctx)
+
+	if impersonated != nil {
+		// The type gate is a pre-PDP fail-closed deny, like the resolution
+		// failures below: refused before any client or info is consulted.
+		if err := impersonationTypeGate(impersonated); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	if r.pdp == nil {
@@ -165,6 +182,18 @@ func (r *RBAC) decide(ctx context.Context, checks []CheckRequest) ([]bool, *sdk.
 		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
+	if impersonated != nil {
+		return r.decideImpersonated(ctx, info, impersonated, checks)
+	}
+
+	return r.evaluate(ctx, info, checks)
+}
+
+// evaluate is the single-principal evaluation: resolve the subject's
+// bindings, build ONE CheckResources request covering every check, and map
+// the response.  Direct requests run it once; impersonated requests run it
+// once per side of the dual check.
+func (r *RBAC) evaluate(ctx context.Context, info *authorization.Info, checks []CheckRequest) ([]bool, *sdk.CheckResourcesResponse, error) {
 	bindings, err := r.ResolveBindings(ctx, info)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
@@ -242,22 +271,133 @@ func mapResults(checks []CheckRequest, entries []cerbos.BatchEntry, response *sd
 	return allowed, nil
 }
 
-// refuseImpersonation fails closed on impersonated requests: the legacy path
-// intersects the impersonated principal's ACL with the service's own ACL
-// (getSystemAccountACL's confused-deputy prevention) and the Cerbos
-// equivalent — the dual check — arrives with A14.  Detection mirrors the
-// legacy predicate exactly (a principal in context, the impersonation marker
-// and a non-empty actor); silently resolving the calling service's own
-// subject instead would answer for the WRONG identity.  Until A14 lands,
-// A7's shadow comparator must exclude or annotate impersonated requests
-// (see pkg/authz/cerbos/README.md).
-func refuseImpersonation(ctx context.Context) error {
+// impersonationFromContext applies the impersonation-detection predicate —
+// EXACTLY the legacy one (getSystemAccountACL): a principal in context, the
+// impersonation marker, and a non-empty actor.  A missing principal, a
+// missing marker, or a marker without an actor all mean "not impersonated",
+// never a failure.  Returns nil for direct requests.
+//
+// Scope note: legacy consults this predicate only for System-account callers
+// (GetACL's account-type dispatch), whereas the dual check applies to ANY
+// marked request regardless of the acting account type.  For a hypothetical
+// non-System caller carrying the marker this is strictly narrower than
+// legacy (which would ignore the marker) — deny-safe, never escalation —
+// but it is a theoretical shadow-divergence source for such traffic.
+func impersonationFromContext(ctx context.Context) *principal.Principal {
 	p, err := principal.FromContext(ctx)
 	if err != nil || !principal.ImpersonateFromContext(ctx) || p.Actor == "" {
-		// A missing principal means "not impersonated", not a failure —
-		// the exact legacy predicate.
-		return nil //nolint:nilerr
+		return nil
 	}
 
-	return ErrImpersonationNotSupported
+	return p
+}
+
+// impersonationTypeGate refuses impersonated principal types that cannot be
+// impersonated.  PINNED: only User and Service pass; System and
+// unknown/empty types are ErrImpersonationNotSupported — legacy parity,
+// where processImpersonatedPrincipalACL (rbac.go) hard-errors with
+// ErrInvalidPrincipalType for exactly those inputs.  This is deliberately
+// NOT ResolveBindings' default-to-User arm: the actor string is
+// caller-propagated, and silently resolving an unknown type as a user would
+// answer for the wrong principal class.
+func impersonationTypeGate(p *principal.Principal) error {
+	switch p.Type {
+	case openapi.User, openapi.Service:
+		return nil
+	case openapi.System:
+		return fmt.Errorf("%w: invalid or unsupported impersonated principal type %q", ErrImpersonationNotSupported, p.Type)
+	default:
+		return fmt.Errorf("%w: invalid or unsupported impersonated principal type %q", ErrImpersonationNotSupported, p.Type)
+	}
+}
+
+// impersonatedInfo synthesizes the authorization info the impersonated side
+// of the dual check resolves bindings from, mirroring the legacy claims
+// rebuild EXACTLY (getSystemAccountACL, rbac.go): Sub is the propagated
+// actor, Acctype the propagated principal type, and OrgIds the principal's
+// organizations with the defensive singular-OrganizationID fallback (a
+// caller that only sets OrganizationID still resolves the scoped
+// organization rather than an empty grant set).
+//
+// COUPLING: ResolveBindings reads ONLY Userinfo.Sub and the
+// HttpsunikornCloudOrgauthz claims (Acctype, OrgIds) — see
+// pkg/middleware/authorization/authinfo.go and bindings.go — so this
+// synthesized Info is a complete resolution input.  The impersonated
+// principal has no token of its own and none is fabricated.
+func impersonatedInfo(p *principal.Principal) *authorization.Info {
+	organizationIDs := p.OrganizationIDs
+	if len(organizationIDs) == 0 && p.OrganizationID != "" {
+		organizationIDs = []string{p.OrganizationID}
+	}
+
+	return &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: p.Actor,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: p.Type,
+				OrgIds:  organizationIDs,
+			},
+		},
+	}
+}
+
+// decideImpersonated serves an impersonated request as TWO AND-ed
+// single-principal evaluations over the identical (resource, action) set:
+// the impersonated principal and the acting service (A14, replacing the
+// legacy confused-deputy intersection getSystemAccountACL performs).
+//
+// EQUIVALENCE (the proven A14 grounding): the legacy path answers from
+// walk(intersectACL(P, S)) where S — a system-account ACL — is Global-only
+// (processSystemAccountACL accumulates only Role.Spec.Scopes.Global) and
+// intersectACL filters EVERY section of P against ONLY serviceACL.Global
+// (rbac.go).  Every legacy Allow* walk is a monotone OR of per-section
+// membership tests, so the filter distributes over the walk:
+//
+//	walk(intersectACL(P,S), endpoint, op, scope)
+//	    == walk(P, endpoint, op, scope) AND (endpoint, op) ∈ S.Global
+//
+// and the service's OWN verdict at ANY scope equals (endpoint, op) ∈
+// S.Global — global-first flow-down over a Global-only ACL.  Therefore the
+// AND of two independent single-principal checks over the identical
+// (resource, action) equals the legacy intersect verdict, given A5
+// single-principal parity.  The service side inherits global→org→project
+// flow-down structurally — a <roleID>#global binding activates on any
+// resource regardless of its organization/project attributes — which the
+// decision-parity matrix asserts rather than assumes.
+//
+// BOTH sides are always evaluated — no short-circuit — so the decision
+// record and metrics always see the complete outcome; the per-entry verdict
+// is impersonated-side AND service-side.  The two PDP round trips run
+// sequentially, each under the client's own per-call timeout, and each
+// records its own latency histogram sample; the decision counter still
+// increments ONCE per decision (recordDecisions runs at the CheckMany choke
+// point, above this).  A resolver or transport failure on EITHER side maps
+// to the same fail-closed classes as a direct request, the impersonated
+// side's taking precedence when both fail.
+func (r *RBAC) decideImpersonated(ctx context.Context, info *authorization.Info, p *principal.Principal, checks []CheckRequest) ([]bool, *sdk.CheckResourcesResponse, error) {
+	// The impersonated side evaluates FIRST, deliberately: shadow's
+	// capturingPDP retains only the last response, and the service side's
+	// is the one that must win (see shadow.go).
+	impersonatedAllowed, _, impersonatedErr := r.evaluate(ctx, impersonatedInfo(p), checks)
+
+	serviceAllowed, serviceResponse, serviceErr := r.evaluate(ctx, info, checks)
+
+	if impersonatedErr != nil {
+		return nil, nil, impersonatedErr
+	}
+
+	if serviceErr != nil {
+		return nil, nil, serviceErr
+	}
+
+	allowed := make([]bool, len(checks))
+
+	for i := range checks {
+		allowed[i] = impersonatedAllowed[i] && serviceAllowed[i]
+	}
+
+	// The service-side response is the returned policy correlate,
+	// consistent with the shadow capture; both correlates are empty against
+	// today's PDP anyway (the A15 seam).
+	return allowed, serviceResponse, nil
 }

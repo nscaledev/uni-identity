@@ -38,11 +38,11 @@ import (
 
 // These tests pin the A6 dual-path dispatch seam: the Allow* facade serves
 // the Cerbos decision if and only if a decision engine was seeded into the
-// context AND its mode is cerbos AND the request is not impersonated.  Every
-// other combination — crucially the total absence of an engine, which is
-// every downstream service, NewSuperContext and every pre-existing test —
-// takes the legacy ACL walk unchanged.  That absence-default is the
-// compatibility contract.
+// context AND its mode is cerbos (impersonated requests included since the
+// A14 dual check).  Every other combination — crucially the total absence of
+// an engine, which is every downstream service, NewSuperContext and every
+// pre-existing test — takes the legacy ACL walk unchanged.  That
+// absence-default is the compatibility contract.
 
 // capturePDP is a canned PolicyDecisionPoint that records the batches it was
 // asked to check and echoes a uniform allow/deny verdict for every action,
@@ -302,34 +302,39 @@ func TestAllowDispatchDenyMapping(t *testing.T) {
 	})
 }
 
-func TestAllowDispatchImpersonatedTakesLegacy(t *testing.T) {
+func TestAllowDispatchImpersonatedServesDualCheck(t *testing.T) {
 	t.Parallel()
 
-	// The PDP would allow everything: proof the ACL walk (which denies the
-	// ungranted operation) served the decision.
+	// The seeded ACL grants only read, the PDP allows everything: an allowed
+	// delete proves the AND-ed dual-check verdict served — not the legacy
+	// intersection walk, which would deny it.
 	pdp := &capturePDP{allow: true}
 	engine := newDispatchEngine(t, rbac.EngineCerbos, pdp)
 
 	// The exact legacy impersonation predicate: a principal in context, the
-	// impersonation marker, and a non-empty actor.  Until A14 the Cerbos
-	// path refuses impersonation, so dispatch must fall back to the legacy
-	// intersection ACL rather than fail such requests closed.
+	// impersonation marker, and a non-empty actor.  Since A14 cerbos mode
+	// serves impersonated traffic via the dual check: two PDP calls per
+	// decision (the impersonated principal AND the acting service).
 	ctx := rbac.NewEngineContext(rbac.NewContext(aliceContext(t), globalACL("candy", openapi.Read)), engine)
 	ctx = principal.NewContext(ctx, &principal.Principal{Actor: "impersonated@example.com", Type: openapi.User})
 	ctx = principal.NewImpersonateContext(ctx)
 
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read))
-	require.Error(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Delete))
-	require.Zero(t, pdp.calls, "an impersonated request must take the legacy path until A14")
+	require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Delete))
+	require.Equal(t, 4, pdp.calls, "an impersonated decision is two PDP calls, one per dual-check side")
 
 	// Parity with the legacy detection: the marker without an actor is not
-	// impersonation, so the Cerbos path serves.
-	ctx = rbac.NewEngineContext(aliceContext(t), engine)
+	// impersonation, so the Cerbos path serves it as a direct request with
+	// a single PDP call.
+	freshPDP := &capturePDP{allow: true}
+	freshEngine := newDispatchEngine(t, rbac.EngineCerbos, freshPDP)
+
+	ctx = rbac.NewEngineContext(aliceContext(t), freshEngine)
 	ctx = principal.NewContext(ctx, &principal.Principal{Type: openapi.User})
 	ctx = principal.NewImpersonateContext(ctx)
 
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read))
-	require.Equal(t, 1, pdp.calls)
+	require.Equal(t, 1, freshPDP.calls)
 }
 
 func TestAllowProjectScopeCreateStaysLegacy(t *testing.T) {

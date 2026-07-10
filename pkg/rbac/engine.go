@@ -113,20 +113,16 @@ func (r *RBAC) mode() EngineMode {
 }
 
 // engineForDispatch returns the context's decision engine when — and only
-// when — the Cerbos path must serve the decision: an engine was seeded, its
-// mode is cerbos, and the request is not impersonated.  Impersonated
-// requests (the exact predicate refuseImpersonation uses) always take the
-// legacy path regardless of mode: the Cerbos path refuses them outright
-// until the A14 dual-check lands, and a hard deny here would break
-// service-to-service impersonation.
+// when — the Cerbos path must serve the decision: an engine was seeded and
+// its mode is cerbos.  Impersonated requests are served too, via the A14
+// dual check (decideImpersonated in check.go); an invalid impersonated
+// principal TYPE fails closed inside the decision API
+// (ErrImpersonationNotSupported), mirroring the legacy hard error rather
+// than falling back to the legacy path.
 func engineForDispatch(ctx context.Context) *RBAC {
 	engine := EngineFromContext(ctx)
 
 	if engine == nil || engine.mode() != EngineCerbos {
-		return nil
-	}
-
-	if refuseImpersonation(ctx) != nil {
 		return nil
 	}
 

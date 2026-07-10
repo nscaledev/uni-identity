@@ -194,13 +194,14 @@ scope, resource ID always the coarse `*`).
   (`shadowPolicyCorrelate` in `shadow.go` is the seam) so a divergence pins the exact
   store revision it was observed against.
 
-  Exclusions: **impersonated requests are skipped entirely** (no PDP call, no log — the
-  same predicate the legacy confused-deputy intersection uses) until A14, and
-  `AllowProjectScopeCreate`/`AllowRole` are never shadowed (see below). Costs: shadow is
-  an opt-in validation phase, not steady state — every dispatched check pays bindings
-  resolution plus a PDP round trip **on top of** the legacy walk, and during a PDP outage
-  each check additionally waits up to `--cerbos-check-timeout` before failing the shadow
-  evaluation (the served verdict is unaffected either way).
+  Exclusions: `AllowProjectScopeCreate`/`AllowRole` are never shadowed (see below).
+  **Impersonated requests are compared too since A14**: the legacy intersection verdict
+  against the AND-ed dual-check verdict — both single booleans, so the comparator needed
+  no structural change (an impersonated shadow evaluation costs two PDP calls). Costs:
+  shadow is an opt-in validation phase, not steady state — every dispatched check pays
+  bindings resolution plus a PDP round trip **on top of** the legacy walk, and during a
+  PDP outage each check additionally waits up to `--cerbos-check-timeout` before failing
+  the shadow evaluation (the served verdict is unaffected either way).
 - **Deny-shape parity.** Cerbos-path denials surface as the same `HTTPForbidden` form the
   legacy walk produces — call sites branch on `err == nil` and the error mapper on the
   HTTP status — with the fail-closed sentinel (`ErrPolicyDenied`,
@@ -209,10 +210,18 @@ scope, resource ID always the coarse `*`).
   cannot tell from a policy deny — deliberately — while operators can, via the decision
   records' `reason` field and the decision counter's `class` attribute (see
   [Decision observability](#decision-observability-a10)).
-- **Impersonated requests always take the legacy path regardless of mode** (the same
-  predicate the confused-deputy intersection uses): the Cerbos decision API refuses them
-  outright until the A14 dual-check, and failing them closed would break
-  service-to-service impersonation.
+- **Impersonated requests dispatch like any other since A14**: in cerbos mode they are
+  served by the dual check — two AND-ed single-principal evaluations, the impersonated
+  principal and the acting service, over the identical resource and action — replacing
+  the legacy confused-deputy ACL intersection. The equivalence rests on system-account
+  ACLs being Global-only: the legacy intersection then distributes over the (monotone)
+  ACL walk into `principal-verdict AND service-verdict`, with the service side inheriting
+  global→org→project flow-down structurally (a global binding activates on any resource —
+  asserted by the parity matrix, not assumed). Detection is the exact legacy predicate (a
+  principal in context, the impersonation marker, and a non-empty actor); an invalid
+  impersonated principal TYPE — System, unknown or empty — fails closed with
+  `ErrImpersonationNotSupported`, mirroring the legacy `ErrInvalidPrincipalType` hard
+  error rather than falling back to the legacy path.
 - **`AllowProjectScopeCreate` and `AllowRole` stay legacy-only, nested checks included**:
   Create's live project-existence orchestration moves to Cerbos with A9, and `AllowRole`'s
   grantability walk stays thin-Go by design (A16 owns its parity story).
@@ -240,10 +249,29 @@ scope, resource ID always the coarse `*`).
   authorization info, resolver or request-construction failure). Every served evaluation is
   audited and counted at the `CheckMany` choke point (see
   [Decision observability](#decision-observability-a10)).
-- **Impersonated requests are refused outright** (`ErrImpersonationNotSupported`): the
-  confused-deputy intersection has no Cerbos equivalent until A14, and resolving the calling
-  service's own subject would answer for the wrong identity. A7's shadow comparator must
-  exclude or annotate impersonated requests until A14 lands.
+- **Impersonated requests are the A14 dual check** (`decideImpersonated` in `check.go`): the
+  impersonated side resolves from an `Info` synthesized from the propagated principal —
+  mirroring the legacy claims rebuild exactly, defensive singular-organization fallback
+  included — and the service side from the real context info. BOTH sides always evaluate
+  (no short-circuit): two sequential PDP calls, each under the client's per-call timeout,
+  each recording its own latency histogram sample; the per-entry verdict is their AND. A
+  resolver or transport failure on either side maps to the ordinary fail-closed classes.
+  `ErrImpersonationNotSupported` is **retained with a narrowed meaning**: only the type
+  gate — an impersonated principal type that cannot be impersonated (System, unknown,
+  empty) — refuses pre-PDP; it is deliberately not `ResolveBindings`' default-to-User arm,
+  which would answer for the wrong principal class. **Verdict-level parity with the legacy
+  intersection is the contract; two mechanism asymmetries are documented, not replicated**
+  (both encoded in the parity matrix like the `UserProjectWrongOrg` precedent): an
+  impersonated user scoped to a non-member organization legacy-errors
+  (`ErrNotInOrganization` from the request-scoped resolution) where the dual check
+  policy-denies via the request-scope-free resolver, and a System-type impersonation
+  legacy-errors (`ErrInvalidPrincipalType`) where the dual check refuses with
+  `ErrImpersonationNotSupported` — the same deny verdicts, different error shapes.
+  **A15 cache-key obligation**: no Cerbos-side decision cache exists yet; when A15 builds
+  one, its key MUST include the full `(impersonated-sub, actor)` pair plus the
+  impersonation flag (preserving today's `direct|`/`impersonated|` cache-key
+  discriminator), per the design's caching clause — A14's concrete deliverable for that
+  clause is carrying the pair in every impersonated decision record (see below).
 
 ### Decision observability (A10)
 
@@ -252,7 +280,9 @@ Every SERVED Cerbos-path decision is audited and counted at the `CheckMany` chok
 A8's remote `/authorization/check` handler will land on `CheckMany` too — so remote decisions
 inherit these records with no further work. Hooking the choke point rather than decorating
 the PDP client is deliberate: the pre-PDP fail-closed denials (no client configured,
-resolution failures, refused impersonation) are decisions and must be observed. Two
+resolution failures, refused impersonated principal types) are decisions and must be
+observed. An impersonated dual-check decision is still ONE record and ONE counter
+increment per entry — never one per side — with the AND-ed outcome. Two
 owner-flagged deviations from the migration plan's file table: **`decision_log` lives in
 `pkg/rbac`, not `pkg/authz/cerbos`** (the plan row predates A5 placing the decision layer
 here — the choke point and every record input live in this package, and the PDP client knows
@@ -274,20 +304,26 @@ verbosity. Fields (closed set, credential-free — only `Sub` and `Acctype` are 
 authorization info, NEVER tokens/passports/claims): `subject`, `actor_type`, `endpoint`,
 `resource_id` (empty for coarse checks), `operation`, `organization_id`, `project_id`,
 `decision` (`allow|deny`), `reason` (`policy|unavailable|resolution|impersonation`, derived
-from the sentinel taxonomy via `errors.Is` — `policy` covers both verdicts, the rest are the
-fail-closed classes), `policy_version`/`policy_scope` (the A15-seam correlate, only claimed
-when a verdict was obtained), and `latency` (the whole decision: resolution + PDP + mapping).
+from the sentinel taxonomy via `errors.Is` — `policy` covers both verdicts, including a
+dual-check deny from either side; `impersonation` is **narrowed since A14** to the type-gate
+refusal only; the rest are the fail-closed classes), `policy_version`/`policy_scope` (the
+A15-seam correlate, only claimed when a verdict was obtained), and `latency` (the whole
+decision: resolution + PDP + mapping). Impersonated decisions carry exactly two more
+fields — `impersonated_subject` and `impersonated_type`, read from the propagated
+principal — the design's `(impersonated-sub, actor)` pair, while `subject` stays the
+acting service (the legacy cache-key convention).
 
 **Metrics.**
 
 | Instrument | Type | Attributes / boundaries |
 | --- | --- | --- |
-| `unikorn_identity_authz_decisions_total` | `Int64Counter` | `decision=allow\|deny`, `class=policy\|unavailable\|resolution\|impersonation` — the vocabulary is CLOSED; subject/endpoint attributes would be an open-vocabulary cardinality explosion |
+| `unikorn_identity_authz_decisions_total` | `Int64Counter` | `decision=allow\|deny`, `class=policy\|unavailable\|resolution\|impersonation` — the vocabulary is CLOSED (renames are breaking; `impersonation` survives A14 with its narrowed type-gate-refusal meaning); subject/endpoint attributes would be an open-vocabulary cardinality explosion |
 | `unikorn_identity_authz_pdp_latency` | `Float64Histogram` (the repo's first) | unit `s`; explicit sub-second buckets `0.0005 … 2` sized for localhost gRPC, top buckets making `--cerbos-check-timeout` expiries visible |
 
-The counter increments at the same per-entry classification point as the log. The histogram
-is recorded tightly around the PDP `CheckResources` round trip only (no resolution, no
-mapping), success and failure alike. Instruments export **only when the server runs with
+The counter increments at the same per-entry classification point as the log — once per
+decision, never once per dual-check side. The histogram is recorded tightly around the PDP
+`CheckResources` round trip only (no resolution, no mapping), success and failure alike —
+an impersonated decision contributes two samples, one per side. Instruments export **only when the server runs with
 `--otlp-endpoint`** (metrics are pushed over OTLP; no `/metrics` endpoint exists) — without
 it the recordings are silently dropped.
 
@@ -314,7 +350,12 @@ deliberately-divergent store (one extra generated allow the legacy fixture lacks
 one divergence must be detected — with the legacy verdict still served on the divergent cell.
 The matrix also carries open-vocabulary cells (`radar:*`/`envir:*` roles transcribed from the
 real deployment repo) — the Go-side proof that parity is not an artifact of this repo's
-built-in `identity:*` vocabulary.
+built-in `identity:*` vocabulary — and, since A14, impersonated cells: a registered system
+account impersonating the fixture user and service account, the byte-untouched legacy
+`intersectACL` oracle against the dual check, covering allowed-by-both (including the
+project-scope cell witnessing the service side's global→project flow-down),
+denied-by-service-only (the narrowing proof), denied-by-principal-only, the wrong-org
+mechanism asymmetries, and System-impersonation error parity.
 
 ### The kind-CI divergence gate (A11)
 
@@ -329,7 +370,10 @@ container never restarted, since a restart truncates the logs and would make a p
 What zero divergence there proves — and does not:
 
 - **Proves:** legacy/Cerbos verdict parity for the identity-served kinds the suite exercises,
-  under non-impersonated traffic (the comparator skips impersonated requests until A14).
+  under non-impersonated traffic. The comparator covers impersonated requests since A14,
+  but the kind fixtures and API suite send no `X-Impersonate` traffic, so the gate's
+  EVIDENCE remains non-impersonated until the fixtures exercise impersonation (a recorded
+  follow-up); impersonated parity is proven by the docker matrix's impersonated cells.
 - **Does not prove:** open-vocabulary parity (no `radar:*`/`envir:*` traffic flows through
   identity's own endpoints) — that is the docker matrix's job above, plus the generator's
   compile suite. The CI values file does inject the transcribed open-vocabulary roles, so the

@@ -39,7 +39,8 @@ import (
 // handler will land on it too, so remote decisions inherit these records for
 // free).  Hooking the choke point rather than decorating the PDP client is
 // deliberate: the pre-PDP fail-closed denials (no client, resolution
-// failures, refused impersonation) are decisions and must be recorded.
+// failures, refused impersonated principal types) are decisions and must be
+// recorded.
 //
 // The sink is the shared audit sink: the request-scoped logr logger
 // (log.FromContext), which the server wires to zap JSON via SetupLogging.
@@ -55,6 +56,8 @@ import (
 // The field set is CLOSED and credential-free by construction: only the
 // subject identifier and account type are read from the authorization info,
 // NEVER tokens, passports or claims (the shadow comparator's discipline).
+// Impersonated decisions extend it by exactly two fields — the impersonated
+// subject and its principal type, read from the propagated principal.
 //
 // Shadow evaluations ride the same funnel through a marked shallow engine
 // copy (shadow.go) and are excluded here: shadow has its own
@@ -106,9 +109,13 @@ func decisionVerdict(allowed bool) string {
 // decisionClass names the decision's reason class, derived from the check.go
 // error taxonomy via errors.Is — never from message strings.  The vocabulary
 // is CLOSED (it doubles as a metric attribute): "policy" is a verdict from
-// the policies (an allow, or an explicit deny), the rest are the fail-closed
-// classes.  An unclassified error is a failure to obtain a verdict, which is
-// exactly what "unavailable" means (check.go's catch-all mapping).
+// the policies (an allow, or an explicit deny — for a dual-check decision,
+// EITHER side policy-denying), the rest are the fail-closed classes.
+// "impersonation" is NARROWED with A14 to the type-gate refusal only (an
+// impersonated principal type that cannot be impersonated); valid
+// impersonations classify like any other decision.  An unclassified error is
+// a failure to obtain a verdict, which is exactly what "unavailable" means
+// (check.go's catch-all mapping).
 func decisionClass(err error) string {
 	switch {
 	case err == nil, goerrors.Is(err, ErrPolicyDenied):
@@ -159,15 +166,31 @@ func resultPolicyCorrelate(response *sdk.CheckResourcesResponse, i int) (string,
 // recordDecisions emits one audit record and one counter increment per
 // (resource, action) entry of a served CheckMany evaluation — the flat,
 // greppable batch shape (a batch-wide failure denies every entry, so every
-// entry gets a deny record with the shared reason class).  The latency field
-// is the whole decision (resolution + PDP + mapping); the PDP-only round trip
-// is the histogram's, recorded in check.go.  Counter attributes are the
-// CLOSED (decision × class) vocabulary ONLY: subject or endpoint attributes
-// would be an open-vocabulary cardinality explosion.
+// entry gets a deny record with the shared reason class).  An impersonated
+// decision (A14) is still ONE record and ONE increment per entry — never one
+// per dual-check side — with the AND-ed outcome; its record carries exactly
+// two extra fields, the design's (impersonated-sub, actor) pair: the
+// impersonated subject and its principal type, while "subject" stays the
+// acting service (matching the legacy cache-key convention).  The latency
+// field is the whole decision (resolution + PDP + mapping); the PDP-only
+// round trips are the histogram's, recorded in check.go.  Counter attributes
+// are the CLOSED (decision × class) vocabulary ONLY: subject or endpoint
+// attributes would be an open-vocabulary cardinality explosion.
 func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allowed []bool, response *sdk.CheckResourcesResponse, err error, elapsed time.Duration) {
 	subject, actorType := decisionSubject(ctx)
 	class := decisionClass(err)
 	logger := log.FromContext(ctx)
+
+	// The same detection predicate the decision path uses: type-gate
+	// refusals are impersonated decisions too and carry the pair.
+	var impersonatedFields []any
+
+	if p := impersonationFromContext(ctx); p != nil {
+		impersonatedFields = []any{
+			"impersonated_subject", p.Actor,
+			"impersonated_type", string(p.Type),
+		}
+	}
 
 	for i, check := range checks {
 		verdict := err == nil && allowed[i]
@@ -182,6 +205,11 @@ func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allow
 		fields := []any{
 			"subject", subject,
 			"actor_type", actorType,
+		}
+
+		fields = append(fields, impersonatedFields...)
+
+		fields = append(fields,
 			"endpoint", check.Resource.Kind,
 			"resource_id", check.Resource.ID,
 			"operation", string(check.Action),
@@ -192,7 +220,7 @@ func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allow
 			"policy_version", version,
 			"policy_scope", scope,
 			"latency", elapsed,
-		}
+		)
 
 		if verdict {
 			logger.V(1).Info(decisionMessage, fields...)

@@ -110,6 +110,20 @@ const (
 	parityGroupOpenVocab         = "parity-group-openvocab"
 	parityProjectZ               = "parity-project-z"
 	parityFrankSubject           = "parity-frank@example.com"
+
+	// Impersonation (A14) additions: a SECOND registered system account
+	// whose global role deliberately OVERLAPS the fixture principals'
+	// grants — paritySystemCN's identity:organizations role overlaps
+	// nothing alice or sa-1 hold, so it could not witness the intersection.
+	// The role's operations are chosen so every impersonated matrix cell
+	// class exists: identity:groups read+create (alice holds CRU at org
+	// scope: read = allowed-by-both, update = denied-by-service-only),
+	// identity:projects read (sa-1's org grant), and compute:clusters
+	// read+create (sa-1 holds CRD at project scope: delete =
+	// denied-by-service-only; alice holds none: read =
+	// denied-by-principal-only).
+	paritySystemImpersonatorCN = "parity-system-impersonator"
+	parityRoleImpersonator     = "prole-impersonator"
 )
 
 type parityFixture struct {
@@ -178,6 +192,17 @@ func parityRoles() []unikornv1.Role {
 				scope("envir:product-configurator", unikornv1.Read),
 				scope("envir:product-deployer", unikornv1.Read),
 				scope("envir:dependency-manager", unikornv1.Read),
+			},
+		}),
+		// The impersonating service's role (A14): GLOBAL scopes only, like
+		// every system-account role (processSystemAccountACL reads nothing
+		// else) — the property the dual-check equivalence proof rests on.
+		// See the constant block for how each operation was chosen.
+		role(parityRoleImpersonator, unikornv1.RoleScopes{
+			Global: []unikornv1.RoleScope{
+				scope("identity:groups", unikornv1.Read, unikornv1.Create),
+				scope("identity:projects", unikornv1.Read),
+				scope("compute:clusters", unikornv1.Read, unikornv1.Create),
 			},
 		}),
 	}
@@ -322,7 +347,10 @@ func newParityFixture(t *testing.T) *parityFixture {
 	options := &rbac.Options{
 		PlatformAdministratorSubjects: []string{parityAdminSubject},
 		PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
-		SystemAccountRoleIDs:          map[string]string{paritySystemCN: parityRoleGlobalAdmin},
+		SystemAccountRoleIDs: map[string]string{
+			paritySystemCN:             parityRoleGlobalAdmin,
+			paritySystemImpersonatorCN: parityRoleImpersonator,
+		},
 	}
 
 	return &parityFixture{

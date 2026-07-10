@@ -316,7 +316,7 @@ func TestShadowPanicIsRecovered(t *testing.T) {
 	require.NotEmpty(t, attrs["stack"])
 }
 
-func TestShadowImpersonatedSkipsComparison(t *testing.T) {
+func TestShadowImpersonatedComparisonRuns(t *testing.T) {
 	t.Parallel()
 
 	capture := &logCapture{}
@@ -325,28 +325,66 @@ func TestShadowImpersonatedSkipsComparison(t *testing.T) {
 	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
 
 	// The exact legacy impersonation predicate: a principal in context, the
-	// impersonation marker, and a non-empty actor.  Until the A14 dual-check
-	// the Cerbos path has no impersonation story, so such requests are
-	// excluded from the comparison entirely: no PDP call, no log.
+	// impersonation marker, and a non-empty actor.  Since A14 the comparison
+	// covers impersonated traffic: the legacy intersection verdict against
+	// the AND-ed dual-check verdict — two PDP calls per shadowed check.
 	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 	ctx = principal.NewContext(ctx, &principal.Principal{Actor: "impersonated@example.com", Type: openapi.User})
 	ctx = principal.NewImpersonateContext(ctx)
 
+	// Agreement (legacy allow, dual-check allow) stays silent.
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read))
-	require.Error(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Delete))
-
-	require.Zero(t, pdp.calls, "impersonated requests are excluded from shadow comparison until A14")
+	require.Equal(t, 2, pdp.calls, "an impersonated shadow evaluation is a dual check: two PDP calls")
 	require.Empty(t, capture.messages(shadowDivergenceMessage))
 	require.Empty(t, capture.messages(shadowFailureMessage))
 
+	// Divergence (legacy deny, dual-check allow) is logged — and the served
+	// verdict STAYS legacy's deny.
+	require.Error(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Delete))
+	require.Equal(t, 4, pdp.calls)
+
+	records := capture.messages(shadowDivergenceMessage)
+	require.Len(t, records, 1, "an impersonated verdict disagreement must be logged as divergence")
+
+	attrs := logAttrs(t, records[0])
+	require.Equal(t, "deny", attrs["legacy_verdict"])
+	require.Equal(t, "allow", attrs["cerbos_verdict"])
+
+	require.Empty(t, capture.messages(shadowFailureMessage))
+
+	// The opposite divergence direction: legacy allows but the dual check
+	// denies (the acting service side refuses).  The served verdict stays
+	// legacy's allow, and the disagreement is logged.
+	denyPDP := &capturePDP{allow: false}
+	denyEngine := newDispatchEngine(t, rbac.EngineShadow, denyPDP)
+
+	denyCapture := &logCapture{}
+	denyCtx := shadowContext(t, denyCapture, denyEngine, globalACL("candy", openapi.Read))
+	denyCtx = principal.NewContext(denyCtx, &principal.Principal{Actor: "impersonated@example.com", Type: openapi.User})
+	denyCtx = principal.NewImpersonateContext(denyCtx)
+
+	require.NoError(t, rbac.AllowGlobalScope(denyCtx, "candy", openapi.Read), "the served verdict must stay legacy's allow")
+	require.Equal(t, 2, denyPDP.calls)
+
+	denyRecords := denyCapture.messages(shadowDivergenceMessage)
+	require.Len(t, denyRecords, 1)
+
+	denyAttrs := logAttrs(t, denyRecords[0])
+	require.Equal(t, "allow", denyAttrs["legacy_verdict"])
+	require.Equal(t, "deny", denyAttrs["cerbos_verdict"])
+
 	// Predicate parity with the legacy detection: the marker WITHOUT an
-	// actor is not impersonation, so the comparison runs.
-	ctx = shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
+	// actor is not impersonation, so the comparison runs as a direct
+	// single-principal evaluation.
+	freshPDP := &capturePDP{allow: true}
+	freshEngine := newDispatchEngine(t, rbac.EngineShadow, freshPDP)
+
+	ctx = shadowContext(t, capture, freshEngine, globalACL("candy", openapi.Read))
 	ctx = principal.NewContext(ctx, &principal.Principal{Type: openapi.User})
 	ctx = principal.NewImpersonateContext(ctx)
 
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read))
-	require.Equal(t, 1, pdp.calls)
+	require.Equal(t, 1, freshPDP.calls)
 }
 
 func TestShadowAbsentEngineTakesPlainLegacy(t *testing.T) {

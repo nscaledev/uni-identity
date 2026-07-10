@@ -274,11 +274,13 @@ deliberately ONLY that — the Kubernetes-reading resolver that turns group
 memberships into `RoleBinding` values is `rbac.ResolveBindings`, and the
 decision API that maps responses (and `ErrUnavailable`) to allow/deny is
 `rbac.Check`/`rbac.CheckMany` (both documented in
-[pkg/rbac](../rbac/README.md)); the impersonation dual-check is A14 — until
-it lands the decision API refuses impersonated requests outright with
-`ErrImpersonationNotSupported`, so **the A7 shadow comparator skips
-impersonated requests entirely** (no PDP call, no divergence log; see the
-shadow-mode notes in [pkg/rbac](../rbac/README.md) — in particular the
+[pkg/rbac](../rbac/README.md)); the impersonation dual-check (A14) serves
+impersonated requests as two AND-ed single-principal evaluations — the
+impersonated principal and the acting service, one `CheckResources` call
+each — with `ErrImpersonationNotSupported` narrowed to refusing invalid
+impersonated principal TYPES, so **the A7 shadow comparator compares
+impersonated requests too** (see the shadow-mode notes in
+[pkg/rbac](../rbac/README.md) — in particular the
 divergence-vs-evaluation-failure split A12's cutover gate reads, and the
 policy correlate that A15's policy-hash signal upgrades); and the
 `AllowProjectScopeCreate` orchestration follows with A9.  The builder is actor-class-agnostic: it

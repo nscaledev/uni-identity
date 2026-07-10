@@ -55,6 +55,12 @@ const decisionMessage = "authorization decision"
 // guarantee that no token, passport or claim material can ride along.
 const decisionFieldCount = 12
 
+// impersonatedDecisionFieldCount is the closed field set for impersonated
+// decisions (A14): exactly two more fields — the impersonated subject and its
+// principal type — alongside the acting service's subject, preserving the
+// design's (impersonated-sub, actor) pair in every record.
+const impersonatedDecisionFieldCount = decisionFieldCount + 2
+
 // logCapture is a minimal logr.LogSink recording every record emitted through
 // a logger backed by it.  It is seeded per-test into the CONTEXT
 // (log.IntoContext) — the exact seam the core OTel middleware uses for the
@@ -294,8 +300,13 @@ func TestDecisionLogFailureClasses(t *testing.T) {
 		pdp := &fakePDP{}
 		fx.rbac.WithCerbos(pdp)
 
+		// The NARROWED (A14) meaning of the impersonation class: only the
+		// type-gate refusal — an impersonated principal type that cannot be
+		// impersonated (here System) — lands here; valid User/Service
+		// impersonations are served by the dual check and classify as
+		// policy/failure classes like any other decision.
 		capture := &logCapture{}
-		ctx := principal.NewContext(capture.into(aliceContext(t)), &principal.Principal{Actor: "impersonated@example.com", Type: openapi.User})
+		ctx := principal.NewContext(capture.into(aliceContext(t)), &principal.Principal{Actor: "impersonated@example.com", Type: openapi.System})
 		ctx = principal.NewImpersonateContext(ctx)
 
 		err := fx.rbac.Check(ctx, rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}, openapi.Read)
@@ -306,10 +317,41 @@ func TestDecisionLogFailureClasses(t *testing.T) {
 		require.Len(t, records, 1, "a pre-PDP refusal is still a served decision and must be recorded")
 
 		attrs := logAttrs(t, records[0])
-		require.Len(t, attrs, decisionFieldCount)
+		require.Len(t, attrs, impersonatedDecisionFieldCount)
 		require.Equal(t, "deny", attrs["decision"])
 		require.Equal(t, "impersonation", attrs["reason"])
+		require.Equal(t, "impersonated@example.com", attrs["impersonated_subject"])
+		require.Equal(t, "system", attrs["impersonated_type"])
 	})
+}
+
+func TestDecisionLogImpersonatedDualCheck(t *testing.T) {
+	t.Parallel()
+
+	fx := newParityFixture(t)
+	fx.rbac.WithCerbos(&fakePDP{response: pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}))})
+
+	capture := &logCapture{}
+	ctx := capture.into(impersonatedContext(t, &principal.Principal{Actor: parityAliceSubject, Type: openapi.User, OrganizationIDs: []string{parityOrgA}}))
+
+	require.NoError(t, fx.rbac.Check(ctx, rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}, openapi.Read))
+
+	// ONE record per decision — never one per dual-check side — with the
+	// AND-ed outcome and the (impersonated-sub, actor) pair the design's
+	// cache-key clause requires every impersonated record to carry.
+	records := capture.messages(decisionMessage)
+	require.Len(t, records, 1, "an impersonated decision is one record, not one per PDP call")
+
+	attrs := logAttrs(t, records[0])
+	require.Len(t, attrs, impersonatedDecisionFieldCount)
+	require.Equal(t, paritySystemCN, attrs["subject"], "the subject stays the acting service, matching the legacy cache-key convention")
+	require.Equal(t, "system", attrs["actor_type"])
+	require.Equal(t, parityAliceSubject, attrs["impersonated_subject"])
+	require.Equal(t, "user", attrs["impersonated_type"])
+	require.Equal(t, "allow", attrs["decision"])
+	require.Equal(t, "policy", attrs["reason"])
+
+	t.Logf("sample impersonated allow record: fields=%v", attrs)
 }
 
 func TestDecisionLogBatchPerEntry(t *testing.T) {
@@ -441,9 +483,11 @@ func TestDecisionMetrics(t *testing.T) {
 
 	resource := rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}
 
-	// One decision per (decision, class) attribute pair.  The first three
-	// reach the PDP (an errored round trip still measures transport latency);
-	// resolution and impersonation fail before the PDP is asked.
+	// One decision per (decision, class) attribute pair, plus a dual-check
+	// decision at the end.  The first three reach the PDP (an errored round
+	// trip still measures transport latency); resolution and the
+	// impersonation type-gate refusal fail before the PDP is asked; the
+	// dual-check decision reaches it twice.
 	require.NoError(t, fx.rbac.Check(aliceContext(t), resource, openapi.Read))
 
 	pdp.response = pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"delete": effectv1.Effect_EFFECT_DENY}))
@@ -456,9 +500,20 @@ func TestDecisionMetrics(t *testing.T) {
 
 	require.ErrorIs(t, fx.rbac.Check(t.Context(), resource, openapi.Read), rbac.ErrResolutionFailed)
 
-	ictx := principal.NewContext(aliceContext(t), &principal.Principal{Actor: "impersonated@example.com", Type: openapi.User})
+	// The impersonation class is NARROWED (A14) to the type-gate refusal:
+	// a System principal cannot be impersonated, refused pre-PDP.
+	ictx := principal.NewContext(aliceContext(t), &principal.Principal{Actor: "impersonated@example.com", Type: openapi.System})
 	ictx = principal.NewImpersonateContext(ictx)
 	require.ErrorIs(t, fx.rbac.Check(ictx, resource, openapi.Read), rbac.ErrImpersonationNotSupported)
+
+	// A VALID impersonation is served by the dual check: TWO PDP round trips
+	// (both in the histogram) but ONE decision (one counter increment, with
+	// the AND-ed outcome under the ordinary policy class).
+	pdp.err = nil
+	pdp.response = pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}))
+
+	dctx := impersonatedContext(t, &principal.Principal{Actor: parityAliceSubject, Type: openapi.User, OrganizationIDs: []string{parityOrgA}})
+	require.NoError(t, fx.rbac.Check(dctx, resource, openapi.Read))
 
 	var rm metricdata.ResourceMetrics
 
@@ -470,7 +525,7 @@ func TestDecisionMetrics(t *testing.T) {
 	sum, ok := counter.Data.(metricdata.Sum[int64])
 	require.True(t, ok, "the decision counter must be an Int64Counter")
 
-	require.Equal(t, int64(1), counterValue(t, sum, "allow", "policy"))
+	require.Equal(t, int64(2), counterValue(t, sum, "allow", "policy"), "the dual-check decision counts ONCE, not once per side")
 	require.Equal(t, int64(1), counterValue(t, sum, "deny", "policy"))
 	require.Equal(t, int64(1), counterValue(t, sum, "deny", "unavailable"))
 	require.Equal(t, int64(1), counterValue(t, sum, "deny", "resolution"))
@@ -489,7 +544,7 @@ func TestDecisionMetrics(t *testing.T) {
 	require.Len(t, data.DataPoints, 1, "the histogram carries no attributes")
 
 	point := data.DataPoints[0]
-	require.Equal(t, uint64(3), point.Count, "one sample per PDP round trip — pre-PDP denials never reach the histogram")
+	require.Equal(t, uint64(5), point.Count, "one sample per PDP round trip — two for the dual check, none for pre-PDP denials")
 	require.Equal(t, []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2}, point.Bounds,
 		"explicit sub-second boundaries sized for localhost gRPC")
 

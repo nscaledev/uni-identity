@@ -63,18 +63,14 @@ const (
 
 // engineForShadow returns the context's decision engine when — and only when
 // — the shadow comparison must run alongside the legacy decision: an engine
-// was seeded, its mode is shadow, and the request is not impersonated.
-// Impersonated requests (the exact predicate refuseImpersonation uses) are
-// excluded from the comparison entirely — no PDP call, no log — until the
-// A14 dual-check gives the Cerbos path an impersonation story.
+// was seeded and its mode is shadow.  Impersonated requests are compared
+// too, since A14: the legacy intersection verdict against the AND-ed
+// dual-check verdict — both single booleans, so the comparator needs no
+// structural change.
 func engineForShadow(ctx context.Context) *RBAC {
 	engine := EngineFromContext(ctx)
 
 	if engine == nil || engine.mode() != EngineShadow {
-		return nil
-	}
-
-	if refuseImpersonation(ctx) != nil {
 		return nil
 	}
 
@@ -207,7 +203,11 @@ func shadowClass(err error) string {
 // capturingPDP decorates the configured PDP to retain the raw response of one
 // evaluation: Check maps it to a verdict and discards it, but the shadow log
 // wants the in-band policy metadata.  One instance per evaluation — it is
-// deliberately not safe for shared use.
+// deliberately not safe for shared use.  An impersonated evaluation makes
+// TWO CheckResources calls (the A14 dual check) and only the LAST response
+// — the service side's, deliberately sequenced second by decideImpersonated
+// — is retained: acceptable, because the correlate is empty against today's
+// PDP either way; A15's policy-hash correlate should revisit this.
 type capturingPDP struct {
 	next     PolicyDecisionPoint
 	response *sdk.CheckResourcesResponse
