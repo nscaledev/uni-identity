@@ -2,3 +2,41 @@
 # Passed to hack/ci/install via --values.
 systemAccounts:
   ci-fixtures: platform-administrator
+
+identity:
+  # Run the A7 shadow comparator in CI: serve legacy verdicts, evaluate the
+  # Cerbos PDP in parallel, and log any disagreement for the divergence gate
+  # (hack/ci/divergence-gate) to read once the API suite has run.
+  authorizationEngine: shadow
+
+# Open-vocabulary roles transcribed from the real deployment repo
+# (github.com/nscaledev/k8s-deploy-unikorn) so the kind stack proves
+# radar:*/envir:* shapes survive the whole pipeline: values -> Role CR ->
+# policy controller (generation + compile gate) -> published ConfigMap ->
+# Cerbos.  No fixture persona is bound to them — their job here is the
+# in-cluster pipeline proof; decision parity for these shapes is asserted by
+# the docker matrix (make test-cerbos-decisions).
+additionalRoles:
+  # Transcribed from charts/unikorn/values.yaml (identity.additionalRoles).
+  fleet-operator:
+    description: Fleet operator
+    scopes:
+      organization:
+        radar:repairstats: [create, read]
+        radar:resourcestats: [read]
+        radar:announcements: [read]
+        radar:topology: [read]
+  # The envir "project-viewer" Role CR
+  # (charts/unikorn/templates/uni/ai-services.yaml) reshaped into this
+  # chart's additionalRoles map form: org-scope catalog read plus
+  # project-scope read-only envir grants.
+  project-viewer:
+    description: Envir project read-only access
+    scopes:
+      organization:
+        envir:product-catalog: [read]
+      project:
+        envir:environment-manager: [read]
+        envir:product-configurator: [read]
+        envir:product-deployer: [read]
+        envir:dependency-manager: [read]

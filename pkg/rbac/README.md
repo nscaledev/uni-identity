@@ -312,6 +312,44 @@ the migration, never something to special-case. The same run exercises the shado
 end to end: against the parity store the matrix must log zero divergences, and against a
 deliberately-divergent store (one extra generated allow the legacy fixture lacks) exactly that
 one divergence must be detected — with the legacy verdict still served on the divergent cell.
+The matrix also carries open-vocabulary cells (`radar:*`/`envir:*` roles transcribed from the
+real deployment repo) — the Go-side proof that parity is not an artifact of this repo's
+built-in `identity:*` vocabulary.
+
+### The kind-CI divergence gate (A11)
+
+Kind CI runs the identity server in shadow mode (`hack/ci/test-values.yaml` sets
+`identity.authorizationEngine: shadow`), so every fixture and API-suite request doubles as a
+live legacy-vs-Cerbos comparison. After the API suite, `hack/ci/divergence-gate` reads the
+server logs and **fails on any `cerbos shadow divergence` line**, while `cerbos shadow
+evaluation failure` lines are tolerated but printed (infrastructure signal, per the split
+above — the gate greps the two exact message constants separately, and asserts the server
+container never restarted, since a restart truncates the logs and would make a pass vacuous).
+
+What zero divergence there proves — and does not:
+
+- **Proves:** legacy/Cerbos verdict parity for the identity-served kinds the suite exercises,
+  under non-impersonated traffic (the comparator skips impersonated requests until A14).
+- **Does not prove:** open-vocabulary parity (no `radar:*`/`envir:*` traffic flows through
+  identity's own endpoints) — that is the docker matrix's job above, plus the generator's
+  compile suite. The CI values file does inject the transcribed open-vocabulary roles, so the
+  kind stack proves those shapes survive generation, the compile gate and publication.
+
+Two supporting CI units guard the gate's integrity (both documented in
+[hack/ci](../../hack/ci/README.md)):
+
+- `hack/ci/wait-policies` runs between install and fixtures: until the policy controller's
+  first publish reaches the PDP, Cerbos denies everything and every shadowed request would log
+  a false divergence, poisoning the gate. Cerbos 0.53.0 only logs its policy count at startup
+  (`"Found N executable policies"`) — a live reload after the kubelet back-fills the ConfigMap
+  volume is silent at info level — so if the sidecar started against the empty store the unit
+  restarts the deployment to make the load observable.
+- `hack/ci/decision-flip` runs strictly AFTER the gate: it applies a Role CR granting the user
+  persona `identity:roles` read, rebinds the fixture group via kubectl (deliberately bypassing
+  the grantability API), and asserts the endpoint flips 403→200 and that shadow divergence
+  ceases. The two engines flip at different times (legacy on ~1m ACL-cache expiry, Cerbos on
+  ~1m ConfigMap propagation), so a transient divergence window is expected and correct there —
+  which is exactly why it must never run before the gate.
 
 ## Invariants
 

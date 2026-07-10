@@ -10,7 +10,10 @@ higher-level services call it directly to deploy dependencies. Fix once, fix eve
 |--------|-----------|---------|
 | `setup-infra` | CI workflow, `make integration-infra` | Installs cluster-level prerequisites (cert-manager, ingress-nginx, unikorn-core). Idempotent. |
 | `install` | CI workflow, `make integration-install`, downstream services | Deploys identity into a running cluster with a given namespace and release name. Outputs a `.env` fragment to stdout. |
+| `wait-policies` | `make integration-install` (after `install`) | Blocks until the policy controller has published the Cerbos policy store AND the PDP sidecar verifiably loaded it. Without it, shadow-mode traffic during the empty-store window logs false divergence and poisons the gate. |
 | `fixtures/main.go` | CI workflow, `make integration-fixtures` | Creates test resources via the identity API using mTLS. Outputs a `.env` fragment to stdout. |
+| `divergence-gate` | CI workflow, `make integration-divergence-gate` | Fails if the shadow comparator logged ANY `cerbos shadow divergence` during the run; prints (but tolerates) `cerbos shadow evaluation failure` lines and asserts the server never restarted. Run after the API suite, **before** `decision-flip`. Zero divergence covers identity-served kinds, non-impersonated traffic only. |
+| `decision-flip` | CI workflow, `make integration-decision-flip` | Applies a Role CR + kubectl group rebind and asserts a live decision flips 403→200 on both engines, then that shadow divergence ceases. Deliberately opens a transient divergence window — must run **after** the gate. |
 
 ## Output contracts
 
@@ -47,7 +50,7 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | File | Purpose |
 |------|---------|
 | `kind-config.yaml` | KinD cluster config (ingress-ready node label) |
-| `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
+| `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account, runs the server in shadow authorization mode (feeding `divergence-gate`), and injects open-vocabulary `radar:*`/`envir:*` roles transcribed from the real deployment repo so the whole generate→compile→publish pipeline is exercised on them |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally
@@ -81,6 +84,10 @@ make integration-infra  # bootstraps cloud-provider-kind if needed, then install
 ```sh
 make integration-test
 ```
+
+The full run finishes with the shadow-divergence gate and then the
+decision-flip e2e (in that order — the flip deliberately opens a transient
+divergence window that would poison the gate).
 
 ## Composability example
 

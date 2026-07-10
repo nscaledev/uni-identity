@@ -258,9 +258,13 @@ labels, not ownerReferences).  Consequences:
   non-Linux hosts the Linux binary cannot exec, so the same gate code drives
   the pinned image via `docker run` instead; CI always tests the direct-exec
   path production uses.
-- The end-to-end "apply a Role, watch a decision flip" assertion needs the
-  kind stack to reach the loopback PDP, which no harness supports yet: it is
-  deliberately deferred to the kind-parity migration task (A11).
+- The end-to-end "apply a Role, watch a decision flip" assertion is delivered
+  by `hack/ci/decision-flip` (A11): in kind CI it applies a Role CR, rebinds
+  the fixture user's group, and asserts a live decision flips 403→200 on both
+  engines — Cerbos observing the flip through this controller's republish and
+  the ConfigMap propagation — and that shadow divergence ceases once both
+  have converged (see [hack/ci](../../../hack/ci/README.md) and the kind-gate
+  section in [pkg/rbac](../../rbac/README.md)).
 
 ## The Request Builder
 

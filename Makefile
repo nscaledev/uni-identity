@@ -498,6 +498,9 @@ integration-install:  ## Deploy identity into the current cluster with random na
 	  --release-name $(KIND_RELEASE) \
 	  --values hack/ci/test-values.yaml \
 	  > test/.env.install
+	hack/ci/wait-policies \
+	  --namespace $(KIND_NAMESPACE) \
+	  --release-name $(KIND_RELEASE)
 
 .PHONY: integration-fixtures
 integration-fixtures:  ## Create integration fixtures and write test/.env
@@ -508,5 +511,13 @@ integration-fixtures:  ## Create integration fixtures and write test/.env
 	  --ca-cert "$$IDENTITY_CA_CERT" \
 	  > test/.env
 
+.PHONY: integration-divergence-gate
+integration-divergence-gate:  ## Fail if shadow mode logged any authorization divergence (run after test-api-ci)
+	hack/ci/divergence-gate
+
+.PHONY: integration-decision-flip
+integration-decision-flip:  ## Prove a live Role CR edit flips a decision on both engines (run AFTER the divergence gate: it deliberately opens a divergence window)
+	hack/ci/decision-flip
+
 .PHONY: integration-test
-integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci  ## Full local integration run
+integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci integration-divergence-gate integration-decision-flip  ## Full local integration run

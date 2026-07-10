@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# CI gate: fail if the shadow comparator logged ANY authorization divergence
+# during the integration run.  Run AFTER the API suite (its traffic is the
+# gate's signal) and BEFORE hack/ci/decision-flip (which deliberately opens a
+# divergence window).
+#
+# The identity server logs are zap JSON; the shadow comparator
+# (pkg/rbac/shadow.go) emits two DISTINCT messages and the distinction is
+# load-bearing — a naive grep for "shadow" would conflate them:
+#   - "cerbos shadow divergence": the PDP produced a VERDICT that differs
+#     from legacy — policy-parity signal; ANY occurrence fails the gate.
+#   - "cerbos shadow evaluation failure": NO verdict was obtained (PDP
+#     outage, resolver failure, timeout) — infrastructure signal; tolerated
+#     but surfaced loudly so it can never masquerade as parity.
+#
+# Scope honesty: zero divergence here proves parity for identity-served
+# kinds under non-impersonated traffic only — the comparator skips
+# impersonated requests until A14, and open-vocabulary (radar:*/envir:*)
+# parity is proven by the docker decision matrix (make
+# test-cerbos-decisions), not by this gate.
+#
+# Usage: hack/ci/divergence-gate  (sources test/.env.install)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# shellcheck source=/dev/null
+source "${REPO_ROOT}/test/.env.install"
+
+DEPLOYMENT="deploy/${IDENTITY_RELEASE}-server"
+CONTAINER="${IDENTITY_RELEASE}-server"
+
+# The exact message constants from pkg/rbac/shadow.go.
+DIVERGENCE_MSG='cerbos shadow divergence'
+FAILURE_MSG='cerbos shadow evaluation failure'
+
+# ── The gate is meaningless unless the server is actually in shadow mode ─────
+ARGS=$(kubectl get "${DEPLOYMENT}" -n "${IDENTITY_NAMESPACE}" \
+  -o jsonpath="{.spec.template.spec.containers[?(@.name=='${CONTAINER}')].args}")
+if [[ "${ARGS}" != *"--authorization-engine=shadow"* ]]; then
+  echo "ERROR: ${DEPLOYMENT} is not running with --authorization-engine=shadow — the gate has nothing to read" >&2
+  exit 1
+fi
+
+# ── A restarted container truncates `kubectl logs` and voids the gate ────────
+RESTARTS=$(kubectl get pods -n "${IDENTITY_NAMESPACE}" -l "app=${IDENTITY_RELEASE}-server" \
+  -o jsonpath="{.items[*].status.containerStatuses[?(@.name=='${CONTAINER}')].restartCount}")
+if [[ -z "${RESTARTS}" ]]; then
+  echo "ERROR: no ${CONTAINER} container found to read restart counts from" >&2
+  exit 1
+fi
+for count in ${RESTARTS}; do
+  if [[ "${count}" -ne 0 ]]; then
+    echo "ERROR: ${CONTAINER} restarted ${count} time(s) — its logs are truncated, so a passing grep would be vacuous" >&2
+    exit 1
+  fi
+done
+
+LOGS=$(kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}")
+
+# Anchor on the exact zap message field so no other log field can conflate.
+DIVERGENCE_COUNT=$(grep -cF "\"msg\":\"${DIVERGENCE_MSG}\"" <<< "${LOGS}" || true)
+FAILURE_COUNT=$(grep -cF "\"msg\":\"${FAILURE_MSG}\"" <<< "${LOGS}" || true)
+
+# Self-check against log-encoder drift: if the raw constants appear in lines
+# the anchored greps did not count, the anchors are blind and a pass would be
+# vacuous — fail loudly instead.
+RAW_DIVERGENCE_COUNT=$(grep -cF "${DIVERGENCE_MSG}" <<< "${LOGS}" || true)
+RAW_FAILURE_COUNT=$(grep -cF "${FAILURE_MSG}" <<< "${LOGS}" || true)
+if [[ "${DIVERGENCE_COUNT}" -ne "${RAW_DIVERGENCE_COUNT}" || "${FAILURE_COUNT}" -ne "${RAW_FAILURE_COUNT}" ]]; then
+  echo "ERROR: shadow message constants found outside the expected \"msg\" field (divergence ${DIVERGENCE_COUNT}/${RAW_DIVERGENCE_COUNT}, failure ${FAILURE_COUNT}/${RAW_FAILURE_COUNT}) — log format drift would blind this gate; fix the gate's anchors" >&2
+  grep -F "${DIVERGENCE_MSG}" <<< "${LOGS}" >&2 || true
+  grep -F "${FAILURE_MSG}" <<< "${LOGS}" >&2 || true
+  exit 1
+fi
+
+# ── Evaluation failures: infrastructure signal — tolerated but surfaced ──────
+if [[ "${FAILURE_COUNT}" -gt 0 ]]; then
+  echo "WARNING: ${FAILURE_COUNT} shadow evaluation failure(s) — the PDP produced NO verdict for these requests (infrastructure signal, not policy divergence). Tolerated, but the gate proved nothing for them — investigate:" >&2
+  grep -F "\"msg\":\"${FAILURE_MSG}\"" <<< "${LOGS}" >&2
+fi
+
+# ── Divergence: policy-parity signal — any occurrence fails the gate ─────────
+if [[ "${DIVERGENCE_COUNT}" -gt 0 ]]; then
+  echo "ERROR: ${DIVERGENCE_COUNT} shadow divergence(s) — the PDP returned a different verdict from the legacy engine. This is an authorization bug in the migration (or a legacy quirk the resolver failed to replicate): escalate it, never special-case it. The divergent decisions:" >&2
+  grep -F "\"msg\":\"${DIVERGENCE_MSG}\"" <<< "${LOGS}" >&2
+  exit 1
+fi
+
+echo "==> Divergence gate passed: 0 divergences, ${FAILURE_COUNT} evaluation failure(s)." >&2
+echo "==> Scope: identity-served kinds, non-impersonated traffic (shadow skips impersonation until A14); open-vocabulary parity is proven by the docker decision matrix." >&2
