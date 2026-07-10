@@ -205,6 +205,15 @@ test-cerbos-controller:
 	CERBOS_BINARY="$$tmp/cerbos" CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) \
 	go test -count=1 -tags=integration ./pkg/authz/cerbos/controller/
 
+# Decision-parity integration test: legacy GetACL/Allow* verdicts versus
+# Cerbos Check/CheckMany verdicts, both computed from the same fixture data,
+# with the generated policy store served by the pinned image.  Requires
+# Docker, so this is deliberately not part of test-unit; CI runs it
+# alongside the unit tests.
+.PHONY: test-cerbos-decisions
+test-cerbos-decisions:
+	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/rbac/
+
 # Build a binary and install it.
 $(PREFIX)/%: $(BINDIR)/%
 	install -m 750 $< $@
