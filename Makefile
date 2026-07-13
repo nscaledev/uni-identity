@@ -214,6 +214,16 @@ test-cerbos-controller:
 test-cerbos-decisions:
 	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/rbac/
 
+# Remote decision-endpoint integration test (migration task A8): drives the
+# internal POST /api/v1/authorization/check through the real generated router
+# + openapi validator middleware + handler + a real Cerbos-backed RBAC (pinned
+# image), via the generated typed client, proving a downstream service obtains
+# a decision from identity.  Requires Docker, so this is deliberately not part
+# of test-unit; CI runs it alongside the other Cerbos integration tests.
+.PHONY: test-cerbos-remote
+test-cerbos-remote:
+	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/handler/
+
 # Build a binary and install it.
 $(PREFIX)/%: $(BINDIR)/%
 	install -m 750 $< $@
