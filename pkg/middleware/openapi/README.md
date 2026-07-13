@@ -55,7 +55,10 @@ that keeps those two models separate while presenting handlers with one normaliz
   of authorization.
 - Service identity and delegated principal identity are separate concepts.
 - ACL cache keys must distinguish direct calls from impersonated calls so cached results do not
-  overgrant.
+  overgrant. The impersonated key additionally carries the impersonated actor's principal type and
+  sorted organization set — the inputs the impersonated ACL is resolved from — so two distinct
+  impersonated principals that share an actor string cannot collide (parity with the A15-hardened
+  coarse-decision cache in `pkg/rbac`).
 - OpenAPI validation, authentication, principal propagation, and ACL resolution are colocated so
   handlers receive already-normalized request context.
 

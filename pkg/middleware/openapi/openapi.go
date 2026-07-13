@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -174,9 +175,18 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // would over-grant, while reusing an impersonated entry for a direct or
 // attributed call would under-grant.
 //
-// The impersonated cache key therefore includes both:
+// The impersonated cache key therefore includes:
 // - the authenticated calling service subject.
 // - the impersonated actor.
+// - the impersonated actor's principal type and sorted organization set.
+//
+// The actor's type and organization set are the inputs the impersonated ACL is
+// resolved from (getSystemAccountACL reads p.OrganizationIDs and p.Type;
+// processImpersonatedPrincipalACL switches on p.Type), so two distinct
+// impersonated principals that merely share an actor string cannot collide on
+// one cache entry. This mirrors the A15-hardened coarse-decision key
+// (pkg/rbac decisionCacheKey); the organization set is sorted so a semantically
+// identical set always yields one key.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
 	scope := organizationID
 	if scope == "" {
@@ -193,7 +203,10 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
-		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + scope, nil
+		orgs := slices.Clone(p.OrganizationIDs)
+		slices.Sort(orgs)
+
+		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + string(p.Type) + "|" + strings.Join(orgs, ",") + "|" + scope, nil
 	}
 
 	return "direct|" + info.Userinfo.Sub + "|" + scope, nil

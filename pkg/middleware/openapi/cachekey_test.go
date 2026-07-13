@@ -89,7 +89,7 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, "direct|compute-service|org-1", direct)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", impersonated)
+		require.Equal(t, "impersonated|compute-service|user-1|||org-1", impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
 
@@ -115,8 +115,8 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotEqual(t, computeKey, regionKey)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", computeKey)
-		require.Equal(t, "impersonated|region-service|user-1|org-1", regionKey)
+		require.Equal(t, "impersonated|compute-service|user-1|||org-1", computeKey)
+		require.Equal(t, "impersonated|region-service|user-1|||org-1", regionKey)
 	})
 
 	t.Run("ImpersonatedIncludesOrganizationScope", func(t *testing.T) {
@@ -133,9 +133,53 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "impersonated|compute-service|user-1|_global", global)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", scoped)
+		require.Equal(t, "impersonated|compute-service|user-1|||_global", global)
+		require.Equal(t, "impersonated|compute-service|user-1|||org-1", scoped)
 		require.NotEqual(t, global, scoped)
+	})
+
+	t.Run("ImpersonatedTypeDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// The impersonated ACL is resolved from the actor's principal TYPE
+		// (getSystemAccountACL -> processImpersonatedPrincipalACL switches on
+		// p.Type: User subjects vs Service-account IDs), so it changes the ACL
+		// and MUST change the key. A User actor and a Service actor sharing an
+		// actor string must never collide on one cached ACL.
+		userCtx := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User}))
+		serviceCtx := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.Service}))
+
+		userKey, err := aclCacheKey(userCtx, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		serviceKey, err := aclCacheKey(serviceCtx, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, userKey, serviceKey)
+	})
+
+	t.Run("ImpersonatedOrgSetDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// The impersonated ACL is resolved from the actor's organization set
+		// (getSystemAccountACL reads p.OrganizationIDs to scope membership), so
+		// it changes the ACL and MUST change the key; order does not (it is
+		// sorted), so a semantically identical set always yields one key.
+		orgsAB := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-a", "org-b"}}))
+		orgsA := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-a"}}))
+		orgsBA := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-b", "org-a"}}))
+
+		keyAB, err := aclCacheKey(orgsAB, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		keyA, err := aclCacheKey(orgsA, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		keyBA, err := aclCacheKey(orgsBA, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyAB, keyA, "a different org set must be a different key")
+		require.Equal(t, keyAB, keyBA, "org-set order must not change the key (sorted)")
 	})
 
 	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {
