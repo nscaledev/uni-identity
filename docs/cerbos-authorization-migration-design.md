@@ -480,6 +480,23 @@ terminates mTLS or ingress config drifts. **M1 MUST harden it:**
 - **`/authorization/check` re-derives the acting service identity from the verified
   mTLS peer CN** and never trusts a self-declared subject or impersonation flag.
 
+> **M1 status (A8 — partially delivered).** Bullet (c) is **delivered**: the
+> `POST /api/v1/authorization/check` handler serves decisions only to callers
+> the middleware marks `SystemAccount` (re-derived from the verified peer CN);
+> a bearer-authenticated caller reaching the multiplexed route is rejected
+> 401. The endpoint never trusts a self-declared subject. Bullets (a)
+> header-strip-as-a-hard-tested-deploy-invariant and (b)
+> signed-principal-propagation-preferred-over-bare-base64-JSON are **NOT yet
+> delivered** — the fast path still base64-decodes `X-Principal` and reads
+> `X-Impersonate: true` with no signature check, and identity's ingress strips
+> no headers. The safety argument therefore still rests on the uncodified
+> "mTLS terminates only at identity" assumption for the principal/impersonation
+> headers (the CN-derived acting identity is safe regardless). These are
+> tracked as named follow-ups in the M1 plan (§3.7(a)/(b) hardening). A genuine
+> TLS-handshake mTLS assertion for the endpoint is likewise a kind-CI
+> follow-up; the A8 in-process integration test reproduces the ingress model by
+> injecting the verified-cert headers.
+
 ---
 
 ## 4. Data flow & migration
@@ -492,8 +509,16 @@ terminates mTLS or ingress config drifts. **M1 MUST harden it:**
    decision (cacheable; batched with other checks this request).
 3. Handler fetches the target resource, derives org/project from labels (taint),
    and for ABAC-gated kinds calls `rbac.Check(resource, action)`.
-4. `remote` POSTs principal (bindings) + resource attrs + request context to
-   identity `/authorization/check`; identity → Cerbos → decision; identity logs it.
+4. `remote` POSTs the subject credential (the acting service's mTLS client
+   cert, ingress-verified; the forwarded bearer when present) + the
+   `X-Principal`/`X-Impersonate` principal headers + the batch of
+   `(resource, action)` checks to identity `POST /api/v1/authorization/check`;
+   **identity resolves the bindings** from the acting service's CN (and, when
+   impersonating, the propagated principal) and its own k8s membership state —
+   the wire does NOT carry bindings, and passports do not either — then
+   Cerbos → per-check decision; identity logs it. (As implemented in A8:
+   `pkg/handler` `PostApiV1AuthorizationCheck` + `pkg/middleware/openapi/remote`
+   `CheckMany`.)
 5. Handler proceeds or returns 403 **before** any side effect.
 
 **List endpoints:** pre-authorize scope, push org/project filters to storage, fetch

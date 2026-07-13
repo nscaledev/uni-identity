@@ -19,6 +19,38 @@
 
 ---
 
+## Status (updated 2026-07-11)
+
+**Plan A — 12 of 17 tasks landed on `cerbos-integration`; 5 remaining + 2 follow-ups.**
+The full decision pipeline is live end-to-end: `Role` CR → generated policy (A2) →
+compile-gated publish to a controller-owned ConfigMap (A3) → PDP sidecar (A1) →
+request builder (A4) + `Check`/`CheckMany` (A5) behind the dual-path `Allow*` facade
+(A6), shadowed against legacy (A7) with decision logging + metrics (A10),
+impersonation dual-check (A14), a kind CI shadow-divergence gate + docker parity
+matrix (A11), and a remote decision endpoint for downstream services (A8). The
+shadow signal is scope-complete (impersonation included).
+
+| Task | Status | Anchor commit |
+|---|---|---|
+| A13 spike | ✅ done | `cerbos-experiment/spike-a13` (separate repo) |
+| A2 generator | ✅ committed | `9f0afcf2` |
+| A1 sidecar + client | ✅ committed | `873bb2ad` |
+| A3 controller | ✅ committed | `e96c62e1` |
+| A4 request builder | ✅ committed | `a4aaa41e` |
+| A5 resolver + decision API | ✅ committed | `f2576298` |
+| A6 dual-path facade | ✅ committed | `7c6e1c60` |
+| A7 shadow comparator | ✅ committed | `d5083837` |
+| A10 decision logging + metrics | ✅ committed | `0b930975` |
+| A11 kind parity + divergence gate | ✅ committed | `6fa4300e` |
+| A14 impersonation dual-check | ✅ committed | `21285364` |
+| A8 remote decision endpoint | ✅ committed | (with the review fixes folded in: `maxItems:50`; system-account framing corrected from "mTLS-only/bearer→401" + a System-bearer accepted test; projectId-without-organizationId → 400 handler guard) |
+
+**Remaining (Plan A):** A9 (thin-Go `/acl` decoupling + `AllowProjectScopeCreate` orchestration) · A12 (strangle-by-kind cutover — the critical path; needs A9 + real shadow soak) · A15 (coarse-decision cache + policy-hash) · A16 (grantability cross-parity) · A17 (post-cutover legacy removal). **Follow-ups (deferred out of A8):** A18 (§3.7 a/b principal-propagation hardening) · A19 (downstream `Allow*`-routing through the remote call).
+
+**Plan B — not started (0 of 6).**
+
+---
+
 ## Plan A — Cerbos M1 (compatible cutover, central)
 
 **Goal:** Cerbos is the authorization engine, deployed as a central sidecar at
@@ -47,23 +79,25 @@ Cerbos; `GetACL`/`/acl` stays as a thin Go enumeration.
 
 ### Tasks (ordered; each ends in a testable deliverable)
 
-- [ ] **A1 — Cerbos sidecar + client + config.** Add the Cerbos sidecar to `charts/identity` (localhost gRPC, v0.53.0); scaffold `pkg/authz/cerbos/client.go` (connect, health, timeout, **fail-closed on unavailable**); wire config/flags. *Deliverable:* identity boots with the sidecar; a trivial `CheckResources` round-trips. *Test:* integration test hits the sidecar with a hand-written allow/deny policy. *Depends:* —
-- [ ] **A2 — Policy generator (pure fn).** `generate.go`: `Role` CRD scopes → derived-roles (one per role, binding-match condition) + resource policies (derived-role → actions). Per **A13**: emit an **OVERRIDE grantor** top scope (the RBAC ceiling) with a **root (`""`) policy per resource** (binding-match `derivedRoles` drop in unchanged); CONSENT org/project overlay scopes are M2; no scope-chain gaps. *Deliverable:* generator emits valid Cerbos YAML for the built-in roles (`values.yaml`) **and representative out-of-repo open-vocabulary roles** (`radar:*`, `envir:*` from `~/go/src/k8s-deploy-unikorn` — the generator exists for exactly those); `cerbos compile` + its test suite pass on the output. *Test:* golden-file unit tests per role (incl. open-vocab) + `cerbos compile` in CI. *Depends:* A1, A13 (spike proves the mechanism first).
-- [ ] **A3 — Reconciling controller.** Watch `Role` CRDs → run A2 → write to the sidecar's policy volume/ConfigMap → hot-reload. Handles GitOps *and* manually-applied `Role` CRs, and must settle policies-ConfigMap ownership/upgrade semantics (Helm templates it empty today; upgrade/rollback/prune must not wipe controller-written policies — design §3.1). *Deliverable:* applying/editing a `Role` CR updates Cerbos policy at runtime. *Test:* integration — create a custom `Role`, assert a decision that depends on it flips. *Depends:* A2.
-- [ ] **A4 — Cerbos request builder.** `request.go`: identity's resolved principal (bindings + actor type + attrs) + resource (kind/id/org/project) + action → `CheckResources` request. *Deliverable:* builder produces correct requests for user / service-account / system-account principals. *Test:* table unit tests. *Depends:* A1.
-- [ ] **A5 — `pkg/rbac.Check()`/`CheckMany()` delegating to Cerbos.** Decision API calling the client (local) / `/authorization/check` (remote), fail-closed, batched. *Deliverable:* `Check()` returns correct allow/deny via Cerbos for representative cases. *Test:* unit + integration. *Depends:* A1, A4.
-- [ ] **A6 — `Allow*()` dual-path (facade preserved; legacy RETAINED).** Behind the unchanged `Allow*()` signatures, ADD a coarse Cerbos decision path while **retaining** the legacy local-ACL evaluation; a mode flag selects which the comparator (A7) serves. Legacy is removed only at A12 cutover — NOT here (A7 needs it live to compare against). *Deliverable:* both engines live behind the facade; `Allow*` call sites compile unchanged. *Test:* existing RBAC unit tests pass against the legacy path; new tests cover the Cerbos path. *Depends:* A5.
-- [ ] **A7 — Shadow-mode comparator.** `shadow.go`: run legacy `Allow*` + Cerbos, **serve legacy**, log divergence (inputs, both verdicts, policy hash). Config-gated. *Deliverable:* divergences are detected and logged; zero behaviour change. *Test:* inject a deliberately-divergent policy → assert divergence logged; parity policy → none. *Depends:* A6.
-- [ ] **A8 — Internal `/authorization/check` + `remote` path.** OpenAPI spec entry (`x-hidden`, mTLS) + handler + `remote` authorizer decision call. Gates A12-for-remote-kinds (downstream adoption). *Deliverable:* a downstream service obtains a decision from identity. *Test:* integration via the typed client over mTLS. *Depends:* A5.
+- [x] **A1 — Cerbos sidecar + client + config.** Add the Cerbos sidecar to `charts/identity` (localhost gRPC, v0.53.0); scaffold `pkg/authz/cerbos/client.go` (connect, health, timeout, **fail-closed on unavailable**); wire config/flags. *Deliverable:* identity boots with the sidecar; a trivial `CheckResources` round-trips. *Test:* integration test hits the sidecar with a hand-written allow/deny policy. *Depends:* —
+- [x] **A2 — Policy generator (pure fn).** `generate.go`: `Role` CRD scopes → derived-roles (one per role, binding-match condition) + resource policies (derived-role → actions). Per **A13**: emit an **OVERRIDE grantor** top scope (the RBAC ceiling) with a **root (`""`) policy per resource** (binding-match `derivedRoles` drop in unchanged); CONSENT org/project overlay scopes are M2; no scope-chain gaps. *Deliverable:* generator emits valid Cerbos YAML for the built-in roles (`values.yaml`) **and representative out-of-repo open-vocabulary roles** (`radar:*`, `envir:*` from `~/go/src/k8s-deploy-unikorn` — the generator exists for exactly those); `cerbos compile` + its test suite pass on the output. *Test:* golden-file unit tests per role (incl. open-vocab) + `cerbos compile` in CI. *Depends:* A1, A13 (spike proves the mechanism first).
+- [x] **A3 — Reconciling controller.** Watch `Role` CRDs → run A2 → write to the sidecar's policy volume/ConfigMap → hot-reload. Handles GitOps *and* manually-applied `Role` CRs, and must settle policies-ConfigMap ownership/upgrade semantics (Helm templates it empty today; upgrade/rollback/prune must not wipe controller-written policies — design §3.1). *Deliverable:* applying/editing a `Role` CR updates Cerbos policy at runtime. *Test:* integration — create a custom `Role`, assert a decision that depends on it flips. *Depends:* A2.
+- [x] **A4 — Cerbos request builder.** `request.go`: identity's resolved principal (bindings + actor type + attrs) + resource (kind/id/org/project) + action → `CheckResources` request. *Deliverable:* builder produces correct requests for user / service-account / system-account principals. *Test:* table unit tests. *Depends:* A1.
+- [x] **A5 — `pkg/rbac.Check()`/`CheckMany()` delegating to Cerbos.** Decision API calling the client (local) / `/authorization/check` (remote), fail-closed, batched. *Deliverable:* `Check()` returns correct allow/deny via Cerbos for representative cases. *Test:* unit + integration. *Depends:* A1, A4.
+- [x] **A6 — `Allow*()` dual-path (facade preserved; legacy RETAINED).** Behind the unchanged `Allow*()` signatures, ADD a coarse Cerbos decision path while **retaining** the legacy local-ACL evaluation; a mode flag selects which the comparator (A7) serves. Legacy is removed only at A12 cutover — NOT here (A7 needs it live to compare against). *Deliverable:* both engines live behind the facade; `Allow*` call sites compile unchanged. *Test:* existing RBAC unit tests pass against the legacy path; new tests cover the Cerbos path. *Depends:* A5.
+- [x] **A7 — Shadow-mode comparator.** `shadow.go`: run legacy `Allow*` + Cerbos, **serve legacy**, log divergence (inputs, both verdicts, policy hash). Config-gated. *Deliverable:* divergences are detected and logged; zero behaviour change. *Test:* inject a deliberately-divergent policy → assert divergence logged; parity policy → none. *Depends:* A6.
+- [x] **A8 — Internal `/authorization/check` + `remote` path. ✅ DONE (endpoint + remote decision call; review fixes folded in — maxItems:50, system-account framing, projectId→400 guard).** OpenAPI spec entry (`x-hidden` + `x-no-authorization` + `oauth2Authentication` security triple; `pkg/openapi/server.spec.yaml`, info bumped 1.13.0→1.14.0) + handler (`pkg/handler` `PostApiV1AuthorizationCheck`, thin: `SystemAccount` gate then `CheckMany`; Cerbos-authoritative, no legacy twin, fail-closed over the wire) + `remote` authorizer decision call (`pkg/middleware/openapi/remote` `CheckMany`, mirrors `GetACL`; local DTO, no `pkg/rbac` import; fail-closed sentinel mapping). *Deliverable:* a downstream service obtains a decision from identity ✅. *Test:* `make test-cerbos-remote` — real router + validator + handler + real Cerbos-backed RBAC via the generated typed client (allowed/denied, impersonated dual-check, bearer-reject, PDP-down). §3.7(c) reject-non-mTLS delivered in the handler; §3.7(a)/(b) hardening and downstream `Allow*`-routing are the follow-ups below. *Depends:* A5.
 - [ ] **A9 — Retain thin-Go `/acl`.** Ensure `GetApiV1Acl` / `…/organizations/{id}/acl` (`handler.go:309/319`) still compute the coarse ACL, now decoupled from enforcement. *Deliverable:* `/acl` returns the same shape/content as today. *Test:* regression test comparing `/acl` output pre/post. *Depends:* A6 (decoupling).
-- [ ] **A10 — Decision logging + fail-closed + metrics.** `decision_log.go` to the shared audit sink; explicit `Check()` timeout → deny; metrics (latency, deny-on-error). *Deliverable:* decisions logged (no tokens); Cerbos-down ⇒ deny. *Test:* unit (fail-closed) + assert log fields. *Depends:* A5.
-- [ ] **A11 — `hack/ci` + kind integration parity.** Add Cerbos to the CI stack; RBAC **parity matrix** (Cerbos == legacy) + **shadow-divergence CI gate**. Parity fixtures MUST cover the **open-vocabulary** shapes (`radar:*`/`envir:*` from `k8s-deploy-unikorn`), not only this repo's built-ins — that's what the generator exists for. *Deliverable:* integration suite green; parity proven across built-in AND open-vocabulary roles. *Test:* `test/api/suites/rbac_matrix_test.go` extended. *Depends:* A2, A3, A7 (A8 dropped: its endpoint is a Cerbos-only path with no legacy twin, so it feeds the shadow gate nothing).
+- [x] **A10 — Decision logging + fail-closed + metrics.** `decision_log.go` to the shared audit sink; explicit `Check()` timeout → deny; metrics (latency, deny-on-error). *Deliverable:* decisions logged (no tokens); Cerbos-down ⇒ deny. *Test:* unit (fail-closed) + assert log fields. *Depends:* A5.
+- [x] **A11 — `hack/ci` + kind integration parity.** Add Cerbos to the CI stack; RBAC **parity matrix** (Cerbos == legacy) + **shadow-divergence CI gate**. Parity fixtures MUST cover the **open-vocabulary** shapes (`radar:*`/`envir:*` from `k8s-deploy-unikorn`), not only this repo's built-ins — that's what the generator exists for. *Deliverable:* integration suite green; parity proven across built-in AND open-vocabulary roles. *Test:* `test/api/suites/rbac_matrix_test.go` extended. *Depends:* A2, A3, A7 (A8 dropped: its endpoint is a Cerbos-only path with no legacy twin, so it feeds the shadow gate nothing).
 - [ ] **A12 — Strangle-by-kind cutover + rollback.** Per-`(kind)` flag to flip Cerbos authoritative (retire the legacy path for that kind) + revert. *Deliverable:* a kind flips to Cerbos-authoritative and reverts via config, gated on zero divergence. *Test:* integration toggling a kind. *Depends:* A7, A11.
 - [x] **A13 — D1b composition spike. ✅ DONE** (`cerbos-experiment/spike-a13`). Verdict: the composition works on 0.53.0 — binding-match `derivedRoles` compose across a native `root→org→project` scope chain, `effectiveDerivedRoles` resolves at every scope, tenant isolation holds. **Requirements it established for A2:** (a) the chain top must be an **OVERRIDE grantor** — a consent-mode policy can't originate a grant, so an all-consent chain denies everything; (b) every scoped resource needs a **root (`""`) policy**; (c) `scopePermissions` is per-scope-string (consent/override can't share a scope → separate stores); (d) narrowing is via **explicit deny, not silence** — a silent org doesn't restrict, so an org-level veto needs an explicit deny at/above the org (consent = "≥1 ancestor allows & no scope denies").
-- [ ] **A14 — Impersonation-intersection under Cerbos.** Two AND-ed checks (impersonated principal ∧ acting service, identical resource/action), the service-side inheriting global→org→project flow-down; preserve the `direct|`/`impersonated|` cache-key discriminator. *Deliverable:* impersonated decisions match today's `intersectACL`; shadow parity holds for system-account impersonation. *Test:* unit + shadow. *Depends:* A5, A6.
+- [x] **A14 — Impersonation-intersection under Cerbos.** Two AND-ed checks (impersonated principal ∧ acting service, identical resource/action), the service-side inheriting global→org→project flow-down; preserve the `direct|`/`impersonated|` cache-key discriminator. *Deliverable:* impersonated decisions match today's `intersectACL`; shadow parity holds for system-account impersonation. *Test:* unit + shadow. *Depends:* A5, A6.
 - [ ] **A15 — Coarse-decision cache + policy-hash invalidation.** Cache coarse decisions keyed by (subject, impersonation-flag+actor, scope, **policy hash**); bust on controller republish; cache-key test analogous to `pkg/middleware/openapi/cachekey_test.go`. *Deliverable:* correct keying; no stale-allow past republish. *Depends:* A3, A6.
 - [ ] **A16 — Grantability cross-parity.** Keep grantability (`AllowRole`) reading the caller's materialized ACL (Go `GetACL`); add a test asserting the Go expansion and the generated Cerbos policy AGREE for every role (built-in + open-vocab). *Deliverable:* enforcement (Cerbos) and grant-guard (Go) provably agree. *Depends:* A2, A6.
 - [ ] **A17 — Post-cutover legacy removal + doc updates.** After A12: delete the dead legacy decision path; update the affected `pkg/**/README.md` (`pkg/rbac`, `pkg/middleware/openapi`, `pkg/oauth2`, `pkg/authn`, `pkg/authz/cerbos`) per CLAUDE.md. *Deliverable:* no dead legacy code; package docs current. *Depends:* A12.
+- [ ] **A18 — `/authorization/check` principal-propagation hardening (design §3.7 a/b).** A8 delivered §3.7(c) (the handler rejects non-`SystemAccount` callers, re-deriving the acting identity from the verified peer CN). Still open: (a) make ingress header-stripping (`X-Principal`, `X-Impersonate`, `Ssl-Client-Cert`, …) a **hard, tested deploy invariant** with a chart-level assertion + a negative test that a forged header over a non-mTLS/untrusted hop is rejected; (b) **prefer signed-principal propagation** (the existing `VerifyAndDecode`/JWS path) over bare base64-JSON `X-Principal`, so trust does not rest on ingress config alone. Also: a genuine TLS-handshake mTLS assertion for the endpoint in **kind CI** (the A8 in-process test reproduces the ingress model by injecting verified-cert headers). *Deliverable:* a forged principal/impersonation header cannot reach Cerbos over a non-mTLS/untrusted hop; propagation is signature-verified. *Depends:* A8.
+- [ ] **A19 — Downstream `Allow*`-routing through the remote decision call.** A8 delivered the remote decision **call** (`remote.Authorizer.CheckMany` over `/authorization/check`), but NOT downstream `Allow*` **routing** through it: that needs a remote transport **above** `rbac.decide()` (a downstream RBAC cannot read identity's authorization resources — the Group/Role/Project/Organization CRDs binding resolution walks — so `ResolveBindings` fail-closed-denies everything) plus a remote `DecisionEngineProvider` — the `DecisionEngine()` seam sits **below** binding resolution and cannot express it (see `pkg/rbac/check.go`, `pkg/middleware/openapi/decision_engine.go`). *Deliverable:* a downstream service's `Allow*()` call transparently obtains its decision from identity via the remote path. *Depends:* A8.
 
 ---
 
@@ -112,9 +146,14 @@ reads the real file it's touching, writes the bite-sized TDD steps for that task
 implements, and returns for a review gate before the next. Alternatively, inline
 execution per `executing-plans`. Plans A and B can run in parallel.
 
-Suggested first slices: **A13 is done** (✅ composition proven — `cerbos-experiment/spike-a13`)
-→ **A1–A3** (get generated policies live under shadow, honoring A13's grantor-root
-pattern) and **B1** (the registry contract). Nothing cuts over authoritative until
-**A7/A11** prove zero divergence. (The A11 kind gate covers identity-served kinds;
+Next slices (see **Status** above for what has landed): **A9** (decouple thin-Go
+`/acl` from enforcement + fold in the `AllowProjectScopeCreate` orchestration —
+small, independent, closes the last unmigrated enforcement call shape), then
+**A15/A16** hardening, before **A12** flips any kind authoritative. **A12 must not
+cut over until real shadow soak shows zero divergence** — the A11 kind gate proves
+this for identity-served kinds under non-impersonated-plus-impersonated traffic;
 open-vocabulary parity is proven by the docker decision matrix plus the A2 compile
-suite, since no `radar:*`/`envir:*` traffic flows through identity's own endpoints.)
+suite, since no `radar:*`/`envir:*` traffic flows through identity's own endpoints.
+**A18/A19** (principal-propagation hardening; downstream `Allow*`-routing) and all of
+**Plan B** remain open and can run in parallel. Cutover for *remote* kinds
+additionally waits on A19 (downstream adoption of the A8 endpoint).
