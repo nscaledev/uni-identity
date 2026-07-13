@@ -223,7 +223,7 @@ scope, resource ID always the coarse `*`).
   `ErrImpersonationNotSupported`, mirroring the legacy `ErrInvalidPrincipalType` hard
   error rather than falling back to the legacy path.
 - **`AllowProjectScopeCreate` and `AllowRole` stay legacy-only, nested checks included**:
-  Create's live project-existence orchestration moves to Cerbos with A9, and `AllowRole`'s
+  Create's live project-existence orchestration moves to Cerbos with A19, and `AllowRole`'s
   grantability walk stays thin-Go by design (A16 owns its parity story).
 - **Costs, accepted until later tasks**: the middleware still resolves the legacy ACL for
   every request even in cerbos mode (the double-resolution goes with A12/A17), and

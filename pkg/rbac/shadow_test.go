@@ -414,7 +414,7 @@ func TestShadowCreateAndRoleStayUnshadowed(t *testing.T) {
 	capture := &logCapture{}
 
 	// AllowProjectScopeCreate and AllowRole are never shadowed — their Cerbos
-	// stories are A9 and A16 respectively: zero PDP calls, zero shadow logs.
+	// stories are A19 and A16 respectively: zero PDP calls, zero shadow logs.
 	pdp := &capturePDP{}
 	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
 

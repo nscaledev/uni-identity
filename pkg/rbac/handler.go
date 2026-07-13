@@ -280,7 +280,7 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 // nested scope checks included.  Its orchestration (project-scope grant
 // implies verified existence; organization-scope grant demands a live
 // project-existence verification) is entangled with legacy ACL structure,
-// and its Cerbos equivalent is task A9 (see pkg/authz/cerbos/README.md).
+// and its Cerbos equivalent is task A19 (see pkg/authz/cerbos/README.md).
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.

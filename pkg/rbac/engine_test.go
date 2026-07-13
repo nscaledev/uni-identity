@@ -343,7 +343,7 @@ func TestAllowProjectScopeCreateStaysLegacy(t *testing.T) {
 	// The PDP would deny everything; the ACL grants at global scope.  Create
 	// must serve from the legacy walk END TO END — its nested scope checks
 	// included — because its project-existence orchestration only moves to
-	// Cerbos with A9.  A nil identity client proves the global-trust
+	// Cerbos with A19.  A nil identity client proves the global-trust
 	// shortcut is also untouched.
 	pdp := &capturePDP{}
 	engine := newDispatchEngine(t, rbac.EngineCerbos, pdp)
@@ -351,7 +351,7 @@ func TestAllowProjectScopeCreateStaysLegacy(t *testing.T) {
 	ctx := rbac.NewEngineContext(rbac.NewContext(aliceContext(t), globalACL("candy", openapi.Create)), engine)
 
 	require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID))
-	require.Zero(t, pdp.calls, "AllowProjectScopeCreate must stay legacy-only until A9")
+	require.Zero(t, pdp.calls, "AllowProjectScopeCreate must stay legacy-only until A19")
 }
 
 func TestAllowRoleStaysLegacy(t *testing.T) {
