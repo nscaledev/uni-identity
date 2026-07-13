@@ -167,16 +167,18 @@ authorization migration (see
 [docs/cerbos-authorization-migration-design.md](../../docs/cerbos-authorization-migration-design.md)
 and [pkg/authz/cerbos](../authz/cerbos/README.md)). Since A6 the `Allow*` facade is
 **dual-path**: behind the unchanged signatures each scope check either walks the local ACL
-(the legacy path, retained verbatim for A7's shadow comparison and removed only at the A12
-cutover) or asks the PDP a coarse question (`Resource{Kind}` for global, `+OrganizationID`
+(the legacy path, retained verbatim for A7's shadow comparison and to serve kinds not yet
+cut over by the A12 strangle-by-kind switch — removed only at A17) or asks the PDP a coarse
+question (`Resource{Kind}` for global, `+OrganizationID`
 for organization — the project attribute deliberately absent — and both IDs for project
 scope, resource ID always the coarse `*`).
 
 - **Dispatch is a structural fail-safe, not a configuration one.** The Cerbos path serves
   only when a decision engine was seeded into the request context (`NewEngineContext`,
   done by the openapi middleware when its authorizer implements `DecisionEngineProvider`)
-  AND that engine's mode (`Options.AuthorizationEngine`, the identity server's
-  `--authorization-engine` flag, default `legacy`) is `cerbos`. Contexts without an engine
+  AND that engine's mode for the endpoint (`Options.AuthorizationEngine`, the identity
+  server's `--authorization-engine` flag, default `legacy`) is `cerbos` — either globally,
+  or for that endpoint alone via the A12 strangle-by-kind cutover below. Contexts without an engine
   — every downstream service (they never construct an `RBAC`), `NewSuperContext`, and
   every ACL-only test context — always take the legacy path by construction. That
   absence-default is the migration's compatibility contract.
@@ -449,6 +451,46 @@ Two supporting CI units guard the gate's integrity (both documented in
   ceases. The two engines flip at different times (legacy on ~1m ACL-cache expiry, Cerbos on
   ~1m ConfigMap propagation), so a transient divergence window is expected and correct there —
   which is exactly why it must never run before the gate.
+
+### The strangle-by-kind cutover (A12)
+
+`--authorization-engine` is a single GLOBAL switch: it makes one engine serve every `Allow*`
+decision. A12 adds a **per-kind override** on top so Cerbos can be made authoritative one
+endpoint at a time, without flipping the whole service. `--cerbos-authoritative-kinds`
+(`Options.CerbosAuthoritativeKinds`, the chart's `identity.cerbosAuthoritativeKinds`) is the
+**cutover set**: the endpoint kinds (e.g. `identity:groups`) for which Cerbos is authoritative
+*regardless of the global baseline*.
+
+- **`modeForKind` is the switch** (`engine.go`). It specialises `mode()` per kind: a kind in
+  the cutover set resolves to `cerbos` even when the global mode is `legacy` or `shadow`; every
+  other kind follows the global mode. Both dispatch (`engineForDispatch`) and the shadow gate
+  (`engineForShadow`) consult `modeForKind(endpoint)` rather than `mode()`, so the engine
+  decision is taken per endpoint. Matching is **exact-string** on the endpoint — one endpoint
+  is strangled at a time (no wildcards in M1). A value that does not exactly match an endpoint
+  is a silent no-op leaving the kind on the baseline (fail-open in the safe direction — legacy
+  still enforces — but with no per-request signal); entries are whitespace-trimmed, and the
+  effective set is logged once at startup (`cerbos authoritative (cutover) kinds configured`) so
+  an operator can confirm the flip matches intent.
+- **A cut-over kind is Cerbos-authoritative.** It takes the existing cerbos branch
+  (`allowCoarse` → `Check`), so the PDP verdict is the SERVED verdict. There is **no legacy
+  fallback** and it is **not shadow-compared** (its `modeForKind` is cerbos, so `engineForShadow`
+  returns nil for it — a cut-over kind is authoritative-served, never both). Crucially it is
+  **fail-closed**: the kind hard-depends on the PDP, so a Cerbos outage is a deny for that kind
+  (`ErrDecisionUnavailable`), never a quiet fall back to the legacy ACL walk. That fail-closed
+  hard-dependency is the load-bearing safety property of an authoritative cutover.
+- **Empty by default = zero behaviour change.** With no kind cut over, `modeForKind == mode()`
+  for every kind, so dispatch is byte-identical to the pre-A12 global behaviour. Downstream
+  services and every ACL-only test never set the option, so they are unaffected by construction
+  (the same absence-default the whole migration rests on).
+- **Config-only rollback.** Removing a kind from the set reverts it to the global mode — no code
+  change. This is the escape hatch if a cut-over kind misbehaves in production.
+- **Mechanism now, flip deferred.** This is the cutover MECHANISM only. WHICH kinds are cut
+  over, and WHEN, is an operations config change, gated on the shadow soak (the A11 divergence
+  gate above) showing zero verdict divergence for that kind — not decided in this code, which
+  ships with an empty default.
+- **Legacy code stays until A17.** A12 does not remove the legacy ACL walk (nor
+  `AllowProjectScopeCreate`/`AllowRole`, which never dispatch to Cerbos): it is retained to serve
+  every not-yet-cut-over kind and A7's shadow comparison. Removing it is task **A17**.
 
 ### The coarse-decision cache (A15)
 

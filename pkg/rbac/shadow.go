@@ -60,15 +60,18 @@ const (
 )
 
 // engineForShadow returns the context's decision engine when — and only when
-// — the shadow comparison must run alongside the legacy decision: an engine
-// was seeded and its mode is shadow.  Impersonated requests are compared
-// too, since A14: the legacy intersection verdict against the AND-ed
+// — the shadow comparison must run alongside the legacy decision for this
+// kind: an engine was seeded and its mode for the kind is shadow (modeForKind).
+// A kind cut over to Cerbos (its modeForKind is cerbos, the A12 switch) is
+// therefore NOT shadowed under a shadow baseline — it is authoritative-served
+// through engineForDispatch instead, exactly right.  Impersonated requests are
+// compared too, since A14: the legacy intersection verdict against the AND-ed
 // dual-check verdict — both single booleans, so the comparator needs no
 // structural change.
-func engineForShadow(ctx context.Context) *RBAC {
+func engineForShadow(ctx context.Context, kind string) *RBAC {
 	engine := EngineFromContext(ctx)
 
-	if engine == nil || engine.mode() != EngineShadow {
+	if engine == nil || engine.modeForKind(kind) != EngineShadow {
 		return nil
 	}
 
@@ -80,7 +83,7 @@ func engineForShadow(ctx context.Context) *RBAC {
 // zero-behaviour-change contract of shadow mode: the legacy verdict — already
 // computed by the time this runs — is always the served verdict.
 func shadowed(ctx context.Context, resource Resource, operation openapi.AclOperation, legacyErr error) error {
-	if engine := engineForShadow(ctx); engine != nil {
+	if engine := engineForShadow(ctx, resource.Kind); engine != nil {
 		engine.shadowCompare(ctx, resource, operation, legacyErr == nil)
 	}
 

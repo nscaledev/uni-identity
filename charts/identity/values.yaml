@@ -97,6 +97,13 @@ identity:
   # the PDP and log verdict divergence) or "cerbos" (the PDP sidecar).
   # Leave unset for the default (legacy).
   authorizationEngine: ~
+  # cerbosAuthoritativeKinds is the strangle-by-kind cutover set: endpoint kinds
+  # (e.g. identity:groups) for which the Cerbos PDP is AUTHORITATIVE regardless
+  # of authorizationEngine — served by the PDP, no legacy fallback, fail-closed
+  # (a PDP outage denies that kind).  Empty (the default) means no kind is cut
+  # over, so deploying this is a no-op; set kinds per-endpoint only once the
+  # shadow soak shows zero divergence for them (the flip is an ops decision).
+  cerbosAuthoritativeKinds: []
 
 # Issuer related configuration.
 issuer:

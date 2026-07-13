@@ -140,6 +140,15 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*openap
 // DecisionEngine implements the middleware's optional DecisionEngineProvider
 // interface: the returned RBAC (whose PDP client backs rbac.Check/CheckMany)
 // is seeded into handler contexts for the Allow* facade's dual-path dispatch.
+//
+// LOAD-BEARING: this MUST return the engine UNCONDITIONALLY — even under a
+// legacy or shadow global baseline.  The A12 per-kind cutover
+// (rbac.modeForKind) makes Cerbos authoritative for individual kinds
+// regardless of the baseline, and dispatch only reaches Cerbos when the engine
+// is seeded.  Gating this on "global mode == cerbos" would silently break
+// cutover-under-a-legacy/shadow-baseline — those kinds would fall back to the
+// legacy path — with no test failing (the dispatch tests seed the engine
+// directly, bypassing this seam).
 func (a *Authorizer) DecisionEngine() *rbac.RBAC {
 	return a.rbac
 }

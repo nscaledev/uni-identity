@@ -22,6 +22,7 @@ import (
 	goerrors "errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -74,6 +75,16 @@ type Options struct {
 	// there dispatch additionally requires an engine-seeded context.
 	AuthorizationEngine EngineMode
 
+	// CerbosAuthoritativeKinds is the A12 strangle-by-kind cutover set: the
+	// endpoint/kind strings (e.g. "identity:groups") for which the Cerbos PDP
+	// is AUTHORITATIVE regardless of the global AuthorizationEngine baseline —
+	// served by the PDP with no legacy fallback and fail-closed (see
+	// modeForKind in engine.go).  Empty (the default) means no kind is cut
+	// over, so dispatch is byte-identical to the global mode: the mechanism is
+	// inert until an operator sets it per-kind post shadow-soak, and clearing a
+	// kind is a config-only rollback.
+	CerbosAuthoritativeKinds []string
+
 	// DecisionCacheSize is the capacity of the coarse-decision cache
 	// (cerbos-mode allowCoarse; see engine.go).
 	DecisionCacheSize int
@@ -91,6 +102,7 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringSliceVar(&o.PlatformAdministratorSubjects, "platform-administrator-subjects", nil, "Platform administrators.")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
 	f.Var(&o.AuthorizationEngine, "authorization-engine", "Authorization engine serving Allow* enforcement decisions (legacy, shadow or cerbos).")
+	f.StringSliceVar(&o.CerbosAuthoritativeKinds, "cerbos-authoritative-kinds", nil, "Endpoint kinds (e.g. identity:groups) for which Cerbos is authoritative regardless of --authorization-engine: the strangle-by-kind cutover (served by the PDP, no legacy fallback, fail-closed). Exact-match on the endpoint (no wildcards); a value that does not exactly match an endpoint silently leaves that kind on the baseline. Empty means no cutover.")
 	f.IntVar(&o.DecisionCacheSize, "decision-cache-size", defaultDecisionCacheSize, "Size of the coarse Cerbos decision cache.")
 	f.DurationVar(&o.DecisionCacheTimeout, "decision-cache-timeout", defaultDecisionCacheTimeout, "Duration to cache coarse Cerbos decisions for.")
 }
@@ -100,6 +112,14 @@ type RBAC struct {
 	client    client.Client
 	namespace string
 	options   *Options
+
+	// cutoverKinds is the O(1) form of Options.CerbosAuthoritativeKinds, built
+	// once in New: the per-kind strangle cutover set the A12 modeForKind reads.
+	// A kind here is Cerbos-authoritative regardless of the global mode; nil —
+	// the default, and every downstream/test construction that never sets the
+	// option — means no kind is cut over, so modeForKind == mode() for all
+	// kinds and dispatch is byte-identical to the pre-A12 global behaviour.
+	cutoverKinds map[string]bool
 
 	// pdp is the Cerbos policy decision point used by Check/CheckMany
 	// (injected via WithCerbos; see check.go).  It is legal for it to be
@@ -158,10 +178,49 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 	decisionCache := cache.NewLRUExpireCache[string, bool](cacheSize)
 	decisionCache.ZeroCopy()
 
+	// Build the O(1) cutover set once.  Left nil when unset (downstream services
+	// and tests never register the flag), so modeForKind resolves to mode() for
+	// every kind — the zero-behaviour-change default.  Each entry is trimmed and
+	// empties skipped: --cerbos-authoritative-kinds is a StringSliceVar whose CSV
+	// parser does NOT trim, so "identity:groups, identity:projects" would store a
+	// leading-space " identity:projects" that could never match a facade endpoint
+	// and silently leave that kind on the baseline.
+	var cutoverKinds map[string]bool
+
+	if options != nil {
+		for _, raw := range options.CerbosAuthoritativeKinds {
+			kind := strings.TrimSpace(raw)
+			if kind == "" {
+				continue
+			}
+
+			if cutoverKinds == nil {
+				cutoverKinds = map[string]bool{}
+			}
+
+			cutoverKinds[kind] = true
+		}
+	}
+
+	// Announce the effective cutover set at startup.  Matching is exact and a
+	// mismatch fails OPEN (the kind silently stays on the baseline), so surfacing
+	// the security-critical set of kinds Cerbos is authoritative for turns a
+	// silent misconfiguration into one an operator can eyeball against intent.
+	if len(cutoverKinds) > 0 {
+		kinds := make([]string, 0, len(cutoverKinds))
+		for kind := range cutoverKinds {
+			kinds = append(kinds, kind)
+		}
+
+		slices.Sort(kinds)
+		log.Log.Info("cerbos authoritative (cutover) kinds configured", "kinds", kinds)
+	}
+
 	return &RBAC{
 		client:           client,
 		namespace:        namespace,
 		options:          options,
+		cutoverKinds:     cutoverKinds,
 		decisions:        decisions,
 		cacheDecisions:   cacheDecisions,
 		pdpLatency:       pdpLatency,

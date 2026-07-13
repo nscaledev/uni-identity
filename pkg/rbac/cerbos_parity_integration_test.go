@@ -570,6 +570,61 @@ func TestCerbosDecisionParity(t *testing.T) {
 
 		require.Empty(t, capture.messages(shadowFailureMessage))
 	})
+
+	// A12 strangle-by-kind cutover against REAL Cerbos: with a LEGACY global
+	// baseline and a single kind cut over, that kind is served authoritatively
+	// by the PDP — the served verdict is Cerbos's, with NO fall back to the
+	// legacy walk — while clearing the cutover set reverts it to the legacy
+	// walk.  This proves the A12 mechanism end to end against the pinned image,
+	// not just the capturePDP unit fakes.
+	t.Run("CutoverKindServedByRealCerbosUnderLegacyBaseline", func(t *testing.T) {
+		t.Parallel()
+
+		const cutoverKind = "identity:groups"
+
+		// Alice holds identity:groups create/read/update (not delete) at org A,
+		// so real Cerbos DENIES delete — the UserOrgUngrantedOp matrix cell.
+		aliceInfo := parityUserInfo(parityAliceSubject, parityOrgA, parityOrgGhost, parityOrgB)
+
+		// A seeded ACL that GRANTS identity:groups delete at org A, so the legacy
+		// walk would ALLOW: the served verdict therefore distinguishes which
+		// engine answered.
+		grantingACL := &openapi.Acl{
+			Organizations: &openapi.AclOrganizationList{{
+				Id:        parityOrgA,
+				Endpoints: &openapi.AclEndpoints{{Name: cutoverKind, Operations: openapi.AclOperations{openapi.Delete}}},
+			}},
+		}
+
+		baseCtx := rbac.NewContext(authorization.NewContext(t.Context(), aliceInfo), grantingACL)
+
+		// Cut over: real Cerbos is authoritative even under a LEGACY global
+		// baseline, so the PDP deny is served with no fall back to the legacy
+		// allow.
+		cutover := rbac.New(fx.client, parityNamespace, &rbac.Options{
+			PlatformAdministratorSubjects: []string{parityAdminSubject},
+			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+			SystemAccountRoleIDs: map[string]string{
+				paritySystemCN:             parityRoleGlobalAdmin,
+				paritySystemImpersonatorCN: parityRoleImpersonator,
+			},
+			AuthorizationEngine:      rbac.EngineLegacy,
+			CerbosAuthoritativeKinds: []string{cutoverKind},
+		}).WithCerbos(client)
+
+		err := rbac.AllowOrganizationScope(rbac.NewEngineContext(baseCtx, cutover), cutoverKind, openapi.Delete, parityOrgA)
+		require.Error(t, err, "a cut-over kind must be served by Cerbos (deny), never the legacy allow")
+		require.ErrorIs(t, err, rbac.ErrPolicyDenied)
+
+		// Reverted (empty cutover set): the same check under the same legacy
+		// baseline is served by the legacy walk, which the ACL allows.
+		reverted := rbac.New(fx.client, parityNamespace, &rbac.Options{
+			AuthorizationEngine: rbac.EngineLegacy,
+		}).WithCerbos(client)
+
+		require.NoError(t, rbac.AllowOrganizationScope(rbac.NewEngineContext(baseCtx, reverted), cutoverKind, openapi.Delete, parityOrgA),
+			"an empty cutover set reverts the kind to the legacy walk")
+	})
 }
 
 // shadowFacadeVerdict serves one matrix case through the Allow* facade with a

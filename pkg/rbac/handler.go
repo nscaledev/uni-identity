@@ -56,7 +56,7 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 
 // AllowGlobalScope tries to allow the requested operation at the global scope.
 func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
-	if engine := engineForDispatch(ctx); engine != nil {
+	if engine := engineForDispatch(ctx, endpoint); engine != nil {
 		// Coarse global check: Kind only, no scope attributes, coarse ID.
 		return engine.allowCoarse(ctx, Resource{Kind: endpoint}, operation)
 	}
@@ -65,7 +65,8 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 }
 
 // allowGlobalScopeLegacy is the legacy local ACL walk, retained verbatim for
-// the A7 shadow comparison; it goes at the A12 cutover.
+// the A7 shadow comparison and to serve kinds not yet cut over to Cerbos
+// (A12); it is removed at A17.
 func allowGlobalScopeLegacy(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
 	acl := FromContext(ctx)
 
@@ -105,7 +106,7 @@ func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operatio
 // deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
 // and will be removed once those callers have migrated.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
-	if engine := engineForDispatch(ctx); engine != nil {
+	if engine := engineForDispatch(ctx, endpoint); engine != nil {
 		// Coarse organization check: the project attribute stays ABSENT —
 		// the generated policies' no-flow-up invariant depends on that.
 		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID}, operation)
@@ -115,7 +116,8 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 }
 
 // allowOrganizationScopeLegacy is the legacy local ACL walk, retained
-// verbatim for the A7 shadow comparison; it goes at the A12 cutover.
+// verbatim for the A7 shadow comparison and to serve kinds not yet cut over to
+// Cerbos (A12); it is removed at A17.
 func allowOrganizationScopeLegacy(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
 	if allowGlobalScopeLegacy(ctx, endpoint, operation) == nil {
 		return nil
@@ -169,7 +171,7 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 // in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
 // will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	if engine := engineForDispatch(ctx); engine != nil {
+	if engine := engineForDispatch(ctx, endpoint); engine != nil {
 		// Coarse project check: both scope attributes set.
 		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation)
 	}
@@ -178,7 +180,8 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 }
 
 // allowProjectScopeLegacy is the legacy local ACL walk, retained verbatim
-// for the A7 shadow comparison; it goes at the A12 cutover.
+// for the A7 shadow comparison and to serve kinds not yet cut over to Cerbos
+// (A12); it is removed at A17.
 func allowProjectScopeLegacy(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	if allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID) == nil {
 		return nil

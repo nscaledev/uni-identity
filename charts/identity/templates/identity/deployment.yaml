@@ -42,6 +42,14 @@ spec:
         {{- with .Values.identity.authorizationEngine }}
         - --authorization-engine={{ . }}
         {{- end }}
+        {{- with .Values.identity.cerbosAuthoritativeKinds }}
+        # Strangle-by-kind cutover: these endpoint kinds are served
+        # authoritatively by Cerbos regardless of --authorization-engine (no
+        # legacy fallback, fail-closed).  Rendered only when non-empty, so the
+        # default deploy sets no cutover — flip is deferred; set kinds per-kind
+        # post-soak.
+        - --cerbos-authoritative-kinds={{ join "," . }}
+        {{- end }}
         # The controller-owned policy store ConfigMap, read to key the
         # coarse-decision cache on the policy-store hash so a republish busts
         # it.  Same expression the cerbos sidecar's policy volume and the

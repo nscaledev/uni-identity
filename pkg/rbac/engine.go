@@ -34,8 +34,9 @@ import (
 // its decisions either from the legacy in-process ACL walk (handler.go) or
 // from the Cerbos decision API (check.go), selected by an engine seeded into
 // the request context.  The legacy path is retained verbatim — the A7 shadow
-// comparator (shadow.go) runs it live alongside the Cerbos path — and it
-// only goes at the A12 cutover.
+// comparator (shadow.go) runs it live alongside the Cerbos path, and the A12
+// per-kind cutover (modeForKind) makes Cerbos authoritative one kind at a time
+// — and it is removed only at A17, after the strangle-by-kind cutover.
 
 // ErrInvalidEngineMode rejects engine mode values outside the whitelist.
 var ErrInvalidEngineMode = goerrors.New("invalid authorization engine mode")
@@ -115,17 +116,35 @@ func (r *RBAC) mode() EngineMode {
 	return EngineLegacy
 }
 
+// modeForKind is mode() specialized per (kind): a kind cut over to Cerbos is
+// authoritative regardless of the global --authorization-engine baseline (the
+// A12 strangle-by-kind switch), so it is served by the PDP even under a legacy
+// or shadow global mode; every other kind follows the global mode.  Matching is
+// exact-string on the endpoint — one endpoint is strangled at a time (no
+// wildcards in M1).  With an empty cutover set (the default) modeForKind ==
+// mode() for every kind, so dispatch is byte-identical to the pre-A12 global
+// behaviour, and clearing a kind from the set reverts it (config-only
+// rollback).
+func (r *RBAC) modeForKind(kind string) EngineMode {
+	if r.cutoverKinds[kind] {
+		return EngineCerbos
+	}
+
+	return r.mode()
+}
+
 // engineForDispatch returns the context's decision engine when — and only
-// when — the Cerbos path must serve the decision: an engine was seeded and
-// its mode is cerbos.  Impersonated requests are served too, via the A14
-// dual check (decideImpersonated in check.go); an invalid impersonated
-// principal TYPE fails closed inside the decision API
+// when — the Cerbos path must serve the decision for this kind: an engine was
+// seeded and its mode for the kind is cerbos — the global cerbos baseline, or a
+// per-kind A12 cutover (modeForKind).  Impersonated requests are served too,
+// via the A14 dual check (decideImpersonated in check.go); an invalid
+// impersonated principal TYPE fails closed inside the decision API
 // (ErrImpersonationNotSupported), mirroring the legacy hard error rather
 // than falling back to the legacy path.
-func engineForDispatch(ctx context.Context) *RBAC {
+func engineForDispatch(ctx context.Context, kind string) *RBAC {
 	engine := EngineFromContext(ctx)
 
-	if engine == nil || engine.mode() != EngineCerbos {
+	if engine == nil || engine.modeForKind(kind) != EngineCerbos {
 		return nil
 	}
 
