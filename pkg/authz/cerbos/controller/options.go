@@ -39,12 +39,23 @@ type Options struct {
 	// gate.  The default matches where the controller image vendors the
 	// pinned binary (docker/unikorn-policy-controller/Dockerfile).
 	CerbosBinary string
+
+	// MaxPolicyStoreBytes caps the generated policy store: a candidate whose
+	// key+value bytes exceed it is refused before publication (a
+	// PolicyStoreTooLarge event, last-good retained) instead of failing an
+	// opaque publish.  The whole store lives in one ConfigMap, which the API
+	// server caps at ~1 MiB (the etcd request-size limit); 0 selects that
+	// default (defaultMaxPolicyStoreBytes).  Configurable because the
+	// effective ceiling is cluster/etcd-tunable and so tests can exercise the
+	// refusal path with a small value.
+	MaxPolicyStoreBytes int
 }
 
 // AddFlags registers the controller flags with the flag set.
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringVar(&o.ConfigMapName, "cerbos-policies-configmap", "", "Name of the Cerbos policy store ConfigMap to publish (required).")
 	f.StringVar(&o.CerbosBinary, "cerbos-binary", "/usr/local/bin/cerbos", "Path of the cerbos binary used as the compile gate.")
+	f.IntVar(&o.MaxPolicyStoreBytes, "cerbos-max-policy-store-bytes", defaultMaxPolicyStoreBytes, "Maximum size in bytes of the generated Cerbos policy store; a larger candidate is refused rather than published (the ~1 MiB single-ConfigMap ceiling).")
 }
 
 // Validate rejects unusable static configuration; the manager fails fast on

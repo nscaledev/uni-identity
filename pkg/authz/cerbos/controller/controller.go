@@ -27,6 +27,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -69,7 +70,25 @@ const (
 	// eventPolicyStoreRejected is the reason on the warning event emitted
 	// when the compile gate refuses a candidate store.
 	eventPolicyStoreRejected = "PolicyStoreRejected"
+
+	// eventPolicyStoreTooLarge is the reason on the warning event emitted
+	// when the pre-publish size gate refuses a candidate store that would
+	// exceed the ConfigMap size ceiling.
+	eventPolicyStoreTooLarge = "PolicyStoreTooLarge"
+
+	// defaultMaxPolicyStoreBytes is the default policy-store size ceiling:
+	// the ~1 MiB (1<<20) the Kubernetes API server enforces on a ConfigMap's
+	// data (the etcd request-size limit, k8s ValidateConfigMap).  Overridable
+	// via Options.MaxPolicyStoreBytes.
+	defaultMaxPolicyStoreBytes = 1 << 20
 )
+
+// ErrPolicyStoreTooLarge is returned when a candidate store would exceed the
+// configured ConfigMap size ceiling (Reconciler.maxStoreBytes).  It is refused
+// before publication so the sidecar keeps serving the last-good store; the
+// sentinel makes the refusal classifiable with errors.Is, like the compile
+// gate's ErrCompileFailed/ErrTestsFailed.
+var ErrPolicyStoreTooLarge = errors.New("policy store exceeds the ConfigMap size limit")
 
 // Reconciler regenerates and publishes the policy store ConfigMap.  It is a
 // custom fan-in reconciler, not a coremanager.NewReconciler object-lifecycle
@@ -95,18 +114,31 @@ type Reconciler struct {
 
 	// gate validates every candidate store before publication.
 	gate CompileGate
+
+	// maxStoreBytes is the size ceiling (key+value bytes across Data) above
+	// which a candidate store is refused before publication instead of
+	// failing an opaque publish: the whole store lives in one ConfigMap,
+	// which the API server caps at ~1 MiB.  Defaulted from
+	// Options.MaxPolicyStoreBytes in New.
+	maxStoreBytes int
 }
 
 var _ reconcile.Reconciler = &Reconciler{}
 
 // New returns a policy store reconciler.
 func New(client client.Client, recorder record.EventRecorder, namespace string, options *Options, gate CompileGate) *Reconciler {
+	maxStoreBytes := options.MaxPolicyStoreBytes
+	if maxStoreBytes <= 0 {
+		maxStoreBytes = defaultMaxPolicyStoreBytes
+	}
+
 	return &Reconciler{
 		client:        client,
 		recorder:      recorder,
 		namespace:     namespace,
 		configMapName: options.ConfigMapName,
 		gate:          gate,
+		maxStoreBytes: maxStoreBytes,
 	}
 }
 
@@ -130,6 +162,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconc
 
 	if current {
 		return reconcile.Result{}, nil
+	}
+
+	if size := policyStoreSize(data); size > r.maxStoreBytes {
+		// Refuse before compiling (cheap-first): a store too large to fit
+		// the ConfigMap must surface as a dedicated, classifiable refusal,
+		// not freeze last-good behind an opaque publish error.  Same
+		// fail-closed contract as the compile gate — leave the ConfigMap
+		// untouched and alarm via an event on the store object.
+		logger.Error(ErrPolicyStoreTooLarge, "refusing to publish policy store", "roles", roles, "bytes", size, "limit", r.maxStoreBytes)
+		r.recorder.Eventf(r.configMapRef(), corev1.EventTypeWarning, eventPolicyStoreTooLarge,
+			"Refusing to publish generated policy store (%d bytes exceeds the %d-byte ConfigMap limit), keeping last-good policies", size, r.maxStoreBytes)
+
+		return reconcile.Result{}, fmt.Errorf("%w: %d bytes exceeds %d", ErrPolicyStoreTooLarge, size, r.maxStoreBytes)
 	}
 
 	if err := r.compileCheck(ctx, data); err != nil {
@@ -227,6 +272,20 @@ func (r *Reconciler) configMapRef() *corev1.ConfigMap {
 			Name:      r.configMapName,
 		},
 	}
+}
+
+// policyStoreSize is the ConfigMap data size the API server validates against
+// its ~1 MiB limit: the sum of key and value bytes across Data.  Counting the
+// keys (the API server's data check may weigh only values) is deliberately
+// conservative — refuse at or slightly before the true limit, never after.
+func policyStoreSize(data map[string]string) int {
+	total := 0
+
+	for k, v := range data {
+		total += len(k) + len(v)
+	}
+
+	return total
 }
 
 // compileCheck materializes the candidate store in a scratch directory and

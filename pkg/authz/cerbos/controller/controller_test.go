@@ -247,6 +247,60 @@ func TestReconcileGateRefusalKeepsLastGood(t *testing.T) {
 	}
 }
 
+// TestReconcileOversizeRefusalKeepsLastGood pins the size-gate fail-closed
+// contract, the sibling of the compile gate: when the candidate store would
+// exceed the configured ConfigMap ceiling the reconciler must surface
+// ErrPolicyStoreTooLarge, emit a PolicyStoreTooLarge warning event, and leave
+// the last-good ConfigMap byte-identical.  Without this gate an over-cap store
+// fails publish as an opaque error and silently freezes at last-good with no
+// dedicated signal — A22 turns that silent freeze into a legible refusal.
+func TestReconcileOversizeRefusalKeepsLastGood(t *testing.T) {
+	t.Parallel()
+
+	// Seed a last-good store that differs from what the role generates, so
+	// the reconcile is not a no-op and actually reaches the size gate.
+	lastGood := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      configMapName,
+		},
+		Data: map[string]string{"last-good.yaml": "keep me"},
+	}
+
+	c := newClient(t, newRole("role-a", "identity:groups"), lastGood)
+	gate := &fakeGate{}
+	recorder := record.NewFakeRecorder(8)
+
+	// A tiny ceiling refuses any non-empty candidate.  The gate is left
+	// passing, so a refusal proves the SIZE gate fired — and it must run
+	// before the compile gate (cheap-first), which the gate.calls == 0
+	// assertion below pins.
+	options := &controller.Options{
+		ConfigMapName:       configMapName,
+		CerbosBinary:        "/usr/local/bin/cerbos",
+		MaxPolicyStoreBytes: 8,
+	}
+	r := controller.New(c, recorder, testNamespace, options, gate)
+
+	seeded := getConfigMap(t, c)
+
+	_, err := r.Reconcile(t.Context(), reconcile.Request{})
+	require.ErrorIs(t, err, controller.ErrPolicyStoreTooLarge)
+
+	kept := getConfigMap(t, c)
+	require.Equal(t, seeded.Data, kept.Data, "an oversize store must leave the last-good policies untouched")
+	require.Equal(t, seeded.ResourceVersion, kept.ResourceVersion, "a refused store must not write the ConfigMap")
+	require.Equal(t, 0, gate.calls, "the size gate must refuse before the compile gate runs")
+
+	select {
+	case event := <-recorder.Events:
+		require.Contains(t, event, corev1.EventTypeWarning)
+		require.Contains(t, event, "PolicyStoreTooLarge")
+	default:
+		require.Fail(t, "expected a warning event for the oversize store")
+	}
+}
+
 // TestReconcileGateRefusalDoesNotCreate pins the fail-closed contract for
 // first publish: if the very first candidate store is refused, no ConfigMap
 // may appear — the sidecar keeps serving deny-by-default from its empty

@@ -207,6 +207,23 @@ a warning event (`PolicyStoreRejected`) is emitted on the ConfigMap, and the
 error is logged and returned for retry with backoff.  There is no code path
 that publishes an unvetted store.  The gate never passes `--skip-tests`.
 
+### The Single-ConfigMap Size Ceiling (caveat)
+
+The whole generated store is published into **one** ConfigMap, which the
+Kubernetes API server caps at ~1 MiB (the etcd request-size limit enforced by
+`ValidateConfigMap`).  A candidate store whose key+value bytes would exceed the
+ceiling is refused by a **pre-publish size gate** that runs *before* the compile
+gate (cheap-first — do not compile a store that cannot be published):
+`--cerbos-max-policy-store-bytes` (default 1 MiB, `defaultMaxPolicyStoreBytes`)
+sets the limit.  The refusal mirrors the compile gate exactly — the ConfigMap is
+left untouched so the sidecar keeps serving the last-good store, a warning event
+(`PolicyStoreTooLarge`) is emitted on it, and an `ErrPolicyStoreTooLarge`
+reconcile error is returned for backoff.  Without this gate an over-cap store
+fails the opaque `CreateOrUpdate` publish and silently freezes at last-good with
+no dedicated signal — the gate turns that silent freeze into a legible refusal
+(A22).  Sharding the store across multiple ConfigMaps, or moving to a
+non-ConfigMap Cerbos store (blob/git/DB), is **M2**.
+
 ### The Hash-Suffixed Key Scheme (load-bearing)
 
 Every generated file `<base>.yaml` is published under the ConfigMap key
