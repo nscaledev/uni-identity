@@ -52,8 +52,10 @@ import (
 const decisionMessage = "authorization decision"
 
 // decisionFieldCount is the CLOSED decision-record field set size: the
-// guarantee that no token, passport or claim material can ride along.
-const decisionFieldCount = 12
+// guarantee that no token, passport or claim material can ride along.  The
+// policy correlate is the single policy_hash field (A20), not the former
+// policy_version/policy_scope pair.
+const decisionFieldCount = 11
 
 // impersonatedDecisionFieldCount is the closed field set for impersonated
 // decisions (A14): exactly two more fields — the impersonated subject and its
@@ -152,14 +154,11 @@ func TestDecisionLogAllow(t *testing.T) {
 	t.Parallel()
 
 	fx := newParityFixture(t)
+	fx.rbac.WithCerbos(&fakePDP{response: pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}))})
 
-	// The stamped policy metadata proves the A15 policy-correlate seam is
-	// plumbed through to the record (a real PDP echoes empty values today).
-	fx.rbac.WithCerbos(&stampedPDP{
-		next:          &fakePDP{response: pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}))},
-		policyVersion: "default",
-		policyScope:   "acme",
-	})
+	// The stub hasher proves the A20 policy-store-hash correlate is plumbed
+	// through to the record: an obtained verdict pins the store revision.
+	fx.rbac.WithPolicyStoreHash(&stubHasher{hash: "store-hash-allow", ok: true})
 
 	capture := &logCapture{}
 	ctx := capture.into(aliceContext(t))
@@ -186,11 +185,66 @@ func TestDecisionLogAllow(t *testing.T) {
 	require.Empty(t, attrs["project_id"])
 	require.Equal(t, "allow", attrs["decision"])
 	require.Equal(t, "policy", attrs["reason"])
-	require.Equal(t, "default", attrs["policy_version"])
-	require.Equal(t, "acme", attrs["policy_scope"])
+	require.Equal(t, "store-hash-allow", attrs["policy_hash"], "an obtained verdict pins the policy-store revision")
 	require.NotEmpty(t, attrs["latency"])
 
 	t.Logf("sample allow record: level=%d message=%q fields=%v", records[0].level, records[0].message, attrs)
+}
+
+// TestDecisionLogPolicyStoreHashCorrelate is the A20 deliverable proof: a
+// served decision record must PIN the policy-store revision it was decided
+// against, so an operator reading a deny (or a shadow divergence) can tell
+// which store content produced it.  The correlate is the store hash when a
+// hasher is configured, and empty — never invented — when one is not or the
+// hash is not yet available, the same fail-safe contract the coarse cache keys
+// on.
+func TestDecisionLogPolicyStoreHashCorrelate(t *testing.T) {
+	t.Parallel()
+
+	response := pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}))
+	resource := rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}
+
+	t.Run("WithHasherCarriesTheStoreHash", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newParityFixture(t)
+		fx.rbac.WithCerbos(&fakePDP{response: response}).WithPolicyStoreHash(&stubHasher{hash: "store-rev-abc", ok: true})
+
+		capture := &logCapture{}
+		require.NoError(t, fx.rbac.Check(capture.into(aliceContext(t)), resource, openapi.Read))
+
+		records := capture.messages(decisionMessage)
+		require.Len(t, records, 1)
+		require.Equal(t, "store-rev-abc", logAttrs(t, records[0])["policy_hash"], "an obtained verdict pins the configured store revision")
+	})
+
+	t.Run("WithoutHasherCorrelateIsEmpty", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newParityFixture(t)
+		fx.rbac.WithCerbos(&fakePDP{response: response})
+
+		capture := &logCapture{}
+		require.NoError(t, fx.rbac.Check(capture.into(aliceContext(t)), resource, openapi.Read))
+
+		records := capture.messages(decisionMessage)
+		require.Len(t, records, 1)
+		require.Empty(t, logAttrs(t, records[0])["policy_hash"], "no hasher configured, so the correlate is empty — never invented")
+	})
+
+	t.Run("UnavailableHashCorrelateIsEmpty", func(t *testing.T) {
+		t.Parallel()
+
+		fx := newParityFixture(t)
+		fx.rbac.WithCerbos(&fakePDP{response: response}).WithPolicyStoreHash(&stubHasher{ok: false})
+
+		capture := &logCapture{}
+		require.NoError(t, fx.rbac.Check(capture.into(aliceContext(t)), resource, openapi.Read))
+
+		records := capture.messages(decisionMessage)
+		require.Len(t, records, 1)
+		require.Empty(t, logAttrs(t, records[0])["policy_hash"], "an unavailable hash (no successful read yet) bypasses the correlate, fail-safe")
+	})
 }
 
 func TestDecisionLogPolicyDeny(t *testing.T) {
@@ -216,7 +270,7 @@ func TestDecisionLogPolicyDeny(t *testing.T) {
 	require.Equal(t, "deny", attrs["decision"])
 	require.Equal(t, "policy", attrs["reason"], "an explicit policy deny is a verdict, not a failure class")
 	require.Equal(t, "delete", attrs["operation"])
-	require.Empty(t, attrs["policy_version"], "an unstamped PDP response carries no policy correlate")
+	require.Empty(t, attrs["policy_hash"], "no hasher is configured, so the correlate is empty even for an obtained verdict")
 
 	t.Logf("sample policy-deny record: level=%d message=%q fields=%v", records[0].level, records[0].message, attrs)
 }
@@ -233,6 +287,11 @@ func TestDecisionLogFailureClasses(t *testing.T) {
 		fx := newParityFixture(t)
 		fx.rbac.WithCerbos(&fakePDP{err: errFakeTransport})
 
+		// A hasher IS configured: the empty correlate below proves the gate is
+		// the obtained-verdict, not the mere absence of a hasher — no verdict,
+		// no store revision pinned, even when one is available.
+		fx.rbac.WithPolicyStoreHash(&stubHasher{hash: "store-hash-unavail", ok: true})
+
 		capture := &logCapture{}
 		ctx := capture.into(aliceContext(t))
 
@@ -247,7 +306,7 @@ func TestDecisionLogFailureClasses(t *testing.T) {
 		require.Len(t, attrs, decisionFieldCount)
 		require.Equal(t, "deny", attrs["decision"])
 		require.Equal(t, "unavailable", attrs["reason"])
-		require.Empty(t, attrs["policy_version"], "no verdict was obtained, so no policy correlate may be claimed")
+		require.Empty(t, attrs["policy_hash"], "no verdict was obtained, so no policy correlate may be claimed even with a hasher")
 
 		t.Logf("sample unavailable record: level=%d message=%q fields=%v", records[0].level, records[0].message, attrs)
 	})

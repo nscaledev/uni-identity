@@ -562,13 +562,11 @@ func TestCerbosDecisionParity(t *testing.T) {
 		require.Equal(t, "allow", attrs["cerbos_verdict"])
 		require.Equal(t, "allowed", attrs["cerbos_class"])
 
-		// The policy correlate is carried, but the PDP echoes the REQUESTED
-		// policy version/scope, which identity's coarse checks leave unset
-		// (the server-default version applies) — so both are empty against a
-		// real PDP until A15's policy-hash signal upgrades the correlate.
-		// The unit tests prove non-empty values are plumbed through.
-		require.Contains(t, attrs, "policy_version")
-		require.Contains(t, attrs, "policy_scope")
+		// The policy correlate is the policy-store hash (A20).  This fixture
+		// configures no hasher, so the value is empty — assert presence, not
+		// value; the unit tests prove a configured hasher plumbs the hash
+		// through.
+		require.Contains(t, attrs, "policy_hash")
 
 		require.Empty(t, capture.messages(shadowFailureMessage))
 	})

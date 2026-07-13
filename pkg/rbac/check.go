@@ -154,7 +154,7 @@ func (r *RBAC) Check(ctx context.Context, resource Resource, action openapi.AclO
 func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, error) {
 	start := time.Now()
 
-	allowed, response, err := r.decide(ctx, checks)
+	allowed, err := r.decide(ctx, checks)
 
 	// Shadow evaluations ride this same funnel via a marked shallow engine
 	// copy (shadow.go) but must not pollute the served-decision audit stream
@@ -162,34 +162,35 @@ func (r *RBAC) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, er
 	// latency histogram, recorded inside decide, IS shared deliberately:
 	// transport health is path-independent.
 	if !r.shadowEvaluation {
-		r.recordDecisions(ctx, checks, allowed, response, err, time.Since(start))
+		r.recordDecisions(ctx, checks, allowed, err, time.Since(start))
 	}
 
 	return allowed, err
 }
 
-// decide is CheckMany's evaluation body, additionally returning the raw PDP
-// response so the decision records can carry the in-band policy correlate.
-// Direct requests are one single-principal evaluation; impersonated requests
-// (the legacy detection predicate, type-gated) are the A14 dual check.
-func (r *RBAC) decide(ctx context.Context, checks []CheckRequest) ([]bool, *sdk.CheckResourcesResponse, error) {
+// decide is CheckMany's evaluation body.  Direct requests are one
+// single-principal evaluation; impersonated requests (the legacy detection
+// predicate, type-gated) are the A14 dual check.  The decision records' policy
+// correlate is the policy-store hash (recordDecisions/shadowCompare read it
+// from r.policyHasher), so the raw PDP response is no longer threaded out.
+func (r *RBAC) decide(ctx context.Context, checks []CheckRequest) ([]bool, error) {
 	impersonated := impersonationFromContext(ctx)
 
 	if impersonated != nil {
 		// The type gate is a pre-PDP fail-closed deny, like the resolution
 		// failures below: refused before any client or info is consulted.
 		if err := impersonationTypeGate(impersonated); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
 	if r.pdp == nil {
-		return nil, nil, fmt.Errorf("%w: no PDP client configured", ErrDecisionUnavailable)
+		return nil, fmt.Errorf("%w: no PDP client configured", ErrDecisionUnavailable)
 	}
 
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
 	if impersonated != nil {
@@ -203,10 +204,10 @@ func (r *RBAC) decide(ctx context.Context, checks []CheckRequest) ([]bool, *sdk.
 // bindings, build ONE CheckResources request covering every check, and map
 // the response.  Direct requests run it once; impersonated requests run it
 // once per side of the dual check.
-func (r *RBAC) evaluate(ctx context.Context, info *authorization.Info, checks []CheckRequest) ([]bool, *sdk.CheckResourcesResponse, error) {
+func (r *RBAC) evaluate(ctx context.Context, info *authorization.Info, checks []CheckRequest) ([]bool, error) {
 	bindings, err := r.ResolveBindings(ctx, info)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
 	// The principal is keyed by the same subject string the resolver keyed
@@ -214,7 +215,7 @@ func (r *RBAC) evaluate(ctx context.Context, info *authorization.Info, checks []
 	// BuildPrincipal): the request is still sent and every check denies.
 	checkPrincipal, err := cerbos.BuildPrincipal(info.Userinfo.Sub, bindings)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
 	entries := make([]cerbos.BatchEntry, len(checks))
@@ -222,7 +223,7 @@ func (r *RBAC) evaluate(ctx context.Context, info *authorization.Info, checks []
 	for i, check := range checks {
 		resource, err := cerbos.BuildResource(check.Resource.Kind, check.Resource.ID, check.Resource.OrganizationID, check.Resource.ProjectID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 		}
 
 		entries[i] = cerbos.BatchEntry{Resource: resource, Actions: []openapi.AclOperation{check.Action}}
@@ -230,7 +231,7 @@ func (r *RBAC) evaluate(ctx context.Context, info *authorization.Info, checks []
 
 	batch, err := cerbos.BuildBatch(entries)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrResolutionFailed, err)
 	}
 
 	// The histogram is recorded tightly around the PDP round trip — no
@@ -244,12 +245,10 @@ func (r *RBAC) evaluate(ctx context.Context, info *authorization.Info, checks []
 	r.pdpLatency.Record(ctx, time.Since(pdpStart).Seconds())
 
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %w", ErrDecisionUnavailable, err)
+		return nil, fmt.Errorf("%w: %w", ErrDecisionUnavailable, err)
 	}
 
-	allowed, err := mapResults(checks, entries, response)
-
-	return allowed, response, err
+	return mapResults(checks, entries, response)
 }
 
 // mapResults maps the PDP response onto the request order.  CheckResources
@@ -384,20 +383,19 @@ func impersonatedInfo(p *principal.Principal) *authorization.Info {
 // point, above this).  A resolver or transport failure on EITHER side maps
 // to the same fail-closed classes as a direct request, the impersonated
 // side's taking precedence when both fail.
-func (r *RBAC) decideImpersonated(ctx context.Context, info *authorization.Info, p *principal.Principal, checks []CheckRequest) ([]bool, *sdk.CheckResourcesResponse, error) {
-	// The impersonated side evaluates FIRST, deliberately: shadow's
-	// capturingPDP retains only the last response, and the service side's
-	// is the one that must win (see shadow.go).
-	impersonatedAllowed, _, impersonatedErr := r.evaluate(ctx, impersonatedInfo(p), checks)
+func (r *RBAC) decideImpersonated(ctx context.Context, info *authorization.Info, p *principal.Principal, checks []CheckRequest) ([]bool, error) {
+	// The impersonated side is evaluated first, the service side second — the
+	// fixed order the dual-check tests pin via the captured principals.
+	impersonatedAllowed, impersonatedErr := r.evaluate(ctx, impersonatedInfo(p), checks)
 
-	serviceAllowed, serviceResponse, serviceErr := r.evaluate(ctx, info, checks)
+	serviceAllowed, serviceErr := r.evaluate(ctx, info, checks)
 
 	if impersonatedErr != nil {
-		return nil, nil, impersonatedErr
+		return nil, impersonatedErr
 	}
 
 	if serviceErr != nil {
-		return nil, nil, serviceErr
+		return nil, serviceErr
 	}
 
 	allowed := make([]bool, len(checks))
@@ -406,10 +404,5 @@ func (r *RBAC) decideImpersonated(ctx context.Context, info *authorization.Info,
 		allowed[i] = impersonatedAllowed[i] && serviceAllowed[i]
 	}
 
-	// The service-side response is the returned policy correlate,
-	// consistent with the shadow capture; both correlates are empty against
-	// today's PDP anyway (the A15 seam — the policy-store hash that would
-	// replace them now exists, pkg/authz/cerbos.PolicyStoreHasher, but wiring
-	// it into the correlate is deferred out of A15, tracked as task A20).
-	return allowed, serviceResponse, nil
+	return allowed, nil
 }

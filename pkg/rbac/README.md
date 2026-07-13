@@ -190,20 +190,21 @@ scope, resource ID always the coarse `*`).
     legacy's. Comparison is on allow/deny alone, never on error message strings
     (cerbos-path denials carry a generic message by design). Fields: subject, actor type,
     endpoint, operation, organization/project IDs, both verdicts, the Cerbos sentinel
-    class, and the policy correlate.
+    class, and the policy-store hash correlate (`policy_hash`).
   - `cerbos shadow evaluation failure` — **no verdict** was obtained
     (`ErrDecisionUnavailable`, `ErrResolutionFailed`, or a recovered panic). This is infra
     signal, never policy-parity signal: **A12's gate reads "zero divergence" as zero
     VERDICT divergences, with evaluation failures triaged separately**, so a PDP restart
     during the shadow phase cannot masquerade as policy divergence.
 
-  The **policy correlate** is currently the in-band per-result policy version/scope the
-  SDK response carries (plus the record's timestamp) — a deliberate deviation from the
-  plan's "policy hash". Note the PDP echoes the *requested* version/scope, which identity's
-  version-less coarse checks leave empty. A15 has since built the policy-store hash signal
-  (the hasher, for cache invalidation), but this correlate does NOT yet consume it: wiring
-  that hash into `shadowPolicyCorrelate` (the seam in `shadow.go`), so a divergence pins the
-  exact store revision it was observed against, is a deferred follow-up.
+  The **policy correlate** is the **policy-store hash** (`policy_hash`, A20): the fingerprint
+  the hasher reports (`pkg/authz/cerbos.PolicyStoreHasher`, read-through of the
+  controller-owned policies ConfigMap), so a divergence pins the exact store revision it was
+  observed against. It is claimed only when a verdict was obtained, and is empty — never
+  invented — when no hasher is configured or the hash is not yet available (the same
+  fail-safe contract the coarse cache keys on). This replaces the earlier empty PDP echo: the
+  PDP only echoes the *requested* policy version/scope, which identity's version-less coarse
+  checks leave unset, so that echo carried no signal.
 
   Exclusions: `AllowProjectScopeCreate`/`AllowRole` are never shadowed (see below).
   **Impersonated requests are compared too since A14**: the legacy intersection verdict
@@ -305,9 +306,9 @@ increment per entry — never one per side — with the AND-ed outcome. Two
 owner-flagged deviations from the migration plan's file table: **`decision_log` lives in
 `pkg/rbac`, not `pkg/authz/cerbos`** (the plan row predates A5 placing the decision layer
 here — the choke point and every record input live in this package, and the PDP client knows
-nothing about subjects and stays log-free), and **the "policy version/hash" field is emitted
-through the same seam the shadow comparator uses** (empty against today's PDP; A15 has built
-the policy-store hash signal but wiring it into this correlate is a deferred follow-up).
+nothing about subjects and stays log-free), and **the policy-store hash correlate
+(`policy_hash`) is emitted through the same seam the shadow comparator uses** (A20 — sourced
+from `PolicyStoreHasher`, empty when no hasher is configured, e.g. downstream or tests).
 
 **The decision log.** One record per `(resource, action)` entry of the batch — the flat,
 greppable shape; a batch-wide failure denies every entry, so every entry gets a record with
@@ -325,8 +326,9 @@ authorization info, NEVER tokens/passports/claims): `subject`, `actor_type`, `en
 `decision` (`allow|deny`), `reason` (`policy|unavailable|resolution|impersonation`, derived
 from the sentinel taxonomy via `errors.Is` — `policy` covers both verdicts, including a
 dual-check deny from either side; `impersonation` is **narrowed since A14** to the type-gate
-refusal only; the rest are the fail-closed classes), `policy_version`/`policy_scope` (the
-A15-seam correlate, only claimed when a verdict was obtained), and `latency` (the whole
+refusal only; the rest are the fail-closed classes), `policy_hash` (the policy-store hash
+correlate — A20 — pinning the store revision, only claimed when a verdict was obtained and
+empty when no hasher is configured), and `latency` (the whole
 decision: resolution + PDP + mapping). Impersonated decisions carry exactly two more
 fields — `impersonated_subject` and `impersonated_type`, read from the propagated
 principal — the design's `(impersonated-sub, actor)` pair, while `subject` stays the

@@ -21,8 +21,6 @@ import (
 	goerrors "errors"
 	"runtime/debug"
 
-	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
-
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -108,23 +106,14 @@ func (r *RBAC) shadowCompare(ctx context.Context, resource Resource, operation o
 
 	attrs = shadowAttrs(ctx, resource, operation, legacyAllowed)
 
-	// Capture the raw PDP response at the PolicyDecisionPoint seam — Check
-	// deliberately discards it, and the per-result policy metadata it
-	// carries is the divergence log's policy correlate.  The shallow engine
-	// copy scopes the capturing decorator to this one evaluation; a nil PDP
-	// stays nil so Check fails closed exactly as it would in cerbos mode.
-	capture := &capturingPDP{next: r.pdp}
-
 	// The marker keeps this evaluation out of the served-decision audit
 	// records and counter (decision_log.go): shadow's own taxonomy below is
 	// the observability for this path.  The shared PDP latency histogram
-	// still records — transport health is path-independent.
+	// still records — transport health is path-independent.  The shallow copy
+	// inherits r.pdp directly (a nil PDP stays nil, so Check fails closed
+	// exactly as it would in cerbos mode).
 	shadow := *r
 	shadow.shadowEvaluation = true
-
-	if r.pdp != nil {
-		shadow.pdp = capture
-	}
 
 	err := shadow.Check(ctx, resource, operation)
 
@@ -138,13 +127,13 @@ func (r *RBAC) shadowCompare(ctx context.Context, resource Resource, operation o
 			return
 		}
 
-		version, scope := shadowPolicyCorrelate(capture.response)
-
+		// The correlate pins the policy-store revision this divergence was
+		// observed against — the store hash r.policyHasher reports, or "" when
+		// none is configured (A20, replacing the empty PDP version/scope echo).
 		log.FromContext(ctx).Info(shadowDivergenceMessage, append(attrs,
 			"cerbos_verdict", shadowVerdict(cerbosAllowed),
 			"cerbos_class", shadowClass(err),
-			"policy_version", version,
-			"policy_scope", scope)...)
+			"policy_hash", r.policyStoreHash(ctx))...)
 	default:
 		// No verdict was obtained (unavailability, resolution failure or an
 		// unclassified error): infra signal, NEVER divergence — A12's
@@ -198,49 +187,4 @@ func shadowClass(err error) string {
 	default:
 		return "unclassified"
 	}
-}
-
-// capturingPDP decorates the configured PDP to retain the raw response of one
-// evaluation: Check maps it to a verdict and discards it, but the shadow log
-// wants the in-band policy metadata.  One instance per evaluation — it is
-// deliberately not safe for shared use.  An impersonated evaluation makes
-// TWO CheckResources calls (the A14 dual check) and only the LAST response
-// — the service side's, deliberately sequenced second by decideImpersonated
-// — is retained: acceptable, because the correlate is empty against today's
-// PDP either way; the deferred policy-hash correlate wire-up (the signal now
-// exists — see shadowPolicyCorrelate) should revisit this.
-type capturingPDP struct {
-	next     PolicyDecisionPoint
-	response *sdk.CheckResourcesResponse
-}
-
-func (c *capturingPDP) CheckResources(ctx context.Context, principal *sdk.Principal, resources *sdk.ResourceBatch) (*sdk.CheckResourcesResponse, error) {
-	response, err := c.next.CheckResources(ctx, principal, resources)
-
-	c.response = response
-
-	return response, err
-}
-
-// shadowPolicyCorrelate extracts the policy metadata the PDP response carries
-// in-band for the (single) coarse check: the per-result policy version and
-// scope.  NOTE the PDP echoes the REQUESTED version/scope here, and
-// identity's coarse checks request none (the server-default policy version
-// applies), so both are empty against today's PDP — the fields exist so the
-// correlate upgrades in place.
-//
-// A15 SEAM (signal now built, wire-up deferred): the policy-store hash A15
-// needed for cache invalidation now EXISTS — pkg/authz/cerbos.PolicyStoreHasher,
-// injected into RBAC via WithPolicyStoreHash.  Replacing this empty PDP echo
-// with that hash — so a divergence pins the exact store revision it was
-// observed against — is the small remaining follow-up, deferred out of A15
-// (tracked as task A20); behaviour here is unchanged until it lands.
-func shadowPolicyCorrelate(response *sdk.CheckResourcesResponse) (string, string) {
-	if response == nil || len(response.Results) == 0 {
-		return "", ""
-	}
-
-	resource := response.Results[0].GetResource()
-
-	return resource.GetPolicyVersion(), resource.GetScope()
 }

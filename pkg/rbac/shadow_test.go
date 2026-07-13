@@ -53,28 +53,6 @@ const (
 	shadowFailureMessage    = "cerbos shadow evaluation failure"
 )
 
-// stampedPDP decorates another PDP, stamping the in-band per-result policy
-// metadata a real PDP returns, so the divergence log's policy correlate is
-// observable in unit tests.
-type stampedPDP struct {
-	next          rbac.PolicyDecisionPoint
-	policyVersion string
-	policyScope   string
-}
-
-func (s *stampedPDP) CheckResources(ctx context.Context, checkPrincipal *sdk.Principal, resources *sdk.ResourceBatch) (*sdk.CheckResourcesResponse, error) {
-	response, err := s.next.CheckResources(ctx, checkPrincipal, resources)
-
-	if response != nil {
-		for _, result := range response.Results {
-			result.Resource.PolicyVersion = s.policyVersion
-			result.Resource.Scope = s.policyScope
-		}
-	}
-
-	return response, err
-}
-
 // panicPDP panics on every call: the worst-case shadow failure.
 type panicPDP struct{}
 
@@ -168,12 +146,10 @@ func TestShadowDivergenceCerbosAllows(t *testing.T) {
 	capture := &logCapture{}
 
 	// The PDP allows what the ACL does not grant: a divergence, with the
-	// legacy DENY still served.
-	engine := newDispatchEngine(t, rbac.EngineShadow, &stampedPDP{
-		next:          &capturePDP{allow: true},
-		policyVersion: "default",
-		policyScope:   "acme",
-	})
+	// legacy DENY still served.  The stub hasher pins the store revision the
+	// divergence record must carry as its policy correlate (A20).
+	engine := newDispatchEngine(t, rbac.EngineShadow, &capturePDP{allow: true}).
+		WithPolicyStoreHash(&stubHasher{hash: "store-hash-shadow", ok: true})
 	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Read))
 
 	err := rbac.AllowOrganizationScope(ctx, "candy", openapi.Delete, parityOrgA)
@@ -185,7 +161,7 @@ func TestShadowDivergenceCerbosAllows(t *testing.T) {
 	// The full record, and NOTHING but the record: the closed field set is
 	// the guarantee no token or credential material can ride along.
 	attrs := logAttrs(t, records[0])
-	require.Len(t, attrs, 11)
+	require.Len(t, attrs, 10)
 	require.Equal(t, parityAliceSubject, attrs["subject"])
 	require.Equal(t, "user", attrs["actor_type"])
 	require.Equal(t, "candy", attrs["endpoint"])
@@ -195,8 +171,7 @@ func TestShadowDivergenceCerbosAllows(t *testing.T) {
 	require.Equal(t, "deny", attrs["legacy_verdict"])
 	require.Equal(t, "allow", attrs["cerbos_verdict"])
 	require.Equal(t, "allowed", attrs["cerbos_class"])
-	require.Equal(t, "default", attrs["policy_version"])
-	require.Equal(t, "acme", attrs["policy_scope"])
+	require.Equal(t, "store-hash-shadow", attrs["policy_hash"], "the divergence pins the policy-store revision it was observed against")
 
 	require.Empty(t, capture.messages(shadowFailureMessage))
 }

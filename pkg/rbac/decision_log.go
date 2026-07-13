@@ -21,7 +21,6 @@ import (
 	goerrors "errors"
 	"time"
 
-	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -165,21 +164,28 @@ func decisionSubject(ctx context.Context) (string, string) {
 	return subject, actorType
 }
 
-// resultPolicyCorrelate extracts the in-band policy version/scope the PDP
-// echoes for one result entry.  Same A15 seam as shadowPolicyCorrelate
-// (shadow.go): empty against today's PDP — identity's coarse checks request
-// no version, and the PDP echoes the request.  The policy-store hash that
-// would replace this now EXISTS (pkg/authz/cerbos.PolicyStoreHasher, built by
-// A15 for cache invalidation); wiring it in here is the deferred follow-up
-// (tracked as task A20).
-func resultPolicyCorrelate(response *sdk.CheckResourcesResponse, i int) (string, string) {
-	if response == nil || i >= len(response.Results) {
-		return "", ""
+// policyStoreHash is the decision/divergence correlate: the current
+// policy-store fingerprint, pinning the exact store revision a record was
+// observed against.  It replaces the empty PDP version/scope echo the correlate
+// carried before A20 — the PDP only echoes the REQUESTED policy version, which
+// identity's coarse checks leave unset — with the real signal A15 built
+// (pkg/authz/cerbos.PolicyStoreHasher, read-through of the controller-owned
+// policies ConfigMap).
+//
+// Fail-safe by construction: no hasher configured (every downstream and most
+// tests) or no successful ConfigMap read yet (!ok) both yield "", never an
+// error — a record never fails or blocks on the correlate.
+func (r *RBAC) policyStoreHash(ctx context.Context) string {
+	if r.policyHasher == nil {
+		return ""
 	}
 
-	resource := response.Results[i].GetResource()
+	hash, ok := r.policyHasher.Current(ctx)
+	if !ok {
+		return ""
+	}
 
-	return resource.GetPolicyVersion(), resource.GetScope()
+	return hash
 }
 
 // recordDecisions emits one audit record and one counter increment per
@@ -195,7 +201,7 @@ func resultPolicyCorrelate(response *sdk.CheckResourcesResponse, i int) (string,
 // round trips are the histogram's, recorded in check.go.  Counter attributes
 // are the CLOSED (decision × class) vocabulary ONLY: subject or endpoint
 // attributes would be an open-vocabulary cardinality explosion.
-func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allowed []bool, response *sdk.CheckResourcesResponse, err error, elapsed time.Duration) {
+func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allowed []bool, err error, elapsed time.Duration) {
 	subject, actorType := decisionSubject(ctx)
 	class := decisionClass(err)
 	logger := log.FromContext(ctx)
@@ -211,15 +217,17 @@ func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allow
 		}
 	}
 
+	// The policy-store hash is the correlate, claimed only for an obtained
+	// verdict (A10's gate): a failure record pins no store revision — the
+	// decision never reached a policy verdict.  One evaluation runs against
+	// one store, so every entry of the batch shares the single hash.
+	var policyHash string
+	if err == nil {
+		policyHash = r.policyStoreHash(ctx)
+	}
+
 	for i, check := range checks {
 		verdict := err == nil && allowed[i]
-
-		// The correlate is only claimed for obtained verdicts: on a failure
-		// the response is absent or untrusted (mapResults refused it).
-		var version, scope string
-		if err == nil {
-			version, scope = resultPolicyCorrelate(response, i)
-		}
 
 		fields := []any{
 			"subject", subject,
@@ -236,8 +244,7 @@ func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allow
 			"project_id", check.Resource.ProjectID,
 			"decision", decisionVerdict(verdict),
 			"reason", class,
-			"policy_version", version,
-			"policy_scope", scope,
+			"policy_hash", policyHash,
 			"latency", elapsed,
 		)
 
