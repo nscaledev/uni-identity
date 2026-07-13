@@ -37,6 +37,12 @@ type TestConfig struct {
 	UserSAID            string
 	UnauthorisedOrgID   string
 	ServiceAccountToken string
+	// MTLSClientCert and MTLSClientKey are the base64-encoded PEM of the
+	// ci-fixtures mTLS client certificate/key, exported by hack/ci/fixtures.
+	// They are optional: the genuine-mTLS authorization-check test skips when
+	// they are absent (e.g. a focused local run without a full fixtures pass).
+	MTLSClientCert string
+	MTLSClientKey  string
 }
 
 // LoadTestConfig loads configuration from environment variables and .env files using viper.
@@ -87,6 +93,8 @@ func LoadTestConfig() (*TestConfig, error) {
 		UserSAID:            v.GetString("TEST_USER_SA_ID"),
 		UnauthorisedOrgID:   v.GetString("UNAUTHORISED_ORG_ID"),
 		ServiceAccountToken: v.GetString("SERVICE_ACCOUNT_TOKEN"),
+		MTLSClientCert:      v.GetString("IDENTITY_MTLS_CLIENT_CERT"),
+		MTLSClientKey:       v.GetString("IDENTITY_MTLS_CLIENT_KEY"),
 	}
 
 	// Validate required fields

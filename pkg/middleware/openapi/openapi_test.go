@@ -206,6 +206,26 @@ func addPrincipalHeaderWithoutActor(t *testing.T, r *http.Request) {
 	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(dataJSON))
 }
 
+// spoofedActor is a sentinel actor a malicious caller would try to inject via a
+// forged X-Principal, distinct from any legitimately authenticated subject so a
+// test can prove it was never honoured.
+const spoofedActor = "attacker@evil.example"
+
+// addSpoofedPrincipalHeader plants a caller-supplied X-Principal naming an
+// arbitrary actor — standing in for a client forging propagation headers over an
+// untrusted (non-mTLS) hop, exactly the payload ingress header-stripping exists
+// to defeat.
+func addSpoofedPrincipalHeader(t *testing.T, r *http.Request, actor string) {
+	t.Helper()
+
+	p := &principal.Principal{Actor: actor}
+
+	dataJSON, err := json.Marshal(p)
+	require.NoError(t, err)
+
+	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(dataJSON))
+}
+
 // addAuthorizationHeader adds a token to the request.
 func addAuthorizationHeader(t *testing.T, r *http.Request) {
 	t.Helper()
@@ -235,9 +255,10 @@ func authInfoFixture(actor string, accountType identityapi.AuthClaimsAcctype) *a
 // handler is a HTTP handler that records expected things that should exist in
 // hte request context and allows inspection of them.
 type handler struct {
-	authinfo  *authorization.Info
-	acl       *identityapi.Acl
-	principal *principal.Principal
+	authinfo    *authorization.Info
+	acl         *identityapi.Acl
+	principal   *principal.Principal
+	impersonate bool
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -251,6 +272,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: no error checking... not that it's relevant.
 	h.acl = rbac.FromContext(r.Context())
+
+	// Capture the impersonation signal before the local shadow below; a forged
+	// X-Impersonate must never activate it on an untrusted hop.
+	h.impersonate = principal.ImpersonateFromContext(r.Context())
 
 	principal, err := principal.FromContext(r.Context())
 	if err != nil {
@@ -475,6 +500,94 @@ func TestServiceToServiceAuthenticationDenyEscalation(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
+}
+
+// TestServiceToServiceForgedPrincipalWithoutMTLSIsNotHonored is the A18
+// trust-boundary regression guard for principal propagation over an untrusted
+// hop.  On a NON-mTLS request (a bearer-authenticated user with no verified
+// client certificate) the propagation headers carry no trust: the acting
+// principal is DERIVED from the validated token, never read from a
+// caller-supplied X-Principal, and a forged X-Impersonate is ignored entirely.
+//
+// WHY this matters: X-Principal/X-Impersonate are honoured only because a
+// verified mTLS peer set them and the ingress strips any an external client
+// tries to inject (the trust-the-channel model).  If the header were honoured
+// without that verified peer, any bearer user could forge X-Principal to act as
+// someone else and forge X-Impersonate to have RBAC resolved against that
+// victim — a direct privilege escalation.  The mTLS path's own separation of the
+// service identity (the peer CN) from the propagated delegated principal (the
+// header) is covered by TestServiceToServiceAuthenticationSuccess; this pins the
+// untrusted-hop half of that boundary.
+func TestServiceToServiceForgedPrincipalWithoutMTLSIsNotHonored(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, identityapi.User), nil)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	// A bearer user (NO verified client certificate) forging the propagation
+	// headers a trusted mTLS peer would set.
+	addAuthorizationHeader(t, r)
+	addSpoofedPrincipalHeader(t, r, spoofedActor)
+	r.Header.Set(principal.ImpersonateHeader, "true")
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+	// The acting principal is the authenticated token subject, NOT the forged actor.
+	require.NotNil(t, h.principal)
+	require.Equal(t, userActor, h.principal.Actor, "the acting principal must be derived from the validated token, not a forged X-Principal")
+	require.NotEqual(t, spoofedActor, h.principal.Actor, "a forged X-Principal must never set the acting principal on a non-mTLS hop")
+
+	// The forged X-Impersonate must be ignored: RBAC must not be redirected onto the actor.
+	require.False(t, h.impersonate, "a forged X-Impersonate must not activate impersonation without a verified mTLS peer")
+}
+
+// TestForgedPrincipalHeaderWithoutVerifiedPeerRejected is the A18 trust-boundary
+// guard for a caller with no authenticated identity at all.  A request carrying
+// ONLY forged X-Principal / X-Impersonate headers — no bearer token and no
+// verified mTLS client certificate — must be rejected outright: the internal
+// propagation headers carry zero authority on their own.
+//
+// WHY this matters: propagation headers are trustworthy solely because a verified
+// mTLS peer set them and the ingress strips any an external caller injects.
+// Absent that verified peer they must authenticate nothing.  This is the
+// X-Principal analogue of TestServiceToServiceAuthenticationDenyEscalation, which
+// pins the same for a relayed client-certificate header.
+func TestForgedPrincipalHeaderWithoutVerifiedPeerRejected(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	// No Authorize/GetACL expectations: authentication must fail before either runs.
+	authorizer := mock.NewMockAuthorizer(c)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	// Forged propagation headers, but no bearer token and no client certificate.
+	addSpoofedPrincipalHeader(t, r, spoofedActor)
+	r.Header.Set(principal.ImpersonateHeader, "true")
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode, "forged propagation headers must not authenticate without a verified peer")
 }
 
 // TestServiceToServicePrincipalMissing tests the response when a principal is missing.

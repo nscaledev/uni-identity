@@ -400,9 +400,25 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 	data, err := base64.RawURLEncoding.DecodeString(header)
 	if err != nil {
-		// TODO: fallback, delete me... I am VERY slow.
-		// Use the certificate of the service that actually called us.
-		// The one in the context is used to propagate token binding information.
+		// SIGNED-PRINCIPAL FALLBACK.  The primary path (below) is the unsigned
+		// base64url(JSON) X-Principal set by principal.Injector: trust rests on
+		// the channel — mTLS plus ingress header-stripping ("trust the channel";
+		// see this package's README).  A header that is not base64url-decodable
+		// is instead a SIGNED principal set by principal.ControllerInjector
+		// (uni-core's EncodeAndSign, a JWS), which this branch verifies against
+		// the CALLING service's certificate.  Verify against the certificate of
+		// the service that actually called us (from the header), not the one in
+		// the context — the context copy propagates token-binding information.
+		//
+		// A18(b) — DEFERRED (trust-the-channel kept by owner decision): making
+		// signed propagation the DEFAULT for all service-to-service calls — not
+		// only the ControllerInjector case handled here — is recorded future
+		// hardening, not done here.  EncodeAndSign/VerifyAndDecode live in
+		// uni-core, so flipping the default is cross-repo/flag-day, and
+		// per-request public-key verification is VERY slow.  The original TODO
+		// here read "fallback, delete me... I am VERY slow", flagging exactly
+		// that cost; keep it in mind before making signed propagation the
+		// default.  This fallback's BEHAVIOUR is unchanged.
 		certRaw, err := util.GetClientCertificateHeader(r.Header)
 		if err != nil {
 			return nil, err

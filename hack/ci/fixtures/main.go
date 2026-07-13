@@ -568,6 +568,16 @@ func main() {
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
+	// Export the ci-fixtures mTLS client certificate + key (base64 so the
+	// multi-line PEM survives shell sourcing of test/.env) for the genuine
+	// mTLS-handshake authorization-check test
+	// (test/api/suites/authorization_check_mtls_test.go).  This is the same
+	// unikorn-client-issuer cert (CN ci-fixtures → platform-administrator) used
+	// for bootstrap above; the test drives it over a real TLS handshake to prove
+	// /authorization/check enforces mTLS at the transport, not merely injected
+	// verified-cert headers.
+	fmt.Printf("IDENTITY_MTLS_CLIENT_CERT=%s\n", base64.StdEncoding.EncodeToString(certPEM))
+	fmt.Printf("IDENTITY_MTLS_CLIENT_KEY=%s\n", base64.StdEncoding.EncodeToString(keyPEM))
 	fmt.Printf("TEST_ORG_ID=%s\n", orgID)
 	fmt.Printf("UNAUTHORISED_ORG_ID=%s\n", unauthorisedOrgID)
 	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID)

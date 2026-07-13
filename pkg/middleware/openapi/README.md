@@ -158,20 +158,52 @@ That trust exists because the nginx ingress layer detects and rejects user attem
 certificate-related headers used by the internal service chain. This is a core assumption of the
 request model and should be treated as part of the security boundary, not merely deployment trivia.
 
+### Trust The Channel, And The Deferred Signed-Propagation Option (A18)
+
+Principal propagation is **trust-the-channel by design**. The primary `X-Principal` is unsigned
+base64url(JSON) (`principal.Injector`), and its trustworthiness rests on two facts working together:
+
+- the caller is a verified **mTLS** peer — its client-certificate CN is the acting service identity;
+- the **ingress strips** `X-Principal`, `X-Impersonate`, `Ssl-Client-Cert`/`Ssl-Client-Verify` and
+  the relayed `Unikorn-Client-Certificate` from external requests, so an end user cannot inject them.
+
+Consequently `extractPrincipal` reads these headers only on the mTLS path (`extractOrGeneratePrincipal`
+gates on the client-certificate header); a bearer or no-certificate caller has its principal
+**derived from the validated token**, never from the header, and a forged `X-Impersonate` on such a
+hop is ignored. That boundary is a hard, regression-guarded invariant: see the A18 negative tests
+`TestServiceToServiceForgedPrincipalWithoutMTLSIsNotHonored` and
+`TestForgedPrincipalHeaderWithoutVerifiedPeerRejected` (this package's `openapi_test.go`), the
+endpoint guard `TestAuthorizationCheckIgnoresForgedPrincipalHeaders` (`pkg/handler`), and a genuine
+mTLS-handshake test for `/authorization/check` in the kind suite
+(`test/api/suites/authorization_check_mtls_test.go`).
+
+`extractPrincipal` also has a **signature-verified** path (`client.VerifyAndDecode`), used today for
+principals signed by `principal.ControllerInjector` (uni-core's `EncodeAndSign`). Making
+signature-verified propagation the **default** for all service-to-service calls — so trust does not
+rest on ingress configuration alone — is a **recorded future option (the A18(b) deferral)**. It is
+deferred, not adopted: the signing primitives live in **uni-core** (flipping the default is a
+cross-repo, flag-day change) and per-request public-key verification carries a real performance cost.
+The owner decision is to keep trust-the-channel for now.
+
 ## Caveats
 
 - This package contains real trust-boundary logic, not just glue code.
-- Some transitional behaviour still exists around principal extraction and historical propagation
-  formats; these paths should be reviewed as deletion candidates rather than normalized into the
-  long-term design.
+- The `extractPrincipal` signature-verification fallback (`VerifyAndDecode`) is **retained**: it
+  serves principals signed by `principal.ControllerInjector`. Whether signed propagation becomes the
+  default (retiring the unsigned `X-Principal`) is the deferred **A18(b)** decision — see
+  [Trust The Channel, And The Deferred Signed-Propagation Option](#trust-the-channel-and-the-deferred-signed-propagation-option-a18)
+  above — not a blanket deletion candidate.
 - Remote bearer-token validation depends on an identity round-trip per cache miss; cache hits avoid
   it. Phase 2 deliberately does not introduce downstream JWKS verification — the trust model for
   passports remains channel-scoped to identity rather than signature-scoped per service.
 
 ## TODO
 
-- Remove the legacy principal extraction/verification fallback once all callers use the current
-  propagation model.
+- **A18(b) (deferred):** decide whether to make signature-verified principal propagation the default
+  for all service-to-service calls (retiring the unsigned `X-Principal`), weighed against the
+  cross-repo/flag-day cost (the `EncodeAndSign`/`VerifyAndDecode` primitives live in uni-core) and the
+  per-request public-key verification cost. Kept as trust-the-channel for now; the signed
+  `VerifyAndDecode` fallback stays in place for `ControllerInjector` principals.
 
 ## Related Documentation
 

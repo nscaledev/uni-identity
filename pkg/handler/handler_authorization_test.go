@@ -19,6 +19,7 @@ package handler_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	goerrors "errors"
 	"net/http"
@@ -34,6 +35,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -190,6 +192,39 @@ func doCheck(ctx context.Context, t *testing.T, h *handler.Handler, body openapi
 	return w
 }
 
+// doCheckWithHeaders is doCheck with caller-controlled request headers, used to
+// plant forged principal-propagation headers on the wire request and prove the
+// handler derives no trust from them.
+func doCheckWithHeaders(ctx context.Context, t *testing.T, h *handler.Handler, body openapi.AuthorizationCheckRequest, headers map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/authorization/check", bytes.NewReader(raw))
+
+	for k, v := range headers {
+		r.Header.Set(k, v)
+	}
+
+	h.PostApiV1AuthorizationCheck(w, r)
+
+	return w
+}
+
+// forgedPrincipalHeader base64url-encodes a principal so a test can plant a
+// caller-supplied X-Principal on the wire request, exactly as a malicious client
+// would.
+func forgedPrincipalHeader(t *testing.T, actor string) string {
+	t.Helper()
+
+	raw, err := json.Marshal(&principal.Principal{Actor: actor})
+	require.NoError(t, err)
+
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
 // TestAuthorizationCheckRejectsBearer is the mTLS-only guarantee: a
 // bearer-authenticated caller (SystemAccount false) is refused with a 401
 // BEFORE any decision is attempted.  A nil PDP proves no CheckMany call ran:
@@ -209,6 +244,44 @@ func TestAuthorizationCheckRejectsBearer(t *testing.T) {
 
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 	require.Empty(t, pdp.batches, "the decision layer must not be consulted for a rejected caller")
+}
+
+// TestAuthorizationCheckIgnoresForgedPrincipalHeaders is the A18 trust-boundary
+// regression guard for the decision endpoint.  The system-account gate is
+// established by the middleware from the VERIFIED transport identity (the mTLS
+// peer CN, or a cert-bound service token) and carried on the context as
+// authorization.Info — NEVER from headers on the wire request.  A non-system
+// (bearer) caller that plants a forged X-Principal naming a system account, plus
+// X-Impersonate:true, must therefore still be refused with a 401 and must never
+// reach the decision layer.
+//
+// WHY this matters: the endpoint's ONE security obligation is the SystemAccount
+// gate; were the handler to derive that (or the acting identity) from
+// caller-supplied X-Principal/X-Impersonate, a forged header would spoof a system
+// account and reach Cerbos — the exact escalation the mTLS + ingress
+// header-stripping boundary exists to prevent.  A nil PDP confirms no CheckMany
+// ran: the forged headers gained nothing.
+func TestAuthorizationCheckIgnoresForgedPrincipalHeaders(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{}
+	h := newAuthzHandler(t, pdp)
+
+	w := doCheckWithHeaders(bearerContext(t), t, h, openapi.AuthorizationCheckRequest{
+		Checks: []openapi.AuthorizationCheck{{
+			Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups"},
+			Action:   openapi.Read,
+		}},
+	}, map[string]string{
+		// The propagation headers a trusted mTLS peer would set, here forged by a
+		// bearer caller: an X-Principal impersonating the system account CN and the
+		// impersonation marker.
+		principal.Header:            forgedPrincipalHeader(t, authzSystemCN),
+		principal.ImpersonateHeader: "true",
+	})
+
+	require.Equal(t, http.StatusUnauthorized, w.Code, "a forged principal header must not satisfy the system-account gate")
+	require.Empty(t, pdp.batches, "a forged principal header must not reach the decision layer")
 }
 
 // TestAuthorizationCheckMissingInfo covers a request with no authorization
