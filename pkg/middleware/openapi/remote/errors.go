@@ -42,4 +42,11 @@ var (
 
 	// ErrPassportInvalid indicates exchange returned an unusable passport payload.
 	ErrPassportInvalid = errors.New("passport invalid")
+
+	// ErrDecisionUnavailable is the fail-closed mapping for an authorization
+	// check that could not obtain a verdict from identity: transport failures,
+	// 5xx responses, and malformed successful responses.  The caller MUST
+	// treat it as a deny.  It mirrors rbac.ErrDecisionUnavailable across the
+	// wire without importing pkg/rbac into consumers of this package.
+	ErrDecisionUnavailable = errors.New("authorization decision unavailable")
 )

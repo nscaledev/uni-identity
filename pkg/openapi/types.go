@@ -245,6 +245,87 @@ type AuthClaimsAcctype string
 // AuthMethod Supported authentication methods.
 type AuthMethod string
 
+// AuthorizationCheck A single resource/action pair to authorize.
+type AuthorizationCheck struct {
+	// Action An access control operation.
+	Action AclOperation `json:"action"`
+
+	// Resource Identifies what an authorization decision is about.  Scope is encoded
+	// by attribute ABSENCE, never by empty values (mirroring the internal
+	// decision API): omitting organizationId is a GLOBAL check; supplying
+	// organizationId but omitting projectId is an ORGANIZATION-scope check
+	// (the project attribute MUST stay omitted so project-scoped bindings
+	// cannot activate — the no-flow-up invariant depends on it); supplying
+	// both is a PROJECT-scope check.  identity passes these through verbatim.
+	Resource AuthorizationCheckResource `json:"resource"`
+}
+
+// AuthorizationCheckList A non-empty, ordered list of checks to authorize.  Capped at 50 to
+// match the Cerbos sidecar's maxResourcesPerRequest default (each check
+// is one PDP resource): a larger batch would be rejected by the PDP as a
+// 500, so the cap makes it a clean 400 and keeps the bound an explicit
+// part of the contract rather than an implicit consequence of the client
+// wiring plus the PDP default.  Keep this in sync if the sidecar's
+// requestLimits are ever configured.
+type AuthorizationCheckList = []AuthorizationCheck
+
+// AuthorizationCheckRequestSchema A batch of authorization checks.  Checks are evaluated together and
+// their results returned in request order.
+type AuthorizationCheckRequestSchema struct {
+	// Checks A non-empty, ordered list of checks to authorize.  Capped at 50 to
+	// match the Cerbos sidecar's maxResourcesPerRequest default (each check
+	// is one PDP resource): a larger batch would be rejected by the PDP as a
+	// 500, so the cap makes it a clean 400 and keeps the bound an explicit
+	// part of the contract rather than an implicit consequence of the client
+	// wiring plus the PDP default.  Keep this in sync if the sidecar's
+	// requestLimits are ever configured.
+	Checks AuthorizationCheckList `json:"checks"`
+}
+
+// AuthorizationCheckResource Identifies what an authorization decision is about.  Scope is encoded
+// by attribute ABSENCE, never by empty values (mirroring the internal
+// decision API): omitting organizationId is a GLOBAL check; supplying
+// organizationId but omitting projectId is an ORGANIZATION-scope check
+// (the project attribute MUST stay omitted so project-scoped bindings
+// cannot activate — the no-flow-up invariant depends on it); supplying
+// both is a PROJECT-scope check.  identity passes these through verbatim.
+type AuthorizationCheckResource struct {
+	// Id Optionally identifies a specific resource instance; omit for a
+	// coarse (whole-kind) check.
+	Id *string `json:"id,omitempty"`
+
+	// Kind The endpoint name matched verbatim against the generated resource
+	// policies, e.g. "identity:groups".
+	Kind string `json:"kind"`
+
+	// OrganizationId Optionally scopes the check to an organization.  Omit for a global
+	// check.
+	OrganizationId *string `json:"organizationId,omitempty"`
+
+	// ProjectId Optionally scopes the check to a project; requires organizationId
+	// (projectId without organizationId is rejected with a 400 — the
+	// OpenAPI 3.0 schema cannot express this cross-field dependency, so
+	// the handler enforces it).  Omit on an organization-scope check (do
+	// not send an empty string).
+	ProjectId *string `json:"projectId,omitempty"`
+}
+
+// AuthorizationCheckResponseSchema The per-check authorization decisions.
+type AuthorizationCheckResponseSchema struct {
+	// Results The per-check results, one per requested check, in order.
+	Results AuthorizationCheckResultList `json:"results"`
+}
+
+// AuthorizationCheckResult The decision for one check, in request order.
+type AuthorizationCheckResult struct {
+	// Allowed Whether the subject may perform the action on the resource.  false
+	// is a policy deny.
+	Allowed bool `json:"allowed"`
+}
+
+// AuthorizationCheckResultList The per-check results, one per requested check, in order.
+type AuthorizationCheckResultList = []AuthorizationCheckResult
+
 // AuthorizationRequestOptions OAuth 2.0/OIDC authorization endpoint request.
 type AuthorizationRequestOptions struct {
 	// AcrValues Requested content class reference values.
@@ -953,6 +1034,9 @@ type AclResponse = Acl
 // AllocationResponse An allocation of resources.
 type AllocationResponse = AllocationRead
 
+// AuthorizationCheckResponse The per-check authorization decisions.
+type AuthorizationCheckResponse = AuthorizationCheckResponseSchema
+
 // GroupResponse A group when read.
 type GroupResponse = GroupRead
 
@@ -1026,6 +1110,10 @@ type UsersResponse = Users
 // AllocationRequest An allocation of resources.
 type AllocationRequest = AllocationWrite
 
+// AuthorizationCheckRequest A batch of authorization checks.  Checks are evaluated together and
+// their results returned in request order.
+type AuthorizationCheckRequest = AuthorizationCheckRequestSchema
+
 // CreateGroupRequest A group when created or updated.
 type CreateGroupRequest = GroupWrite
 
@@ -1061,6 +1149,9 @@ type GetApiV1OrganizationsParams struct {
 	// Email A user's email address.
 	Email *UserEmailParameter `form:"email,omitempty" json:"email,omitempty"`
 }
+
+// PostApiV1AuthorizationCheckJSONRequestBody defines body for PostApiV1AuthorizationCheck for application/json ContentType.
+type PostApiV1AuthorizationCheckJSONRequestBody = AuthorizationCheckRequestSchema
 
 // PostApiV1OrganizationsJSONRequestBody defines body for PostApiV1Organizations for application/json ContentType.
 type PostApiV1OrganizationsJSONRequestBody = OrganizationWrite

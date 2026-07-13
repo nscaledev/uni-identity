@@ -277,8 +277,8 @@ scope, resource ID always the coarse `*`).
 
 Every SERVED Cerbos-path decision is audited and counted at the `CheckMany` choke point
 (`decision_log.go`): `Check` wraps `CheckMany`, cerbos-mode `allowCoarse` wraps `Check`, and
-A8's remote `/authorization/check` handler will land on `CheckMany` too — so remote decisions
-inherit these records with no further work. Hooking the choke point rather than decorating
+A8's remote `/authorization/check` handler lands on `CheckMany` too (delivered — see below)
+— so remote decisions inherit these records with no further work. Hooking the choke point rather than decorating
 the PDP client is deliberate: the pre-PDP fail-closed denials (no client configured,
 resolution failures, refused impersonated principal types) are decisions and must be
 observed. An impersonated dual-check decision is still ONE record and ONE counter
@@ -356,6 +356,40 @@ account impersonating the fixture user and service account, the byte-untouched l
 project-scope cell witnessing the service side's global→project flow-down),
 denied-by-service-only (the narrowing proof), denied-by-principal-only, the wrong-org
 mechanism asymmetries, and System-impersonation error parity.
+
+### The remote decision endpoint (A8)
+
+`POST /api/v1/authorization/check` (`pkg/handler`, `x-hidden`/`x-no-authorization` in the
+spec) is how a downstream service **without** an in-process Cerbos sidecar obtains a decision:
+it POSTs a batch of `(resource, action)` checks over mTLS and identity resolves bindings,
+consults the PDP, and returns per-check `allowed` booleans in request order. The handler is
+deliberately thin — it maps the wire body to `[]CheckRequest` (absence semantics preserved:
+an omitted `organizationId`/`projectId` stays absent, never an empty string, so an org check
+cannot gain a project attribute) and calls `CheckMany`. Everything else is inherited: the A14
+dual check, the A10 decision records and metrics all apply with no extra plumbing, off the
+same context the middleware builds for any mTLS caller.
+
+- **Cerbos-authoritative from day one, no legacy twin.** This endpoint IS the Cerbos path
+  regardless of `--authorization-engine` (that flag only selects what serves identity's own
+  `Allow*` facade). It has no legacy `Allow*` equivalent to shadow-compare against, which is
+  exactly why A11 dropped its dependency on A8 (nothing to feed the divergence gate).
+- **mTLS-only.** The `oauth2` security scheme multiplexes bearer and mTLS onto the one route,
+  so the handler's single security obligation is to reject non-system-account (bearer) callers
+  (it checks `authorization.Info.SystemAccount`, set by the middleware from the verified peer
+  CN); a bearer caller gets a 401. Hardening the header-strip deploy invariant and moving to
+  signed-principal propagation (design §3.7 b/c) are named follow-ups, not delivered here.
+- **Fail-closed crosses the wire.** A per-check policy deny is `allowed: false` at HTTP 200; a
+  batch-level failure (`ErrDecisionUnavailable`/`ErrResolutionFailed`/`ErrImpersonationNotSupported`)
+  is a non-200 the calling `remote` authorizer treats as a deny for every check
+  (`pkg/middleware/openapi/remote` `CheckMany`). Remote decisions are indistinguishable from
+  local in the decision records (the closed `class` vocabulary has no remote/local split); if
+  operators ever need that split it is an A15+ attribute, documented as breaking to rename.
+
+`make test-cerbos-remote` (Docker-dependent, not part of `test-unit`) is the deliverable's
+proof: it drives the real router + middleware validator + handler + a real Cerbos-backed RBAC
+through the generated typed client, asserting an allowed and a denied check for a system
+caller, the dual-check verdict for an impersonated call, bearer rejection, and PDP-down
+fail-closed.
 
 ### The kind-CI divergence gate (A11)
 

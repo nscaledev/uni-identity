@@ -11,7 +11,7 @@ info:
     if they are being consumed by a horizontally scalable platform care must be taken
     to ensure token rotation is handled atomically by a single process, and the tokens
     are distributed to each service instance synchronously.
-  version: 1.13.0
+  version: 1.14.0
 paths:
   /.well-known/openid-configuration:
     description: |-
@@ -222,6 +222,46 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/aclResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+  /api/v1/authorization/check:
+    description: |-
+      Obtains authorization decisions from identity for a batch of checks.
+      This is the internal decision endpoint downstream services call (over
+      mTLS) when they have no in-process Cerbos sidecar: identity resolves the
+      subject's bindings, consults the policy decision point, and returns a
+      per-check allow/deny.
+    post:
+      x-no-authorization: true
+      x-hidden: true
+      description: |-
+        Returns per-check authorization decisions for the authenticated
+        subject.  The oauth2 security scheme multiplexes bearer and mTLS on
+        the same route; this endpoint is restricted to SYSTEM-ACCOUNT callers
+        — authenticated either by the verified mTLS peer certificate CN or by
+        a certificate-bound service token (proof-of-possession of the same
+        client certificate).  Ordinary (non-system) bearer callers receive a
+        401.
+
+        The decision is Cerbos-authoritative from day one, independent of the
+        server's --authorization-engine flag (that flag only selects what
+        serves identity's own Allow* facade); there is no legacy twin.
+
+        FAIL-CLOSED CONTRACT: a per-check policy deny is returned as
+        `allowed: false` with a 200 status.  Any NON-200 response (401, 500)
+        is a batch-level failure and the caller MUST treat it as a deny for
+        every check in the request — never as allow.
+      security:
+      - oauth2Authentication: []
+      requestBody:
+        $ref: '#/components/requestBodies/authorizationCheckRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/authorizationCheckResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
         '401':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '500':
@@ -1984,6 +2024,101 @@ components:
           $ref: '#/components/schemas/aclOrganization'
         projects:
           $ref: '#/components/schemas/aclProjectList'
+    authorizationCheckResource:
+      description: |-
+        Identifies what an authorization decision is about.  Scope is encoded
+        by attribute ABSENCE, never by empty values (mirroring the internal
+        decision API): omitting organizationId is a GLOBAL check; supplying
+        organizationId but omitting projectId is an ORGANIZATION-scope check
+        (the project attribute MUST stay omitted so project-scoped bindings
+        cannot activate — the no-flow-up invariant depends on it); supplying
+        both is a PROJECT-scope check.  identity passes these through verbatim.
+      type: object
+      required:
+      - kind
+      properties:
+        kind:
+          description: |-
+            The endpoint name matched verbatim against the generated resource
+            policies, e.g. "identity:groups".
+          type: string
+        id:
+          description: |-
+            Optionally identifies a specific resource instance; omit for a
+            coarse (whole-kind) check.
+          type: string
+        organizationId:
+          description: |-
+            Optionally scopes the check to an organization.  Omit for a global
+            check.
+          type: string
+        projectId:
+          description: |-
+            Optionally scopes the check to a project; requires organizationId
+            (projectId without organizationId is rejected with a 400 — the
+            OpenAPI 3.0 schema cannot express this cross-field dependency, so
+            the handler enforces it).  Omit on an organization-scope check (do
+            not send an empty string).
+          type: string
+    authorizationCheck:
+      description: A single resource/action pair to authorize.
+      type: object
+      required:
+      - resource
+      - action
+      properties:
+        resource:
+          $ref: '#/components/schemas/authorizationCheckResource'
+        action:
+          $ref: '#/components/schemas/aclOperation'
+    authorizationCheckList:
+      description: |-
+        A non-empty, ordered list of checks to authorize.  Capped at 50 to
+        match the Cerbos sidecar's maxResourcesPerRequest default (each check
+        is one PDP resource): a larger batch would be rejected by the PDP as a
+        500, so the cap makes it a clean 400 and keeps the bound an explicit
+        part of the contract rather than an implicit consequence of the client
+        wiring plus the PDP default.  Keep this in sync if the sidecar's
+        requestLimits are ever configured.
+      type: array
+      minItems: 1
+      maxItems: 50
+      items:
+        $ref: '#/components/schemas/authorizationCheck'
+    authorizationCheckRequestSchema:
+      description: |-
+        A batch of authorization checks.  Checks are evaluated together and
+        their results returned in request order.
+      type: object
+      required:
+      - checks
+      properties:
+        checks:
+          $ref: '#/components/schemas/authorizationCheckList'
+    authorizationCheckResult:
+      description: The decision for one check, in request order.
+      type: object
+      required:
+      - allowed
+      properties:
+        allowed:
+          description: |-
+            Whether the subject may perform the action on the resource.  false
+            is a policy deny.
+          type: boolean
+    authorizationCheckResultList:
+      description: The per-check results, one per requested check, in order.
+      type: array
+      items:
+        $ref: '#/components/schemas/authorizationCheckResult'
+    authorizationCheckResponseSchema:
+      description: The per-check authorization decisions.
+      type: object
+      required:
+      - results
+      properties:
+        results:
+          $ref: '#/components/schemas/authorizationCheckResultList'
     stringList:
       description: A list of strings.
       type: array
@@ -2387,6 +2522,24 @@ components:
         spec:
           $ref: '#/components/schemas/allocationSpec'
   requestBodies:
+    authorizationCheckRequest:
+      description: A batch of authorization checks to evaluate.
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/authorizationCheckRequestSchema'
+          example:
+            checks:
+            - resource:
+                kind: identity:groups
+                organizationId: adb2e414-1aef-4589-b933-ad0613d2d78f
+              action: read
+            - resource:
+                kind: compute:clusters
+                organizationId: adb2e414-1aef-4589-b933-ad0613d2d78f
+                projectId: a866ea05-2655-41bc-8135-d99b62ed4be6
+              action: create
     authorizationRequest:
       description: OIDC authentication request.
       required: true
@@ -2800,6 +2953,18 @@ components:
               - name: infrastructure
                 operations:
                 - create
+    authorizationCheckResponse:
+      description: |-
+        The per-check authorization decisions, one per requested check, in
+        request order.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/authorizationCheckResponseSchema'
+          example:
+            results:
+            - allowed: true
+            - allowed: false
     rolesResponse:
       description: |-
         A set of roles within the organization.

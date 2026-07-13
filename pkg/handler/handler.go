@@ -323,6 +323,110 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDAcl(w http.ResponseWriter, 
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
+// PostApiV1AuthorizationCheck is the internal decision endpoint downstream
+// services (without an in-process Cerbos sidecar) call over mTLS to obtain
+// authorization decisions from identity (migration task A8).
+//
+// The endpoint is Cerbos-authoritative from day one — CheckMany IS the Cerbos
+// path regardless of --authorization-engine (that flag only selects what
+// serves identity's OWN Allow* facade), consistent with A11's waiver: it is a
+// Cerbos-only path with no legacy twin.
+//
+// This handler is deliberately thin.  The oauth2 security scheme multiplexes
+// bearer and mTLS onto the same route, so its ONE security obligation is to
+// reject non-system-account (bearer) callers here — that is the real
+// "mTLS-only" guarantee; x-hidden is documentation only.  Everything else is
+// inherited with ZERO extra plumbing from rbac.CheckMany off the context the
+// middleware already built: the acting service Info from the verified peer CN,
+// any X-Principal/X-Impersonate principal + marker, and therefore the A14 dual
+// check, A10 decision records and metrics all apply unchanged.
+func (h *Handler) PostApiV1AuthorizationCheck(w http.ResponseWriter, r *http.Request) {
+	// System-account enforcement: only system accounts may obtain decisions.
+	// The invariant is the account TYPE, not the transport — a system account
+	// is authenticated either by the mTLS peer certificate CN or by a
+	// certificate-bound service token (which the middleware also resolves to
+	// SystemAccount, after proof-of-possession of the same client cert — the
+	// same trust tier).  An ordinary (non-system) bearer caller reaches this
+	// route via the multiplexed oauth2 scheme and is refused; x-no-authorization
+	// forbids declaring a 403, so that refusal is a 401.
+	info, err := authorization.FromContext(r.Context())
+	if err != nil || !info.SystemAccount {
+		errors.HandleError(w, r, errors.AccessDenied(r, "authorization check is restricted to system accounts"))
+		return
+	}
+
+	request := &openapi.AuthorizationCheckRequest{}
+	if err := util.ReadJSONBody(r, request); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	checks, err := authorizationCheckRequests(request)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	// CheckMany fail-closed semantics (check.go): per-entry policy denials are
+	// false entries (200); a batch-level failure (ErrDecisionUnavailable /
+	// ErrResolutionFailed / ErrImpersonationNotSupported, plus the empty-batch
+	// error) is a non-nil error that HandleError renders as a 5xx.  The wire
+	// contract obliges the caller to treat ANY non-200 as a deny for every
+	// check — fail-closed crosses the wire as "error => deny at the client"
+	// (implemented in the remote authorizer).
+	allowed, err := h.rbac.CheckMany(r.Context(), checks)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	results := make([]openapi.AuthorizationCheckResult, len(allowed))
+	for i := range allowed {
+		results[i] = openapi.AuthorizationCheckResult{Allowed: allowed[i]}
+	}
+
+	h.setUncacheable(w)
+	util.WriteJSONResponse(w, r, http.StatusOK, &openapi.AuthorizationCheckResponse{Results: results})
+}
+
+// authorizationCheckRequests maps the wire request to rbac.CheckRequests.
+// Absence semantics are load-bearing and passed through verbatim: a scope
+// field is set ONLY when present in the JSON.  An omitted organizationId is a
+// global check; an omitted projectId on an org check MUST stay absent (a
+// present-but-empty project attribute would let project-scoped bindings flow
+// up — see rbac.Resource / cerbos.BuildResource).  projectId requires
+// organizationId; the OpenAPI 3.0 schema cannot express that cross-field
+// dependency (and kin-openapi does not enforce `dependencies`), so it is a
+// client error (400) here rather than a 500 from cerbos.BuildResource —
+// fail-closed either way, this is only the correct status classification.
+func authorizationCheckRequests(request *openapi.AuthorizationCheckRequest) ([]rbac.CheckRequest, error) {
+	checks := make([]rbac.CheckRequest, len(request.Checks))
+
+	for i, check := range request.Checks {
+		resource := rbac.Resource{Kind: check.Resource.Kind}
+
+		if check.Resource.Id != nil {
+			resource.ID = *check.Resource.Id
+		}
+
+		if check.Resource.OrganizationId != nil {
+			resource.OrganizationID = *check.Resource.OrganizationId
+		}
+
+		if check.Resource.ProjectId != nil {
+			resource.ProjectID = *check.Resource.ProjectId
+		}
+
+		if resource.ProjectID != "" && resource.OrganizationID == "" {
+			return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("check %d: projectId requires organizationId", i))
+		}
+
+		checks[i] = rbac.CheckRequest{Resource: resource, Action: check.Action}
+	}
+
+	return checks, nil
+}
+
 func (h *Handler) GetApiV1OrganizationsOrganizationIDRoles(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
 	if err := rbac.AllowOrganizationScopeID(r.Context(), "identity:roles", openapi.Read, organizationID); err != nil {
 		errors.HandleError(w, r, err)

@@ -78,12 +78,40 @@ into handler contexts for `pkg/rbac`'s dual-path `Allow*` dispatch. `DecisionEng
 is an **optional** interface asserted against the configured `Authorizer` at request handling
 time — deliberately not part of the `Authorizer` interface, so the generated mock and any
 external implementer keep compiling and their requests structurally take the legacy path.
-The `local` authorizer implements it (identity's own `RBAC`, whose PDP client backs
-`rbac.Check`/`CheckMany`); the `remote` authorizer gains it with A8. Seeding happens next to
-the ACL context on the context handlers actually receive, and is unconditional on engine
-mode — whether the engine actually serves decisions is the dispatch predicate's job (see
-[`pkg/rbac`](../../rbac/README.md)). Until A12/A17 the per-request ACL resolution above
-still runs even when the engine serves, so cerbos mode carries both resolution costs.
+**Only the `local` authorizer implements it** (identity's own `RBAC`, whose in-process PDP
+client backs `rbac.Check`/`CheckMany`). The `remote` authorizer deliberately does **not** — a
+remote `DecisionEngineProvider` is a **designed follow-up**, not delivered by A8. What A8
+delivered is the `remote` authorizer's decision **call** (`Authorizer.CheckMany` over
+`POST /authorization/check`, `remote/decision.go`): a downstream service obtains a decision
+from identity. Routing a downstream `Allow*` through that call would need a remote transport
+**above** `rbac.decide()` (a downstream RBAC cannot read identity's authorization resources — the Group/Role/Project/Organization CRDs binding resolution walks — so `ResolveBindings` would
+fail-closed-deny everything); the `DecisionEngine()` seam sits **below** binding resolution and
+cannot express that, so it stays a separate task (see the migration plan's follow-up entries).
+Seeding happens next to the ACL context on the context handlers actually receive, and is
+unconditional on engine mode — whether the engine actually serves decisions is the dispatch
+predicate's job (see [`pkg/rbac`](../../rbac/README.md)). Until A12/A17 the per-request ACL
+resolution above still runs even when the engine serves, so cerbos mode carries both
+resolution costs.
+
+### The Remote Decision Call (A8)
+
+`remote/decision.go` adds `Authorizer.CheckMany(ctx, []CheckRequest) ([]bool, error)`, the
+downstream side of identity's `POST /api/v1/authorization/check`. It mirrors the `GetACL` wire
+pattern exactly: the generated typed client (`PostApiV1AuthorizationCheckWithResponse`) over
+the cached mTLS/trace-context HTTP client, the bearer forwarded only when present (mTLS-only
+callers have an empty `Token`), and the `X-Principal`/`X-Impersonate` principal headers
+injected via `principal.Injector`. Identity requires `X-Principal` on every mTLS call (even a
+non-impersonating one — `extractPrincipal` rejects its absence with a 400), so a caller that
+hand-rolls the request instead of using this `CheckMany` must inject it itself or be denied.
+It uses a small local `CheckRequest`/`Resource` DTO rather than
+importing `pkg/rbac`, keeping the seam free of that dependency for downstream consumers.
+Absence semantics are preserved on the wire (a scope field is populated only when non-empty,
+so an org check never gains a project attribute). **Fail-closed**: a transport failure or 5xx
+maps to `ErrDecisionUnavailable`, a 401/other 4xx propagates via `errors.PropagateError`, and a
+result-count mismatch is unavailability — the caller treats any error as a deny, while a
+per-entry `false` is a policy deny. There is no caching (the design's no-cache-coarser rule
+plus impersonation keying make a decision cache a deliberate later decision — A15). Wiring this
+call into downstream `Allow*` routing is the recorded follow-up above.
 
 ### Remote Token Exchange
 

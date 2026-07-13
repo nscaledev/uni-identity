@@ -99,6 +99,11 @@ type ClientInterface interface {
 	// GetApiV1Acl request
 	GetApiV1Acl(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PostApiV1AuthorizationCheckWithBody request with any body
+	PostApiV1AuthorizationCheckWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostApiV1AuthorizationCheck(ctx context.Context, body PostApiV1AuthorizationCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetApiV1Oauth2providers request
 	GetApiV1Oauth2providers(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -308,6 +313,30 @@ func (c *Client) GetWellKnownOpenidProtectedResource(ctx context.Context, reqEdi
 
 func (c *Client) GetApiV1Acl(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetApiV1AclRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostApiV1AuthorizationCheckWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostApiV1AuthorizationCheckRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostApiV1AuthorizationCheck(ctx context.Context, body PostApiV1AuthorizationCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostApiV1AuthorizationCheckRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1199,6 +1228,46 @@ func NewGetApiV1AclRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewPostApiV1AuthorizationCheckRequest calls the generic PostApiV1AuthorizationCheck builder with application/json body
+func NewPostApiV1AuthorizationCheckRequest(server string, body PostApiV1AuthorizationCheckJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostApiV1AuthorizationCheckRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPostApiV1AuthorizationCheckRequestWithBody generates requests for PostApiV1AuthorizationCheck with any type of body
+func NewPostApiV1AuthorizationCheckRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/authorization/check")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -3240,6 +3309,11 @@ type ClientWithResponsesInterface interface {
 	// GetApiV1AclWithResponse request
 	GetApiV1AclWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1AclResponse, error)
 
+	// PostApiV1AuthorizationCheckWithBodyWithResponse request with any body
+	PostApiV1AuthorizationCheckWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostApiV1AuthorizationCheckResponse, error)
+
+	PostApiV1AuthorizationCheckWithResponse(ctx context.Context, body PostApiV1AuthorizationCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*PostApiV1AuthorizationCheckResponse, error)
+
 	// GetApiV1Oauth2providersWithResponse request
 	GetApiV1Oauth2providersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1Oauth2providersResponse, error)
 
@@ -3485,6 +3559,31 @@ func (r GetApiV1AclResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetApiV1AclResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostApiV1AuthorizationCheckResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AuthorizationCheckResponse
+	JSON400      *externalRef0.BadRequestResponse
+	JSON401      *externalRef0.UnauthorizedResponse
+	JSON500      *externalRef0.InternalServerErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PostApiV1AuthorizationCheckResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostApiV1AuthorizationCheckResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -4731,6 +4830,23 @@ func (c *ClientWithResponses) GetApiV1AclWithResponse(ctx context.Context, reqEd
 	return ParseGetApiV1AclResponse(rsp)
 }
 
+// PostApiV1AuthorizationCheckWithBodyWithResponse request with arbitrary body returning *PostApiV1AuthorizationCheckResponse
+func (c *ClientWithResponses) PostApiV1AuthorizationCheckWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostApiV1AuthorizationCheckResponse, error) {
+	rsp, err := c.PostApiV1AuthorizationCheckWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostApiV1AuthorizationCheckResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostApiV1AuthorizationCheckWithResponse(ctx context.Context, body PostApiV1AuthorizationCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*PostApiV1AuthorizationCheckResponse, error) {
+	rsp, err := c.PostApiV1AuthorizationCheck(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostApiV1AuthorizationCheckResponse(rsp)
+}
+
 // GetApiV1Oauth2providersWithResponse request returning *GetApiV1Oauth2providersResponse
 func (c *ClientWithResponses) GetApiV1Oauth2providersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1Oauth2providersResponse, error) {
 	rsp, err := c.GetApiV1Oauth2providers(ctx, reqEditors...)
@@ -5387,6 +5503,53 @@ func ParseGetApiV1AclResponse(rsp *http.Response) (*GetApiV1AclResponse, error) 
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest externalRef0.UnauthorizedResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest externalRef0.InternalServerErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostApiV1AuthorizationCheckResponse parses an HTTP response from a PostApiV1AuthorizationCheckWithResponse call
+func ParsePostApiV1AuthorizationCheckResponse(rsp *http.Response) (*PostApiV1AuthorizationCheckResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostApiV1AuthorizationCheckResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AuthorizationCheckResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest externalRef0.BadRequestResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
 		var dest externalRef0.UnauthorizedResponse

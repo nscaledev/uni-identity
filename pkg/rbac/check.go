@@ -35,12 +35,20 @@ import (
 // to allow/deny.  Impersonated requests are served by the A14 dual check —
 // two AND-ed single-principal evaluations, the impersonated principal and
 // the acting service (decideImpersonated) — replacing the legacy
-// confused-deputy ACL intersection.  Only the local in-process PDP client
-// path exists today; the PolicyDecisionPoint seam is where A8 slots the
-// remote transport (/authorization/check) for services without a sidecar.
-// Decision audit logging and metrics live in decision_log.go (A10), hooked
-// at the CheckMany choke point below so every consumer — Check, allowCoarse,
-// and A8's remote handler alike — is observed, pre-PDP fail-closed denials
+// confused-deputy ACL intersection.  The PolicyDecisionPoint seam is the PDP
+// CLIENT boundary: only the local in-process Cerbos client satisfies it.  A8
+// does NOT plug a "remote PDP" in here — its POST /authorization/check
+// endpoint (pkg/handler) is a REMOTE ENTRY into THIS decision layer: a
+// downstream service without a sidecar calls identity, whose handler runs
+// CheckMany against the SAME local PDP client.  (A remote transport BELOW
+// decide() would still need to read identity's authorization resources (the
+// Group/Role/Project/Organization CRDs) to resolve bindings — Kubernetes
+// access a downstream service does not have — which is exactly what the
+// endpoint centralizes; see decision_engine.go for why the
+// Allow*-facade remote-provider is a separate designed follow-up.)  Decision
+// audit logging and metrics live in decision_log.go (A10), hooked at the
+// CheckMany choke point below so every consumer — Check, allowCoarse, and
+// A8's remote handler alike — is observed, pre-PDP fail-closed denials
 // included.
 
 // The decision error taxonomy.  All three failure classes are DENY-shaped —
@@ -73,9 +81,11 @@ var (
 	ErrImpersonationNotSupported = goerrors.New("impersonated requests are not supported by the cerbos decision path")
 )
 
-// PolicyDecisionPoint is the PDP surface the decision API consumes.  The
-// in-process client (pkg/authz/cerbos.Client) satisfies it; A8's remote
-// /authorization/check transport slots in behind the same seam.
+// PolicyDecisionPoint is the PDP CLIENT surface the decision API consumes:
+// the in-process client (pkg/authz/cerbos.Client) satisfies it.  This is NOT
+// where A8's remote path lives — A8's /authorization/check is a remote ENTRY
+// into this layer (its handler calls CheckMany, which uses this seam's local
+// client), not an alternative implementation of this interface.
 type PolicyDecisionPoint interface {
 	CheckResources(ctx context.Context, principal *sdk.Principal, resources *sdk.ResourceBatch) (*sdk.CheckResourcesResponse, error)
 }

@@ -29,8 +29,21 @@ import (
 // dual-path dispatch (rbac.NewEngineContext).  It is asserted at request
 // handling time instead of widening Authorizer so external implementers —
 // the generated mock included — keep compiling, and their requests
-// structurally take the legacy path.  The local authorizer implements it
-// today; the remote authorizer gains it with A8.
+// structurally take the legacy path.
+//
+// Only the LOCAL authorizer implements it: it hands back identity's own RBAC,
+// whose in-process PDP client can actually resolve bindings and decide.  The
+// REMOTE authorizer deliberately does NOT — a remote DecisionEngineProvider
+// is a designed follow-up, not delivered by A8.  A8 delivers the remote
+// DECISION CALL (Authorizer.CheckMany over POST /authorization/check): a
+// downstream service obtains a decision from identity.  Routing a downstream
+// Allow* through that call would need a remote transport ABOVE rbac.decide()
+// (a downstream RBAC cannot read identity's authorization resources — the
+// Group/Role/Project/Organization CRDs binding resolution walks — so
+// ResolveBindings would fail-closed-deny everything), which the
+// DecisionEngine() seam — sitting
+// BELOW binding resolution — cannot express.  See pkg/rbac/check.go and the
+// migration plan's follow-up entries.
 type DecisionEngineProvider interface {
 	// DecisionEngine returns the decision engine to seed into handler
 	// contexts, or nil when none is available.
