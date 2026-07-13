@@ -266,6 +266,46 @@ labels, not ownerReferences).  Consequences:
   have converged (see [hack/ci](../../../hack/ci/README.md) and the kind-gate
   section in [pkg/rbac](../../rbac/README.md)).
 
+## The Policy-Store Hasher (A15)
+
+`PolicyStoreHasher` (`policyhash.go`) is a read-through provider of the current
+policy-store fingerprint, consumed by [pkg/rbac](../../rbac/README.md#the-coarse-decision-cache-a15)'s
+coarse-decision cache as the cache-key dimension that busts every entry on a
+policy republish.
+
+- **Content-addressed off the key set.** The fingerprint is
+  `sha256(join(sorted(ConfigMap.Data keys), "\n"))`, hex-encoded — the VALUES
+  are ignored. This works precisely because the [hash-suffixed key
+  scheme](#the-hash-suffixed-key-scheme-load-bearing) already content-addresses
+  every key (`<base>-<sha256[:8]>.yaml`): any policy content change changes at
+  least one key, so the key set alone changes iff the store content changes. An
+  empty store hashes to a fixed, stable, non-empty token.
+- **Why read the ConfigMap, not the PDP.** Identity cannot get this from Cerbos:
+  the PDP response only echoes the *requested* policy version, which identity's
+  coarse checks leave unset (the A15 seam in `shadow.go`/`decision_log.go`). So
+  the hasher read-throughs the controller-owned ConfigMap directly, re-`Get`ting
+  it at most once per refresh interval (identity passes `--decision-cache-timeout`)
+  and memoizing in between; `Current` is concurrency-safe (it is called on every
+  cerbos-mode decision).
+- **Uncached client, narrow RBAC.** It MUST use a direct (uncached) client — the
+  identity server passes its `directclient`. A cache-backed client would spin up
+  a cluster-wide ConfigMap informer, exactly the anti-pattern the [policy
+  controller](#the-policy-controller) avoids for the same reason; the chart grants
+  the server only a dedicated `get` on `configmaps` (not list/watch) for this read.
+- **Fail-safe availability contract.** `Current` reports unavailable
+  (`ok=false`) until the FIRST successful read, so the coarse-decision cache
+  stays bypassed rather than keyed on a bogus hash. After a first success it
+  retains the last-good hash across a later failed refresh (a transient
+  ConfigMap read blip must not fail-closed-deny every decision), logging the
+  failure at most once per transition to avoid per-decision spam.
+- **Reload-lag / TTL relationship.** The controller publishes, then the kubelet
+  syncs the volume (~1 minute) and Cerbos reloads (2s), so the hasher — reading
+  the ConfigMap directly — sees a new hash BEFORE the PDP has the new policy.
+  That is deliberate and safe: the hash flip makes stale-store entries
+  unreachable immediately (no stale-allow past a revoking republish), while the
+  brief window where the PDP still serves the old store, and any same-hash edge
+  case, are bounded by the decision cache TTL (`--decision-cache-timeout`).
+
 ## The Request Builder
 
 `request.go` is the pure half of request construction: resolved bindings +

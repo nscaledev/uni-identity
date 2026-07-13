@@ -207,7 +207,8 @@ func shadowClass(err error) string {
 // TWO CheckResources calls (the A14 dual check) and only the LAST response
 // — the service side's, deliberately sequenced second by decideImpersonated
 // — is retained: acceptable, because the correlate is empty against today's
-// PDP either way; A15's policy-hash correlate should revisit this.
+// PDP either way; the deferred policy-hash correlate wire-up (the signal now
+// exists — see shadowPolicyCorrelate) should revisit this.
 type capturingPDP struct {
 	next     PolicyDecisionPoint
 	response *sdk.CheckResourcesResponse
@@ -228,10 +229,12 @@ func (c *capturingPDP) CheckResources(ctx context.Context, principal *sdk.Princi
 // applies), so both are empty against today's PDP — the fields exist so the
 // correlate upgrades in place.
 //
-// A15 SEAM: no policy-hash signal exists at identity yet.  When A15 builds
-// one (for cache invalidation), replace this correlate with the policy-store
-// hash so a divergence pins the exact store revision it was observed
-// against.
+// A15 SEAM (signal now built, wire-up deferred): the policy-store hash A15
+// needed for cache invalidation now EXISTS — pkg/authz/cerbos.PolicyStoreHasher,
+// injected into RBAC via WithPolicyStoreHash.  Replacing this empty PDP echo
+// with that hash — so a divergence pins the exact store revision it was
+// observed against — is the small remaining follow-up, deferred out of A15
+// (tracked as task A20); behaviour here is unchanged until it lands.
 func shadowPolicyCorrelate(response *sdk.CheckResourcesResponse) (string, string) {
 	if response == nil || len(response.Results) == 0 {
 		return "", ""

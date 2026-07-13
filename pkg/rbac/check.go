@@ -408,6 +408,8 @@ func (r *RBAC) decideImpersonated(ctx context.Context, info *authorization.Info,
 
 	// The service-side response is the returned policy correlate,
 	// consistent with the shadow capture; both correlates are empty against
-	// today's PDP anyway (the A15 seam).
+	// today's PDP anyway (the A15 seam — the policy-store hash that would
+	// replace them now exists, pkg/authz/cerbos.PolicyStoreHasher, but wiring
+	// it into the correlate is deferred out of A15, tracked as task A20).
 	return allowed, serviceResponse, nil
 }

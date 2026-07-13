@@ -57,6 +57,16 @@ rules:
   verbs:
   - list
   - watch
+# The policy-store hasher (coarse-decision cache invalidation, A15) does a
+# direct Get on the controller-owned policies ConfigMap.  Grant only get on
+# configmaps here, as a dedicated rule, rather than broadening the shared
+# secrets+configmaps+namespaces rule above (secrets/namespaces stay list+watch).
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
 - apiGroups:
   - coordination.k8s.io
   resources:

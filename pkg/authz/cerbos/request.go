@@ -76,7 +76,9 @@ const (
 	// CoarseResourceID is the synthetic resource id for coarse (no specific
 	// instance) checks: the engine proto requires a non-empty resource id
 	// (engine.proto Resource.id min_len 1).  The constant is pinned because
-	// it is part of the future A15 decision-cache key.
+	// the coarse checks it marks are exactly what the A15 decision cache
+	// memoizes; the cache key is scope + policy hash and deliberately OMITS
+	// the resource id (see pkg/rbac engine.go decisionCacheKey).
 	CoarseResourceID = "*"
 )
 

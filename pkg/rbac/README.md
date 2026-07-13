@@ -188,11 +188,11 @@ scope, resource ID always the coarse `*`).
 
   The **policy correlate** is currently the in-band per-result policy version/scope the
   SDK response carries (plus the record's timestamp) — a deliberate deviation from the
-  plan's "policy hash", which does not exist at identity yet. Note the PDP echoes the
-  *requested* version/scope, which identity's version-less coarse checks leave empty; the
-  A15 policy-hash signal (built for cache invalidation) upgrades this correlate in place
-  (`shadowPolicyCorrelate` in `shadow.go` is the seam) so a divergence pins the exact
-  store revision it was observed against.
+  plan's "policy hash". Note the PDP echoes the *requested* version/scope, which identity's
+  version-less coarse checks leave empty. A15 has since built the policy-store hash signal
+  (the hasher, for cache invalidation), but this correlate does NOT yet consume it: wiring
+  that hash into `shadowPolicyCorrelate` (the seam in `shadow.go`), so a divergence pins the
+  exact store revision it was observed against, is a deferred follow-up.
 
   Exclusions: `AllowProjectScopeCreate`/`AllowRole` are never shadowed (see below).
   **Impersonated requests are compared too since A14**: the legacy intersection verdict
@@ -228,7 +228,8 @@ scope, resource ID always the coarse `*`).
 - **Costs, accepted until later tasks**: the middleware still resolves the legacy ACL for
   every request even in cerbos mode (the double-resolution goes with A12/A17), and
   per-item filter loops over `Allow*` become N single-check PDP calls (the localhost
-  sidecar answers sub-millisecond; A15 adds caching).
+  sidecar answers sub-millisecond; the A15 coarse-decision cache — below — now memoizes
+  repeated identical checks).
 
 - `ResolveBindings(ctx, info)` converts the authenticated subject into the `(role, scope)`
   binding tuples the Cerbos request builder renders. Every branch deliberately mirrors a
@@ -267,28 +268,32 @@ scope, resource ID always the coarse `*`).
   policy-denies via the request-scope-free resolver, and a System-type impersonation
   legacy-errors (`ErrInvalidPrincipalType`) where the dual check refuses with
   `ErrImpersonationNotSupported` — the same deny verdicts, different error shapes.
-  **A15 cache-key obligation**: no Cerbos-side decision cache exists yet; when A15 builds
-  one, its key MUST include the full `(impersonated-sub, actor)` pair plus the
-  impersonation flag (preserving today's `direct|`/`impersonated|` cache-key
-  discriminator), per the design's caching clause — A14's concrete deliverable for that
-  clause is carrying the pair in every impersonated decision record (see below).
+  **A15 cache-key obligation (delivered)**: the A15 coarse-decision cache (below) keys an
+  impersonated entry on the `(impersonated-sub, actor)` pair, the impersonation flag (the
+  `direct|`/`impersonated|` discriminator), and the actor's type and org set — every
+  verdict-determining input of the dual check — per the design's caching clause, so an
+  impersonated verdict can never be served to a direct call, nor to a different impersonated
+  principal. A14's concrete deliverable for that clause is carrying the pair in every
+  impersonated decision record (see below).
 
 ### Decision observability (A10)
 
-Every SERVED Cerbos-path decision is audited and counted at the `CheckMany` choke point
+Every PDP-SERVED Cerbos-path decision is audited and counted at the `CheckMany` choke point
 (`decision_log.go`): `Check` wraps `CheckMany`, cerbos-mode `allowCoarse` wraps `Check`, and
 A8's remote `/authorization/check` handler lands on `CheckMany` too (delivered — see below)
 — so remote decisions inherit these records with no further work. Hooking the choke point rather than decorating
 the PDP client is deliberate: the pre-PDP fail-closed denials (no client configured,
 resolution failures, refused impersonated principal types) are decisions and must be
-observed. An impersonated dual-check decision is still ONE record and ONE counter
+observed. **One path does not reach here: an A15 coarse-cache HIT short-circuits before
+`CheckMany`, so it emits no audit record and no `decisions_total` increment (it is counted
+on the separate coarse-cache hit/miss counter instead — see [the cache](#the-coarse-decision-cache-a15)).** An impersonated dual-check decision is still ONE record and ONE counter
 increment per entry — never one per side — with the AND-ed outcome. Two
 owner-flagged deviations from the migration plan's file table: **`decision_log` lives in
 `pkg/rbac`, not `pkg/authz/cerbos`** (the plan row predates A5 placing the decision layer
 here — the choke point and every record input live in this package, and the PDP client knows
 nothing about subjects and stays log-free), and **the "policy version/hash" field is emitted
-through the same A15 seam the shadow comparator uses** (empty against today's PDP; upgraded
-in place when A15 builds the policy-store hash).
+through the same seam the shadow comparator uses** (empty against today's PDP; A15 has built
+the policy-store hash signal but wiring it into this correlate is a deferred follow-up).
 
 **The decision log.** One record per `(resource, action)` entry of the batch — the flat,
 greppable shape; a batch-wide failure denies every entry, so every entry gets a record with
@@ -428,6 +433,57 @@ Two supporting CI units guard the gate's integrity (both documented in
   ceases. The two engines flip at different times (legacy on ~1m ACL-cache expiry, Cerbos on
   ~1m ConfigMap propagation), so a transient divergence window is expected and correct there —
   which is exactly why it must never run before the gate.
+
+### The coarse-decision cache (A15)
+
+Cerbos-mode `Allow*` dispatch memoizes coarse verdicts so repeated identical checks (the
+per-item filter loops over `Allow*`) do not re-hit the PDP. The cache lives at ONE choke
+point — `allowCoarse` in `engine.go`, reached only through `engineForDispatch` (cerbos mode)
+— so the shadow path (`shadowCompare`) and the remote decision endpoint (A8's `CheckMany`
+handler) never touch it: shadow divergence coverage and remote decisions are uncached by
+construction.
+
+- **Key dimensions** (`decisionCacheKey`, the analog of the middleware's `aclCacheKey`):
+  the calling subject, the `direct|`/`impersonated|` discriminator, the coarse scope
+  (`kind|organizationID|projectID`, the no-flow-up shape preserved — org/project empty when
+  absent), the action, and the **policy-store hash**. An impersonated key additionally
+  carries the impersonated actor, its principal **type**, and its **sorted organization
+  set** — the verdict-determining inputs the A14 dual check resolves the actor's bindings
+  from (`impersonatedInfo` → `ResolveBindings`) — so two distinct impersonated principals
+  that merely share an actor string cannot collide on one cached verdict. (This is stricter
+  than today's `aclCacheKey`, which omits type/orgs; aligning the ACL cache is a tracked
+  follow-up.) The resource ID is deliberately absent (coarse-only). The impersonation
+  predicate is the SAME `impersonationFromContext` the decision path uses, so the key can
+  never disagree with how `decide` treats the request (a marker without an actor is direct
+  on both sides).
+- **Policy-hash invalidation is the correctness core.** The hash comes from the
+  controller-owned policies ConfigMap (see
+  [`pkg/authz/cerbos`](../authz/cerbos/README.md#the-policy-store-hasher-a15)). A republish
+  changes the store's content-addressed key set, so the hash changes, so every entry keyed
+  on the previous store becomes unreachable — a revoking republish can NEVER be masked by a
+  stale cached allow. Residual staleness (while the PDP itself reloads the new store, or in
+  the same-hash edge case) is bounded by `--decision-cache-timeout`.
+- **Only DEFINITE verdicts are cached** — an allow (`err == nil`) or a policy deny
+  (`ErrPolicyDenied`). Transient failures (`ErrDecisionUnavailable`, `ErrResolutionFailed`)
+  are NEVER cached: a PDP outage must not poison a later retry. A cached deny is
+  reconstructed to the exact `ErrPolicyDenied` HTTPForbidden shape a fresh deny carries, so
+  a hit is indistinguishable from a miss to callers.
+- **Fail-safe / inert by default.** The cache is only active when a policy-store hasher is
+  configured (`WithPolicyStoreHash`, wired only in the identity server). Without one — every
+  downstream construction and every test — `decisionCacheKey` reports bypass and every
+  decision consults the PDP. An unavailable hash (no successful ConfigMap read yet) or an
+  unreadable subject also bypasses. The impersonation type gate runs BEFORE any cache lookup,
+  so a cached allow (keyed on the actor, not the principal type) can never be served to a
+  principal type that cannot be impersonated.
+- **Cache hits skip the A10 decision log and `decisions_total`** (which document PDP-served
+  decisions — a hit is not a new PDP decision) but are counted in a dedicated
+  `unikorn_identity_authz_coarse_cache_total{outcome=hit|miss}` counter, so the cache's
+  effectiveness (hit ratio) stays observable without inflating the PDP-served stream.
+  Misses funnel through `CheckMany` and are logged and counted there exactly as before, and
+  additionally recorded as `outcome=miss` on the coarse-cache counter. The verbose audit
+  log stays miss-only by design (the authoritative decision is logged on the miss that
+  populated the entry). Flags: `--decision-cache-size` (default `1<<16`) and
+  `--decision-cache-timeout` (default `1m`).
 
 ## Invariants
 

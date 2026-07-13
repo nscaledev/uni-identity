@@ -33,14 +33,21 @@ import (
 )
 
 // This file is the A10 decision observability: one structured audit record
-// and one counter increment per SERVED Cerbos-path decision, hooked at the
-// CheckMany choke point (every consumer funnels through it — Check wraps it,
-// cerbos-mode allowCoarse wraps Check, and A8's remote /authorization/check
-// handler will land on it too, so remote decisions inherit these records for
-// free).  Hooking the choke point rather than decorating the PDP client is
-// deliberate: the pre-PDP fail-closed denials (no client, resolution
-// failures, refused impersonated principal types) are decisions and must be
-// recorded.
+// and one counter increment per PDP-SERVED Cerbos-path decision, hooked at the
+// CheckMany choke point (every PDP-served consumer funnels through it — Check
+// wraps it, cerbos-mode allowCoarse wraps Check, and A8's remote
+// /authorization/check handler lands on it too, so remote decisions inherit
+// these records for free).  Hooking the choke point rather than decorating the
+// PDP client is deliberate: the pre-PDP fail-closed denials (no client,
+// resolution failures, refused impersonated principal types) are decisions and
+// must be recorded.
+//
+// ONE path deliberately does not reach here: a cerbos-mode allowCoarse CACHE
+// HIT (A15) short-circuits before CheckMany, so it emits no audit record and
+// no decisions_total increment — a hit is not a new PDP decision.  Hits are
+// counted separately by recordCacheOutcome (the coarse-cache hit/miss counter)
+// so the cache's effect stays observable without inflating the PDP-served
+// stream.
 //
 // The sink is the shared audit sink: the request-scoped logr logger
 // (log.FromContext), which the server wires to zap JSON via SetupLogging.
@@ -69,18 +76,28 @@ import (
 // (the unit tests duplicate it deliberately).
 const decisionMessage = "authorization decision"
 
-// newDecisionInstruments creates the two A10 decision instruments.
+// newDecisionInstruments creates the three A10 decision instruments.
 //
-// Both export ONLY when the server is started with --otlp-endpoint (metrics
+// All export ONLY when the server is started with --otlp-endpoint (metrics
 // are pushed over OTLP; no /metrics endpoint exists) — without it the
 // recordings are silently dropped.
-func newDecisionInstruments() (metric.Int64Counter, metric.Float64Histogram) {
+func newDecisionInstruments() (metric.Int64Counter, metric.Int64Counter, metric.Float64Histogram) {
 	// The errors only report an invalid instrument configuration; the names,
 	// descriptions, and units are static and the API returns usable no-op
 	// instruments regardless, so there is nothing actionable to handle.
 	decisions, _ := otel.Meter(constants.Application).Int64Counter(
 		"unikorn_identity_authz_decisions_total",
-		metric.WithDescription("Cerbos-path authorization decisions served, by decision and sentinel class."),
+		metric.WithDescription("Cerbos PDP-served authorization decisions, by decision and sentinel class (cerbos-mode coarse-cache hits are counted by unikorn_identity_authz_coarse_cache_total, not here)."),
+		metric.WithUnit("{decision}"),
+	)
+
+	// The A15 coarse-decision cache's own effectiveness signal, disjoint from
+	// decisions_total: a hit never reaches the PDP, a miss does (and is also
+	// counted in decisions_total when it resolves).  hit/(hit+miss) is the
+	// cache hit ratio.
+	cacheDecisions, _ := otel.Meter(constants.Application).Int64Counter(
+		"unikorn_identity_authz_coarse_cache_total",
+		metric.WithDescription("Coarse cerbos-mode authorization cache outcomes, by outcome (hit or miss)."),
 		metric.WithUnit("{decision}"),
 	)
 
@@ -94,7 +111,7 @@ func newDecisionInstruments() (metric.Int64Counter, metric.Float64Histogram) {
 		metric.WithExplicitBucketBoundaries(0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2),
 	)
 
-	return decisions, pdpLatency
+	return decisions, cacheDecisions, pdpLatency
 }
 
 // decisionVerdict renders an allow/deny verdict for records and attributes.
@@ -151,8 +168,10 @@ func decisionSubject(ctx context.Context) (string, string) {
 // resultPolicyCorrelate extracts the in-band policy version/scope the PDP
 // echoes for one result entry.  Same A15 seam as shadowPolicyCorrelate
 // (shadow.go): empty against today's PDP — identity's coarse checks request
-// no version, and the PDP echoes the request — and upgraded in place to the
-// policy-store hash when A15 builds that signal.
+// no version, and the PDP echoes the request.  The policy-store hash that
+// would replace this now EXISTS (pkg/authz/cerbos.PolicyStoreHasher, built by
+// A15 for cache invalidation); wiring it in here is the deferred follow-up
+// (tracked as task A20).
 func resultPolicyCorrelate(response *sdk.CheckResourcesResponse, i int) (string, string) {
 	if response == nil || i >= len(response.Results) {
 		return "", ""
@@ -233,4 +252,22 @@ func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allow
 			attribute.String("class", class),
 		))
 	}
+}
+
+// recordCacheOutcome increments the coarse-decision cache hit/miss counter
+// (A15).  It is deliberately separate from recordDecisions: a cerbos-mode
+// cache hit is a served authorization decision but NOT a PDP round trip, so it
+// emits no audit record and does not touch decisions_total (which counts
+// PDP-served decisions) — this counter is the cache's own effectiveness
+// signal.  Only cache-consulted decisions are counted; a bypass (no policy
+// hash available) is neither a hit nor a miss.
+func (r *RBAC) recordCacheOutcome(ctx context.Context, hit bool) {
+	outcome := "miss"
+	if hit {
+		outcome = "hit"
+	}
+
+	r.cacheDecisions.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("outcome", outcome),
+	))
 }

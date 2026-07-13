@@ -22,12 +22,14 @@ import (
 	goerrors "errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/core/pkg/util/cache"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -38,6 +40,19 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	// defaultDecisionCacheSize is the coarse-decision cache capacity used when
+	// the option is unset (e.g. downstream RBAC constructions and tests that
+	// build Options directly).  It must be > 0: the underlying LRU panics on a
+	// non-positive size.
+	defaultDecisionCacheSize = 1 << 16
+
+	// defaultDecisionCacheTimeout is the coarse-decision cache TTL used when
+	// the option is unset.  It also backstops policy-hash staleness: a stale
+	// verdict cannot outlive it (see engine.go allowCoarse and the hasher).
+	defaultDecisionCacheTimeout = time.Minute
 )
 
 var (
@@ -58,6 +73,15 @@ type Options struct {
 	// server registers the flag, so it never exists downstream — and even
 	// there dispatch additionally requires an engine-seeded context.
 	AuthorizationEngine EngineMode
+
+	// DecisionCacheSize is the capacity of the coarse-decision cache
+	// (cerbos-mode allowCoarse; see engine.go).
+	DecisionCacheSize int
+
+	// DecisionCacheTimeout is how long a coarse decision is retained before
+	// it must be re-derived from the PDP.  It also backstops policy-hash
+	// staleness (see the hasher in pkg/authz/cerbos).
+	DecisionCacheTimeout time.Duration
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
@@ -67,6 +91,8 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringSliceVar(&o.PlatformAdministratorSubjects, "platform-administrator-subjects", nil, "Platform administrators.")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
 	f.Var(&o.AuthorizationEngine, "authorization-engine", "Authorization engine serving Allow* enforcement decisions (legacy, shadow or cerbos).")
+	f.IntVar(&o.DecisionCacheSize, "decision-cache-size", defaultDecisionCacheSize, "Size of the coarse Cerbos decision cache.")
+	f.DurationVar(&o.DecisionCacheTimeout, "decision-cache-timeout", defaultDecisionCacheTimeout, "Duration to cache coarse Cerbos decisions for.")
 }
 
 // RBAC contains all the scoping rules for services across the platform.
@@ -80,29 +106,67 @@ type RBAC struct {
 	// nil — decisions then fail closed with ErrDecisionUnavailable.
 	pdp PolicyDecisionPoint
 
-	// decisions counts served Cerbos-path decisions and pdpLatency times the
-	// CheckResources round trip (see decision_log.go and check.go).  Both are
-	// no-op unless metrics are exported (--otlp-endpoint).
-	decisions  metric.Int64Counter
-	pdpLatency metric.Float64Histogram
+	// decisions counts PDP-served Cerbos-path decisions, cacheDecisions counts
+	// coarse-decision cache hits/misses (A15 observability), and pdpLatency
+	// times the CheckResources round trip (see decision_log.go and check.go).
+	// All are no-op unless metrics are exported (--otlp-endpoint).
+	decisions      metric.Int64Counter
+	cacheDecisions metric.Int64Counter
+	pdpLatency     metric.Float64Histogram
 
 	// shadowEvaluation marks the shallow engine copy shadowCompare rides
 	// through Check/CheckMany: such evaluations must emit no decision
 	// records and no decision-counter increments (shadow.go owns that
 	// path's taxonomy).  Never set on a served engine.
 	shadowEvaluation bool
+
+	// decisionCache memoizes coarse cerbos-mode verdicts (allow and policy
+	// deny, never failures) keyed by (subject, impersonation+actor, scope,
+	// action, policy hash); see engine.go allowCoarse/decisionCacheKey.  It
+	// is only consulted when a policyHasher is configured — without one every
+	// decision bypasses it, so downstream and legacy paths are unaffected.
+	decisionCache    *cache.LRUExpireCache[string, bool]
+	decisionCacheTTL time.Duration
+
+	// policyHasher supplies the current policy-store hash, the cache-key
+	// dimension that busts every entry on a policy republish (injected via
+	// WithPolicyStoreHash).  Nil ⇒ the cache is inert (the safe default for
+	// every construction that does not opt in).
+	policyHasher PolicyStoreHasher
 }
 
 // New creates a new RBAC client.
 func New(client client.Client, namespace string, options *Options) *RBAC {
-	decisions, pdpLatency := newDecisionInstruments()
+	decisions, cacheDecisions, pdpLatency := newDecisionInstruments()
+
+	// Fall back to the defaults when the option is unset: Options is built
+	// directly (without AddFlags) by several consumers and every test, and the
+	// underlying LRU panics on a non-positive size.
+	cacheSize := defaultDecisionCacheSize
+	cacheTTL := defaultDecisionCacheTimeout
+
+	if options != nil {
+		if options.DecisionCacheSize > 0 {
+			cacheSize = options.DecisionCacheSize
+		}
+
+		if options.DecisionCacheTimeout > 0 {
+			cacheTTL = options.DecisionCacheTimeout
+		}
+	}
+
+	decisionCache := cache.NewLRUExpireCache[string, bool](cacheSize)
+	decisionCache.ZeroCopy()
 
 	return &RBAC{
-		client:     client,
-		namespace:  namespace,
-		options:    options,
-		decisions:  decisions,
-		pdpLatency: pdpLatency,
+		client:           client,
+		namespace:        namespace,
+		options:          options,
+		decisions:        decisions,
+		cacheDecisions:   cacheDecisions,
+		pdpLatency:       pdpLatency,
+		decisionCache:    decisionCache,
+		decisionCacheTTL: cacheTTL,
 	}
 }
 

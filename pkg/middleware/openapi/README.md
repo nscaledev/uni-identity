@@ -109,9 +109,12 @@ Absence semantics are preserved on the wire (a scope field is populated only whe
 so an org check never gains a project attribute). **Fail-closed**: a transport failure or 5xx
 maps to `ErrDecisionUnavailable`, a 401/other 4xx propagates via `errors.PropagateError`, and a
 result-count mismatch is unavailability — the caller treats any error as a deny, while a
-per-entry `false` is a policy deny. There is no caching (the design's no-cache-coarser rule
-plus impersonation keying make a decision cache a deliberate later decision — A15). Wiring this
-call into downstream `Allow*` routing is the recorded follow-up above.
+per-entry `false` is a policy deny. This remote call is uncached (the design's
+no-cache-coarser rule plus impersonation keying). A15 has since delivered the coarse-decision
+cache, but at identity's OWN dispatch — the `pkg/rbac` `allowCoarse` layer, keyed on the
+policy-store hash (see [`pkg/rbac`](../../rbac/README.md#the-coarse-decision-cache-a15)) — NOT
+on this remote endpoint, which stays uncached. Wiring this call into downstream `Allow*`
+routing is the recorded follow-up above.
 
 ### Remote Token Exchange
 

@@ -50,7 +50,7 @@ import (
 //     claims, not just a request-scoped one, because the legacy Allow*
 //     functions consult the plural acl.Organizations list built across all
 //     organizations (handler.go:107/159/194).  A scoped-org optimization is
-//     recorded for post-cutover (A15 decision caching);
+//     recorded for post-cutover;
 //   - the resolver never reads Role.Spec.Scopes: the generated policies'
 //     scope buckets decide what each binding level actually grants.
 //
