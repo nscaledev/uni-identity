@@ -130,6 +130,17 @@ is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from t
 chart values for every ordered role pair, asserting each allowed edge and rejecting every
 non-edge.
 
+`TestBuiltinRoleGrantability` proves the Go lattice is internally consistent, but `AllowRole`
+also has to agree with Cerbos, which does the actual enforcement — the grant-guard trusts
+`Role.Spec.Scopes` while Cerbos serves the generated policy. That cross-check is A16's
+`TestGrantabilityCrossParity` (integration, `make test-cerbos-decisions`): for every role — the
+built-in nine plus the out-of-repo open-vocabulary shapes — it holds a principal bound to
+exactly that role and asserts, in both directions, that the generated Cerbos policy grants it
+exactly the scopes `AllowRole` trusts it to (with the downward flow). An over-grant would be an
+escalation slipping past the grant-guard; an under-grant a role that under-functions. The test
+is what lets `AllowRole` stay thin-Go: it guarantees its model and Cerbos enforcement cannot
+diverge for any role.
+
 ## Actor Model
 
 The package distinguishes three important actor classes:
@@ -224,7 +235,10 @@ scope, resource ID always the coarse `*`).
   error rather than falling back to the legacy path.
 - **`AllowProjectScopeCreate` and `AllowRole` stay legacy-only, nested checks included**:
   Create's live project-existence orchestration moves to Cerbos with A19, and `AllowRole`'s
-  grantability walk stays thin-Go by design (A16 owns its parity story).
+  grantability walk stays thin-Go by design. A16 proved that safe: `TestGrantabilityCrossParity`
+  (integration) shows the generated Cerbos policy grants every role — the built-in nine and the
+  out-of-repo open-vocabulary shapes — exactly its declared scopes, so the thin-Go grant-guard
+  and Cerbos enforcement provably agree and `AllowRole` need not dispatch to the PDP.
 - **Costs, accepted until later tasks**: the middleware still resolves the legacy ACL for
   every request even in cerbos mode (the double-resolution goes with A12/A17), and
   per-item filter loops over `Allow*` become N single-check PDP calls (the localhost

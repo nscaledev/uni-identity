@@ -402,7 +402,11 @@ func allowGrantProjectScope(ctx context.Context, endpoint string, operation open
 // NOTE: this function deliberately does NOT dispatch to the Cerbos engine —
 // nested scope checks included.  Grantability walks the raw ACL structure
 // (allowGrantProjectScope's any-project acceptance has no coarse-check
-// equivalent) and stays thin-Go by design; its parity story is task A16.
+// equivalent) and stays thin-Go by design.  Its parity story is task A16,
+// delivered: TestGrantabilityCrossParity (pkg/rbac, integration) proves the
+// generated Cerbos policy grants a holder of every role — the built-in nine and
+// the out-of-repo open-vocabulary shapes — EXACTLY the scopes this walk trusts
+// it to, so the thin-Go grant-guard and Cerbos enforcement cannot diverge.
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
