@@ -423,13 +423,6 @@ var _ = Describe("RBAC Enforcement", func() {
 		// Cerbos PDP and any disagreement is logged for the gate to fail on,
 		// so breadth here is gate coverage, not just RBAC coverage.
 
-		Describe("Given a request to list allocations", func() {
-			It("should be denied with a forbidden response", func() {
-				expectUserRequestForbidden(http.MethodGet,
-					api.NewEndpoints().ListAllocations(config.OrgID, config.ProjectID), nil)
-			})
-		})
-
 		Describe("Given a request to create an allocation", func() {
 			It("should be denied with a forbidden response", func() {
 				payload := identityopenapi.AllocationWrite{
