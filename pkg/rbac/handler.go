@@ -54,14 +54,49 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' is not permitted", operation, endpoint))
 }
 
-// AllowGlobalScope tries to allow the requested operation at the global scope.
-func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
-	if engine := engineForDispatch(ctx, endpoint); engine != nil {
-		// Coarse global check: Kind only, no scope attributes, coarse ID.
-		return engine.allowCoarse(ctx, Resource{Kind: endpoint}, operation)
+// dispatchCoarse is the single dispatch point the three Allow* scope forks
+// below call. A remote CoarseEngine seeded into the context (Task 5's seam,
+// NewRemoteEngineContext) takes priority over today's local dispatch when
+// present: RemoteEnforce serves the remote engine's verdict authoritatively,
+// fail-closed, and RemoteShadow runs the (Task 7) remote comparator. Neither
+// case falls through below. A context carrying no remote engine — or one
+// explicitly seeded as RemoteOff — falls through unchanged to today's
+// dispatch: the local (Cerbos) engine when this kind was cut over
+// (engineForDispatch), else the legacy ACL walk, optionally shadow-compared
+// (shadowed).
+//
+// legacy is a CLOSURE, not a precomputed value, so its evaluation can be
+// deferred: RemoteEnforce must reach engine.AllowCoarse WITHOUT ever calling
+// legacy() — a downstream consumer wiring a remote engine has no local
+// ACL/CRD access to run the legacy walk, so enforce can never depend on it,
+// let alone fall back to it on a remote deny or outage. The shadow and
+// fall-through paths call legacy() because they need its verdict: RemoteShadow
+// to compare against, and the local paths to serve or shadow-compare against
+// Cerbos exactly as before.
+func dispatchCoarse(ctx context.Context, resource Resource, operation openapi.AclOperation, legacy func() error) error {
+	if engine, mode := remoteEngineFromContext(ctx); engine != nil {
+		//nolint:exhaustive // RemoteOff deliberately has no case: it falls through to the local dispatch below.
+		switch mode {
+		case RemoteEnforce:
+			return engine.AllowCoarse(ctx, resource, operation) // authoritative, fail-closed
+		case RemoteShadow:
+			return remoteShadowed(ctx, engine, resource, operation, legacy())
+		}
 	}
 
-	return shadowed(ctx, Resource{Kind: endpoint}, operation, allowGlobalScopeLegacy(ctx, endpoint, operation))
+	if engine := engineForDispatch(ctx, resource.Kind); engine != nil {
+		return engine.allowCoarse(ctx, resource, operation)
+	}
+
+	return shadowed(ctx, resource, operation, legacy())
+}
+
+// AllowGlobalScope tries to allow the requested operation at the global scope.
+func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
+	// Coarse global check: Kind only, no scope attributes, coarse ID.
+	return dispatchCoarse(ctx, Resource{Kind: endpoint}, operation, func() error {
+		return allowGlobalScopeLegacy(ctx, endpoint, operation)
+	})
 }
 
 // allowGlobalScopeLegacy is the legacy local ACL walk, retained verbatim for
@@ -106,13 +141,11 @@ func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operatio
 // deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
 // and will be removed once those callers have migrated.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
-	if engine := engineForDispatch(ctx, endpoint); engine != nil {
-		// Coarse organization check: the project attribute stays ABSENT —
-		// the generated policies' no-flow-up invariant depends on that.
-		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID}, operation)
-	}
-
-	return shadowed(ctx, Resource{Kind: endpoint, OrganizationID: organizationID}, operation, allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID))
+	// Coarse organization check: the project attribute stays ABSENT —
+	// the generated policies' no-flow-up invariant depends on that.
+	return dispatchCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID}, operation, func() error {
+		return allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID)
+	})
 }
 
 // allowOrganizationScopeLegacy is the legacy local ACL walk, retained
@@ -171,12 +204,10 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 // in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
 // will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	if engine := engineForDispatch(ctx, endpoint); engine != nil {
-		// Coarse project check: both scope attributes set.
-		return engine.allowCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation)
-	}
-
-	return shadowed(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation, allowProjectScopeLegacy(ctx, endpoint, operation, organizationID, projectID))
+	// Coarse project check: both scope attributes set.
+	return dispatchCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation, func() error {
+		return allowProjectScopeLegacy(ctx, endpoint, operation, organizationID, projectID)
+	})
 }
 
 // allowProjectScopeLegacy is the legacy local ACL walk, retained verbatim
