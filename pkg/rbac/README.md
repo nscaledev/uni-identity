@@ -414,6 +414,88 @@ through the generated typed client, asserting an allowed and a denied check for 
 caller, the dual-check verdict for an impersonated call, bearer rejection, and PDP-down
 fail-closed.
 
+### Downstream remote-authorization adoption (cut #1)
+
+Tasks 2–9 deliver the identity-side half of routing a **downstream** service's `Allow*`
+decisions through identity's central PDP instead of a locally-resolved ACL walk: the seam and
+its guardrail essentials specified in
+[docs/downstream-remote-authorization-design.md](../../docs/downstream-remote-authorization-design.md)'s
+cut #1. It reuses the A8 endpoint above as the wire call and adds a second, independent
+dispatch fork alongside the local Cerbos path documented above.
+
+- **One seam, two implementations.** `CoarseEngine` (`coarse_engine.go`) is
+  `AllowCoarse`/`AllowCoarseMany` — the same coarse, batch-native shape the local `*RBAC`
+  already serves internally (`AllowCoarseMany` wraps `CheckMany`; `AllowCoarse` is the N=1
+  case over `allowCoarse`, decision cache included). `RemoteEngine`
+  (`pkg/middleware/openapi/remote`) is a second implementation, adapting the identical
+  interface onto the A8 wire call (`CheckMany` over `POST /authorization/check`): its
+  `AllowCoarseMany` is one `CheckMany` round trip for N resources, re-wrapping any
+  `CheckMany` failure as `ErrDecisionUnavailable` (`%w`-preserved, so `errors.Is` against
+  this package's sentinels answers identically whichever engine served the decision); its
+  `AllowCoarse` funnels through `AllowCoarseMany` for the N=1 case, so it carries no
+  telemetry of its own (below) — one call in, one observation, never two.
+- **`RemoteMode` and dispatch (`remote_engine.go`, `handler.go`).** A remote engine and its
+  mode — `RemoteOff`/`RemoteShadow`/`RemoteEnforce` (`ParseRemoteMode`) — are seeded and read
+  as one atomic context value (`NewRemoteEngineContext`/`remoteEngineFromContext`), under a
+  key independent of the existing local `EngineMode`/`engineKey` seam above: that one selects
+  WHICH local engine serves a decision (legacy walk vs. Cerbos); this one selects WHETHER a
+  remote engine is consulted at all. `dispatchCoarse`, the single dispatch point behind all
+  three `Allow*` scope forks, consults it FIRST, ahead of today's local dispatch:
+  - `RemoteEnforce` serves the remote engine's `AllowCoarse` **authoritatively, fail-closed**
+    — the `legacy` closure is never even invoked. Deliberately so: a downstream consumer
+    wiring a remote engine has no local ACL/CRD access to run the legacy walk, so enforce
+    cannot fall back to it on a remote deny or a decision-endpoint outage.
+  - `RemoteShadow` evaluates `legacy()` (needed both to serve its verdict and to compare it)
+    and hands the pair to `remoteShadowed` (below).
+  - No remote engine in context, or one explicitly seeded `RemoteOff` — the zero value, and
+    what an unseeded context reports — falls through **unchanged** to today's dispatch: the
+    local Cerbos engine when the kind was cut over (A12), else the legacy walk, optionally
+    *locally* shadow-compared (above). The two shadow mechanisms stay independent and are
+    never conflated (next).
+- **The remote shadow comparator (`remote_shadow.go`) is a downstream analog of the local
+  Cerbos shadow comparator above, built for a consumer-side soak gate rather than identity's
+  own.** `remoteShadowed` always returns the legacy verdict UNCHANGED — a policy deny, a
+  decision-endpoint outage, or a recovered panic on the remote side can never alter the
+  served verdict, the same zero-behaviour-change contract the local comparator gives its own
+  path. Disagreement is logged into its own two-class taxonomy, mirroring the local split
+  exactly:
+  - `remote shadow divergence` — a verdict was obtained and it differs from legacy's,
+    compared on allow/deny only, never error strings.
+  - `remote shadow evaluation failure` — no verdict was obtained (unavailability, an
+    unclassified error, or a recovered panic) — infra signal, never divergence signal.
+
+  Both messages are new and distinct from `shadow.go`'s `cerbos shadow …` pair, so the two
+  comparators' signals never blur under the same grep. Unlike the local comparator, a remote
+  divergence carries no `policy_hash` correlate: the remote `CoarseEngine` has no local
+  policy-store hasher to pin a revision against — the generated policy lives at identity, not
+  the consumer.
+- **How a consumer opts in.** A downstream service builds its `remote` authorizer with the
+  `WithRemoteEngineMode` option (left unset, the mode defaults to the zero value
+  `RemoteOff` — today's legacy walk, untouched). That satisfies `RemoteDecisionEngineProvider`
+  (`pkg/middleware/openapi/decision_engine.go`), the sibling of the local engine's
+  `DecisionEngineProvider` (above); `Validator.seedDecisionEngines` (`openapi.go`) — the same
+  production choke point that seeds the local engine — seeds the pair into every handler
+  context via `NewRemoteEngineContext`. No `Allow*` call site changes.
+- **Guardrail essentials, delivered.** The remote call carries its own hard per-call deadline
+  (`WithCheckTimeout`, default 250ms) applied via `context.WithTimeout`, independent of
+  whatever deadline the caller's own context carries, so a slow or wedged identity cannot
+  block a downstream request indefinitely — an expired deadline surfaces through the same
+  fail-closed path as any other transport failure. Every `AllowCoarse`/`AllowCoarseMany`
+  round trip also gets caller-side telemetry, distinct from identity's own A10 instruments: a
+  decision log (`remote authorization decision` — denies/unavailable at Info, allows at
+  `V(1)`, deliberately a different message from A10's `authorization decision`) and two
+  metrics, `unikorn_identity_authz_remote_decision_total` (`outcome=allow|deny|unavailable`)
+  and `unikorn_identity_authz_remote_decision_latency` (network-hop-shaped buckets from 5ms to
+  5s — an order of magnitude above the localhost-sidecar `pdp_latency` above). This is the
+  consumer's own view of the round trip, one observation per call regardless of batch size,
+  never a duplicate of identity's server-side records.
+- **Mechanism now, adoption deferred.** No consumer in this repo builds a `remote`
+  authorizer with `WithRemoteEngineMode` set — identity's own `Allow*` behaviour is
+  unaffected by construction, since identity's own server always constructs the local
+  authorizer, never the remote one. Provisioning and wiring `uni-region`/`uni-compute` (the
+  shadow-then-enforce rollout) is Tasks 10–12; the circuit-breaker profile is the design
+  doc's cut #2. Neither is delivered by this seam — it ships the mechanism only.
+
 ### The kind-CI divergence gate (A11)
 
 Kind CI runs the identity server in shadow mode (`hack/ci/test-values.yaml` sets
@@ -608,3 +690,5 @@ construction.
   group, organization, project, user, and service-account resources this package resolves
 - [`pkg/authz/cerbos`](../authz/cerbos/README.md), which provides the PDP client, policy
   generator and request builder behind the Cerbos decision path
+- [`docs/downstream-remote-authorization-design.md`](../../docs/downstream-remote-authorization-design.md),
+  which specifies the downstream remote-authorization seam (cut #1) documented above
