@@ -510,7 +510,7 @@ terminates mTLS or ingress config drifts. **M1 MUST harden it:**
 3. Handler fetches the target resource, derives org/project from labels (taint),
    and for ABAC-gated kinds calls `rbac.Check(resource, action)`.
 4. `remote` POSTs the subject credential (the acting service's mTLS client
-   cert, ingress-verified; the forwarded bearer when present) + the
+   cert, ingress-verified; no bearer forwarded — the endpoint is system-account-only) + the
    `X-Principal`/`X-Impersonate` principal headers + the batch of
    `(resource, action)` checks to identity `POST /api/v1/authorization/check`;
    **identity resolves the bindings** from the acting service's CN (and, when

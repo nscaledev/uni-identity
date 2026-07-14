@@ -238,18 +238,24 @@ func TestRemoteCheckManyForwardsPrincipal(t *testing.T) {
 	require.Equal(t, "true", h.gotImpersonate, "the impersonation marker must ride when set")
 }
 
-// TestRemoteCheckManyForwardsBearer proves a bearer token present in the
-// authorization info is forwarded, and that an mTLS-only (empty-token) caller
-// forwards none.
-func TestRemoteCheckManyForwardsBearer(t *testing.T) {
+// TestRemoteCheckManyNeverForwardsBearer proves the check-endpoint client never
+// sends an Authorization header — even when the request context carries a user
+// bearer.  The endpoint is system-account-only and 401s any bearer
+// (handler.PostApiV1AuthorizationCheck; TestRemoteAuthorizationCheckRejectsBearer);
+// the caller is authenticated by mTLS and the acting user is conveyed by
+// X-Principal, so forwarding the user's token would break every check.  This is
+// why CheckMany diverges from GetACL, which DOES forward the bearer.
+func TestRemoteCheckManyNeverForwardsBearer(t *testing.T) {
 	t.Parallel()
 
-	t.Run("bearer present", func(t *testing.T) {
+	t.Run("a user bearer in context is not forwarded", func(t *testing.T) {
 		t.Parallel()
 
 		h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
 		auth := newCheckAuthorizer(t, h)
 
+		// The realistic downstream shape: a live user request whose context
+		// carries the user's bearer.  It must NOT reach the check endpoint.
 		ctx := checkAuthContext(t, "the-bearer-token", false)
 
 		_, err := auth.CheckMany(ctx, []authorizer.CheckRequest{
@@ -257,7 +263,8 @@ func TestRemoteCheckManyForwardsBearer(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		require.Equal(t, "bearer the-bearer-token", h.gotAuthorization)
+		require.Empty(t, h.gotAuthorization, "a user bearer must never be forwarded to the system-account-only check endpoint (it would 401)")
+		require.NotEmpty(t, h.gotPrincipal, "the acting user must still be conveyed via X-Principal")
 	})
 
 	t.Run("mtls only forwards no bearer", func(t *testing.T) {

@@ -22,7 +22,6 @@ import (
 	"net/http"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
-	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 )
@@ -55,10 +54,18 @@ type CheckRequest struct {
 }
 
 // CheckMany obtains authorization decisions from identity for a batch of
-// checks, mirroring the GetACL wire pattern: the generated typed client over
-// the cached mTLS/trace-context HTTP client, the bearer forwarded when present
-// (mTLS-only callers have an empty Token and forward none), and the
-// X-Principal/X-Impersonate principal headers injected via principal.Injector.
+// checks: the generated typed client over the cached mTLS/trace-context HTTP
+// client, with the X-Principal/X-Impersonate principal headers injected via
+// principal.Injector.
+//
+// It deliberately does NOT forward a bearer.  The check endpoint is
+// system-account-only and REJECTS any Authorization header
+// (handler.PostApiV1AuthorizationCheck; TestRemoteAuthorizationCheckRejectsBearer):
+// the CALLER is authenticated by the cached client's mTLS peer certificate CN,
+// and the ACTING user is conveyed by X-Principal/X-Impersonate — not by a
+// token.  Forwarding the request's user bearer here would 401 every check.
+// This is the one place the wire pattern diverges from GetACL, which is not
+// system-gated and forwards the bearer to name the user.
 //
 // FAIL-CLOSED: any transport or server error is returned and the caller MUST
 // treat it as a deny for every check; a per-entry false is a policy deny.  The
@@ -66,24 +73,11 @@ type CheckRequest struct {
 // transport/decode failure) maps to ErrDecisionUnavailable, while a 401/other
 // 4xx is propagated verbatim via errors.PropagateError.
 func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, error) {
-	info, err := authorization.FromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Trace context and TLS are handled by the cached client.
-	// TODO: a nicer way to inject a token per call would be preferable.
+	// Trace context and TLS (the system-account identity) ride the cached
+	// client; the acting principal rides X-Principal via the injector.
 	options := []identityapi.ClientOption{
 		identityapi.WithHTTPClient(a.httpClient),
 		identityapi.WithRequestEditorFn(principal.Injector(a.client, a.clientOptions)),
-	}
-
-	if info.Token != "" {
-		options = append(options, identityapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
-			req.Header.Set("Authorization", "bearer "+info.Token)
-
-			return nil
-		}))
 	}
 
 	rawClient, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
