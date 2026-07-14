@@ -54,6 +54,11 @@ type capturePDP struct {
 	// allow is the verdict echoed for every requested action.
 	allow bool
 
+	// results, when non-nil, gives the per-batch-entry verdict positionally,
+	// overriding allow — for tests asserting distinct per-resource verdicts
+	// (e.g. AllowCoarseMany's batch primitive).
+	results []bool
+
 	calls   int
 	batches []*sdk.ResourceBatch
 }
@@ -66,14 +71,14 @@ func (f *capturePDP) CheckResources(_ context.Context, _ *sdk.Principal, batch *
 		return nil, f.err
 	}
 
-	effect := effectv1.Effect_EFFECT_DENY
-	if f.allow {
-		effect = effectv1.Effect_EFFECT_ALLOW
-	}
-
 	results := make([]*responsev1.CheckResourcesResponse_ResultEntry, len(batch.Batch))
 
 	for i, entry := range batch.Batch {
+		effect := effectv1.Effect_EFFECT_DENY
+		if f.verdict(i) {
+			effect = effectv1.Effect_EFFECT_ALLOW
+		}
+
 		actions := make(map[string]effectv1.Effect, len(entry.GetActions()))
 
 		for _, action := range entry.GetActions() {
@@ -84,6 +89,16 @@ func (f *capturePDP) CheckResources(_ context.Context, _ *sdk.Principal, batch *
 	}
 
 	return pdpResponse(results...), nil
+}
+
+// verdict returns the i-th batch entry's allow/deny verdict: the per-entry
+// results slice when set, else the uniform allow flag.
+func (f *capturePDP) verdict(i int) bool {
+	if f.results != nil {
+		return f.results[i]
+	}
+
+	return f.allow
 }
 
 // batchEntry returns the single resource entry of the i-th captured batch,

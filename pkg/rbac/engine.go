@@ -194,7 +194,7 @@ func (r *RBAC) allowCoarse(ctx context.Context, resource Resource, operation ope
 	// be served to a principal type that cannot be impersonated.
 	if p := impersonationFromContext(ctx); p != nil {
 		if err := impersonationTypeGate(p); err != nil {
-			return coarseForbidden(resource, operation, err)
+			return CoarseForbidden(resource, operation, err)
 		}
 	}
 
@@ -211,7 +211,7 @@ func (r *RBAC) allowCoarse(ctx context.Context, resource Resource, operation ope
 			// A cached deny is reconstructed to the exact ErrPolicyDenied
 			// shape a fresh deny carries (see Check), so a hit is
 			// indistinguishable from a miss to callers.
-			return coarseForbidden(resource, operation, fmt.Errorf("%w: operation '%s' on endpoint '%s'", ErrPolicyDenied, operation, resource.Kind))
+			return CoarseForbidden(resource, operation, fmt.Errorf("%w: operation '%s' on endpoint '%s'", ErrPolicyDenied, operation, resource.Kind))
 		}
 	}
 
@@ -233,15 +233,18 @@ func (r *RBAC) allowCoarse(ctx context.Context, resource Resource, operation ope
 	}
 
 	if err != nil {
-		return coarseForbidden(resource, operation, err)
+		return CoarseForbidden(resource, operation, err)
 	}
 
 	return nil
 }
 
-// coarseForbidden maps a coarse decision error to the HTTPForbidden form the
-// legacy walk produces, preserving the wrapped sentinel for errors.Is.
-func coarseForbidden(resource Resource, operation openapi.AclOperation, err error) error {
+// CoarseForbidden maps a coarse decision error to the HTTPForbidden form the
+// legacy walk produces, preserving the wrapped sentinel for errors.Is.  It is
+// exported so the remote CoarseEngine adapter (identity's decision-endpoint
+// client) reuses the identical error shape as the local path — a single
+// source of truth for how a coarse deny renders.
+func CoarseForbidden(resource Resource, operation openapi.AclOperation, err error) error {
 	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' is not permitted", operation, resource.Kind)).WithError(err)
 }
 
