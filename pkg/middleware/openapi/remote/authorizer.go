@@ -40,6 +40,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -70,9 +71,17 @@ type Authorizer struct {
 	// checkTimeout is the hard per-call deadline CheckMany applies to the
 	// remote authorization-check call.
 	checkTimeout time.Duration
+
+	// remoteMode selects how the RemoteDecisionEngine seeded into handler
+	// contexts (see RemoteDecisionEngine, RemoteEngineMode) participates in
+	// Allow* dispatch.  Defaults to the zero value rbac.RemoteOff — under
+	// which dispatchCoarse falls through to the legacy path — overridable by
+	// WithRemoteEngineMode.
+	remoteMode rbac.RemoteMode
 }
 
 var _ openapi.Authorizer = &Authorizer{}
+var _ openapi.RemoteDecisionEngineProvider = &Authorizer{}
 
 type tokenCacheKey struct {
 	sourceToken    string
@@ -96,6 +105,17 @@ type Option func(*Authorizer)
 func WithCheckTimeout(d time.Duration) Option {
 	return func(a *Authorizer) {
 		a.checkTimeout = d
+	}
+}
+
+// WithRemoteEngineMode sets the dispatch mode the RemoteDecisionEngine seeded
+// into handler contexts participates under (see rbac.RemoteMode).  Unset,
+// remoteMode defaults to rbac.RemoteOff — the zero value — under which
+// dispatchCoarse falls through to the legacy path, preserving today's
+// behavior for every existing remote-authorizer caller.
+func WithRemoteEngineMode(m rbac.RemoteMode) Option {
+	return func(a *Authorizer) {
+		a.remoteMode = m
 	}
 }
 
@@ -402,4 +422,12 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 	}
 
 	return response.JSON200, nil
+}
+
+// RemoteEngineMode implements the middleware's optional
+// RemoteDecisionEngineProvider interface: it reports the dispatch mode the
+// RemoteDecisionEngine seeded into handler contexts participates under,
+// defaulting to rbac.RemoteOff unless WithRemoteEngineMode configured it.
+func (a *Authorizer) RemoteEngineMode() rbac.RemoteMode {
+	return a.remoteMode
 }

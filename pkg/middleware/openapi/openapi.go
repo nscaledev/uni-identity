@@ -499,6 +499,38 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	return r, responseValidationInput, nil
 }
 
+// seedDecisionEngines seeds the local and/or remote decision engines the
+// configured Authorizer optionally supplies into ctx, for the Allow* facade's
+// dual-path (DecisionEngineProvider) and remote (RemoteDecisionEngineProvider)
+// dispatch forks to consult.  This is the single production seeding point —
+// deliberately called next to the ACL, on the context the handlers actually
+// receive (the derived context getACL hands to GetACL is discarded).
+// Contexts without an engine always take the legacy path.  The two
+// assertions are independent — local.Authorizer and remote.Authorizer each
+// implement only one of the two optional interfaces in practice (see
+// TestLocalAuthorizerDoesNotImplementRemoteDecisionEngineProvider and
+// TestRemoteAuthorizerDoesNotImplementDecisionEngineProvider), so at most one
+// of the two context values is actually added, but nothing here depends on
+// that exclusivity to behave correctly.  A remote RemoteMode of RemoteOff
+// (the default absent a WithRemoteEngineMode option) is harmless — dispatch
+// falls through to the path above — so seeding it never changes behavior on
+// its own.
+func (v *Validator) seedDecisionEngines(ctx context.Context) context.Context {
+	if provider, ok := v.authorizer.(DecisionEngineProvider); ok {
+		if engine := provider.DecisionEngine(); engine != nil {
+			ctx = rbac.NewEngineContext(ctx, engine)
+		}
+	}
+
+	if provider, ok := v.authorizer.(RemoteDecisionEngineProvider); ok {
+		if engine := provider.RemoteDecisionEngine(); engine != nil {
+			ctx = rbac.NewRemoteEngineContext(ctx, engine, provider.RemoteEngineMode())
+		}
+	}
+
+	return ctx
+}
+
 // Handle builds up any expected contextual information for the handlers and dispatches
 // it.  Once complete this will also validate the OpenAPI response.
 func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.Request, responseValidationInput *openapi3filter.ResponseValidationInput, params map[string]string, next http.Handler) error {
@@ -514,19 +546,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 		// for the pursposes of auditing and RBAC.
 		ctx = authorization.NewContext(ctx, authInfo.info)
 		ctx = rbac.NewContext(ctx, authInfo.acl)
-
-		// Seed the Cerbos-capable decision engine for the Allow* facade's
-		// dual-path dispatch when the authorizer can supply one (see
-		// DecisionEngineProvider).  This is the single production seeding
-		// point — deliberately here, next to the ACL, on the context the
-		// handlers actually receive (the derived context getACL hands to
-		// GetACL is discarded).  Contexts without an engine always take
-		// the legacy path.
-		if provider, ok := v.authorizer.(DecisionEngineProvider); ok {
-			if engine := provider.DecisionEngine(); engine != nil {
-				ctx = rbac.NewEngineContext(ctx, engine)
-			}
-		}
+		ctx = v.seedDecisionEngines(ctx)
 
 		// Trusted clients using mTLS must provide principal information in the headers.
 		// Other clients (UI/CLI) generate principal information from token introspection

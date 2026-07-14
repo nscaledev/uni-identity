@@ -83,7 +83,9 @@ time — deliberately not part of the `Authorizer` interface, so the generated m
 external implementer keep compiling and their requests structurally take the legacy path.
 **Only the `local` authorizer implements it** (identity's own `RBAC`, whose in-process PDP
 client backs `rbac.Check`/`CheckMany`). The `remote` authorizer deliberately does **not** — a
-remote `DecisionEngineProvider` is a **designed follow-up**, not delivered by A8. What A8
+remote `DecisionEngineProvider` was a **designed follow-up**, not delivered by A8, and has
+since been delivered as a sibling interface rather than by widening this one (see
+[below](#the-remote-decision-engine-seed)). What A8
 delivered is the `remote` authorizer's decision **call** (`Authorizer.CheckMany` over
 `POST /authorization/check`, `remote/decision.go`): a downstream service obtains a decision
 from identity. Routing a downstream `Allow*` through that call would need a remote transport
@@ -95,6 +97,24 @@ unconditional on engine mode — whether the engine actually serves decisions is
 predicate's job (see [`pkg/rbac`](../../rbac/README.md)). Until A12/A17 the per-request ACL
 resolution above still runs even when the engine serves, so cerbos mode carries both
 resolution costs.
+
+### The Remote Decision-Engine Seed
+
+The gap the previous section calls a designed follow-up has been closed by
+`RemoteDecisionEngineProvider`, the remote-side sibling of `DecisionEngineProvider` — same
+optional-interface, not-widening-`Authorizer` rationale, seeded immediately after it at the same
+production seeding point (`Validator.seedDecisionEngines`, `openapi.go`). **Only the `remote`
+authorizer implements it** — the mirror image of the local split above — handing back the
+`rbac.CoarseEngine` backed by its own decision call (`CheckMany`, described next) plus the
+`rbac.RemoteMode` it should participate under. The mode is set at construction via
+`remote.WithRemoteEngineMode`; left unset it defaults to the zero value `rbac.RemoteOff`, under
+which `pkg/rbac`'s dispatch falls through to the legacy/local path exactly as before, so every
+existing `remote`-authorizer deployment is unaffected until it opts in. `local.Authorizer` and
+`remote.Authorizer` each implement only one of the two provider interfaces, never both, so exactly
+one seed block ever matches for a given deployment (`TestLocalAuthorizerDoesNotImplementRemoteDecisionEngineProvider`
+and `TestRemoteAuthorizerDoesNotImplementDecisionEngineProvider`, this package's
+`remote_decision_engine_test.go`). Deciding what mode a downstream service actually configures
+in production is a separate, later concern — this seam only makes the choice reachable.
 
 ### The Remote Decision Call (A8)
 

@@ -34,7 +34,9 @@ import (
 // Only the LOCAL authorizer implements it: it hands back identity's own RBAC,
 // whose in-process PDP client can actually resolve bindings and decide.  The
 // REMOTE authorizer deliberately does NOT — a remote DecisionEngineProvider
-// is a designed follow-up, not delivered by A8.  A8 delivers the remote
+// is a designed follow-up, not delivered by A8 — see RemoteDecisionEngineProvider
+// below, which seeds a remote CoarseEngine via a sibling seam instead of
+// widening this interface.  A8 delivers the remote
 // DECISION CALL (Authorizer.CheckMany over POST /authorization/check): a
 // downstream service obtains a decision from identity.  Routing a downstream
 // Allow* through that call would need a remote transport ABOVE rbac.decide()
@@ -48,4 +50,30 @@ type DecisionEngineProvider interface {
 	// DecisionEngine returns the decision engine to seed into handler
 	// contexts, or nil when none is available.
 	DecisionEngine() *rbac.RBAC
+}
+
+// RemoteDecisionEngineProvider is optionally implemented by an Authorizer
+// that can supply a remote rbac.CoarseEngine — and the rbac.RemoteMode it
+// participates under — for the Allow* facade's remote dispatch fork
+// (rbac.NewRemoteEngineContext).  It is asserted at request handling time
+// instead of widening Authorizer, for the same reason as
+// DecisionEngineProvider above: the generated mock and any external
+// implementer keep compiling, and their requests structurally take the
+// legacy/local path.
+//
+// Only the REMOTE authorizer implements it: it hands back a CoarseEngine
+// backed by its own decision CALL (Authorizer.CheckMany over
+// POST /authorization/check, see remote/decision.go) — the remote transport
+// ABOVE rbac.decide() that DecisionEngineProvider's doc comment flags as a
+// designed follow-up. The LOCAL authorizer deliberately does NOT implement
+// it: identity resolves its own bindings in-process via DecisionEngineProvider
+// and never needs a remote hop for its own decisions.
+type RemoteDecisionEngineProvider interface {
+	// RemoteDecisionEngine returns the remote decision engine to seed into
+	// handler contexts, or nil when none is available.
+	RemoteDecisionEngine() rbac.CoarseEngine
+
+	// RemoteEngineMode returns the dispatch mode the seeded engine
+	// participates under (rbac.RemoteOff/RemoteShadow/RemoteEnforce).
+	RemoteEngineMode() rbac.RemoteMode
 }
