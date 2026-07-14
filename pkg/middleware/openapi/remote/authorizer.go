@@ -50,6 +50,11 @@ const (
 	// cacheTTLFudge absorbs clock skew between identity and this middleware
 	// when deriving cache TTLs from passport expiry.
 	cacheTTLFudge = 10 * time.Second
+
+	// defaultCheckTimeout is the hard per-call deadline CheckMany applies when
+	// no WithCheckTimeout option overrides it, guaranteeing a bounded remote
+	// authorization-check call even before a consumer wires a flag.
+	defaultCheckTimeout = 250 * time.Millisecond
 )
 
 // Authorizer provides OpenAPI based authorization middleware backed by remote
@@ -61,6 +66,10 @@ type Authorizer struct {
 	httpClient    *http.Client
 	exchange      TokenExchange
 	tokenCache    *cache.LRUExpireCache[tokenCacheKey, *oauth2.PassportClaims]
+
+	// checkTimeout is the hard per-call deadline CheckMany applies to the
+	// remote authorization-check call.
+	checkTimeout time.Duration
 }
 
 var _ openapi.Authorizer = &Authorizer{}
@@ -79,8 +88,19 @@ func newTokenCacheKey(sourceToken string, scope tokenExchangeOptions) tokenCache
 	}
 }
 
+// Option configures an Authorizer at construction time.
+type Option func(*Authorizer)
+
+// WithCheckTimeout overrides the default hard per-call deadline CheckMany
+// applies to the remote authorization-check call.
+func WithCheckTimeout(d time.Duration) Option {
+	return func(a *Authorizer) {
+		a.checkTimeout = d
+	}
+}
+
 // NewAuthorizer returns a new authorizer with required parameters.
-func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*Authorizer, error) {
+func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, opts ...Option) (*Authorizer, error) {
 	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
 	if err != nil {
 		return nil, err
@@ -95,6 +115,11 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		clientOptions: clientOptions,
 		exchange:      NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
 		tokenCache:    tokenCache,
+		checkTimeout:  defaultCheckTimeout,
+	}
+
+	for _, opt := range opts {
+		opt(a)
 	}
 
 	return a, nil

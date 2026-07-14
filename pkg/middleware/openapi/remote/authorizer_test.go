@@ -392,13 +392,13 @@ func createCoreClientOptions(t *testing.T) *coreclient.HTTPClientOptions {
 	return options
 }
 
-func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string) *authorizer.Authorizer {
+func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string, opts ...authorizer.Option) *authorizer.Authorizer {
 	t.Helper()
 
 	identityOptions := createIdentityOptions(t, issuer)
 	clientOptions := createCoreClientOptions(t)
 
-	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
+	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions, opts...)
 	require.NoError(t, err)
 
 	return a

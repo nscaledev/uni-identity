@@ -72,7 +72,20 @@ type CheckRequest struct {
 // sentinel distinction is preserved as far as the wire allows — a 5xx (or a
 // transport/decode failure) maps to ErrDecisionUnavailable, while a 401/other
 // 4xx is propagated verbatim via errors.PropagateError.
+//
+// It also applies its own hard per-call deadline (checkTimeout, see
+// WithCheckTimeout), independent of the caller's context: a slow identity
+// must not be allowed to block a caller indefinitely.  A deadline exceeded
+// surfaces through the same transport-error path above as
+// ErrDecisionUnavailable.
 func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, error) {
+	if a.checkTimeout > 0 {
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(ctx, a.checkTimeout)
+		defer cancel()
+	}
+
 	// Trace context and TLS (the system-account identity) ride the cached
 	// client; the acting principal rides X-Principal via the injector.
 	options := []identityapi.ClientOption{

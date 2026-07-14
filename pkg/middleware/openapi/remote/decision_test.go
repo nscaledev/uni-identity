@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -53,6 +54,10 @@ type checkHandler struct {
 	// results is the canned per-check response served on a 200.
 	results []identityapi.AuthorizationCheckResult
 
+	// delay, when set, sleeps before serving the response, simulating a slow
+	// backend for timeout tests.
+	delay time.Duration
+
 	// captured request state, for header/absence assertions.
 	gotAuthorization string
 	gotPrincipal     string
@@ -66,6 +71,10 @@ func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.gotImpersonate = r.Header.Get(principal.ImpersonateHeader)
 
 	_ = json.NewDecoder(r.Body).Decode(&h.gotBody)
+
+	if h.delay > 0 {
+		time.Sleep(h.delay)
+	}
 
 	status := h.status
 	if status == 0 {
@@ -101,7 +110,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 // the mtlstest CA/client-cert plumbing and the createRemoteAuthorizer/secret
 // conventions the exchange tests exercise; the decision path needs no JWT or
 // oauth2 wiring, so this is a deliberately minimal stand-up.
-func newCheckAuthorizer(t *testing.T, h *checkHandler) *authorizer.Authorizer {
+func newCheckAuthorizer(t *testing.T, h *checkHandler, opts ...authorizer.Option) *authorizer.Authorizer {
 	t.Helper()
 
 	mtlsServer, err := mtlstest.NewMTLSServer(h)
@@ -137,7 +146,7 @@ func newCheckAuthorizer(t *testing.T, h *checkHandler) *authorizer.Authorizer {
 		WithObjects(clientCertSecret, caCertSecret).
 		Build()
 
-	return createRemoteAuthorizer(t, k8sClient, mtlsServer.URL())
+	return createRemoteAuthorizer(t, k8sClient, mtlsServer.URL(), opts...)
 }
 
 // checkAuthContext seeds the context a downstream call carries: a principal
