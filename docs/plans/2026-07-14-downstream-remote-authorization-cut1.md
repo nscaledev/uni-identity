@@ -8,6 +8,30 @@
 
 **Tech Stack:** Go 1.25, `github.com/unikorn-cloud/identity/pkg/rbac`, `.../pkg/middleware/openapi[/remote]`, cerbos-sdk-go, Ginkgo/Gomega (integration), kind CI. Design spec: `docs/downstream-remote-authorization-design.md`.
 
+## Progress (updated 2026-07-15)
+
+Identity-side seam (Tasks 1–9b) **complete and committed**; consumer rollout (Tasks 10–12) in progress.
+
+| Task | Status | Commit / notes |
+|------|--------|----------------|
+| 1 — parity + impersonation spike | ✅ done | findings → design §7 (`ffa4e926`); bearer landmine fixed `c18eeefe` |
+| 2 — CoarseEngine seam | ✅ done | `7e20e487` |
+| 3 — remote adapter | ✅ done | `9f28b357` |
+| 4 — per-call timeout | ✅ done | `0b3d4255` |
+| 5 — remote-engine context + mode | ✅ done | `63170d89` |
+| 6 — dispatch arm (enforce) | ✅ done | `0b4d67aa` |
+| 7 — remoteShadowed comparator | ✅ done | `d01119fe` |
+| 8 — seed remote engine | ✅ done | `a4ad0233` |
+| 9 — caller-side telemetry | ✅ done | `88ba7d6b` |
+| 9b — impersonation trigger ("Fix B") | ✅ done | `94d2eb1e` (corrected to the `authorization.Info` model) |
+| 10 — uni-region wiring + role provisioning | 🚧 in progress | uni-region flag/wiring staged (uni-region repo); `region-service` `region:*` superset ("Fix A") staged in identity chart |
+| 11 — uni-region cross-service e2e + divergence gate | ⬜ todo | |
+| 12 — uni-compute wiring + e2e | ⬜ todo | |
+
+> **Model correction (2026-07-15, design §4.3):** the original "always impersonate" model was superseded by trusted-subsystem / caller-alone. **Fix B** = the Task 9b trigger (done). **Fix A** = the `region-service` `region:*` superset (part of Task 10, staged).
+
+---
+
 ## Global Constraints
 
 - **GOWORK=off** for every `go` command (a local `go.work` links sibling checkouts; CI resolves via `go.mod`).
@@ -52,10 +76,10 @@
 
 **Interfaces:** Produces a documented finding only; no code contract. Its two findings gate Tasks 10–12 (role provisioning; impersonation marking).
 
-- [ ] **Step 1: §4.6.1 parity.** Determine whether today's downstream `GetACL` already applies `intersection(user, calling-service)`, or returns the user's full ACL. Check the A14 dual-check impersonation handling and the ACL handler.
-- [ ] **Step 2: Impersonation context.** Determine how (or whether) the consumer request path marks the acting **user** as the impersonated principal for a `CheckMany` call — i.e. whether `principal.ImpersonateFromContext` is set in a consumer's user-request context so `principal.Injector` emits `X-Impersonate: true`. Without it, identity would decide against the *service's* identity (attribution-only, §4.6), not the user — a correctness bug.
-- [ ] **Step 3: Record both findings** in the design doc §7: "(a) GetACL returns {full user ACL | intersected} ⇒ shadow expected {non-zero, close via provisioning | zero}. (b) Consumer path {already marks | does NOT mark} the user as impersonated for CheckMany ⇒ Task 10/12 {no-op | must set `ImpersonateFromContext` at <location>}."
-- [ ] **Step 4: Stage for review.** `git add docs/downstream-remote-authorization-design.md` (no commit).
+- [x] **Step 1: §4.6.1 parity.** Determine whether today's downstream `GetACL` already applies `intersection(user, calling-service)`, or returns the user's full ACL. Check the A14 dual-check impersonation handling and the ACL handler.
+- [x] **Step 2: Impersonation context.** Determine how (or whether) the consumer request path marks the acting **user** as the impersonated principal for a `CheckMany` call — i.e. whether `principal.ImpersonateFromContext` is set in a consumer's user-request context so `principal.Injector` emits `X-Impersonate: true`. Without it, identity would decide against the *service's* identity (attribution-only, §4.6), not the user — a correctness bug.
+- [x] **Step 3: Record both findings** in the design doc §7: "(a) GetACL returns {full user ACL | intersected} ⇒ shadow expected {non-zero, close via provisioning | zero}. (b) Consumer path {already marks | does NOT mark} the user as impersonated for CheckMany ⇒ Task 10/12 {no-op | must set `ImpersonateFromContext` at <location>}."
+- [x] **Step 4: Stage for review.** `git add docs/downstream-remote-authorization-design.md` (no commit).
 
 ---
 
@@ -83,7 +107,7 @@
   Local methods on `*RBAC`: `AllowCoarse` delegates to `allowCoarse` (preserving the cache + impersonation gate); `AllowCoarseMany` delegates to `CheckMany`.
   Also **exports** `CoarseForbidden(resource Resource, operation openapi.AclOperation, err error) error` — a rename of the existing unexported `coarseForbidden` (engine.go:244) — so the remote adapter (Task 3) reuses the identical `HTTPForbidden` error shape (single source of truth).
 
-- [ ] **Step 1: Write the failing test** — `coarse_engine_test.go` (package `rbac_test`, reuse the `newParityFixture`/`capturePDP` helpers from the existing dispatch tests):
+- [x] **Step 1: Write the failing test** — `coarse_engine_test.go` (package `rbac_test`, reuse the `newParityFixture`/`capturePDP` helpers from the existing dispatch tests):
 ```go
 func TestRBACImplementsCoarseEngine(t *testing.T) {
     t.Parallel()
@@ -104,8 +128,8 @@ func TestRBACImplementsCoarseEngine(t *testing.T) {
 }
 ```
 (If `capturePDP` lacks a `results []bool` field, extend it minimally as part of this task.)
-- [ ] **Step 2: Run — expect FAIL** (`AllowCoarse`/`AllowCoarseMany`/`CoarseEngine` undefined): `GOWORK=off go test ./pkg/rbac/ -run TestRBACImplementsCoarseEngine -v`
-- [ ] **Step 3: Implement** `pkg/rbac/coarse_engine.go`:
+- [x] **Step 2: Run — expect FAIL** (`AllowCoarse`/`AllowCoarseMany`/`CoarseEngine` undefined): `GOWORK=off go test ./pkg/rbac/ -run TestRBACImplementsCoarseEngine -v`
+- [x] **Step 3: Implement** `pkg/rbac/coarse_engine.go`:
 ```go
 package rbac
 
@@ -134,9 +158,9 @@ func (r *RBAC) AllowCoarseMany(ctx context.Context, resources []Resource, action
     return r.CheckMany(ctx, checks)
 }
 ```
-- [ ] **Step 4: Run — expect PASS.** `GOWORK=off go test ./pkg/rbac/ -run TestRBACImplementsCoarseEngine -v`
-- [ ] **Step 5: Export `CoarseForbidden`.** Rename `coarseForbidden`→`CoarseForbidden` in `pkg/rbac/engine.go` (engine.go:244) and update its in-package call sites (`allowCoarse` etc.). Run `GOWORK=off go test ./pkg/rbac/...` — expect green.
-- [ ] **Step 6: Pre-commit checklist + stage.** `GOWORK=off make generate lint test-unit` (from uni-identity), then `git add pkg/rbac/coarse_engine.go pkg/rbac/coarse_engine_test.go pkg/rbac/engine.go` (+ any `capturePDP` extension). No commit.
+- [x] **Step 4: Run — expect PASS.** `GOWORK=off go test ./pkg/rbac/ -run TestRBACImplementsCoarseEngine -v`
+- [x] **Step 5: Export `CoarseForbidden`.** Rename `coarseForbidden`→`CoarseForbidden` in `pkg/rbac/engine.go` (engine.go:244) and update its in-package call sites (`allowCoarse` etc.). Run `GOWORK=off go test ./pkg/rbac/...` — expect green.
+- [x] **Step 6: Pre-commit checklist + stage.** `GOWORK=off make generate lint test-unit` (from uni-identity), then `git add pkg/rbac/coarse_engine.go pkg/rbac/coarse_engine_test.go pkg/rbac/engine.go` (+ any `capturePDP` extension). No commit.
 
 ---
 
@@ -150,9 +174,9 @@ func (r *RBAC) AllowCoarseMany(ctx context.Context, resources []Resource, action
 - Consumes: `rbac.CoarseEngine`, `rbac.Resource`, `rbac.ErrPolicyDenied`, `rbac.ErrDecisionUnavailable`; local `Authorizer.CheckMany(ctx, []CheckRequest) ([]bool, error)` (decision.go:68) with `authorizer.Resource`/`CheckRequest`.
 - Produces: `type RemoteEngine struct{ authorizer *Authorizer }`; `func NewRemoteEngine(a *Authorizer) *RemoteEngine`; it satisfies `rbac.CoarseEngine`. `func (a *Authorizer) RemoteDecisionEngine() rbac.CoarseEngine` returning `NewRemoteEngine(a)`.
 
-- [ ] **Step 1: Write the failing test** — `engine_test.go`: with a fake `Authorizer.CheckMany` returning `[]bool{true}` → `AllowCoarse` returns nil; returning `[]bool{false}` → `errors.Is(err, rbac.ErrPolicyDenied)`; returning `(nil, ErrDecisionUnavailable)` → `errors.Is(err, rbac.ErrDecisionUnavailable)`; and `AllowCoarseMany([x,y])` returns the batch verdicts in order. Assert `var _ rbac.CoarseEngine = (*RemoteEngine)(nil)`.
-- [ ] **Step 2: Run — expect FAIL.** `GOWORK=off go test ./pkg/middleware/openapi/remote/ -run TestRemoteEngine -v`
-- [ ] **Step 3: Implement** `engine.go` — translate `rbac.Resource` → `authorizer.Resource`, call `CheckMany`, and map results with the SAME mapping the local `coarseForbidden` uses:
+- [x] **Step 1: Write the failing test** — `engine_test.go`: with a fake `Authorizer.CheckMany` returning `[]bool{true}` → `AllowCoarse` returns nil; returning `[]bool{false}` → `errors.Is(err, rbac.ErrPolicyDenied)`; returning `(nil, ErrDecisionUnavailable)` → `errors.Is(err, rbac.ErrDecisionUnavailable)`; and `AllowCoarseMany([x,y])` returns the batch verdicts in order. Assert `var _ rbac.CoarseEngine = (*RemoteEngine)(nil)`.
+- [x] **Step 2: Run — expect FAIL.** `GOWORK=off go test ./pkg/middleware/openapi/remote/ -run TestRemoteEngine -v`
+- [x] **Step 3: Implement** `engine.go` — translate `rbac.Resource` → `authorizer.Resource`, call `CheckMany`, and map results with the SAME mapping the local `coarseForbidden` uses:
 ```go
 func (e *RemoteEngine) AllowCoarseMany(ctx context.Context, resources []rbac.Resource, action openapi.AclOperation) ([]bool, error) {
     checks := make([]CheckRequest, len(resources))
@@ -174,8 +198,8 @@ func (e *RemoteEngine) AllowCoarse(ctx context.Context, resource rbac.Resource, 
 }
 ```
   NOTE: `rbac.CoarseForbidden` is exported in Task 2 — consume it here. If the `Resource(r)` conversion fails (field order differs between `rbac.Resource` and `authorizer.Resource`), map the four fields explicitly.
-- [ ] **Step 4: Run — expect PASS.** Same command.
-- [ ] **Step 5: Pre-commit + stage.** No commit.
+- [x] **Step 4: Run — expect PASS.** Same command.
+- [x] **Step 5: Pre-commit + stage.** No commit.
 
 ---
 
@@ -198,9 +222,9 @@ func (e *RemoteEngine) AllowCoarse(ctx context.Context, resource rbac.Resource, 
   ```
   `NewAuthorizer` sets `a.checkTimeout = defaultCheckTimeout` BEFORE applying `opts` (so `WithCheckTimeout` overrides). Making it variadic is backward-compatible — every existing 3-arg caller (uni-region/compute/kubernetes/auth0 + in-repo tests) still compiles untouched. `CheckMany` applies the hard per-call deadline; a `context.DeadlineExceeded` surfaces through the existing transport-error mapping as `ErrDecisionUnavailable`.
 
-- [ ] **Step 1: Write the failing test** (`decision_timeout_test.go`) — stand up a fake identity HTTP server that sleeps ~500ms before responding; build the authorizer with `WithCheckTimeout(50 * time.Millisecond)` (reuse the existing `createRemoteAuthorizer`/`newCheckAuthorizer` test helpers, extended to pass the option); assert `CheckMany` returns in well under 500ms and `errors.Is(err, authorizer.ErrDecisionUnavailable)`.
-- [ ] **Step 2: Run — expect FAIL** (`GOWORK=off go test ./pkg/middleware/openapi/remote/ -run Timeout -v`): no timeout today, so the call blocks ~500ms.
-- [ ] **Step 3: Implement** — add the `Option` type, `WithCheckTimeout`, the `checkTimeout` field, the variadic constructor with the `defaultCheckTimeout` default; then in `CheckMany`, before building the client:
+- [x] **Step 1: Write the failing test** (`decision_timeout_test.go`) — stand up a fake identity HTTP server that sleeps ~500ms before responding; build the authorizer with `WithCheckTimeout(50 * time.Millisecond)` (reuse the existing `createRemoteAuthorizer`/`newCheckAuthorizer` test helpers, extended to pass the option); assert `CheckMany` returns in well under 500ms and `errors.Is(err, authorizer.ErrDecisionUnavailable)`.
+- [x] **Step 2: Run — expect FAIL** (`GOWORK=off go test ./pkg/middleware/openapi/remote/ -run Timeout -v`): no timeout today, so the call blocks ~500ms.
+- [x] **Step 3: Implement** — add the `Option` type, `WithCheckTimeout`, the `checkTimeout` field, the variadic constructor with the `defaultCheckTimeout` default; then in `CheckMany`, before building the client:
 ```go
 if a.checkTimeout > 0 {
     var cancel context.CancelFunc
@@ -209,8 +233,8 @@ if a.checkTimeout > 0 {
 }
 ```
   Keep the existing transport-error → `ErrDecisionUnavailable` mapping (`decision.go` already maps a client error that way; `context.DeadlineExceeded` surfaces through it).
-- [ ] **Step 4: Run — expect PASS**; then `GOWORK=off go test ./pkg/middleware/openapi/remote/ ./pkg/rbac/` to confirm no regression (existing 3-arg `NewAuthorizer` callers still green).
-- [ ] **Step 5: Pre-commit + stage.** No commit.
+- [x] **Step 4: Run — expect PASS**; then `GOWORK=off go test ./pkg/middleware/openapi/remote/ ./pkg/rbac/` to confirm no regression (existing 3-arg `NewAuthorizer` callers still green).
+- [x] **Step 5: Pre-commit + stage.** No commit.
 
 ---
 
@@ -230,11 +254,11 @@ if a.checkTimeout > 0 {
   ```
   Uses a new unexported context key (mirror `engineKey`, engine.go:88).
 
-- [ ] **Step 1: Write the failing test** — round-trip: a context seeded with `(fakeEngine, RemoteEnforce)` returns them; an unseeded context returns `(nil, RemoteOff)`; `ParseRemoteMode` maps the three strings and errors on junk.
-- [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** the mode enum, context key, seed/read functions, and parser. Mirror `NewEngineContext`/`EngineFromContext` exactly (engine.go:88-106).
-- [ ] **Step 4: Run — expect PASS.**
-- [ ] **Step 5: Pre-commit + stage.** No commit.
+- [x] **Step 1: Write the failing test** — round-trip: a context seeded with `(fakeEngine, RemoteEnforce)` returns them; an unseeded context returns `(nil, RemoteOff)`; `ParseRemoteMode` maps the three strings and errors on junk.
+- [x] **Step 2: Run — expect FAIL.**
+- [x] **Step 3: Implement** the mode enum, context key, seed/read functions, and parser. Mirror `NewEngineContext`/`EngineFromContext` exactly (engine.go:88-106).
+- [x] **Step 4: Run — expect PASS.**
+- [x] **Step 5: Pre-commit + stage.** No commit.
 
 ---
 
@@ -248,9 +272,9 @@ if a.checkTimeout > 0 {
 - Consumes: `remoteEngineFromContext`, `engineForDispatch` (engine.go:144), `shadowed` (shadow.go), the `allow*Legacy` functions, `remoteShadowed` (Task 7).
 - Produces: `func dispatchCoarse(ctx, resource Resource, operation openapi.AclOperation, legacy func() error) error`.
 
-- [ ] **Step 1: Write the failing test** (mirror `engine_cutover_test.go`): remote engine seeded in `RemoteEnforce` with a deny-PDP over a GRANTING ACL ⇒ `AllowGlobalScope`/`AllowProjectScope` return `IsForbidden` + `errors.Is(ErrPolicyDenied)`, and the legacy walk is NOT consulted (assert via a legacy-walk spy or a granting ACL that would allow). Remote enforce + unavailable PDP ⇒ `errors.Is(ErrDecisionUnavailable)` (fail-closed, no legacy fallback). Remote `off` ⇒ identical to today (legacy/local path unchanged).
-- [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** `dispatchCoarse`:
+- [x] **Step 1: Write the failing test** (mirror `engine_cutover_test.go`): remote engine seeded in `RemoteEnforce` with a deny-PDP over a GRANTING ACL ⇒ `AllowGlobalScope`/`AllowProjectScope` return `IsForbidden` + `errors.Is(ErrPolicyDenied)`, and the legacy walk is NOT consulted (assert via a legacy-walk spy or a granting ACL that would allow). Remote enforce + unavailable PDP ⇒ `errors.Is(ErrDecisionUnavailable)` (fail-closed, no legacy fallback). Remote `off` ⇒ identical to today (legacy/local path unchanged).
+- [x] **Step 2: Run — expect FAIL.**
+- [x] **Step 3: Implement** `dispatchCoarse`:
 ```go
 func dispatchCoarse(ctx context.Context, resource Resource, operation openapi.AclOperation, legacy func() error) error {
     if engine, mode := remoteEngineFromContext(ctx); engine != nil {
@@ -273,8 +297,8 @@ return dispatchCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organization
     func() error { return allowProjectScopeLegacy(ctx, endpoint, operation, organizationID, projectID) })
 ```
   (`remoteShadowed` may be a temporary stub returning `legacyErr` until Task 7 — keep this task's tests to `off`/`enforce`.)
-- [ ] **Step 4: Run — expect PASS; then `GOWORK=off go test ./pkg/rbac/...` to confirm all existing dispatch/cutover/shadow tests still pass** (local path unchanged).
-- [ ] **Step 5: Pre-commit + stage.** No commit.
+- [x] **Step 4: Run — expect PASS; then `GOWORK=off go test ./pkg/rbac/...` to confirm all existing dispatch/cutover/shadow tests still pass** (local path unchanged).
+- [x] **Step 5: Pre-commit + stage.** No commit.
 
 ---
 
@@ -293,11 +317,11 @@ return dispatchCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organization
 - **Verdict mapping:** `err == nil` ⇒ remote allow (a verdict); `errors.Is(err, ErrPolicyDenied)` ⇒ remote deny (a verdict); anything else (`ErrDecisionUnavailable`/unclassified) ⇒ NO verdict ⇒ the failure message (never divergence — the gate must not be poisoned by an outage). Compare the remote verdict against `legacyErr == nil`.
 - **LOAD-BEARING safety (mirror `shadowCompare`):** wrap the evaluation in a `recover()` so a panicking remote engine (or a bug here) is a log line, NEVER a request failure — shadow mode must serve `legacyErr` regardless. This is the zero-behaviour-change contract for shadow.
 
-- [ ] **Step 1: Write the failing test** (`remote_shadow_test.go`, mirror the identity shadow tests + the `logCapture` helper): legacy-allow / remote-deny ⇒ served result is the **legacy allow**, and exactly one `remote shadow divergence` record with `legacy_verdict=allow`, `remote_verdict=deny`, `endpoint=<kind>`. Remote-unavailable ⇒ served legacy, one `remote shadow evaluation failure`, **zero** divergence records. (Use a fake `CoarseEngine` returning nil / `ErrPolicyDenied` / `ErrDecisionUnavailable`.)
-- [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** `remoteShadowed` per the interfaces above.
-- [ ] **Step 4: Run — expect PASS; then `GOWORK=off go test ./pkg/rbac/...`** to confirm the whole suite (incl. the Task-6 dispatch tests, which currently exercise the stub) stays green.
-- [ ] **Step 5: Pre-commit + stage.** No commit.
+- [x] **Step 1: Write the failing test** (`remote_shadow_test.go`, mirror the identity shadow tests + the `logCapture` helper): legacy-allow / remote-deny ⇒ served result is the **legacy allow**, and exactly one `remote shadow divergence` record with `legacy_verdict=allow`, `remote_verdict=deny`, `endpoint=<kind>`. Remote-unavailable ⇒ served legacy, one `remote shadow evaluation failure`, **zero** divergence records. (Use a fake `CoarseEngine` returning nil / `ErrPolicyDenied` / `ErrDecisionUnavailable`.)
+- [x] **Step 2: Run — expect FAIL.**
+- [x] **Step 3: Implement** `remoteShadowed` per the interfaces above.
+- [x] **Step 4: Run — expect PASS; then `GOWORK=off go test ./pkg/rbac/...`** to confirm the whole suite (incl. the Task-6 dispatch tests, which currently exercise the stub) stays green.
+- [x] **Step 5: Pre-commit + stage.** No commit.
 
 ---
 
@@ -321,11 +345,11 @@ return dispatchCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organization
   }
   ```
 
-- [ ] **Step 1: Write the failing test** — a validator built with a remote authorizer in `enforce` mode seeds a context where `remoteEngineFromContext` (exercised via a test that runs a handler `Allow*`) routes to the remote engine. (Reuse the middleware test harness; assert via a handler that calls `AllowGlobalScope` and observing the remote engine was consulted.)
-- [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** the interface, the `WithRemoteEngineMode` option + `remoteMode` field + the provider methods (`RemoteDecisionEngine`/`RemoteEngineMode`) on `remote.Authorizer`, and the seed block. `local.Authorizer` does NOT implement it (unchanged — identity keeps its local engine).
-- [ ] **Step 4: Run — expect PASS; run `./pkg/middleware/...`.**
-- [ ] **Step 5: Pre-commit + stage.** No commit.
+- [x] **Step 1: Write the failing test** — a validator built with a remote authorizer in `enforce` mode seeds a context where `remoteEngineFromContext` (exercised via a test that runs a handler `Allow*`) routes to the remote engine. (Reuse the middleware test harness; assert via a handler that calls `AllowGlobalScope` and observing the remote engine was consulted.)
+- [x] **Step 2: Run — expect FAIL.**
+- [x] **Step 3: Implement** the interface, the `WithRemoteEngineMode` option + `remoteMode` field + the provider methods (`RemoteDecisionEngine`/`RemoteEngineMode`) on `remote.Authorizer`, and the seed block. `local.Authorizer` does NOT implement it (unchanged — identity keeps its local engine).
+- [x] **Step 4: Run — expect PASS; run `./pkg/middleware/...`.**
+- [x] **Step 5: Pre-commit + stage.** No commit.
 
 ---
 
@@ -348,11 +372,11 @@ return dispatchCoarse(ctx, Resource{Kind: endpoint, OrganizationID: organization
 - Recorded in `AllowCoarse`/`AllowCoarseMany` around the `CheckMany` round-trip: **one latency observation per call**; **counter incremented per check outcome** (`nil`→allow, `errors.Is(ErrPolicyDenied)`→deny, else→unavailable). For the batch method, one latency obs + N counter increments.
 - A credential-free decision-log line via `log.FromContext(ctx)`: resource kind, operation, org/project, decision, `source="remote"`, latency (+ the acting subject only if cleanly readable — NO tokens/claims/passports). **Level convention mirrors A10:** denies/unavailable at `Info`, allows at `V(1)` (deny-focused default stream, no per-allow spam). `pkg/rbac`'s `decisionSubject`/`decisionVerdict` are unexported — add a minimal local renderer here rather than exporting them.
 
-- [ ] **Step 1: Write the failing test** (`metrics_test.go`) — with a fake identity server returning allow / deny / 5xx, assert the counter increments with the correct `outcome` for each, one latency observation per call, and a deny emits the Info-level log line (reuse a `logCapture`-style helper). Use an in-memory otel meter reader if the repo has one; else assert via the log line + a thin seam.
-- [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement** mirroring `decision_log.go`.
-- [ ] **Step 4: Run — expect PASS; then `GOWORK=off go test ./pkg/middleware/openapi/...`.**
-- [ ] **Step 5: Pre-commit + stage.** No commit.
+- [x] **Step 1: Write the failing test** (`metrics_test.go`) — with a fake identity server returning allow / deny / 5xx, assert the counter increments with the correct `outcome` for each, one latency observation per call, and a deny emits the Info-level log line (reuse a `logCapture`-style helper). Use an in-memory otel meter reader if the repo has one; else assert via the log line + a thin seam.
+- [x] **Step 2: Run — expect FAIL.**
+- [x] **Step 3: Implement** mirroring `decision_log.go`.
+- [x] **Step 4: Run — expect PASS; then `GOWORK=off go test ./pkg/middleware/openapi/...`.**
+- [x] **Step 5: Pre-commit + stage.** No commit.
 
 ---
 
@@ -370,11 +394,11 @@ if info, err := authorization.FromContext(ctx); err == nil && info != nil && !in
 ```
 Marks impersonation for any bearer-authenticated caller (User or Service token), leaves system-account (mTLS) callers on attribution-only, and respects any inbound `X-Impersonate` (only ADDS marking, never strips). Add the `pkg/middleware/authorization` import. Mirrors identity's own `getSystemAccountACL` branch (`rbac.go:1029-1056`).
 
-- [ ] Step 1: rewrite the impersonation test to drive `authorization.Info`: (a) bearer caller (`SystemAccount:false`) → outbound `X-Impersonate: true`; (b) system-account caller (`SystemAccount:true`), no inbound flag → none; (c) system-account caller with an inbound `X-Impersonate` → flows through (idempotent).
-- [ ] Step 2: run — expect FAIL (current code keys off `principal.Type`).
-- [ ] Step 3: implement the trigger above.
-- [ ] Step 4: `GOWORK=off go test ./pkg/middleware/openapi/... ./pkg/rbac/...` → PASS.
-- [ ] Step 5: pre-commit + stage. No commit.
+- [x] Step 1: rewrite the impersonation test to drive `authorization.Info`: (a) bearer caller (`SystemAccount:false`) → outbound `X-Impersonate: true`; (b) system-account caller (`SystemAccount:true`), no inbound flag → none; (c) system-account caller with an inbound `X-Impersonate` → flows through (idempotent).
+- [x] Step 2: run — expect FAIL (current code keys off `principal.Type`).
+- [x] Step 3: implement the trigger above.
+- [x] Step 4: `GOWORK=off go test ./pkg/middleware/openapi/... ./pkg/rbac/...` → PASS.
+- [x] Step 5: pre-commit + stage. No commit.
 
 **Superseded note (force-on-`User`, 2026-07-14):** the original decision keyed impersonation off `principal.FromContext(ctx).Type == identityapi.User`, marking it in the shared remote engine (scoped to `CheckMany`, leaving `GetACL`/the shadow baseline untouched). The grounding showed `X-Principal` carries the user as attribution on attributed s2s too, so that forces `intersect(user, caller)` and wrongly denies service-privilege ops — see design §7. Replaced by the `authorization.Info`-keyed trigger above.
 
