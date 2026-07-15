@@ -85,9 +85,13 @@ deployment time.
 - `platform-administrator` — global CRUD over every resource; can act in any organization
   or project.
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
-  accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
-  only the global permissions the corresponding service actually exercises;
-  over-permissioning here is a security defect.
+  accounts mapped from an mTLS certificate common name (see the Actor Model). By default each
+  holds only the global permissions the corresponding service actually exercises. **Exception —
+  the remote-authorization seam** (`docs/downstream-remote-authorization-design.md` §4.3): a
+  consumer whose own API routes through identity's central PDP must have its service-account
+  role provisioned as a **superset of what its API authorizes**, because that role is the cap in
+  the `intersection(user, service)` a direct-user check resolves against — under-provisioning
+  would deny legitimate users. `region-service` accordingly now grants the full `region:*` set.
 
 ### User-facing roles
 
