@@ -173,6 +173,22 @@ func checkAuthContext(t *testing.T, token string, impersonate bool) context.Cont
 	})
 }
 
+// checkSystemAccountAuthContext seeds the context an AUTHENTICATED caller
+// presents to AllowCoarseMany, keyed on authorization.Info.SystemAccount —
+// the dimension Fix B triggers impersonation from (an mTLS system-account
+// caller vs. a bearer caller), never the propagated X-Principal's Type. A
+// principal is always set: the principal.Injector (pkg/principal/injector.go)
+// requires one in context to emit any header, X-Impersonate included.
+func checkSystemAccountAuthContext(t *testing.T, systemAccount bool) context.Context {
+	t.Helper()
+
+	p := &principal.Principal{Actor: "actor@example.com", Type: identityapi.User, OrganizationIDs: []string{"org-1"}}
+
+	ctx := principal.NewContext(t.Context(), p)
+
+	return authorization.NewContext(ctx, &authorization.Info{SystemAccount: systemAccount})
+}
+
 // TestRemoteCheckManyResultsInOrder pins the happy path: a batch of checks
 // yields per-check bools in request order, mapped from identity's response.
 func TestRemoteCheckManyResultsInOrder(t *testing.T) {

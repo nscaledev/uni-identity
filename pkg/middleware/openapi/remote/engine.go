@@ -23,7 +23,9 @@ import (
 
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
 
@@ -79,6 +81,24 @@ func (a *Authorizer) RemoteDecisionEngine() rbac.CoarseEngine {
 // increment per (resource, action) entry.  AllowCoarse below funnels through
 // here, so it is instrumented for free without a second observation.
 func (e *RemoteEngine) AllowCoarseMany(ctx context.Context, resources []rbac.Resource, action identityapi.AclOperation) ([]bool, error) {
+	// Impersonate on the outbound check iff the AUTHENTICATED caller is a bearer
+	// principal (authorization.Info.SystemAccount == false).  A system-account
+	// (mTLS) caller is conveyed to identity by the cert-relay
+	// (Unikorn-Client-Certificate) and resolved directly, so forcing
+	// impersonation there would wrongly compute intersect(user, caller) and deny
+	// service-privilege ops the caller holds but the propagated user lacks (e.g.
+	// compute→region:servers).  A bearer caller cannot be conveyed by cert (the
+	// check endpoint is mTLS-only and drops the bearer), so it is impersonated to
+	// be resolved as the user.  An inbound X-Impersonate (a caller already
+	// delegating) flows through unchanged — this only ADDS marking for bearer
+	// callers, never strips.  Mirrors identity's own getSystemAccountACL branch.
+	// Scoped to this call only: reached solely from Allow* dispatch, long AFTER
+	// the middleware fetched the ACL via GetACL on the unmarked request context,
+	// so GetACL — and thus the shadow legacy baseline — is untouched.
+	if info, err := authorization.FromContext(ctx); err == nil && info != nil && !info.SystemAccount {
+		ctx = principal.NewImpersonateContext(ctx)
+	}
+
 	checks := make([]CheckRequest, len(resources))
 	for i, resource := range resources {
 		checks[i] = CheckRequest{Resource: Resource(resource), Action: action}
