@@ -120,10 +120,13 @@ in production is a separate, later concern — this seam only makes the choice r
 
 `remote/decision.go` adds `Authorizer.CheckMany(ctx, []CheckRequest) ([]bool, error)`, the
 downstream side of identity's `POST /api/v1/authorization/check`. It mirrors the `GetACL` wire
-pattern exactly: the generated typed client (`PostApiV1AuthorizationCheckWithResponse`) over
-the cached mTLS/trace-context HTTP client, the bearer forwarded only when present (mTLS-only
-callers have an empty `Token`), and the `X-Principal`/`X-Impersonate` principal headers
-injected via `principal.Injector`. Identity requires `X-Principal` on every mTLS call (even a
+pattern — the generated typed client (`PostApiV1AuthorizationCheckWithResponse`) over the
+cached mTLS/trace-context HTTP client, with the `X-Principal`/`X-Impersonate` principal headers
+injected via `principal.Injector` — with one deliberate divergence: it forwards **no** bearer.
+The check endpoint is system-account-only and rejects any `Authorization` header, so the caller
+is authenticated by the mTLS peer certificate and the acting user is conveyed by `X-Principal`,
+never a token (unlike `GetACL`, which is not system-gated and forwards the bearer to name the
+user). Identity requires `X-Principal` on every mTLS call (even a
 non-impersonating one — `extractPrincipal` rejects its absence with a 400), so a caller that
 hand-rolls the request instead of using this `CheckMany` must inject it itself or be denied.
 It uses a small local `CheckRequest`/`Resource` DTO rather than
