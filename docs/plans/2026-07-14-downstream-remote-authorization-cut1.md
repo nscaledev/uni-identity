@@ -10,7 +10,7 @@
 
 ## Progress (updated 2026-07-15)
 
-Identity-side seam (Tasks 1–9b) **complete and committed**; consumer rollout (Tasks 10–12) in progress.
+Identity-side seam (Tasks 1–9b) **and Task 10** (uni-region wiring + Fix A) **done and committed**; Tasks 11–12 (cross-service e2e, uni-compute) remaining.
 
 | Task | Status | Commit / notes |
 |------|--------|----------------|
@@ -24,7 +24,7 @@ Identity-side seam (Tasks 1–9b) **complete and committed**; consumer rollout (
 | 8 — seed remote engine | ✅ done | `a4ad0233` |
 | 9 — caller-side telemetry | ✅ done | `88ba7d6b` |
 | 9b — impersonation trigger ("Fix B") | ✅ done | `94d2eb1e` (corrected to the `authorization.Info` model) |
-| 10 — uni-region wiring + role provisioning | 🚧 in progress | uni-region flag/wiring staged (uni-region repo); `region-service` `region:*` superset ("Fix A") staged in identity chart |
+| 10 — uni-region wiring + role provisioning | ✅ done | uni-region wiring (uni-region repo) + `region-service` superset / Fix A (`3e6254d3`, identity) |
 | 11 — uni-region cross-service e2e + divergence gate | ⬜ todo | |
 | 12 — uni-compute wiring + e2e | ⬜ todo | |
 
@@ -406,6 +406,8 @@ Marks impersonation for any bearer-authenticated caller (User or Service token),
 
 ## Task 10: `uni-region` wiring + role provisioning (pilot, shadow)
 
+**Status (2026-07-15): done.** uni-region Go wiring + chart committed (uni-region repo); identity `region-service` `region:*` superset = **Fix A** (`3e6254d3`). Verified via the workspace overlay (`go build ./...` + `pkg/server` tests + `helm lint` green). Step 5's `GOWORK=off make` checklist runs only once identity's seam is released and uni-region bumps `go.mod` (its `v1.17.8` pin predates the seam).
+
 **Files (uni-region unless noted):**
 - Modify: `pkg/server/options.go` (add `--authorization-engine-mode`, values `off|shadow|enforce`, default `off`), `pkg/server/server.go:~147-152` (pass the parsed mode into the remote authorizer construction), the chart `values.yaml` + `templates/.../deployment.yaml` (render the flag).
 - Modify (uni-identity chart): the Helm values that map system-account CN→role — add `uni-region`'s CN with a role covering its endpoints.
@@ -414,12 +416,12 @@ Marks impersonation for any bearer-authenticated caller (User or Service token),
 - Consumes: `remote.WithMode`/construction option added in Task 8; `rbac.ParseRemoteMode` (Task 5).
 - Produces: a deployable `uni-region` whose remote authorizer is built with the configured mode; default `off` = today's behavior (reversible).
 
-- [ ] **Step 1: Read** `uni-region/pkg/server/server.go` around the `NewAuthorizer`/`NewValidator` wiring and its options plumbing; follow the existing flag pattern.
-- [ ] **Step 2: Write the failing test** — a server-options unit test: `--authorization-engine-mode=shadow` parses to `rbac.RemoteShadow`; unset defaults to `RemoteOff`; junk errors.
-- [ ] **Step 3: Run — expect FAIL.**
-- [ ] **Step 4: Implement** the flag, thread it into the authorizer construction, render it in the chart, and add the `uni-region` CN→role mapping in the identity chart values.
-- [ ] **Step 5: Run — expect PASS**; `GOWORK=off make lint test-unit generate` in uni-region; `helm template` renders the flag only when set.
-- [ ] **Step 6: Stage for review** (uni-region + identity chart). No commit.
+- [x] **Step 1: Read** `uni-region/pkg/server/server.go` around the `NewAuthorizer`/`NewValidator` wiring and its options plumbing; follow the existing flag pattern.
+- [x] **Step 2: Write the failing test** — a server-options unit test: `--authorization-engine-mode=shadow` parses to `rbac.RemoteShadow`; unset defaults to `RemoteOff`; junk errors.
+- [x] **Step 3: Run — expect FAIL.**
+- [x] **Step 4: Implement** the flag, thread it into the authorizer construction, render it in the chart, and add the `uni-region` CN→role mapping in the identity chart values.
+- [x] **Step 5: Run — expect PASS**; `GOWORK=off make lint test-unit generate` in uni-region; `helm template` renders the flag only when set.
+- [x] **Step 6: Stage for review** (uni-region + identity chart). No commit.
 
 ---
 
