@@ -10,7 +10,7 @@
 
 ## Progress (updated 2026-07-15)
 
-Identity-side seam (Tasks 1–9b) **and Task 10** (uni-region wiring + Fix A) **done and committed**; Tasks 11–12 (cross-service e2e, uni-compute) remaining.
+Identity-side seam (Tasks 1–9b), **Task 10** (uni-region wiring + Fix A), **and Task 11** (uni-region shadow e2e + divergence gate) **done and committed** — the Task 11 kind run is deferred to CI (see its status below). Task 12 (uni-compute) remaining.
 
 | Task | Status | Commit / notes |
 |------|--------|----------------|
@@ -24,11 +24,11 @@ Identity-side seam (Tasks 1–9b) **and Task 10** (uni-region wiring + Fix A) **
 | 8 — seed remote engine | ✅ done | `a4ad0233` |
 | 9 — caller-side telemetry | ✅ done | `88ba7d6b` |
 | 9b — impersonation trigger ("Fix B") | ✅ done | `94d2eb1e` (corrected to the `authorization.Info` model) |
-| 10 — uni-region wiring + role provisioning | ✅ done | uni-region wiring (uni-region repo) + `region-service` superset / Fix A (`3e6254d3`, identity) |
-| 11 — uni-region cross-service e2e + divergence gate | ⬜ todo | |
+| 10 — uni-region wiring + role provisioning | ✅ done | uni-region `3f92ade` (wiring + flags + chart) + `region-service` superset / Fix A (`3e6254d3`, identity) |
+| 11 — uni-region cross-service e2e + divergence gate | ✅ committed; kind run pends CI | uni-region `bf3b3a5`; reviewed + compile-verified; local kind run blocked by Colima LB routing → empirical 0-divergence pends CI/Linux |
 | 12 — uni-compute wiring + e2e | ⬜ todo | |
 
-> **Model correction (2026-07-15, design §4.3):** the original "always impersonate" model was superseded by trusted-subsystem / caller-alone. **Fix B** = the Task 9b trigger (done). **Fix A** = the `region-service` `region:*` superset (part of Task 10, staged).
+> **Model correction (2026-07-15, design §4.3):** the original "always impersonate" model was superseded by trusted-subsystem / caller-alone. **Fix B** = the Task 9b trigger (done). **Fix A** = the `region-service` `region:*` superset (part of Task 10, committed `3e6254d3`).
 
 ---
 
@@ -427,16 +427,18 @@ Marks impersonation for any bearer-authenticated caller (User or Service token),
 
 ## Task 11: `uni-region` cross-service kind e2e + downstream divergence gate
 
+**Status (2026-07-16): committed (`bf3b3a5`); kind run deferred to CI.** The admin/user shadow RBAC matrix (`test/api/suites/rbac_matrix_test.go`) + `hack/ci/divergence-gate` are committed and reviewed (`go vet -tags integration` clean). **Scoped to shadow-only** — fail-closed + timeout are `enforce` behaviors (unit-covered by Tasks 4/6, deferred to the flip; they'd contradict a shadow deploy). Steps 3–4 (the kind run + the empirical 0-divergence result) are **deferred to CI/Linux**: the local Colima run is blocked by kind LoadBalancer routing (LB IPs on the Docker bridge inside the VM aren't reachable from the macOS host — see [[project-local-shadow-integration-run]]). The `unikorn-region`→`region-service` CN mapping needed no identity edit (already in chart defaults).
+
 **Files (uni-region):**
 - Modify/create: `hack/ci/install` deps (install identity via `../identity/hack/ci/install`), `hack/ci/test-values.yaml` (`authorizationEngineMode: shadow`; the CI system-account CN→role), `hack/ci/divergence-gate` (read the **uni-region** server logs for `remote shadow divergence`), `test/e2e/rbac_matrix_test.go`.
 
 **Interfaces:** Consumes the Task 10 flag + Task 7 divergence message. Produces a green cross-service run proving parity, then readiness to flip.
 
-- [ ] **Step 1: Read** the kind CI strategy + uni-region's existing `hack/ci/*` and `test/e2e/`.
-- [ ] **Step 2: Write the e2e** (BDD, typed client): deploy identity + region (region in `shadow`); run the two-principal RBAC matrix asserting response bodies + statuses; add a **fail-closed** case (identity scaled to 0 ⇒ mutating op denied with an unavailability shape) and a **timeout** assertion.
-- [ ] **Step 3: Run the pipeline** on kind: `GOWORK=off make integration-test` (region). Expect the matrix green.
-- [ ] **Step 4: Run the divergence gate** — assert **zero** `remote shadow divergence` in region's server logs. If non-zero: the §4.6.1 gap — fix the CN→role provisioning (Task 10) until clean. (This is the empirical answer to the parity question.)
-- [ ] **Step 5: Stage for review.** No commit. **Flip to `enforce` is a follow-up config change, gated on this zero-divergence result — not part of this task.**
+- [x] **Step 1: Read** the kind CI strategy + uni-region's `hack/ci/*` and `test/api/` (its integration tests live under `test/api/suites/`, not `test/e2e/`).
+- [x] **Step 2: Write the e2e** (BDD, typed client): admin/user RBAC matrix in `shadow`, asserting bodies + statuses. **Scoped to shadow-only** — fail-closed + timeout are `enforce` behaviors, unit-covered by Tasks 4/6 and deferred to the flip.
+- [ ] **Step 3: Run the pipeline** on kind: `GOWORK=off make integration-test` (region). **Deferred to CI/Linux** — the local Colima run is blocked by kind LB routing (see status + [[project-local-shadow-integration-run]]).
+- [ ] **Step 4: Run the divergence gate** — assert **zero** `remote shadow divergence`. **Pends the Step 3 run**; the empirical parity answer is still outstanding.
+- [x] **Step 5: Committed** (`bf3b3a5`) after review. **Flip to `enforce` is a gated follow-up.**
 
 ---
 
