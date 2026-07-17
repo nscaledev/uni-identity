@@ -260,6 +260,12 @@ roles:
         region:images: [read]
         region:externalnetworks: [read]
         region:networks: [create,read,delete] # TODO: Create/delete V1 only
+        kubernetes:regions: [read]
+        kubernetes:flavors: [read]
+        kubernetes:images: [read]
+        kubernetes:clustermanagers: [create,read,update,delete]
+        kubernetes:clusters: [create,read,update,delete]
+        kubernetes:virtualclusters: [create,read,update,delete]
   compute-service:
     decription: Compute service
     protected: true
