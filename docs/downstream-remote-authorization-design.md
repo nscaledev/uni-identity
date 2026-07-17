@@ -285,6 +285,17 @@ working tree overlays a newer identity via `go.work`, but the cited `uni-compute
   (resolved region + resource) and covering the missing ops.
 - *Fix direction:* emit a front-door decision record for the sensitive ops carrying (user, operation,
   resolved region+resource, decision, correlation id).
+- **Status (2026-07-17): DONE, identity central side — `bbc2879b`.** A request-scoped decision stash
+  (`pkg/rbac/decision_stash.go`) has the two `Allow*` choke points append each verdict (resource
+  kind+id, action, allow/deny/unavailable, reason); the audit middleware seeds it and emits a
+  `decisions` list, so the record now carries the referenced resources and the decision on each. The
+  record's own resource is now derived authoritatively — kind from the `Allow*` the handler made, id
+  from the request's last path parameter — instead of URL-guessing, which also covers the
+  previously-dropped creates and body-less actions (Start/Stop/rotate). Sensitive reads opt in via an
+  `x-unikorn-audit: sensitive` operation extension (routine reads still skipped). Purely additive — no
+  authorization decision changed. **Remaining:** (a) per-service sensitive-read annotations that
+  activate that path (compute console/sshkey, kubernetes kubeconfig) — a small consumer follow-up; (b)
+  the **resolved region** was split to F3 and is deliberately excluded here.
 
 **F3 — Region is not a first-class authorization/audit dimension (identity; cross-cutting).**
 - ACL scopes are **Global/Org/Project only**; region is never an authz scope, and decision-log fields

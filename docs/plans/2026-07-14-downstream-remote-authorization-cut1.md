@@ -462,6 +462,7 @@ Marks impersonation for any bearer-authenticated caller (User or Service token),
 - Full **circuit breaker** (`failsafe-go@0.9.6`, already in the module graph) — cut #2, before broad `enforce`.
 - **`uni-kubernetes`** adoption — cut #3.
 - **Unified downstream e2e/CI harness** ("Task 12b" + kubernetes) — the kind-based cross-service RBAC-matrix + divergence-gate for `uni-compute` (and later `uni-kubernetes`), built *once* as a shared harness rather than greenfield-per-service. Deferred: it can't run locally (Colima LB) and is CI-gated on the identity seam release; per-service shadow parity is validated by manual soak until then.
+- **Per-service sensitive-read audit annotations** — mark each service's sensitive read operations (`compute` console/sshkey, `kubernetes` kubeconfig) with `x-unikorn-audit: sensitive` in their specs to activate F2's sensitive-read audit path. The central mechanism landed in identity `bbc2879b` (design §8 F2); this is the small per-consumer step that switches it on.
 - Public **`rbac.AllowMany` list facade** wiring — added when the first per-resource ABAC list needs it (interface is already batch-native; §4.6).
 - Remote paths for `AllowProjectScopeCreate*` (A19 create) and `AllowRole` (A16).
 - The actual **`shadow`→`enforce` flip** per service (operational config change, gated on zero divergence).
