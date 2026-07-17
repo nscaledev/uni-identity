@@ -10,7 +10,7 @@
 
 ## Progress (updated 2026-07-15)
 
-Identity-side seam (Tasks 1–9b), **Task 10** (uni-region wiring + Fix A), **and Task 11** (uni-region shadow e2e + divergence gate) **done and committed** — the Task 11 kind run is deferred to CI (see its status below). Task 12 (uni-compute) remaining.
+Identity-side seam (Tasks 1–9b), **Task 10** (uni-region wiring + Fix A), **Task 11** (uni-region shadow e2e), **and Task 12a** (uni-compute wiring + Fix A) **done and committed** — the Task 11/12 e2e *runs* are CI-deferred (Colima LB wall). **Task 12b** (the compute/kubernetes e2e harness) is folded into the unified downstream-e2e follow-up (Out of scope).
 
 | Task | Status | Commit / notes |
 |------|--------|----------------|
@@ -26,7 +26,8 @@ Identity-side seam (Tasks 1–9b), **Task 10** (uni-region wiring + Fix A), **an
 | 9b — impersonation trigger ("Fix B") | ✅ done | `94d2eb1e` (corrected to the `authorization.Info` model) |
 | 10 — uni-region wiring + role provisioning | ✅ done | uni-region `3f92ade` (wiring + flags + chart) + `region-service` superset / Fix A (`3e6254d3`, identity) |
 | 11 — uni-region cross-service e2e + divergence gate | ✅ committed; kind run pends CI | uni-region `bf3b3a5`; reviewed + compile-verified; local kind run blocked by Colima LB routing → empirical 0-divergence pends CI/Linux |
-| 12 — uni-compute wiring + e2e | ⬜ todo | |
+| 12a — uni-compute wiring + Fix A (shadow) | ✅ done | uni-compute `9d742b5` (cerbos-integration) + `compute-service` `compute:*` superset / Fix A (identity `1e75c435`) |
+| 12b — uni-compute e2e/CI harness | ⬜ deferred | greenfield (no `hack/ci/`, 2-level install, can't run locally); folded into the unified downstream-e2e follow-up — see Out of scope |
 
 > **Model correction (2026-07-15, design §4.3):** the original "always impersonate" model was superseded by trusted-subsystem / caller-alone. **Fix B** = the Task 9b trigger (done). **Fix A** = the `region-service` `region:*` superset (part of Task 10, committed `3e6254d3`).
 
@@ -442,13 +443,17 @@ Marks impersonation for any bearer-authenticated caller (User or Service token),
 
 ---
 
-## Task 12: `uni-compute` wiring + cross-service e2e (repeat 10–11)
+## Task 12a: `uni-compute` wiring + Fix A (shadow)
 
-**Files (uni-compute):** the analogues of Tasks 10–11 — `pkg/server/options.go`, `pkg/server/server.go:~153-158`, charts, `hack/ci/*`, `test/e2e/rbac_matrix_test.go`; plus the `uni-compute` CN→role mapping in the identity chart. `uni-compute` CI installs identity (+ region if its e2e needs it) as dependencies.
+**Rescoped (2026-07-17):** "repeat 10–11" split unevenly — compute's e2e is a *greenfield* CI build (no `hack/ci/`, no multi-principal/mTLS harness, a two-level identity→region→compute install) that can't run locally (Colima LB wall) and is CI-gated. So Task 12 is now **12a (wiring + Fix A)** here; **12b (the e2e/CI harness)** is deferred to a unified downstream-e2e follow-up (see Out of scope). Compute's shadow parity is validated by a **manual soak** (deploy in shadow, drive real traffic incl. compute→region, grep for `remote shadow divergence`), which — unlike the kind e2e — works on Colima.
 
-- [ ] **Step 1: Read** `uni-compute/pkg/server/server.go` + `hack/ci/*` + `test/e2e/`.
-- [ ] **Step 2–6:** repeat Task 10's steps for `uni-compute` (flag, wiring, chart, CN→role).
-- [ ] **Step 7–11:** repeat Task 11's steps for `uni-compute` (e2e in `shadow`, fail-closed, timeout, divergence gate = zero). Stage for review; flip is a gated follow-up.
+**Files:**
+- Identity: `charts/identity/values.yaml` `compute-service` role — add the **`compute:*` superset** (`compute:instances`/`clusters` [CRUD] + `compute:regions`/`flavors`/`images` [read] at global scope): the **Fix A analogue** for compute, else direct-user compute ops diverge. CN→role (`unikorn-compute`→`compute-service`) is already in defaults (`values.yaml:164`).
+- uni-compute: `pkg/server/server.go` (fields + flags + `remoteAuthorizerOptions` helper + thread into `NewAuthorizer` ~`:153`; flags in `AddFlags`, NOT the dead `options.go`; `GetServer(client)` has no ctx — no signature change), the chart (`charts/compute/templates/server/deployment.yaml` + `values.yaml`; dir is `templates/server/`), and a flag-parse unit test (`server_test.go`/`export_test.go`, mirroring region's Task 10).
+
+- [x] **Step 1: Fix A** — `compute-service` `compute:*` superset (identity `1e75c435`; cerbos generate testdata regenerated to match).
+- [x] **Step 2: Wire** — flags + helper + thread-in + chart + flag-parse unit test (uni-compute `9d742b5`, `cerbos-integration`).
+- [x] **Step 3: Verified** (go.work ON) — `pkg/server` build/vet/test + cerbos-generate + rbac tests pass; `helm template` renders the flags and the `compute:*` grants. **Shadow parity pends a manual soak** (kind e2e is 12b, deferred). NB: compute's *whole-repo* build has a pre-existing region-ID skew (`regionids.MustParse*ID` relocated by region `c9be20c`), unrelated to this task.
 
 ---
 
@@ -456,6 +461,7 @@ Marks impersonation for any bearer-authenticated caller (User or Service token),
 
 - Full **circuit breaker** (`failsafe-go@0.9.6`, already in the module graph) — cut #2, before broad `enforce`.
 - **`uni-kubernetes`** adoption — cut #3.
+- **Unified downstream e2e/CI harness** ("Task 12b" + kubernetes) — the kind-based cross-service RBAC-matrix + divergence-gate for `uni-compute` (and later `uni-kubernetes`), built *once* as a shared harness rather than greenfield-per-service. Deferred: it can't run locally (Colima LB) and is CI-gated on the identity seam release; per-service shadow parity is validated by manual soak until then.
 - Public **`rbac.AllowMany` list facade** wiring — added when the first per-resource ABAC list needs it (interface is already batch-native; §4.6).
 - Remote paths for `AllowProjectScopeCreate*` (A19 create) and `AllowRole` (A16).
 - The actual **`shadow`→`enforce` flip** per service (operational config change, gated on zero divergence).
