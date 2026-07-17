@@ -22,3 +22,6 @@ resourcePolicy:
     - actions: [read]
       derivedRoles: [role_00000000-0000-0000-0000-000000000006_org]
       effect: EFFECT_ALLOW
+    - actions: [read]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000008_global]
+      effect: EFFECT_ALLOW

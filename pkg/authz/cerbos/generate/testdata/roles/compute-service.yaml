@@ -36,3 +36,13 @@ spec:
         operations: [read]
       - name: region:sshcertificateauthorities:v2
         operations: [read]
+      - name: compute:regions
+        operations: [read]
+      - name: compute:flavors
+        operations: [read]
+      - name: compute:images
+        operations: [read]
+      - name: compute:instances
+        operations: [create, read, update, delete]
+      - name: compute:clusters
+        operations: [create, read, update, delete]

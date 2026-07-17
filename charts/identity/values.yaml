@@ -278,6 +278,11 @@ roles:
         region:securitygroups: [create,read,update,delete]
         region:securitygroups:v2: [read]
         region:sshcertificateauthorities:v2: [read]
+        compute:regions: [read]
+        compute:flavors: [read]
+        compute:images: [read]
+        compute:instances: [create,read,update,delete]
+        compute:clusters: [create,read,update,delete]
   storage-service:
     decription: Storage service
     protected: true

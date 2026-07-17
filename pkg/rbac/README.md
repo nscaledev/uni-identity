@@ -91,7 +91,9 @@ deployment time.
   consumer whose own API routes through identity's central PDP must have its service-account
   role provisioned as a **superset of what its API authorizes**, because that role is the cap in
   the `intersection(user, service)` a direct-user check resolves against — under-provisioning
-  would deny legitimate users. `region-service` accordingly now grants the full `region:*` set.
+  would deny legitimate users. `region-service` accordingly now grants the full `region:*` set,
+  and `compute-service` grants the `compute:*` superset of what `administrator`/`user` hold
+  (`compute:regions`/`flavors`/`images` read, `compute:instances`/`clusters` full CRUD).
 
 ### User-facing roles
 
