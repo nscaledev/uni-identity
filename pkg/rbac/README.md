@@ -631,6 +631,57 @@ construction.
   populated the entry). Flags: `--decision-cache-size` (default `1<<16`) and
   `--decision-cache-timeout` (default `1m`).
 
+## The decision stash (F2)
+
+`decision_stash.go` is a request-scoped accumulator of `Allow*` outcomes, seeded by
+[`pkg/middleware/audit`](../middleware/audit/README.md#decisions-and-the-sensitive-read-marker)
+before it calls the handler chain and read back once the handler returns, so the audit record can
+carry the resources a request actually referenced and the authorization verdict on each — closing
+the design doc's front-door-audit finding (F2) that the record previously carried neither. It is
+engine-independent: it observes whatever verdict the `Allow*` facade already produced, whether
+served by the legacy ACL walk, Cerbos, or a remote engine, and changes no authorization decision
+itself. `pkg/middleware/audit` also reads this accumulator to type the record's resource itself —
+the authoritative `ResourceKind`, not a URL guess — not only to populate the `decisions` list.
+
+- **Purely additive.** `NewDecisionAccumulatorContext` seeds an accumulator into a context;
+  `appendDecision` — called from the two hook points below — is a no-op unless one is present. Every
+  existing `Allow*` caller and every pre-existing test (none of which seed an accumulator) is
+  therefore unaffected by construction, mirroring the migration's own absence-default discipline
+  (`EngineFromContext`/`remoteEngineFromContext` above).
+- **Hooked at exactly two choke points**, mirroring how A10's `decision_log.go` hooks `CheckMany`
+  rather than decorating every call site: `dispatchCoarse` is the single dispatch point behind
+  `AllowGlobalScope`, `AllowOrganizationScope` and `AllowProjectScope` — and therefore their `…ID`/
+  `…Reader` delegates too — so one append there covers all three scope-check families without
+  duplicating the call at every wrapper. `AllowProjectScopeCreate` is hooked separately since it
+  deliberately never calls `dispatchCoarse` (its live project-existence orchestration is entangled
+  with legacy ACL structure — see its own `NOTE`). Both are thin wrappers around an `…Impl` function
+  carrying the original, unchanged logic verbatim: a plain local variable captures the result, not a
+  named return plus `defer` (the repository's `nonamedreturns` lint rule forbids the latter).
+  **`AllowRole` is deliberately not hooked**: it is a role-*grantability* meta-check over a whole
+  role's scope set (many endpoint/operation pairs, evaluated via the legacy walk directly — see its
+  own docs above), not a single check against one referenced resource, so it does not fit this
+  accumulator's per-resource shape.
+- **The accumulated `Decision`** carries the resource kind (the RBAC endpoint, e.g.
+  `identity:groups`), the resource ID (empty for every coarse check — global/organization/project
+  scope checks never carry a specific instance), the action (`openapi.AclOperation` stringified),
+  and the tri-state outcome described next.
+- **The outcome vocabulary reuses `decision_log.go`'s reason strings (`policy`, `impersonation`,
+  `resolution`, `unavailable`) and adds a tri-state `allow`/`deny`/`unavailable` decision — but
+  `decisionOutcome` is a DELIBERATELY DIFFERENT classifier from `decisionClass`, not a call to it.**
+  `decisionClass` classifies `CheckMany`'s PDP-served errors only, where an error matching none of
+  the sentinels means the PDP/transport failed — correct for that narrower caller. The `Allow*`
+  facade's return spans a wider surface: today's default legacy ACL walk, and whatever
+  shadow/remote-shadow mode always *serves* (both unconditionally return the legacy verdict),
+  produce a plain `errors.HTTPForbidden` denial with **no wrapped sentinel at all** (the legacy
+  `*Legacy` functions never call `.WithError`). Reusing `decisionClass` verbatim would misclassify
+  that extremely common case — the system's own default operating mode — as `unavailable` instead
+  of `deny`. `decisionOutcome` therefore treats an unrecognized non-nil error as an explicit denial
+  (`deny`/`policy`): only the specific fail-closed sentinels (`ErrResolutionFailed`,
+  `ErrDecisionUnavailable`, `ErrImpersonationNotSupported`) classify as `unavailable` — no verdict
+  was reached, so the request was failed closed rather than actually denied by a policy. `nil`
+  classifies `allow`/`policy`, and an explicit `ErrPolicyDenied` classifies `deny`/`policy`, matching
+  `decisionClass` for the cases the two classifiers do agree on.
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.

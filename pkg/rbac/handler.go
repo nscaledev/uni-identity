@@ -73,7 +73,27 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 // fall-through paths call legacy() because they need its verdict: RemoteShadow
 // to compare against, and the local paths to serve or shadow-compare against
 // Cerbos exactly as before.
+//
+// F2: this is a thin wrapper around dispatchCoarseImpl (below) purely to
+// record the outcome into the request-scoped decision accumulator, if one is
+// present (see decision_stash.go) — a plain local variable rather than a
+// named return + defer, which the repo's nonamedreturns lint rule forbids.
+// This is the single choke point behind AllowGlobalScope/
+// AllowOrganizationScope/AllowProjectScope (and their …ID/…Reader
+// delegates), so every dispatch path — remote-enforce, remote-shadow, Cerbos
+// cutover, and the legacy/local-shadow fallback — appends exactly once, with
+// zero change to the returned verdict itself.
 func dispatchCoarse(ctx context.Context, resource Resource, operation openapi.AclOperation, legacy func() error) error {
+	err := dispatchCoarseImpl(ctx, resource, operation, legacy)
+
+	appendDecision(ctx, resource, operation, err)
+
+	return err
+}
+
+// dispatchCoarseImpl is dispatchCoarse's actual dispatch logic, unchanged by
+// F2.
+func dispatchCoarseImpl(ctx context.Context, resource Resource, operation openapi.AclOperation, legacy func() error) error {
 	if engine, mode := remoteEngineFromContext(ctx); engine != nil {
 		//nolint:exhaustive // RemoteOff deliberately has no case: it falls through to the local dispatch below.
 		switch mode {
@@ -315,7 +335,22 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 // implies verified existence; organization-scope grant demands a live
 // project-existence verification) is entangled with legacy ACL structure,
 // and its Cerbos equivalent is task A19 (see pkg/authz/cerbos/README.md).
+//
+// F2: this function deliberately never calls dispatchCoarse (see the NOTE
+// above), so it needs its own decision-accumulator append, mirroring
+// dispatchCoarse's thin-wrapper pattern (a plain local variable, not a named
+// return + defer, which the repo's nonamedreturns lint rule forbids).
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	err := allowProjectScopeCreateImpl(ctx, client, endpoint, operation, organizationID, projectID)
+
+	appendDecision(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation, err)
+
+	return err
+}
+
+// allowProjectScopeCreateImpl is AllowProjectScopeCreate's actual logic,
+// unchanged by F2.
+func allowProjectScopeCreateImpl(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
 	if isAllowedByProjectACL(ctx, endpoint, operation, organizationID, projectID) {
