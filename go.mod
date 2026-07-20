@@ -7,6 +7,7 @@ require (
 	github.com/cerbos/cerbos-sdk-go v0.4.0
 	github.com/cerbos/cerbos/api/genpb v0.53.1-0.20260602120402-cf85ce6cd99e
 	github.com/coreos/go-oidc/v3 v3.14.1
+	github.com/failsafe-go/failsafe-go v0.9.6
 	github.com/getkin/kin-openapi v0.132.0
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/go-jose/go-jose/v4 v4.1.4
@@ -57,7 +58,6 @@ require (
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
 	github.com/evanphx/json-patch v5.9.0+incompatible // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
-	github.com/failsafe-go/failsafe-go v0.9.6 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.8.0 // indirect

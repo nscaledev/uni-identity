@@ -381,3 +381,68 @@ func TestRemoteMetricsAllowLogsAtV1(t *testing.T) {
 	require.Equal(t, 1, records[0].level, "allows must be quiet by default: V(1), not unconditional Info")
 	require.Equal(t, "allow", logAttrs(t, records[0])["decision"])
 }
+
+// TestCircuitBreakerStateChangeObservability pins cut #2's operator
+// visibility requirement (see the breaker-state section of metrics.go):
+// NewAuthorizer's default breaker emits a log line (unconditional Info,
+// matching the deny/unavailable convention above) and increments a counter
+// keyed by the state entered, on a real state transition.
+//
+// This exercises the REAL default (not a WithCircuitBreaker override):
+// NewAuthorizer is the only place that wires the OnStateChanged listener
+// automatically -- a caller supplying a custom breaker via WithCircuitBreaker
+// owns wiring its own listener, by design (see WithCircuitBreaker).
+//
+//nolint:paralleltest // installManualReader swaps the process-global OTel meter provider.
+func TestCircuitBreakerStateChangeObservability(t *testing.T) {
+	reader := installManualReader(t)
+
+	h := &checkHandler{status: http.StatusInternalServerError}
+	auth := newCheckAuthorizer(t, h) // the real NewAuthorizer default, instruments bound to the reader above
+
+	capture := &logCapture{}
+	ctx := capture.into(checkAuthContext(t, "", false))
+
+	// Drive the default profile's minimum sample size as sustained failures
+	// (see TestCircuitBreakerDefaultTripsOnSustainedFailure): deterministic,
+	// no sleep required, since the underlying stats are a rolling sum over
+	// the whole window rather than bucket-local.
+	for range 10 {
+		_, err := auth.CheckMany(ctx, singleCheck())
+		require.ErrorIs(t, err, authorizer.ErrDecisionUnavailable)
+	}
+
+	const stateMessage = "remote authorization circuit breaker state changed"
+
+	var transitions []logRecord
+
+	for _, record := range capture.records {
+		if record.message == stateMessage {
+			transitions = append(transitions, record)
+		}
+	}
+
+	require.Len(t, transitions, 1, "exactly one transition (closed->open) must have fired")
+	require.Zero(t, transitions[0].level, "breaker state transitions must be unconditional Info")
+
+	attrs := logAttrs(t, transitions[0])
+	require.Equal(t, "closed", attrs["from"])
+	require.Equal(t, "open", attrs["to"])
+	require.Equal(t, "remote", attrs["source"])
+
+	var rm metricdata.ResourceMetrics
+
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+
+	counter, found := findMetric(&rm, "unikorn_identity_authz_remote_breaker_transitions_total")
+	require.True(t, found, "the breaker-state counter must exist")
+	require.Equal(t, "{transition}", counter.Unit)
+
+	sum, ok := counter.Data.(metricdata.Sum[int64])
+	require.True(t, ok, "the breaker-state counter must be an Int64Counter")
+	require.Len(t, sum.DataPoints, 1)
+
+	v, _ := sum.DataPoints[0].Attributes.Value(attribute.Key("state"))
+	require.Equal(t, "open", v.AsString())
+	require.Equal(t, int64(1), sum.DataPoints[0].Value)
+}

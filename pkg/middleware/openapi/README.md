@@ -142,6 +142,52 @@ policy-store hash (see [`pkg/rbac`](../../rbac/README.md#the-coarse-decision-cac
 on this remote endpoint, which stays uncached. Wiring this call into downstream `Allow*`
 routing is the recorded follow-up above.
 
+### The Circuit Breaker (cut #2)
+
+`CheckMany`'s round trip (above) is additionally guarded by a `failsafe-go` circuit breaker
+(`remote/decision.go`, `remote/authorizer.go`), closing the resilience gap the migration design's
+§4.4 calls out: today, when the central PDP degrades, every remote check would otherwise wait out
+the full per-call timeout, keep hammering the struggling PDP, then fail closed. The breaker detects
+sustained unavailability and **opens** — short-circuiting further calls (fail fast, no round trip,
+no added load on the PDP) for a cooldown — then **half-opens** to probe recovery and **closes**
+again. The security posture is unchanged (still fail-closed): the breaker only makes an
+already-fail-closed system fail closed **faster** and **PDP-protectively**; it never introduces a
+fallback to a legacy path.
+
+**States:** `closed` (normal — every call reaches the transport), `open` (every call fails instantly
+with `ErrDecisionUnavailable`, no HTTP round trip), `half_open` (a small number of trial calls are
+let through to probe recovery). A `failsafe-go` `OnStateChanged` listener logs every transition
+(`"remote authorization circuit breaker state changed"`, unconditional `Info` — including a failed
+half-open probe dropping back to `open`, exactly as actionable as the initial trip) and increments
+the `unikorn_identity_authz_remote_breaker_transitions_total` counter, keyed by the state entered —
+this is how an operator sees the breaker open without reading source.
+
+**Load-bearing invariant — trips on unavailability, never on denies.** `CheckMany` returns
+`([]bool, nil)` for any successfully served check, however many entries denied; it returns
+`(nil, err)` only when no verdict was obtained at all (transport failure, timeout, 5xx, or a
+malformed response — see above). The breaker's default any-error-is-a-failure handling therefore
+already trips on exactly "no verdict obtained" and never on a returned deny: a high deny rate under
+normal load can never open the breaker, only a genuine failure to reach/parse identity can.
+
+**Defaults (`NewAuthorizer`):** a time-based failure **rate** — not a raw consecutive count, so one
+flaky call cannot trip it, but sustained majority failure trips it quickly — opens the breaker once
+at least 10 executions have landed within a trailing 10s window and at least 50% of them failed;
+once open it waits a 5s cooldown before probing recovery in half-open state, where 2 consecutive
+successful probes close it again (any half-open failure reopens it immediately). Every consumer
+(region/compute/kubernetes) gets this working breaker for free from `NewAuthorizer`, with no server
+flag required.
+
+**Tuning and disable (`WithCircuitBreaker`):** an `Option`, mirroring `WithCheckTimeout`'s shape,
+that takes any `failsafe-go` `circuitbreaker.CircuitBreaker[[]bool]` — full control over the
+thresholds/cooldown/half-open profile for a deployment that needs different tuning. Passing `nil`
+disables the breaker entirely (e.g. for rollback): `CheckMany` then behaves exactly as it did before
+this guardrail, still bounded only by `checkTimeout`.
+
+**Deferred:** bounded retry. §4.4 names "breaker + timeout + bounded retry" as the full resilience
+profile; retry is deliberately **not** part of this cut — it interacts with the tight per-call
+latency budget (N attempts × timeout) and deserves its own sizing decision, so it is left as a
+follow-up rather than bundled in here.
+
 ### Remote Token Exchange
 
 The `remote` authorizer's bearer-token path is exchange-backed. On a cache miss it performs RFC 8693

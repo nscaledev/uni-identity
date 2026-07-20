@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -174,6 +175,71 @@ func (e *RemoteEngine) recordDecisions(ctx context.Context, checks []CheckReques
 
 		e.decisions.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("outcome", outcome),
+		))
+	}
+}
+
+// This section is cut #2's breaker-state observability, mirroring the
+// caller-side decision instruments above exactly: a no-op-safe otel counter
+// (exports only with --otlp-endpoint) plus a structured log line, both keyed
+// off the failsafe-go CircuitBreaker's own OnStateChanged event (see
+// NewAuthorizer) rather than anything derived from a single decision. This is
+// the ONLY way an operator sees the breaker open without reading source, so
+// every transition — not only closed->open — is logged unconditionally at
+// Info: half-open dropping back to open (a failed recovery probe) is exactly
+// as actionable as the initial trip.
+
+// remoteBreakerStateMessage is the load-bearing message constant of the
+// breaker-state-transition log stream (mirrors remoteDecisionMessage):
+// dashboards/alerts grep it, so a rename is a breaking change.
+const remoteBreakerStateMessage = "remote authorization circuit breaker state changed"
+
+// newRemoteBreakerStateInstrument creates the breaker-state-transition
+// counter, mirroring newRemoteDecisionInstruments' construction idiom
+// exactly (the config error is unactionable; the API returns a usable no-op
+// instrument regardless).
+func newRemoteBreakerStateInstrument() metric.Int64Counter {
+	counter, _ := otel.Meter(constants.Application).Int64Counter(
+		"unikorn_identity_authz_remote_breaker_transitions_total",
+		metric.WithDescription("Circuit-breaker state transitions guarding the RemoteEngine CheckMany round trip (see NewAuthorizer/WithCircuitBreaker), by the state entered (closed, open, half_open)."),
+		metric.WithUnit("{transition}"),
+	)
+
+	return counter
+}
+
+// breakerStateName renders a circuitbreaker.State for the log/metric
+// vocabulary above.
+func breakerStateName(s circuitbreaker.State) string {
+	switch s {
+	case circuitbreaker.ClosedState:
+		return "closed"
+	case circuitbreaker.OpenState:
+		return "open"
+	case circuitbreaker.HalfOpenState:
+		return "half_open"
+	default:
+		return "unknown"
+	}
+}
+
+// newBreakerStateChangedListener returns the failsafe OnStateChanged
+// listener wired into the default breaker (see NewAuthorizer). event.Context
+// is whichever request happened to trigger the transition (the executor is
+// bound to that call's context in CheckMany), else context.Background if
+// none was configured; log.FromContext falls back sanely either way.
+func newBreakerStateChangedListener(counter metric.Int64Counter) func(circuitbreaker.StateChangedEvent) {
+	return func(event circuitbreaker.StateChangedEvent) {
+		newState := breakerStateName(event.NewState)
+
+		log.FromContext(event.Context()).Info(remoteBreakerStateMessage,
+			"from", breakerStateName(event.OldState),
+			"to", newState,
+			"source", "remote",
+		)
+
+		counter.Add(event.Context(), 1, metric.WithAttributes(
+			attribute.String("state", newState),
 		))
 	}
 }

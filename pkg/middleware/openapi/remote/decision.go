@@ -18,8 +18,12 @@ package authorizer
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"net/http"
+
+	"github.com/failsafe-go/failsafe-go"
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
@@ -78,6 +82,15 @@ type CheckRequest struct {
 // must not be allowed to block a caller indefinitely.  A deadline exceeded
 // surfaces through the same transport-error path above as
 // ErrDecisionUnavailable.
+//
+// The round trip is additionally guarded by a circuit breaker (breaker, see
+// NewAuthorizer/WithCircuitBreaker): once open it fails instantly with
+// ErrDecisionUnavailable and makes NO HTTP round trip, protecting a
+// struggling identity from further load until a cooldown elapses. It trips
+// on CheckMany's own error return only — i.e. failure to obtain a verdict —
+// and NEVER on a returned deny: a successful check that denies some or all
+// entries is (allowed, nil), a success as far as the breaker is concerned. A
+// nil breaker (WithCircuitBreaker(nil)) disables this guard entirely.
 func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, error) {
 	if a.checkTimeout > 0 {
 		var cancel context.CancelFunc
@@ -86,6 +99,30 @@ func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest) ([]bo
 		defer cancel()
 	}
 
+	if a.breaker == nil {
+		return a.checkManyRequest(ctx, checks)
+	}
+
+	allowed, err := failsafe.With[[]bool](a.breaker).WithContext(ctx).Get(func() ([]bool, error) {
+		return a.checkManyRequest(ctx, checks)
+	})
+	if err != nil {
+		if goerrors.Is(err, circuitbreaker.ErrOpen) {
+			return nil, fmt.Errorf("%w: circuit breaker open: %w", ErrDecisionUnavailable, err)
+		}
+
+		return nil, err
+	}
+
+	return allowed, nil
+}
+
+// checkManyRequest performs exactly one attempt at the round trip — build
+// the client, issue the check call, map the response — with no retry of its
+// own (bounded retry is a deliberate follow-up, see the package README).
+// Split out of CheckMany so the circuit breaker guards precisely this call,
+// never the timeout setup or the breaker plumbing around it.
+func (a *Authorizer) checkManyRequest(ctx context.Context, checks []CheckRequest) ([]bool, error) {
 	// Trace context and TLS (the system-account identity) ride the cached
 	// client; the acting principal rides X-Principal via the injector.
 	options := []identityapi.ClientOption{

@@ -63,9 +63,16 @@ type checkHandler struct {
 	gotPrincipal     string
 	gotImpersonate   string
 	gotBody          identityapi.AuthorizationCheckRequest
+
+	// requests counts every ServeHTTP invocation, i.e. every actual HTTP
+	// round trip that reached the transport. The circuit-breaker tests drive
+	// CheckMany sequentially from a single goroutine and assert on this
+	// between calls, so no synchronization is needed here.
+	requests int
 }
 
 func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.requests++
 	h.gotAuthorization = r.Header.Get("Authorization")
 	h.gotPrincipal = r.Header.Get(principal.Header)
 	h.gotImpersonate = r.Header.Get(principal.ImpersonateHeader)

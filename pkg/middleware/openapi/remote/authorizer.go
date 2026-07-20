@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -56,6 +57,25 @@ const (
 	// no WithCheckTimeout option overrides it, guaranteeing a bounded remote
 	// authorization-check call even before a consumer wires a flag.
 	defaultCheckTimeout = 250 * time.Millisecond
+
+	// The five constants below configure the safe-default circuit breaker
+	// guarding the CheckMany round trip (see NewAuthorizer, WithCircuitBreaker):
+	// a time-based failure RATE -- not a raw consecutive count -- opens the
+	// breaker once at least defaultBreakerFailureExecutionThreshold executions
+	// have landed within the trailing defaultBreakerFailureThresholdingPeriod
+	// and a majority of them failed (defaultBreakerFailureRateThreshold),
+	// tolerating an occasional flaky call while still tripping quickly on a
+	// genuine outage. Once open, it waits defaultBreakerDelay before probing
+	// recovery in half-open state, where defaultBreakerSuccessThreshold
+	// consecutive successes close it again (any half-open failure reopens it
+	// immediately). "Failure" here is CheckMany's own error return -- no
+	// verdict obtained -- never a returned allow/deny verdict; see CheckMany's
+	// doc comment.
+	defaultBreakerFailureRateThreshold      = 0.5
+	defaultBreakerFailureExecutionThreshold = 10
+	defaultBreakerFailureThresholdingPeriod = 10 * time.Second
+	defaultBreakerDelay                     = 5 * time.Second
+	defaultBreakerSuccessThreshold          = 2
 )
 
 // Authorizer provides OpenAPI based authorization middleware backed by remote
@@ -71,6 +91,16 @@ type Authorizer struct {
 	// checkTimeout is the hard per-call deadline CheckMany applies to the
 	// remote authorization-check call.
 	checkTimeout time.Duration
+
+	// breaker guards the CheckMany round trip (see decision.go): once open it
+	// fails every call instantly with no HTTP round trip, protecting a
+	// struggling identity from further load until a cooldown elapses.
+	// Constructed once per Authorizer and shared across every request --
+	// that is the point, and failsafe-go's CircuitBreaker is
+	// concurrency-safe. nil disables the breaker entirely (see
+	// WithCircuitBreaker), reverting CheckMany to exactly its pre-breaker
+	// behavior.
+	breaker circuitbreaker.CircuitBreaker[[]bool]
 
 	// remoteMode selects how the RemoteDecisionEngine seeded into handler
 	// contexts (see RemoteDecisionEngine, RemoteEngineMode) participates in
@@ -108,6 +138,17 @@ func WithCheckTimeout(d time.Duration) Option {
 	}
 }
 
+// WithCircuitBreaker overrides the default circuit breaker guarding the
+// CheckMany round trip (see NewAuthorizer for the default profile). Pass nil
+// to disable the breaker entirely -- e.g. for rollback -- reverting
+// CheckMany to a plain call bounded only by checkTimeout, exactly as it
+// behaved before this guardrail existed.
+func WithCircuitBreaker(cb circuitbreaker.CircuitBreaker[[]bool]) Option {
+	return func(a *Authorizer) {
+		a.breaker = cb
+	}
+}
+
 // WithRemoteEngineMode sets the dispatch mode the RemoteDecisionEngine seeded
 // into handler contexts participates under (see rbac.RemoteMode).  Unset,
 // remoteMode defaults to rbac.RemoteOff — the zero value — under which
@@ -128,6 +169,17 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 
 	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *oauth2.PassportClaims](tokenCacheSize)
 
+	// The safe-default breaker (see the constants above): every consumer
+	// (region/compute/kubernetes) gets a working breaker for free from this
+	// constructor, with no flag or config required; WithCircuitBreaker tunes
+	// or disables it.
+	breaker := circuitbreaker.NewBuilder[[]bool]().
+		WithFailureRateThreshold(defaultBreakerFailureRateThreshold, defaultBreakerFailureExecutionThreshold, defaultBreakerFailureThresholdingPeriod).
+		WithDelay(defaultBreakerDelay).
+		WithSuccessThreshold(defaultBreakerSuccessThreshold).
+		OnStateChanged(newBreakerStateChangedListener(newRemoteBreakerStateInstrument())).
+		Build()
+
 	a := &Authorizer{
 		httpClient:    httpClient,
 		client:        client,
@@ -136,6 +188,7 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		exchange:      NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
 		tokenCache:    tokenCache,
 		checkTimeout:  defaultCheckTimeout,
+		breaker:       breaker,
 	}
 
 	for _, opt := range opts {
