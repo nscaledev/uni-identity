@@ -35,6 +35,7 @@ var (
 	adminClient          *api.APIClient
 	userClient           *api.APIClient
 	auditClient          *api.APIClient
+	publicAdminClient    *api.APIClient
 	serviceAccountClient *api.APIClient
 	ctx                  context.Context
 	config               *api.TestConfig
@@ -69,6 +70,13 @@ var _ = BeforeEach(func() {
 		auditConfig := *config
 		auditConfig.AuthToken = config.AuditToken
 		auditClient = api.NewAPIClientWithConfig(&auditConfig)
+	}
+
+	publicAdminClient = nil
+	if config.PublicAdminToken != "" {
+		publicAdminConfig := *config
+		publicAdminConfig.AuthToken = config.PublicAdminToken
+		publicAdminClient = api.NewAPIClientWithConfig(&publicAdminConfig)
 	}
 
 	serviceAccountClient = nil

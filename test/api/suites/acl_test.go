@@ -169,15 +169,6 @@ func expectOrganizationACLEndpoints(acl *identityopenapi.Acl, orgID string, expe
 	Fail("expected organization " + orgID + " in ACL response")
 }
 
-func apiClientWithToken(token string) *api.APIClient {
-	GinkgoHelper()
-
-	tokenConfig := *config
-	tokenConfig.AuthToken = token
-
-	return api.NewAPIClientWithConfig(&tokenConfig)
-}
-
 var _ = Describe("Access Control Discovery", func() {
 	Context("When getting global ACL", func() {
 		Describe("Given valid authentication", func() {
@@ -228,8 +219,6 @@ var _ = Describe("Access Control Discovery", func() {
 			})
 
 			It("should return the administrator permission matrix", func() {
-				Expect(adminClient).NotTo(BeNil(), "ADMIN_AUTH_TOKEN must create an administrator API client")
-
 				acl, err := adminClient.GetGlobalACL(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
@@ -238,7 +227,7 @@ var _ = Describe("Access Control Discovery", func() {
 
 			It("should return the auditor read-only permission matrix", func() {
 				if auditClient == nil {
-					Skip("AUDIT_AUTH_TOKEN or SERVICE_TOKEN_PRIVATE_AUDIT must create an auditor API client")
+					Skip("AUDIT_AUTH_TOKEN or SERVICE_TOKEN_PRIVATE_AUDIT must be set by integration fixtures")
 				}
 
 				acl, err := auditClient.GetGlobalACL(ctx)
@@ -248,11 +237,10 @@ var _ = Describe("Access Control Discovery", func() {
 			})
 
 			It("should return the public-admin permission matrix", func() {
-				if config.PublicAdminToken == "" {
+				if publicAdminClient == nil {
 					Skip("PUBLIC_ADMIN_AUTH_TOKEN or SERVICE_TOKEN_PRIVATE_PUBLIC_ADMIN must be set by integration fixtures")
 				}
 
-				publicAdminClient := apiClientWithToken(config.PublicAdminToken)
 				acl, err := publicAdminClient.GetGlobalACL(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
@@ -277,11 +265,10 @@ var _ = Describe("Access Control Discovery", func() {
 	Context("When public-admin accesses users", func() {
 		Describe("Given a private organization", func() {
 			It("should be denied", func() {
-				if config.PublicAdminToken == "" {
+				if publicAdminClient == nil {
 					Skip("PUBLIC_ADMIN_AUTH_TOKEN or SERVICE_TOKEN_PRIVATE_PUBLIC_ADMIN must be set by integration fixtures")
 				}
 
-				publicAdminClient := apiClientWithToken(config.PublicAdminToken)
 				resp, _, err := publicAdminClient.DoRequest(ctx, http.MethodGet,
 					api.NewEndpoints().ListUsers(config.OrgID), nil, http.StatusForbidden)
 
