@@ -23,6 +23,7 @@ package suites
 import (
 	"errors"
 	"net/http"
+	"sort"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -31,6 +32,151 @@ import (
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
 )
+
+func aclEndpoint(name string, operations ...identityopenapi.AclOperation) identityopenapi.AclEndpoint {
+	return identityopenapi.AclEndpoint{
+		Name:       name,
+		Operations: operations,
+	}
+}
+
+func fullAccessOperations() []identityopenapi.AclOperation {
+	return []identityopenapi.AclOperation{
+		identityopenapi.Create,
+		identityopenapi.Read,
+		identityopenapi.Update,
+		identityopenapi.Delete,
+	}
+}
+
+func expectedAdminACLEndpoints() []identityopenapi.AclEndpoint {
+	return []identityopenapi.AclEndpoint{
+		aclEndpoint("compute:clusters", fullAccessOperations()...),
+		aclEndpoint("compute:flavors", identityopenapi.Read),
+		aclEndpoint("compute:images", identityopenapi.Read),
+		aclEndpoint("compute:instances", fullAccessOperations()...),
+		aclEndpoint("compute:regions", identityopenapi.Read),
+		aclEndpoint("identity:groups", fullAccessOperations()...),
+		aclEndpoint("identity:oauth2providers", fullAccessOperations()...),
+		aclEndpoint("identity:organizations", identityopenapi.Read, identityopenapi.Update),
+		aclEndpoint("identity:projects", fullAccessOperations()...),
+		aclEndpoint("identity:quotas", identityopenapi.Read),
+		aclEndpoint("identity:roles", fullAccessOperations()...),
+		aclEndpoint("identity:serviceaccounts", fullAccessOperations()...),
+		aclEndpoint("identity:users", fullAccessOperations()...),
+		aclEndpoint("kubernetes:clusters", fullAccessOperations()...),
+		aclEndpoint("kubernetes:flavors", identityopenapi.Read),
+		aclEndpoint("kubernetes:images", identityopenapi.Read),
+		aclEndpoint("kubernetes:regions", identityopenapi.Read),
+		aclEndpoint("kubernetes:virtualclusters", fullAccessOperations()...),
+		aclEndpoint("region:filestorage:v2", fullAccessOperations()...),
+		aclEndpoint("region:filestorageclass:v2", identityopenapi.Read),
+		aclEndpoint("region:flavors", identityopenapi.Read),
+		aclEndpoint("region:images", identityopenapi.Create, identityopenapi.Read, identityopenapi.Delete),
+		aclEndpoint("region:loadbalancers:v2", fullAccessOperations()...),
+		aclEndpoint("region:networks:v2", fullAccessOperations()...),
+		aclEndpoint("region:regions", identityopenapi.Read),
+		aclEndpoint("region:securitygroups:v2", fullAccessOperations()...),
+		aclEndpoint("region:sshcertificateauthorities:v2", identityopenapi.Create, identityopenapi.Read, identityopenapi.Delete),
+		aclEndpoint("storage:objectstorageclasses", identityopenapi.Read),
+		aclEndpoint("storage:objectstorageendpoints", fullAccessOperations()...),
+		aclEndpoint("storage:objectstorageendpoints/accesskeys", fullAccessOperations()...),
+	}
+}
+
+func expectedAuditACLEndpoints() []identityopenapi.AclEndpoint {
+	return []identityopenapi.AclEndpoint{
+		aclEndpoint("compute:clusters", identityopenapi.Read),
+		aclEndpoint("compute:flavors", identityopenapi.Read),
+		aclEndpoint("compute:images", identityopenapi.Read),
+		aclEndpoint("compute:instances", identityopenapi.Read),
+		aclEndpoint("compute:regions", identityopenapi.Read),
+		aclEndpoint("identity:groups", identityopenapi.Read),
+		aclEndpoint("identity:oauth2providers", identityopenapi.Read),
+		aclEndpoint("identity:organizations", identityopenapi.Read),
+		aclEndpoint("identity:projects", identityopenapi.Read),
+		aclEndpoint("identity:quotas", identityopenapi.Read),
+		aclEndpoint("identity:roles", identityopenapi.Read),
+		aclEndpoint("identity:serviceaccounts", identityopenapi.Read),
+		aclEndpoint("identity:users", identityopenapi.Read),
+		aclEndpoint("kubernetes:clusters", identityopenapi.Read),
+		aclEndpoint("kubernetes:flavors", identityopenapi.Read),
+		aclEndpoint("kubernetes:images", identityopenapi.Read),
+		aclEndpoint("kubernetes:regions", identityopenapi.Read),
+		aclEndpoint("kubernetes:virtualclusters", identityopenapi.Read),
+		aclEndpoint("region:filestorage:v2", identityopenapi.Read),
+		aclEndpoint("region:filestorageclass:v2", identityopenapi.Read),
+		aclEndpoint("region:flavors", identityopenapi.Read),
+		aclEndpoint("region:images", identityopenapi.Read),
+		aclEndpoint("region:loadbalancers:v2", identityopenapi.Read),
+		aclEndpoint("region:networks:v2", identityopenapi.Read),
+		aclEndpoint("region:regions", identityopenapi.Read),
+		aclEndpoint("region:securitygroups:v2", identityopenapi.Read),
+		aclEndpoint("region:sshcertificateauthorities:v2", identityopenapi.Read),
+		aclEndpoint("storage:objectstorageclasses", identityopenapi.Read),
+		aclEndpoint("storage:objectstorageendpoints", identityopenapi.Read),
+		aclEndpoint("storage:objectstorageendpoints/accesskeys", identityopenapi.Read),
+	}
+}
+
+func expectedPublicAdminACLEndpoints() []identityopenapi.AclEndpoint {
+	return []identityopenapi.AclEndpoint{
+		aclEndpoint("compute:flavors", identityopenapi.Read),
+		aclEndpoint("identity:groups", identityopenapi.Read),
+		aclEndpoint("identity:organizations", identityopenapi.Read),
+		aclEndpoint("identity:projects", identityopenapi.Read),
+		aclEndpoint("identity:quotas", identityopenapi.Read),
+		aclEndpoint("identity:roles", identityopenapi.Read),
+		aclEndpoint("identity:serviceaccounts", fullAccessOperations()...),
+		aclEndpoint("kubernetes:flavors", identityopenapi.Read),
+		aclEndpoint("kubernetes:images", identityopenapi.Read),
+		aclEndpoint("kubernetes:regions", identityopenapi.Read),
+	}
+}
+
+func normalisedACLMap(endpoints []identityopenapi.AclEndpoint) map[string][]string {
+	normalised := make(map[string][]string, len(endpoints))
+
+	for _, endpoint := range endpoints {
+		operations := make([]string, 0, len(endpoint.Operations))
+		for _, operation := range endpoint.Operations {
+			operations = append(operations, string(operation))
+		}
+		sort.Strings(operations)
+		normalised[endpoint.Name] = operations
+	}
+
+	return normalised
+}
+
+func expectOrganizationACLEndpoints(acl *identityopenapi.Acl, orgID string, expected []identityopenapi.AclEndpoint) {
+	GinkgoHelper()
+
+	Expect(acl).NotTo(BeNil())
+	Expect(acl.Organizations).NotTo(BeNil(), "Organizations ACL should be present")
+
+	for _, org := range *acl.Organizations {
+		if org.Id != orgID {
+			continue
+		}
+
+		Expect(org.Endpoints).NotTo(BeNil(), "Organization ACL endpoints should be present")
+		Expect(normalisedACLMap(*org.Endpoints)).To(Equal(normalisedACLMap(expected)))
+
+		return
+	}
+
+	Fail("expected organization " + orgID + " in ACL response")
+}
+
+func apiClientWithToken(token string) *api.APIClient {
+	GinkgoHelper()
+
+	tokenConfig := *config
+	tokenConfig.AuthToken = token
+
+	return api.NewAPIClientWithConfig(&tokenConfig)
+}
 
 var _ = Describe("Access Control Discovery", func() {
 	Context("When getting global ACL", func() {
@@ -80,6 +226,38 @@ var _ = Describe("Access Control Discovery", func() {
 
 				GinkgoWriter.Printf("Global ACL retrieved with %d organizations\n", len(*acl.Organizations))
 			})
+
+			It("should return the administrator permission matrix", func() {
+				Expect(adminClient).NotTo(BeNil(), "ADMIN_AUTH_TOKEN must create an administrator API client")
+
+				acl, err := adminClient.GetGlobalACL(ctx)
+
+				Expect(err).NotTo(HaveOccurred())
+				expectOrganizationACLEndpoints(acl, config.OrgID, expectedAdminACLEndpoints())
+			})
+
+			It("should return the auditor read-only permission matrix", func() {
+				if auditClient == nil {
+					Skip("AUDIT_AUTH_TOKEN or SERVICE_TOKEN_PRIVATE_AUDIT must create an auditor API client")
+				}
+
+				acl, err := auditClient.GetGlobalACL(ctx)
+
+				Expect(err).NotTo(HaveOccurred())
+				expectOrganizationACLEndpoints(acl, config.OrgID, expectedAuditACLEndpoints())
+			})
+
+			It("should return the public-admin permission matrix", func() {
+				if config.PublicAdminToken == "" {
+					Skip("PUBLIC_ADMIN_AUTH_TOKEN or SERVICE_TOKEN_PRIVATE_PUBLIC_ADMIN must be set by integration fixtures")
+				}
+
+				publicAdminClient := apiClientWithToken(config.PublicAdminToken)
+				acl, err := publicAdminClient.GetGlobalACL(ctx)
+
+				Expect(err).NotTo(HaveOccurred())
+				expectOrganizationACLEndpoints(acl, config.OrgID, expectedPublicAdminACLEndpoints())
+			})
 		})
 
 		Describe("Given invalid authentication", func() {
@@ -92,6 +270,24 @@ var _ = Describe("Access Control Discovery", func() {
 					"Should return unexpected status code error for missing auth")
 
 				GinkgoWriter.Printf("Expected error for missing authentication: %v\n", err)
+			})
+		})
+	})
+
+	Context("When public-admin accesses users", func() {
+		Describe("Given a private organization", func() {
+			It("should be denied", func() {
+				if config.PublicAdminToken == "" {
+					Skip("PUBLIC_ADMIN_AUTH_TOKEN or SERVICE_TOKEN_PRIVATE_PUBLIC_ADMIN must be set by integration fixtures")
+				}
+
+				publicAdminClient := apiClientWithToken(config.PublicAdminToken)
+				resp, _, err := publicAdminClient.DoRequest(ctx, http.MethodGet,
+					api.NewEndpoints().ListUsers(config.OrgID), nil, http.StatusForbidden)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 			})
 		})
 	})

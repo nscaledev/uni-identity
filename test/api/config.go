@@ -28,6 +28,7 @@ type TestConfig struct {
 	AdminToken          string
 	UserToken           string
 	AuditToken          string
+	PublicAdminToken    string
 	OrgID               string
 	ProjectID           string
 	AdminGroupID        string
@@ -67,7 +68,7 @@ func LoadTestConfig() (*TestConfig, error) {
 	config := &TestConfig{
 		BaseConfig: coreconfig.BaseConfig{
 			BaseURL:         v.GetString("IDENTITY_BASE_URL"),
-			AuthToken:       firstNonEmpty(v.GetString("API_AUTH_TOKEN"), v.GetString("ADMIN_AUTH_TOKEN")),
+			AuthToken:       firstNonEmpty(v.GetString("API_AUTH_TOKEN"), v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("SERVICE_TOKEN_PRIVATE_ADMIN")),
 			RequestTimeout:  coreconfig.GetDurationFromViper(v, "REQUEST_TIMEOUT", 30*time.Second),
 			TestTimeout:     coreconfig.GetDurationFromViper(v, "TEST_TIMEOUT", 20*time.Minute),
 			SkipIntegration: v.GetBool("SKIP_INTEGRATION"),
@@ -75,9 +76,10 @@ func LoadTestConfig() (*TestConfig, error) {
 			LogRequests:     v.GetBool("LOG_REQUESTS"),
 			LogResponses:    v.GetBool("LOG_RESPONSES"),
 		},
-		AdminToken:          firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN")),
+		AdminToken:          firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN"), v.GetString("SERVICE_TOKEN_PRIVATE_ADMIN")),
 		UserToken:           v.GetString("USER_AUTH_TOKEN"),
-		AuditToken:          v.GetString("AUDIT_AUTH_TOKEN"),
+		AuditToken:          firstNonEmpty(v.GetString("AUDIT_AUTH_TOKEN"), v.GetString("SERVICE_TOKEN_PRIVATE_AUDIT")),
+		PublicAdminToken:    firstNonEmpty(v.GetString("PUBLIC_ADMIN_AUTH_TOKEN"), v.GetString("SERVICE_TOKEN_PRIVATE_PUBLIC_ADMIN")),
 		OrgID:               v.GetString("TEST_ORG_ID"),
 		ProjectID:           v.GetString("TEST_PROJECT_ID"),
 		AdminGroupID:        v.GetString("TEST_ADMIN_GROUP_ID"),
