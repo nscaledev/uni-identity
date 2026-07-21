@@ -38,7 +38,9 @@ import (
 
 // These tests pin the A15 policy-store hasher: a read-through fingerprint of
 // the controller-owned policies ConfigMap key set, with the fail-safe
-// availability contract the coarse-decision cache depends on.
+// availability contract the coarse-decision cache depends on, and the
+// non-blocking hot-path contract: Current never waits on an API-server read —
+// the refresh runs in the background, detached from the caller that starts it.
 
 const (
 	hashNamespace = "identity-system"
@@ -76,24 +78,41 @@ func hashClient(t *testing.T, objects ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(hashScheme(t)).WithObjects(objects...).Build()
 }
 
-// countingClient counts ConfigMap Gets and can be switched to fail, so the
-// refresh cadence and the last-good retention contract are observable.
+// countingClient counts ConfigMap Gets, can be switched to fail, and can be
+// gated so a Get parks until the gate is closed — a hung API server.  Unlike
+// the embedded fake it honours context cancellation the way the real
+// API-server client does; the detached-refresh contract is observable only
+// against a client that does.
 type countingClient struct {
 	client.Client
 
 	mu   sync.Mutex
 	gets int
 	err  error
+	gate chan struct{}
 }
 
 func (c *countingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	c.mu.Lock()
 	c.gets++
-	err := c.err
+	failure := c.err
+	gate := c.gate
 	c.mu.Unlock()
 
-	if err != nil {
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
 		return err
+	}
+
+	if failure != nil {
+		return failure
 	}
 
 	return c.Client.Get(ctx, key, obj, opts...)
@@ -113,6 +132,63 @@ func (c *countingClient) failWith(err error) {
 	c.err = err
 }
 
+func (c *countingClient) setGate(gate chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.gate = gate
+}
+
+// waitForHash spins until the background read lands and the hasher reports
+// available, returning the hash.  Current never blocks — a cold-start caller
+// gets ("", false) until the first read completes — so tests await
+// availability rather than assuming the call that starts the read returns it.
+func waitForHash(t *testing.T, hasher *cerbos.PolicyStoreHasher) string {
+	t.Helper()
+
+	var hash string
+
+	require.Eventually(t, func() bool {
+		var ok bool
+
+		hash, ok = hasher.Current(t.Context())
+
+		return ok
+	}, 10*time.Second, time.Millisecond, "the background refresh must eventually deliver availability")
+
+	return hash
+}
+
+// currentPrompt calls Current and fails the test if it does not return
+// promptly.  This is the hot-path contract: Current is called on every
+// cerbos-mode decision and must never stall behind an API-server read,
+// whatever state that read is in.
+func currentPrompt(t *testing.T, hasher *cerbos.PolicyStoreHasher) (string, bool) {
+	t.Helper()
+
+	type result struct {
+		hash string
+		ok   bool
+	}
+
+	results := make(chan result, 1)
+
+	go func() {
+		hash, ok := hasher.Current(t.Context())
+
+		results <- result{hash: hash, ok: ok}
+	}()
+
+	select {
+	case r := <-results:
+		return r.hash, r.ok
+	case <-time.After(5 * time.Second):
+		t.Fatal("Current blocked behind an API-server read; the hot-path contract is that it returns the memoized state immediately")
+
+		return "", false
+	}
+}
+
 func TestPolicyStoreHasherStableNonEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -120,9 +196,82 @@ func TestPolicyStoreHasherStableNonEmpty(t *testing.T) {
 		hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml", "uni_roles-8c9d0e1f.yaml")),
 		hashNamespace, hashConfigMap, time.Hour)
 
-	hash, ok := hasher.Current(t.Context())
-	require.True(t, ok)
+	hash := waitForHash(t, hasher)
 	require.NotEmpty(t, hash)
+
+	again, ok := hasher.Current(t.Context())
+	require.True(t, ok)
+	require.Equal(t, hash, again)
+}
+
+func TestPolicyStoreHasherColdStartDoesNotBlockOnSlowRead(t *testing.T) {
+	t.Parallel()
+
+	// A hung API server during cold start must not stall decisions: the
+	// fail-safe for the no-hash state is ("", false) — the coarse-decision
+	// cache is bypassed and the decision proceeds uncached — never a wait on
+	// the in-flight first read.
+	counting := &countingClient{Client: hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml"))}
+
+	gate := make(chan struct{})
+	counting.setGate(gate)
+
+	hasher := cerbos.NewPolicyStoreHasher(counting, hashNamespace, hashConfigMap, time.Hour)
+
+	hash, ok := currentPrompt(t, hasher)
+	require.False(t, ok, "no read has succeeded yet: the fail-safe is unavailable, not a wait")
+	require.Empty(t, hash)
+
+	// Releasing the hung read delivers availability in the background.
+	close(gate)
+	waitForHash(t, hasher)
+}
+
+func TestPolicyStoreHasherServesLastGoodDuringSlowRefresh(t *testing.T) {
+	t.Parallel()
+
+	counting := &countingClient{Client: hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml"))}
+
+	// A zero interval makes every call due, so a refresh — gated, simulating a
+	// hung API server — starts as soon as one is not already running.
+	hasher := cerbos.NewPolicyStoreHasher(counting, hashNamespace, hashConfigMap, 0)
+
+	good := waitForHash(t, hasher)
+
+	counting.setGate(make(chan struct{}))
+
+	// Every caller — including the one whose call starts the hung refresh —
+	// must serve the last-good hash immediately rather than stalling behind
+	// the read for its whole request lifetime.
+	for range 3 {
+		hash, ok := currentPrompt(t, hasher)
+		require.True(t, ok, "a caller with a last-good hash must be served during a hung refresh")
+		require.Equal(t, good, hash)
+	}
+}
+
+func TestPolicyStoreHasherRefreshSurvivesCallerCancellation(t *testing.T) {
+	t.Parallel()
+
+	// The once-per-interval refresh is a shared, process-wide resource: it
+	// must not ride on the lifetime of whichever request happens to start it,
+	// or one disconnecting client burns the interval's only attempt for the
+	// whole process (cache bypassed and audit correlate lost fleet-wide until
+	// the next interval).
+	counting := &countingClient{Client: hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml"))}
+
+	hasher := cerbos.NewPolicyStoreHasher(counting, hashNamespace, hashConfigMap, time.Hour)
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, ok := hasher.Current(cancelled)
+	require.False(t, ok, "no hash is available before the first read lands")
+
+	// With an hour-long interval there is no second attempt inside this test:
+	// availability arriving at all proves the read outlived its caller.
+	waitForHash(t, hasher)
+	require.Equal(t, 1, counting.count(), "the interval's single refresh attempt must have succeeded")
 }
 
 func TestPolicyStoreHasherNoReReadWithinInterval(t *testing.T) {
@@ -130,12 +279,11 @@ func TestPolicyStoreHasherNoReReadWithinInterval(t *testing.T) {
 
 	counting := &countingClient{Client: hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml"))}
 
-	// A long interval: only the first Current reads the ConfigMap; the rest
-	// return the memoized hash without a further Get.
+	// A long interval: only the first call elects a read; once it lands the
+	// rest return the memoized hash without a further Get.
 	hasher := cerbos.NewPolicyStoreHasher(counting, hashNamespace, hashConfigMap, time.Hour)
 
-	first, ok := hasher.Current(t.Context())
-	require.True(t, ok)
+	first := waitForHash(t, hasher)
 
 	for range 5 {
 		hash, ok := hasher.Current(t.Context())
@@ -152,11 +300,10 @@ func TestPolicyStoreHasherKeySetChangeChangesHash(t *testing.T) {
 	c := hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml", "uni_roles-8c9d0e1f.yaml"))
 
 	// A zero interval re-reads on every call, so a republish is observed
-	// immediately.
+	// as soon as the next background read lands.
 	hasher := cerbos.NewPolicyStoreHasher(c, hashNamespace, hashConfigMap, 0)
 
-	before, ok := hasher.Current(t.Context())
-	require.True(t, ok)
+	before := waitForHash(t, hasher)
 
 	// Simulate a republish: the controller's content-addressed keys change
 	// when policy content changes (here one file's hash suffix flips).
@@ -165,10 +312,11 @@ func TestPolicyStoreHasherKeySetChangeChangesHash(t *testing.T) {
 	updated.Data = policyConfigMap("identity_groups-ffffffff.yaml", "uni_roles-8c9d0e1f.yaml").Data
 	require.NoError(t, c.Update(t.Context(), updated))
 
-	after, ok := hasher.Current(t.Context())
-	require.True(t, ok)
+	require.Eventually(t, func() bool {
+		after, ok := hasher.Current(t.Context())
 
-	require.NotEqual(t, before, after, "a changed policy-store key set must change the hash (the bust signal)")
+		return ok && after != before
+	}, 10*time.Second, time.Millisecond, "a changed policy-store key set must change the hash (the bust signal)")
 }
 
 func TestPolicyStoreHasherUnavailableBeforeFirstSuccess(t *testing.T) {
@@ -177,18 +325,30 @@ func TestPolicyStoreHasherUnavailableBeforeFirstSuccess(t *testing.T) {
 	// No ConfigMap published yet: the Get fails (NotFound), and with no prior
 	// success the hasher reports unavailable so the cache stays bypassed
 	// rather than keying on a bogus hash.
-	hasher := cerbos.NewPolicyStoreHasher(hashClient(t), hashNamespace, hashConfigMap, time.Hour)
+	counting := &countingClient{Client: hashClient(t)}
+
+	hasher := cerbos.NewPolicyStoreHasher(counting, hashNamespace, hashConfigMap, time.Hour)
 
 	_, ok := hasher.Current(t.Context())
 	require.False(t, ok)
+
+	// Still unavailable once the failed background read has landed — failure
+	// must not publish a hash.
+	require.Eventually(t, func() bool {
+		return counting.count() >= 1
+	}, 10*time.Second, time.Millisecond)
+
+	_, ok = hasher.Current(t.Context())
+	require.False(t, ok, "a failed first read must leave the hasher unavailable (fail-safe), not publish a bogus hash")
 }
 
 func TestPolicyStoreHasherConcurrentCurrentIsRaceFree(t *testing.T) {
 	t.Parallel()
 
 	// Current is invoked on every cerbos-mode decision, concurrently.  Its
-	// mutex-guarded read-through must be data-race-free and hand every caller
-	// one consistent hash.
+	// mutex-guarded read-through must be data-race-free, and any caller that
+	// observes an available hash must observe the same one; callers racing the
+	// first read get the fail-safe ("", false) rather than a wait.
 	hasher := cerbos.NewPolicyStoreHasher(
 		hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml", "uni_roles-8c9d0e1f.yaml")),
 		hashNamespace, hashConfigMap, time.Hour)
@@ -214,9 +374,16 @@ func TestPolicyStoreHasherConcurrentCurrentIsRaceFree(t *testing.T) {
 
 	wg.Wait()
 
+	available := waitForHash(t, hasher)
+
 	for i := range hashes {
-		require.True(t, oks[i])
-		require.Equal(t, hashes[0], hashes[i], "all concurrent callers must observe one consistent hash")
+		if !oks[i] {
+			require.Empty(t, hashes[i], "an unavailable observation must carry no hash")
+
+			continue
+		}
+
+		require.Equal(t, available, hashes[i], "all available observations must agree on one consistent hash")
 	}
 }
 
@@ -225,15 +392,27 @@ func TestPolicyStoreHasherRetainsLastGoodAfterFailedRefresh(t *testing.T) {
 
 	counting := &countingClient{Client: hashClient(t, policyConfigMap("identity_groups-0a1b2c3d.yaml"))}
 
-	// A zero interval forces a re-read on the second call, which we make fail.
+	// A zero interval re-reads on every call, so a failing refresh is
+	// triggered as soon as the client is switched to fail.
 	hasher := cerbos.NewPolicyStoreHasher(counting, hashNamespace, hashConfigMap, 0)
 
-	good, ok := hasher.Current(t.Context())
-	require.True(t, ok)
-	require.NotEmpty(t, good)
+	good := waitForHash(t, hasher)
 
 	// A later refresh fails transiently.
 	counting.failWith(errPolicyStoreRead)
+
+	base := counting.count()
+
+	// Trigger refreshes until at least one failed read has landed; every
+	// intervening call must keep serving the last-good hash.
+	require.Eventually(t, func() bool {
+		hash, ok := hasher.Current(t.Context())
+		if !ok || hash != good {
+			return false
+		}
+
+		return counting.count() > base
+	}, 10*time.Second, time.Millisecond)
 
 	retained, ok := hasher.Current(t.Context())
 	require.True(t, ok, "a failed refresh after a prior success must retain the last-good hash, not fail closed")

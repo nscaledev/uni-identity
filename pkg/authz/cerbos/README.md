@@ -314,17 +314,22 @@ policy republish.
   coarse checks leave unset (the A15 seam in `shadow.go`/`decision_log.go`). So
   the hasher read-throughs the controller-owned ConfigMap directly, re-`Get`ting
   it at most once per refresh interval (identity passes `--decision-cache-timeout`)
-  and memoizing in between; `Current` is concurrency-safe (it is called on every
-  cerbos-mode decision).
+  and memoizing in between. `Current` is concurrency-safe and never blocks (it
+  is called on every cerbos-mode decision): a due call elects one background
+  read — detached from the electing request's lifetime and bounded by its own
+  timeout, so a client disconnect cannot burn the interval's only attempt and a
+  hung API server cannot stall decisions — and every caller returns the
+  memoized state immediately.
 - **Uncached client, narrow RBAC.** It MUST use a direct (uncached) client — the
   identity server passes its `directclient`. A cache-backed client would spin up
   a cluster-wide ConfigMap informer, exactly the anti-pattern the [policy
   controller](#the-policy-controller) avoids for the same reason; the chart grants
   the server only a dedicated `get` on `configmaps` (not list/watch) for this read.
 - **Fail-safe availability contract.** `Current` reports unavailable
-  (`ok=false`) until the FIRST successful read, so the coarse-decision cache
-  stays bypassed rather than keyed on a bogus hash. After a first success it
-  retains the last-good hash across a later failed refresh (a transient
+  (`ok=false`) until the FIRST successful read — including the brief cold-start
+  window while that read completes in the background — so the coarse-decision
+  cache stays bypassed rather than keyed on a bogus hash. After a first success
+  it retains the last-good hash across a later failed refresh (a transient
   ConfigMap read blip must not fail-closed-deny every decision), logging the
   failure at most once per transition to avoid per-decision spam.
 - **Reload-lag / TTL relationship.** The controller publishes, then the kubelet

@@ -157,6 +157,10 @@ func engineForDispatch(ctx context.Context, kind string) *RBAC {
 // read-throughs the controller-owned policies ConfigMap; this interface keeps
 // the cache tests injectable without Kubernetes.  Current reports ok=false
 // when no hash is available yet — the caller then bypasses the cache.
+//
+// Implementations must return without blocking: Current sits on the
+// per-decision hot path (cache keying and audit records), so reporting
+// ok=false — a cache bypass — always beats waiting on a slow read.
 type PolicyStoreHasher interface {
 	Current(ctx context.Context) (string, bool)
 }

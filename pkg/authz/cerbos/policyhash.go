@@ -51,6 +51,11 @@ import (
 // bogus hash; after a first success it retains the last-good hash across a
 // later failed refresh (a transient ConfigMap read blip must not fail-closed
 // every decision — residual staleness is bounded by the decision cache TTL).
+//
+// Current never blocks on the API server: reads run on a background
+// goroutine, detached from the caller that elects them, so a slow or hung
+// API server degrades decisions to the fail-safe path instead of stalling
+// them.
 type PolicyStoreHasher struct {
 	// client reads the ConfigMap.  It MUST be a direct (uncached) client: a
 	// cache-backed client would spin up a cluster-wide ConfigMap informer,
@@ -81,6 +86,11 @@ type PolicyStoreHasher struct {
 	// readFailed tracks the last read outcome so a failure is logged at most
 	// once per transition rather than once per decision.
 	readFailed bool
+
+	// refreshing is true while a background goroutine is reading the
+	// ConfigMap, ensuring at most one read is ever in flight.  Callers never
+	// wait on it: they serve the memoized state and move on.
+	refreshing bool
 }
 
 // NewPolicyStoreHasher returns a hasher reading the ConfigMap named name in
@@ -95,23 +105,59 @@ func NewPolicyStoreHasher(client client.Client, namespace, name string, refresh 
 }
 
 // Current returns the current policy-store hash and whether it is available.
-// It re-reads the ConfigMap at most once per refresh interval, returning the
-// memoized value in between.  Availability follows the fail-safe contract: no
-// successful read yet ⇒ (\"\", false); a failed refresh after a prior success
-// ⇒ the last-good hash retained.
+// It NEVER blocks beyond the memoizing mutex: Current is on the per-decision
+// hot path (decisionCacheKey and recordDecisions both call it on every
+// cerbos-mode decision), so an API-server read — however slow — must never
+// stall a decision.  When a re-read is due it elects one background refresh,
+// detached from the calling request, and returns the memoized state
+// immediately: the last-good hash after a first success (a transient read
+// blip must not fail-closed every decision; residual staleness is bounded by
+// the decision cache TTL), or ("", false) during the cold-start window before
+// the first read lands — the fail-safe that bypasses the coarse-decision
+// cache rather than keying it on a bogus hash.
 func (h *PolicyStoreHasher) Current(ctx context.Context) (string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	now := time.Now()
-	if !h.nextRead.IsZero() && now.Before(h.nextRead) {
-		return h.hash, h.haveHash
+	// Elect a refresh if one is due and none is in flight.  nextRead advances
+	// at election so the interval rate-limits regardless of outcome; the read
+	// itself runs on a background goroutine — no caller, not even the electing
+	// one, performs it inline.
+	if now := time.Now(); !h.refreshing && !now.Before(h.nextRead) {
+		h.refreshing = true
+		h.nextRead = now.Add(h.refresh)
+
+		go h.refreshHash(ctx)
 	}
 
-	h.nextRead = now.Add(h.refresh)
+	return h.hash, h.haveHash
+}
+
+// policyStoreReadTimeout bounds the background ConfigMap read.  The refresh
+// context is detached from the electing caller, so this is the read's only
+// bound: without it a hung API-server connection would pin the single refresh
+// slot indefinitely.
+const policyStoreReadTimeout = 10 * time.Second
+
+// refreshHash performs one ConfigMap read and publishes the outcome.  It runs
+// on its own goroutine with a context that inherits the electing caller's
+// values (the logger) but NOT its cancellation: the refresh is a shared,
+// once-per-interval resource, and binding it to whichever request happened to
+// elect it would let a routine client disconnect burn the interval's only
+// attempt for the whole process.
+func (h *PolicyStoreHasher) refreshHash(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), policyStoreReadTimeout)
+	defer cancel()
 
 	configMap := &corev1.ConfigMap{}
-	if err := h.client.Get(ctx, types.NamespacedName{Namespace: h.namespace, Name: h.name}, configMap); err != nil {
+	err := h.client.Get(ctx, types.NamespacedName{Namespace: h.namespace, Name: h.name}, configMap)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.refreshing = false
+
+	if err != nil {
 		// Fail-safe: keep serving the last-good hash (if any) rather than
 		// forcing every decision to bypass the cache on a transient blip; the
 		// decision cache TTL bounds the resulting staleness.  Log once per
@@ -123,14 +169,12 @@ func (h *PolicyStoreHasher) Current(ctx context.Context) (string, bool) {
 			h.readFailed = true
 		}
 
-		return h.hash, h.haveHash
+		return
 	}
 
 	h.readFailed = false
 	h.hash = storeHash(configMap.Data)
 	h.haveHash = true
-
-	return h.hash, true
 }
 
 // storeHash fingerprints the ConfigMap's key set: sha256 of the sorted keys
