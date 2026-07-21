@@ -10,8 +10,11 @@
 #   - "cerbos shadow divergence": the PDP produced a VERDICT that differs
 #     from legacy — policy-parity signal; ANY occurrence fails the gate.
 #   - "cerbos shadow evaluation failure": NO verdict was obtained (PDP
-#     outage, resolver failure, timeout) — infrastructure signal; tolerated
-#     but surfaced loudly so it can never masquerade as parity.
+#     outage, resolver failure, timeout).  The gate proved NOTHING for these,
+#     and a dead/unreachable PDP produces only these, so ANY occurrence fails
+#     the gate — otherwise a green run could mean "Cerbos agreed" OR "Cerbos
+#     never answered", and those must never be conflated (that vacuous pass is
+#     exactly the hole this gate exists to close).
 #
 # Scope honesty: zero divergence here proves parity for identity-served
 # kinds under non-impersonated traffic only — the comparator covers
@@ -78,10 +81,14 @@ if [[ "${DIVERGENCE_COUNT}" -ne "${RAW_DIVERGENCE_COUNT}" || "${FAILURE_COUNT}" 
   exit 1
 fi
 
-# ── Evaluation failures: infrastructure signal — tolerated but surfaced ──────
+# ── Evaluation failures: NO verdict obtained, so the gate proved nothing for
+# those requests — and a dead/unreachable PDP produces only these, so
+# tolerating them would let the gate pass vacuously while Cerbos never decided
+# anything.  Any occurrence is a hard failure. ──────────────────────────────
 if [[ "${FAILURE_COUNT}" -gt 0 ]]; then
-  echo "WARNING: ${FAILURE_COUNT} shadow evaluation failure(s) — the PDP produced NO verdict for these requests (infrastructure signal, not policy divergence). Tolerated, but the gate proved nothing for them — investigate:" >&2
+  echo "ERROR: ${FAILURE_COUNT} shadow evaluation failure(s) — the PDP produced NO verdict for these requests (PDP outage/unreachable, resolver failure, or timeout). The gate cannot certify parity for them, and a dead PDP looks exactly like this, so this fails the gate rather than passing vacuously — investigate:" >&2
   grep -F "\"msg\":\"${FAILURE_MSG}\"" <<< "${LOGS}" >&2
+  exit 1
 fi
 
 # ── Divergence: policy-parity signal — any occurrence fails the gate ─────────
@@ -91,5 +98,5 @@ if [[ "${DIVERGENCE_COUNT}" -gt 0 ]]; then
   exit 1
 fi
 
-echo "==> Divergence gate passed: 0 divergences, ${FAILURE_COUNT} evaluation failure(s)." >&2
+echo "==> Divergence gate passed: 0 divergences and 0 evaluation failures across the shadowed traffic." >&2
 echo "==> Scope: identity-served kinds, non-impersonated traffic (the comparator covers impersonation since A14, but the kind fixtures send none); open-vocabulary and impersonated parity are proven by the docker decision matrix." >&2

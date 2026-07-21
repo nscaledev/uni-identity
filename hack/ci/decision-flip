@@ -35,6 +35,11 @@ source "${REPO_ROOT}/test/.env"
 DEPLOYMENT="deploy/${IDENTITY_RELEASE}-server"
 CONTAINER="${IDENTITY_RELEASE}-server"
 DIVERGENCE_MSG='cerbos shadow divergence'
+FAILURE_MSG='cerbos shadow evaluation failure'
+
+# Seconds of continued probe traffic with no NEW divergence (while the endpoint
+# holds the post-flip code) that count as Cerbos having converged.
+STABLE_SECONDS=90
 
 FLIP_ROLE="ci-decision-flip"
 ENDPOINT="${IDENTITY_BASE_URL}/api/v1/organizations/${TEST_ORG_ID}/roles"
@@ -63,6 +68,16 @@ divergences_since() {
     | grep -cF "\"msg\":\"${DIVERGENCE_MSG}\"" || true
 }
 
+# failures_since echoes the number of shadow evaluation-failure lines logged
+# since the given RFC3339 timestamp.  These mean the PDP produced NO verdict
+# (outage, timeout, resolver failure); a dead PDP emits ONLY these, so the flip
+# must reject them rather than mistake a silent PDP for convergence.
+failures_since() {
+  kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
+    --since-time="$1" 2>/dev/null \
+    | grep -cF "\"msg\":\"${FAILURE_MSG}\"" || true
+}
+
 # set_group_roles replaces the fixture user group's role IDs with the given
 # JSON array (idempotent, unlike JSON-patch index surgery).
 set_group_roles() {
@@ -74,6 +89,71 @@ group_roles_without_flip_role() {
   kubectl get groups.identity.unikorn-cloud.org "${TEST_USER_GROUP_ID}" \
     -n "${ORG_NAMESPACE}" -o json \
     | jq -c --arg role "${FLIP_ROLE}" '[.spec.roleIDs[] | select(. != $role)]'
+}
+
+# converge_phase asserts Cerbos AUTHORITATIVELY converges after a flip:
+#   $1 label   human label for logs ("grant" / "revoke")
+#   $2 marker  RFC3339 timestamp the flip started at (log --since-time anchor)
+#   $3 want    the HTTP code the endpoint must hold throughout convergence
+#
+# It requires, since the marker: (a) ZERO evaluation-failure lines — a dead or
+# unreachable PDP emits only those, and tolerating them would let a silent PDP
+# masquerade as convergence; (b) AT LEAST ONE divergence — the two engines flip
+# at different times, so a live, evaluating PDP MUST transiently disagree with
+# legacy, and zero divergence would mean Cerbos never produced a differing
+# verdict (dead or not evaluating); then (c) no NEW divergence for
+# STABLE_SECONDS while the endpoint holds ${want}.  The plain "wait for
+# divergence to cease" this replaces passed vacuously on a dead PDP (zero
+# divergence ceases instantly).
+converge_phase() {
+  local label="$1" marker="$2" want="$3"
+  local deadline last_count last_change now code count failures
+
+  echo "==> [${label}] awaiting shadow divergence to appear then cease (Cerbos converging)..." >&2
+  deadline=$(( $(date +%s) + 360 ))
+  last_count=$(divergences_since "${marker}")
+  last_change=$(date +%s)
+
+  while true; do
+    now=$(date +%s)
+    if [[ "${now}" -gt "${deadline}" ]]; then
+      echo "ERROR: [${label}] divergence did not cease within 360s — Cerbos never converged on the new verdict" >&2
+      kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
+        --since-time="${marker}" | grep -F "\"msg\":\"${DIVERGENCE_MSG}\"" | tail -20 >&2 || true
+      exit 1
+    fi
+
+    failures=$(failures_since "${marker}")
+    if [[ "${failures}" -gt 0 ]]; then
+      echo "ERROR: [${label}] ${failures} shadow evaluation failure(s) during the flip — the PDP produced no verdict (outage/timeout/resolver). The flip cannot certify Cerbos, and a dead PDP looks exactly like this, so this fails:" >&2
+      kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
+        --since-time="${marker}" | grep -F "\"msg\":\"${FAILURE_MSG}\"" | tail -20 >&2 || true
+      exit 1
+    fi
+
+    code=$(probe)
+    if [[ "${code}" != "${want}" ]]; then
+      echo "ERROR: [${label}] endpoint returned ${code}, expected ${want} while Cerbos converges" >&2
+      exit 1
+    fi
+
+    count=$(divergences_since "${marker}")
+    if [[ "${count}" -gt "${last_count}" ]]; then
+      last_count="${count}"
+      last_change="${now}"
+    elif [[ $(( now - last_change )) -ge "${STABLE_SECONDS}" ]]; then
+      break
+    fi
+
+    sleep 3
+  done
+
+  if [[ "${last_count}" -eq 0 ]]; then
+    echo "ERROR: [${label}] shadow logged ZERO divergences during the flip window. The engines flip at different times, so a live, evaluating PDP must transiently disagree with legacy; zero means Cerbos never produced a differing verdict (dead or not evaluating), so 'converged' would be vacuous." >&2
+    exit 1
+  fi
+
+  echo "==> [${label}] converged: ${last_count} divergence line(s) during the window, none for ${STABLE_SECONDS}s while holding ${want}, and 0 evaluation failures." >&2
 }
 
 CLEANED=false
@@ -145,56 +225,34 @@ for i in $(seq 1 100); do
   sleep 3
 done
 
-# ── Cerbos flip + convergence: divergence appears during the window (that is
-# expected and correct — the engines flip at different times), then must
-# CEASE for 90s of continued probe traffic while the endpoint stays 200 ─────
-echo "==> Waiting for shadow divergence to cease (Cerbos converging on the new verdict)..." >&2
-STABLE_SECONDS=90
-PHASE_DEADLINE=$(( $(date +%s) + 360 ))
-LAST_COUNT=$(divergences_since "${FLIP_START}")
-LAST_CHANGE=$(date +%s)
+# ── Cerbos flip + convergence (grant): the engines flip at different times, so
+# shadow MUST transiently diverge, then converge.  converge_phase asserts both
+# — a divergence appears (proving Cerbos actually evaluated and disagreed) and
+# then ceases, with zero evaluation failures, while the endpoint holds 200. ──
+converge_phase "grant" "${FLIP_START}" 200
 
-while true; do
-  NOW=$(date +%s)
-  if [[ "${NOW}" -gt "${PHASE_DEADLINE}" ]]; then
-    echo "ERROR: divergence did not cease within 360s — Cerbos never converged on the new verdict" >&2
-    kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
-      --since-time="${FLIP_START}" | grep -F "\"msg\":\"${DIVERGENCE_MSG}\"" | tail -20 >&2 || true
-    exit 1
-  fi
-
-  CODE=$(probe)
-  if [[ "${CODE}" != "200" ]]; then
-    echo "ERROR: endpoint regressed to ${CODE} after the legacy flip" >&2
-    exit 1
-  fi
-
-  COUNT=$(divergences_since "${FLIP_START}")
-  if [[ "${COUNT}" -gt "${LAST_COUNT}" ]]; then
-    LAST_COUNT="${COUNT}"
-    LAST_CHANGE="${NOW}"
-  elif [[ $(( NOW - LAST_CHANGE )) -ge "${STABLE_SECONDS}" ]]; then
-    break
-  fi
-
-  sleep 3
-done
-
-echo "==> Converged: ${LAST_COUNT} divergence line(s) during the flip window; last one $(( LAST_CHANGE - FLIP_START_EPOCH ))s after the flip; none for ${STABLE_SECONDS}s of continued 200s." >&2
-
-# ── Reverse flip: clean up and prove the 403 returns on both engines ─────────
+# ── Reverse flip: revoke, then prove BOTH engines return to 403 with Cerbos
+# authoritatively converging — the same rigor as the grant, not just a legacy
+# 403 poll (which a dead PDP would satisfy vacuously). ──────────────────────
+REVERT_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+REVERT_START_EPOCH=$(date +%s)
+echo "==> Revoking (unbind + delete the ${FLIP_ROLE} role; marker: ${REVERT_START})..." >&2
 cleanup
 
-echo "==> Waiting for the 403 to return after cleanup..." >&2
+echo "==> Waiting for the legacy engine to flip 200 -> 403..." >&2
 for i in $(seq 1 100); do
   CODE=$(probe)
   if [[ "${CODE}" == "403" ]]; then
-    echo "==> Decision flip complete: 403 -> 200 -> 403, shadow converged." >&2
-    exit 0
+    echo "==> Legacy reverted after $(( $(date +%s) - REVERT_START_EPOCH ))s." >&2
+    break
   fi
   if [[ "${i}" -eq 100 ]]; then
-    echo "ERROR: endpoint still returns ${CODE} after 300s — the revert never landed" >&2
+    echo "ERROR: endpoint still returns ${CODE} after 300s — the revert never landed on legacy" >&2
     exit 1
   fi
   sleep 3
 done
+
+converge_phase "revoke" "${REVERT_START}" 403
+
+echo "==> Decision flip complete: 403 -> 200 -> 403, Cerbos authoritatively converged on both the grant and the revoke." >&2
