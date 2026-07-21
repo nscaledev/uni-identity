@@ -28,8 +28,10 @@ import (
 	policycontroller "github.com/unikorn-cloud/identity/pkg/authz/cerbos/controller"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -63,6 +65,20 @@ type Factory struct {
 	// informer, which the chart's deliberately narrow namespaced RBAC
 	// forbids.
 	client client.Client
+
+	// namespace is the identity namespace (--namespace), captured in
+	// Initialize so RegisterWatches can scope the ConfigMap watch to it.
+	namespace string
+
+	// configMapCache is a namespace-scoped cache dedicated to watching the
+	// managed policy store ConfigMap.  It exists precisely because the
+	// manager's own cache is cluster-wide: watching ConfigMaps through that
+	// would start a cluster-wide ConfigMap informer — the same anti-pattern
+	// the reconciler's uncached client avoids, and one the controller's
+	// namespaced RBAC (list/watch on configmaps in --namespace only, no
+	// ClusterRole) forbids.  A cache scoped to --namespace issues a namespaced
+	// list/watch the chart's Role already permits.
+	configMapCache cache.Cache
 }
 
 var _ coremanager.ControllerFactory = &Factory{}
@@ -98,6 +114,26 @@ func (f *Factory) Initialize(_ context.Context, manager manager.Manager, options
 	}
 
 	f.client = client
+	f.namespace = options.Namespace
+
+	// Build a cache scoped to --namespace for the ConfigMap watch and hand it
+	// to the manager to start and stop.  It must not be the manager's
+	// cluster-wide cache (see the configMapCache field comment): a namespaced
+	// cache lists/watches ConfigMaps only in --namespace, which the chart's
+	// Role permits.
+	configMapCache, err := cache.New(manager.GetConfig(), cache.Options{
+		Scheme:            manager.GetScheme(),
+		DefaultNamespaces: map[string]cache.Config{options.Namespace: {}},
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := manager.Add(configMapCache); err != nil {
+		return err
+	}
+
+	f.configMapCache = configMapCache
 
 	return nil
 }
@@ -110,8 +146,20 @@ func (f *Factory) Reconciler(options *options.Options, _ coremanager.ControllerO
 }
 
 // RegisterWatches adds any watches that would trigger a reconcile.
-func (*Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
+func (f *Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
 	if err := controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Role{}, handler.TypedEnqueueRequestsFromMapFunc(enqueuePolicyStore), rolePredicate())); err != nil {
+		return err
+	}
+
+	// Also watch the managed policy store ConfigMap itself, so a delete (it is
+	// mounted as an optional volume — while it is missing Cerbos serves
+	// deny-by-default) or an out-of-band data mutation self-heals on the very
+	// next reconcile rather than waiting for an unrelated Role event or the
+	// ~10h informer resync.  The event collapses into the same synthetic
+	// fan-in request as a Role event.  This uses the namespace-scoped cache,
+	// not the manager's cluster-wide one (see the Factory.configMapCache field
+	// comment).
+	if err := controller.Watch(source.Kind(f.configMapCache, &corev1.ConfigMap{}, handler.TypedEnqueueRequestsFromMapFunc(enqueueConfigMapPolicyStore), configMapPredicate(f.namespace, f.controllerOptions.ConfigMapName))); err != nil {
 		return err
 	}
 
@@ -132,10 +180,29 @@ func enqueuePolicyStore(_ context.Context, _ *unikornv1.Role) []reconcile.Reques
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: policyStoreRequestName}}}
 }
 
+// enqueueConfigMapPolicyStore collapses a managed-ConfigMap event into the
+// same synthetic fan-in request a Role event uses, so a deleted or tampered
+// store re-enters the one reconcile that regenerates it (and the workqueue
+// dedups it against any concurrent Role event).
+func enqueueConfigMapPolicyStore(_ context.Context, _ *corev1.ConfigMap) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: policyStoreRequestName}}}
+}
+
 // rolePredicate filters Role events like the sibling controllers do.  The
 // generation-changed predicate only overrides UpdateFunc, so Create and —
 // crucially for a generated store that must shrink — Delete events pass
 // (pinned by unit test, not assumed).
 func rolePredicate() predicate.TypedPredicate[*unikornv1.Role] {
 	return &predicate.TypedGenerationChangedPredicate[*unikornv1.Role]{}
+}
+
+// configMapPredicate passes events only for the controller-owned policy store
+// ConfigMap (its exact name in --namespace).  The namespace-scoped informer
+// still observes every ConfigMap in --namespace, so matching name AND namespace
+// keeps unrelated ConfigMap churn from triggering pointless store
+// regenerations.
+func configMapPredicate(namespace, name string) predicate.TypedPredicate[*corev1.ConfigMap] {
+	return predicate.NewTypedPredicateFuncs(func(configMap *corev1.ConfigMap) bool {
+		return configMap.GetNamespace() == namespace && configMap.GetName() == name
+	})
 }

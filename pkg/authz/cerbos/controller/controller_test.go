@@ -117,7 +117,11 @@ func doReconcile(t *testing.T, r *controller.Reconciler) {
 
 	result, err := r.Reconcile(t.Context(), reconcile.Request{})
 	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{}, result)
+	// Every successful reconcile schedules the safety-net re-verify (see
+	// TestReconcileSchedulesSafetyNetResync); it must never come back with no
+	// requeue, which would leave a later-missed deletion or tamper un-healed
+	// until the informer cache's ~10h resync.
+	require.Positive(t, result.RequeueAfter)
 }
 
 // getConfigMap fetches the published policy store ConfigMap.
@@ -373,6 +377,64 @@ func TestReconcileRecreatesDeletedConfigMap(t *testing.T) {
 	recreated := getConfigMap(t, c)
 	require.Equal(t, published.Data, recreated.Data)
 	require.Equal(t, 2, gate.calls, "recreation must re-run the compile gate")
+}
+
+// TestReconcileRestoresMutatedData pins drift correction: if the published
+// ConfigMap's Data is tampered out of band (a key altered, added or removed),
+// the next reconcile sees the store is no longer current, re-gates it and
+// republishes the generated store — a hand-edited policy cannot persist.  This
+// is the Data-mutation sibling of TestReconcileClearsForeignBinaryData and,
+// with TestReconcileRecreatesDeletedConfigMap, the drift half of the
+// ConfigMap-watch self-healing contract.
+func TestReconcileRestoresMutatedData(t *testing.T) {
+	t.Parallel()
+
+	role := newRole("role-a", "identity:groups")
+
+	c := newClient(t, role)
+	gate := &fakeGate{}
+	r := newReconciler(c, gate, record.NewFakeRecorder(8))
+
+	doReconcile(t, r)
+
+	published := getConfigMap(t, c)
+
+	// Tamper with the published store: replace its data with a bogus policy,
+	// as a hand-edit or a partial write would.
+	tampered := published.DeepCopy()
+	tampered.Data = map[string]string{"rogue.yaml": "boo"}
+	require.NoError(t, c.Update(t.Context(), tampered))
+
+	doReconcile(t, r)
+
+	restored := getConfigMap(t, c)
+	require.Equal(t, expectedData(t, role), restored.Data, "tampered data must be restored to the generated store")
+	require.Equal(t, 2, gate.calls, "restoring drift must re-run the compile gate")
+}
+
+// TestReconcileSchedulesSafetyNetResync pins the periodic safety net: both the
+// publish path and the already-current no-op path request a bounded requeue,
+// so the store is re-verified — and a missed deletion or tamper self-healed —
+// on a fixed interval even if no Role or ConfigMap event ever fires.  This is
+// the belt-and-suspenders backstop to the watches; without it a missed event
+// would leave drift until the informer cache's ~10h resync.
+func TestReconcileSchedulesSafetyNetResync(t *testing.T) {
+	t.Parallel()
+
+	role := newRole("role-a", "identity:groups")
+
+	c := newClient(t, role)
+	r := newReconciler(c, &fakeGate{}, record.NewFakeRecorder(8))
+
+	// Publish path.
+	result, err := r.Reconcile(t.Context(), reconcile.Request{})
+	require.NoError(t, err)
+	require.Positive(t, result.RequeueAfter, "a publish must schedule the safety-net re-verify")
+
+	// No-op path: the store is now current, but it must still reschedule.
+	result, err = r.Reconcile(t.Context(), reconcile.Request{})
+	require.NoError(t, err)
+	require.Positive(t, result.RequeueAfter, "an unchanged store must still schedule the safety-net re-verify")
 }
 
 // TestReconcileEmptyRoleSetPublishesEmptyStore pins the zero-role case: an

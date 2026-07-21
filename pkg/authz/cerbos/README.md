@@ -250,9 +250,18 @@ The controller owns the policy store ConfigMap outright and marks it
 `app.kubernetes.io/managed-by: unikorn-policy-controller` (repo convention is
 labels, not ownerReferences).  Consequences:
 
-- a missing ConfigMap (including the one-time A1→A3 `helm upgrade` deleting
-  the previously chart-templated one, rollbacks, or GitOps pruning) is
-  self-healing: the next reconcile re-gates and recreates it from the Roles;
+- a missing or tampered ConfigMap (the one-time A1→A3 `helm upgrade` deleting
+  the previously chart-templated one, rollbacks, GitOps pruning, or an
+  out-of-band edit) is self-healing: the controller watches the ConfigMap
+  itself, so a delete (it is an `optional` volume — while it is gone Cerbos
+  serves deny-by-default) or a data mutation triggers a reconcile that re-gates
+  and republishes from the Roles.  The watch uses a **namespace-scoped**
+  informer, not the manager's cluster-wide cache, because the ConfigMap RBAC is
+  a namespaced `Role` (there is no ClusterRole for configmaps) — the same
+  reason the reconciler's ConfigMap reads go through an uncached client.  A
+  bounded periodic requeue (`resyncPeriod`) re-verifies the store as a
+  belt-and-suspenders backstop for any missed event, far tighter than the
+  informer cache's ~10h resync;
 - `helm uninstall` does **not** delete it — labels give no garbage
   collection, so the orphaned ConfigMap must be removed manually if the
   release is gone for good;
@@ -266,7 +275,10 @@ labels, not ownerReferences).  Consequences:
   under hash-suffixed keys, unchanged-content no-ops, gate refusals keeping
   last-good, Role deletion shrinking the store (the watch predicate passing
   delete events is itself pinned by a unit test in `pkg/controllers/policy`),
-  and NotFound recreation.
+  NotFound recreation, out-of-band data-mutation restoration, and the periodic
+  safety-net requeue.  The ConfigMap watch's own predicate (matching only the
+  managed store, on create/update/delete) and its fan-in enqueue are pinned by
+  unit tests in `pkg/controllers/policy` alongside the Role ones.
 - `make test-cerbos-controller` (Docker-dependent like `make
   validate-policies`, so not part of `test-unit`) extracts the pinned binary
   from the image via `docker create`/`docker cp` and runs the real gate:

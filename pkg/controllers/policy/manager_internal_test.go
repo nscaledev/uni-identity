@@ -23,6 +23,7 @@ import (
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -70,4 +71,52 @@ func TestEveryRoleEventCollapsesToOneRequest(t *testing.T) {
 	require.Len(t, a, 1)
 	require.Equal(t, a, b)
 	require.Equal(t, policyStoreRequestName, a[0].Name)
+}
+
+func testConfigMap(namespace, name string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+		},
+	}
+}
+
+// TestConfigMapPredicateMatchesOnlyManagedStore pins that the ConfigMap watch
+// fires only for the controller-owned policy store object.  The namespace-scoped
+// informer still observes every ConfigMap in the identity namespace, so the
+// predicate must match name AND namespace: a delete of the managed store (which
+// leaves Cerbos serving deny-by-default) must re-trigger a publish, while churn
+// on any other ConfigMap must be ignored so it cannot storm the reconciler.
+func TestConfigMapPredicateMatchesOnlyManagedStore(t *testing.T) {
+	t.Parallel()
+
+	const (
+		namespace = "identity"
+		name      = "identity-cerbos-policies"
+	)
+
+	p := configMapPredicate(namespace, name)
+	managed := testConfigMap(namespace, name)
+
+	require.True(t, p.Create(event.TypedCreateEvent[*corev1.ConfigMap]{Object: managed}), "managed store creation must trigger a publish")
+	require.True(t, p.Update(event.TypedUpdateEvent[*corev1.ConfigMap]{ObjectOld: managed, ObjectNew: managed}), "managed store mutation must trigger a restore")
+	require.True(t, p.Delete(event.TypedDeleteEvent[*corev1.ConfigMap]{Object: managed}), "managed store deletion must trigger recreation")
+
+	require.False(t, p.Create(event.TypedCreateEvent[*corev1.ConfigMap]{Object: testConfigMap(namespace, "other")}), "a different ConfigMap in the namespace must be ignored")
+	require.False(t, p.Delete(event.TypedDeleteEvent[*corev1.ConfigMap]{Object: testConfigMap("other-namespace", name)}), "the same name in another namespace must be ignored")
+}
+
+// TestConfigMapEventCollapsesToPolicyStoreRequest pins that a managed-ConfigMap
+// event enqueues the SAME synthetic fan-in request as a Role event, so drift on
+// the store re-enters the one reconcile that regenerates it and the workqueue
+// dedups ConfigMap and Role events against each other.
+func TestConfigMapEventCollapsesToPolicyStoreRequest(t *testing.T) {
+	t.Parallel()
+
+	reqs := enqueueConfigMapPolicyStore(t.Context(), testConfigMap("identity", "identity-cerbos-policies"))
+
+	require.Len(t, reqs, 1)
+	require.Equal(t, policyStoreRequestName, reqs[0].Name)
+	require.Equal(t, enqueuePolicyStore(t.Context(), testRole(1)), reqs, "ConfigMap and Role events must map to the same fan-in request")
 }

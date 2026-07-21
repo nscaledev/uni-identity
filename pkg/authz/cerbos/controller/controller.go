@@ -33,6 +33,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/authz/cerbos/generate"
@@ -81,6 +82,15 @@ const (
 	// data (the etcd request-size limit, k8s ValidateConfigMap).  Overridable
 	// via Options.MaxPolicyStoreBytes.
 	defaultMaxPolicyStoreBytes = 1 << 20
+
+	// resyncPeriod is the safety-net interval on which every successful
+	// reconcile requeues itself, so the published store is re-verified even if
+	// no Role or ConfigMap event ever fires.  The ConfigMap watch (registered
+	// in pkg/controllers/policy) is the primary trigger that self-heals a
+	// deleted or tampered store; this bounded periodic requeue is the
+	// belt-and-suspenders backstop for any missed event, far tighter than the
+	// informer cache's ~10h resync.
+	resyncPeriod = 10 * time.Minute
 )
 
 // ErrPolicyStoreTooLarge is returned when a candidate store would exceed the
@@ -147,6 +157,9 @@ func New(client client.Client, recorder record.EventRecorder, namespace string, 
 // synthetic fan-in key (every Role event maps to the same request), so its
 // content is deliberately ignored.  All failure paths return an error and
 // leave the published ConfigMap untouched: last-good policies keep serving.
+// Every successful reconcile requests a bounded requeue (resyncPeriod) so a
+// deleted or tampered store is re-verified and self-healed even if its watch
+// event is somehow missed.
 func (r *Reconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconcile.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -161,7 +174,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconc
 	}
 
 	if current {
-		return reconcile.Result{}, nil
+		return reconcile.Result{RequeueAfter: resyncPeriod}, nil
 	}
 
 	if size := policyStoreSize(data); size > r.maxStoreBytes {
@@ -196,7 +209,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconc
 
 	logger.Info("published policy store", "operation", result, "roles", roles, "files", len(data))
 
-	return reconcile.Result{}, nil
+	return reconcile.Result{RequeueAfter: resyncPeriod}, nil
 }
 
 // generateStore lists the Roles in the namespace and generates their policy
