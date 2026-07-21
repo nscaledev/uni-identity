@@ -134,7 +134,7 @@ func (r *RBAC) shadowCompare(ctx context.Context, resource Resource, operation o
 		// observed against — the store hash r.policyHasher reports, or "" when
 		// none is configured (A20, replacing the empty PDP version/scope echo).
 		log.FromContext(ctx).Info(shadowDivergenceMessage, append(attrs,
-			"cerbos_verdict", shadowVerdict(cerbosAllowed),
+			"cerbos_verdict", decisionVerdict(cerbosAllowed),
 			"cerbos_class", shadowClass(err),
 			"policy_hash", r.policyStoreHash(ctx))...)
 	default:
@@ -162,17 +162,8 @@ func shadowAttrs(ctx context.Context, resource Resource, operation openapi.AclOp
 		"operation", string(operation),
 		"organization_id", resource.OrganizationID,
 		"project_id", resource.ProjectID,
-		"legacy_verdict", shadowVerdict(legacyAllowed),
+		"legacy_verdict", decisionVerdict(legacyAllowed),
 	}
-}
-
-// shadowVerdict renders an allow/deny verdict for the log record.
-func shadowVerdict(allowed bool) string {
-	if allowed {
-		return "allow"
-	}
-
-	return "deny"
 }
 
 // shadowClass names the Cerbos-side outcome for the log record, derived from

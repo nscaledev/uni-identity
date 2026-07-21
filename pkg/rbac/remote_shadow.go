@@ -105,7 +105,7 @@ func remoteShadowCompare(ctx context.Context, engine CoarseEngine, resource Reso
 		// remote CoarseEngine has no local policy hasher to pin a store
 		// revision against — the policy lives at identity, the remote side.
 		log.FromContext(ctx).Info(remoteShadowDivergenceMessage, append(attrs,
-			"remote_verdict", shadowVerdict(remoteAllowed),
+			"remote_verdict", decisionVerdict(remoteAllowed),
 			"remote_class", shadowClass(err))...)
 	default:
 		// No verdict was obtained (unavailability or an unclassified error):

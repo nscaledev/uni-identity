@@ -167,15 +167,17 @@ test-unit:
 validate-policies: validate-cerbos-version
 	docker run --rm -v $(CURDIR)/pkg/authz/cerbos/generate/testdata/store:/policies:ro ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) compile /policies
 
-# The pinned Cerbos version appears in four places; if they drift, CI tests
+# The pinned Cerbos version appears in six places; if they drift, CI tests
 # a different PDP than the chart deploys, or the policy controller's compile
 # gate vets stores with a different compiler than the PDP that loads them.
 .PHONY: validate-cerbos-version
 validate-cerbos-version:
 	@if ! grep -q 'default "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' charts/identity/templates/identity/deployment.yaml || \
 	    ! grep -q 'defaultImage = "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' pkg/authz/cerbos/client_integration_test.go || \
+	    ! grep -q 'parityDefaultImage = "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' pkg/rbac/cerbos_parity_integration_test.go || \
+	    ! grep -q 'remoteAuthzDefaultImage = "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' pkg/handler/handler_authorization_integration_test.go || \
 	    ! grep -q 'COPY --from=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) /cerbos' docker/unikorn-policy-controller/Dockerfile; then \
-		echo "Cerbos version drift: CERBOS_VERSION in the Makefile ($(CERBOS_VERSION)), the image default tag in charts/identity/templates/identity/deployment.yaml, defaultImage in pkg/authz/cerbos/client_integration_test.go, and the COPY --from tag in docker/unikorn-policy-controller/Dockerfile must all match."; \
+		echo "Cerbos version drift: CERBOS_VERSION in the Makefile ($(CERBOS_VERSION)), the image default tag in charts/identity/templates/identity/deployment.yaml, defaultImage in pkg/authz/cerbos/client_integration_test.go, parityDefaultImage in pkg/rbac/cerbos_parity_integration_test.go, remoteAuthzDefaultImage in pkg/handler/handler_authorization_integration_test.go, and the COPY --from tag in docker/unikorn-policy-controller/Dockerfile must all match."; \
 		exit 1; \
 	fi
 

@@ -26,10 +26,9 @@ import (
 // docs/plans/2026-07-14-downstream-remote-authorization-cut1.md): a remote
 // CoarseEngine (the decision-endpoint adapter in pkg/middleware/openapi/remote)
 // plus a RemoteMode are carried in the request context for the Allow* dispatch
-// forks to consult.  Task 5 delivers only the mode enum, the context seed/read
-// pair, and the mode parser -- remoteEngineFromContext has no caller yet
-// (Task 6 adds the dispatchCoarse fork that consumes it) and no comparator
-// exists yet (Task 7's remoteShadowed).  This seam is independent of the
+// forks to consult.  remoteEngineFromContext is consumed by the dispatchCoarse
+// fork (handler.go) and the RemoteShadow comparator (remote_shadow.go), both
+// delivered on this branch.  This seam is independent of the
 // existing EngineMode/engineKey seam above: that one selects which engine
 // serves the LOCAL decision (legacy ACL walk vs. Cerbos); this one selects
 // whether a REMOTE engine is consulted at all.
