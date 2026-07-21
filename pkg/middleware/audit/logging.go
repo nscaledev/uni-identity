@@ -70,15 +70,17 @@ func getResource(capture *middleware.Capture, r *http.Request, route *routers.Ro
 // create — a POST carrying a request body (unlike a body-less x-no-body
 // action such as rotate) to a collection (its path ends in a literal
 // segment, not an instance {parameter}) — the new id is only in the
-// response body. Every other audited op (read, update, delete, and
+// response body, so it is read from there and is empty on a failed or
+// non-canonical create. It deliberately does NOT fall back to the last path
+// parameter for a create: that parameter is the PARENT collection's id (e.g.
+// the organization id), and stamping it as the created resource's id would
+// misattribute the record — a denied group create would be logged against the
+// organization id. Every other audited op (read, update, delete, and
 // body-less actions like rotate) addresses an existing instance by its last
-// path parameter; the create branch also falls through to the path if the
-// response carries no canonical id.
+// path parameter.
 func resourceID(capture *middleware.Capture, r *http.Request, route *routers.Route, params map[string]string) string {
 	if r.Method == http.MethodPost && route.Operation != nil && route.Operation.RequestBody != nil && !strings.HasSuffix(route.Path, "}") {
-		if id := createdResourceID(capture); id != "" {
-			return id
-		}
+		return createdResourceID(capture)
 	}
 
 	return lastPathParamValue(route.Path, params)
@@ -177,29 +179,45 @@ func newDecisions(accumulated []rbac.Decision) []Decision {
 	return decisions
 }
 
+// isRoutineRead reports whether a request is a routine read — a GET that is not
+// a marked sensitive read (x-unikorn-audit: sensitive), or a GET whose route
+// did not resolve. Users and auditors care about things coming, going and
+// changing (who did what, and when), not periodic polling that is par for the
+// course; but a failed read may indicate someone probing the API, so a spec
+// opts specific reads (console URLs, credentials/kubeconfig, SSH keys) into
+// logging via the sensitive marker. A routine read is neither seeded a decision
+// accumulator nor logged; every mutation and every sensitive read is. A GET
+// whose route did not resolve is treated as routine here — the mutation case
+// that must surface a resolution failure is handled separately (the
+// errors.HandleError call in handle).
+func isRoutineRead(method string, route *routeresolver.RouteInfo, routeErr error) bool {
+	if method != http.MethodGet {
+		return false
+	}
+
+	return routeErr != nil || !isSensitiveRead(route.Route)
+}
+
 // ServeHTTP implements the http.Handler interface.
 func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	// The route is resolved pre-routing (server.go wires routeresolver ahead of
+	// this middleware), so it is available here, BEFORE next.
+	route, routeErr := routeresolver.FromContext(r.Context())
+
+	routineRead := isRoutineRead(r.Method, route, routeErr)
+
 	// F2: seed the request-scoped decision accumulator (pkg/rbac) BEFORE
-	// calling next, so any Allow* dispatch the handler chain performs
-	// appends to it; read back below, after the handler has run.
-	r = r.WithContext(rbac.NewDecisionAccumulatorContext(r.Context()))
+	// calling next, so any Allow* dispatch the handler chain performs appends
+	// to it (read back below). Skip it for a routine read — which is never
+	// audited (the early return below), so seeding would only make the
+	// handler's Allow* calls do mutex-guarded appends nothing ever reads.
+	if !routineRead {
+		r = r.WithContext(rbac.NewDecisionAccumulatorContext(r.Context()))
+	}
 
 	capture := middleware.CaptureResponse(w, r, next)
 
-	route, routeErr := routeresolver.FromContext(r.Context())
-
-	// Users and auditors care about things coming, going and changing, who did
-	// those things and when?  Certainly not periodic polling that is par for the
-	// course. Failures of reads may be indicative of someone trying to do
-	// something they shouldn't via the API (or indeed a bug in a UI leeting them
-	// attempt something they are forbidden to do). A spec may still opt a
-	// specific read into logging by marking its operation x-unikorn-audit:
-	// sensitive (e.g. console URLs, credentials/kubeconfig, SSH keys): those
-	// get the same treatment as a mutation below. A route resolution failure
-	// on a GET is treated the same as an unmarked routine read and silently
-	// skipped here — see the errors.HandleError call below for the case that
-	// does surface it.
-	if r.Method == http.MethodGet && (routeErr != nil || !isSensitiveRead(route.Route)) {
+	if routineRead {
 		return
 	}
 

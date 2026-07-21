@@ -153,6 +153,39 @@ func TestDecisionAccumulatorAbsentIsNoOp(t *testing.T) {
 	require.Nil(t, rbac.DecisionsFromContext(ctx), "a context that never seeded an accumulator must read back nothing")
 }
 
+// TestRecordDecisionRecordsForNonDispatchPaths proves RecordDecision (the F2
+// hook for authorization paths that never reach an Allow* choke point — e.g. a
+// handler's service-account self-access shortcut, which grants access with no
+// ACL walk) appends the referenced kind, id and verdict to the accumulator, so
+// the front-door audit still learns them. Without it such a path logs an empty
+// resource kind.
+func TestRecordDecisionRecordsForNonDispatchPaths(t *testing.T) {
+	t.Parallel()
+
+	ctx := rbac.NewDecisionAccumulatorContext(t.Context())
+
+	rbac.RecordDecision(ctx, rbac.Resource{Kind: "identity:serviceaccounts", ID: "sa-1"}, openapi.Update, nil)
+
+	decisions := rbac.DecisionsFromContext(ctx)
+	require.Len(t, decisions, 1)
+	require.Equal(t, "identity:serviceaccounts", decisions[0].ResourceKind)
+	require.Equal(t, "sa-1", decisions[0].ResourceID)
+	require.Equal(t, "update", decisions[0].Action)
+	require.Equal(t, "allow", decisions[0].Decision)
+}
+
+// TestRecordDecisionAbsentIsNoOp proves RecordDecision shares appendDecision's
+// purely-additive contract: with no accumulator seeded it does nothing (and
+// never panics), so callers on non-audited paths are unaffected.
+func TestRecordDecisionAbsentIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	require.NotPanics(t, func() {
+		rbac.RecordDecision(t.Context(), rbac.Resource{Kind: "identity:serviceaccounts"}, openapi.Update, nil)
+	})
+	require.Nil(t, rbac.DecisionsFromContext(t.Context()))
+}
+
 // TestDecisionAccumulatorAllowProjectScopeCreate proves the second hook
 // site: AllowProjectScopeCreate deliberately never calls dispatchCoarse
 // (see its own NOTE in handler.go), so it carries its own appendDecision

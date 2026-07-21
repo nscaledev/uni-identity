@@ -159,6 +159,18 @@ func appendDecision(ctx context.Context, resource Resource, action openapi.AclOp
 	})
 }
 
+// RecordDecision records one authorization outcome into ctx's accumulator, if
+// present; a no-op otherwise. It exists for the rare authorization paths that
+// decide access WITHOUT going through an Allow* dispatch choke point
+// (dispatchCoarse / AllowProjectScopeCreate) — notably a handler's self-access
+// shortcut, which grants a service account access to itself with no ACL walk.
+// Such a path must call this so the front-door audit still learns the resource
+// kind and verdict it referenced (otherwise the audit record's resource type is
+// empty). err is classified exactly as an Allow* return (nil == allow).
+func RecordDecision(ctx context.Context, resource Resource, action openapi.AclOperation, err error) {
+	appendDecision(ctx, resource, action, err)
+}
+
 // decisionOutcome classifies an Allow* facade return for the decision
 // accumulator, reusing decision_log.go's reason vocabulary and sentinel
 // taxonomy — but deliberately NOT decisionClass itself: decisionClass

@@ -325,6 +325,50 @@ func TestMiddlewareCreateResourceIDFromResponseBody(t *testing.T) {
 	require.Equal(t, testCreatedServiceAccountID, resource.ID, "a create must resolve its id from the response body, not organizationID (the last path parameter)")
 }
 
+// TestMiddlewareFailedCreateDoesNotStampParentID proves the F1 fix: a create
+// whose response carries no canonical id — a denied or otherwise failed create
+// — must resolve to an EMPTY id, never falling back to the last path parameter.
+// For a create that parameter is the PARENT collection's id (organizationID
+// here); the pre-fix code stamped it as the created resource's id,
+// misattributing a failed create to the organization it was scoped under.
+func TestMiddlewareFailedCreateDoesNotStampParentID(t *testing.T) {
+	t.Parallel()
+
+	route := &routers.Route{
+		Path:      "/api/v1/organizations/{organizationID}/serviceaccounts",
+		Method:    http.MethodPost,
+		Operation: &openapi3.Operation{RequestBody: &openapi3.RequestBodyRef{}},
+	}
+	params := map[string]string{
+		"organizationID": testOrganizationID,
+	}
+
+	capture := &logCapture{}
+	r := newRequest(t, http.MethodPost, route, params, capture)
+	orgID := organizationUUID(t)
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The coarse check is recorded (so the audited kind is known), but the
+		// create does not complete: the response carries no canonical metadata
+		// id (here a 5xx error body — a denial or validation failure looks the
+		// same to the id extraction).
+		assert.NoError(t, rbac.AllowOrganizationScopeID(r.Context(), "identity:serviceaccounts", openapi.Create, orgID))
+
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"boom"}`))
+	})
+
+	audit.New("test", "v1").Middleware(next).ServeHTTP(httptest.NewRecorder(), r)
+
+	records := capture.auditRecords()
+	require.Len(t, records, 1)
+
+	resource, ok := attrs(t, records[0])["resource"].(*audit.Resource)
+	require.True(t, ok)
+	require.Equal(t, "identity:serviceaccounts", resource.Type)
+	require.Empty(t, resource.ID, "a create with no canonical id in its response must not stamp the parent organizationID as the resource id")
+}
+
 // TestMiddlewareLiteralTerminatedPathResourceID proves a mutation whose path
 // ends in a literal singleton segment (".../quotas", not an instance
 // {parameter}) resolves its id from the last path parameter available —

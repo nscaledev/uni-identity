@@ -843,6 +843,11 @@ func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclO
 	}
 
 	if info.ServiceAccount && (serviceAccountID == "" || info.Userinfo.Sub == serviceAccountID) {
+		// Self-access is granted WITHOUT an Allow* dispatch, so record the
+		// decision explicitly — otherwise the front-door audit (F2) logs this
+		// (credential-rotation) event with an empty resource kind.
+		rbac.RecordDecision(ctx, rbac.Resource{Kind: "identity:serviceaccounts", ID: serviceAccountID}, operation, nil)
+
 		return nil
 	}
 
