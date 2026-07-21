@@ -117,18 +117,16 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 	return needsPatching
 }
 
-// updateGroups takes a user name and a requested list of groups and adds to
+// updateGroups takes a user's subject and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
-	// find the subject, so we can add/remove that as well
-	var user unikornv1.User
-	if err := c.client.Get(ctx, client.ObjectKey{Name: globalUserID, Namespace: c.namespace}, &user); err != nil {
-		return err
-	}
-
+func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// The subject is supplied by the caller rather than re-read here: on the
+	// create path the global user was just written to the API server, and a
+	// read back through the cached client can miss it while the informer catches
+	// up, spuriously failing the request. Callers already hold the user.
 	subject := unikornv1.GroupSubject{
-		ID:     user.Spec.Subject,
-		Email:  user.Spec.Subject,
+		ID:     userSubject,
+		Email:  userSubject,
 		Issuer: c.issuer.URL,
 	}
 
@@ -152,6 +150,10 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 
 				return fmt.Errorf("%w: failed to patch group", err)
 			}
+
+			// Reflect the change in the caller's in-memory list so responses can be
+			// built from it without a cached reload that may lag the write.
+			groups.Items[i] = *updated
 		}
 	}
 
@@ -428,7 +430,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Name, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -515,15 +517,13 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Name, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
-	// Reload post update...
-	if groups, err = c.listGroups(ctx, organization); err != nil {
-		return nil, err
-	}
-
+	// updateGroups applies its membership changes to the in-memory group list, so
+	// the response reflects the update just made without a cached reload that could
+	// still be lagging the writes.
 	return convert(updated, user, groups), nil
 }
 
@@ -548,7 +548,12 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
-	if err := c.updateGroups(ctx, resource.Labels[constants.UserLabel], userID, nil, groups); err != nil {
+	user, err := c.getGlobalUserByID(ctx, resource.Labels[constants.UserLabel])
+	if err != nil {
+		return err
+	}
+
+	if err := c.updateGroups(ctx, user.Spec.Subject, userID, nil, groups); err != nil {
 		return err
 	}
 
