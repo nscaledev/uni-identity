@@ -334,10 +334,7 @@ func impersonationTypeGate(p *principal.Principal) error {
 // synthesized Info is a complete resolution input.  The impersonated
 // principal has no token of its own and none is fabricated.
 func impersonatedInfo(p *principal.Principal) *authorization.Info {
-	organizationIDs := p.OrganizationIDs
-	if len(organizationIDs) == 0 && p.OrganizationID != "" {
-		organizationIDs = []string{p.OrganizationID}
-	}
+	organizationIDs := p.ResolvedOrganizationIDs()
 
 	return &authorization.Info{
 		Userinfo: &openapi.Userinfo{

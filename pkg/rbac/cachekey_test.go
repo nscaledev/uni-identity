@@ -69,6 +69,21 @@ func subjectContext(t *testing.T) context.Context {
 	})
 }
 
+// directClaimsContext seeds authorization info for a DIRECT principal carrying
+// the given account type and organization set — the claims decisionCacheKey
+// folds into a direct key (mirroring what ResolveBindings reads for a direct
+// request), so the key can never be coarser than the resolution input.
+func directClaimsContext(t *testing.T, acctype openapi.AuthClaimsAcctype, orgs []string) context.Context {
+	t.Helper()
+
+	return authorization.NewContext(t.Context(), &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub:                       keySubject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: acctype, OrgIds: orgs},
+		},
+	})
+}
+
 // impersonate marks ctx as impersonating keyActor, exactly as the middleware
 // does at the request boundary.
 func impersonate(ctx context.Context) context.Context {
@@ -88,7 +103,49 @@ func TestDecisionCacheKey(t *testing.T) {
 		key, ok := keyEngine(fixedHasher{hash: keyHash, ok: true}).decisionCacheKey(subjectContext(t), orgResource, openapi.Read)
 
 		require.True(t, ok)
-		require.Equal(t, "direct|compute-service|identity:groups|org-1||read|hash-1", key)
+		// The direct key carries the caller's account type and org set (both
+		// empty here — subjectContext sets no auth claims — hence the two empty
+		// "||" fields) alongside the subject: a direct request resolves its own
+		// bindings from all three, so all three key the entry.
+		require.Equal(t, "direct|compute-service|||identity:groups|org-1||read|hash-1", key)
+	})
+
+	t.Run("DirectAccountTypeDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// A direct request resolves its bindings via a path chosen by account
+		// type (User vs Service — bindings.go), so two principals sharing a
+		// subject but asserting different types must never collide on one
+		// cached verdict.
+		engine := keyEngine(fixedHasher{hash: keyHash, ok: true})
+
+		userKey, ok := engine.decisionCacheKey(directClaimsContext(t, openapi.User, nil), orgResource, openapi.Read)
+		require.True(t, ok)
+
+		serviceKey, ok := engine.decisionCacheKey(directClaimsContext(t, openapi.Service, nil), orgResource, openapi.Read)
+		require.True(t, ok)
+
+		require.NotEqual(t, userKey, serviceKey)
+	})
+
+	t.Run("DirectOrgSetDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// A direct request's org set scopes its membership resolution, so it
+		// keys the entry; order does not (it is sorted).
+		engine := keyEngine(fixedHasher{hash: keyHash, ok: true})
+
+		keyA, ok := engine.decisionCacheKey(directClaimsContext(t, openapi.User, []string{"org-a"}), orgResource, openapi.Read)
+		require.True(t, ok)
+
+		keyAB, ok := engine.decisionCacheKey(directClaimsContext(t, openapi.User, []string{"org-a", "org-b"}), orgResource, openapi.Read)
+		require.True(t, ok)
+
+		keyBA, ok := engine.decisionCacheKey(directClaimsContext(t, openapi.User, []string{"org-b", "org-a"}), orgResource, openapi.Read)
+		require.True(t, ok)
+
+		require.NotEqual(t, keyA, keyAB, "a different org set must be a different key")
+		require.Equal(t, keyAB, keyBA, "org-set order must not change the key (sorted)")
 	})
 
 	t.Run("ImpersonatedShapeIncludesSubjectAndActor", func(t *testing.T) {
@@ -213,7 +270,7 @@ func TestDecisionCacheKey(t *testing.T) {
 		key, ok := keyEngine(fixedHasher{hash: keyHash, ok: true}).decisionCacheKey(ctx, orgResource, openapi.Read)
 
 		require.True(t, ok)
-		require.Equal(t, "direct|compute-service|identity:groups|org-1||read|hash-1", key)
+		require.Equal(t, "direct|compute-service|||identity:groups|org-1||read|hash-1", key)
 	})
 
 	t.Run("NoHasherBypasses", func(t *testing.T) {

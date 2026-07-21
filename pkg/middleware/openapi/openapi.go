@@ -203,13 +203,37 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
-		orgs := slices.Clone(p.OrganizationIDs)
+		// The org set is the SAME principal.ResolvedOrganizationIDs
+		// getSystemAccountACL resolves the impersonated ACL from, so the
+		// singular-OrganizationID fallback is keyed too — not just
+		// OrganizationIDs — and two distinct actors sharing a subject string
+		// cannot collide. Sorted for a stable key.
+		orgs := p.ResolvedOrganizationIDs()
 		slices.Sort(orgs)
 
 		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + string(p.Type) + "|" + strings.Join(orgs, ",") + "|" + scope, nil
 	}
 
-	return "direct|" + info.Userinfo.Sub + "|" + scope, nil
+	// A direct principal's ACL is resolved from its subject, account type AND
+	// organization set (the userinfo auth claims); keying on the subject alone
+	// would let one principal be served an ACL resolved for a different
+	// principal that shares a subject string but asserts a different account
+	// type or organization set — the platform's cache-scope-isolation invariant
+	// forbids a key coarser than the full authorization scope. The claims block
+	// is absent on a principal that carries none (empty type/set).
+	var (
+		directType string
+		directOrgs []string
+	)
+
+	if authz := info.Userinfo.HttpsunikornCloudOrgauthz; authz != nil {
+		directType = string(authz.Acctype)
+		directOrgs = slices.Clone(authz.OrgIds)
+	}
+
+	slices.Sort(directOrgs)
+
+	return "direct|" + info.Userinfo.Sub + "|" + directType + "|" + strings.Join(directOrgs, ",") + "|" + scope, nil
 }
 
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting

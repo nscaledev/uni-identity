@@ -219,15 +219,27 @@ func (r *RBAC) allowCoarse(ctx context.Context, resource Resource, operation ope
 
 	if ok {
 		// A miss: the cache was consulted but did not serve.  Record the
-		// outcome, then cache ONLY definite verdicts.  A transient failure
-		// (ErrDecisionUnavailable/ErrResolutionFailed) is never cached: the
-		// next call must retry the PDP rather than serve a poisoned deny.
+		// outcome, then cache ONLY an explicit policy DENY.
+		//
+		// Allows are deliberately NOT cached.  The cache key's policy-store
+		// hash is read from the DESIRED ConfigMap, which the hasher observes
+		// before the kubelet has synced the projected volume and the PDP has
+		// hot-reloaded it (see pkg/authz/cerbos.PolicyStoreHasher's reload-lag
+		// note).  In that window a verdict is obtained from the STILL-OLD store
+		// yet keyed under the NEW hash; caching an allow there would let a
+		// permission the new store REVOKES keep being served for a full TTL
+		// after the PDP actually applied the revocation — a stale allow past a
+		// revoking republish, which fail-closed authorization must never do.
+		// A stale DENY is safe (it withholds an access now permitted, bounded
+		// by the TTL and fail-closed), so denies are cached.  Re-enabling allow
+		// caching needs an applied-revision handshake keyed on the store the
+		// PDP has actually loaded, not the one the ConfigMap desires (a
+		// documented follow-up).  A transient failure (ErrDecisionUnavailable/
+		// ErrResolutionFailed) is likewise never cached: the next call must
+		// retry the PDP rather than serve a poisoned verdict.
 		r.recordCacheOutcome(ctx, false)
 
-		switch {
-		case err == nil:
-			r.decisionCache.Add(key, true, r.decisionCacheTTL)
-		case goerrors.Is(err, ErrPolicyDenied):
+		if goerrors.Is(err, ErrPolicyDenied) {
 			r.decisionCache.Add(key, false, r.decisionCacheTTL)
 		}
 	}
@@ -294,12 +306,35 @@ func (r *RBAC) decisionCacheKey(ctx context.Context, resource Resource, operatio
 		// Service-account IDs) and the org set scopes membership.  Both must
 		// key the entry, or two distinct impersonated principals sharing an
 		// actor string would collide on one cached verdict.  The org set is
-		// sorted so a semantically identical set always yields one key.
-		orgs := slices.Clone(p.OrganizationIDs)
+		// the SAME principal.ResolvedOrganizationIDs the decision resolves
+		// against (so the singular-OrganizationID fallback is keyed too, not
+		// just OrganizationIDs), sorted so a semantically identical set always
+		// yields one key.
+		orgs := p.ResolvedOrganizationIDs()
 		slices.Sort(orgs)
 
 		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + string(p.Type) + "|" + strings.Join(orgs, ",") + "|" + scope + "|" + action + "|" + hash, true
 	}
 
-	return "direct|" + info.Userinfo.Sub + "|" + scope + "|" + action + "|" + hash, true
+	// A direct request resolves the caller's OWN bindings from the token's
+	// subject, account type AND organization set (ResolveBindings reads all
+	// three — bindings.go).  All three therefore key the entry: keying on the
+	// subject alone would serve one principal's verdict to a different
+	// principal that shares a subject string but asserts a different account
+	// type or organization set — the platform's cache-scope-isolation invariant
+	// forbids a decision key coarser than the full authorization scope.  The
+	// claims block is absent on a principal that carries none (empty type/set).
+	var (
+		directType string
+		directOrgs []string
+	)
+
+	if authz := info.Userinfo.HttpsunikornCloudOrgauthz; authz != nil {
+		directType = string(authz.Acctype)
+		directOrgs = slices.Clone(authz.OrgIds)
+	}
+
+	slices.Sort(directOrgs)
+
+	return "direct|" + info.Userinfo.Sub + "|" + directType + "|" + strings.Join(directOrgs, ",") + "|" + scope + "|" + action + "|" + hash, true
 }

@@ -56,8 +56,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(t.Context(), directInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|user-1|_global", global)
-		require.Equal(t, "direct|user-1|org-1", scoped)
+		require.Equal(t, "direct|user-1|||_global", global)
+		require.Equal(t, "direct|user-1|||org-1", scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
@@ -71,7 +71,7 @@ func TestACLCacheKey(t *testing.T) {
 		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", key)
+		require.Equal(t, "direct|compute-service|||org-1", key)
 	})
 
 	t.Run("ImpersonatedDiffersFromDirect", func(t *testing.T) {
@@ -88,7 +88,7 @@ func TestACLCacheKey(t *testing.T) {
 		impersonated, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", direct)
+		require.Equal(t, "direct|compute-service|||org-1", direct)
 		require.Equal(t, "impersonated|compute-service|user-1|||org-1", impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
@@ -180,6 +180,58 @@ func TestACLCacheKey(t *testing.T) {
 
 		require.NotEqual(t, keyAB, keyA, "a different org set must be a different key")
 		require.Equal(t, keyAB, keyBA, "org-set order must not change the key (sorted)")
+	})
+
+	t.Run("DirectAccountTypeAndOrgSetDistinguishTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// A direct principal's ACL is resolved from its account type and org set
+		// too, not just its subject, so both key the entry: two callers sharing
+		// a subject but asserting different claims must not collide.
+		base := &authorization.Info{Userinfo: &identityapi.Userinfo{
+			Sub:                       "user-1",
+			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{Acctype: identityapi.User, OrgIds: []string{"org-a"}},
+		}}
+		otherType := &authorization.Info{Userinfo: &identityapi.Userinfo{
+			Sub:                       "user-1",
+			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{Acctype: identityapi.Service, OrgIds: []string{"org-a"}},
+		}}
+		otherOrgs := &authorization.Info{Userinfo: &identityapi.Userinfo{
+			Sub:                       "user-1",
+			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{Acctype: identityapi.User, OrgIds: []string{"org-b"}},
+		}}
+
+		baseKey, err := aclCacheKey(t.Context(), base, "org-1")
+		require.NoError(t, err)
+
+		typeKey, err := aclCacheKey(t.Context(), otherType, "org-1")
+		require.NoError(t, err)
+
+		orgKey, err := aclCacheKey(t.Context(), otherOrgs, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, baseKey, typeKey, "account type must key the direct entry")
+		require.NotEqual(t, baseKey, orgKey, "org set must key the direct entry")
+	})
+
+	t.Run("ImpersonatedSingularOrganizationIsKeyed", func(t *testing.T) {
+		t.Parallel()
+
+		// A caller that sets only the singular OrganizationID (no OrganizationIDs)
+		// resolves the impersonated ACL from that org via the defensive fallback
+		// (principal.ResolvedOrganizationIDs), so the key must reflect it: two
+		// such principals differing only in the singular org must not collide.
+		orgA := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationID: "org-a"}))
+		orgB := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationID: "org-b"}))
+
+		keyA, err := aclCacheKey(orgA, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(orgB, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyA, keyB, "the singular OrganizationID fallback must key the entry")
+		require.Contains(t, keyA, "org-a")
 	})
 
 	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {
