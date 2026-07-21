@@ -73,6 +73,16 @@ spec:
         ports:
         - name: http
           containerPort: 6080
+        # In-cluster credentials for the Kubernetes client
+        # (rest.InClusterConfig).  automountServiceAccountToken is disabled
+        # pod-wide (see below) to keep this SA's token — which can list/watch
+        # cluster Secrets and mutate identity CRDs — out of the third-party
+        # cerbos sidecar, so the first-party server mounts it explicitly at the
+        # standard path the client library reads.
+        volumeMounts:
+        - name: kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
         resources:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
@@ -131,6 +141,29 @@ spec:
           # filesystem and an empty policy directory).
           runAsUser: 65534
       volumes:
+      # Reproduces the default ServiceAccount token projection that
+      # automountServiceAccountToken: false suppresses, so it can be mounted
+      # into the server container alone and never the cerbos sidecar.  The
+      # three sources are exactly what rest.InClusterConfig() reads: the bound
+      # token, the API server CA, and the pod namespace.
+      - name: kube-api-access
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3607
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - path: namespace
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
       - name: cerbos-config
         configMap:
           name: {{ .Release.Name }}-cerbos-config
@@ -148,5 +181,10 @@ spec:
       - name: cerbos-cache
         emptyDir: {}
       serviceAccountName: {{ .Release.Name }}-server
+      # Kubernetes otherwise auto-projects this SA's token into every container
+      # in the pod, including the third-party cerbos sidecar.  Disable that and
+      # hand the token to the first-party server container only, via the
+      # kube-api-access projected volume mounted above.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
