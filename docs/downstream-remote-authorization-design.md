@@ -143,6 +143,19 @@ grounding in §8).
   computes `intersection(user, consumer-service)` — which equals the user's own perms only if the
   consumer role is a superset. Attributed s2s does not depend on it (it resolves the caller). The
   shadow soak verifies provisioning empirically before enforce.
+- **Residual risk — direct-path blast radius (accepted):** provisioning the consumer role as a
+  superset also widens what the consumer's OWN system account can do on a **direct** (non-impersonated)
+  call. `region-service` now passes a direct authorization check for the full `region:*` set it
+  previously lacked (create/update/delete on regions/flavors/images included); likewise
+  `compute-service`/`kubernetes-service` for their domains. The `intersection(user, service)` cap
+  constrains only **impersonated** checks — a direct service call resolves the service's own, now
+  widened, role — so a **compromised or forged consumer mTLS credential** gains that service's entire
+  resource domain platform-wide, where before it would have been denied. This is accepted as the cost
+  of the seam (under-provisioning denies legitimate users — see §6), and is bounded by: mTLS
+  credential hygiene (the credential is an X.509 CN, not a bearer token — rotation/scoping per the
+  cluster's cert policy); and the deferred **F3** (region as a first-class authz dimension, §8) and
+  **F1** (compute lifecycle under-authz, §8), each of which would narrow the direct-path grant. Revisit
+  before broad `enforce`.
 - **Rejected — `intersection(caller-service, receiver-service)`:** an anti-escalation cap (bound the
   caller by the relaying receiver's own role) was considered and dropped — since the receiver
   (`region-service`) is provisioned as the full superset (above), the intersection is a **no-op**.
@@ -321,3 +334,29 @@ working tree overlays a newer identity via `go.work`, but the cited `uni-compute
   - **Full authz scope — EXPENSIVE:** core-model change (bindings 3-tuple→4-tuple, wire grammar,
     generated CEL, CRD scope buckets, parity/migration). Only if per-region *enforcement* is needed;
     otherwise keep region an optional attribute.
+
+---
+
+## 9. Program status & remaining work (single source of truth, 2026-07-20)
+
+Canonical rollup of every workstream in the downstream remote-authorization program. The scattered
+lists (§1 Out of scope, §4.4/§4.5, §8 findings, and the cut-1 plan's Out-of-scope) feed into this
+table; when they disagree, this wins.
+
+| Workstream | Status | Where / notes |
+|---|---|---|
+| Cut #1 — region + compute seam, shadow wiring, Fix A | ✅ done | identity `cerbos-integration` (Tasks 1–12a); region `bf3b3a5`, compute `9d742b5` |
+| F2 — front-door audit completeness | ✅ done | identity `bbc2879b` |
+| Cut #3 — uni-kubernetes wiring + Fix A | ✅ done | kubernetes `57db77b`, identity `5c9e7d80` |
+| **Identity seam release — THE GATE** | ⬜ pending | merge/tag `cerbos-integration` → `main`; unblocks CI e2e, real go.mod pins (drop the `go.work` overlay), the compute/kubernetes region-ID skew |
+| Cut #2 — circuit breaker (`failsafe-go`) | 🔄 in progress | breaker + timeout + bounded retry around the remote `CheckMany` PDP call (`pkg/middleware/openapi/remote`), fail-fast-closed. Needed before broad `enforce`. See §4.4 |
+| shadow → enforce flip (per service) | ⬜ pending | operational config; gated on **zero divergence** (region first, most-validated). See §4.5 |
+| F1 — compute server-lifecycle under-authz | ⬜ deferred | rewrites the original lifecycle impl. See §8 F1 |
+| F3 — region as a first-class authz/audit dimension | ⬜ deferred | cost ladder (cheap caller-side `RegionID` field → expensive full scope). See §8 F3 |
+| 12b — unified downstream e2e/CI harness | ⬜ deferred | kind cross-service RBAC matrix + divergence gate; CI-gated on the release |
+| Sensitive-read audit annotations | ⬜ pending | per-service `x-unikorn-audit: sensitive` (compute console/sshkey, kubernetes kubeconfig) — activates F2's sensitive-read path |
+
+**Ordering dependencies:** the **seam release** unblocks the most (CI, real pins, the region-ID skew)
+and is the prerequisite for 12b and for rebasing follow-ups off `main`. The **circuit breaker** (cut
+#2) should land before broad `enforce`. The **flip** is gated on observed zero divergence, region
+first. F3's cheap tier and F1 do not need the release.
