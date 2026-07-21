@@ -108,6 +108,12 @@ type Authorizer struct {
 	// which dispatchCoarse falls through to the legacy path — overridable by
 	// WithRemoteEngineMode.
 	remoteMode rbac.RemoteMode
+
+	// remoteEngine is the cached rbac.CoarseEngine view of this Authorizer,
+	// built once in NewAuthorizer so RemoteDecisionEngine — called on every
+	// request by seedDecisionEngines — need not re-register OTel instruments
+	// each time. It holds no per-request state.
+	remoteEngine *RemoteEngine
 }
 
 var _ openapi.Authorizer = &Authorizer{}
@@ -160,6 +166,28 @@ func WithRemoteEngineMode(m rbac.RemoteMode) Option {
 	}
 }
 
+// isBreakerFailure classifies which CheckMany errors count toward opening the
+// circuit breaker: ONLY a genuine failure to obtain a verdict from a
+// struggling identity — a transport error, a 5xx, a malformed 200, or this
+// package's own checkTimeout expiry, all folded into ErrDecisionUnavailable.
+// Two error classes are deliberately EXCLUDED so caller behaviour can never
+// open a breaker that fail-closes authorization for unrelated users:
+//
+//   - a caller-canceled request (context.Canceled, wrapped inside
+//     ErrDecisionUnavailable by the transport path): the client aborted, so the
+//     PDP's health is unknown, not bad. This package's own deadline expiry is
+//     context.DeadlineExceeded, NOT Canceled, so it still counts — that is the
+//     intended trip signal.
+//   - a deterministic 4xx (propagated verbatim, so NOT ErrDecisionUnavailable):
+//     a rejected request is the caller's fault, not an availability failure.
+//
+// Without this, failsafe-go's default predicate counts EVERY non-nil error, so
+// a client that repeatedly cancels (or sends rejected) requests could trip the
+// shared breaker and deny authorization for everyone on the instance.
+func isBreakerFailure(_ []bool, err error) bool {
+	return goerrors.Is(err, ErrDecisionUnavailable) && !goerrors.Is(err, context.Canceled)
+}
+
 // NewAuthorizer returns a new authorizer with required parameters.
 func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, opts ...Option) (*Authorizer, error) {
 	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
@@ -177,6 +205,7 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		WithFailureRateThreshold(defaultBreakerFailureRateThreshold, defaultBreakerFailureExecutionThreshold, defaultBreakerFailureThresholdingPeriod).
 		WithDelay(defaultBreakerDelay).
 		WithSuccessThreshold(defaultBreakerSuccessThreshold).
+		HandleIf(isBreakerFailure).
 		OnStateChanged(newBreakerStateChangedListener(newRemoteBreakerStateInstrument())).
 		Build()
 
@@ -194,6 +223,10 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 	for _, opt := range opts {
 		opt(a)
 	}
+
+	// Build the CoarseEngine view once, now that options are applied; see
+	// RemoteDecisionEngine for why it must not be rebuilt per request.
+	a.remoteEngine = NewRemoteEngine(a)
 
 	return a, nil
 }

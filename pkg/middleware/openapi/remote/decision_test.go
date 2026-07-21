@@ -69,6 +69,16 @@ type checkHandler struct {
 	// CheckMany sequentially from a single goroutine and assert on this
 	// between calls, so no synchronization is needed here.
 	requests int
+
+	// echoPerCheck, when true, serves one result per requested check (whatever
+	// the batch size) instead of the fixed results slice — allowing each check
+	// UNLESS its resource organization id equals denyOrganizationID — and
+	// records each request's batch size in batchSizes. The chunking test uses
+	// this to send an over-cap batch across several round trips and assert both
+	// the chunk sizes and that per-index verdicts survive the chunk boundaries.
+	echoPerCheck       bool
+	denyOrganizationID string
+	batchSizes         []int
 }
 
 func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +91,27 @@ func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if h.delay > 0 {
 		time.Sleep(h.delay)
+	}
+
+	if h.echoPerCheck {
+		h.batchSizes = append(h.batchSizes, len(h.gotBody.Checks))
+
+		results := make([]identityapi.AuthorizationCheckResult, len(h.gotBody.Checks))
+
+		for i, check := range h.gotBody.Checks {
+			org := ""
+			if check.Resource.OrganizationId != nil {
+				org = *check.Resource.OrganizationId
+			}
+
+			results[i] = identityapi.AuthorizationCheckResult{Allowed: h.denyOrganizationID == "" || org != h.denyOrganizationID}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		writeJSON(w, identityapi.AuthorizationCheckResponse{Results: results})
+
+		return
 	}
 
 	status := h.status

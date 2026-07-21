@@ -64,15 +64,21 @@ func NewRemoteEngine(a *Authorizer) *RemoteEngine {
 	return &RemoteEngine{authorizer: a, decisions: decisions, latency: latency}
 }
 
-// RemoteDecisionEngine exposes this Authorizer as a rbac.CoarseEngine.
+// RemoteDecisionEngine exposes this Authorizer as a rbac.CoarseEngine. The
+// engine is built ONCE (in NewAuthorizer) and cached: it holds no per-request
+// state — the acting principal rides the ctx — and rebuilding it per request
+// would re-register its OTel instruments (newRemoteDecisionInstruments) on the
+// hot path, since seedDecisionEngines calls this on every request.
 func (a *Authorizer) RemoteDecisionEngine() rbac.CoarseEngine {
-	return NewRemoteEngine(a)
+	return a.remoteEngine
 }
 
-// AllowCoarseMany is the batch primitive: one CheckMany round trip for N
-// resources, returning per-resource verdicts in order.  A CheckMany failure
-// is folded into rbac.ErrDecisionUnavailable (see the type doc) rather than
-// forwarded as-is.
+// AllowCoarseMany is the batch primitive: it resolves per-resource verdicts for
+// N resources in order, splitting the batch across as many CheckMany round
+// trips as the wire cap requires (see checkManyChunked/maxChecksPerRequest) so
+// a batch of any size resolves instead of failing wholesale above the cap.  A
+// CheckMany failure is folded into rbac.ErrDecisionUnavailable (see the type
+// doc) rather than forwarded as-is.
 //
 // This is the Task 9 caller-side telemetry choke point (see metrics.go): the
 // CheckMany round trip is timed tightly (no request-slice construction, no
@@ -106,7 +112,7 @@ func (e *RemoteEngine) AllowCoarseMany(ctx context.Context, resources []rbac.Res
 
 	start := time.Now()
 
-	allowed, err := e.authorizer.CheckMany(ctx, checks)
+	allowed, err := e.checkManyChunked(ctx, checks)
 
 	elapsed := time.Since(start)
 
@@ -140,4 +146,39 @@ func (e *RemoteEngine) AllowCoarse(ctx context.Context, resource rbac.Resource, 
 	}
 
 	return nil
+}
+
+// maxChecksPerRequest bounds how many checks ride a single CheckMany round
+// trip.  It mirrors identity's wire contract (server.spec.yaml
+// authorizationCheckList maxItems) and the PDP's own maxResourcesPerRequest:
+// a request exceeding it is rejected wholesale (a deterministic 400), so a
+// batch larger than this MUST be split rather than sent as one over-cap
+// request that can never succeed.  Keep this in sync with that maxItems.
+const maxChecksPerRequest = 50
+
+// checkManyChunked issues checks in wire-cap-sized batches (maxChecksPerRequest)
+// and concatenates the per-resource verdicts in order, so a caller batch of any
+// size resolves correctly instead of failing wholesale above the cap.
+// Fail-closed: any chunk that fails to obtain a verdict fails the WHOLE batch
+// (the error is returned and no partial verdicts leak out), and each chunk is
+// independently guarded by the circuit breaker inside CheckMany.
+func (e *RemoteEngine) checkManyChunked(ctx context.Context, checks []CheckRequest) ([]bool, error) {
+	if len(checks) <= maxChecksPerRequest {
+		return e.authorizer.CheckMany(ctx, checks)
+	}
+
+	allowed := make([]bool, 0, len(checks))
+
+	for start := 0; start < len(checks); start += maxChecksPerRequest {
+		end := min(start+maxChecksPerRequest, len(checks))
+
+		chunk, err := e.authorizer.CheckMany(ctx, checks[start:end])
+		if err != nil {
+			return nil, err
+		}
+
+		allowed = append(allowed, chunk...)
+	}
+
+	return allowed, nil
 }

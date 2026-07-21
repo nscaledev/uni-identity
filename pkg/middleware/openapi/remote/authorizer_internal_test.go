@@ -21,6 +21,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -568,4 +570,42 @@ func TestCacheHitWithinScope(t *testing.T) {
 
 	assert.Equal(t, int32(1), exchange.calls.Load(),
 		"identical (token, org, project) requests must be served from cache after the first exchange")
+}
+
+// errStubPropagated4xx stands in for a deterministic 4xx that CheckMany
+// propagates verbatim (errors.PropagateError) — i.e. any error that does NOT
+// wrap ErrDecisionUnavailable. A static sentinel keeps the err113 linter happy.
+var errStubPropagated4xx = errors.New("propagated 4xx from identity")
+
+// TestIsBreakerFailure pins which CheckMany errors count toward opening the
+// circuit breaker (cut #2). Only a genuine failure to obtain a verdict — a
+// transport error, a 5xx, a malformed 200, or this package's own checkTimeout
+// expiry, all folded into ErrDecisionUnavailable — must count. Caller
+// cancellation (context.Canceled, even when wrapped in ErrDecisionUnavailable
+// by the transport path) and a deterministic 4xx (propagated verbatim, so NOT
+// ErrDecisionUnavailable) must NOT, so client behaviour cannot open a breaker
+// that fail-closes authorization for unrelated users.
+func TestIsBreakerFailure(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		err   error
+		count bool
+	}{
+		{"nil (a served verdict) never counts", nil, false},
+		{"transport/5xx unavailability counts", fmt.Errorf("%w: identity returned status 503", ErrDecisionUnavailable), true},
+		{"our own checkTimeout (deadline exceeded) counts", fmt.Errorf("%w: %w", ErrDecisionUnavailable, context.DeadlineExceeded), true},
+		{"caller cancellation wrapped in unavailable does NOT count", fmt.Errorf("%w: %w", ErrDecisionUnavailable, context.Canceled), false},
+		{"bare caller cancellation does NOT count", context.Canceled, false},
+		{"deterministic 4xx (propagated, not unavailable) does NOT count", errStubPropagated4xx, false},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, testCase.count, isBreakerFailure(nil, testCase.err))
+		})
+	}
 }

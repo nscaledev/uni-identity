@@ -157,3 +157,39 @@ func TestRemoteEngineAllowCoarseManyBatchOrder(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []bool{true, false}, allowed)
 }
+
+// TestRemoteEngineAllowCoarseManyChunksAtWireCap pins the batch chunking: a
+// batch larger than the wire cap (maxChecksPerRequest — 50, mirroring
+// server.spec.yaml's authorizationCheckList maxItems and the PDP's own
+// maxResourcesPerRequest) is split across several CheckMany round trips instead
+// of being sent as one over-cap request identity would reject wholesale. Every
+// verdict comes back, in order, across the chunk boundaries.
+func TestRemoteEngineAllowCoarseManyChunksAtWireCap(t *testing.T) {
+	t.Parallel()
+
+	// One check per request is denied by organization id, placed in the SECOND
+	// chunk, so a correct split-and-concatenate is provable per index.
+	h := &checkHandler{echoPerCheck: true, denyOrganizationID: "deny-me"}
+	engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
+
+	const (
+		resources   = 120 // 50 + 50 + 20 at a wire cap of 50
+		deniedIndex = 75  // in the second chunk (indices 50..99)
+	)
+
+	batch := make([]rbac.Resource, resources)
+	for i := range batch {
+		batch[i] = rbac.Resource{Kind: "identity:groups", OrganizationID: "org-1"}
+	}
+
+	batch[deniedIndex].OrganizationID = "deny-me"
+
+	allowed, err := engine.AllowCoarseMany(checkAuthContext(t, "", false), batch, identityapi.Read)
+	require.NoError(t, err)
+	require.Len(t, allowed, resources, "every resource in an over-cap batch must get a verdict")
+	require.Equal(t, []int{50, 50, 20}, h.batchSizes, "the batch must be split into wire-cap-sized chunks, not sent as one over-cap request")
+
+	for i, a := range allowed {
+		require.Equal(t, i != deniedIndex, a, "verdict for index %d must survive the chunk split in order", i)
+	}
+}

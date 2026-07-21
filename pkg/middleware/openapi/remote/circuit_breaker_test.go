@@ -237,3 +237,28 @@ func TestCircuitBreakerDefaultTripsOnSustainedFailure(t *testing.T) {
 	require.ErrorIs(t, err, authorizer.ErrDecisionUnavailable)
 	require.Equal(t, 10, h.requests, "the default breaker must have opened after 10 sustained failures: the 11th call must not reach the transport")
 }
+
+// TestCircuitBreakerDefault4xxDoesNotTrip proves the failure classifier
+// NewAuthorizer wires (isBreakerFailure): a run of deterministic 4xx responses
+// — a caller/request error, not a PDP availability failure — must NOT open the
+// default breaker, even well past its 10-execution sample size. This is the
+// mirror of TestCircuitBreakerDefaultTripsOnSustainedFailure, where the same
+// volume of 5xx DOES open it: only genuine unavailability trips the breaker.
+func TestCircuitBreakerDefault4xxDoesNotTrip(t *testing.T) {
+	t.Parallel()
+
+	h := &checkHandler{status: http.StatusForbidden}
+	auth := newCheckAuthorizer(t, h) // the real NewAuthorizer default breaker + classifier
+
+	ctx := checkAuthContext(t, "", false)
+
+	const calls = 12 // past the default 10-execution threshold
+
+	for range calls {
+		_, err := auth.CheckMany(ctx, singleCheck())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, authorizer.ErrDecisionUnavailable, "a 4xx propagates verbatim, it is not unavailability")
+	}
+
+	require.Equal(t, calls, h.requests, "a 4xx must not count toward the breaker, so every call still reaches the transport (the breaker never opens)")
+}
