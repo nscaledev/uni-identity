@@ -1,0 +1,38 @@
+# Transcribed from charts/identity/values.yaml (roles.compute-service).
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000008
+  labels:
+    unikorn-cloud.org/name: compute-service
+spec:
+  protected: true
+  scopes:
+    global:
+      - name: identity:projects
+        operations: [read]
+      - name: identity:allocations
+        operations: [create, read, update, delete]
+      - name: region:identities
+        operations: [create, read, delete]
+      - name: region:regions
+        operations: [read]
+      - name: region:flavors
+        operations: [read]
+      - name: region:images
+        operations: [read, create]
+      - name: region:networks
+        operations: [create, read, delete]
+      - name: region:networks:v2
+        operations: [read]
+      - name: region:servers
+        operations: [create, read, update, delete]
+      - name: region:servers:v2
+        operations: [create, read, update, delete]
+      - name: region:securitygroups
+        operations: [create, read, update, delete]
+      - name: region:securitygroups:v2
+        operations: [read]
+      - name: region:sshcertificateauthorities:v2
+        operations: [read]
