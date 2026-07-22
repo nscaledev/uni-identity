@@ -103,6 +103,12 @@ GENCLIENTNAME = unikorn
 # This defines how docker containers are tagged.
 DOCKER_ORG = ghcr.io/nscaledev
 
+# Pinned: the Cerbos version the authorization migration is designed and
+# spike-validated against (see docs/cerbos-authorization-migration-design.md).
+# The committed policy store must compile and its test suites pass on exactly
+# this version; do not float without re-validating the policy shapes.
+CERBOS_VERSION = 0.53.0
+
 # Main target, builds all binaries.
 .PHONY: all
 all: $(COMMAND_BINARIES) $(CONTROLLER_BINARIES) $(CRDDIR)
@@ -152,6 +158,13 @@ test: test-unit
 test-unit:
 	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api -e /test/contracts)
 	go tool cover -html cover.out -o cover.html
+
+# Integration-test the Cerbos gRPC client against the pinned Cerbos image
+# with a hand-written allow/deny policy.  Requires Docker, so this is
+# deliberately not part of test-unit; CI runs it alongside the unit tests.
+.PHONY: test-cerbos-client
+test-cerbos-client:
+	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/authz/cerbos/
 
 # Build a binary and install it.
 $(PREFIX)/%: $(BINDIR)/%

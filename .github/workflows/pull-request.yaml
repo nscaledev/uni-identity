@@ -63,6 +63,8 @@ jobs:
       uses: codecov/codecov-action@v5
       env:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    - name: Test Cerbos Client
+      run: make test-cerbos-client
   ProviderContractVerification:
     runs-on: ubuntu-latest
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-contract-tests') }}

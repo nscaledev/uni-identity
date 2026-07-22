@@ -26,6 +26,19 @@ server:
       cpu: '1'
       memory: 1Gi
 
+# Cerbos policy decision point (PDP) sidecar configuration.
+cerbos:
+  # Allows override of the image.  This is a third-party image; the default
+  # (set in the deployment template) is pinned and must stay consistent with
+  # CERBOS_VERSION in the Makefile.
+  image: ~
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
 # Organization controller specifc configuration.
 organizationController:
   # Allows override of the image.

@@ -13,6 +13,13 @@ spec:
     metadata:
       labels:
         app: {{ .Release.Name }}-server
+      annotations:
+        # Cerbos reads config.yaml only at startup, so config changes must
+        # roll the pods.  The policy store ConfigMap (owned and published at
+        # runtime by the policy controller, not templated by this chart) is
+        # deliberately NOT annotated: it is live-watched (watchForChanges),
+        # and restarting pods on policy writes would be wrong.
+        checksum/cerbos-config: {{ include (print $.Template.BasePath "/identity/cerbos-config.yaml") . | sha256sum }}
     spec:
       containers:
       - name: {{ .Release.Name }}-server
@@ -49,10 +56,118 @@ spec:
         ports:
         - name: http
           containerPort: 6080
+        # In-cluster credentials for the Kubernetes client
+        # (rest.InClusterConfig).  automountServiceAccountToken is disabled
+        # pod-wide (see below) to keep this SA's token — which can list/watch
+        # cluster Secrets and mutate identity CRDs — out of the third-party
+        # cerbos sidecar, so the first-party server mounts it explicitly at the
+        # standard path the client library reads.
+        volumeMounts:
+        - name: kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
         resources:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
           readOnlyRootFilesystem: true
+      # Cerbos PDP sidecar: authorization decisions migrate from the in-process
+      # evaluator to policies evaluated by this central PDP.  Always on; shadow
+      # and cutover gating happens in the Go layer, not here.  This is a
+      # third-party image so the first-party image helpers don't apply; the
+      # default tag must stay consistent with CERBOS_VERSION in the Makefile.
+      - name: cerbos
+        image: {{ .Values.cerbos.image | default "ghcr.io/cerbos/cerbos:0.53.0" }}
+        args:
+        - server
+        - --config=/config/config.yaml
+        ports:
+        - name: cerbos-http
+          containerPort: 3592
+        - name: cerbos-grpc
+          containerPort: 3593
+        # Cerbos binds loopback only (see cerbos-config.yaml), so the kubelet
+        # cannot reach it over HTTP: probe by exec'ing the in-image healthcheck
+        # binary, which reads the mounted config and checks the gRPC listener.
+        # The integration test in pkg/authz/cerbos execs this exact command
+        # against the test container to keep it honest.
+        readinessProbe:
+          exec:
+            command:
+            - /cerbos
+            - healthcheck
+            - --config=/config/config.yaml
+        livenessProbe:
+          exec:
+            command:
+            - /cerbos
+            - healthcheck
+            - --config=/config/config.yaml
+        volumeMounts:
+        - name: cerbos-config
+          mountPath: /config
+          readOnly: true
+        - name: cerbos-policies
+          mountPath: /policies
+          readOnly: true
+        # The image declares VOLUME /tmp and /.cache; with a read-only root
+        # filesystem they need writable emptyDirs.
+        - name: cerbos-tmp
+          mountPath: /tmp
+        - name: cerbos-cache
+          mountPath: /.cache
+        resources:
+          {{- .Values.cerbos.resources | toYaml | nindent 10 }}
+        securityContext:
+          readOnlyRootFilesystem: true
+          # The upstream image defaults to root, which the pod's runAsNonRoot
+          # forbids; run as nobody (verified working with a read-only root
+          # filesystem and an empty policy directory).
+          runAsUser: 65534
+      volumes:
+      # Reproduces the default ServiceAccount token projection that
+      # automountServiceAccountToken: false suppresses, so it can be mounted
+      # into the server container alone and never the cerbos sidecar.  The
+      # three sources are exactly what rest.InClusterConfig() reads: the bound
+      # token, the API server CA, and the pod namespace.
+      - name: kube-api-access
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3607
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+              - key: ca.crt
+                path: ca.crt
+          - downwardAPI:
+              items:
+              - path: namespace
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+      - name: cerbos-config
+        configMap:
+          name: {{ .Release.Name }}-cerbos-config
+      - name: cerbos-policies
+        configMap:
+          name: {{ .Release.Name }}-cerbos-policies
+          # The policy controller owns, creates and publishes this ConfigMap
+          # at runtime; the chart does not template it.  optional lets the
+          # pod start before the first publish — Cerbos serves
+          # deny-by-default from the empty directory, and the kubelet
+          # back-fills the volume once the ConfigMap appears.
+          optional: true
+      - name: cerbos-tmp
+        emptyDir: {}
+      - name: cerbos-cache
+        emptyDir: {}
       serviceAccountName: {{ .Release.Name }}-server
+      # Kubernetes otherwise auto-projects this SA's token into every container
+      # in the pod, including the third-party cerbos sidecar.  Disable that and
+      # hand the token to the first-party server container only, via the
+      # kube-api-access projected volume mounted above.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
