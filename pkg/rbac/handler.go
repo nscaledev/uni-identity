@@ -288,9 +288,76 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 	return nil
 }
 
+// allowGrantProjectScope decides whether the caller may grant a role's project-scoped
+// permission. Unlike a normal access check there is no specific target project — a role
+// grant is organization-scoped — so the permission is satisfied if the caller holds it
+// at global or organization scope, or at project scope in *any* project they can access
+// within the organization.
+//
+// This is deliberately laxer than promoting the permission to an organization-scope
+// check: granting a project-scoped role hands out a subset of what the caller already
+// holds at the same scope (downscoping, e.g. a project `user` granting a project
+// `reader`), which is least-privilege delegation, not privilege escalation. Requiring
+// the caller to hold every project permission organization-wide would wrongly reject
+// those legitimate grants.
+//
+// Trust assumption: accepting a permission held in *any* one of the caller's projects is
+// only safe because a granted role cannot take effect in a project the caller does not
+// already administer. Two surrounding invariants enforce that and must be preserved:
+//
+//   - group create/update (the only path to AllowRole via validateRoleIDs) requires
+//     organization-scope identity:groups write, which project-scoped authority cannot
+//     satisfy; and
+//   - linking a group to an existing project requires project-scope identity:projects
+//     update for that specific project.
+//
+// If a role ever grants identity:groups write at project scope, or project-group linking
+// is relaxed to organization scope, this "any project" acceptance would become a
+// cross-project escalation and must be tightened to a specific target project.
+func allowGrantProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
+	if AllowOrganizationScopeID(ctx, endpoint, operation, organizationID) == nil {
+		return nil
+	}
+
+	acl := FromContext(ctx)
+
+	if acl.Organizations != nil {
+		for _, organization := range *acl.Organizations {
+			if organization.Id != organizationID.String() {
+				continue
+			}
+
+			if organization.Projects == nil {
+				break
+			}
+
+			for _, project := range *organization.Projects {
+				if operationAllowedByEndpoints(project.Endpoints, endpoint, operation) == nil {
+					return nil
+				}
+			}
+		}
+	}
+
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — the caller holds it at neither organization nor any project scope, so cannot grant it", operation, endpoint))
+}
+
 // AllowRole determines whether your ACL contains the same or higher privileges than
 // the role, which is then used to determine role visibility and limit privilege
 // escalation.
+//
+// Each scope block of the target role is checked against the caller's authority at the
+// matching scope, with the usual downward flow (global satisfies organization and
+// project, organization satisfies project):
+//
+//   - global endpoints must be held at global scope;
+//   - organization endpoints must be held at global or organization scope;
+//   - project endpoints must be held at global or organization scope, or at project
+//     scope in any project the caller can access (see allowGrantProjectScope).
+//
+// The project case is why granting is subset-preserving rather than escalation-prone: a
+// caller may only ever grant a role whose permissions they already hold at the grant's
+// scope or broader.
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
@@ -310,7 +377,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 
 	for _, endpoint := range role.Spec.Scopes.Project {
 		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+			if err := allowGrantProjectScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
 			}
 		}

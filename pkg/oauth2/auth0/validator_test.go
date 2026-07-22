@@ -103,7 +103,7 @@ func newValidatorTestIssuer(t *testing.T) *validatorTestIssuer {
 }
 
 func (i *validatorTestIssuer) issuer() string {
-	return i.server.URL + "/"
+	return i.server.URL
 }
 
 type testAuthzClaims struct {
@@ -195,13 +195,10 @@ func (i *validatorTestIssuer) signedToken(t *testing.T, key *rsa.PrivateKey, kid
 	return token
 }
 
-func newTestValidator(t *testing.T, issuer string) *auth0.Validator {
+func newTestValidator(t *testing.T, options auth0.Options) *auth0.Validator {
 	t.Helper()
 
-	validator, err := auth0.NewValidator(auth0.Options{
-		Issuer:   issuer,
-		Audience: validatorTestAudience,
-	})
+	validator, err := auth0.NewValidator(options)
 	require.NoError(t, err)
 	require.NotNil(t, validator)
 
@@ -212,7 +209,11 @@ func TestValidate(t *testing.T) {
 	t.Parallel()
 
 	issuer := newValidatorTestIssuer(t)
-	validator := newTestValidator(t, issuer.issuer())
+	validator := newTestValidator(t, auth0.Options{
+		Issuer:            issuer.issuer(),
+		Audience:          validatorTestAudience,
+		RequireAuthzClaim: true,
+	})
 
 	user, err := validator.Validate(t.Context(), issuer.token(t, nil))
 	require.NoError(t, err)
@@ -294,7 +295,11 @@ func TestValidateRejectsInvalidClaims(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator := newTestValidator(t, issuer.issuer())
+			validator := newTestValidator(t, auth0.Options{
+				Issuer:            issuer.issuer(),
+				Audience:          validatorTestAudience,
+				RequireAuthzClaim: true,
+			})
 
 			_, err := validator.Validate(t.Context(), issuer.token(t, test.mutate))
 			require.Error(t, err)
@@ -314,7 +319,10 @@ func TestValidateThrottlesForgedTokenJWKSFetches(t *testing.T) {
 	t.Parallel()
 
 	issuer := newValidatorTestIssuer(t)
-	validator := newTestValidator(t, issuer.issuer())
+	validator := newTestValidator(t, auth0.Options{
+		Issuer:   issuer.issuer(),
+		Audience: validatorTestAudience,
+	})
 
 	// Prime the key cache; this is the one permitted fetch in the window.
 	_, err := validator.Validate(t.Context(), issuer.token(t, nil))
@@ -373,4 +381,68 @@ func TestNewValidatorRejectsPartialConfig(t *testing.T) {
 	validator, err := auth0.NewValidator(auth0.Options{Issuer: "https://tenant.auth0.com/"})
 	require.ErrorIs(t, err, auth0.ErrInvalidConfig)
 	assert.Nil(t, validator)
+}
+
+func TestNewValidatorRejectsSymmetricAlgorithm(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		alg  string
+	}{
+		{name: "HS256", alg: "HS256"},
+		{name: "none", alg: "none"},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			validator, err := auth0.NewValidator(auth0.Options{
+				Issuer:                     "https://tenant.auth0.com/",
+				Audience:                   validatorTestAudience,
+				SupportedSigningAlgorithms: []string{test.alg},
+			})
+			require.ErrorIs(t, err, auth0.ErrInvalidConfig)
+			assert.Nil(t, validator)
+		})
+	}
+}
+
+func TestValidateSkipEmailVerification(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+
+	validator := newTestValidator(t, auth0.Options{
+		Issuer:                issuer.issuer(),
+		Audience:              validatorTestAudience,
+		SkipEmailVerification: true,
+	})
+
+	unverified := false
+
+	user, err := validator.Validate(t.Context(), issuer.token(t, func(claims *testTokenClaims) {
+		claims.EmailVerified = &unverified
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "user@example.com", user.Email)
+}
+
+func TestValidateRequireAuthzClaimOffToleratesMissing(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+
+	validator := newTestValidator(t, auth0.Options{
+		Issuer:            issuer.issuer(),
+		Audience:          validatorTestAudience,
+		RequireAuthzClaim: false,
+	})
+
+	user, err := validator.Validate(t.Context(), issuer.token(t, func(claims *testTokenClaims) {
+		claims.Authz = testAuthzClaims{}
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "user@example.com", user.Email)
 }

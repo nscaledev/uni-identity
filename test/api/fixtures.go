@@ -466,6 +466,12 @@ func (b *Oauth2ProviderPayloadBuilder) WithClientID(clientID string) *Oauth2Prov
 	return b
 }
 
+// WithIssuer sets the OIDC issuer URL.
+func (b *Oauth2ProviderPayloadBuilder) WithIssuer(issuer string) *Oauth2ProviderPayloadBuilder {
+	b.provider.Spec.Issuer = issuer
+	return b
+}
+
 // Build returns the typed OAuth2 provider struct.
 func (b *Oauth2ProviderPayloadBuilder) Build() identityopenapi.Oauth2ProviderWrite {
 	return b.provider

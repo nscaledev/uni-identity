@@ -29,12 +29,16 @@ The package enforces several important security rules:
 - a caller may only grant a role if the caller already holds all permissions contained in that role
 - when a system service acts as an impersonated principal, the effective ACL is the intersection of
   the principal's ACL and the service's ACL
+- platform-administrator matching is issuer-qualified: a subject is only recognized as a
+  platform administrator when the token's `src_iss` matches the registered issuer entry
 
 Those rules prevent several different forms of privilege escalation:
 
 - user-facing exposure of internal platform roles
 - granting permissions the caller does not personally hold
 - confused-deputy expansion through service-to-service calls
+- cross-issuer confused-deputy: an external IdP cannot impersonate a UNI-local admin subject, and
+  a UNI-local admin subject cannot be promoted to admin via an external token
 
 ## Scope Model
 
@@ -69,6 +73,67 @@ without re-deriving it:
 
 Rule of thumb: path-parameter handler → `…ID`; you have a CRD object in hand → `…Reader`.
 
+## Built-in Roles
+
+The role catalogue is defined in `charts/identity/values.yaml` and rendered into `Role`
+resources by `charts/identity/templates/roles.yaml`. That values file is the single
+source of truth; `pkg/rbac` resolves those roles but never invents them. There are two
+families.
+
+### Protected (platform) roles
+
+Roles marked `protected: true` are internal-only: never returned by the user-facing role
+list and never grantable through the API. They are bound solely via Helm values at
+deployment time.
+
+- `platform-administrator` — global CRUD over every resource; can act in any organization
+  or project.
+- `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
+  accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
+  only the global permissions the corresponding service actually exercises;
+  over-permissioning here is a security defect.
+
+### User-facing roles
+
+These carry `organization` and/or `project` scope blocks and are the roles an
+administrator grants to groups.
+
+| Role | organization block | project block |
+| --- | --- | --- |
+| `administrator` | full CRUD across identity, region, storage, Kubernetes and compute | — |
+| `auditor` | read-only across all of the above | — |
+| `user` | org-wide reads, plus `region:images` create/delete | CRUD on workloads: networks, load balancers, security groups, file storage, object storage, SSH CAs, clusters, instances |
+| `reader` | org-wide reads (`region:images` read only) | read-only on those same workloads |
+
+`administrator` and `auditor` hold all their authority at organization scope. `user` and
+`reader` keep a thin organization-wide read baseline but place their real workload
+authority in the project block, so it applies only to the projects their group is linked
+to.
+
+### Grant relationships
+
+A caller may grant a role only if they already hold every permission it contains, at the
+grant's scope or broader (`AllowRole`, with the downward scope flow described above).
+Because a grant hands out a subset of what the caller already holds, the built-in roles
+form a superset lattice:
+
+```
+administrator ─┬─ auditor ─── reader
+               └─ user ────── reader
+```
+
+- `administrator` can grant every user-facing role.
+- `auditor` (read-only) can grant `reader` (also read-only) but not `user`, which needs
+  write verbs `auditor` lacks.
+- `user` can grant `reader` — the same project scope with fewer verbs (downscoping) — but
+  not `auditor`, which needs `identity:*` reads `user` lacks.
+- `reader` can grant only `reader`.
+
+`user` and `auditor` are incomparable, and neither can grant `administrator`. This lattice
+is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from the parsed
+chart values for every ordered role pair, asserting each allowed edge and rejecting every
+non-edge.
+
 ## Actor Model
 
 The package distinguishes three important actor classes:
@@ -88,6 +153,37 @@ When a system account carries an impersonated principal, RBAC does not simply sw
 principal's ACL. Instead, it intersects the principal ACL with the system account ACL so the service
 cannot exercise permissions that either side lacks.
 
+### Platform-administrator issuer-aware fast-path
+
+User account ACL resolution includes a fast-path for platform administrators. The match is on the
+pair `(srcIss, subject)` where `srcIss` is the issuer URL (verbatim, as the IdP emits it) carried in
+the passport's `src_iss` claim (or the `"uni"` sentinel for UNI-local tokens). The match is an exact
+string comparison against each `PlatformAdministratorSubject` entry registered via
+`--platform-administrator-subjects`; the configured issuer must equal the emitted `iss` exactly
+(for Auth0, including the trailing slash).
+
+Platform-administrator subjects should be registered in `issuer::subject` form when any non-UNI
+bearer-trust provider is configured. A bare subject (no `::` prefix) defaults the issuer to the
+UNI sentinel, which cannot be forged by an external token because the sentinel is deliberately
+not a valid URL.
+
+**Bare entries are mirrored onto the legacy Auth0 issuer at server construction.** When the
+deprecated `--auth0-exchange-issuer` flag is set, `expandBareAdminSubjects` (in `pkg/server`)
+appends, for every bare entry, a concrete issuer-qualified duplicate for that flag's issuer. This
+reproduces the issuer-unaware matching that predates issuer qualification: a bare entry matches
+both UNI-login sessions (via the retained sentinel entry) and Auth0-exchange sessions (via the
+mirror), and never a CRD-declared `bearerTrust` issuer. The mirror grants nothing the old
+issuer-blind match did not already grant.
+
+**`Options.Validate` is a startup-only, advisory migration check.** When called during startup
+with the list of non-UNI `bearerTrust` issuers currently present in the operator namespace (the
+legacy flag issuer is deliberately excluded — the mirroring above already covers it), it reports
+any admin entry still in bare (UNI-sentinel) form. The caller logs a warning; startup is never
+rejected, since a bare entry cannot match a CRD-declared issuer and a boot-time failure would
+otherwise fire at an unrelated pod restart long after the first `bearerTrust` CRD was created.
+The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match in
+`processUserAccountACL`. Operators must not rely on `Options.Validate` as a protection.
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
@@ -99,6 +195,13 @@ cannot exercise permissions that either side lacks.
 - Group membership is the main route from actors to roles.
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
+- Platform-administrator matching is always issuer-qualified at runtime via `(srcIss, subject)`.
+  `Options.Validate` is a startup-only advisory warning; it does not replace the runtime control.
+  Bare entries match only the UNI sentinel plus, via the startup mirror in `pkg/server`, the
+  legacy auth0-exchange flag issuer — never a CRD-declared issuer.
+- The confused-deputy invariant: a system service acting as an impersonated principal cannot hold
+  permissions that either the principal's ACL or the service's ACL denies. The ACL intersection
+  enforces this regardless of which IdP authenticated the principal.
 
 ## Caveats
 
@@ -111,6 +214,22 @@ cannot exercise permissions that either side lacks.
 - Some pragmatic compatibility behaviour exists around scoped lookups and transition paths, so
   security-sensitive changes here should be reviewed in terms of end-to-end actor behaviour rather
   than local code shape alone.
+- Role permission sets must be distributed *consistently across the role hierarchy*.
+  Grantability requires the caller to hold every permission a role contains at the same
+  scope or broader (`AllowRole`; project-scoped endpoints are satisfied by project, then
+  organization, then global authority — not flattened to an organization-only check).
+  Granting a service's endpoints to a lower role such as `user` or `reader` *without also
+  granting them to every role above it in the grant lattice* — `administrator` for any
+  operation, and `auditor` for reads — silently makes that lower role non-grantable and
+  invisible to those roles. Any new endpoint added to a role in
+  `charts/identity/values.yaml` must be added to every role that should be able to grant
+  it, not just the leaf roles that consume it. `TestBuiltinRoleGrantability` enforces this
+  over the parsed chart values.
+- The `application:*` endpoints (`application:applications`, `application:applicationsets`) were
+  removed because the application service was never implemented and never will be — they were dead
+  configuration. The removal also fixed a live bug: they were present on `platform-administrator`,
+  `user`, and `reader` but absent from the organization `administrator`, which broke administrator
+  grantability of `user`/`reader`. They are gone for good; there is no service to grant access to.
 
 ## TODO
 

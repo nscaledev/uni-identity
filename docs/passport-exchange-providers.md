@@ -1,6 +1,11 @@
-# Generic Passport Exchange — Design Note
+> The design described here has been implemented. The open questions, proposed design, and migration
+> path sections below are historical context only. For the current implementation, see
+> [`pkg/oauth2/README.md`](../pkg/oauth2/README.md) and
+> [`docs/multi-issuer-token-contract.md`](multi-issuer-token-contract.md).
 
-Status: draft for discussion
+# Generic Passport Exchange — Design Note (Historical)
+
+Status: implemented
 Owner: @nscale-peter
 Last updated: 2026-06-01
 

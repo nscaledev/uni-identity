@@ -154,6 +154,13 @@ func oAuth2ServerError(description string) *Error {
 	return newError(http.StatusInternalServerError, openapi.ServerError, description)
 }
 
+// OAuth2ServiceUnavailable tells the client the service is temporarily unavailable
+// (e.g., cache or dependency is still warming up). This is a transient condition
+// and the client should retry.
+func OAuth2ServiceUnavailable(description string) *Error {
+	return newError(http.StatusServiceUnavailable, openapi.ServerError, description)
+}
+
 // toError is a handy unwrapper to get a HTTP error from a generic one.
 func toError(err error) *Error {
 	var httpErr *Error
