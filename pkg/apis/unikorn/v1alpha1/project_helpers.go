@@ -25,6 +25,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -41,15 +42,20 @@ func (c *Project) Paused() bool {
 
 // StatusConditionRead scans the status conditions for an existing condition whose type
 // matches.
-func (c *Project) StatusConditionRead(t unikornv1core.ConditionType) (*unikornv1core.Condition, error) {
+func (c *Project) StatusConditionRead(t unikornv1core.ConditionType) (*metav1.Condition, error) {
 	return unikornv1core.GetCondition(c.Status.Conditions, t)
 }
 
-// StatusConditionWrite either adds or updates a condition in the cluster manager status.
-// If the condition, status and message match an existing condition the update is
-// ignored.
-func (c *Project) StatusConditionWrite(t unikornv1core.ConditionType, status corev1.ConditionStatus, reason unikornv1core.ConditionReason, message string) {
-	unikornv1core.UpdateCondition(&c.Status.Conditions, t, status, reason, message)
+// SetProvisioningCondition sets the Available condition with a reason drawn from
+// the provisioning vocabulary.
+func (c *Project) SetProvisioningCondition(status corev1.ConditionStatus, reason unikornv1core.ProvisioningConditionReason, message string) {
+	unikornv1core.UpdateCondition(&c.Status.Conditions, unikornv1core.ConditionAvailable, status, string(reason), message)
+}
+
+// SetHealthCondition sets the Healthy condition with a reason drawn from the
+// health vocabulary.
+func (c *Project) SetHealthCondition(status corev1.ConditionStatus, reason unikornv1core.HealthConditionReason, message string) {
+	unikornv1core.UpdateCondition(&c.Status.Conditions, unikornv1core.ConditionHealthy, status, string(reason), message)
 }
 
 // ResourceLabels generates a set of labels to uniquely identify the resource
