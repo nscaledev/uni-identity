@@ -23,6 +23,7 @@ package v1alpha1
 
 import (
 	unikornv1alpha1 "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -388,7 +389,7 @@ func (in *OAuth2ClientStatus) DeepCopyInto(out *OAuth2ClientStatus) {
 	*out = *in
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
-		*out = make([]unikornv1alpha1.Condition, len(*in))
+		*out = make([]v1.Condition, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
@@ -673,7 +674,7 @@ func (in *OrganizationStatus) DeepCopyInto(out *OrganizationStatus) {
 	*out = *in
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
-		*out = make([]unikornv1alpha1.Condition, len(*in))
+		*out = make([]v1.Condition, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
@@ -902,7 +903,7 @@ func (in *ProjectStatus) DeepCopyInto(out *ProjectStatus) {
 	*out = *in
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
-		*out = make([]unikornv1alpha1.Condition, len(*in))
+		*out = make([]v1.Condition, len(*in))
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}

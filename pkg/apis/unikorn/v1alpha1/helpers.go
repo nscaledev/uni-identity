@@ -24,6 +24,7 @@ import (
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -38,15 +39,14 @@ func (c *OAuth2Client) Paused() bool {
 
 // StatusConditionRead scans the status conditions for an existing condition whose type
 // matches.
-func (c *OAuth2Client) StatusConditionRead(t unikornv1core.ConditionType) (*unikornv1core.Condition, error) {
+func (c *OAuth2Client) StatusConditionRead(t unikornv1core.ConditionType) (*metav1.Condition, error) {
 	return unikornv1core.GetCondition(c.Status.Conditions, t)
 }
 
-// StatusConditionWrite either adds or updates a condition in the cluster manager status.
-// If the condition, status and message match an existing condition the update is
-// ignored.
-func (c *OAuth2Client) StatusConditionWrite(t unikornv1core.ConditionType, status corev1.ConditionStatus, reason unikornv1core.ConditionReason, message string) {
-	unikornv1core.UpdateCondition(&c.Status.Conditions, t, status, reason, message)
+// SetProvisioningCondition sets the Available condition with a reason drawn from
+// the provisioning vocabulary.
+func (c *OAuth2Client) SetProvisioningCondition(status corev1.ConditionStatus, reason unikornv1core.ProvisioningConditionReason, message string) {
+	unikornv1core.UpdateCondition(&c.Status.Conditions, unikornv1core.ConditionAvailable, status, string(reason), message)
 }
 
 // ResourceLabels generates a set of labels to uniquely identify the resource
