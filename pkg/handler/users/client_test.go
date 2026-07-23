@@ -35,6 +35,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -57,6 +58,10 @@ const (
 	orgUserAliceID2  = "orguser-alice-2"
 	groupAlphaID     = "group-alpha"
 	groupBetaID      = "group-beta"
+
+	userBobSubject = "bob@example.com"
+	userBobID      = "user-bob"
+	orgUserBobID   = "orguser-bob"
 )
 
 type userTestFixture struct {
@@ -67,6 +72,7 @@ type userTestFixture struct {
 var (
 	errListOrganizationUsers  = goerrors.New("list organization users")
 	errCreateOrganizationUser = goerrors.New("create organization user")
+	errUnexpectedGroupReload  = goerrors.New("unexpected group reload")
 )
 
 func newContext(t *testing.T) context.Context {
@@ -354,5 +360,142 @@ func TestClient_Create(t *testing.T) {
 		})
 
 		assertCreateUserError(t, fixture, errCreateOrganizationUser)
+	})
+
+	t.Run("creates user when the new global user is not yet visible to cached reads", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate informer cache lag: the global user is written to the API server
+		// during creation, but a subsequent cached Get does not observe it yet.
+		// Creating a user must not depend on reading back a user it just created,
+		// otherwise first-time sign-ups fail intermittently with NotFound.
+		fixture := newUserTestFixtureWithObjects(t, nil, interceptor.Funcs{
+			Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*unikornv1.User); ok {
+					return kerrors.NewNotFound(unikornv1.Resource("users"), key.Name)
+				}
+
+				return inner.Get(ctx, key, obj, opts...)
+			},
+		})
+		ctx := newContext(t)
+
+		createGroup(ctx, t, fixture.client, groupAlphaID)
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		result, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		globalUsers := &unikornv1.UserList{}
+		require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+		require.Len(t, globalUsers.Items, 1)
+
+		organizationUsers := &unikornv1.OrganizationUserList{}
+		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
+		require.Len(t, organizationUsers.Items, 1)
+
+		// the requested group membership was still applied
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Contains(t, alphaGroup.Spec.UserIDs, result.Metadata.Id)
+	})
+}
+
+func TestClient_Update(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reports group membership without a post-write cache reload", func(t *testing.T) {
+		t.Parallel()
+
+		// After patching group membership, the response must be built from the
+		// in-memory group state, not re-listed through the cached client: a cached
+		// reload can lag the writes just made and return stale GroupIDs. Enforce it
+		// by failing any second group List — the update must still succeed and
+		// report the membership it just applied.
+		var groupListCalls int
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+		}, interceptor.Funcs{
+			List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*unikornv1.GroupList); ok {
+					groupListCalls++
+
+					if groupListCalls > 1 {
+						return errUnexpectedGroupReload
+					}
+				}
+
+				return inner.List(ctx, list, opts...)
+			},
+		})
+		ctx := newContext(t)
+
+		createGroup(ctx, t, fixture.client, groupAlphaID)
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		result, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, openapi.GroupIDs{groupAlphaID}, result.Spec.GroupIDs)
+	})
+}
+
+func TestClient_Delete(t *testing.T) {
+	t.Parallel()
+
+	t.Run("removes the user from its groups and deletes the membership", func(t *testing.T) {
+		t.Parallel()
+
+		subject := unikornv1.GroupSubject{
+			ID:     userBobSubject,
+			Email:  userBobSubject,
+			Issuer: testIssuerURL,
+		}
+
+		group := &unikornv1.Group{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: testOrgNS,
+				Name:      groupAlphaID,
+			},
+			Spec: unikornv1.GroupSpec{
+				UserIDs:  []string{orgUserBobID},
+				Subjects: []unikornv1.GroupSubject{subject},
+			},
+		}
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userBobID, userBobSubject),
+			newOrganizationUser(orgUserBobID, userBobID),
+			group,
+		}, interceptor.Funcs{})
+		ctx := newContext(t)
+
+		err := fixture.usersClient.Delete(ctx, ids.MustParseOrganizationID(testOrgID), orgUserBobID)
+		require.NoError(t, err)
+
+		organizationUsers := &unikornv1.OrganizationUserList{}
+		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
+		require.Empty(t, organizationUsers.Items)
+
+		// the user is scrubbed from the group in both membership representations
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.NotContains(t, alphaGroup.Spec.UserIDs, orgUserBobID)
+		assert.NotContains(t, alphaGroup.Spec.Subjects, subject)
 	})
 }
