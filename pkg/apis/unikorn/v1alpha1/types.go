@@ -79,7 +79,7 @@ type OAuth2ClientStatus struct {
 	// Secret is the generated client secret.
 	Secret string `json:"secret,omitempty"`
 	// Current service state of the resource.
-	Conditions []unikornv1core.Condition `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // OAuth2ProviderList is a typed list of backend servers.
