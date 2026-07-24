@@ -56,6 +56,11 @@ type ProjectSpec struct {
 	Pause bool `json:"pause,omitempty"`
 	// GroupIDs is a list of groups that are allowed access to the project.
 	GroupIDs []string `json:"groupIDs,omitempty"`
+	// Platform, if true, marks this as a platform project: a project owned and operated by the
+	// Nscale platform layer (e.g. Envir), invisible and unmanageable to the customer. Only
+	// principals holding the identity:projects:platform capability may see or manage it.
+	// +kubebuilder:validation:Optional
+	Platform bool `json:"platform,omitempty"`
 }
 
 // ProjectStatus defines the status of the project.

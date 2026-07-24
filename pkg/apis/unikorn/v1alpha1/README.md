@@ -106,6 +106,18 @@ value simply never matches and the token is rejected as an untrusted issuer.
 The full bearer-trust operator contract is in
 [`docs/multi-issuer-token-contract.md`](../../../../docs/multi-issuer-token-contract.md).
 
+## `platform` (Envir-managed projects)
+
+`ProjectSpec.Platform` is a CRD-only field. It does not appear on the REST or OpenAPI surface
+(`ProjectWrite`/`ProjectRead`); customers can neither set nor read it. The platform sets it
+directly on the cluster (controller-runtime/kubectl) to mark a project as Envir-managed.
+
+A platform project is hidden from customers: the project handler excludes it from list results
+and returns 404 (not 403, so existence is not leaked) on get, unless the caller holds the distinct
+`identity:projects:platform` capability at organization or global scope. That capability is
+checked independently of `identity:projects`, so an ordinary organization administrator does not
+gain sight of platform projects. See [`pkg/rbac`](../../rbac/README.md) and the project handler.
+
 ## Label Query Model
 
 The package follows the broader platform rule that resource labels should carry the maximum

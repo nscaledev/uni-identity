@@ -595,7 +595,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	result, err := projects.New(h.client, h.namespace).List(r.Context(), organizationID)
+	result, platform, err := projects.New(h.client, h.namespace).List(r.Context(), organizationID)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -612,7 +612,20 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWri
 			return true
 		}
 
-		return rbac.AllowProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID) != nil
+		if rbac.AllowProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID) != nil {
+			return true
+		}
+
+		// Platform (Envir-managed) projects stay hidden unless the caller holds the
+		// distinct identity:projects:platform capability at organization or global
+		// scope. This is checked independently of identity:projects, which an org
+		// administrator holds but which does not grant sight of platform projects.
+		if platform.Contains(resource.Metadata.Id) &&
+			rbac.AllowOrganizationScopeID(ctx, "identity:projects:platform", openapi.Read, organizationID) != nil {
+			return true
+		}
+
+		return false
 	})
 
 	h.setUncacheable(w)
@@ -648,9 +661,17 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 		return
 	}
 
-	result, err := projects.New(h.client, h.namespace).Get(r.Context(), organizationID, projectID.String())
+	result, platform, err := projects.New(h.client, h.namespace).Get(r.Context(), organizationID, projectID.String())
 	if err != nil {
 		errors.HandleError(w, r, err)
+		return
+	}
+
+	// Platform (Envir-managed) projects must not leak their existence to customers:
+	// if the caller lacks the distinct identity:projects:platform capability, respond
+	// as if the project were not found rather than forbidden.
+	if platform && rbac.AllowOrganizationScopeID(r.Context(), "identity:projects:platform", openapi.Read, organizationID) != nil {
+		errors.HandleError(w, r, errors.HTTPNotFound())
 		return
 	}
 
@@ -661,6 +682,17 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
 	if err := rbac.AllowProjectScopeID(r.Context(), "identity:projects", openapi.Update, organizationID, projectID); err != nil {
 		errors.HandleError(w, r, err)
+		return
+	}
+
+	if _, platform, err := projects.New(h.client, h.namespace).Get(r.Context(), organizationID, projectID.String()); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	} else if platform && rbac.AllowOrganizationScopeID(r.Context(), "identity:projects:platform", openapi.Read, organizationID) != nil {
+		// Platform (Envir-managed) projects must not be mutated by, nor leak their
+		// existence to, callers lacking the distinct identity:projects:platform
+		// capability: respond as if not found rather than forbidden (no existence oracle).
+		errors.HandleError(w, r, errors.HTTPNotFound())
 		return
 	}
 
@@ -686,6 +718,17 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http
 		return
 	}
 
+	if _, platform, err := projects.New(h.client, h.namespace).Get(r.Context(), organizationID, projectID.String()); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	} else if platform && rbac.AllowOrganizationScopeID(r.Context(), "identity:projects:platform", openapi.Read, organizationID) != nil {
+		// Platform (Envir-managed) projects must not be mutated by, nor leak their
+		// existence to, callers lacking the distinct identity:projects:platform
+		// capability: respond as if not found rather than forbidden (no existence oracle).
+		errors.HandleError(w, r, errors.HTTPNotFound())
+		return
+	}
+
 	if err := projects.New(h.client, h.namespace).Delete(r.Context(), organizationID, projectID.String()); err != nil {
 		errors.HandleError(w, r, err)
 		return
@@ -695,9 +738,21 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http
 	w.WriteHeader(http.StatusAccepted)
 }
 
+//nolint:dupl // parallel reference handlers share the platform-project guard by design.
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, reference openapi.ReferenceParameter) {
 	if err := rbac.AllowProjectScopeID(r.Context(), "identity:projects/references", openapi.Create, organizationID, projectID); err != nil {
 		errors.HandleError(w, r, err)
+		return
+	}
+
+	if _, platform, err := projects.New(h.client, h.namespace).Get(r.Context(), organizationID, projectID.String()); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	} else if platform && rbac.AllowOrganizationScopeID(r.Context(), "identity:projects:platform", openapi.Read, organizationID) != nil {
+		// Platform (Envir-managed) projects must not be mutated by, nor leak their
+		// existence to, callers lacking the distinct identity:projects:platform
+		// capability: respond as if not found rather than forbidden (no existence oracle).
+		errors.HandleError(w, r, errors.HTTPNotFound())
 		return
 	}
 
@@ -710,9 +765,21 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferences
 	w.WriteHeader(http.StatusCreated)
 }
 
+//nolint:dupl // parallel reference handlers share the platform-project guard by design.
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReference(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, reference openapi.ReferenceParameter) {
 	if err := rbac.AllowProjectScopeID(r.Context(), "identity:projects/references", openapi.Delete, organizationID, projectID); err != nil {
 		errors.HandleError(w, r, err)
+		return
+	}
+
+	if _, platform, err := projects.New(h.client, h.namespace).Get(r.Context(), organizationID, projectID.String()); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	} else if platform && rbac.AllowOrganizationScopeID(r.Context(), "identity:projects:platform", openapi.Read, organizationID) != nil {
+		// Platform (Envir-managed) projects must not be mutated by, nor leak their
+		// existence to, callers lacking the distinct identity:projects:platform
+		// capability: respond as if not found rather than forbidden (no existence oracle).
+		errors.HandleError(w, r, errors.HTTPNotFound())
 		return
 	}
 

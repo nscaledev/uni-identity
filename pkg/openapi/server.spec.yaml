@@ -1967,6 +1967,14 @@ components:
           $ref: '#/components/schemas/aclEndpoints'
         projects:
           $ref: '#/components/schemas/aclProjectList'
+        platformProjects:
+          description: >-
+            Platform-project IDs in this organization (D16) that this subject may NOT see: an
+            organization-scope grant does not extend to them. Empty/absent when the subject holds
+            the identity:projects:platform capability.
+          type: array
+          items:
+            type: string
     aclOrganizationList:
       description: A list of organizations the subject is a member of.
       type: array

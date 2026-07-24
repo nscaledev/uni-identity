@@ -24,6 +24,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/spjmurray/go-util/pkg/set"
+
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -79,23 +81,35 @@ func convertList(in *unikornv1.ProjectList) openapi.Projects {
 	return out
 }
 
-func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Projects, error) {
+// List returns the organization's projects alongside the set of project IDs that are
+// platform. Platform is not part of the API response body (ProjectRead), so it is
+// returned separately for the handler to apply platform-project RBAC without ever
+// exposing the flag to customers.
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Projects, set.Set[string], error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var result unikornv1.ProjectList
 
 	if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: organization.Namespace}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	slices.SortStableFunc(result.Items, func(a, b unikornv1.Project) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	return convertList(&result), nil
+	platform := set.New[string]()
+
+	for i := range result.Items {
+		if result.Items[i].Spec.Platform {
+			platform.Add(result.Items[i].Name)
+		}
+	}
+
+	return convertList(&result), platform, nil
 }
 
 func (c *Client) get(ctx context.Context, organization *organizations.Meta, projectID string) (*unikornv1.Project, error) {
@@ -112,18 +126,21 @@ func (c *Client) get(ctx context.Context, organization *organizations.Meta, proj
 	return result, nil
 }
 
-func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID string) (*openapi.ProjectRead, error) {
+// Get returns the project alongside its platform flag. Platform is not part of the API
+// response body (ProjectRead), so it is returned separately for the handler to apply
+// platform-project RBAC without ever exposing the flag to customers.
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID string) (*openapi.ProjectRead, bool, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	result, err := c.get(ctx, organization, projectID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	return convert(result), nil
+	return convert(result), result.Spec.Platform, nil
 }
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ProjectWrite) (*unikornv1.Project, error) {
@@ -197,6 +214,10 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Labels = required.Labels
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
+
+	// Platform is a CRD-only field the API must never set or clear: it is not part of
+	// ProjectWrite, so retain the existing value to stop a PUT nulling it via merge-patch.
+	updated.Spec.Platform = current.Spec.Platform
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		if kerrors.IsConflict(err) {

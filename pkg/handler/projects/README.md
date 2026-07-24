@@ -41,6 +41,15 @@ delegation units created elsewhere in the handler tree:
 
 So `groupIDs` is the project-level selector over the organization's local delegation structure.
 
+### Platform Flag Handoff
+
+`ProjectSpec.Platform` marks an Envir-managed project that must stay hidden from customers. It is
+a CRD-only field and is deliberately never placed on `ProjectRead`, so it cannot leak through the
+API body. `List` and `Get` therefore return the platform state separately (a set of platform
+project IDs, and a bool respectively) alongside the converted `ProjectRead`. The handler applies
+the `identity:projects:platform` RBAC decision on top of that; this package only surfaces the
+flag, it does not interpret authority.
+
 ### External Reference Blocking
 
 Projects provide explicit reference-add and reference-remove helpers.

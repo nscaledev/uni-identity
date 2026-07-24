@@ -64,6 +64,12 @@ spec:
               pause:
                 description: Pause, if true, will inhibit reconciliation.
                 type: boolean
+              platform:
+                description: Platform, if true, marks this as a platform project owned
+                  and operated by the Nscale platform layer (e.g. Envir), invisible and
+                  unmanageable to the customer; only principals holding the
+                  identity:projects:platform capability may see or manage it.
+                type: boolean
               tags:
                 description: Tags are aribrary user data.
                 items:

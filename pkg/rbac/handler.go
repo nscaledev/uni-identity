@@ -146,10 +146,31 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 // in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
 // will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
+	// A global-scope (platform administrator) grant is never constrained by hidden projects.
+	if AllowGlobalScope(ctx, endpoint, operation) == nil {
 		return nil
 	}
 
+	// D16/D21: a platform project hidden from this subject is NOT reachable via any
+	// organization-scope grant — only via an explicit per-project grant (which a customer holding
+	// just an org grant will not have). When hidden, we therefore skip BOTH the organization-scope
+	// short-circuit AND the organization-endpoints re-check further down, leaving only the
+	// project-scope entries to satisfy the operation.
+	hidden := isHiddenPlatformProject(ctx, organizationID, projectID)
+
+	if !hidden && AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
+		return nil
+	}
+
+	// Otherwise (or for a hidden platform project) only an explicit per-project grant satisfies it.
+	return allowByProjectScopeEntry(ctx, endpoint, operation, organizationID, projectID, hidden)
+}
+
+// allowByProjectScopeEntry is the project-scope fall-through for AllowProjectScope: it resolves the
+// operation against the organization's own endpoints and its per-project ACL entries. When the
+// project is hidden (a platform project the subject lacks the capability for), the organization
+// endpoints are skipped so that only an explicit per-project grant can satisfy the operation.
+func allowByProjectScopeEntry(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string, hidden bool) error {
 	acl := FromContext(ctx)
 
 	if acl.Organizations == nil {
@@ -161,7 +182,7 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 			continue
 		}
 
-		if organization.Endpoints != nil {
+		if !hidden && organization.Endpoints != nil {
 			if operationAllowedByEndpoints(*organization.Endpoints, endpoint, operation) == nil {
 				return nil
 			}
@@ -179,6 +200,31 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 	}
 
 	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — project is not in this principal's accessible set", operation, endpoint))
+}
+
+// isHiddenPlatformProject reports whether the project is in the subject's hidden set for the organization
+// (D16/D21 platform projects the subject lacks the identity:projects:platform capability for).
+// It reads both the plural Organizations list (what sibling services receive) and the singular
+// scoped Organization, so it works regardless of which ACL shape was built.
+func isHiddenPlatformProject(ctx context.Context, organizationID, projectID string) bool {
+	acl := FromContext(ctx)
+
+	if acl.Organizations != nil {
+		for i := range *acl.Organizations {
+			org := &(*acl.Organizations)[i]
+			if org.Id == organizationID && org.PlatformProjects != nil && slices.Contains(*org.PlatformProjects, projectID) {
+				return true
+			}
+		}
+	}
+
+	if acl.Organization != nil && acl.Organization.Id == organizationID && acl.Organization.PlatformProjects != nil {
+		if slices.Contains(*acl.Organization.PlatformProjects, projectID) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isAllowedByProjectACL checks only the project-level ACL entries for a specific project,
@@ -258,6 +304,13 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 	// identity:projects/Read, and global admins are already fully trusted.
 	if AllowGlobalScope(ctx, endpoint, operation) == nil {
 		return nil
+	}
+
+	// D16/D21: an organization-scope grant does not extend to a platform project, so a
+	// subject holding only the org grant cannot create resources *into* it. (This path does not go
+	// through AllowProjectScope, so the guard must be repeated here.)
+	if isHiddenPlatformProject(ctx, organizationID, projectID) {
+		return errors.HTTPForbidden("operation is not allowed by rbac: project is platform-managed")
 	}
 
 	// Access is granted via organization-scoped ACL, but the project ID is untrusted —

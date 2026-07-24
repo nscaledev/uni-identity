@@ -174,6 +174,12 @@ type AclOrganization struct {
 	// Endpoints A list of access control scopes.
 	Endpoints *AclEndpoints `json:"endpoints,omitempty"`
 
+	// PlatformProjects Platform-project IDs in this organization (D16) that this subject may NOT
+	// see: an organization-scope grant does not extend to them. Empty/absent when the subject holds
+	// the identity:projects:platform capability. Consumed by rbac.AllowProjectScope (and sibling
+	// services) to keep a platform project's resources out of organization-scope reads.
+	PlatformProjects *[]string `json:"platformProjects,omitempty"`
+
 	// Id The organization ID.
 	Id string `json:"id"`
 

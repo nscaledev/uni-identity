@@ -19,7 +19,13 @@ package rbac
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/openapi"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestSrcIssDefaultMatchesMigrationGateSentinel pins the coupling between the
@@ -39,4 +45,47 @@ func TestSrcIssDefaultMatchesMigrationGateSentinel(t *testing.T) {
 	if got := srcIssOrUNISentinel("https://staff.auth0.com"); got != "https://staff.auth0.com" {
 		t.Fatalf("srcIssOrUNISentinel must not alter a non-empty srcIss, got %q", got)
 	}
+}
+
+// TestPlatformProjectNames pins the ACL builder's core selection: only projects flagged
+// Spec.Platform become the hidden set (D16/D21).
+func TestPlatformProjectNames(t *testing.T) {
+	t.Parallel()
+
+	projects := &unikornv1.ProjectList{
+		Items: []unikornv1.Project{
+			{ObjectMeta: metav1.ObjectMeta{Name: "p-normal"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "p-platform"}, Spec: unikornv1.ProjectSpec{Platform: true}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "p-normal-2"}},
+			{ObjectMeta: metav1.ObjectMeta{Name: "p-platform-2"}, Spec: unikornv1.ProjectSpec{Platform: true}},
+		},
+	}
+
+	require.ElementsMatch(t, []string{"p-platform", "p-platform-2"}, platformProjectNames(projects))
+	require.Empty(t, platformProjectNames(&unikornv1.ProjectList{}))
+}
+
+// TestHasPlatformProjectsCapability pins that only an explicit identity:projects:platform Read
+// endpoint counts as holding the capability (so the hidden set is populated for everyone else).
+func TestHasPlatformProjectsCapability(t *testing.T) {
+	t.Parallel()
+
+	held := &openapi.AclEndpoints{
+		{Name: "identity:projects:platform", Operations: openapi.AclOperations{openapi.Read}},
+	}
+	require.True(t, hasPlatformProjectsCapability(held))
+
+	// The ordinary projects grant does NOT confer the platform capability.
+	ordinary := &openapi.AclEndpoints{
+		{Name: "identity:projects", Operations: openapi.AclOperations{openapi.Read, openapi.Create}},
+	}
+	require.False(t, hasPlatformProjectsCapability(ordinary))
+
+	// Holding the endpoint at the wrong operation is not enough.
+	wrongOp := &openapi.AclEndpoints{
+		{Name: "identity:projects:platform", Operations: openapi.AclOperations{openapi.Create}},
+	}
+	require.False(t, hasPlatformProjectsCapability(wrongOp))
+
+	require.False(t, hasPlatformProjectsCapability(nil))
 }
