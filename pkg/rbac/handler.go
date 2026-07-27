@@ -310,7 +310,7 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 	// subject holding only the org grant cannot create resources *into* it. (This path does not go
 	// through AllowProjectScope, so the guard must be repeated here.)
 	if isHiddenPlatformProject(ctx, organizationID, projectID) {
-		return errors.HTTPForbidden("operation is not allowed by rbac: project is platform-managed")
+		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — project is a platform project", operation, endpoint))
 	}
 
 	// Access is granted via organization-scoped ACL, but the project ID is untrusted —

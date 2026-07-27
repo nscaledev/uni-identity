@@ -46,6 +46,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
+	identityutil "github.com/unikorn-cloud/identity/pkg/util"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -310,17 +311,51 @@ func (h *Handler) GetApiV1Acl(w http.ResponseWriter, r *http.Request) {
 	// The middleware will populate this from the URL, and thus not have access to any
 	// scoping information, so just return anything at the global scope.
 	// TODO: we may want to consider just returning everything across all organizations.
-	result := rbac.FromContext(r.Context())
+	result := aclForCaller(r.Header, rbac.FromContext(r.Context()))
 
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDAcl(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
-	result := rbac.FromContext(r.Context())
+	result := aclForCaller(r.Header, rbac.FromContext(r.Context()))
 
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
+}
+
+// aclForCaller returns the ACL to serialize for an /acl request. Service-to-service callers
+// (mTLS — a client-certificate header is present) receive it unchanged, because the sibling
+// services need the per-organization platformProjects hidden-set to enforce platform-project
+// hiding (D21). Any other caller — a direct user/CLI/UI request — has the hidden-set stripped, so a
+// customer can never learn the IDs or existence of the platform projects they are meant not to see.
+// It copies rather than mutates: the source ACL is cached and shared across requests, so mutating it
+// would also corrupt the copy served to legitimate service callers.
+func aclForCaller(header http.Header, acl *openapi.Acl) *openapi.Acl {
+	if acl == nil || identityutil.HasClientCertificateHeader(header) {
+		return acl
+	}
+
+	out := *acl
+
+	if acl.Organization != nil {
+		organization := *acl.Organization
+		organization.PlatformProjects = nil
+		out.Organization = &organization
+	}
+
+	if acl.Organizations != nil {
+		organizations := make(openapi.AclOrganizationList, len(*acl.Organizations))
+
+		for i, organization := range *acl.Organizations {
+			organization.PlatformProjects = nil
+			organizations[i] = organization
+		}
+
+		out.Organizations = &organizations
+	}
+
+	return &out
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDRoles(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
