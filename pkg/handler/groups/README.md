@@ -68,6 +68,10 @@ knows which one it cannot drop.
 
 So group writes are also authority-delegation checks, for both grants and revocations.
 
+Group DELETE intentionally remains an unguarded revocation path: deleting a group is an explicit,
+whole-group action by the caller, not a silent side effect of an update, so the guard above — which
+exists to catch omission — does not apply to it.
+
 ### Project Reference Cleanup
 
 Projects use groups as access boundaries.

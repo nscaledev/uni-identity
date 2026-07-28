@@ -272,6 +272,11 @@ func TestNonBuiltinRolesAdminGrantable(t *testing.T) {
 			continue
 		}
 
+		// charts/identity/templates/roles.yaml does not yet render per-role labels onto
+		// the Role resources it creates, so this exemption cannot be satisfied from
+		// values.yaml today — the label check is a no-op until that template gains
+		// label rendering (ID-368 Phase B). It exists now so Phase B has a test to
+		// flip green rather than one to write from scratch.
 		if role.Labels["rbac.unikorn-cloud.org/aggregate-to-administrator"] == "true" {
 			continue
 		}

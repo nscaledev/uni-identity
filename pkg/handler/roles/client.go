@@ -52,7 +52,7 @@ func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
 	return out
 }
 
-func (c *Client) convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID) openapi.Roles {
+func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID) openapi.Roles {
 	var out openapi.Roles
 
 	for _, resource := range in.Items {
@@ -84,5 +84,5 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return role.Spec.Protected
 	})
 
-	return c.convertList(ctx, result, organizationID), nil
+	return convertList(ctx, result, organizationID), nil
 }
