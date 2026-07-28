@@ -568,6 +568,9 @@ func main() {
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
+	// Tests that install custom resources directly (roles have no write API)
+	// need the deployment namespace.
+	fmt.Printf("IDENTITY_NAMESPACE=%s\n", *namespace)
 	fmt.Printf("TEST_ORG_ID=%s\n", orgID)
 	fmt.Printf("UNAUTHORISED_ORG_ID=%s\n", unauthorisedOrgID)
 	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID)

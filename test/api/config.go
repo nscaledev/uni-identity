@@ -25,11 +25,15 @@ import (
 // TestConfig extends the base config with Identity-specific fields.
 type TestConfig struct {
 	coreconfig.BaseConfig
-	AdminToken          string
-	UserToken           string
-	AuditToken          string
-	OrgID               string
-	ProjectID           string
+	AdminToken string
+	UserToken  string
+	AuditToken string
+	OrgID      string
+	ProjectID  string
+	// Namespace is the Kubernetes namespace identity is deployed into.  Tests
+	// that install fixtures with no HTTP API (Role CRs, and Groups carrying
+	// them) need it to find the identity resources and the organization CR.
+	Namespace           string
 	AdminGroupID        string
 	UserGroupID         string
 	UserID              string
@@ -80,6 +84,7 @@ func LoadTestConfig() (*TestConfig, error) {
 		AuditToken:          v.GetString("AUDIT_AUTH_TOKEN"),
 		OrgID:               v.GetString("TEST_ORG_ID"),
 		ProjectID:           v.GetString("TEST_PROJECT_ID"),
+		Namespace:           v.GetString("IDENTITY_NAMESPACE"),
 		AdminGroupID:        v.GetString("TEST_ADMIN_GROUP_ID"),
 		UserGroupID:         v.GetString("TEST_USER_GROUP_ID"),
 		UserID:              v.GetString("TEST_USER_ID"),

@@ -60,6 +60,7 @@ Optional variables for richer coverage:
 - `USER_AUTH_TOKEN`
 - `TEST_USER_SA_ID`
 - `IDENTITY_CA_CERT`
+- `IDENTITY_NAMESPACE`
 
 Notes:
 
@@ -67,6 +68,9 @@ Notes:
 - `ADMIN_AUTH_TOKEN` is also accepted and is used by the KinD fixture flow.
 - When `IDENTITY_CA_CERT` is set, the Make targets export `SSL_CERT_FILE` so Go HTTP clients trust
   the test CA issued by the KinD environment.
+- `IDENTITY_NAMESPACE` is the namespace identity is deployed into. Specs that install custom
+  resources with no write API — roles, and groups carrying them — need it plus cluster access via
+  `KUBECONFIG`; they fail fast when it is missing.
 
 ## Local KinD Flow
 

@@ -274,6 +274,20 @@ func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, grou
 	return nil
 }
 
+// UpdateGroupRaw updates a group and returns the raw response so tests can
+// assert on rejection status codes and error bodies.  Pass expectedStatus 0 to
+// accept any status.
+func (c *APIClient) UpdateGroupRaw(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite, expectedStatus int) (*http.Response, []byte, error) {
+	path := c.endpoints.GetGroup(orgID, groupID)
+
+	body, err := json.Marshal(group)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshaling group: %w", err)
+	}
+
+	return c.DoRequest(ctx, http.MethodPut, path, bytes.NewReader(body), expectedStatus)
+}
+
 // DeleteGroup deletes a group from an organization.
 func (c *APIClient) DeleteGroup(ctx context.Context, orgID, groupID string) error {
 	path := c.endpoints.GetGroup(orgID, groupID)

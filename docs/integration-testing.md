@@ -154,6 +154,7 @@ Optional variables used by the richer kind-generated flow:
 - `USER_AUTH_TOKEN`
 - `TEST_USER_SA_ID`
 - `IDENTITY_CA_CERT`
+- `IDENTITY_NAMESPACE` (needed by specs that install role and group custom resources directly)
 
 If `IDENTITY_CA_CERT` is present, the Make targets export `SSL_CERT_FILE` so the suite can trust
 the test ingress certificate.
