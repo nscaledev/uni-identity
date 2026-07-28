@@ -46,8 +46,15 @@ concrete write-time check.
 When roles are attached to a group, this client:
 
 - verifies the role exists
-- rejects protected roles
-- rejects roles the caller is not permitted to grant in that organization
+- rejects protected roles, whether newly added or already on the group
+- rejects newly added roles the caller is not permitted to grant in that organization
+
+The grant check applies only to the delta: roles already on the group before the write are not
+re-checked, so a caller can edit membership on a group that carries a role they could not grant
+themselves, and can resend that group's existing role list without the write being refused. A role
+being added is always grant-checked, on both create and update; create has no prior state, so every
+role in the request counts as an addition. A refused grant names the role so the caller knows which
+one to remove or delegate.
 
 So group writes are also authority-delegation checks.
 
@@ -64,7 +71,8 @@ would drift.
 - groups are the primary organization-local attachment point between members and roles
 - `RoleIDs` are the actual delegated-authority payload of the group
 - protected roles must never be attached to a group
-- callers may only attach roles they are allowed to grant in that organization
+- callers may only add roles they are allowed to grant in that organization; roles already on the
+  group are not re-checked on subsequent writes
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible
 - group membership and role/service-account ID lists are normalized to first-occurrence unique values
 - projects should not retain references to groups that no longer exist
