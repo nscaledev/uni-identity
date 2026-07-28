@@ -34,6 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -576,4 +577,112 @@ func TestUpdateGroup_DeduplicatesSpecFieldsBeforePersist(t *testing.T) {
 	assert.Equal(t, "alice@example.com", stored.Spec.Subjects[1].ID)
 	assert.Equal(t, "https://external.example.com", stored.Spec.Subjects[1].Issuer)
 	assert.Equal(t, "alice-external-1@example.com", stored.Spec.Subjects[1].Email)
+}
+
+// createRadarRole creates a Role scoped to an endpoint the fixture's caller does not hold,
+// so AllowRole refuses it unless the caller's ACL is extended to cover that endpoint.
+func (f *groupTestFixture) createRadarRole(t *testing.T) {
+	t.Helper()
+
+	role := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "radar-id",
+			Labels:    map[string]string{"unikorn-cloud.org/name": "radar"},
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Organization: []unikornv1.RoleScope{
+					{Name: "radar:things", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+	require.NoError(t, f.client.Create(newContext(t), role))
+}
+
+// createGroupWithRoles creates the test group with a pre-existing set of RoleIDs, standing
+// in for roles granted by an earlier, more privileged write.
+func (f *groupTestFixture) createGroupWithRoles(t *testing.T, roleIDs []string) {
+	t.Helper()
+
+	group := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupTestID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs: roleIDs,
+		},
+	}
+	require.NoError(t, f.client.Create(newContext(t), group))
+}
+
+// aclContext builds a context carrying an ACL that grants only the given organization-scoped
+// endpoints in testOrgID, layered on top of newContext's authorization/principal info.
+func aclContext(t *testing.T, endpoints openapi.AclEndpoints) context.Context {
+	t.Helper()
+
+	organizations := openapi.AclOrganizationList{{Id: testOrgID, Endpoints: &endpoints}}
+
+	return rbac.NewContext(newContext(t), &openapi.Acl{Organizations: &organizations})
+}
+
+// TestUpdateGroupRejectsRemovalOfUngrantableRole exercises the removal guard through the
+// public Update() entrypoint, not just the unexported validateRoleRemovals helper directly:
+// a group already carries "radar-id" (as if granted by a more privileged earlier write), and
+// the caller — who cannot grant radar:things — submits an update that omits it. Without the
+// guard wired into Update, this would silently revoke the role; instead it must be refused,
+// naming the role, and the stored group must be unchanged (ID-368).
+func TestUpdateGroupRejectsRemovalOfUngrantableRole(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	// Caller holds identity:groups update but nothing on radar:things.
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	// The request omits "radar-id" entirely — a silent removal attempt.
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(nil, nil))
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	// The group must be unchanged: the role was refused, not silently dropped.
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+}
+
+// TestUpdateGroupKeepsUngrantableRoleWhenResent is the companion happy path: a caller who
+// cannot grant radar:things may still resend a group's existing radar-id role untouched
+// alongside an unrelated change (here, service account membership). The removal guard must
+// not fire when the role isn't actually being dropped.
+func TestUpdateGroupKeepsUngrantableRoleWhenResent(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	request := makeGroupUpdateRequest(nil, nil)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+	request.Spec.ServiceAccountIDs = openapi.StringList{"sa-a"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+	assert.Equal(t, []string{"sa-a"}, stored.Spec.ServiceAccountIDs)
 }
