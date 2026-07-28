@@ -93,7 +93,10 @@ deployment time.
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
   accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
   only the global permissions the corresponding service actually exercises;
-  over-permissioning here is a security defect.
+  over-permissioning here is a security defect. Each also holds `identity:projects:platform`
+  (read only): they operate on platform projects — reading the record and, for those that
+  hold `identity:projects/references`, maintaining reference finalizers — so the D16/D21
+  gates must not hide platform projects from them.
 
 ### User-facing roles
 

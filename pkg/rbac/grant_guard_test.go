@@ -253,3 +253,31 @@ func TestPlatformAdministratorHoldsPlatformCapability(t *testing.T) {
 	require.NoError(t, rbac.AllowGlobalScope(ctx, "identity:projects:platform", openapi.Read),
 		"platform-administrator must hold identity:projects:platform (option A) so its project-record visibility matches its substrate access")
 }
+
+// TestSubstrateServicesHoldPlatformCapability pins that the built-in substrate service accounts
+// hold identity:projects:platform. They legitimately operate on platform projects — creating and
+// removing project references (finalizers) and reading the project record — and the D16/D21 gates
+// return 404 to any caller lacking the capability. Without this grant those services break
+// platform-project lifecycle (Codex "Preserve service reference access to platform projects").
+func TestSubstrateServicesHoldPlatformCapability(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+
+	for _, name := range []string{"region-service", "kubernetes-service", "compute-service", "storage-service"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			role, ok := roles[name]
+			require.Truef(t, ok, "%s role missing from the chart values", name)
+
+			global := toACLEndpoints(role.Scopes.Global)
+			acl := &openapi.Acl{Global: &global}
+
+			ctx := rbac.NewContext(t.Context(), acl)
+
+			require.NoErrorf(t, rbac.AllowGlobalScope(ctx, "identity:projects:platform", openapi.Read),
+				"%s operates on platform projects and must hold identity:projects:platform (read), else the D16/D21 gates 404 its reference and project calls", name)
+		})
+	}
+}

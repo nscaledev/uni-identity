@@ -210,6 +210,7 @@ roles:
       global:
         identity:allocations: [create,read,update,delete]
         identity:projects: [read]
+        identity:projects:platform: [read] # operates on platform projects (D16/D21)
         identity:projects/references: [create,delete]
   kubernetes-service:
     description: Kubernetes service
@@ -217,6 +218,7 @@ roles:
     scopes:
       global:
         identity:projects: [read]
+        identity:projects:platform: [read] # operates on platform projects (D16/D21)
         identity:projects/references: [create,delete]
         identity:allocations: [create,read,update,delete]
         region:identities: [create,read,delete] # TODO: Create/delete V1 only
@@ -233,6 +235,7 @@ roles:
     scopes:
       global:
         identity:projects: [read]
+        identity:projects:platform: [read] # operates on platform projects (D16/D21)
         identity:allocations: [create,read,update,delete]
         region:identities: [create,read,delete] # TODO: V2 delete me, created by network
         region:regions: [read]
@@ -251,6 +254,7 @@ roles:
     scopes:
       global:
         identity:projects: [read]
+        identity:projects:platform: [read] # operates on platform projects (D16/D21)
         identity:projects/references: [create,delete]
         identity:allocations: [create,read,update,delete]
         region:networks:v2/references: [create,read,update,delete]
