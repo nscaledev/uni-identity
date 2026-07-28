@@ -388,6 +388,35 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 	return normalizedRoleIDs, nil
 }
 
+// validateRoleRemovals rejects updates that drop a role the caller cannot
+// grant.  Without this, a client that cannot see an ungrantable role
+// silently revokes it by round-tripping the group (ID-368).  Roles that no
+// longer exist may always be dropped: a dangling reference conveys no
+// permissions.
+func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.OrganizationID, current *unikornv1.Group, requestedRoleIDs []string) error {
+	for _, roleID := range current.Spec.RoleIDs {
+		if slices.Contains(requestedRoleIDs, roleID) {
+			continue
+		}
+
+		var resource unikornv1.Role
+
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: roleID}, &resource); err != nil {
+			if kerrors.IsNotFound(err) {
+				continue
+			}
+
+			return fmt.Errorf("%w: failed to validate role removal", err)
+		}
+
+		if err := rbac.AllowRole(ctx, &resource, organizationID); err != nil {
+			return errors.HTTPForbidden(fmt.Sprintf("role %q (%s) cannot be removed from the group: the caller does not hold all its permissions", roleDisplayName(&resource), roleID)).WithError(err)
+		}
+	}
+
+	return nil
+}
+
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.GroupWrite, current *unikornv1.Group) (*unikornv1.Group, error) {
 	userIDs, subjects, err := c.populateSubjectsAndUserIDs(ctx, organization, in)
 	if err != nil {
@@ -450,6 +479,10 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	current, err := c.get(ctx, organization, groupID)
 	if err != nil {
+		return err
+	}
+
+	if err := c.validateRoleRemovals(ctx, organizationID, current, request.Spec.RoleIDs); err != nil {
 		return err
 	}
 

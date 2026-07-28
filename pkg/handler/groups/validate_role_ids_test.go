@@ -126,3 +126,34 @@ func TestValidateRoleIDsProtectedAndMissing(t *testing.T) {
 	_, err = c.validateRoleIDs(ctx, orgID, []string{"nope"}, nil)
 	require.Error(t, err)
 }
+
+func TestValidateRoleRemovalsRejectsUngrantableDrop(t *testing.T) {
+	t.Parallel()
+
+	radar := testRole("radar-id", "radar", false, "radar:things")
+	c := testClient(t, radar)
+
+	orgID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	current := &unikornv1.Group{Spec: unikornv1.GroupSpec{RoleIDs: []string{"radar-id"}}}
+
+	// Caller cannot grant radar: dropping it must be rejected, naming it.
+	// Without this, a client that cannot resolve the role silently revokes
+	// it by round-tripping the group.
+	ctx := testACL(openapi.AclEndpoints{{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}}})
+	err = c.validateRoleRemovals(ctx, orgID, current, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "radar")
+
+	// Keeping it is fine (no removal).
+	require.NoError(t, c.validateRoleRemovals(ctx, orgID, current, []string{"radar-id"}))
+
+	// A caller who CAN grant radar may drop it.
+	ctx = testACL(openapi.AclEndpoints{{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}}})
+	require.NoError(t, c.validateRoleRemovals(ctx, orgID, current, nil))
+
+	// A dangling role reference (role deleted) may always be dropped.
+	dangling := &unikornv1.Group{Spec: unikornv1.GroupSpec{RoleIDs: []string{"no-such-role"}}}
+	require.NoError(t, c.validateRoleRemovals(ctx, orgID, dangling, nil))
+}
