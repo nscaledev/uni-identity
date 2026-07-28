@@ -55,6 +55,15 @@ project permissions remain the narrowest scope.
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 
+One deliberate exception to "organization satisfies project": a **platform project hidden from the
+subject** (D16/D21 — they lack `identity:projects:platform`) is not reachable through any
+organization-scope grant, only through an explicit per-project grant or a global grant. Denials for
+a hidden platform project are returned as **not-found, not forbidden**, so a hidden project is
+indistinguishable from a nonexistent one; a 403 would otherwise be an existence oracle. This
+translation lives inside the project scope checks (`AllowProjectScope*`), so every consumer —
+identity's own handlers and sibling services alike — inherits it without handler-side special
+cases.
+
 Each scope check comes in three argument flavours so callers pass whatever they already hold,
 without re-deriving it:
 

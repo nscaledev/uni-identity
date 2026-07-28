@@ -169,8 +169,28 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 // allowByProjectScopeEntry is the project-scope fall-through for AllowProjectScope: it resolves the
 // operation against the organization's own endpoints and its per-project ACL entries. When the
 // project is hidden (a platform project the subject lacks the capability for), the organization
-// endpoints are skipped so that only an explicit per-project grant can satisfy the operation.
+// endpoints are skipped so that only an explicit per-project grant can satisfy the operation, and
+// any denial is returned as not-found rather than forbidden — a 403 would be an existence oracle
+// (403 = a real platform project, 404 = nothing there). Translating here covers every
+// AllowProjectScope* consumer, sibling services included, not just identity's own project CRUD
+// handlers (D16/D21).
 func allowByProjectScopeEntry(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string, hidden bool) error {
+	if err := allowByProjectEntryEndpoints(ctx, endpoint, operation, organizationID, projectID, hidden); err != nil {
+		if hidden {
+			return errors.HTTPNotFound()
+		}
+
+		return err
+	}
+
+	return nil
+}
+
+// allowByProjectEntryEndpoints resolves the operation against the organization's own endpoints
+// (skipped when the project is hidden) and its per-project ACL entries, returning a forbidden
+// error when nothing satisfies it. Callers must go through allowByProjectScopeEntry, which owns
+// the hidden-platform-project not-found translation.
+func allowByProjectEntryEndpoints(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string, hidden bool) error {
 	acl := FromContext(ctx)
 
 	if acl.Organizations == nil {
@@ -225,14 +245,6 @@ func isHiddenPlatformProject(ctx context.Context, organizationID, projectID stri
 	}
 
 	return false
-}
-
-// IsHiddenPlatformProjectID reports whether projectID is a platform project hidden from the caller
-// (they lack the identity:projects:platform capability). Handlers use it to turn an authorization
-// denial into a 404 so a hidden platform project is indistinguishable from a nonexistent one,
-// rather than leaking its existence with a 403 (D16/D21).
-func IsHiddenPlatformProjectID(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) bool {
-	return isHiddenPlatformProject(ctx, organizationID.String(), projectID.String())
 }
 
 // isAllowedByProjectACL checks only the project-level ACL entries for a specific project,
@@ -316,9 +328,11 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 
 	// D16/D21: an organization-scope grant does not extend to a platform project, so a
 	// subject holding only the org grant cannot create resources *into* it. (This path does not go
-	// through AllowProjectScope, so the guard must be repeated here.)
+	// through AllowProjectScope, so the guard must be repeated here.) Deny with not-found — the
+	// same response a nonexistent project gets below — so a hidden platform project is
+	// indistinguishable from one that does not exist.
 	if isHiddenPlatformProject(ctx, organizationID, projectID) {
-		return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — project is a platform project", operation, endpoint))
+		return errors.HTTPNotFound()
 	}
 
 	// Access is granted via organization-scoped ACL, but the project ID is untrusted —

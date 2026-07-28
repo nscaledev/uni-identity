@@ -691,15 +691,10 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjects(w http.ResponseWr
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
+	// The rbac layer denies a hidden platform project with not-found, so no 403-vs-404
+	// existence oracle can arise here (D16/D21).
 	if err := rbac.AllowProjectScopeID(r.Context(), "identity:projects", openapi.Read, organizationID, projectID); err != nil {
-		// A platform project hidden from this caller must look nonexistent, not forbidden: a 403
-		// here would be an existence oracle (403 = a real platform project, 404 = nothing here).
-		if rbac.IsHiddenPlatformProjectID(r.Context(), organizationID, projectID) {
-			err = errors.HTTPNotFound()
-		}
-
 		errors.HandleError(w, r, err)
-
 		return
 	}
 
@@ -722,15 +717,10 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
+	// The rbac layer denies a hidden platform project with not-found, so no 403-vs-404
+	// existence oracle can arise here (D16/D21).
 	if err := rbac.AllowProjectScopeID(r.Context(), "identity:projects", openapi.Update, organizationID, projectID); err != nil {
-		// A platform project hidden from this caller must look nonexistent, not forbidden: a 403
-		// here would be an existence oracle (403 = a real platform project, 404 = nothing here).
-		if rbac.IsHiddenPlatformProjectID(r.Context(), organizationID, projectID) {
-			err = errors.HTTPNotFound()
-		}
-
 		errors.HandleError(w, r, err)
-
 		return
 	}
 
@@ -762,15 +752,10 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
+	// The rbac layer denies a hidden platform project with not-found, so no 403-vs-404
+	// existence oracle can arise here (D16/D21).
 	if err := rbac.AllowProjectScopeID(r.Context(), "identity:projects", openapi.Delete, organizationID, projectID); err != nil {
-		// A platform project hidden from this caller must look nonexistent, not forbidden: a 403
-		// here would be an existence oracle (403 = a real platform project, 404 = nothing here).
-		if rbac.IsHiddenPlatformProjectID(r.Context(), organizationID, projectID) {
-			err = errors.HTTPNotFound()
-		}
-
 		errors.HandleError(w, r, err)
-
 		return
 	}
 

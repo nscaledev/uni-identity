@@ -85,9 +85,39 @@ func TestAllowProjectScopePlatformProject(t *testing.T) {
 			ACL:  platformACL(nil, false),
 		},
 		{
-			// The fix: an org grant must NOT reach a hidden platform project.
-			Name:         "Deny: org grant does not reach a hidden platform project",
+			// The fix: an org grant must NOT reach a hidden platform project, and the denial
+			// must be not-found so it is indistinguishable from the project not existing (no
+			// 403-vs-404 existence oracle).
+			Name:         "Deny: org grant does not reach a hidden platform project (as not found)",
 			ACL:          platformACL([]string{projectID}, false),
+			ErrorChecker: coreerrors.IsHTTPNotFound,
+		},
+		{
+			// The hidden set is honoured when carried only on the singular scoped Organization
+			// (the shape a scoped-token ACL is built with), and still denies as not-found.
+			Name: "Deny: hidden set on the singular scoped organization (as not found)",
+			ACL: &openapi.Acl{
+				Organization: &openapi.AclOrganization{
+					Id:               organizationID,
+					PlatformProjects: &[]string{projectID},
+				},
+			},
+			ErrorChecker: coreerrors.IsHTTPNotFound,
+		},
+		{
+			// Not-found is ONLY for hidden platform projects: an ordinary no-grant denial must
+			// stay forbidden or we lose real 403 semantics everywhere else.
+			Name: "Deny: plain no-grant denial stays forbidden",
+			ACL: &openapi.Acl{
+				Organizations: &openapi.AclOrganizationList{
+					{
+						Id: organizationID,
+						Endpoints: &openapi.AclEndpoints{
+							{Name: resourceType2, Operations: openapi.AclOperations{openapi.Read}},
+						},
+					},
+				},
+			},
 			ErrorChecker: coreerrors.IsForbidden,
 		},
 		{
@@ -151,10 +181,11 @@ func TestAllowProjectScopeCreatePlatformProject(t *testing.T) {
 	}{
 		{
 			// The fix: an org grant cannot create INTO a hidden platform project, and the
-			// existence API is never consulted (no mock expectation set).
-			Name:         "Deny: org grant cannot create into a hidden platform project",
+			// existence API is never consulted (no mock expectation set). The denial is
+			// not-found, matching the nonexistent-project response below it (no oracle).
+			Name:         "Deny: org grant cannot create into a hidden platform project (as not found)",
 			ACL:          platformACL([]string{projectID}, false),
-			ErrorChecker: coreerrors.IsForbidden,
+			ErrorChecker: coreerrors.IsHTTPNotFound,
 		},
 		{
 			// No regression: an org grant can still create into a normal project (existence checked).
