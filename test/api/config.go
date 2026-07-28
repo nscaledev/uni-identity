@@ -37,6 +37,9 @@ type TestConfig struct {
 	UserSAID            string
 	UnauthorisedOrgID   string
 	ServiceAccountToken string
+	// PlatformProjectID is a project with the CRD-only Spec.Platform flag set, seeded by the
+	// integration fixtures. Optional: suites that exercise platform-project hiding skip when unset.
+	PlatformProjectID string
 }
 
 // LoadTestConfig loads configuration from environment variables and .env files using viper.
@@ -87,6 +90,7 @@ func LoadTestConfig() (*TestConfig, error) {
 		UserSAID:            v.GetString("TEST_USER_SA_ID"),
 		UnauthorisedOrgID:   v.GetString("UNAUTHORISED_ORG_ID"),
 		ServiceAccountToken: v.GetString("SERVICE_ACCOUNT_TOKEN"),
+		PlatformProjectID:   v.GetString("TEST_PLATFORM_PROJECT_ID"),
 	}
 
 	// Validate required fields

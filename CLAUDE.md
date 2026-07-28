@@ -30,7 +30,17 @@ make test-unit
 
 ## Test Writing
 
-All new tests must follow the patterns established in `test/api/`:
+Tests come in two kinds; pick the right one before writing:
+
+- **Unit tests** live beside the code in `pkg/**` as plain-Go `testing` tests (table-driven,
+  `testify/require`). Use them for logic with no HTTP surface — authorization functions,
+  unexported helpers, and assertions on the chart role catalogue in `charts/identity/values.yaml`.
+  They do **not** use Ginkgo, the typed client, or build tags.
+- **Integration tests** live in `test/api/` (and e2e in `test/e2e/`), run against a live cluster,
+  and MUST follow the patterns below. Endpoint RBAC behaviour (real HTTP status codes and response
+  bodies) belongs here, not in unit tests.
+
+The patterns below apply to `test/api/` integration tests:
 
 - **BDD structure**: Use `Describe > Context > Describe > It` nesting.
   `Describe` names the resource or component. `Context` describes the scenario

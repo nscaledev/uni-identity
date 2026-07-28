@@ -277,6 +277,63 @@ func createProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, 
 	return id
 }
 
+// orgNamespace returns the provisioned namespace of an organization. The organization must already
+// be provisioned (call waitForOrgNamespace first).
+func orgNamespace(ctx context.Context, k8s client.Client, namespace, orgID string) string {
+	org := &unstructured.Unstructured{}
+	org.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "identity.unikorn-cloud.org",
+		Version: "v1alpha1",
+		Kind:    "Organization",
+	})
+
+	if err := k8s.Get(ctx, types.NamespacedName{Namespace: namespace, Name: orgID}, org); err != nil {
+		fatalf("failed to get organization %s: %v", orgID, err)
+	}
+
+	ns, _, _ := unstructured.NestedString(org.Object, "status", "namespace")
+	if ns == "" {
+		fatalf("organization %s has no provisioned namespace", orgID)
+	}
+
+	return ns
+}
+
+// createPlatformProject creates a project through the API, then flips its CRD-only Spec.Platform
+// flag via the Kubernetes client. Platform is deliberately absent from the API surface (it can only
+// be set out-of-band), so this yields a well-formed platform project for the integration suite to
+// exercise the D16/D21 hiding behaviour against. Returns the project ID.
+func createPlatformProject(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace, orgID, name string, groupIDs []string) string {
+	id := createProject(ctx, ac, orgID, name, groupIDs)
+
+	ns := orgNamespace(ctx, k8s, namespace, orgID)
+
+	logf("Marking project %q (%s) as a platform project...", name, id)
+
+	if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 60*time.Second, true, func(ctx context.Context) (bool, error) {
+		project := &unikornv1.Project{}
+		if err := k8s.Get(ctx, types.NamespacedName{Namespace: ns, Name: id}, project); err != nil {
+			return false, nil //nolint:nilerr // project CR may not be visible yet
+		}
+
+		if project.Spec.Platform {
+			return true, nil
+		}
+
+		project.Spec.Platform = true
+
+		if err := k8s.Update(ctx, project); err != nil {
+			return false, nil //nolint:nilerr // retry on conflict with the controller
+		}
+
+		return true, nil
+	}); err != nil {
+		fatalf("failed to mark project %s as platform: %v", id, err)
+	}
+
+	return id
+}
+
 // createServiceAccount creates a service account in the given groups and returns its ID and token.
 func createServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) (string, string) {
 	logf("Creating service account %q...", name)
@@ -553,6 +610,9 @@ func main() {
 	// Both groups are members so both service accounts can access project endpoints.
 	projectID := createProject(ctx, ac, orgID, "ci-test-project", []string{adminGroupID, userGroupID})
 
+	// A platform project (CRD-only Spec.Platform=true) for the D16/D21 hiding integration suite.
+	platformProjectID := createPlatformProject(ctx, ac, k8s, *namespace, orgID, "ci-platform-project", []string{adminGroupID})
+
 	// ── Create user and ServiceAccounts ───────────────────────────────────────
 	const ciFixtureUserSubject = "ci-user@nscale.test"
 
@@ -571,6 +631,7 @@ func main() {
 	fmt.Printf("TEST_ORG_ID=%s\n", orgID)
 	fmt.Printf("UNAUTHORISED_ORG_ID=%s\n", unauthorisedOrgID)
 	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID)
+	fmt.Printf("TEST_PLATFORM_PROJECT_ID=%s\n", platformProjectID)
 	fmt.Printf("API_AUTH_TOKEN=%s\n", adminToken)
 	fmt.Printf("TEST_ADMIN_GROUP_ID=%s\n", adminGroupID)
 	fmt.Printf("TEST_USER_GROUP_ID=%s\n", userGroupID)

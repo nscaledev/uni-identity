@@ -55,7 +55,7 @@ func aclWithPlatformProjects() *openapi.Acl {
 	}
 }
 
-func callACL(t *testing.T, serviceCall bool) *openapi.Acl {
+func callACLAsService(t *testing.T) *openapi.Acl {
 	t.Helper()
 
 	acl := aclWithPlatformProjects()
@@ -65,9 +65,7 @@ func callACL(t *testing.T, serviceCall bool) *openapi.Acl {
 
 	// A service-to-service caller reaches identity over mTLS, which the ingress surfaces as the
 	// Ssl-Client-Cert header; a direct user/CLI/UI caller has none.
-	if serviceCall {
-		req.Header.Set("Ssl-Client-Cert", "dummy-cert")
-	}
+	req.Header.Set("Ssl-Client-Cert", "dummy-cert")
 
 	rec := httptest.NewRecorder()
 
@@ -86,39 +84,19 @@ func callACL(t *testing.T, serviceCall bool) *openapi.Acl {
 	return &got
 }
 
-// TestGetACLHidesPlatformProjectsFromUsers pins that a direct (non-service) /acl caller never sees
-// the hidden platform-project IDs — otherwise the field leaks the very existence + IDs the platform
-// project is meant to hide (Codex P1).
-func TestGetACLHidesPlatformProjectsFromUsers(t *testing.T) {
-	t.Parallel()
-
-	got := callACL(t, false)
-
-	if got.Organization != nil {
-		require.Nil(t, got.Organization.PlatformProjects, "platform project IDs leaked to a user in acl.organization")
-	}
-
-	for i := range derefOrgs(got.Organizations) {
-		require.Nil(t, (*got.Organizations)[i].PlatformProjects, "platform project IDs leaked to a user in acl.organizations")
-	}
-}
-
 // TestGetACLKeepsPlatformProjectsForServices pins that a service-to-service caller (mTLS) still
 // receives the hidden set — the sibling services need it to enforce the hiding (D21).
+//
+// This stays a unit test on purpose: it turns on the Ssl-Client-Cert header that only an mTLS
+// service-to-service call carries, which the bearer-token integration suite cannot produce. The
+// customer-facing half of this behaviour (the set is scrubbed for direct users) is covered by the
+// test/api "Platform projects" integration suite.
 func TestGetACLKeepsPlatformProjectsForServices(t *testing.T) {
 	t.Parallel()
 
-	got := callACL(t, true)
+	got := callACLAsService(t)
 
 	require.NotNil(t, got.Organizations)
 	require.NotNil(t, (*got.Organizations)[0].PlatformProjects, "service caller must still receive the hidden set")
 	require.Equal(t, []string{aclHiddenProject}, *(*got.Organizations)[0].PlatformProjects)
-}
-
-func derefOrgs(in *openapi.AclOrganizationList) openapi.AclOrganizationList {
-	if in == nil {
-		return nil
-	}
-
-	return *in
 }
