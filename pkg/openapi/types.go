@@ -635,6 +635,12 @@ type ResponseType string
 
 // RoleRead A role.
 type RoleRead struct {
+	// Grantable Whether the calling principal holds every permission in this role
+	// and may therefore grant it to groups. Roles with grantable set to
+	// false are visible for display purposes but cannot be added to or
+	// removed from groups by this caller.
+	Grantable bool `json:"grantable"`
+
 	// Metadata Metadata required by all resource reads.
 	Metadata externalRef0.ResourceReadMetadata `json:"metadata"`
 }
