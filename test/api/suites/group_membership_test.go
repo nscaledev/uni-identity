@@ -38,6 +38,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// waitForFixtureVisibility blocks until the API server has observed both
+// fixtures.  The server reads roles and groups through an informer cache, so a
+// spec that calls the API straight after creating the custom resources can see
+// "role ID ... does not exist" or a 404 on the group until the cache catches
+// up.  Every spec here must pass through this before its first API call.
+func waitForFixtureVisibility(roleID, groupID string) {
+	GinkgoHelper()
+
+	Eventually(func(g Gomega) {
+		roles, err := client.ListRoles(ctx, config.OrgID)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		roleIDs := make([]string, 0, len(roles))
+		for _, role := range roles {
+			roleIDs = append(roleIDs, role.Metadata.Id)
+		}
+
+		g.Expect(roleIDs).To(ContainElement(roleID),
+			"the role fixture is not visible to the API yet")
+
+		group, err := client.GetGroup(ctx, config.OrgID, groupID)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(group.Spec.RoleIDs).To(ContainElement(roleID),
+			"the group fixture is not visible to the API yet")
+	}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())
+}
+
 var _ = Describe("Group membership with ungrantable roles", func() {
 	Context("When a group carries a role the admin cannot grant", func() {
 		// The role is installed as a custom resource because roles have no
@@ -120,43 +147,34 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 
 				GinkgoWriter.Printf("Installed role %s (%s) and group %s (%s)\n",
 					roleName, roleID, groupName, groupID)
+
+				waitForFixtureVisibility(roleID, groupID)
 			})
 
 			It("should list the ungrantable role, flagged as not grantable", func() {
-				var fixtureRole *identityopenapi.RoleRead
-
-				// The API server reads roles through a cache, so the fixture
-				// may take a moment to become visible.
-				Eventually(func(g Gomega) {
-					roles, err := client.ListRoles(ctx, config.OrgID)
-					g.Expect(err).NotTo(HaveOccurred())
-
-					fixtureRole = nil
-
-					for i := range roles {
-						if roles[i].Metadata.Id == roleID {
-							fixtureRole = &roles[i]
-						}
-					}
-
-					g.Expect(fixtureRole).NotTo(BeNil(),
-						"ungrantable roles must still be listed so clients can resolve group role IDs")
-				}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())
-
-				Expect(fixtureRole.Metadata.Name).To(Equal(roleName))
-				Expect(fixtureRole.Grantable).To(BeFalse(),
-					"a role whose permissions the caller does not hold is not grantable")
-
 				roles, err := client.ListRoles(ctx, config.OrgID)
 				Expect(err).NotTo(HaveOccurred())
 
-				var administrator *identityopenapi.RoleRead
+				var (
+					fixtureRole   *identityopenapi.RoleRead
+					administrator *identityopenapi.RoleRead
+				)
 
 				for i := range roles {
+					if roles[i].Metadata.Id == roleID {
+						fixtureRole = &roles[i]
+					}
+
 					if roles[i].Metadata.Name == "administrator" {
 						administrator = &roles[i]
 					}
 				}
+
+				Expect(fixtureRole).NotTo(BeNil(),
+					"ungrantable roles must still be listed so clients can resolve group role IDs")
+				Expect(fixtureRole.Metadata.Name).To(Equal(roleName))
+				Expect(fixtureRole.Grantable).To(BeFalse(),
+					"a role whose permissions the caller does not hold is not grantable")
 
 				Expect(administrator).NotTo(BeNil(), "the administrator role should be listed")
 				Expect(administrator.Grantable).To(BeTrue(),
