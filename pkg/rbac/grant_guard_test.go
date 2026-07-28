@@ -43,8 +43,9 @@ const chartValuesPath = "../../charts/identity/values.yaml"
 type endpointOperations map[string][]string
 
 type chartRole struct {
-	Description string `json:"description"`
-	Protected   bool   `json:"protected"`
+	Description string            `json:"description"`
+	Protected   bool              `json:"protected"`
+	Labels      map[string]string `json:"labels"`
 	Scopes      struct {
 		Global       endpointOperations `json:"global"`
 		Organization endpointOperations `json:"organization"`
@@ -53,7 +54,8 @@ type chartRole struct {
 }
 
 type chartValues struct {
-	Roles map[string]chartRole `json:"roles"`
+	Roles           map[string]chartRole `json:"roles"`
+	AdditionalRoles map[string]chartRole `json:"additionalRoles"`
 }
 
 func loadChartRoles(t *testing.T) map[string]chartRole {
@@ -66,6 +68,17 @@ func loadChartRoles(t *testing.T) map[string]chartRole {
 
 	require.NoError(t, yaml.Unmarshal(raw, &values))
 	require.NotEmpty(t, values.Roles)
+
+	// additionalRoles is how operators inject roles beyond the chart's built-in
+	// set (charts/identity/templates/roles.yaml renders both maps into the same
+	// Role list). The template fails to render on a name clash between the two
+	// maps, so mirror that as a test assertion rather than silently overwriting.
+	for name, role := range values.AdditionalRoles {
+		_, clash := values.Roles[name]
+		require.False(t, clash, "additionalRoles key %q conflicts with built-in role", name)
+
+		values.Roles[name] = role
+	}
 
 	return values.Roles
 }
@@ -227,5 +240,43 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestNonBuiltinRolesAdminGrantable asserts every non-protected role outside
+// the built-in grant tree is either labelled for aggregation into
+// administrator (admin-grantable at runtime once aggregation lands, ID-368
+// Phase B) or already grantable by administrator from its spec alone.
+// Vacuous while additionalRoles is empty; it exists to catch the next role
+// someone adds without thinking about the grant lattice.
+func TestNonBuiltinRolesAdminGrantable(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+	admin, ok := roles["administrator"]
+	require.True(t, ok)
+
+	// Every role name present in the chart's built-in roles: map today.
+	// Cross-check against values.yaml when touching this list.
+	builtins := map[string]bool{
+		"platform-administrator": true, "region-service": true, "kubernetes-service": true,
+		"compute-service": true, "storage-service": true,
+		"administrator": true, "auditor": true, "user": true, "reader": true,
+	}
+
+	org := ids.MustParseOrganizationID(organizationID)
+	ctx := rbac.NewContext(t.Context(), aclForHolder(admin))
+
+	for name, role := range roles {
+		if builtins[name] || role.Protected {
+			continue
+		}
+
+		if role.Labels["rbac.unikorn-cloud.org/aggregate-to-administrator"] == "true" {
+			continue
+		}
+
+		require.NoError(t, rbac.AllowRole(ctx, asRole(role), org),
+			"role %q is neither aggregate-to-administrator labelled nor admin-grantable; admins will be unable to manage groups containing it (ID-368)", name)
 	}
 }
