@@ -229,3 +229,27 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 		}
 	}
 }
+
+// TestPlatformAdministratorHoldsPlatformCapability pins the option-A decision for the platform
+// project scheme (PR #522, review comment #4): the platform-administrator superuser MUST hold the
+// identity:projects:platform capability at global scope. Without it the role still reaches
+// platform-project substrate through its global region/kubernetes/compute grants, yet 404s on the
+// platform-project record itself — the exact record-vs-substrate inconsistency the capability is
+// meant to remove. This guards against a future edit silently dropping the grant and re-opening
+// the gap.
+func TestPlatformAdministratorHoldsPlatformCapability(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+
+	role, ok := roles["platform-administrator"]
+	require.True(t, ok, "platform-administrator role missing from the chart values")
+
+	global := toACLEndpoints(role.Scopes.Global)
+	acl := &openapi.Acl{Global: &global}
+
+	ctx := rbac.NewContext(t.Context(), acl)
+
+	require.NoError(t, rbac.AllowGlobalScope(ctx, "identity:projects:platform", openapi.Read),
+		"platform-administrator must hold identity:projects:platform (option A) so its project-record visibility matches its substrate access")
+}

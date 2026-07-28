@@ -87,7 +87,9 @@ list and never grantable through the API. They are bound solely via Helm values 
 deployment time.
 
 - `platform-administrator` — global CRUD over every resource; can act in any organization
-  or project.
+  or project. It deliberately holds `identity:projects:platform`, so platform projects are
+  neither hidden from it (the project record stays visible) nor fenced off from its global
+  substrate grants — record visibility and substrate access stay consistent for the superuser.
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
   accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
   only the global permissions the corresponding service actually exercises;
