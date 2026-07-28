@@ -91,6 +91,16 @@ would drift.
 
 ## Caveats
 
+- Because the addition check only covers the delta, a caller with `identity:groups` update may add
+  members to an existing group whose `RoleIDs` include a role they could not themselves grant —
+  resending the group's current role list is always accepted, regardless of who originally granted
+  those roles (see Role Assignment Guard Rails above). This is an accepted consequence, not an
+  oversight: it is what makes membership management possible on a group seeded with a role from a
+  broader-authority admin, without forcing every editor to also hold that role. The exposure stays
+  org-internal and admin-only today, since `identity:groups` update is granted only to
+  `administrator` and the global `platform-administrator`. ID-368 Phase B is expected to close the
+  remaining gap for aggregated third-party roles specifically, by extending an administrator's own
+  grantable surface to reach them directly rather than relying on this delta exemption.
 - The package is partly a migration bridge because it must support both deprecated `UserIDs` and
   forward-looking `Subjects`.
 - Groups may include external subjects that do not resolve to local `User` objects, so not every
