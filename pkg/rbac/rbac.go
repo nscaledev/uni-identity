@@ -459,7 +459,7 @@ func accumulateOrganizationScopedProject(groups map[string]*unikornv1.Group, rol
 // then add them to the ACL.
 func accumulateOrganizationScopedProjects(acl *openapi.Acl, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, projects *unikornv1.ProjectList) error {
 	// D16/D21: without the identity:projects:platform capability, platform projects are not
-	// surfaced in the member-project list (closes the AT3 /acl leak). acl.Organization is set by
+	// surfaced in the member-project list (closes the /acl platform-project existence leak). acl.Organization is set by
 	// the caller before this runs.
 	capable := acl.Organization != nil && hasPlatformProjectsCapability(acl.Organization.Endpoints)
 
@@ -605,7 +605,7 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 		// D16/D21: unless the subject holds identity:projects:platform, platform projects must
 		// not be reachable via this organization-scope grant. Advertise them as hidden (so the
 		// sibling services and rbac.AllowProjectScope exclude their resources) and keep them out
-		// of the member-project list below (closes the AT3 /acl leak).
+		// of the member-project list below (closes the /acl platform-project existence leak).
 		capable := hasPlatformProjectsCapability(organizationACL.Endpoints)
 		if !capable {
 			if hidden := platformProjectNames(projects); len(hidden) > 0 {
@@ -920,9 +920,12 @@ func intersectACL(userACL *openapi.Acl, serviceACL *openapi.Acl) *openapi.Acl {
 
 		if endpoints != nil || projects != nil {
 			result.Organization = &openapi.AclOrganization{
-				Id:               userACL.Organization.Id,
-				Endpoints:        endpoints,
-				Projects:         projects,
+				Id:        userACL.Organization.Id,
+				Endpoints: endpoints,
+				Projects:  projects,
+				// PlatformProjects is identity-based (which projects are hidden from this subject),
+				// not permission-based, so it passes through unchanged rather than being intersected
+				// against the service's grants like endpoints/projects above.
 				PlatformProjects: userACL.Organization.PlatformProjects,
 			}
 		}
@@ -937,9 +940,10 @@ func intersectACL(userACL *openapi.Acl, serviceACL *openapi.Acl) *openapi.Acl {
 
 			if endpoints != nil || projects != nil {
 				orgs = append(orgs, openapi.AclOrganization{
-					Id:               org.Id,
-					Endpoints:        endpoints,
-					Projects:         projects,
+					Id:        org.Id,
+					Endpoints: endpoints,
+					Projects:  projects,
+					// Identity-based, not permission-based — passes through unintersected (as above).
 					PlatformProjects: org.PlatformProjects,
 				})
 			}

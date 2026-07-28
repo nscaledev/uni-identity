@@ -227,6 +227,14 @@ func isHiddenPlatformProject(ctx context.Context, organizationID, projectID stri
 	return false
 }
 
+// IsHiddenPlatformProjectID reports whether projectID is a platform project hidden from the caller
+// (they lack the identity:projects:platform capability). Handlers use it to turn an authorization
+// denial into a 404 so a hidden platform project is indistinguishable from a nonexistent one,
+// rather than leaking its existence with a 403 (D16/D21).
+func IsHiddenPlatformProjectID(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) bool {
+	return isHiddenPlatformProject(ctx, organizationID.String(), projectID.String())
+}
+
 // isAllowedByProjectACL checks only the project-level ACL entries for a specific project,
 // with no fallback to organization or global scope.  If the project is present in the ACL
 // it must have been fetched from storage when the ACL was built, so its existence is guaranteed.
