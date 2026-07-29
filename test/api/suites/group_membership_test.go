@@ -21,7 +21,6 @@ limitations under the License.
 package suites
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -208,16 +207,15 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 					WithRoleIDs([]string{}).
 					Build()
 
-				resp, body, err := client.UpdateGroupRaw(ctx, config.OrgID, groupID, payload, http.StatusForbidden)
+				response, err := client.UpdateGroupWithResponse(ctx, config.OrgID, groupID, payload)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-
-				var apiError coreopenapi.Error
-				Expect(json.Unmarshal(body, &apiError)).To(Succeed())
-				Expect(apiError.Error).To(Equal(coreopenapi.Forbidden))
-				Expect(apiError.ErrorDescription).To(ContainSubstring(roleID),
+				Expect(response.StatusCode()).To(Equal(http.StatusForbidden))
+				Expect(response.JSON403).NotTo(BeNil(),
+					"a refusal must come back as a typed forbidden response")
+				Expect(response.JSON403.Error).To(Equal(coreopenapi.Forbidden))
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleID),
 					"the error must name the role that blocked the update")
-				Expect(apiError.ErrorDescription).To(ContainSubstring(roleName),
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleName),
 					"the error must give the role's display name, not only its ID")
 
 				current, err := client.GetGroup(ctx, config.OrgID, groupID)
@@ -225,7 +223,7 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 				Expect(current.Spec.RoleIDs).To(ContainElement(roleID),
 					"a refused update must leave the group untouched")
 
-				GinkgoWriter.Printf("Refused role removal: %s\n", apiError.ErrorDescription)
+				GinkgoWriter.Printf("Refused role removal: %s\n", response.JSON403.ErrorDescription)
 			})
 		})
 	})
