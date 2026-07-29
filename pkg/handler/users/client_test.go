@@ -667,6 +667,91 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 		assert.Equal(t, []string{radarRoleID}, alphaGroup.Spec.RoleIDs)
 	})
 
+	t.Run("refuses a create joining an ungrantable group without persisting any record", func(t *testing.T) {
+		t.Parallel()
+
+		// Create writes a global user and an organization membership before it
+		// reconciles groups.  Discovering the refusal after that would leave
+		// both records behind for an account the caller was told it could not
+		// create.
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			radarRole(),
+			newRadarGroup(groupAlphaID, nil, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Create}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+		require.Error(t, err)
+		require.True(t, errors.IsForbidden(err))
+		assert.Contains(t, err.Error(), radarRoleName)
+
+		globalUsers := &unikornv1.UserList{}
+		require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+		assert.Empty(t, globalUsers.Items, "a refused create must not leave a global user behind")
+
+		organizationUsers := &unikornv1.OrganizationUserList{}
+		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
+		assert.Empty(t, organizationUsers.Items, "a refused create must not leave an organization membership behind")
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs)
+		assert.Empty(t, alphaGroup.Spec.Subjects)
+	})
+
+	t.Run("creates the user when the caller holds the requested group's role", func(t *testing.T) {
+		t.Parallel()
+
+		// The counterpart: validating up front must not block a create the
+		// caller is entitled to make, and the whole flow still has to run.
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			radarRole(),
+			newRadarGroup(groupAlphaID, nil, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Create}},
+			{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		result, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+		require.NoError(t, err)
+		assert.Equal(t, userAliceSubject, result.Spec.Subject)
+		assert.Equal(t, openapi.GroupIDs{groupAlphaID}, result.Spec.GroupIDs)
+
+		globalUsers := &unikornv1.UserList{}
+		require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+		require.Len(t, globalUsers.Items, 1)
+		assert.Equal(t, userAliceSubject, globalUsers.Items[0].Spec.Subject)
+
+		organizationUsers := &unikornv1.OrganizationUserList{}
+		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
+		require.Len(t, organizationUsers.Items, 1)
+		assert.Equal(t, result.Metadata.Id, organizationUsers.Items[0].Name)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Contains(t, alphaGroup.Spec.UserIDs, result.Metadata.Id)
+		assert.Contains(t, alphaGroup.Spec.Subjects, aliceSubject())
+	})
+
 	t.Run("allows deleting a user held by a group whose role the caller cannot grant", func(t *testing.T) {
 		t.Parallel()
 

@@ -441,6 +441,50 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 	return resource, nil
 }
 
+// validateCreateGroupAdditions checks the groups a create request asks to join
+// before any record is written.  Create is idempotent, so the subject may
+// already have a user record and some of these memberships; those confer
+// nothing new and are skipped, exactly as on the update path.  A subject with
+// no records yet belongs to no group, so every requested group is an addition.
+func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, groups *unikornv1.GroupList) error {
+	// Nothing is being granted, so skip the lookups below: they cannot change
+	// the answer, and on this path they would only add ways to fail.
+	if len(request.Spec.GroupIDs) == 0 {
+		return nil
+	}
+
+	subject := unikornv1.GroupSubject{
+		ID:     request.Spec.Subject,
+		Email:  request.Spec.Subject,
+		Issuer: c.issuer.URL,
+	}
+
+	// Resolve what already exists without creating it.  Either record may be
+	// absent on a first-time create, which just means there is no prior
+	// membership to exempt.
+	var orgUserID string
+
+	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
+
+	switch {
+	case err == nil:
+		orgUser, err := c.getOrganizationUserByGlobalUserID(ctx, organization, user.Name)
+
+		switch {
+		case err == nil:
+			orgUserID = orgUser.Name
+		case goerrors.Is(err, ErrReference):
+		default:
+			return err
+		}
+	case goerrors.Is(err, ErrReference):
+	default:
+		return err
+	}
+
+	return c.validateGroupAdditions(ctx, organization.ID, subject, orgUserID, request.Spec.GroupIDs, groups)
+}
+
 // Create makes a new user.  This creates a new user in an organization, but they
 // reference a unique user resource, so we need to get or create the underlying record
 // first, then add to the organization.
@@ -451,22 +495,30 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
 	}
 
-	user, err := c.getOrCreateGlobalUser(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	resource, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
+	groups, err := c.listGroups(ctx, organization)
 	if err != nil {
 		return nil, err
 	}
 
-	groups, err := c.listGroups(ctx, organization)
+	// Settle the group grants before any record exists.  Writing the user
+	// first and refusing afterwards would leave a global user and an
+	// organization membership behind for an account the caller was told it
+	// could not create.
+	if err := c.validateCreateGroupAdditions(ctx, organization, request, groups); err != nil {
+		return nil, err
+	}
+
+	user, err := c.getOrCreateGlobalUser(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	resource, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
 	if err != nil {
 		return nil, err
 	}

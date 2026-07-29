@@ -71,6 +71,12 @@ they may not is refused whole, leaving both untouched, rather than applying the 
 then failing. Without that, whether a partial grant landed would depend on the order the groups
 came back in.
 
+Create runs the same check earlier still — before the global `User` and the `OrganizationUser` are
+written, not just before the group patches. A create refused on its group membership therefore
+leaves no records at all, rather than an account the caller was told it could not create. Because
+create is idempotent, the check resolves any records the subject already has first, so memberships
+they already hold are exempt just as they are on update.
+
 ### Read Model Aggregation
 
 The user read model is assembled from multiple sources:
@@ -93,7 +99,8 @@ clients.
   `groupIDs`
 - adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
   could grant every role the group carries; removals and user deletion are not gated
-- a refused membership addition applies none of the write's other additions
+- a refused membership addition applies none of the write's other additions, and on create writes
+  no user records either
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
 - the API-managed path only allows email-address subjects for normal user creation
@@ -109,9 +116,11 @@ clients.
 
 - Revisit partial-failure behaviour in create/update/delete flows that mutate organization users
   and then reconcile groups, so membership state does not drift if later steps fail. Authorization
-  no longer contributes to this — group additions are all grant-checked before any group is
-  written — but a write that fails partway on a conflict or an API-server error still can, and the
-  organization user is patched before group reconciliation starts.
+  no longer contributes: every grant in a request is settled before that request writes anything.
+  What remains is infrastructure failure partway through a multi-object write — a conflict or an
+  API-server error on the third of four group patches leaves the first two applied, and on update
+  the organization user is patched before group reconciliation starts. Closing that needs a
+  rollback or a single-object write.
 - Revisit list resilience so an orphaned `OrganizationUser` -> `User` reference does not
   necessarily fail the entire organization user listing.
 
