@@ -48,6 +48,10 @@ delete is exempt for the same reason: it reconciles against an empty group list,
 unlinks, and an account must remain deletable even when it sits in a group nobody can grant the
 roles of.
 
+Reconciliation is validate-then-apply: every group the account would newly join is grant-checked
+before the first group is patched, so a write that joins one group the caller may grant and another
+they may not is refused whole rather than applying the permitted half.
+
 ### Token Issuance And Rotation
 
 This is the main behavioural difference from the users client.
@@ -69,6 +73,7 @@ That makes this package both an identity-binding client and a credential-lifecyc
 - service-account authority is still mediated through groups and roles
 - adding a service account to a group is a grant of that group's roles, so it is allowed only where
   the caller could grant every role the group carries; removals and account deletion are not gated
+- a refused membership addition applies none of the write's other additions
 - create returns freshly issued credentials
 - ordinary update preserves the current token
 - rotate replaces the token and invalidates the old one

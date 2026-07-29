@@ -43,6 +43,7 @@ const (
 	testOrganizationID = "acbaf1e5-6414-4066-b74e-2d95dc766299"
 
 	testGroupID          = "radar-group"
+	testCleanGroupID     = "clean-group"
 	testServiceAccountID = "sa-a"
 	testRoleID           = "radar-id"
 	testRoleName         = "radar"
@@ -82,6 +83,17 @@ func testGroup(serviceAccountIDs ...string) *unikornv1.Group {
 	}
 }
 
+// cleanGroup builds a group carrying no roles, so joining it is never a grant.  Its name
+// sorts before the radar group's, so a reconciliation reaches it first.
+func cleanGroup() *unikornv1.Group {
+	return &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testCleanGroupID,
+			Namespace: testOrgNS,
+		},
+	}
+}
+
 func testFixture(t *testing.T, objects ...client.Object) (*Client, client.Client) {
 	t.Helper()
 
@@ -115,8 +127,14 @@ func listGroups(t *testing.T, cli client.Client) *unikornv1.GroupList {
 func getGroup(t *testing.T, cli client.Client) *unikornv1.Group {
 	t.Helper()
 
+	return getNamedGroup(t, cli, testGroupID)
+}
+
+func getNamedGroup(t *testing.T, cli client.Client, name string) *unikornv1.Group {
+	t.Helper()
+
 	group := &unikornv1.Group{}
-	require.NoError(t, cli.Get(t.Context(), client.ObjectKey{Namespace: testOrgNS, Name: testGroupID}, group))
+	require.NoError(t, cli.Get(t.Context(), client.ObjectKey{Namespace: testOrgNS, Name: name}, group))
 
 	return group
 }
@@ -141,6 +159,31 @@ func TestUpdateGroupsRefusesAdditionToUngrantableRoleGroup(t *testing.T) {
 	require.True(t, errors.IsForbidden(err))
 	assert.Contains(t, err.Error(), testRoleName)
 
+	assert.Empty(t, getGroup(t, cli).Spec.ServiceAccountIDs)
+}
+
+// TestUpdateGroupsRefusesEveryAdditionWhenOneIsRefused pins the write down as one unit: a
+// request joining a harmless group and an ungrantable one must leave both alone, even
+// though the harmless one is reached first.
+func TestUpdateGroupsRefusesEveryAdditionWhenOneIsRefused(t *testing.T) {
+	t.Parallel()
+
+	c, cli := testFixture(t, testRole(), cleanGroup(), testGroup())
+
+	organizationID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	ctx := testACL(openapi.AclEndpoints{
+		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	err = c.updateGroups(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{testCleanGroupID, testGroupID}, listGroups(t, cli))
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	assert.Contains(t, err.Error(), testRoleName)
+
+	assert.Empty(t, getNamedGroup(t, cli, testCleanGroupID).Spec.ServiceAccountIDs,
+		"the permitted addition must not land when another in the same write is refused")
 	assert.Empty(t, getGroup(t, cli).Spec.ServiceAccountIDs)
 }
 

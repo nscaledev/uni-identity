@@ -61,6 +61,12 @@ handing it out, so the remove branch is unguarded. Deletion is exempt for the sa
 reconciles against an empty group list, so it only ever removes, and a user must remain deletable
 even when they sit in a group nobody can grant the roles of.
 
+Reconciliation is validate-then-apply: every group the user would newly join is grant-checked
+before the first group is patched. A write that joins one group the caller may grant and another
+they may not is refused whole, leaving both untouched, rather than applying the permitted half and
+then failing. Without that, whether a partial grant landed would depend on the order the groups
+came back in.
+
 ### Read Model Aggregation
 
 The user read model is assembled from multiple sources:
@@ -83,6 +89,7 @@ clients.
   `groupIDs`
 - adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
   could grant every role the group carries; removals and user deletion are not gated
+- a refused membership addition applies none of the write's other additions
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
 - the API-managed path only allows email-address subjects for normal user creation
@@ -97,7 +104,10 @@ clients.
 ## TODO
 
 - Revisit partial-failure behaviour in create/update/delete flows that mutate organization users
-  and then reconcile groups, so membership state does not drift if later steps fail.
+  and then reconcile groups, so membership state does not drift if later steps fail. Authorization
+  no longer contributes to this — group additions are all grant-checked before any group is
+  written — but a write that fails partway on a conflict or an API-server error still can, and the
+  organization user is patched before group reconciliation starts.
 - Revisit list resilience so an orphaned `OrganizationUser` -> `User` reference does not
   necessarily fail the entire organization user listing.
 

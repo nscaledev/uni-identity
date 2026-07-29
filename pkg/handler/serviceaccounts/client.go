@@ -202,9 +202,41 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
+// validateGroupAdditions checks every group the service account would newly
+// join before any of them is written.  Joining a group confers its roles, so
+// each is a grant the caller has to be able to make; running the whole set up
+// front keeps a refusal from landing after an earlier group has already been
+// patched.  Groups the account is only leaving, or already belongs to, confer
+// nothing and are skipped.
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	for i := range groups.Items {
+		group := &groups.Items[i]
+
+		if !slices.Contains(groupIDs, group.Name) {
+			continue
+		}
+
+		if slices.Contains(group.Spec.ServiceAccountIDs, serviceAccountID) {
+			continue
+		}
+
+		if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, group); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // updateGroups takes a user name and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
 func (c *Client) updateGroups(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// Every grant in the request is settled before the first write, so a
+	// refusal cannot leave part of the requested membership applied.
+	if err := c.validateGroupAdditions(ctx, organizationID, serviceAccountID, groupIDs, groups); err != nil {
+		return err
+	}
+
 	for i := range groups.Items {
 		current := &groups.Items[i]
 
@@ -214,12 +246,6 @@ func (c *Client) updateGroups(ctx context.Context, organizationID ids.Organizati
 			// Add to a group where it should be a member but isn't.
 			if slices.Contains(current.Spec.ServiceAccountIDs, serviceAccountID) {
 				continue
-			}
-
-			// Joining the group confers its roles on the service account, so
-			// the caller has to be able to grant them.
-			if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, current); err != nil {
-				return err
 			}
 
 			updated.Spec.ServiceAccountIDs = append(updated.Spec.ServiceAccountIDs, serviceAccountID)

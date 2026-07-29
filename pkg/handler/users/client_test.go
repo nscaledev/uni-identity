@@ -482,16 +482,26 @@ func radarRole() *unikornv1.Role {
 
 // newRadarGroup builds a group already carrying the ungrantable role, standing in for one
 // seeded by a third-party service or a more privileged admin.
-func newRadarGroup(userIDs []string, subjects []unikornv1.GroupSubject) *unikornv1.Group {
+func newRadarGroup(name string, userIDs []string, subjects []unikornv1.GroupSubject) *unikornv1.Group {
 	return &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testOrgNS,
-			Name:      groupAlphaID,
+			Name:      name,
 		},
 		Spec: unikornv1.GroupSpec{
 			RoleIDs:  []string{radarRoleID},
 			UserIDs:  userIDs,
 			Subjects: subjects,
+		},
+	}
+}
+
+// newPlainGroup builds a group carrying no roles, so joining it is never a grant.
+func newPlainGroup(name string) *unikornv1.Group {
+	return &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      name,
 		},
 	}
 }
@@ -527,7 +537,7 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 			newGlobalUser(userAliceID, userAliceSubject),
 			newOrganizationUser(orgUserAliceID, userAliceID),
 			radarRole(),
-			newRadarGroup(nil, nil),
+			newRadarGroup(groupAlphaID, nil, nil),
 		}, interceptor.Funcs{})
 
 		ctx := aclContext(t, openapi.AclEndpoints{
@@ -559,7 +569,7 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 			newGlobalUser(userAliceID, userAliceSubject),
 			newOrganizationUser(orgUserAliceID, userAliceID),
 			radarRole(),
-			newRadarGroup(nil, nil),
+			newRadarGroup(groupAlphaID, nil, nil),
 		}, interceptor.Funcs{})
 
 		ctx := aclContext(t, openapi.AclEndpoints{
@@ -583,6 +593,48 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 		assert.Contains(t, alphaGroup.Spec.UserIDs, orgUserAliceID)
 	})
 
+	t.Run("leaves every group untouched when one addition in the write is refused", func(t *testing.T) {
+		t.Parallel()
+
+		// group-alpha carries no roles and would be allowed on its own, and
+		// it sorts first so the reconciliation reaches it before the refusal.
+		// A membership write is one request: if any addition in it is a grant
+		// the caller cannot make, none of them may land.
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newPlainGroup(groupAlphaID),
+			newRadarGroup(groupBetaID, nil, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID, groupBetaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.Error(t, err)
+		require.True(t, errors.IsForbidden(err))
+		assert.Contains(t, err.Error(), radarRoleName)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs,
+			"the permitted addition must not land when another in the same write is refused")
+		assert.Empty(t, alphaGroup.Spec.Subjects)
+
+		betaGroup := getGroup(ctx, t, fixture.client, groupBetaID)
+		assert.Empty(t, betaGroup.Spec.UserIDs)
+		assert.Empty(t, betaGroup.Spec.Subjects)
+	})
+
 	t.Run("allows removing a user from a group whose role the caller cannot grant", func(t *testing.T) {
 		t.Parallel()
 
@@ -590,7 +642,7 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 			newGlobalUser(userAliceID, userAliceSubject),
 			newOrganizationUser(orgUserAliceID, userAliceID),
 			radarRole(),
-			newRadarGroup([]string{orgUserAliceID}, []unikornv1.GroupSubject{aliceSubject()}),
+			newRadarGroup(groupAlphaID, []string{orgUserAliceID}, []unikornv1.GroupSubject{aliceSubject()}),
 		}, interceptor.Funcs{})
 
 		ctx := aclContext(t, openapi.AclEndpoints{
@@ -622,7 +674,7 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 			newGlobalUser(userAliceID, userAliceSubject),
 			newOrganizationUser(orgUserAliceID, userAliceID),
 			radarRole(),
-			newRadarGroup([]string{orgUserAliceID}, []unikornv1.GroupSubject{aliceSubject()}),
+			newRadarGroup(groupAlphaID, []string{orgUserAliceID}, []unikornv1.GroupSubject{aliceSubject()}),
 		}, interceptor.Funcs{})
 
 		ctx := aclContext(t, openapi.AclEndpoints{

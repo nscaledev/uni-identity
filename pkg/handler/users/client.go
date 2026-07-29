@@ -100,21 +100,56 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 	return needsPatching
 }
 
+// isGroupAddition reports whether the user is missing from either membership
+// representation, and so would newly join the group.  addToGroup patches
+// exactly when this holds, which is what lets the grant check run ahead of the
+// write without the two disagreeing about what counts as an addition.
+func isGroupAddition(subject unikornv1.GroupSubject, orgUserID string, group *unikornv1.Group) bool {
+	return !slices.Contains(group.Spec.UserIDs, orgUserID) || !slices.Contains(group.Spec.Subjects, subject)
+}
+
 // addToGroup adds the Subject and userID if not present.
 func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
-	var needsPatching bool
 	// Add to a group where it should be a member but isn't.
+	if !isGroupAddition(subject, orgUserID, updated) {
+		return false
+	}
+
 	if !slices.Contains(updated.Spec.UserIDs, orgUserID) {
 		updated.Spec.UserIDs = append(updated.Spec.UserIDs, orgUserID)
-		needsPatching = true
 	}
 
 	if !slices.Contains(updated.Spec.Subjects, subject) {
 		updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
-		needsPatching = true
 	}
 
-	return needsPatching
+	return true
+}
+
+// validateGroupAdditions checks every group the user would newly join before
+// any of them is written.  Joining a group confers its roles, so each is a
+// grant the caller has to be able to make; running the whole set up front
+// keeps a refusal from landing after an earlier group has already been
+// patched.  Groups the user is only leaving, or already belongs to, confer
+// nothing and are skipped.
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subject unikornv1.GroupSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	for i := range groups.Items {
+		group := &groups.Items[i]
+
+		if !slices.Contains(groupIDs, group.Name) {
+			continue
+		}
+
+		if !isGroupAddition(subject, orgUserID, group) {
+			continue
+		}
+
+		if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, group); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // updateGroups takes a user's subject and a requested list of groups and adds to
@@ -130,6 +165,12 @@ func (c *Client) updateGroups(ctx context.Context, organizationID ids.Organizati
 		Issuer: c.issuer.URL,
 	}
 
+	// Every grant in the request is settled before the first write, so a
+	// refusal cannot leave part of the requested membership applied.
+	if err := c.validateGroupAdditions(ctx, organizationID, subject, orgUserID, groupIDs, groups); err != nil {
+		return err
+	}
+
 	for i := range groups.Items {
 		current := &groups.Items[i]
 		updated := current.DeepCopy()
@@ -138,16 +179,6 @@ func (c *Client) updateGroups(ctx context.Context, organizationID ids.Organizati
 
 		if slices.Contains(groupIDs, current.Name) {
 			needsPatching = addToGroup(subject, orgUserID, updated)
-
-			// Joining the group confers its roles on the user, so the
-			// caller has to be able to grant them.  Re-affirming a
-			// membership the user already holds confers nothing new, hence
-			// the check hangs off an actual addition.
-			if needsPatching {
-				if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, current); err != nil {
-					return err
-				}
-			}
 		} else {
 			needsPatching = removeFromGroup(subject, orgUserID, updated)
 		}
