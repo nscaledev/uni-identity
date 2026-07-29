@@ -157,3 +157,25 @@ func TestValidateRoleRemovalsRejectsUngrantableDrop(t *testing.T) {
 	dangling := &unikornv1.Group{Spec: unikornv1.GroupSpec{RoleIDs: []string{"no-such-role"}}}
 	require.NoError(t, c.validateRoleRemovals(ctx, orgID, dangling, nil))
 }
+
+func TestValidateRoleRemovalsAllowsProtectedDrop(t *testing.T) {
+	t.Parallel()
+
+	hidden := testRole("hidden-id", "hidden", true, "identity:groups")
+	c := testClient(t, hidden)
+
+	orgID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	current := &unikornv1.Group{Spec: unikornv1.GroupSpec{RoleIDs: []string{"hidden-id"}}}
+
+	// Caller holds none of the protected role's permissions.
+	ctx := testACL(openapi.AclEndpoints{{Name: "other:thing", Operations: openapi.AclOperations{openapi.Read}}})
+
+	// A group invalidly carrying a protected role (only reachable via direct
+	// CR access — validateRoleIDs refuses protected roles on every re-send)
+	// must still be droppable: dropping it is repair toward the invariant
+	// that protected roles never sit on an API-managed group, not a
+	// revocation the caller needs permission for.
+	require.NoError(t, c.validateRoleRemovals(ctx, orgID, current, nil))
+}

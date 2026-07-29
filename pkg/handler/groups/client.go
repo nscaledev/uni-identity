@@ -392,7 +392,9 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 // grant.  Without this, a client that cannot see an ungrantable role
 // silently revokes it by round-tripping the group (ID-368).  Roles that no
 // longer exist may always be dropped: a dangling reference conveys no
-// permissions.
+// permissions.  Protected roles may also always be dropped: they should
+// never be on a group at all, so removing one is invariant repair rather
+// than a revocation the caller needs permission for.
 func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.OrganizationID, current *unikornv1.Group, requestedRoleIDs []string) error {
 	for _, roleID := range current.Spec.RoleIDs {
 		if slices.Contains(requestedRoleIDs, roleID) {
@@ -407,6 +409,16 @@ func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.Or
 			}
 
 			return fmt.Errorf("%w: failed to validate role removal", err)
+		}
+
+		// Protected roles are internal and must never sit on an
+		// API-managed group; validateRoleIDs refuses them on any re-send,
+		// so a group invalidly carrying one (only reachable via direct CR
+		// access) would otherwise be permanently un-updatable. Dropping it
+		// is repair toward that invariant, not revocation, so it is always
+		// allowed.
+		if resource.Spec.Protected {
+			continue
 		}
 
 		if err := rbac.AllowRole(ctx, &resource, organizationID); err != nil {

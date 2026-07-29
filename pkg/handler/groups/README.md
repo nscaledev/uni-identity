@@ -63,14 +63,44 @@ themselves. Without this, a client that cannot resolve an ungrantable role — f
 only fetches the roles it is permitted to see and then round-trips the group as it received it —
 would silently revoke that role by omitting it from the write, rather than the write being refused.
 A role reference that no longer resolves to a `Role` resource may always be dropped, since a
-dangling reference conveys no permissions to revoke. A refused removal names the role so the caller
-knows which one it cannot drop.
+dangling reference conveys no permissions to revoke. A group carrying a `protected` role may also
+always have it dropped: `protected` roles must never be attached to a group in the first place, so
+a group that has one anyway (only reachable via direct CR access, since normal writes refuse
+`protected` roles on every re-send) would otherwise be permanently un-updatable — dropping it is
+repair toward that invariant, not a revocation the caller needs permission for. A refused removal
+names the role so the caller knows which one it cannot drop.
 
 So group writes are also authority-delegation checks, for both grants and revocations.
 
 Group DELETE intentionally remains an unguarded revocation path: deleting a group is an explicit,
 whole-group action by the caller, not a silent side effect of an update, so the guard above — which
 exists to catch omission — does not apply to it.
+
+### Decommissioning A Service's Roles
+
+Retiring a service that contributed roles (third-party or internal) has an order dependency, and
+getting it backwards leaves a mess the API cannot clean up on its own.
+
+Strip the service's roles from every group first, then delete its `Role` CRs — not the other way
+round. Deleting a `Role` CR while groups still reference it breaks ACL computation for every member
+of those groups: `pkg/rbac/rbac.go` returns a consistency error for the dangling reference. That is
+pre-existing, unrelated-to-this-guard behaviour, and it is exactly what the correct order avoids.
+
+Once a `Role` CR is actually gone, cleanup is easy: a dangling reference may always be dropped from
+a group, by anyone with group update rights, since the removal guard above treats a role that no
+longer resolves as cleanup rather than revocation.
+
+The trap is the window before that. While the `Role` CR still exists, removing it from a group is a
+guarded revocation like any other — the caller must hold its permissions. That is unremarkable for a
+live service, but once a service is being decommissioned, nobody may hold those permissions any
+more, so waiting until after the `Role` CRs are deleted to start pulling references can leave a
+group stuck with a reference the guard will not let anyone drop through the API (only direct CR
+access would). Strip the references while permission holders still exist instead. ID-368 Phase B's
+aggregation is expected to narrow this for aggregated third-party roles specifically, by giving
+administrators the role's permissions directly for as long as it stays labelled and installed.
+
+Protected roles are the one case exempt from that trap entirely: they are always droppable from a
+group regardless of who holds what, as invariant repair (see Role Assignment Guard Rails above).
 
 ### Project Reference Cleanup
 

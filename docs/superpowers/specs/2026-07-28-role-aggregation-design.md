@@ -201,7 +201,11 @@ Every consumer of role permissions moves from `Spec.Scopes` to effective scopes:
    `removed = current roles − requested roles`; any removed role the caller cannot grant is
    rejected with a 403 naming the role. Today such a removal passes silently (only the
    requested list is validated) — that is the silent-revocation hole. Explicitly retaining was
-   rejected: mutating the caller's requested spec is surprising; a named error is honest.
+   rejected: mutating the caller's requested spec is surprising; a named error is honest. Two
+   removals are exempt from the grant check regardless of who is asking: a role ID that no
+   longer resolves to a `Role` (dangling-reference cleanup) and a `protected` role (invariant
+   repair — such a role should never be on a group at all, so dropping it is corrective, not a
+   revocation).
 3. **Named errors**: `validateRoleIDs` includes the role name and ID in every grant-refusal
    error so the console can say which role is the blocker.
 4. **Enforcement alignment** (ID-367 overlap) — **OPEN QUESTION, needs a maintainer ruling
