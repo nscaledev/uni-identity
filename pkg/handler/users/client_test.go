@@ -776,6 +776,88 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 	})
 }
 
+// TestClient_GroupMembershipRepresentations covers the two ways a group stores a member.
+// RBAC resolves a principal into a group through either the deprecated organization user
+// ID list or the subject list, so a member present in one already holds the group's roles
+// and writing the other half grants nothing.
+func TestClient_GroupMembershipRepresentations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("allows completing the subject half for a member already in the legacy user ID list", func(t *testing.T) {
+		t.Parallel()
+
+		// A group written before Subjects existed lists its members in UserIDs
+		// only.  RBAC resolves membership through either list, so the user
+		// already holds the group's roles and writing the missing half confers
+		// nothing — it must not be gated on a role the caller cannot grant.
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(groupAlphaID, []string{orgUserAliceID}, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.NoError(t, err)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Equal(t, []string{orgUserAliceID}, alphaGroup.Spec.UserIDs)
+		require.Len(t, alphaGroup.Spec.Subjects, 1)
+		assert.Equal(t, userAliceSubject, alphaGroup.Spec.Subjects[0].ID)
+	})
+
+	t.Run("does not duplicate a stored subject whose email differs from the derived one", func(t *testing.T) {
+		t.Parallel()
+
+		// Email is display data and three writers populate it differently, so a
+		// whole-struct comparison sees the stored subject and the derived one as
+		// different principals and appends a second copy on every write.
+		stored := unikornv1.GroupSubject{
+			ID:     userAliceSubject,
+			Email:  "stale-display@example.com",
+			Issuer: testIssuerURL,
+		}
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(groupAlphaID, []string{orgUserAliceID}, []unikornv1.GroupSubject{stored}),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.NoError(t, err)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Len(t, alphaGroup.Spec.Subjects, 1, "the same principal must not be stored twice")
+		assert.Equal(t, []string{orgUserAliceID}, alphaGroup.Spec.UserIDs)
+	})
+}
+
 func TestClient_Delete(t *testing.T) {
 	t.Parallel()
 
