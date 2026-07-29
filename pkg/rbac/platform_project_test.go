@@ -30,8 +30,8 @@ import (
 )
 
 // platformACL builds a single-organization ACL for the platform-project (D16/D21) tests. The
-// substrate resource (resourceType1) is granted at ORGANIZATION scope — the org-admin case that
-// drives the leak.
+// substrate resource (resourceType1) is granted at ORGANIZATION scope — the org-admin case the
+// hiding exists to constrain.
 //   - hidden lists the organization's platform-project IDs the subject may not see; leaving it
 //     empty models a subject that holds identity:projects:platform (nothing is hidden from them).
 //   - projectGrant adds an explicit PROJECT-scope grant on projectID, modelling a genuine member
@@ -75,7 +75,7 @@ func TestAllowProjectScopePlatformProject(t *testing.T) {
 		ErrorChecker func(error) bool // nil = expect allow
 	}{
 		{
-			// No regression: an org grant still reaches a normal (non-hidden) project.
+			// An org grant reaches a normal (non-hidden) project.
 			Name: "Allow: org grant, project not hidden",
 			ACL:  platformACL(nil, false),
 		},
@@ -85,9 +85,9 @@ func TestAllowProjectScopePlatformProject(t *testing.T) {
 			ACL:  platformACL(nil, false),
 		},
 		{
-			// The fix: an org grant must NOT reach a hidden platform project, and the denial
-			// must be not-found so it is indistinguishable from the project not existing (no
-			// 403-vs-404 existence oracle).
+			// An org grant must NOT reach a hidden platform project, and the denial must be
+			// not-found so it is indistinguishable from the project not existing (no 403-vs-404
+			// existence oracle).
 			Name:         "Deny: org grant does not reach a hidden platform project (as not found)",
 			ACL:          platformACL([]string{projectID}, false),
 			ErrorChecker: coreerrors.IsHTTPNotFound,
@@ -180,15 +180,15 @@ func TestAllowProjectScopeCreatePlatformProject(t *testing.T) {
 		ErrorChecker func(error) bool // nil = expect allow
 	}{
 		{
-			// The fix: an org grant cannot create INTO a hidden platform project, and the
-			// existence API is never consulted (no mock expectation set). The denial is
-			// not-found, matching the nonexistent-project response below it (no oracle).
+			// An org grant cannot create INTO a hidden platform project, and the existence
+			// API is never consulted (no mock expectation set). The denial is not-found,
+			// matching the nonexistent-project response (no oracle).
 			Name:         "Deny: org grant cannot create into a hidden platform project (as not found)",
 			ACL:          platformACL([]string{projectID}, false),
 			ErrorChecker: coreerrors.IsHTTPNotFound,
 		},
 		{
-			// No regression: an org grant can still create into a normal project (existence checked).
+			// An org grant creates into a normal project (existence checked).
 			Name: "Allow: org grant creates into a normal project",
 			ACL:  platformACL(nil, false),
 			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {

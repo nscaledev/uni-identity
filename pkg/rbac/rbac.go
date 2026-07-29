@@ -459,8 +459,8 @@ func accumulateOrganizationScopedProject(groups map[string]*unikornv1.Group, rol
 // then add them to the ACL.
 func accumulateOrganizationScopedProjects(acl *openapi.Acl, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, projects *unikornv1.ProjectList) error {
 	// D16/D21: without the identity:projects:platform capability, platform projects are not
-	// surfaced in the member-project list (closes the /acl platform-project existence leak). acl.Organization is set by
-	// the caller before this runs.
+	// surfaced in the member-project list, so an /acl response never reveals their existence.
+	// acl.Organization is set by the caller before this runs.
 	capable := acl.Organization != nil && hasPlatformProjectsCapability(acl.Organization.Endpoints)
 
 	aclProjects := make(openapi.AclProjectList, 0, len(projects.Items))
@@ -605,7 +605,7 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 		// D16/D21: unless the subject holds identity:projects:platform, platform projects must
 		// not be reachable via this organization-scope grant. Advertise them as hidden (so the
 		// sibling services and rbac.AllowProjectScope exclude their resources) and keep them out
-		// of the member-project list below (closes the /acl platform-project existence leak).
+		// of the member-project list below, so an /acl response never reveals their existence.
 		capable := hasPlatformProjectsCapability(organizationACL.Endpoints)
 		if !capable {
 			if hidden := platformProjectNames(projects); len(hidden) > 0 {

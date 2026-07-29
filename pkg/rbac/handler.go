@@ -171,9 +171,9 @@ func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.A
 // project is hidden (a platform project the subject lacks the capability for), the organization
 // endpoints are skipped so that only an explicit per-project grant can satisfy the operation, and
 // any denial is returned as not-found rather than forbidden — a 403 would be an existence oracle
-// (403 = a real platform project, 404 = nothing there). Translating here covers every
-// AllowProjectScope* consumer, sibling services included, not just identity's own project CRUD
-// handlers (D16/D21).
+// (403 = a real platform project, 404 = nothing there). The translation sits here so every
+// AllowProjectScope* consumer — identity's handlers and sibling services alike — inherits it
+// (D16/D21).
 func allowByProjectScopeEntry(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string, hidden bool) error {
 	if err := allowByProjectEntryEndpoints(ctx, endpoint, operation, organizationID, projectID, hidden); err != nil {
 		if hidden {
