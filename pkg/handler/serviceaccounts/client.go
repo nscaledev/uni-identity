@@ -236,13 +236,12 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 
 // updateGroups takes a user name and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
-	// Every grant in the request is settled before the first write, so a
-	// refusal cannot leave part of the requested membership applied.
-	if err := c.validateGroupAdditions(ctx, organizationID, serviceAccountID, groupIDs, groups); err != nil {
-		return err
-	}
-
+//
+// This writes.  It does no grant checking of its own: callers must run
+// validateGroupAdditions over the same group list first, before they make any
+// other write, so a refusal cannot leave an earlier part of the request
+// applied.
+func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	for i := range groups.Items {
 		current := &groups.Items[i]
 
@@ -307,7 +306,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, fmt.Errorf("%w: failed to create service account", err)
 	}
 
-	if err := c.updateGroups(ctx, organization.ID, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -368,6 +367,19 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
+	groups, err := c.listGroups(ctx, organization)
+	if err != nil {
+		return nil, err
+	}
+
+	// Settle every grant in the request before the first write.  The metadata
+	// and tag changes below land on the service account record, so a
+	// membership refusal discovered after them would have already applied part
+	// of a request the caller was told it could not make.
+	if err := c.validateGroupAdditions(ctx, organization.ID, serviceAccountID, request.Spec.GroupIDs, groups); err != nil {
+		return nil, err
+	}
+
 	required, err := c.generate(ctx, organization, request)
 	if err != nil {
 		return nil, err
@@ -394,12 +406,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 
-	groups, err := c.listGroups(ctx, organization)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.updateGroups(ctx, organization.ID, serviceAccountID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, serviceAccountID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -468,7 +475,9 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
-	if err := c.updateGroups(ctx, organization.ID, serviceAccountID, nil, groups); err != nil {
+	// Deletion only strips memberships, which confers nothing, so there is no
+	// grant pre-pass to run.
+	if err := c.updateGroups(ctx, serviceAccountID, nil, groups); err != nil {
 		return err
 	}
 

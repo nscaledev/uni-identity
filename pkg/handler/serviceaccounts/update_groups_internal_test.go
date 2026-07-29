@@ -19,6 +19,7 @@ package serviceaccounts
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -167,6 +168,17 @@ func getNamedGroup(t *testing.T, cli client.Client, name string) *unikornv1.Grou
 	return group
 }
 
+// validateAndUpdateGroups runs the sequence every write path uses: settle the grants over
+// the group list first, then apply the membership changes.  updateGroups does no checking
+// of its own, so that a refusal can be raised before the request's other writes land.
+func validateAndUpdateGroups(ctx context.Context, c *Client, organizationID ids.OrganizationID, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	if err := c.validateGroupAdditions(ctx, organizationID, testServiceAccountID, groupIDs, groups); err != nil {
+		return err
+	}
+
+	return c.updateGroups(ctx, testServiceAccountID, groupIDs, groups)
+}
+
 // TestUpdateGroupsRefusesAdditionToUngrantableRoleGroup covers the grant hidden inside a
 // service account write: joining a group hands the account every role the group carries,
 // so it is refused unless the caller could grant those roles.
@@ -182,7 +194,7 @@ func TestUpdateGroupsRefusesAdditionToUngrantableRoleGroup(t *testing.T) {
 		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
 	})
 
-	err = c.updateGroups(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{testGroupID}, listGroups(t, cli))
+	err = validateAndUpdateGroups(ctx, c, organizationID, openapi.GroupIDs{testGroupID}, listGroups(t, cli))
 	require.Error(t, err)
 	require.True(t, errors.IsForbidden(err))
 	assert.Contains(t, err.Error(), testRoleName)
@@ -205,7 +217,7 @@ func TestUpdateGroupsRefusesEveryAdditionWhenOneIsRefused(t *testing.T) {
 		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
 	})
 
-	err = c.updateGroups(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{testCleanGroupID, testGroupID}, listGroups(t, cli))
+	err = validateAndUpdateGroups(ctx, c, organizationID, openapi.GroupIDs{testCleanGroupID, testGroupID}, listGroups(t, cli))
 	require.Error(t, err)
 	require.True(t, errors.IsForbidden(err))
 	assert.Contains(t, err.Error(), testRoleName)
@@ -229,7 +241,7 @@ func TestUpdateGroupsAllowsAdditionByRoleHolder(t *testing.T) {
 		{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
 	})
 
-	require.NoError(t, c.updateGroups(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{testGroupID}, listGroups(t, cli)))
+	require.NoError(t, validateAndUpdateGroups(ctx, c, organizationID, openapi.GroupIDs{testGroupID}, listGroups(t, cli)))
 	assert.Equal(t, []string{testServiceAccountID}, getGroup(t, cli).Spec.ServiceAccountIDs)
 }
 
@@ -269,6 +281,54 @@ func TestCreateRefusesUngrantableGroupWithoutPersistingTheAccount(t *testing.T) 
 	assert.Empty(t, getGroup(t, cli).Spec.ServiceAccountIDs)
 }
 
+// TestUpdateRefusesUngrantableGroupWithoutPatchingTheAccount pins the ordering on the
+// update path: the grant is settled before the account record is rewritten.  Discovering
+// the refusal afterwards would leave the metadata change applied for a request the caller
+// was told it could not make.
+func TestUpdateRefusesUngrantableGroupWithoutPatchingTheAccount(t *testing.T) {
+	t.Parallel()
+
+	account := &unikornv1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testServiceAccountID,
+			Namespace: testOrgNS,
+			Labels:    map[string]string{constants.NameLabel: "original-name"},
+		},
+		Spec: unikornv1.ServiceAccountSpec{
+			Expiry:      &metav1.Time{Time: time.Now().Add(time.Hour)},
+			AccessToken: "original-token",
+		},
+	}
+
+	c, cli := testFixture(t, testRole(), testGroup(), account)
+
+	organizationID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	ctx := testACL(openapi.AclEndpoints{
+		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	request := &openapi.ServiceAccountWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: "renamed-sa"},
+		Spec: openapi.ServiceAccountSpec{
+			GroupIDs: openapi.GroupIDs{testGroupID},
+		},
+	}
+
+	_, err = c.Update(ctx, organizationID, testServiceAccountID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	assert.Contains(t, err.Error(), testRoleName)
+
+	stored := &unikornv1.ServiceAccount{}
+	require.NoError(t, cli.Get(t.Context(), client.ObjectKey{Namespace: testOrgNS, Name: testServiceAccountID}, stored))
+	assert.Equal(t, "original-name", stored.Labels[constants.NameLabel],
+		"a refused update must not persist the metadata change")
+
+	assert.Empty(t, getGroup(t, cli).Spec.ServiceAccountIDs)
+}
+
 // TestUpdateGroupsAllowsRemovalFromUngrantableRoleGroup shows removal confers nothing and
 // stays ungated, so a group can still be managed down by a caller who could not add to it.
 func TestUpdateGroupsAllowsRemovalFromUngrantableRoleGroup(t *testing.T) {
@@ -283,7 +343,7 @@ func TestUpdateGroupsAllowsRemovalFromUngrantableRoleGroup(t *testing.T) {
 		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
 	})
 
-	require.NoError(t, c.updateGroups(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{}, listGroups(t, cli)))
+	require.NoError(t, validateAndUpdateGroups(ctx, c, organizationID, openapi.GroupIDs{}, listGroups(t, cli)))
 
 	group := getGroup(t, cli)
 	assert.Empty(t, group.Spec.ServiceAccountIDs)
@@ -304,7 +364,7 @@ func TestUpdateGroupsAllowsDeletionUnlink(t *testing.T) {
 		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Delete}},
 	})
 
-	require.NoError(t, c.updateGroups(ctx, organizationID, testServiceAccountID, nil, listGroups(t, cli)))
+	require.NoError(t, validateAndUpdateGroups(ctx, c, organizationID, nil, listGroups(t, cli)))
 	assert.Empty(t, getGroup(t, cli).Spec.ServiceAccountIDs)
 }
 
@@ -322,6 +382,6 @@ func TestUpdateGroupsAllowsReaffirmingExistingMembership(t *testing.T) {
 		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
 	})
 
-	require.NoError(t, c.updateGroups(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{testGroupID}, listGroups(t, cli)))
+	require.NoError(t, validateAndUpdateGroups(ctx, c, organizationID, openapi.GroupIDs{testGroupID}, listGroups(t, cli)))
 	assert.Equal(t, []string{testServiceAccountID}, getGroup(t, cli).Spec.ServiceAccountIDs)
 }

@@ -901,3 +901,46 @@ func TestClient_Delete(t *testing.T) {
 		assert.NotContains(t, alphaGroup.Spec.Subjects, subject)
 	})
 }
+
+// TestClient_GroupMembershipWriteOrdering covers what a refusal must leave behind.  An
+// update rewrites the organization user record as well as reconciling group membership,
+// so the grants have to be settled before any of it lands.
+func TestClient_GroupMembershipWriteOrdering(t *testing.T) {
+	t.Parallel()
+
+	t.Run("refuses an update joining an ungrantable group without persisting the state change", func(t *testing.T) {
+		t.Parallel()
+
+		// Update rewrites the organization user record — state, tags, labels,
+		// annotations — as well as reconciling groups.  A membership refusal
+		// discovered after that would leave the state change applied for a
+		// request the caller was told it could not make.
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(groupAlphaID, nil, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Suspended,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.Error(t, err)
+		require.True(t, errors.IsForbidden(err))
+
+		organizationUser := &unikornv1.OrganizationUser{}
+		require.NoError(t, fixture.client.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: orgUserAliceID}, organizationUser))
+		assert.Equal(t, unikornv1.UserStateActive, organizationUser.Spec.State,
+			"a refused update must not persist the state change")
+	})
+}

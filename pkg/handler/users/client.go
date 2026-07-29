@@ -150,24 +150,29 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 	return nil
 }
 
-// updateGroups takes a user's subject and a requested list of groups and adds to
-// the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, organizationID ids.OrganizationID, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
-	// The subject is supplied by the caller rather than re-read here: on the
-	// create path the global user was just written to the API server, and a
-	// read back through the cached client can miss it while the informer catches
-	// up, spuriously failing the request. Callers already hold the user.
-	subject := unikornv1.GroupSubject{
+// groupSubject builds the membership subject for a user of this deployment's
+// own issuer.
+func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
+	return unikornv1.GroupSubject{
 		ID:     userSubject,
 		Email:  userSubject,
 		Issuer: c.issuer.URL,
 	}
+}
 
-	// Every grant in the request is settled before the first write, so a
-	// refusal cannot leave part of the requested membership applied.
-	if err := c.validateGroupAdditions(ctx, organizationID, subject, orgUserID, groupIDs, groups); err != nil {
-		return err
-	}
+// updateGroups takes a user's subject and a requested list of groups and adds to
+// the groups it should be a member of and removes itself from groups it shouldn't.
+//
+// This writes.  It does no grant checking of its own: callers must run
+// validateGroupAdditions over the same group list first, before they make any
+// other write, so a refusal cannot leave an earlier part of the request
+// applied.
+func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// The subject is supplied by the caller rather than re-read here: on the
+	// create path the global user was just written to the API server, and a
+	// read back through the cached client can miss it while the informer catches
+	// up, spuriously failing the request. Callers already hold the user.
+	subject := c.groupSubject(userSubject)
 
 	for i := range groups.Items {
 		current := &groups.Items[i]
@@ -451,11 +456,7 @@ func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization 
 		return nil
 	}
 
-	subject := unikornv1.GroupSubject{
-		ID:     request.Spec.Subject,
-		Email:  request.Spec.Subject,
-		Issuer: c.issuer.URL,
-	}
+	subject := c.groupSubject(request.Spec.Subject)
 
 	// Resolve what already exists without creating it.  Either record may be
 	// absent on a first-time create, which just means there is no prior
@@ -521,7 +522,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, organization.ID, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -585,6 +586,19 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
+	groups, err := c.listGroups(ctx, organization)
+	if err != nil {
+		return nil, err
+	}
+
+	// Settle every grant in the request before the first write.  The state,
+	// tags and label changes below land on the organization user record, so a
+	// membership refusal discovered after them would have already applied
+	// part of a request the caller was told it could not make.
+	if err := c.validateGroupAdditions(ctx, organization.ID, c.groupSubject(user.Spec.Subject), userID, request.Spec.GroupIDs, groups); err != nil {
+		return nil, err
+	}
+
 	required, err := generateOrganizationUser(ctx, organization, request, current.Labels[constants.UserLabel])
 	if err != nil {
 		return nil, err
@@ -603,12 +617,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	groups, err := c.listGroups(ctx, organization)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.updateGroups(ctx, organization.ID, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -644,7 +653,9 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
-	if err := c.updateGroups(ctx, organization.ID, user.Spec.Subject, userID, nil, groups); err != nil {
+	// Deletion only strips memberships, which confers nothing, so there is no
+	// grant pre-pass to run.
+	if err := c.updateGroups(ctx, user.Spec.Subject, userID, nil, groups); err != nil {
 		return err
 	}
 
