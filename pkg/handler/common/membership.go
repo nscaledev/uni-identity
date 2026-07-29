@@ -43,19 +43,31 @@ func RoleDisplayName(role *unikornv1.Role) string {
 
 // AllowGroupMembershipAddition returns nil if the calling principal may add
 // a member to the given group.  Adding a member confers the group's roles,
-// so the caller must be able to grant every role the group carries.  Roles
-// that no longer resolve confer nothing and are skipped.
+// so the caller must be able to grant every role the group carries.
+//
+// A role reference that does not resolve refuses the addition rather than
+// being skipped.  Role IDs are derived from the role name, so a role that is
+// deleted and later re-applied comes back with the same ID and immediately
+// re-binds to every group still referencing it; a member added during the gap
+// would then hold a role nobody was ever asked to grant, and for a service
+// account that authority rides a long-lived token.  Refusing also keeps this
+// consistent with ACL construction, which treats the same dangling reference
+// as a consistency failure rather than an empty permission set.
 //
 // Only additions go through here.  Removing a member, and deleting a
 // principal (which strips its memberships as cleanup), take authority away
-// rather than handing it out, so neither is gated.
+// rather than handing it out, so neither is gated.  Dropping a dangling role
+// from a group is likewise allowed — see validateRoleRemovals in
+// pkg/handler/groups.  The asymmetry is deliberate: skipping an unresolvable
+// role errs towards less authority on a removal and towards more on an
+// addition, so only the removal side is safe to skip.
 func AllowGroupMembershipAddition(ctx context.Context, cli client.Client, namespace string, organizationID ids.OrganizationID, group *unikornv1.Group) error {
 	for _, roleID := range group.Spec.RoleIDs {
 		var resource unikornv1.Role
 
 		if err := cli.Get(ctx, client.ObjectKey{Namespace: namespace, Name: roleID}, &resource); err != nil {
 			if kerrors.IsNotFound(err) {
-				continue
+				return servererrors.HTTPForbidden(fmt.Sprintf("members cannot be added to the group: role %s does not resolve, so the authority it confers cannot be checked", roleID)).WithError(err)
 			}
 
 			return fmt.Errorf("%w: failed to validate group membership addition", err)

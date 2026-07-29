@@ -776,6 +776,49 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 	})
 }
 
+// TestClient_GroupMembershipDanglingRole covers a group referencing a role that no longer
+// resolves.  The reference cannot be grant-checked, and role IDs are derived from the role
+// name, so the role rebinds to the group if it is ever re-applied.
+func TestClient_GroupMembershipDanglingRole(t *testing.T) {
+	t.Parallel()
+
+	t.Run("refuses adding a user to a group whose role reference does not resolve", func(t *testing.T) {
+		t.Parallel()
+
+		// The role is absent, so nothing can grant-check it.  Waving the
+		// addition through would also break the victim's whole organization
+		// ACL, which fails closed on a dangling reference — a denial primitive
+		// for anyone holding users update.
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			newRadarGroup(groupAlphaID, nil, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+			{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.Error(t, err)
+		require.True(t, errors.IsForbidden(err))
+		assert.Contains(t, err.Error(), radarRoleID, "the error must name the role that cannot be resolved")
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs)
+		assert.Empty(t, alphaGroup.Spec.Subjects)
+	})
+}
+
 // TestClient_GroupMembershipRepresentations covers the two ways a group stores a member.
 // RBAC resolves a principal into a group through either the deprecated organization user
 // ID list or the subject list, so a member present in one already holds the group's roles

@@ -420,10 +420,14 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 // validateRoleRemovals rejects updates that drop a role the caller cannot
 // grant, so a client that cannot see an ungrantable role cannot silently
 // revoke it by round-tripping the group.  Roles that no longer exist may
-// always be dropped: a dangling reference conveys no permissions.  Protected
-// roles may also always be dropped: they should never be on a group at all,
-// so removing one is invariant repair rather than a revocation the caller
-// needs permission for.
+// always be dropped: a dangling reference conveys no permissions, and
+// dropping it is how a group carrying one gets repaired.  The membership
+// addition guard refuses that same dangling reference instead of skipping it,
+// because a role ID is derived from the role name and rebinds if the role
+// returns: skipping errs towards less authority on a removal and towards more
+// on an addition.  Protected roles may also always be dropped: they should
+// never be on a group at all, so removing one is invariant repair rather than
+// a revocation the caller needs permission for.
 func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.OrganizationID, current *unikornv1.Group, requestedRoleIDs []string) error {
 	for _, roleID := range current.Spec.RoleIDs {
 		if slices.Contains(requestedRoleIDs, roleID) {

@@ -118,6 +118,21 @@ the removal guard above treats a role that no longer resolves as cleanup rather 
 build fails closed on the dangling reference — so if an organization's only admins sit in that
 group, repair falls back to direct CR access.)
 
+Adding a member to a group carrying a dangling reference is refused, and the refusal names the
+unresolvable role ID. The two directions are deliberately asymmetric, and the reason is that role
+IDs are not random: a role ID is a hash of the role name, so deleting a `Role` CR and re-applying
+it later brings back the *same* ID, which immediately re-binds to every group that still references
+it. Anyone added to the group during that window silently acquires the role when it returns,
+without a grant check ever having run — and for a service account, that authority rides a token
+valid for up to 90 days. Skipping an unresolvable role therefore errs towards less authority on a
+removal and towards more on an addition, so only the removal side is safe to skip. Refusing
+additions also matches what `pkg/rbac` already does with the same reference: it fails closed.
+
+A side effect worth naming: because ACL construction fails closed, adding someone to a
+dangling-reference group used to break their entire organization ACL, not just their access to that
+group. Anyone holding `identity:users` update could do it to anyone. Refusing the addition closes
+that off as well.
+
 The trap is the window before that. While the `Role` CR still exists, removing it from a group is a
 guarded revocation like any other — the caller must hold its permissions. That is unremarkable for a
 live service, but once a service is being decommissioned, nobody may hold those permissions any

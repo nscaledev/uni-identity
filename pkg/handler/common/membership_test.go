@@ -127,7 +127,7 @@ func TestAllowGroupMembershipAdditionAllowsRoleHolder(t *testing.T) {
 	require.NoError(t, common.AllowGroupMembershipAddition(ctx, cli, membershipNamespace, organizationID, membershipGroup(membershipRoleID)))
 }
 
-func TestAllowGroupMembershipAdditionSkipsDanglingRole(t *testing.T) {
+func TestAllowGroupMembershipAdditionRefusesDanglingRole(t *testing.T) {
 	t.Parallel()
 
 	cli := membershipClient(t)
@@ -139,9 +139,16 @@ func TestAllowGroupMembershipAdditionSkipsDanglingRole(t *testing.T) {
 		{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
 	})
 
-	// A role reference that no longer resolves confers nothing, so it cannot
-	// block a membership addition.
-	require.NoError(t, common.AllowGroupMembershipAddition(ctx, cli, membershipNamespace, organizationID, membershipGroup("no-such-role")))
+	// A role reference that does not resolve cannot be grant-checked, and role
+	// IDs are a hash of the role name, so the same ID comes back if the role is
+	// ever re-applied and re-binds to every group still referencing it.  A
+	// member parked in the group meanwhile would gain the role without anyone
+	// having authorised it, so the addition is refused rather than waved
+	// through.
+	err = common.AllowGroupMembershipAddition(ctx, cli, membershipNamespace, organizationID, membershipGroup("no-such-role"))
+	require.Error(t, err)
+	require.True(t, servererrors.IsForbidden(err))
+	require.Contains(t, err.Error(), "no-such-role", "the error must name the role that cannot be resolved")
 }
 
 func TestAllowGroupMembershipAdditionAllowsRolelessGroup(t *testing.T) {
