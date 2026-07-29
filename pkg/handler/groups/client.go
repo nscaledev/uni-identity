@@ -371,7 +371,7 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 		// Only roles being ADDED are grant-checked.  Re-sending a group's
 		// existing role list (e.g. a members-only edit) must not fail on
 		// roles the caller could not grant; the escalation guard applies to
-		// the delta, and removals are guarded separately (ID-368).
+		// the delta, and removals are guarded separately.
 		if slices.Contains(currentRoleIDs, roleID) {
 			continue
 		}
@@ -389,12 +389,12 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 }
 
 // validateRoleRemovals rejects updates that drop a role the caller cannot
-// grant.  Without this, a client that cannot see an ungrantable role
-// silently revokes it by round-tripping the group (ID-368).  Roles that no
-// longer exist may always be dropped: a dangling reference conveys no
-// permissions.  Protected roles may also always be dropped: they should
-// never be on a group at all, so removing one is invariant repair rather
-// than a revocation the caller needs permission for.
+// grant, so a client that cannot see an ungrantable role cannot silently
+// revoke it by round-tripping the group.  Roles that no longer exist may
+// always be dropped: a dangling reference conveys no permissions.  Protected
+// roles may also always be dropped: they should never be on a group at all,
+// so removing one is invariant repair rather than a revocation the caller
+// needs permission for.
 func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.OrganizationID, current *unikornv1.Group, requestedRoleIDs []string) error {
 	for _, roleID := range current.Spec.RoleIDs {
 		if slices.Contains(requestedRoleIDs, roleID) {
@@ -414,8 +414,8 @@ func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.Or
 		// Protected roles are internal and must never sit on an
 		// API-managed group; validateRoleIDs refuses them on any re-send,
 		// so a group invalidly carrying one (only reachable via direct CR
-		// access) would otherwise be permanently un-updatable. Dropping it
-		// is repair toward that invariant, not revocation, so it is always
+		// access) needs this drop to stay updatable at all. Dropping it is
+		// repair toward that invariant, not revocation, so it is always
 		// allowed.
 		if resource.Spec.Protected {
 			continue

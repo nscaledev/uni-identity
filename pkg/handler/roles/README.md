@@ -30,15 +30,14 @@ are handled differently:
 - a protected role is internal and is never returned, regardless of caller
 - a role the caller cannot grant is still returned, with `grantable: false`
 
-Hiding ungrantable roles outright used to cause silent role revocation. `pkg/handler/groups` stores
-role membership by ID (see its `RoleIDs`), and API clients resolve those IDs to display names and
-descriptions by calling this list endpoint. A group can carry a role the current caller cannot
-themselves grant — for example a role assigned by someone with broader authority. Round-tripping that
-group's role list through a filtered `GET .../roles` view that dropped ungrantable roles made those
-roles look absent to the caller, and a client that resent "the roles I can see" back to the group
-unintentionally revoked the ones it could not see. `grantable: false` lets a caller display and
-reason about a role it does not itself hold, without being able to add or remove it (`pkg/rbac`'s
-`AllowRole` remains the actual enforcement point on group writes). See ID-368.
+`pkg/handler/groups` stores role membership by ID (see its `RoleIDs`), and API clients resolve
+those IDs to display names and descriptions by calling this list endpoint. A group can carry a role
+the current caller cannot themselves grant — for example one assigned by someone with broader
+authority. Omitting ungrantable roles from this list, rather than flagging them, hides such a role
+from any caller who cannot grant it and invites a client that resends "the roles I can see" back to
+the group to silently revoke the one it cannot see. `grantable: false` avoids that: it lets a caller
+display and reason about a role it does not itself hold, without being able to add or remove it
+(`pkg/rbac`'s `AllowRole` remains the actual enforcement point on group writes).
 
 ### Current Global Definition, Future Local Customization
 
@@ -80,7 +79,7 @@ whether the role appears in the list.
 - The package is intentionally thin because the real semantics of authority, protection, and
   grantability belong to `pkg/rbac`.
 - Role visibility here hides only protected roles; it is not a projection of effective authority —
-  that projection is now carried by the per-role `grantable` flag instead of by omission.
+  that projection is carried by the per-role `grantable` flag instead of by omission.
 - The current role source is still centrally administered even though the longer-term model is
   expected to allow organization-local custom roles.
 - `grantable` becomes `false` for a role the moment any single permission it contains is not held by

@@ -76,10 +76,10 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 	}
 
 	// Protected roles are internal and never exposed.  Ungrantable roles ARE
-	// exposed (grantable: false) so clients can resolve and display roles
-	// referenced by groups; hiding them caused silent role revocation on
-	// group round-trips (ID-368).  These are two different reasons for
-	// absence and must not share a filter.
+	// exposed (grantable: false) so clients can resolve and display every
+	// role a group references; omitting them invites clients to round-trip
+	// a group without a role they cannot see, silently revoking it.  These
+	// are two different reasons for absence and must not share a filter.
 	result.Items = slices.DeleteFunc(result.Items, func(role unikornv1.Role) bool {
 		return role.Spec.Protected
 	})

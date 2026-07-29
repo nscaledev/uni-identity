@@ -70,8 +70,8 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 		// The role is installed as a custom resource because roles have no
 		// write API, and the group has to be installed the same way because
 		// the API refuses to create a group carrying a role the caller cannot
-		// grant — that is precisely the state a third party service leaves
-		// behind, and the state this fix is about (ID-368).
+		// grant — that is precisely the state a third-party service can
+		// leave behind.
 		Describe("Given an unlabelled third-party role fixture and a group referencing it", func() {
 			var (
 				roleID    string

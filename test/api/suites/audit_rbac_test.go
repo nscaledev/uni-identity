@@ -138,8 +138,8 @@ var _ = Describe("Console Audit View Permissions", func() {
 
 				// Roles the caller cannot grant are listed with grantable
 				// false rather than hidden, so a client can still resolve the
-				// roles a group already carries (ID-368).  The flag, not
-				// absence, is what denies the grant.
+				// roles a group already carries.  The flag, not absence, is
+				// what denies the grant.
 				Expect(grantable).To(HaveKeyWithValue("auditor", true))
 				Expect(grantable).To(HaveKeyWithValue("administrator", false),
 					"audit token must not be able to grant administrator")

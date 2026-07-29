@@ -244,11 +244,13 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 }
 
 // TestNonBuiltinRolesAdminGrantable asserts every non-protected role outside
-// the built-in grant tree is either labelled for aggregation into
-// administrator (admin-grantable at runtime once aggregation lands, ID-368
-// Phase B) or already grantable by administrator from its spec alone.
-// Vacuous while additionalRoles is empty; it exists to catch the next role
-// someone adds without thinking about the grant lattice.
+// the built-in grant tree is either labelled
+// rbac.unikorn-cloud.org/aggregate-to-administrator: "true" (marking intent
+// for a planned aggregation mechanism to fold the role's permissions into
+// the administrator role — nothing consumes the label yet) or already
+// grantable by administrator from its spec alone. Vacuous while
+// additionalRoles is empty; it exists to catch the next role someone adds
+// without thinking about the grant lattice.
 func TestNonBuiltinRolesAdminGrantable(t *testing.T) {
 	t.Parallel()
 
@@ -274,14 +276,14 @@ func TestNonBuiltinRolesAdminGrantable(t *testing.T) {
 
 		// charts/identity/templates/roles.yaml does not yet render per-role labels onto
 		// the Role resources it creates, so this exemption cannot be satisfied from
-		// values.yaml today — the label check is a no-op until that template gains
-		// label rendering (ID-368 Phase B). It exists now so Phase B has a test to
-		// flip green rather than one to write from scratch.
+		// values.yaml today: the label check is a no-op until the template gains label
+		// rendering. The test exists ahead of that so the work has a test ready to turn
+		// green rather than one still to write.
 		if role.Labels["rbac.unikorn-cloud.org/aggregate-to-administrator"] == "true" {
 			continue
 		}
 
 		require.NoError(t, rbac.AllowRole(ctx, asRole(role), org),
-			"role %q is neither aggregate-to-administrator labelled nor admin-grantable; admins will be unable to manage groups containing it (ID-368)", name)
+			"role %q is neither aggregate-to-administrator labelled nor admin-grantable; admins will be unable to manage groups containing it", name)
 	}
 }

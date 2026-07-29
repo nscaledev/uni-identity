@@ -95,8 +95,8 @@ func TestValidateRoleIDsChecksOnlyAdditions(t *testing.T) {
 	require.Contains(t, err.Error(), "radar")
 
 	// Update re-sending an existing radar role: not an addition — allowed.
-	// This is the reported bug: members-only edits must not fail on roles
-	// that were already on the group.
+	// Members-only edits must not fail on roles that were already on the
+	// group.
 	_, err = c.validateRoleIDs(ctx, orgID, []string{"radar-id", "basic-id"}, []string{"radar-id"})
 	require.NoError(t, err)
 
@@ -138,9 +138,9 @@ func TestValidateRoleRemovalsRejectsUngrantableDrop(t *testing.T) {
 
 	current := &unikornv1.Group{Spec: unikornv1.GroupSpec{RoleIDs: []string{"radar-id"}}}
 
-	// Caller cannot grant radar: dropping it must be rejected, naming it.
-	// Without this, a client that cannot resolve the role silently revokes
-	// it by round-tripping the group.
+	// Caller cannot grant radar: dropping it must be rejected, naming it, so
+	// a client that cannot resolve the role cannot silently revoke it by
+	// round-tripping the group.
 	ctx := testACL(openapi.AclEndpoints{{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}}})
 	err = c.validateRoleRemovals(ctx, orgID, current, nil)
 	require.Error(t, err)

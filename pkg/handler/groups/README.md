@@ -59,14 +59,14 @@ which one to remove or delegate.
 
 Removal is guarded symmetrically, on update only: dropping a role from the group's current
 `RoleIDs` that is not present in the request is refused unless the caller could grant that role
-themselves. Without this, a client that cannot resolve an ungrantable role — for example one that
-only fetches the roles it is permitted to see and then round-trips the group as it received it —
-would silently revoke that role by omitting it from the write, rather than the write being refused.
+themselves, so a client that cannot resolve an ungrantable role — for example one that only fetches
+the roles it is permitted to see and then round-trips the group as it received it — cannot silently
+revoke that role by omitting it from the write.
 A role reference that no longer resolves to a `Role` resource may always be dropped, since a
 dangling reference conveys no permissions to revoke. A group carrying a `protected` role may also
 always have it dropped: `protected` roles must never be attached to a group in the first place, so
 a group that has one anyway (only reachable via direct CR access, since normal writes refuse
-`protected` roles on every re-send) would otherwise be permanently un-updatable — dropping it is
+`protected` roles on every re-send) needs this drop to stay updatable at all — dropping it is
 repair toward that invariant, not a revocation the caller needs permission for. Note the repair is
 not just permitted but unavoidable: since re-sending a `protected` role is always refused, the
 first successful update of such a group necessarily drops it, including from a client blindly
@@ -86,8 +86,8 @@ getting it backwards leaves a mess the API cannot clean up on its own.
 
 Strip the service's roles from every group first, then delete its `Role` CRs — not the other way
 round. Deleting a `Role` CR while groups still reference it breaks ACL computation for every member
-of those groups: `pkg/rbac/rbac.go` returns a consistency error for the dangling reference. That is
-pre-existing, unrelated-to-this-guard behaviour, and it is exactly what the correct order avoids.
+of those groups: `pkg/rbac/rbac.go` returns a consistency error for the dangling reference, failing
+closed. The correct order avoids exactly that window.
 
 Once a `Role` CR is actually gone, cleanup is easy: a dangling reference may always be dropped from
 a group, by any group-update holder whose own membership does not include the broken group, since
@@ -101,9 +101,12 @@ guarded revocation like any other — the caller must hold its permissions. That
 live service, but once a service is being decommissioned, nobody may hold those permissions any
 more, so waiting until after the `Role` CRs are deleted to start pulling references can leave a
 group stuck with a reference the guard will not let anyone drop through the API (only direct CR
-access would). Strip the references while permission holders still exist instead. ID-368 Phase B's
-aggregation is expected to narrow this for aggregated third-party roles specifically, by giving
-administrators the role's permissions directly for as long as it stays labelled and installed.
+access would). Strip the references while permission holders still exist instead. Roles carrying the
+`rbac.unikorn-cloud.org/aggregate-to-administrator: "true"` label are intended to have their
+permissions folded into the administrator role by a planned aggregation mechanism; until that
+mechanism exists, the label only marks intent. Once it does, it narrows this trap for aggregated
+third-party roles specifically: administrators then hold the role's permissions directly for as
+long as it stays labelled and installed.
 
 Protected roles are the one case exempt from that trap entirely: they are always droppable from a
 group regardless of who holds what, as invariant repair (see Role Assignment Guard Rails above).
@@ -138,9 +141,10 @@ would drift.
   oversight: it is what makes membership management possible on a group seeded with a role from a
   broader-authority admin, without forcing every editor to also hold that role. The exposure stays
   org-internal and admin-only today, since `identity:groups` update is granted only to
-  `administrator` and the global `platform-administrator`. ID-368 Phase B is expected to close the
-  remaining gap for aggregated third-party roles specifically, by extending an administrator's own
-  grantable surface to reach them directly rather than relying on this delta exemption.
+  `administrator` and the global `platform-administrator`. The planned aggregation mechanism
+  described under Decommissioning A Service's Roles above is expected to close the remaining gap for
+  aggregated third-party roles specifically, by extending an administrator's own grantable surface to
+  reach them directly rather than relying on this delta exemption.
 - The package is partly a migration bridge because it must support both deprecated `UserIDs` and
   forward-looking `Subjects`.
 - Groups may include external subjects that do not resolve to local `User` objects, so not every

@@ -634,9 +634,8 @@ func aclContext(t *testing.T, endpoints openapi.AclEndpoints) context.Context {
 // TestUpdateGroupRejectsRemovalOfUngrantableRole exercises the removal guard through the
 // public Update() entrypoint, not just the unexported validateRoleRemovals helper directly:
 // a group already carries "radar-id" (as if granted by a more privileged earlier write), and
-// the caller — who cannot grant radar:things — submits an update that omits it. Without the
-// guard wired into Update, this would silently revoke the role; instead it must be refused,
-// naming the role, and the stored group must be unchanged (ID-368).
+// the caller — who cannot grant radar:things — submits an update that omits it. Update must
+// refuse the request, naming the role, and leave the stored group unchanged.
 func TestUpdateGroupRejectsRemovalOfUngrantableRole(t *testing.T) {
 	t.Parallel()
 
