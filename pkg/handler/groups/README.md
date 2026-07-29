@@ -66,11 +66,12 @@ dangling reference conveys no permissions to revoke. A group carrying a `protect
 always have it dropped: `protected` roles must never be attached to a group in the first place, so
 a group that has one anyway (only reachable via direct CR access, since normal writes refuse
 `protected` roles on every re-send) needs this drop to stay updatable at all — dropping it is
-repair toward that invariant, not a revocation the caller needs permission for. Note the repair is
-not just permitted but unavoidable: since re-sending a `protected` role is always refused, the
-first successful update of such a group necessarily drops it, including from a client blindly
-round-tripping the roles it can see — that is the intended outcome, not accidental silent
-revocation. A refused removal names the role so the caller knows which one it cannot drop.
+repair toward that invariant, not a revocation the caller needs permission for. Dropping it is the
+only way such a group can be updated at all: re-sending the `protected` role is refused every time,
+so any successful update has already dropped it. A client that blindly round-trips whatever the
+group reports keeps hitting that refusal, because `GET /groups` reports the `protected` role while
+`GET /roles` does not; only a client that filters its role list against `GET /roles` drops the role
+and gets through. A refused removal names the role so the caller knows which one it cannot drop.
 
 So group writes are also authority-delegation checks, for both grants and revocations.
 

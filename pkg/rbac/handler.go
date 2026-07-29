@@ -303,9 +303,10 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 //
 // Trust assumption: accepting a permission held in *any* one of the caller's projects is
 // only safe because a granted role cannot take effect in a project the caller does not
-// already administer. Every route to AllowRole is entered behind an organization-scope
-// check that project-scoped authority cannot satisfy, and linking the resulting authority
-// to a project needs authority over that project specifically:
+// already administer. Every route that turns an AllowRole result into stored authority is
+// entered behind an organization-scope check that project-scoped authority cannot satisfy,
+// and linking the resulting authority to a project needs authority over that project
+// specifically. The authority-conferring routes are:
 //
 //   - group create and update reach AllowRole through validateRoleIDs, and update also
 //     through validateMemberAdditions when it adds a member, behind organization-scope
@@ -316,6 +317,12 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 //     identity:serviceaccounts write; and
 //   - linking a group to an existing project requires project-scope identity:projects
 //     update for that specific project.
+//
+// Read-only and revocation callers reach AllowRole too — the roles list uses it to compute
+// the grantable flag behind identity:roles read, and group update uses it in
+// validateRoleRemovals to decide whether a role may be dropped. Those confer nothing, so
+// the reasoning above does not depend on enumerating them; a new caller only has to be
+// weighed against it if it stores authority.
 //
 // If a role ever grants identity:groups, identity:users or identity:serviceaccounts write
 // at project scope, or project-group linking is relaxed to organization scope, this "any

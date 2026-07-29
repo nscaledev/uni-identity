@@ -221,8 +221,9 @@ The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match
   organization, then global authority — not flattened to an organization-only check).
   Granting a service's endpoints to a lower role such as `user` or `reader` *without also
   granting them to every role above it in the grant lattice* — `administrator` for any
-  operation, and `auditor` for reads — silently makes that lower role non-grantable and
-  invisible to those roles. Any new endpoint added to a role in
+  operation, and `auditor` for reads — makes that lower role non-grantable by those roles.
+  It stays visible: `GET /roles` returns it with `grantable: false`, so a caller can still
+  resolve and display it, it just cannot put it on a group. Any new endpoint added to a role in
   `charts/identity/values.yaml` must be added to every role that should be able to grant
   it, not just the leaf roles that consume it. `TestBuiltinRoleGrantability` enforces this
   over the parsed chart values.
@@ -238,10 +239,10 @@ The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match
   any `additionalRoles` chart entry into the role set under test, so
   `TestBuiltinRoleGrantability` requires every non-protected role — `additionalRoles`
   included — to have declared grant relationships, and `TestNonBuiltinRolesAdminGrantable`
-  separately asserts every role outside the built-in family is either labelled
-  `rbac.unikorn-cloud.org/aggregate-to-administrator: "true"` (marking intent for a planned
-  aggregation mechanism to fold the role's permissions into the administrator role — nothing
-  consumes the label yet) or already grantable by `administrator` from its own spec.
+  separately asserts every role outside the built-in family is grantable by `administrator`
+  from its own spec. The chart ships no `additionalRoles`, so that second check has no real
+  role to run over; it asserts against a synthetic role of the shape it exists to catch
+  first, so it cannot pass vacuously.
 - The `application:*` endpoints (`application:applications`, `application:applicationsets`) were
   removed because the application service was never implemented and never will be — they were dead
   configuration. The removal also fixed a live bug: they were present on `platform-administrator`,
