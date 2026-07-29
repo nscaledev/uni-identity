@@ -278,6 +278,10 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 
 			return fmt.Errorf("%w: failed to patch group", err)
 		}
+
+		// Reflect the change in the caller's in-memory list so responses can be
+		// built from it without a cached reload that may lag the write.
+		groups.Items[i] = *updated
 	}
 
 	return nil

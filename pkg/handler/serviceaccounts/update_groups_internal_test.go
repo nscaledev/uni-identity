@@ -329,6 +329,37 @@ func TestUpdateRefusesUngrantableGroupWithoutPatchingTheAccount(t *testing.T) {
 	assert.Empty(t, getGroup(t, cli).Spec.ServiceAccountIDs)
 }
 
+// TestUpdateGroupsReflectsMembershipInTheRenderedList pins the response body. Callers
+// render groupIDs from the group list they passed in, so a patch that is not also applied
+// to that list reports a successful join as no membership at all.
+func TestUpdateGroupsReflectsMembershipInTheRenderedList(t *testing.T) {
+	t.Parallel()
+
+	c, cli := testFixture(t, testRole(), cleanGroup())
+
+	organizationID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	ctx := testACL(openapi.AclEndpoints{
+		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	groups := listGroups(t, cli)
+	require.NoError(t, validateAndUpdateGroups(ctx, c, organizationID, openapi.GroupIDs{testCleanGroupID}, groups))
+
+	// The membership really landed on the stored resource.
+	assert.Equal(t, []string{testServiceAccountID}, getNamedGroup(t, cli, testCleanGroupID).Spec.ServiceAccountIDs)
+
+	// And the list the response is built from agrees with it.
+	account := &unikornv1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: testServiceAccountID, Namespace: testOrgNS},
+		Spec:       unikornv1.ServiceAccountSpec{Expiry: &metav1.Time{Time: time.Now()}},
+	}
+
+	assert.Equal(t, openapi.GroupIDs{testCleanGroupID}, convert(account, groups).Spec.GroupIDs,
+		"a successful join must be reported in the response")
+}
+
 // TestUpdateGroupsAllowsRemovalFromUngrantableRoleGroup shows removal confers nothing and
 // stays ungated, so a group can still be managed down by a caller who could not add to it.
 func TestUpdateGroupsAllowsRemovalFromUngrantableRoleGroup(t *testing.T) {
