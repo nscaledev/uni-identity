@@ -67,8 +67,11 @@ dangling reference conveys no permissions to revoke. A group carrying a `protect
 always have it dropped: `protected` roles must never be attached to a group in the first place, so
 a group that has one anyway (only reachable via direct CR access, since normal writes refuse
 `protected` roles on every re-send) would otherwise be permanently un-updatable — dropping it is
-repair toward that invariant, not a revocation the caller needs permission for. A refused removal
-names the role so the caller knows which one it cannot drop.
+repair toward that invariant, not a revocation the caller needs permission for. Note the repair is
+not just permitted but unavoidable: since re-sending a `protected` role is always refused, the
+first successful update of such a group necessarily drops it, including from a client blindly
+round-tripping the roles it can see — that is the intended outcome, not accidental silent
+revocation. A refused removal names the role so the caller knows which one it cannot drop.
 
 So group writes are also authority-delegation checks, for both grants and revocations.
 
@@ -87,8 +90,11 @@ of those groups: `pkg/rbac/rbac.go` returns a consistency error for the dangling
 pre-existing, unrelated-to-this-guard behaviour, and it is exactly what the correct order avoids.
 
 Once a `Role` CR is actually gone, cleanup is easy: a dangling reference may always be dropped from
-a group, by anyone with group update rights, since the removal guard above treats a role that no
-longer resolves as cleanup rather than revocation.
+a group, by any group-update holder whose own membership does not include the broken group, since
+the removal guard above treats a role that no longer resolves as cleanup rather than revocation.
+(A member of the affected group cannot perform the repair through the API at all — their own ACL
+build fails closed on the dangling reference — so if an organization's only admins sit in that
+group, repair falls back to direct CR access.)
 
 The trap is the window before that. While the `Role` CR still exists, removing it from a group is a
 guarded revocation like any other — the caller must hold its permissions. That is unremarkable for a
