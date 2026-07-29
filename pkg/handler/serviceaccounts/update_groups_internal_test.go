@@ -385,3 +385,25 @@ func TestUpdateGroupsAllowsReaffirmingExistingMembership(t *testing.T) {
 	require.NoError(t, validateAndUpdateGroups(ctx, c, organizationID, openapi.GroupIDs{testGroupID}, listGroups(t, cli)))
 	assert.Equal(t, []string{testServiceAccountID}, getGroup(t, cli).Spec.ServiceAccountIDs)
 }
+
+// TestValidateGroupAdditionsRefusesUnknownGroup covers a requested group the organization
+// does not have.  Reconciliation walks the groups that exist and matches the request
+// against them, so an ID matching nothing used to fall through every branch and the caller
+// got a 200 whose body did not mention the group it asked for.
+func TestValidateGroupAdditionsRefusesUnknownGroup(t *testing.T) {
+	t.Parallel()
+
+	c, cli := testFixture(t, testRole(), cleanGroup())
+
+	organizationID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	ctx := testACL(openapi.AclEndpoints{
+		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	err = c.validateGroupAdditions(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{testCleanGroupID, "group-that-does-not-exist"}, listGroups(t, cli))
+	require.Error(t, err)
+	require.True(t, errors.IsBadRequest(err))
+	assert.Contains(t, err.Error(), "group-that-does-not-exist")
+}

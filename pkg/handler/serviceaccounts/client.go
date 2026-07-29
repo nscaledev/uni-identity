@@ -212,6 +212,12 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 // An account that does not exist yet belongs to no group: the create path
 // passes an empty ID, and every group it asked to join counts as an addition.
 func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// Reconciliation below can only act on groups that exist, so an ID naming
+	// none of them would otherwise be dropped without the caller being told.
+	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
+		return err
+	}
+
 	for i := range groups.Items {
 		group := &groups.Items[i]
 

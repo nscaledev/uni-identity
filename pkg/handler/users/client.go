@@ -129,6 +129,12 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 // patched.  Groups the user is only leaving, or already belongs to, confer
 // nothing and are skipped.
 func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subject unikornv1.GroupSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// Reconciliation below can only act on groups that exist, so an ID naming
+	// none of them would otherwise be dropped without the caller being told.
+	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
+		return err
+	}
+
 	for i := range groups.Items {
 		group := &groups.Items[i]
 

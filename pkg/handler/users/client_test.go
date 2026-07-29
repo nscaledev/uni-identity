@@ -819,6 +819,75 @@ func TestClient_GroupMembershipDanglingRole(t *testing.T) {
 	})
 }
 
+// TestClient_GroupMembershipUnknownGroup covers a requested group the organization does
+// not have.  Reconciliation walks the groups that exist and matches the request against
+// them, so an ID that matches nothing used to fall through every branch: the caller got a
+// 200 whose body simply did not mention the group it asked for.
+func TestClient_GroupMembershipUnknownGroup(t *testing.T) {
+	t.Parallel()
+
+	t.Run("refuses an update naming a group that does not exist", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			newPlainGroup(groupAlphaID),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID, "group-that-does-not-exist"},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.Error(t, err)
+		require.True(t, errors.IsBadRequest(err))
+		assert.Contains(t, err.Error(), "group-that-does-not-exist")
+
+		// The check runs in the pre-pass, so the membership the request would
+		// also have applied has not landed either.
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs)
+	})
+
+	t.Run("refuses a create naming a group that does not exist", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newPlainGroup(groupAlphaID),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Create}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{"group-that-does-not-exist"},
+			},
+		}
+
+		_, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+		require.Error(t, err)
+		require.True(t, errors.IsBadRequest(err))
+		assert.Contains(t, err.Error(), "group-that-does-not-exist")
+
+		globalUsers := &unikornv1.UserList{}
+		require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+		assert.Empty(t, globalUsers.Items, "a refused create must not leave a global user behind")
+	})
+}
+
 // TestClient_GroupMembershipRepresentations covers the two ways a group stores a member.
 // RBAC resolves a principal into a group through either the deprecated organization user
 // ID list or the subject list, so a member present in one already holds the group's roles
