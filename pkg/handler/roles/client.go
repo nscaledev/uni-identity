@@ -53,7 +53,10 @@ func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
 }
 
 func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID) openapi.Roles {
-	var out openapi.Roles
+	// Allocated rather than declared nil: the schema types this response as a
+	// non-nullable array, and a nil slice marshals to null, which response
+	// validation rejects.
+	out := make(openapi.Roles, 0, len(in.Items))
 
 	for _, resource := range in.Items {
 		grantable := rbac.AllowRole(ctx, &resource, organizationID) == nil

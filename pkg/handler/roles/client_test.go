@@ -17,6 +17,7 @@ limitations under the License.
 package roles_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -88,4 +89,33 @@ func TestListReturnsUngrantableRolesWithFlag(t *testing.T) {
 	require.True(t, byName["basic"].Grantable)
 	require.False(t, byName["radar"].Grantable)
 	require.NotContains(t, byName, "internal")
+}
+
+// TestListEmptyCatalogueMarshalsAsAnEmptyArray covers the case where every role in the
+// namespace is filtered out.  The schema declares the response a non-nullable array, so a
+// nil slice — which marshals to null — fails response validation rather than reaching the
+// client.
+func TestListEmptyCatalogueMarshalsAsAnEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	// The only role present is protected, so the filter empties the list.
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(newRole("internal", true, nil)).Build()
+
+	endpoints := openapi.AclEndpoints{{Name: "identity:roles", Operations: openapi.AclOperations{openapi.Read}}}
+	organizations := openapi.AclOrganizationList{{Id: testOrganizationID, Endpoints: &endpoints}}
+	ctx := rbac.NewContext(t.Context(), &openapi.Acl{Organizations: &organizations})
+
+	orgID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	result, err := roles.New(cli, namespace).List(ctx, orgID)
+	require.NoError(t, err)
+	require.Empty(t, result)
+
+	body, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.JSONEq(t, "[]", string(body))
 }
