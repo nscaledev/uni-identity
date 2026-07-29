@@ -192,7 +192,8 @@ The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match
 - ACL intersection for impersonated system-account calls is deliberate least-privilege behaviour.
 - Service accounts are organization-bound and their scoped access must remain consistent with that
   binding.
-- Group membership is the main route from actors to roles.
+- Group membership is the main route from actors to roles, so writing a membership is itself a
+  grant and is bounded by the writer's own effective permissions.
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
 - Platform-administrator matching is always issuer-qualified at runtime via `(srcIss, subject)`.
@@ -228,8 +229,12 @@ The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match
   Grantability against this lattice is enforced on the role *delta* for group writes, not a
   group's full `RoleIDs` on every write: `pkg/handler/groups` grant-checks a role being
   added, leaves an already-present role unchecked, and separately requires grant authority
-  to drop a role from the group (see that package's README for the accepted consequence this
-  implies). The guard test suite covers more than the four built-ins: `loadChartRoles` merges
+  to drop a role from the group. Membership is grant-checked against the group's whole role
+  set rather than a delta, because a new member inherits all of it: adding a user, subject or
+  service account to a group requires grant authority over every role that group carries,
+  whether the write arrives through `pkg/handler/groups`, `pkg/handler/users` or
+  `pkg/handler/serviceaccounts`. Removals and principal deletion revoke rather than confer,
+  so they are not gated. The guard test suite covers more than the four built-ins: `loadChartRoles` merges
   any `additionalRoles` chart entry into the role set under test, so
   `TestBuiltinRoleGrantability` requires every non-protected role — `additionalRoles`
   included — to have declared grant relationships, and `TestNonBuiltinRolesAdminGrantable`

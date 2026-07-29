@@ -46,6 +46,21 @@ and adds or removes both:
 So this package is not just a membership record manager. It is also one side of the compatibility
 bridge between old and new group-membership representations.
 
+### Membership Additions Are Grants
+
+Putting a user into a group hands them every role that group carries, so it is a grant and is
+checked as one: the add branch of the reconciliation refuses unless the caller could grant each of
+the group's roles in that organization. The refusal names the role. This is the same rule
+[`pkg/handler/groups`](../groups/README.md) applies to membership written through the group itself
+— the check lives in `pkg/handler/common` so both entry points share it, and a user write cannot be
+used to sidestep the group write's guard.
+
+The check keys on the change, not on the request: re-sending a group the user already belongs to
+confers nothing new and passes. Removing a user from a group takes authority away rather than
+handing it out, so the remove branch is unguarded. Deletion is exempt for the same reason — it
+reconciles against an empty group list, so it only ever removes, and a user must remain deletable
+even when they sit in a group nobody can grant the roles of.
+
 ### Read Model Aggregation
 
 The user read model is assembled from multiple sources:
@@ -66,6 +81,8 @@ clients.
   must use update to intentionally change organization-local state
 - organization membership changes must keep group membership consistent with the requested
   `groupIDs`
+- adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
+  could grant every role the group carries; removals and user deletion are not gated
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
 - the API-managed path only allows email-address subjects for normal user creation
@@ -88,6 +105,8 @@ clients.
 
 - [`pkg/handler/organizations`](../organizations/README.md), which provides the parent
   organization scope and namespace handoff used here
+- [`pkg/handler/groups`](../groups/README.md), which owns the group resources this package
+  reconciles membership into, and documents the guard rails on their roles
 - [`pkg/userdb`](../../userdb/README.md), which shields authn/authz consumers from the raw local
   `User` and `OrganizationUser` storage joins that this package mutates
 - [`pkg/apis/unikorn/v1alpha1`](../../apis/unikorn/v1alpha1/README.md), which defines the stored

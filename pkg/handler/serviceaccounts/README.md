@@ -33,6 +33,21 @@ authority of the service account through their `RoleIDs`.
 So this client participates in the same local delegation model as users, but without the global
 identity split.
 
+### Membership Additions Are Grants
+
+Putting a service account into a group hands it every role that group carries, so it is a grant and
+is checked as one: the add branch of the reconciliation refuses unless the caller could grant each
+of the group's roles in that organization. The refusal names the role. This is the same rule
+[`pkg/handler/groups`](../groups/README.md) applies to membership written through the group itself
+— the check lives in `pkg/handler/common` so both entry points share it, and a service-account
+write cannot be used to sidestep the group write's guard.
+
+Re-sending a group the account already belongs to confers nothing new and passes. Removing it from
+a group takes authority away rather than handing it out, so the remove branch is unguarded, and
+delete is exempt for the same reason: it reconciles against an empty group list, so it only ever
+unlinks, and an account must remain deletable even when it sits in a group nobody can grant the
+roles of.
+
 ### Token Issuance And Rotation
 
 This is the main behavioural difference from the users client.
@@ -52,6 +67,8 @@ That makes this package both an identity-binding client and a credential-lifecyc
 
 - service accounts are organization-bound actors
 - service-account authority is still mediated through groups and roles
+- adding a service account to a group is a grant of that group's roles, so it is allowed only where
+  the caller could grant every role the group carries; removals and account deletion are not gated
 - create returns freshly issued credentials
 - ordinary update preserves the current token
 - rotate replaces the token and invalidates the old one

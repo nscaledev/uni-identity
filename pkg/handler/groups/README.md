@@ -51,11 +51,10 @@ When roles are attached to a group, this client:
 - rejects updates that drop a role the caller is not permitted to grant in that organization
 
 The grant check on addition applies only to the delta: roles already on the group before the write
-are not re-checked, so a caller can edit membership on a group that carries a role they could not
-grant themselves, and can resend that group's existing role list without the write being refused. A
-role being added is always grant-checked, on both create and update; create has no prior state, so
-every role in the request counts as an addition. A refused grant names the role so the caller knows
-which one to remove or delegate.
+are not re-checked, so a caller can resend that group's existing role list without the write being
+refused. A role being added is always grant-checked, on both create and update; create has no prior
+state, so every role in the request counts as an addition. A refused grant names the role so the
+caller knows which one to remove or delegate.
 
 Removal is guarded symmetrically, on update only: dropping a role from the group's current
 `RoleIDs` that is not present in the request is refused unless the caller could grant that role
@@ -75,8 +74,30 @@ revocation. A refused removal names the role so the caller knows which one it ca
 
 So group writes are also authority-delegation checks, for both grants and revocations.
 
-Group DELETE intentionally remains an unguarded revocation path: deleting a group is an explicit,
-whole-group action by the caller, not a silent side effect of an update, so the guard above — which
+### Membership Guard Rails
+
+Adding a member to a group hands that member every role the group carries, so it is a grant like
+any other and has to trace to a holder. An update that puts a user, subject, or service account on
+a group is refused unless the caller could grant each of the group's roles themselves. The roles
+checked are the ones the group carries after the write, since that is what the new member inherits.
+A refusal names the role.
+
+Two cases confer nothing and therefore never block an addition: a group with no roles at all, and a
+role reference that no longer resolves to a `Role` resource.
+
+Create needs no separate membership check. Every role on a new group counts as an addition and is
+already grant-checked, so the creator holds everything the new group confers.
+
+The gate applies wherever membership is written, not only through this client:
+[`pkg/handler/users`](../users/README.md) and
+[`pkg/handler/serviceaccounts`](../serviceaccounts/README.md) reconcile a requested `groupIDs` list
+into group membership and run the same check on the branch that adds.
+
+Removals are ungated throughout. Taking a member out of a group takes authority away rather than
+handing it out, so a caller who could not add a member to a group may still remove one; deleting a
+user or service account strips its memberships as cleanup and is likewise unguarded. Group DELETE
+is an unguarded revocation path for the same reason: deleting a group is an explicit, whole-group
+action by the caller, not a silent side effect of an update, so the role-removal guard — which
 exists to catch omission — does not apply to it.
 
 ### Decommissioning A Service's Roles
@@ -111,6 +132,12 @@ long as it stays labelled and installed.
 Protected roles are the one case exempt from that trap entirely: they are always droppable from a
 group regardless of who holds what, as invariant repair (see Role Assignment Guard Rails above).
 
+Membership is the easier half of the job. Emptying a group of its members needs no authority over
+the roles it carries, so members can be pulled out of a group carrying a live ungrantable role at
+any point in the sequence, and the group can then be deleted outright. What does not work while the
+`Role` CR is still installed is putting anyone *into* such a group — a decommissioning service's
+group cannot take on new members once nobody holds its permissions.
+
 ### Project Reference Cleanup
 
 Projects use groups as access boundaries.
@@ -128,23 +155,21 @@ would drift.
   group are not re-checked on subsequent writes
 - callers may only drop roles from a group on update if they are allowed to grant that role, unless
   the role no longer exists
+- adding a member to a group is a grant of that group's roles, so it is allowed only where the
+  caller could grant every role the group carries
+- removing a member from a group, and deleting a member principal, confer nothing and are not gated
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible
 - group membership and role/service-account ID lists are normalized to first-occurrence unique values
 - projects should not retain references to groups that no longer exist
 
 ## Caveats
 
-- Because the addition check only covers the delta, a caller with `identity:groups` update may add
-  members to an existing group whose `RoleIDs` include a role they could not themselves grant —
-  resending the group's current role list is always accepted, regardless of who originally granted
-  those roles (see Role Assignment Guard Rails above). This is an accepted consequence, not an
-  oversight: it is what makes membership management possible on a group seeded with a role from a
-  broader-authority admin, without forcing every editor to also hold that role. The exposure stays
-  org-internal and admin-only today, since `identity:groups` update is granted only to
-  `administrator` and the global `platform-administrator`. The planned aggregation mechanism
-  described under Decommissioning A Service's Roles above is expected to close the remaining gap for
-  aggregated third-party roles specifically, by extending an administrator's own grantable surface to
-  reach them directly rather than relying on this delta exemption.
+- A group seeded with a role from a broader-authority admin becomes membership-frozen for everyone
+  who cannot grant that role: they can still rename it, resend its role list, and remove members,
+  but not add any. That is the intended trade — a member addition is a grant — and the way out is to
+  give the editor the role's permissions, not to relax the check. The planned aggregation mechanism
+  described under Decommissioning A Service's Roles above closes this for aggregated third-party
+  roles specifically, by extending an administrator's own grantable surface to reach them.
 - The package is partly a migration bridge because it must support both deprecated `UserIDs` and
   forward-looking `Subjects`.
 - Groups may include external subjects that do not resolve to local `User` objects, so not every
