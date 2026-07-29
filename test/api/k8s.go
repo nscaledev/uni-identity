@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
@@ -74,6 +75,30 @@ func OrganizationNamespace(ctx context.Context, cli client.Client, identityNames
 	}
 
 	return org.Status.Namespace, nil
+}
+
+// AddGroupMember writes a user onto a Group custom resource directly.  The API
+// refuses to add a member to a group carrying a role the caller cannot grant,
+// because joining the group would confer that role, so a spec that needs to
+// start from "the member is already there" has to seed it out of band.
+func AddGroupMember(ctx context.Context, cli client.Client, namespace, groupID, userID string) error {
+	group := &unikornv1.Group{}
+
+	if err := cli.Get(ctx, client.ObjectKey{Namespace: namespace, Name: groupID}, group); err != nil {
+		return fmt.Errorf("getting group %s: %w", groupID, err)
+	}
+
+	if slices.Contains(group.Spec.UserIDs, userID) {
+		return nil
+	}
+
+	group.Spec.UserIDs = append(group.Spec.UserIDs, userID)
+
+	if err := cli.Update(ctx, group); err != nil {
+		return fmt.Errorf("adding member %s to group %s: %w", userID, groupID, err)
+	}
+
+	return nil
 }
 
 // InstallFixture creates any custom resource and returns a cleanup function
