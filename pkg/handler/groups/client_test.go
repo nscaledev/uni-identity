@@ -606,6 +606,14 @@ func (f *groupTestFixture) createRadarRole(t *testing.T) {
 func (f *groupTestFixture) createGroupWithRoles(t *testing.T, roleIDs []string) {
 	t.Helper()
 
+	f.createGroupWithRolesAndMembers(t, roleIDs, nil)
+}
+
+// createGroupWithRolesAndMembers creates the test group already carrying roles and service
+// account members, standing in for state left by an earlier, more privileged write.
+func (f *groupTestFixture) createGroupWithRolesAndMembers(t *testing.T, roleIDs, serviceAccountIDs []string) {
+	t.Helper()
+
 	group := &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testOrgNS,
@@ -615,7 +623,8 @@ func (f *groupTestFixture) createGroupWithRoles(t *testing.T, roleIDs []string) 
 			},
 		},
 		Spec: unikornv1.GroupSpec{
-			RoleIDs: roleIDs,
+			RoleIDs:           roleIDs,
+			ServiceAccountIDs: serviceAccountIDs,
 		},
 	}
 	require.NoError(t, f.client.Create(newContext(t), group))
@@ -661,9 +670,37 @@ func TestUpdateGroupRejectsRemovalOfUngrantableRole(t *testing.T) {
 
 // TestUpdateGroupKeepsUngrantableRoleWhenResent is the companion happy path: a caller who
 // cannot grant radar:things may still resend a group's existing radar-id role untouched
-// alongside an unrelated change (here, service account membership). The removal guard must
-// not fire when the role isn't actually being dropped.
+// alongside an unrelated change (here, dropping a service account member). The removal
+// guard must not fire when the role isn't actually being dropped, and member removal is
+// not a grant, so nothing else blocks the write either.
 func TestUpdateGroupKeepsUngrantableRoleWhenResent(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createRadarRole(t)
+	f.createGroupWithRolesAndMembers(t, []string{"radar-id"}, []string{"sa-a"})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	request := makeGroupUpdateRequest(nil, nil)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+	request.Spec.ServiceAccountIDs = openapi.StringList{}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+	assert.Empty(t, stored.Spec.ServiceAccountIDs)
+}
+
+// TestUpdateGroupRejectsMemberAdditionToUngrantableRoleGroup covers the grant that hides
+// inside a membership edit: the new member inherits every role the group carries, so
+// adding one to a group holding radar-id grants radar:things to them. A caller who cannot
+// grant that role must be refused, and the group left untouched.
+func TestUpdateGroupRejectsMemberAdditionToUngrantableRoleGroup(t *testing.T) {
 	t.Parallel()
 
 	f := setupGroupTestFixture(t)
@@ -672,6 +709,86 @@ func TestUpdateGroupKeepsUngrantableRoleWhenResent(t *testing.T) {
 
 	ctx := aclContext(t, openapi.AclEndpoints{
 		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	request := makeGroupUpdateRequest(nil, nil)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+	request.Spec.ServiceAccountIDs = openapi.StringList{"sa-a"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	stored := f.getGroup(t)
+	assert.Empty(t, stored.Spec.ServiceAccountIDs)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+}
+
+// TestUpdateGroupRejectsUserAdditionToUngrantableRoleGroup is the human-member counterpart:
+// the gate has to cover the UserIDs and Subjects representations, not just service accounts.
+func TestUpdateGroupRejectsUserAdditionToUngrantableRoleGroup(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	userIDs := openapi.StringList{orguserAliceID}
+	request := makeGroupUpdateRequest(nil, &userIDs)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	stored := f.getGroup(t)
+	assert.Empty(t, stored.Spec.UserIDs)
+	assert.Empty(t, stored.Spec.Subjects)
+}
+
+// TestUpdateGroupAllowsMemberAdditionToRolelessGroup shows the gate is scoped to what the
+// group actually confers: a group with no roles grants nothing, so anyone who may edit the
+// group may add members to it.
+func TestUpdateGroupAllowsMemberAdditionToRolelessGroup(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createGroupWithRoles(t, nil)
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	request := makeGroupUpdateRequest(nil, nil)
+	request.Spec.ServiceAccountIDs = openapi.StringList{"sa-a"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"sa-a"}, stored.Spec.ServiceAccountIDs)
+}
+
+// TestUpdateGroupAllowsMemberAdditionByRoleHolder is the other half of the gate: the grant
+// traces to a holder, so a caller who does hold radar:things may add members to the group
+// that confers it.
+func TestUpdateGroupAllowsMemberAdditionByRoleHolder(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+		{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
 	})
 
 	request := makeGroupUpdateRequest(nil, nil)

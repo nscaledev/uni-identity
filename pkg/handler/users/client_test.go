@@ -26,6 +26,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
@@ -33,6 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,6 +64,9 @@ const (
 	userBobSubject = "bob@example.com"
 	userBobID      = "user-bob"
 	orgUserBobID   = "orguser-bob"
+
+	radarRoleID   = "radar-id"
+	radarRoleName = "radar"
 )
 
 type userTestFixture struct {
@@ -453,6 +458,184 @@ func TestClient_Update(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.Equal(t, openapi.GroupIDs{groupAlphaID}, result.Spec.GroupIDs)
+	})
+}
+
+// radarRole builds a role scoped to an endpoint no built-in role holds, so only a caller
+// whose ACL is extended to cover it can grant the role.
+func radarRole() *unikornv1.Role {
+	return &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      radarRoleID,
+			Labels:    map[string]string{constants.NameLabel: radarRoleName},
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Organization: []unikornv1.RoleScope{
+					{Name: "radar:things", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+}
+
+// newRadarGroup builds a group already carrying the ungrantable role, standing in for one
+// seeded by a third-party service or a more privileged admin.
+func newRadarGroup(userIDs []string, subjects []unikornv1.GroupSubject) *unikornv1.Group {
+	return &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupAlphaID,
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs:  []string{radarRoleID},
+			UserIDs:  userIDs,
+			Subjects: subjects,
+		},
+	}
+}
+
+// aclContext layers an ACL granting only the given organization-scoped endpoints on top of
+// newContext's authorization and principal info.
+func aclContext(t *testing.T, endpoints openapi.AclEndpoints) context.Context {
+	t.Helper()
+
+	organizations := openapi.AclOrganizationList{{Id: testOrgID, Endpoints: &endpoints}}
+
+	return rbac.NewContext(newContext(t), &openapi.Acl{Organizations: &organizations})
+}
+
+func aliceSubject() unikornv1.GroupSubject {
+	return unikornv1.GroupSubject{
+		ID:     userAliceSubject,
+		Email:  userAliceSubject,
+		Issuer: testIssuerURL,
+	}
+}
+
+// TestClient_GroupMembershipGrantGate covers the grant hidden inside a user write: adding a
+// user to a group hands them every role the group carries, so it is refused unless the
+// caller could grant those roles.  Removals confer nothing and stay open.
+func TestClient_GroupMembershipGrantGate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("refuses adding a user to a group whose role the caller cannot grant", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(nil, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.Error(t, err)
+		require.True(t, errors.IsForbidden(err))
+		assert.Contains(t, err.Error(), radarRoleName)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs)
+		assert.Empty(t, alphaGroup.Spec.Subjects)
+	})
+
+	t.Run("allows adding a user when the caller holds the group's role", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(nil, nil),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+			{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		result, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.NoError(t, err)
+		assert.Equal(t, openapi.GroupIDs{groupAlphaID}, result.Spec.GroupIDs)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Contains(t, alphaGroup.Spec.UserIDs, orgUserAliceID)
+	})
+
+	t.Run("allows removing a user from a group whose role the caller cannot grant", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup([]string{orgUserAliceID}, []unikornv1.GroupSubject{aliceSubject()}),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{},
+			},
+		}
+
+		result, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.NoError(t, err)
+		assert.Empty(t, result.Spec.GroupIDs)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.NotContains(t, alphaGroup.Spec.UserIDs, orgUserAliceID)
+		assert.NotContains(t, alphaGroup.Spec.Subjects, aliceSubject())
+		assert.Equal(t, []string{radarRoleID}, alphaGroup.Spec.RoleIDs)
+	})
+
+	t.Run("allows deleting a user held by a group whose role the caller cannot grant", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup([]string{orgUserAliceID}, []unikornv1.GroupSubject{aliceSubject()}),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Delete}},
+		})
+
+		// Deletion strips memberships as cleanup.  It confers nothing, so it
+		// must not be blocked by the group's ungrantable role.
+		require.NoError(t, fixture.usersClient.Delete(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID))
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs)
+		assert.Empty(t, alphaGroup.Spec.Subjects)
 	})
 }
 

@@ -204,7 +204,7 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 
 // updateGroups takes a user name and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) updateGroups(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	for i := range groups.Items {
 		current := &groups.Items[i]
 
@@ -214,6 +214,12 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 			// Add to a group where it should be a member but isn't.
 			if slices.Contains(current.Spec.ServiceAccountIDs, serviceAccountID) {
 				continue
+			}
+
+			// Joining the group confers its roles on the service account, so
+			// the caller has to be able to grant them.
+			if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, current); err != nil {
+				return err
 			}
 
 			updated.Spec.ServiceAccountIDs = append(updated.Spec.ServiceAccountIDs, serviceAccountID)
@@ -261,7 +267,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, organization.ID, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -353,7 +359,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, serviceAccountID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, organization.ID, serviceAccountID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -422,7 +428,7 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
-	if err := c.updateGroups(ctx, serviceAccountID, nil, groups); err != nil {
+	if err := c.updateGroups(ctx, organization.ID, serviceAccountID, nil, groups); err != nil {
 		return err
 	}
 

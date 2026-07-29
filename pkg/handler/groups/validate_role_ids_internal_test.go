@@ -95,8 +95,8 @@ func TestValidateRoleIDsChecksOnlyAdditions(t *testing.T) {
 	require.Contains(t, err.Error(), "radar")
 
 	// Update re-sending an existing radar role: not an addition — allowed.
-	// Members-only edits must not fail on roles that were already on the
-	// group.
+	// A write that leaves the role list alone must not fail on roles that
+	// were already on the group.
 	_, err = c.validateRoleIDs(ctx, orgID, []string{"radar-id", "basic-id"}, []string{"radar-id"})
 	require.NoError(t, err)
 

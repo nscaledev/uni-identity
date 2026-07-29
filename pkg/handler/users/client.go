@@ -119,7 +119,7 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 
 // updateGroups takes a user's subject and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) updateGroups(ctx context.Context, organizationID ids.OrganizationID, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	// The subject is supplied by the caller rather than re-read here: on the
 	// create path the global user was just written to the API server, and a
 	// read back through the cached client can miss it while the informer catches
@@ -138,6 +138,16 @@ func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string
 
 		if slices.Contains(groupIDs, current.Name) {
 			needsPatching = addToGroup(subject, orgUserID, updated)
+
+			// Joining the group confers its roles on the user, so the
+			// caller has to be able to grant them.  Re-affirming a
+			// membership the user already holds confers nothing new, hence
+			// the check hangs off an actual addition.
+			if needsPatching {
+				if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, current); err != nil {
+					return err
+				}
+			}
 		} else {
 			needsPatching = removeFromGroup(subject, orgUserID, updated)
 		}
@@ -430,7 +440,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, organization.ID, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -517,7 +527,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.updateGroups(ctx, organization.ID, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -553,7 +563,7 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
-	if err := c.updateGroups(ctx, user.Spec.Subject, userID, nil, groups); err != nil {
+	if err := c.updateGroups(ctx, organization.ID, user.Spec.Subject, userID, nil, groups); err != nil {
 		return err
 	}
 
