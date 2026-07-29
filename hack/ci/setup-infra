@@ -79,13 +79,11 @@ if [[ "${IS_KIND}" == true ]]; then
   )
 fi
 
-# The +"${...}" form keeps an empty INGRESS_ARGS (the non-KinD path) from
-# tripping `set -u` on bash 3.2, which is what macOS ships.
 helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
   --create-namespace \
   --wait \
-  ${INGRESS_ARGS[@]+"${INGRESS_ARGS[@]}"}
+  "${INGRESS_ARGS[@]}"
 
 if [[ "${IS_KIND}" == true ]]; then
   echo "==> Waiting for ingress-nginx LoadBalancer IP..."
