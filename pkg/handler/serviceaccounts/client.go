@@ -208,6 +208,9 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 // front keeps a refusal from landing after an earlier group has already been
 // patched.  Groups the account is only leaving, or already belongs to, confer
 // nothing and are skipped.
+//
+// An account that does not exist yet belongs to no group: the create path
+// passes an empty ID, and every group it asked to join counts as an addition.
 func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	for i := range groups.Items {
 		group := &groups.Items[i]
@@ -216,7 +219,10 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 			continue
 		}
 
-		if slices.Contains(group.Spec.ServiceAccountIDs, serviceAccountID) {
+		// Membership lists are not validated against real accounts, so an
+		// empty ID could match a junk entry.  Test the ID first rather than
+		// letting the sentinel skip a check.
+		if serviceAccountID != "" && slices.Contains(group.Spec.ServiceAccountIDs, serviceAccountID) {
 			continue
 		}
 
@@ -279,6 +285,19 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
+	groups, err := c.listGroups(ctx, organization)
+	if err != nil {
+		return nil, err
+	}
+
+	// Settle the group grants before the account exists.  Creating it first
+	// and refusing afterwards would strand a service account, with a token
+	// already issued, that the caller was never told about.  The account is
+	// new, so it is in no group yet.
+	if err := c.validateGroupAdditions(ctx, organization.ID, "", request.Spec.GroupIDs, groups); err != nil {
+		return nil, err
+	}
+
 	resource, err := c.generate(ctx, organization, request)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to generate service account", err)
@@ -286,11 +305,6 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 
 	if err := c.client.Create(ctx, resource); err != nil {
 		return nil, fmt.Errorf("%w: failed to create service account", err)
-	}
-
-	groups, err := c.listGroups(ctx, organization)
-	if err != nil {
-		return nil, err
 	}
 
 	if err := c.updateGroups(ctx, organization.ID, resource.Name, request.Spec.GroupIDs, groups); err != nil {

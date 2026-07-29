@@ -55,9 +55,13 @@ the group's roles in that organization. The refusal names the role. This is the 
 — the check lives in `pkg/handler/common` so both entry points share it, and a user write cannot be
 used to sidestep the group write's guard.
 
-The check keys on the change, not on the request: re-sending a group the user already belongs to
-confers nothing new and passes. Removing a user from a group takes authority away rather than
-handing it out, so the remove branch is unguarded. Deletion is exempt for the same reason — it
+The check keys on the change, not on the request: re-sending a group the user already fully belongs
+to confers nothing new and passes. "Fully" matters, because membership has two representations — a
+user recorded under the legacy `UserIDs` but not yet as a subject is a partial member, and
+completing the pair counts as an addition and is gated. That is the conservative direction: the
+write does extend the membership record, and the alternative would let a half-written membership
+become a way to finish a grant unchecked. Removing a user from a group takes authority away rather
+than handing it out, so the remove branch is unguarded. Deletion is exempt for the same reason — it
 reconciles against an empty group list, so it only ever removes, and a user must remain deletable
 even when they sit in a group nobody can grant the roles of.
 

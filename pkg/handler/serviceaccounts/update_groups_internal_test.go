@@ -24,10 +24,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -100,19 +103,44 @@ func testFixture(t *testing.T, objects ...client.Object) (*Client, client.Client
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      testOrganizationID,
+		},
+		Status: unikornv1.OrganizationStatus{
+			Namespace: testOrgNS,
+		},
+	}
+
+	objects = append([]client.Object{organization}, objects...)
+
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 
-	// updateGroups needs only the Kubernetes client and the identity namespace;
-	// the token issuer is not on this path.
+	// Membership reconciliation needs only the Kubernetes client and the
+	// identity namespace.  The token issuer is left nil deliberately: nothing
+	// on these paths may mint a token, and a refused create in particular must
+	// bail out before it would.
 	return &Client{client: cli, namespace: testNamespace}, cli
 }
 
 // testACL builds a context carrying an ACL granting only the given organization-scoped
-// endpoints in the test organization.
+// endpoints in the test organization, over the authorization and principal info the
+// handlers stamp onto anything they create.
 func testACL(endpoints openapi.AclEndpoints) context.Context {
+	ctx := authorization.NewContext(context.Background(), &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: "test-subject",
+		},
+	})
+
+	ctx = principal.NewContext(ctx, &principal.Principal{
+		Actor: "test-principal",
+	})
+
 	organizations := openapi.AclOrganizationList{{Id: testOrganizationID, Endpoints: &endpoints}}
 
-	return rbac.NewContext(context.Background(), &openapi.Acl{Organizations: &organizations})
+	return rbac.NewContext(ctx, &openapi.Acl{Organizations: &organizations})
 }
 
 func listGroups(t *testing.T, cli client.Client) *unikornv1.GroupList {
@@ -203,6 +231,42 @@ func TestUpdateGroupsAllowsAdditionByRoleHolder(t *testing.T) {
 
 	require.NoError(t, c.updateGroups(ctx, organizationID, testServiceAccountID, openapi.GroupIDs{testGroupID}, listGroups(t, cli)))
 	assert.Equal(t, []string{testServiceAccountID}, getGroup(t, cli).Spec.ServiceAccountIDs)
+}
+
+// TestCreateRefusesUngrantableGroupWithoutPersistingTheAccount pins the ordering on the
+// create path: the grant is settled before the account exists.  Creating it first and
+// discovering the refusal afterwards would strand a service account, with a token already
+// issued, that the caller never got told about.
+func TestCreateRefusesUngrantableGroupWithoutPersistingTheAccount(t *testing.T) {
+	t.Parallel()
+
+	c, cli := testFixture(t, testRole(), testGroup())
+
+	organizationID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	ctx := testACL(openapi.AclEndpoints{
+		{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Create}},
+	})
+
+	request := &openapi.ServiceAccountWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: "refused-sa"},
+		Spec: openapi.ServiceAccountSpec{
+			GroupIDs: openapi.GroupIDs{testGroupID},
+		},
+	}
+
+	_, err = c.Create(ctx, organizationID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	assert.Contains(t, err.Error(), testRoleName)
+
+	accounts := &unikornv1.ServiceAccountList{}
+	require.NoError(t, cli.List(t.Context(), accounts, &client.ListOptions{Namespace: testOrgNS}))
+	assert.Empty(t, accounts.Items,
+		"a refused create must not leave a service account behind")
+
+	assert.Empty(t, getGroup(t, cli).Spec.ServiceAccountIDs)
 }
 
 // TestUpdateGroupsAllowsRemovalFromUngrantableRoleGroup shows removal confers nothing and

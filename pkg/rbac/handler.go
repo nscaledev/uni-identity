@@ -303,17 +303,24 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 //
 // Trust assumption: accepting a permission held in *any* one of the caller's projects is
 // only safe because a granted role cannot take effect in a project the caller does not
-// already administer. Two surrounding invariants enforce that and must be preserved:
+// already administer. Every route to AllowRole is entered behind an organization-scope
+// check that project-scoped authority cannot satisfy, and linking the resulting authority
+// to a project needs authority over that project specifically:
 //
-//   - group create/update (the only path to AllowRole via validateRoleIDs) requires
-//     organization-scope identity:groups write, which project-scoped authority cannot
-//     satisfy; and
+//   - group create and update reach AllowRole through validateRoleIDs, and update also
+//     through validateMemberAdditions when it adds a member, behind organization-scope
+//     identity:groups write;
+//   - user create/update reaches it through AllowGroupMembershipAddition when the write
+//     puts the user in a group, behind organization-scope identity:users write;
+//   - service account create/update reaches it the same way, behind organization-scope
+//     identity:serviceaccounts write; and
 //   - linking a group to an existing project requires project-scope identity:projects
 //     update for that specific project.
 //
-// If a role ever grants identity:groups write at project scope, or project-group linking
-// is relaxed to organization scope, this "any project" acceptance would become a
-// cross-project escalation and must be tightened to a specific target project.
+// If a role ever grants identity:groups, identity:users or identity:serviceaccounts write
+// at project scope, or project-group linking is relaxed to organization scope, this "any
+// project" acceptance would become a cross-project escalation and must be tightened to a
+// specific target project.
 func allowGrantProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
 	if AllowOrganizationScopeID(ctx, endpoint, operation, organizationID) == nil {
 		return nil
