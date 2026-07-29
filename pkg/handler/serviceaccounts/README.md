@@ -52,6 +52,10 @@ Reconciliation is validate-then-apply: every group the account would newly join 
 before the first group is patched, so a write that joins one group the caller may grant and another
 they may not is refused whole rather than applying the permitted half.
 
+That ordering is a guarantee about *refusals*, not about failures. What it buys is that no
+authorization decision is ever discovered after a write has landed. It does not make the write
+atomic — see the caveat on partial application below.
+
 ### Token Issuance And Rotation
 
 This is the main behavioural difference from the users client.
@@ -83,6 +87,27 @@ That makes this package both an identity-binding client and a credential-lifecyc
 
 - Like `pkg/handler/users`, this package performs best-effort multi-object consistency across
   service accounts and groups on top of Kubernetes storage rather than an ACID backing store.
+- **Create can strand a credentialled account.** The grants are settled first and the account is
+  written second, but the group patches come third, and nothing rolls the account back if one of
+  them fails. Two ways in: an infrastructure failure part-way through the loop, or a concurrent
+  privileged writer changing a group between the pre-pass reading it and the reconciler patching
+  it. The second is *detected* rather than silently allowed — the patch carries an optimistic lock
+  against the version the pre-pass read, so a group modified underneath the request conflicts
+  instead of quietly conferring a role nobody authorised — but detection still arrives after any
+  earlier group in the same request has been patched. Either way the caller sees an error while a
+  service account exists, holds a freshly issued token, and sits in some prefix of the groups it
+  asked for.
+
+  There is deliberately no rollback attempt: unpicking a partial write needs the same multi-object
+  atomicity the storage layer does not offer, and a failed rollback leaves a worse state than the
+  one it was trying to repair.
+
+  What makes this worth knowing rather than merely untidy is that a stranded account is not inert.
+  `Rotate` is gated on `identity:serviceaccounts` update or on the account rotating *itself*, and
+  neither path re-checks group membership, so the account can keep renewing its own credential
+  indefinitely and any update holder can re-token it. Callers that see create fail should treat the
+  account as possibly created and delete by name; operators auditing this should look for service
+  accounts whose group membership does not match anything a caller would have asked for.
 - The current access token is stored on the service-account resource and returned on create/rotate,
   so token-handling mistakes have more impact here than in most handler clients.
 - The package is intentionally similar to the users client; the main value in documenting it is the
