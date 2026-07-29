@@ -35,7 +35,11 @@ import (
 )
 
 const (
-	testNamespace      = "identity"
+	// Must match the value in the external test package in this directory: a
+	// test moved between the two files would otherwise silently read a
+	// different namespace, where a NotFound on a role reads as an exemption
+	// rather than a failure.
+	testNamespace      = "test-namespace"
 	testOrganizationID = "acbaf1e5-6414-4066-b74e-2d95dc766299"
 )
 

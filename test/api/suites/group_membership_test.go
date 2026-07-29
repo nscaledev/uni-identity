@@ -113,6 +113,20 @@ func expectGroupEmptiedOfMembers(groupID, roleID string) {
 	}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())
 }
 
+// readGroupResource reads the Group custom resource straight from the API
+// server.  The "left untouched" assertions after a refusal must not go through
+// the identity API: it serves groups from an informer cache, so a single
+// unretried read can return the pre-write state and pass whether or not the
+// refused write actually landed.
+func readGroupResource(kube kubeclient.Client, orgNamespace, groupID string) *unikornv1.Group {
+	GinkgoHelper()
+
+	group := &unikornv1.Group{}
+	Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: orgNamespace, Name: groupID}, group)).To(Succeed())
+
+	return group
+}
+
 // readUser returns the organization user record, which carries the subject and
 // the group memberships a user write has to resend to leave them intact.
 func readUser(userID string) identityopenapi.UserRead {
@@ -269,11 +283,13 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 					"the error must name the role that blocked the addition")
 				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleName),
 					"the error must give the role's display name, not only its ID")
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring("members cannot be added to the group"),
+					"the membership guard must be the one that refused, not the role grant or removal guard")
 
-				current, err := client.GetGroup(ctx, config.OrgID, groupID)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(groupUserIDs(current)).To(BeEmpty(),
+				current := readGroupResource(kube, orgNamespace, groupID)
+				Expect(current.Spec.UserIDs).To(BeEmpty(),
 					"a refused update must leave the group untouched")
+				Expect(current.Spec.Subjects).To(BeEmpty())
 				Expect(current.Spec.RoleIDs).To(ContainElement(roleID))
 
 				GinkgoWriter.Printf("Refused member addition: %s\n", response.JSON403.ErrorDescription)
@@ -315,9 +331,10 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 					"the error must name the role that blocked the update")
 				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleName),
 					"the error must give the role's display name, not only its ID")
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring("cannot be removed from the group"),
+					"the removal guard must be the one that refused, not the membership or role grant guard")
 
-				current, err := client.GetGroup(ctx, config.OrgID, groupID)
-				Expect(err).NotTo(HaveOccurred())
+				current := readGroupResource(kube, orgNamespace, groupID)
 				Expect(current.Spec.RoleIDs).To(ContainElement(roleID),
 					"a refused update must leave the group untouched")
 
@@ -343,11 +360,13 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 					"the error must name the role that blocked the addition")
 				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleName),
 					"the error must give the role's display name, not only its ID")
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring("members cannot be added to the group"),
+					"the membership guard must be the one that refused, not the role grant or removal guard")
 
-				current, err := client.GetGroup(ctx, config.OrgID, groupID)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(groupUserIDs(current)).To(BeEmpty(),
+				current := readGroupResource(kube, orgNamespace, groupID)
+				Expect(current.Spec.UserIDs).To(BeEmpty(),
 					"a refused user write must leave the group untouched")
+				Expect(current.Spec.Subjects).To(BeEmpty())
 
 				GinkgoWriter.Printf("Refused user-path member addition: %s\n", response.JSON403.ErrorDescription)
 			})
@@ -372,6 +391,103 @@ var _ = Describe("Group membership with ungrantable roles", func() {
 				// Leaving confers nothing, so nothing gates it on the group's
 				// roles: the membership really is gone from the group.
 				expectGroupEmptiedOfMembers(groupID, roleID)
+			})
+		})
+	})
+
+	// Without this the whole suite passes with the membership guard replaced by an
+	// unconditional refusal: every other group in it carries either no role or an
+	// ungrantable one, so no other spec can tell "refused because the role is
+	// ungrantable" apart from "refused always".
+	Context("When a group carries a role the admin can grant", func() {
+		Describe("Given a role scoped to an endpoint the administrator holds", func() {
+			var (
+				roleID       string
+				groupID      string
+				groupName    string
+				kube         kubeclient.Client
+				orgNamespace string
+			)
+
+			BeforeEach(func() {
+				Expect(config.Namespace).NotTo(BeEmpty(),
+					"IDENTITY_NAMESPACE must be set by integration fixtures")
+				Expect(config.UserID).NotTo(BeEmpty(),
+					"TEST_USER_ID must be set by integration fixtures")
+
+				var err error
+
+				kube, err = api.NewKubernetesClient()
+				Expect(err).NotTo(HaveOccurred())
+
+				roleID = uuid.NewString()
+
+				// identity:groups read is part of the organization
+				// administrator's own permission set, so the admin holds
+				// everything this role confers and may grant it.
+				role := &unikornv1.Role{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      roleID,
+						Namespace: config.Namespace,
+						Labels: map[string]string{
+							coreconstants.NameLabel: "grantable-fixture-" + roleID[:8],
+						},
+					},
+					Spec: unikornv1.RoleSpec{
+						Scopes: unikornv1.RoleScopes{
+							Organization: []unikornv1.RoleScope{{
+								Name:       "identity:groups",
+								Operations: []unikornv1.Operation{unikornv1.Read},
+							}},
+						},
+					},
+				}
+
+				cleanupRole, err := api.InstallFixture(ctx, kube, role)
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(cleanupRole)
+
+				orgNamespace, err = api.OrganizationNamespace(ctx, kube, config.Namespace, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+
+				groupID = uuid.NewString()
+				groupName = "grantable-group-" + groupID[:8]
+
+				group := &unikornv1.Group{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      groupID,
+						Namespace: orgNamespace,
+						Labels: map[string]string{
+							coreconstants.NameLabel:         groupName,
+							coreconstants.OrganizationLabel: config.OrgID,
+						},
+					},
+					Spec: unikornv1.GroupSpec{
+						RoleIDs: []string{roleID},
+					},
+				}
+
+				cleanupGroup, err := api.InstallFixture(ctx, kube, group)
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(cleanupGroup)
+
+				waitForFixtureVisibility(roleID, groupID)
+			})
+
+			It("should allow a member addition, because the grant traces to a holder", func() {
+				payload := api.NewGroupPayload().
+					WithName(groupName).
+					WithRoleIDs([]string{roleID}).
+					WithUserIDs([]string{config.UserID}).
+					Build()
+
+				Expect(client.UpdateGroup(ctx, config.OrgID, groupID, payload)).To(Succeed(),
+					"the caller holds every permission the group's role confers, so adding a member is a grant it may make")
+
+				stored := readGroupResource(kube, orgNamespace, groupID)
+				Expect(stored.Spec.UserIDs).To(ContainElement(config.UserID),
+					"the member the admin added must be on the group")
+				Expect(stored.Spec.RoleIDs).To(ContainElement(roleID))
 			})
 		})
 	})

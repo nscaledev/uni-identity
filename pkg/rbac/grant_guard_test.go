@@ -43,9 +43,8 @@ const chartValuesPath = "../../charts/identity/values.yaml"
 type endpointOperations map[string][]string
 
 type chartRole struct {
-	Description string            `json:"description"`
-	Protected   bool              `json:"protected"`
-	Labels      map[string]string `json:"labels"`
+	Description string `json:"description"`
+	Protected   bool   `json:"protected"`
 	Scopes      struct {
 		Global       endpointOperations `json:"global"`
 		Organization endpointOperations `json:"organization"`
@@ -243,14 +242,16 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 	}
 }
 
-// TestNonBuiltinRolesAdminGrantable asserts every non-protected role outside
-// the built-in grant tree is either labelled
-// rbac.unikorn-cloud.org/aggregate-to-administrator: "true" (marking intent
-// for a planned aggregation mechanism to fold the role's permissions into
-// the administrator role — nothing consumes the label yet) or already
-// grantable by administrator from its spec alone. Vacuous while
-// additionalRoles is empty; it exists to catch the next role someone adds
-// without thinking about the grant lattice.
+// TestNonBuiltinRolesAdminGrantable asserts every non-protected role outside the
+// built-in grant tree is grantable by administrator from its spec alone, so that an
+// operator role injected through additionalRoles cannot leave admins unable to manage
+// the groups that carry it.
+//
+// The chart ships no additionalRoles, so the loop over real roles runs zero times
+// today. It is preceded by a synthetic role of exactly the shape it exists to catch,
+// which keeps the check honest: were the projection, the ACL construction or AllowRole
+// to stop discriminating, that assertion fails rather than the whole test quietly
+// passing on an empty set.
 func TestNonBuiltinRolesAdminGrantable(t *testing.T) {
 	t.Parallel()
 
@@ -269,21 +270,20 @@ func TestNonBuiltinRolesAdminGrantable(t *testing.T) {
 	org := ids.MustParseOrganizationID(organizationID)
 	ctx := rbac.NewContext(t.Context(), aclForHolder(admin))
 
+	// radar:things is an endpoint no built-in role mentions, so an administrator
+	// cannot hold it and cannot grant a role that carries it.
+	var thirdParty chartRole
+	thirdParty.Scopes.Organization = endpointOperations{"radar:things": {"read"}}
+
+	require.Error(t, rbac.AllowRole(ctx, asRole(thirdParty), org),
+		"a role scoped to an endpoint no built-in role holds must not be admin-grantable, otherwise the check below cannot catch anything")
+
 	for name, role := range roles {
 		if builtins[name] || role.Protected {
 			continue
 		}
 
-		// charts/identity/templates/roles.yaml does not yet render per-role labels onto
-		// the Role resources it creates, so this exemption cannot be satisfied from
-		// values.yaml today: the label check is a no-op until the template gains label
-		// rendering. The test exists ahead of that so the work has a test ready to turn
-		// green rather than one still to write.
-		if role.Labels["rbac.unikorn-cloud.org/aggregate-to-administrator"] == "true" {
-			continue
-		}
-
 		require.NoError(t, rbac.AllowRole(ctx, asRole(role), org),
-			"role %q is neither aggregate-to-administrator labelled nor admin-grantable; admins will be unable to manage groups containing it", name)
+			"role %q is not admin-grantable; admins will be unable to manage groups containing it", name)
 	}
 }
