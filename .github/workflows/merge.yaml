@@ -104,7 +104,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
     - name: Publish OpenAPI spec
-      uses: nscaledev/openapi/.github/actions/publish-spec@main
+      uses: nscaledev/openapi/.github/actions/publish-spec@3c79a8b4cd3863a152456c1c2c729b245a79a1af # main
       with:
         service: identity
         spec-path: pkg/openapi/server.spec.yaml
