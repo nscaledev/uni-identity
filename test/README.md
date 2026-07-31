@@ -74,6 +74,10 @@ Notes:
 - `ADMIN_AUTH_TOKEN` is also accepted and is used by the KinD fixture flow.
 - When `IDENTITY_CA_CERT` is set, the Make targets export `SSL_CERT_FILE` so Go HTTP clients trust
   the test CA issued by the KinD environment.
+- Specs that install custom resources with no write API — roles, and groups carrying them — need
+  cluster access via `KUBECONFIG`. They discover the identity and organization namespaces from
+  `TEST_ORG_ID`, and skip when no kubeconfig is configured (an HTTP-API-only run); a present but
+  broken `KUBECONFIG` fails fast.
 
 ## Local KinD Flow
 
