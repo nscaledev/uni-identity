@@ -58,7 +58,8 @@ type chartRole struct {
 }
 
 type chartValues struct {
-	Roles map[string]chartRole `json:"roles"`
+	Roles           map[string]chartRole `json:"roles"`
+	AdditionalRoles map[string]chartRole `json:"additionalRoles"`
 }
 
 func loadChartRoles(t *testing.T) map[string]chartRole {
@@ -71,6 +72,17 @@ func loadChartRoles(t *testing.T) map[string]chartRole {
 
 	require.NoError(t, yaml.Unmarshal(raw, &values))
 	require.NotEmpty(t, values.Roles)
+
+	// additionalRoles is how operators inject roles beyond the chart's built-in
+	// set (charts/identity/templates/roles.yaml renders both maps into the same
+	// Role list). The template fails to render on a name clash between the two
+	// maps, so mirror that as a test assertion rather than silently overwriting.
+	for name, role := range values.AdditionalRoles {
+		_, clash := values.Roles[name]
+		require.False(t, clash, "additionalRoles key %q conflicts with built-in role", name)
+
+		values.Roles[name] = role
+	}
 
 	return values.Roles
 }
@@ -391,5 +403,51 @@ func TestBuiltinSystemServicesDoNotReceiveVolumePermissions(t *testing.T) {
 				require.Error(t, rbac.AllowProjectScopeID(ctx, volumeEndpoint, operation, organization, project))
 			})
 		}
+	}
+}
+
+// TestNonBuiltinRolesAdminGrantable asserts every non-protected role outside the
+// built-in grant tree is grantable by administrator from its spec alone, so that an
+// operator role injected through additionalRoles cannot leave admins unable to manage
+// the groups that carry it.
+//
+// The chart ships no additionalRoles, so the loop over real roles runs zero times
+// today. It is preceded by a synthetic role of exactly the shape it exists to catch,
+// which keeps the check honest: were the projection, the ACL construction or AllowRole
+// to stop discriminating, that assertion fails rather than the whole test quietly
+// passing on an empty set.
+func TestNonBuiltinRolesAdminGrantable(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+	admin, ok := roles["administrator"]
+	require.True(t, ok)
+
+	// Every role name present in the chart's built-in roles: map today.
+	// Cross-check against values.yaml when touching this list.
+	builtins := map[string]bool{
+		"platform-administrator": true, "region-service": true, "kubernetes-service": true,
+		"compute-service": true, "storage-service": true,
+		"administrator": true, "auditor": true, "user": true, "reader": true,
+	}
+
+	org := ids.MustParseOrganizationID(organizationID)
+	ctx := rbac.NewContext(t.Context(), aclForHolder(admin))
+
+	// radar:things is an endpoint no built-in role mentions, so an administrator
+	// cannot hold it and cannot grant a role that carries it.
+	var thirdParty chartRole
+	thirdParty.Scopes.Organization = endpointOperations{"radar:things": {"read"}}
+
+	require.Error(t, rbac.AllowRole(ctx, asRole(thirdParty), org),
+		"a role scoped to an endpoint no built-in role holds must not be admin-grantable, otherwise the check below cannot catch anything")
+
+	for name, role := range roles {
+		if builtins[name] || role.Protected {
+			continue
+		}
+
+		require.NoError(t, rbac.AllowRole(ctx, asRole(role), org),
+			"role %q is not admin-grantable; admins will be unable to manage groups containing it", name)
 	}
 }
