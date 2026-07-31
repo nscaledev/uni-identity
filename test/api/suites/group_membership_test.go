@@ -22,6 +22,7 @@ package suites
 
 import (
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -85,10 +86,29 @@ func groupUserIDs(group *identityopenapi.GroupRead) []string {
 	return *group.Spec.UserIDs
 }
 
+// readUser returns the organization user record, which carries the subject and
+// the group memberships a user write has to resend to leave them intact.
+func readUser(userID string) identityopenapi.UserRead {
+	GinkgoHelper()
+
+	users, err := client.ListUsers(ctx, config.OrgID)
+	Expect(err).NotTo(HaveOccurred())
+
+	for i := range users {
+		if users[i].Metadata.Id == userID {
+			return users[i]
+		}
+	}
+
+	Fail("user " + userID + " is not a member of the test organization")
+
+	return identityopenapi.UserRead{}
+}
+
 // seedGroupMember puts a user into the group out of band and waits for the API
 // to observe it.  Adding a member through the API is a grant of the group's
-// roles and is refused here by design, so removal specs have to start from
-// state the API would not create.
+// roles and is refused here by design, on the groups path and the users path
+// alike, so removal specs have to start from state the API would not create.
 func seedGroupMember(kube kubeclient.Client, orgNamespace, groupID, userID string) {
 	GinkgoHelper()
 
@@ -314,6 +334,60 @@ var _ = Describe("Group role and membership changes with ungrantable roles", fun
 				Expect(err).NotTo(HaveOccurred())
 				Expect(updated.Metadata.Id).To(Equal(groupID))
 				Expect(updated.Metadata.Name).To(Equal(groupName))
+			})
+
+			It("should refuse joining the group through the users API, naming the role", func() {
+				user := readUser(config.UserID)
+
+				payload := api.NewUserPayload().
+					WithSubject(user.Spec.Subject).
+					WithState(user.Spec.State).
+					WithGroupIDs(append(slices.Clone(user.Spec.GroupIDs), groupID)).
+					Build()
+
+				response, err := client.UpdateUserWithResponse(ctx, config.OrgID, config.UserID, payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(response.StatusCode()).To(Equal(http.StatusForbidden))
+				Expect(response.JSON403).NotTo(BeNil(),
+					"a refusal must come back as a typed forbidden response")
+				Expect(response.JSON403.Error).To(Equal(coreopenapi.Forbidden))
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleID),
+					"the error must name the role that blocked the addition")
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleName),
+					"the error must give the role's display name, not only its ID")
+				Expect(response.JSON403.ErrorDescription).To(ContainSubstring("members cannot be added to the group"),
+					"the membership guard must be the one that refused, not the role grant or removal guard")
+
+				stored := readGroupResource(kube, orgNamespace, groupID)
+				Expect(stored.Spec.UserIDs).To(BeEmpty(),
+					"a refused user write must leave the group untouched")
+				Expect(stored.Spec.Subjects).To(BeEmpty())
+
+				GinkgoWriter.Printf("Refused user-path member addition: %s\n", response.JSON403.ErrorDescription)
+			})
+
+			It("should allow leaving the group through the users API", func() {
+				// Read the memberships before seeding, so resending them is a
+				// write that drops the fixture group and nothing else.
+				user := readUser(config.UserID)
+
+				seedGroupMember(kube, orgNamespace, groupID, config.UserID)
+
+				payload := api.NewUserPayload().
+					WithSubject(user.Spec.Subject).
+					WithState(user.Spec.State).
+					WithGroupIDs(slices.Clone(user.Spec.GroupIDs)).
+					Build()
+
+				updated, err := client.UpdateUser(ctx, config.OrgID, config.UserID, payload)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(updated.Metadata.Id).To(Equal(config.UserID))
+				Expect(updated.Spec.GroupIDs).NotTo(ContainElement(groupID),
+					"the user must no longer report the group it just left")
+
+				// Leaving confers nothing, so nothing gates it on the group's
+				// roles: the membership really is gone from the group.
+				expectGroupEmptiedOfMembers(groupID, roleID)
 			})
 		})
 	})
