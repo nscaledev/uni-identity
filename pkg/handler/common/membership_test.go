@@ -89,6 +89,53 @@ func membershipGroup(roleIDs ...string) *unikornv1.Group {
 	return &unikornv1.Group{Spec: unikornv1.GroupSpec{RoleIDs: roleIDs}}
 }
 
+// membershipGroupList builds the organization's group list as a reconciler reads it.
+func membershipGroupList(names ...string) *unikornv1.GroupList {
+	list := &unikornv1.GroupList{}
+
+	for _, name := range names {
+		list.Items = append(list.Items, unikornv1.Group{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+		})
+	}
+
+	return list
+}
+
+func TestValidateGroupsExistAcceptsKnownGroups(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, common.ValidateGroupsExist([]string{"group-a", "group-b"}, membershipGroupList("group-a", "group-b", "group-c")))
+}
+
+func TestValidateGroupsExistAcceptsAnEmptyRequest(t *testing.T) {
+	t.Parallel()
+
+	// Leaving every group is a legal write and names nothing to check.
+	require.NoError(t, common.ValidateGroupsExist(nil, membershipGroupList("group-a")))
+}
+
+func TestValidateGroupsExistRefusesUnknownGroup(t *testing.T) {
+	t.Parallel()
+
+	// Reconciliation matches the request against the groups that exist, so an
+	// ID matching none of them would otherwise be dropped from the write
+	// without the caller being told.
+	err := common.ValidateGroupsExist([]string{"group-a", "no-such-group"}, membershipGroupList("group-a"))
+	require.Error(t, err)
+	require.True(t, servererrors.IsBadRequest(err))
+	require.Contains(t, err.Error(), "no-such-group", "the error must name the group that does not exist")
+}
+
+func TestValidateGroupsExistRefusesAgainstAnEmptyOrganization(t *testing.T) {
+	t.Parallel()
+
+	err := common.ValidateGroupsExist([]string{"group-a"}, membershipGroupList())
+	require.Error(t, err)
+	require.True(t, servererrors.IsBadRequest(err))
+	require.Contains(t, err.Error(), "group-a")
+}
+
 func TestAllowGroupMembershipAdditionRefusesUngrantableRole(t *testing.T) {
 	t.Parallel()
 
