@@ -69,10 +69,10 @@ So group writes are also authority-delegation checks.
 ### Membership Guard Rails
 
 Adding a member to a group hands that member every role the group carries, so it is a grant like
-any other and has to trace to a holder. A `PUT /groups/{id}` that puts a user, subject, or service
-account on a group is refused unless the caller could grant each of the group's roles themselves.
-The roles checked are the ones the group carries after the write, since that is what the new member
-inherits. A refusal names the role.
+any other and has to trace to a holder. A write that puts a user, subject, or service account on a
+group is refused unless the caller could grant each of the group's roles themselves. The roles
+checked are the ones the group carries after the write, since that is what the new member inherits.
+A refusal names the role.
 
 Membership is compared the way `pkg/rbac` resolves it, not by the stored record. RBAC's
 `groupSubjectFilter` matches a subject by `id` alone and deliberately ignores the recorded
@@ -93,10 +93,13 @@ Decommissioning A Service's Roles below for why that direction is not symmetric 
 Create needs no separate membership check. Every role on a new group counts as an addition and is
 already grant-checked, so the creator holds everything the new group confers.
 
-This gate sits on the groups path. [`pkg/handler/users`](../users/README.md) and
-[`pkg/handler/serviceaccounts`](../serviceaccounts/README.md) also write group membership, by
-reconciling a requested `groupIDs` list into the groups that name the principal, and those paths do
-not run this check.
+The gate applies wherever membership is written, not only through this client:
+[`pkg/handler/users`](../users/README.md) and
+[`pkg/handler/serviceaccounts`](../serviceaccounts/README.md) reconcile a requested `groupIDs` list
+into group membership and run the same check, from `pkg/handler/common`, on the branch that adds.
+Those two paths settle every grant in a request before it writes anything, so a refusal there
+applies none of the write; this client checks after building the required group but before the
+single patch that stores it, which comes to the same thing.
 
 Removals are ungated. Taking a member out of a group takes authority away rather than handing it
 out, so a caller who could not add a member to a group may still remove one. Deleting a user or
@@ -130,15 +133,16 @@ an addition, so only the removal side is safe to skip. Refusing additions also m
 
 A side effect worth naming: because ACL construction fails closed, adding someone to a
 dangling-reference group breaks their whole organization ACL, not just their access to that group.
-Refusing the addition closes that off as well, at least on the groups path.
+Anyone holding `identity:users` update could do that to anyone. Refusing the addition closes that
+off as well, on every path that writes membership.
 
 Membership is the easier half of the job. Emptying a group of its members needs no authority over
 the roles it carries, so members can be pulled out of a group carrying a live ungrantable role at
 any point in the sequence, and the group can then be deleted outright — group DELETE is unguarded.
 Deleting the group takes the members with it, so it is only the right move when the group exists to
 carry the retiring service's roles and nothing else. What does not work while the `Role` CR is still
-installed is putting anyone *into* such a group through `PUT /groups/{id}`: a decommissioning
-service's group cannot take on new members that way once nobody holds its permissions.
+installed is putting anyone *into* such a group, by any route: a decommissioning service's group
+cannot take on new members once nobody holds its permissions.
 
 ### Project Reference Cleanup
 
@@ -155,11 +159,11 @@ would drift.
 - protected roles must never be attached to a group
 - callers may only add roles they are allowed to grant in that organization; roles already on the
   group are not re-checked on subsequent writes
-- adding a member to a group through this client is a grant of that group's roles, so it is allowed
-  only where the caller could grant every role the group carries
+- adding a member to a group is a grant of that group's roles, wherever the membership is written, so
+  it is allowed only where the caller could grant every role the group carries
 - the gate treats a principal as already a member by subject `id` alone (`HasMemberByID`), mirroring
   how `pkg/rbac` resolves membership; the recorded `issuer` and the display-only `email` take no part
-- removing a member from a group confers nothing and is not gated
+- removing a member from a group, and deleting a member principal, confer nothing and are not gated
 - role removals and group DELETE revoke without a role check, by design
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible
 - group membership and role/service-account ID lists are normalized to first-occurrence unique values
@@ -169,13 +173,12 @@ would drift.
 
 - A group carrying a role from a broader-authority admin is frozen for member additions for everyone
   who cannot grant that role: they can still rename it, resend its role list, drop the role, remove
-  members and delete it outright, but they cannot add a member through this client, because adding
-  one would confer that role. The way out is to give the editor the role's permissions, not to relax
-  the check.
-- The membership gate covers `PUT /groups/{id}` only. The same membership can be written through
-  `pkg/handler/users` and `pkg/handler/serviceaccounts`, which reconcile a requested `groupIDs` list
-  without this check, so a caller holding `identity:users` or `identity:serviceaccounts` write can
-  still put a principal into a group whose roles it cannot grant.
+  members and delete it outright, but they cannot add a member on any path, because adding one would
+  confer that role. The way out is to give the editor the role's permissions, not to relax the check.
+- The gate binds authorization, not write atomicity. A refusal applies nothing, on every path. An
+  infrastructure failure partway through a request that patches several groups can still leave some
+  of them applied; see the TODO in [`pkg/handler/users`](../users/README.md) and the create caveat
+  in [`pkg/handler/serviceaccounts`](../serviceaccounts/README.md).
 - The package is partly a migration bridge because it must support both deprecated `UserIDs` and
   forward-looking `Subjects`.
 - Groups may include external subjects that do not resolve to local `User` objects, so not every

@@ -466,6 +466,9 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
   alone can never reach global authority. IdP-asserted groups do reach it: a global group role
   binding grants unclamped global authority to a `groupsClaim` group by deployment configuration,
   with no check that the subject is a UNI user. See [Group bindings](#group-bindings).
+- Writing a group membership is itself a grant of the group's roles, bounded by the writer's own
+  effective permissions, on every path that writes it (`pkg/handler/groups`, `pkg/handler/users`,
+  `pkg/handler/serviceaccounts`).
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
 - Global role binding matching is always issuer-qualified at runtime. Subject and wildcard-subject
@@ -506,8 +509,9 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
   organization, then global authority — not flattened to an organization-only check).
   Granting a service's endpoints to a lower role such as `user` or `reader` *without also
   granting them to every role above it in the grant lattice* — `administrator` for any
-  operation, and `auditor` for reads — silently makes that lower role non-grantable and
-  invisible to those roles. Any new endpoint added to a role in
+  operation, and `auditor` for reads — makes that lower role non-grantable by those roles.
+  It stays visible: `GET /roles` returns it with `grantable: false`, so a caller can still
+  resolve and display it, it just cannot put it on a group. Any new endpoint added to a role in
   `charts/identity/values.yaml` must be added to every role that should be able to grant
   it, not just the leaf roles that consume it. `TestBuiltinRoleGrantability` enforces this
   over the parsed chart values.
@@ -516,7 +520,12 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
   added and leaves an already-present role unchecked, so a group carrying a role from outside
   this lattice (a third-party service's `Role` CR) stays editable. Removals are not gated —
   dropping a role confers nothing. Create has no prior state, so every role in the request
-  counts as an addition.
+  counts as an addition. Membership, by contrast, is grant-checked against the group's whole
+  role set rather than a delta, because a new member inherits all of it: adding a user, subject
+  or service account to a group requires grant authority over every role that group carries,
+  whether the write arrives through `pkg/handler/groups`, `pkg/handler/users` or
+  `pkg/handler/serviceaccounts`. Removals and principal deletion revoke rather than confer, so
+  they are not gated.
 - The `application:*` endpoints (`application:applications`, `application:applicationsets`) were
   removed because the application service was never implemented and never will be — they were dead
   configuration. The removal also fixed a live bug: they were present on `platform-administrator`,
