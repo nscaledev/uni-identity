@@ -30,6 +30,7 @@ Redirect to a file (`> test/.env.install`) and source it before running fixtures
 ```
 IDENTITY_BASE_URL=https://identity-<suffix>.<ingress-ip>.nip.io
 IDENTITY_CA_CERT=/absolute/path/to/hack/ci/ca-bundle.pem
+IDENTITY_NAMESPACE=unikorn-identity-<suffix>
 TEST_ORG_ID=<uuid>
 TEST_PROJECT_ID=<uuid>
 TEST_ADMIN_GROUP_ID=<uuid>

@@ -31,6 +31,7 @@ import (
 
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
@@ -46,6 +47,7 @@ func (g *GinkgoLogger) Printf(format string, args ...interface{}) {
 type APIClient struct {
 	*coreclient.APIClient
 	config    *TestConfig
+	baseURL   string
 	endpoints *Endpoints
 }
 
@@ -114,8 +116,35 @@ func newAPIClientWithConfig(config *TestConfig, baseURL string) *APIClient {
 	return &APIClient{
 		APIClient: coreClient,
 		config:    config,
+		baseURL:   baseURL,
 		endpoints: NewEndpoints(),
 	}
+}
+
+// generated builds the code-generated OpenAPI client against the same base URL,
+// timeout and bearer token as the hand-rolled methods.  It gives tests the
+// generated response structs (JSON200, JSON403, ...) instead of raw bytes.
+// The HTTP client deliberately leaves Transport nil so it picks up any
+// http.DefaultTransport the suite has patched for the self-signed ingress CA.
+func (c *APIClient) generated() (*identityopenapi.ClientWithResponses, error) {
+	authToken := c.config.AuthToken
+
+	client, err := identityopenapi.NewClientWithResponses(
+		c.baseURL,
+		identityopenapi.WithHTTPClient(&http.Client{Timeout: c.config.RequestTimeout}),
+		identityopenapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+			if authToken != "" {
+				req.Header.Set("Authorization", "Bearer "+authToken)
+			}
+
+			return nil
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating generated client: %w", err)
+	}
+
+	return client, nil
 }
 
 // ListOrganizations lists all organizations.
@@ -272,6 +301,34 @@ func (c *APIClient) UpdateGroup(ctx context.Context, orgID, groupID string, grou
 	}
 
 	return nil
+}
+
+// UpdateGroupWithResponse updates a group and returns the generated response
+// struct.  UpdateGroup collapses everything but success into an error, so use
+// this where a test needs the rejection itself: the status code and the typed
+// error body (JSON403, JSON404, ...).
+func (c *APIClient) UpdateGroupWithResponse(ctx context.Context, orgID, groupID string, group identityopenapi.GroupWrite) (*identityopenapi.PutApiV1OrganizationsOrganizationIDGroupsGroupidResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	organizationID, err := ids.ParseOrganizationID(orgID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing organization ID %q: %w", orgID, err)
+	}
+
+	id, err := ids.ParseGroupID(groupID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing group ID %q: %w", groupID, err)
+	}
+
+	response, err := client.PutApiV1OrganizationsOrganizationIDGroupsGroupidWithResponse(ctx, organizationID, id, group)
+	if err != nil {
+		return nil, fmt.Errorf("updating group: %w", err)
+	}
+
+	return response, nil
 }
 
 // DeleteGroup deletes a group from an organization.
