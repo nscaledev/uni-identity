@@ -34,6 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,6 +57,10 @@ const (
 	orguserAliceID   = "orguser-alice"
 
 	groupTestID = "group-test"
+
+	userBobSubject = "bob@example.com"
+	userBobID      = "user-bob"
+	orguserBobID   = "orguser-bob"
 )
 
 // newContext creates a context with required authorization and principal info.
@@ -576,4 +581,123 @@ func TestUpdateGroup_DeduplicatesSpecFieldsBeforePersist(t *testing.T) {
 	assert.Equal(t, "alice@example.com", stored.Spec.Subjects[1].ID)
 	assert.Equal(t, "https://external.example.com", stored.Spec.Subjects[1].Issuer)
 	assert.Equal(t, "alice-external-1@example.com", stored.Spec.Subjects[1].Email)
+}
+
+func (f *groupTestFixture) createRadarRole(t *testing.T) {
+	t.Helper()
+
+	role := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "radar-id",
+			Labels:    map[string]string{"unikorn-cloud.org/name": "radar"},
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Organization: []unikornv1.RoleScope{
+					{Name: "radar:things", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+	require.NoError(t, f.client.Create(newContext(t), role))
+}
+
+// createGroupWithRoles creates the test group with a pre-existing set of RoleIDs, standing
+// in for roles granted by an earlier, more privileged write.
+func (f *groupTestFixture) createGroupWithRoles(t *testing.T, roleIDs []string) {
+	t.Helper()
+
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{RoleIDs: roleIDs})
+}
+
+// aclContext builds a context carrying an ACL that grants only the given organization-scoped
+// endpoints in testOrgID, layered on top of newContext's authorization/principal info.
+func aclContext(t *testing.T, endpoints openapi.AclEndpoints) context.Context {
+	t.Helper()
+
+	organizations := openapi.AclOrganizationList{{Id: testOrgID, Endpoints: &endpoints}}
+
+	return rbac.NewContext(newContext(t), &openapi.Acl{Organizations: &organizations})
+}
+
+// TestUpdateGroupRejectsRemovalOfUngrantableRole exercises the removal guard through the
+// public Update() entrypoint, not just the unexported validateRoleRemovals helper directly:
+// a group already carries "radar-id" (as if granted by a more privileged earlier write), and
+// the caller — who cannot grant radar:things — submits an update that omits it. Update must
+// refuse the request, naming the role, and leave the stored group unchanged.
+func TestUpdateGroupRejectsRemovalOfUngrantableRole(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	// Caller holds identity:groups update but nothing on radar:things.
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	// The request omits "radar-id" entirely — a silent removal attempt.
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(nil, nil))
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	// The group must be unchanged: the role was refused, not silently dropped.
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+}
+
+// TestUpdateGroupKeepsUngrantableRoleWhenResent is the companion happy path: a caller who
+// cannot grant radar:things may still resend a group's existing radar-id role untouched
+// alongside an unrelated change (here, dropping one of two user members). Neither guard
+// may fire — the role is not being added, so the grant check skips it, and it is not being
+// dropped, so the removal check skips it too.
+func TestUpdateGroupKeepsUngrantableRoleWhenResent(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createUserWithOrgMembership(t, userBobID, userBobSubject, orguserBobID)
+	f.createRadarRole(t)
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{
+		RoleIDs: []string{"radar-id"},
+		UserIDs: []string{orguserAliceID, orguserBobID},
+	})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	userIDs := openapi.StringList{orguserAliceID}
+	request := makeGroupUpdateRequest(nil, &userIDs)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+	require.Len(t, stored.Spec.Subjects, 1)
+	assert.Equal(t, userAliceSubject, stored.Spec.Subjects[0].ID)
+}
+
+// createGroupWithSpec creates the test group with the given spec, standing in for state
+// left by an earlier, more privileged write or by direct CR access.
+func (f *groupTestFixture) createGroupWithSpec(t *testing.T, spec unikornv1.GroupSpec) {
+	t.Helper()
+
+	group := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      groupTestID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: testOrgID,
+			},
+		},
+		Spec: spec,
+	}
+	require.NoError(t, f.client.Create(newContext(t), group))
 }
