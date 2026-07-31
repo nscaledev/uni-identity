@@ -822,6 +822,34 @@ func (c *APIClient) UpdateUser(ctx context.Context, orgID, userID string, user i
 		c, ctx, c.endpoints.GetUser(orgID, userID), userID, "user", user)
 }
 
+// UpdateUserWithResponse updates a user and returns the generated response
+// struct.  UpdateUser collapses everything but success into an error, so use
+// this where a test needs the rejection itself: the status code and the typed
+// error body (JSON403, JSON404, ...).
+func (c *APIClient) UpdateUserWithResponse(ctx context.Context, orgID, userID string, user identityopenapi.UserWrite) (*identityopenapi.PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	organizationID, err := ids.ParseOrganizationID(orgID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing organization ID %q: %w", orgID, err)
+	}
+
+	id, err := ids.ParseUserID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing user ID %q: %w", userID, err)
+	}
+
+	response, err := client.PutApiV1OrganizationsOrganizationIDUsersUserIDWithResponse(ctx, organizationID, id, user)
+	if err != nil {
+		return nil, fmt.Errorf("updating user: %w", err)
+	}
+
+	return response, nil
+}
+
 // DeleteUser deletes a user from an organization.
 func (c *APIClient) DeleteUser(ctx context.Context, orgID, userID string) error {
 	path := c.endpoints.GetUser(orgID, userID)
