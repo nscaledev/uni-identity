@@ -89,9 +89,7 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 		needsPatching = true
 	}
 
-	subjects := slices.DeleteFunc(updated.Spec.Subjects, func(sub unikornv1.GroupSubject) bool {
-		return sub.ID == subject.ID && sub.Issuer == subject.Issuer
-	})
+	subjects := slices.DeleteFunc(updated.Spec.Subjects, subject.Matches)
 	if len(subjects) != len(updated.Spec.Subjects) {
 		updated.Spec.Subjects = subjects
 		needsPatching = true
@@ -100,16 +98,23 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 	return needsPatching
 }
 
-// addToGroup adds the Subject and userID if not present.
+// addToGroup writes the user into whichever membership representations do not
+// already hold it, and reports whether anything changed.  Completing the
+// missing half of a membership the group already has confers nothing — RBAC
+// already resolves the user into the group through the half that is present —
+// so this runs whether or not the grant guard saw an addition.  Subjects are
+// matched on identity, not on the whole record: the same principal written by
+// a different handler carries a different Email and must not be appended
+// again.
 func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
-	// Add to a group where it should be a member but isn't.
-	if !slices.Contains(updated.Spec.UserIDs, orgUserID) {
+
+	if orgUserID != "" && !slices.Contains(updated.Spec.UserIDs, orgUserID) {
 		updated.Spec.UserIDs = append(updated.Spec.UserIDs, orgUserID)
 		needsPatching = true
 	}
 
-	if !slices.Contains(updated.Spec.Subjects, subject) {
+	if !updated.Spec.HasSubject(subject) {
 		updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
 		needsPatching = true
 	}
@@ -117,18 +122,67 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 	return needsPatching
 }
 
+// validateGroupAdditions checks every group the user would newly join before
+// any of them is written.  Joining a group confers its roles, so each is a
+// grant the caller has to be able to make; running the whole set up front
+// keeps a refusal from landing after an earlier group has already been
+// patched.  Groups the user is only leaving, or already belongs to, confer
+// nothing and are skipped.
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// Reconciliation below can only act on groups that exist, so an ID naming
+	// none of them would otherwise be dropped without the caller being told.
+	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
+		return err
+	}
+
+	for i := range groups.Items {
+		group := &groups.Items[i]
+
+		if !slices.Contains(groupIDs, group.Name) {
+			continue
+		}
+
+		// Presence in either membership representation already confers the
+		// group's roles, so writing the other half grants nothing.  Subjects
+		// are matched by ID alone, mirroring how RBAC resolves membership: a
+		// record written before subject issuers existed carries an empty one
+		// yet still confers the roles, so re-stating that membership must not
+		// read as an addition and be refused.
+		if group.Spec.HasMemberByID(orgUserID, subjectID) {
+			continue
+		}
+
+		if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, group); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// groupSubject builds the membership subject for a user of this deployment's
+// own issuer.
+func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
+	return unikornv1.GroupSubject{
+		ID:     userSubject,
+		Email:  userSubject,
+		Issuer: c.issuer.URL,
+	}
+}
+
 // updateGroups takes a user's subject and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
+//
+// This writes.  It does no grant checking of its own: callers must run
+// validateGroupAdditions over the same group list first, before they make any
+// other write, so a refusal cannot leave an earlier part of the request
+// applied.
 func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	// The subject is supplied by the caller rather than re-read here: on the
 	// create path the global user was just written to the API server, and a
 	// read back through the cached client can miss it while the informer catches
 	// up, spuriously failing the request. Callers already hold the user.
-	subject := unikornv1.GroupSubject{
-		ID:     userSubject,
-		Email:  userSubject,
-		Issuer: c.issuer.URL,
-	}
+	subject := c.groupSubject(userSubject)
 
 	for i := range groups.Items {
 		current := &groups.Items[i]
@@ -400,6 +454,44 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 	return resource, nil
 }
 
+// validateCreateGroupAdditions checks the groups a create request asks to join
+// before any record is written.  Create is idempotent, so the subject may
+// already have a user record and some of these memberships; those confer
+// nothing new and are skipped, exactly as on the update path.  A subject with
+// no records yet belongs to no group, so every requested group is an addition.
+func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, groups *unikornv1.GroupList) error {
+	// Nothing is being granted, so skip the lookups below: they cannot change
+	// the answer, and on this path they would only add ways to fail.
+	if len(request.Spec.GroupIDs) == 0 {
+		return nil
+	}
+
+	// Resolve what already exists without creating it.  Either record may be
+	// absent on a first-time create, which just means there is no prior
+	// membership to exempt.
+	var orgUserID string
+
+	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
+
+	switch {
+	case err == nil:
+		orgUser, err := c.getOrganizationUserByGlobalUserID(ctx, organization, user.Name)
+
+		switch {
+		case err == nil:
+			orgUserID = orgUser.Name
+		case goerrors.Is(err, ErrReference):
+		default:
+			return err
+		}
+	case goerrors.Is(err, ErrReference):
+	default:
+		return err
+	}
+
+	return c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, orgUserID, request.Spec.GroupIDs, groups)
+}
+
 // Create makes a new user.  This creates a new user in an organization, but they
 // reference a unique user resource, so we need to get or create the underlying record
 // first, then add to the organization.
@@ -410,22 +502,30 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
 	}
 
-	user, err := c.getOrCreateGlobalUser(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	resource, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
+	groups, err := c.listGroups(ctx, organization)
 	if err != nil {
 		return nil, err
 	}
 
-	groups, err := c.listGroups(ctx, organization)
+	// Settle the group grants before any record exists.  Writing the user
+	// first and refusing afterwards would leave a global user and an
+	// organization membership behind for an account the caller was told it
+	// could not create.
+	if err := c.validateCreateGroupAdditions(ctx, organization, request, groups); err != nil {
+		return nil, err
+	}
+
+	user, err := c.getOrCreateGlobalUser(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	resource, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -494,6 +594,19 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
+	groups, err := c.listGroups(ctx, organization)
+	if err != nil {
+		return nil, err
+	}
+
+	// Settle every grant in the request before the first write.  The state,
+	// tags and label changes below land on the organization user record, so a
+	// membership refusal discovered after them would have already applied
+	// part of a request the caller was told it could not make.
+	if err := c.validateGroupAdditions(ctx, organization.ID, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
+		return nil, err
+	}
+
 	required, err := generateOrganizationUser(ctx, organization, request, current.Labels[constants.UserLabel])
 	if err != nil {
 		return nil, err
@@ -509,11 +622,6 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Spec = required.Spec
 
 	if err := c.patchOrganizationUser(ctx, updated, current); err != nil {
-		return nil, err
-	}
-
-	groups, err := c.listGroups(ctx, organization)
-	if err != nil {
 		return nil, err
 	}
 
@@ -553,6 +661,8 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
+	// Deletion only strips memberships, which confers nothing, so there is no
+	// grant pre-pass to run.
 	if err := c.updateGroups(ctx, user.Spec.Subject, userID, nil, groups); err != nil {
 		return err
 	}

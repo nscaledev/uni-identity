@@ -58,3 +58,19 @@ func (s *GroupSpec) HasMemberByID(organizationUserID, subjectID string) bool {
 		return subject.ID == subjectID
 	})
 }
+
+// Matches reports whether two subjects name the same principal, issuer-qualified.
+// This is the stored-record identity the write path uses — a subject at a new
+// issuer is a distinct stored fact — and is deliberately stricter than the
+// ID-only match a grant gate uses (see HasMemberByID).
+func (s *GroupSubject) Matches(other GroupSubject) bool {
+	return s.IdentityKey() == other.IdentityKey()
+}
+
+// HasSubject reports whether the group already lists a subject for the same
+// principal, matched issuer-qualified.  It backs the write path, which must not
+// append a second stored record for a subject already present; a gate asking
+// whether the group's roles are already conferred uses HasMemberByID instead.
+func (s *GroupSpec) HasSubject(subject GroupSubject) bool {
+	return slices.ContainsFunc(s.Subjects, subject.Matches)
+}
