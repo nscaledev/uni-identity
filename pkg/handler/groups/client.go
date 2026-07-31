@@ -197,7 +197,7 @@ func deduplicateGroupSubjects(in []unikornv1.GroupSubject) []unikornv1.GroupSubj
 	seen := make(map[string]struct{}, len(in))
 
 	for _, subject := range in {
-		key := subject.Issuer + "\x00" + subject.ID
+		key := subject.IdentityKey()
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -208,6 +208,44 @@ func deduplicateGroupSubjects(in []unikornv1.GroupSubject) []unikornv1.GroupSubj
 	}
 
 	return out
+}
+
+// groupPrincipal is one member named by a membership write, carrying both the
+// representations a group stores members in.  UserID is empty for a principal
+// at an external issuer: it has no organization user record.  Keeping the two
+// together is what lets the addition guard ask whether the group already
+// confers its roles on this principal, rather than whether one particular
+// representation of it is present.
+type groupPrincipal struct {
+	userID  string
+	subject unikornv1.GroupSubject
+}
+
+// principalUserIDs projects the organization user IDs out of a principal list,
+// dropping principals that have no organization user record.
+func principalUserIDs(in []groupPrincipal) []string {
+	var userIDs []string //nolint:prealloc
+
+	for _, principal := range in {
+		if principal.userID == "" {
+			continue
+		}
+
+		userIDs = append(userIDs, principal.userID)
+	}
+
+	return deduplicateStrings(userIDs)
+}
+
+// principalSubjects projects the subjects out of a principal list.
+func principalSubjects(in []groupPrincipal) []unikornv1.GroupSubject {
+	var subjects []unikornv1.GroupSubject //nolint:prealloc
+
+	for _, principal := range in {
+		subjects = append(subjects, principal.subject)
+	}
+
+	return deduplicateGroupSubjects(subjects)
 }
 
 // findUserBySubject finds a User resource by subject field.
@@ -245,34 +283,40 @@ func (c *Client) findOrgUserByUserID(ctx context.Context, orgNamespace, userID s
 	}
 }
 
-// subjectsToUserIDs converts internal subjects to UserIDs.
-func (c *Client) subjectsToUserIDs(ctx context.Context, subjects []unikornv1.GroupSubject, organization *organizations.Meta) ([]string, error) {
-	var userIDs []string //nolint:prealloc
+// subjectsToPrincipals resolves each subject to the principal it names,
+// filling in the organization user ID for subjects at this deployment's own
+// issuer.  Subjects at an external issuer have no organization user record and
+// keep an empty ID.
+func (c *Client) subjectsToPrincipals(ctx context.Context, subjects []unikornv1.GroupSubject, organization *organizations.Meta) ([]groupPrincipal, error) {
+	principals := make([]groupPrincipal, 0, len(subjects))
 
 	for _, subject := range subjects {
-		if subject.Issuer != c.issuer.URL {
-			continue // Skip external subjects
+		principal := groupPrincipal{subject: subject}
+
+		if subject.Issuer == c.issuer.URL {
+			user, err := c.findUserBySubject(ctx, subject.ID)
+			if err != nil {
+				return nil, err
+			}
+
+			orgUser, err := c.findOrgUserByUserID(ctx, organization.Namespace, user.Name)
+			if err != nil {
+				return nil, err
+			}
+
+			principal.userID = orgUser.Name
 		}
 
-		user, err := c.findUserBySubject(ctx, subject.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		orgUser, err := c.findOrgUserByUserID(ctx, organization.Namespace, user.Name)
-		if err != nil {
-			return nil, err
-		}
-
-		userIDs = append(userIDs, orgUser.Name)
+		principals = append(principals, principal)
 	}
 
-	return userIDs, nil
+	return principals, nil
 }
 
-// userIDsToSubjects converts UserIDs to subjects.
-func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organization *organizations.Meta) ([]unikornv1.GroupSubject, error) {
-	subjects := make([]unikornv1.GroupSubject, 0, len(userIDs))
+// userIDsToPrincipals resolves each organization user ID to the principal it
+// names, deriving the subject that identifies it at this deployment's issuer.
+func (c *Client) userIDsToPrincipals(ctx context.Context, userIDs []string, organization *organizations.Meta) ([]groupPrincipal, error) {
+	principals := make([]groupPrincipal, 0, len(userIDs))
 
 	for _, orgUserID := range userIDs {
 		var orguser unikornv1.OrganizationUser
@@ -287,20 +331,24 @@ func (c *Client) userIDsToSubjects(ctx context.Context, userIDs []string, organi
 			return nil, fmt.Errorf("%w: failed to get user record", err)
 		}
 
-		subjects = append(subjects, unikornv1.GroupSubject{
-			ID:     user.Spec.Subject,
-			Email:  user.Spec.Subject,
-			Issuer: c.issuer.URL,
+		principals = append(principals, groupPrincipal{
+			userID: orgUserID,
+			subject: unikornv1.GroupSubject{
+				ID:     user.Spec.Subject,
+				Email:  user.Spec.Subject,
+				Issuer: c.issuer.URL,
+			},
 		})
 	}
 
-	return subjects, nil
+	return principals, nil
 }
 
-// populateSubjectsAndUserIDs normalizes the dual UserIDs/Subjects representations.
-// Providing both non-empty fields is invalid. A non-empty Subjects input derives UserIDs,
-// and a non-empty UserIDs input derives Subjects.
-func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, organization *organizations.Meta, in *openapi.GroupWrite) ([]string, []unikornv1.GroupSubject, error) {
+// populateGroupPrincipals normalizes the dual UserIDs/Subjects representations
+// into one principal list holding both.  Providing both non-empty fields is
+// invalid. A non-empty Subjects input derives UserIDs, and a non-empty UserIDs
+// input derives Subjects.
+func (c *Client) populateGroupPrincipals(ctx context.Context, organization *organizations.Meta, in *openapi.GroupWrite) ([]groupPrincipal, error) {
 	var normalizedUserIDs []string
 	if in.Spec.UserIDs != nil {
 		normalizedUserIDs = deduplicateStrings(*in.Spec.UserIDs)
@@ -315,28 +363,18 @@ func (c *Client) populateSubjectsAndUserIDs(ctx context.Context, organization *o
 	hasUserIDs := len(normalizedUserIDs) > 0
 
 	if hasSubjects && hasUserIDs {
-		return nil, nil, errors.OAuth2InvalidRequest("cannot provide both subjects and userIDs")
+		return nil, errors.OAuth2InvalidRequest("cannot provide both subjects and userIDs")
 	}
 
 	if hasSubjects {
-		resolvedUserIDs, err := c.subjectsToUserIDs(ctx, normalizedSubjects, organization)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		return deduplicateStrings(resolvedUserIDs), normalizedSubjects, nil
+		return c.subjectsToPrincipals(ctx, normalizedSubjects, organization)
 	}
 
 	if hasUserIDs {
-		resolvedSubjects, err := c.userIDsToSubjects(ctx, normalizedUserIDs, organization)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		return normalizedUserIDs, deduplicateGroupSubjects(resolvedSubjects), nil
+		return c.userIDsToPrincipals(ctx, normalizedUserIDs, organization)
 	}
 
-	return nil, nil, nil
+	return nil, nil
 }
 
 func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.OrganizationID, roleIDs, currentRoleIDs []string) ([]string, error) {
@@ -361,7 +399,8 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 		// Only roles being ADDED are grant-checked.  Re-sending a group's
 		// existing role list (e.g. a rename, or dropping a member) must not
 		// fail on roles the caller could not grant; the escalation guard
-		// applies to the delta.  Removals are guarded separately.
+		// applies to the delta.  Removals are guarded separately, and so are
+		// the member additions that would confer these roles on someone new.
 		if slices.Contains(currentRoleIDs, roleID) {
 			continue
 		}
@@ -382,10 +421,13 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 // grant, so a client that cannot see an ungrantable role cannot silently
 // revoke it by round-tripping the group.  Roles that no longer exist may
 // always be dropped: a dangling reference conveys no permissions, and
-// dropping it is how a group carrying one gets repaired.  Protected roles may
-// also always be dropped: they should never be on a group at all, so removing
-// one is invariant repair rather than a revocation the caller needs permission
-// for.
+// dropping it is how a group carrying one gets repaired.  The membership
+// addition guard refuses that same dangling reference instead of skipping it,
+// because a role ID is derived from the role name and rebinds if the role
+// returns: skipping errs towards less authority on a removal and towards more
+// on an addition.  Protected roles may also always be dropped: they should
+// never be on a group at all, so removing one is invariant repair rather than
+// a revocation the caller needs permission for.
 func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.OrganizationID, current *unikornv1.Group, requestedRoleIDs []string) error {
 	for _, roleID := range current.Spec.RoleIDs {
 		if slices.Contains(requestedRoleIDs, roleID) {
@@ -420,13 +462,53 @@ func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.Or
 	return nil
 }
 
-// generate builds the group the request asks for.  current is the stored group
-// on an update, and nil on a create, where every role in the request counts as
-// an addition.
-func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.GroupWrite, current *unikornv1.Group) (*unikornv1.Group, error) {
-	userIDs, subjects, err := c.populateSubjectsAndUserIDs(ctx, organization, in)
+// hasMemberAdditions reports whether the update puts a principal or service
+// account on the group that the group does not already confer its roles on.
+// A principal is matched on the identity its subject carries, not on the whole
+// stored record, and in either membership representation: an existing member
+// re-stated in a write, or named through the representation it is not stored
+// in, gains nothing it does not already hold.
+func hasMemberAdditions(current *unikornv1.Group, principals []groupPrincipal, serviceAccountIDs []string) bool {
+	for _, principal := range principals {
+		if !current.Spec.HasMember(principal.userID, principal.subject) {
+			return true
+		}
+	}
+
+	for _, serviceAccountID := range serviceAccountIDs {
+		if !slices.Contains(current.Spec.ServiceAccountIDs, serviceAccountID) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// validateMemberAdditions refuses updates that add members to a group whose
+// roles the caller could not grant themselves.  Adding a member confers the
+// group's roles on them, so it is a grant and must trace to a holder.
+// Member removal confers nothing and is not gated.
+func (c *Client) validateMemberAdditions(ctx context.Context, organizationID ids.OrganizationID, current, required *unikornv1.Group, principals []groupPrincipal) error {
+	if !hasMemberAdditions(current, principals, required.Spec.ServiceAccountIDs) {
+		return nil
+	}
+
+	// The roles checked are the ones the group will carry after the write:
+	// that is what the new member inherits.  Any role being added is already
+	// grant-checked by validateRoleIDs, so this only widens the check to the
+	// roles that were there before.
+	return common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, required)
+}
+
+// generate builds the group the write asks for.  current is the stored group on
+// an update, and nil on a create, where every role in the request counts as an
+// addition.  It also returns the principals the membership names, so the
+// addition guard can compare them against the stored group without having to
+// re-derive the pairing between the two membership representations.
+func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.GroupWrite, current *unikornv1.Group) (*unikornv1.Group, []groupPrincipal, error) {
+	principals, err := c.populateGroupPrincipals(ctx, organization, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var currentRoleIDs []string
@@ -437,7 +519,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 
 	roleIDs, err := c.validateRoleIDs(ctx, organization.ID, in.Spec.RoleIDs, currentRoleIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// TODO: validate user and service account existence.
@@ -445,18 +527,18 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).Get(),
 		Spec: unikornv1.GroupSpec{
 			Tags:              conversion.GenerateTagList(in.Metadata.Tags),
-			UserIDs:           userIDs,
-			Subjects:          subjects,
+			UserIDs:           principalUserIDs(principals),
+			Subjects:          principalSubjects(principals),
 			ServiceAccountIDs: deduplicateStrings(in.Spec.ServiceAccountIDs),
 			RoleIDs:           roleIDs,
 		},
 	}
 
 	if err := common.SetIdentityMetadataOrganizationScope(ctx, &out.ObjectMeta, organization.ID); err != nil {
-		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
+		return nil, nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
-	return out, nil
+	return out, principals, nil
 }
 
 func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.GroupWrite) (*openapi.GroupRead, error) {
@@ -465,7 +547,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	resource, err := c.generate(ctx, organization, request, nil)
+	resource, _, err := c.generate(ctx, organization, request, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -492,8 +574,12 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
-	required, err := c.generate(ctx, organization, request, current)
+	required, principals, err := c.generate(ctx, organization, request, current)
 	if err != nil {
+		return err
+	}
+
+	if err := c.validateMemberAdditions(ctx, organizationID, current, required, principals); err != nil {
 		return err
 	}
 

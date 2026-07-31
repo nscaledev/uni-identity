@@ -651,9 +651,11 @@ func TestUpdateGroupRejectsRemovalOfUngrantableRole(t *testing.T) {
 
 // TestUpdateGroupKeepsUngrantableRoleWhenResent is the companion happy path: a caller who
 // cannot grant radar:things may still resend a group's existing radar-id role untouched
-// alongside an unrelated change (here, dropping one of two user members). Neither guard
-// may fire — the role is not being added, so the grant check skips it, and it is not being
-// dropped, so the removal check skips it too.
+// alongside an unrelated change (here, dropping one of two user members). The removal
+// guard must not fire when the role isn't actually being dropped, and member removal is
+// not a grant, so nothing else blocks the write either.  The retained member is the point:
+// it comes back in the request, and re-stating an existing member must not read as an
+// addition.
 func TestUpdateGroupKeepsUngrantableRoleWhenResent(t *testing.T) {
 	t.Parallel()
 
@@ -700,4 +702,279 @@ func (f *groupTestFixture) createGroupWithSpec(t *testing.T, spec unikornv1.Grou
 		Spec: spec,
 	}
 	require.NoError(t, f.client.Create(newContext(t), group))
+}
+
+// TestUpdateGroupAllowsNoOpResendOnLegacyUserIDsGroup covers a group written before
+// Subjects existed: it lists its members in UserIDs only.  Re-sending that membership
+// unchanged derives the Subjects half for the first time, but the members already hold the
+// group's roles through UserIDs, so nothing is conferred and the addition gate must not
+// fire — otherwise a legacy group carrying an ungrantable role has no legal update at all.
+func TestUpdateGroupAllowsNoOpResendOnLegacyUserIDsGroup(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createRadarRole(t)
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{
+		RoleIDs: []string{"radar-id"},
+		UserIDs: []string{orguserAliceID},
+	})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	userIDs := openapi.StringList{orguserAliceID}
+	request := makeGroupUpdateRequest(nil, &userIDs)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	// The write also migrates the group onto the Subjects representation.
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+	require.Len(t, stored.Spec.Subjects, 1)
+	assert.Equal(t, userAliceSubject, stored.Spec.Subjects[0].ID)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+}
+
+// TestUpdateGroupRejectsGenuineAdditionToLegacyUserIDsGroup is the other half: relaxing the
+// gate for members already present in either representation must not relax it for a member
+// that is in neither.
+func TestUpdateGroupRejectsGenuineAdditionToLegacyUserIDsGroup(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createUserWithOrgMembership(t, userBobID, userBobSubject, orguserBobID)
+	f.createRadarRole(t)
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{
+		RoleIDs: []string{"radar-id"},
+		UserIDs: []string{orguserAliceID},
+	})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	userIDs := openapi.StringList{orguserAliceID, orguserBobID}
+	request := makeGroupUpdateRequest(nil, &userIDs)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+}
+
+// TestUpdateGroupAllowsResendWhenStoredSubjectEmailDiffers pins the identity key: three
+// different writers populate a subject's Email with three different values, so a member
+// whose stored Email differs from the derived one is still the same principal and still
+// not an addition.
+func TestUpdateGroupAllowsResendWhenStoredSubjectEmailDiffers(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createRadarRole(t)
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{
+		RoleIDs:  []string{"radar-id"},
+		UserIDs:  []string{orguserAliceID},
+		Subjects: []unikornv1.GroupSubject{{ID: userAliceSubject, Issuer: testIssuerURL, Email: "stale-display@example.com"}},
+	})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	subjects := []openapi.Subject{
+		{Id: userAliceSubject, Issuer: testIssuerURL, Email: ptr.To("fresh-display@example.com")},
+	}
+	request := makeGroupUpdateRequest(&subjects, nil)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	require.Len(t, stored.Spec.Subjects, 1, "the same principal must not be stored twice")
+	assert.Equal(t, userAliceSubject, stored.Spec.Subjects[0].ID)
+	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+}
+
+// TestUpdateGroupAllowsResendWhenOnlySubjectsStored is the mirror of the legacy case: the
+// group stores the member as a subject only, and a UserIDs-style write names the same
+// principal.  RBAC honours either representation, so completing the missing half confers
+// nothing.
+func TestUpdateGroupAllowsResendWhenOnlySubjectsStored(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createRadarRole(t)
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{
+		RoleIDs:  []string{"radar-id"},
+		Subjects: []unikornv1.GroupSubject{{ID: userAliceSubject, Issuer: testIssuerURL, Email: userAliceSubject}},
+	})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	userIDs := openapi.StringList{orguserAliceID}
+	request := makeGroupUpdateRequest(nil, &userIDs)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+	require.Len(t, stored.Spec.Subjects, 1)
+}
+
+// TestUpdateGroupRejectsExternalSubjectAdditionAlongsideExistingMember guards the relaxation
+// itself: an external subject has no organization user record, so it can only ever be
+// matched in the Subjects list.  Naming it alongside a member who is already present must
+// not let it in unchecked.
+func TestUpdateGroupRejectsExternalSubjectAdditionAlongsideExistingMember(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createRadarRole(t)
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{
+		RoleIDs: []string{"radar-id"},
+		UserIDs: []string{orguserAliceID},
+	})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	subjects := []openapi.Subject{
+		{Id: userAliceSubject, Issuer: testIssuerURL, Email: ptr.To(userAliceSubject)},
+		{Id: "mallory@evil.example.com", Issuer: "https://external.example.com"},
+	}
+	request := makeGroupUpdateRequest(&subjects, nil)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	stored := f.getGroup(t)
+	assert.Empty(t, stored.Spec.Subjects)
+}
+
+// TestUpdateGroupRejectsMemberAdditionToUngrantableRoleGroup covers the grant that hides
+// inside a membership edit: the new member inherits every role the group carries, so
+// adding one to a group holding radar-id grants radar:things to them. A caller who cannot
+// grant that role must be refused, and the group left untouched.
+func TestUpdateGroupRejectsMemberAdditionToUngrantableRoleGroup(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	request := makeGroupUpdateRequest(nil, nil)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+	request.Spec.ServiceAccountIDs = openapi.StringList{"sa-a"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	stored := f.getGroup(t)
+	assert.Empty(t, stored.Spec.ServiceAccountIDs)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+}
+
+// TestUpdateGroupRejectsUserAdditionToUngrantableRoleGroup is the human-member counterpart:
+// the gate has to cover the UserIDs and Subjects representations, not just service accounts.
+func TestUpdateGroupRejectsUserAdditionToUngrantableRoleGroup(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	userIDs := openapi.StringList{orguserAliceID}
+	request := makeGroupUpdateRequest(nil, &userIDs)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.Error(t, err)
+	require.True(t, errors.IsForbidden(err))
+	require.Contains(t, err.Error(), "radar")
+
+	stored := f.getGroup(t)
+	assert.Empty(t, stored.Spec.UserIDs)
+	assert.Empty(t, stored.Spec.Subjects)
+}
+
+// TestUpdateGroupAllowsMemberAdditionToRolelessGroup shows the gate is scoped to what the
+// group actually confers: a group with no roles grants nothing, so anyone who may edit the
+// group may add members to it.
+func TestUpdateGroupAllowsMemberAdditionToRolelessGroup(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createGroupWithRoles(t, nil)
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	request := makeGroupUpdateRequest(nil, nil)
+	request.Spec.ServiceAccountIDs = openapi.StringList{"sa-a"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"sa-a"}, stored.Spec.ServiceAccountIDs)
+}
+
+// TestUpdateGroupAllowsMemberAdditionByRoleHolder is the other half of the gate: the grant
+// traces to a holder, so a caller who does hold radar:things may add members to the group
+// that confers it.
+func TestUpdateGroupAllowsMemberAdditionByRoleHolder(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createRadarRole(t)
+	f.createGroupWithRoles(t, []string{"radar-id"})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+		{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+	})
+
+	request := makeGroupUpdateRequest(nil, nil)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+	request.Spec.ServiceAccountIDs = openapi.StringList{"sa-a"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err)
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+	assert.Equal(t, []string{"sa-a"}, stored.Spec.ServiceAccountIDs)
 }
