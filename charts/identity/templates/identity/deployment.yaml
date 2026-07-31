@@ -46,6 +46,10 @@ spec:
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}
+        {{- with include "unikorn.otlp.env" . }}
+        env:
+{{ . | indent 8 }}
+        {{- end }}
         ports:
         - name: http
           containerPort: 6080

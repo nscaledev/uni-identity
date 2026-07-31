@@ -20,6 +20,10 @@ spec:
         args:
         {{- include "unikorn.core.flags" . | nindent 8 }}
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        {{- with include "unikorn.otlp.env" . }}
+        env:
+{{ . | indent 8 }}
+        {{- end }}
         resources:
           {{- .Values.projectController.resources | toYaml | nindent 10 }}
         securityContext:

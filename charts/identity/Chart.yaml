@@ -12,5 +12,5 @@ icon: https://raw.githubusercontent.com/unikorn-cloud/assets/main/images/logos/d
 
 dependencies:
 - name: unikorn-common
-  version: 0.1.17
+  version: 0.1.18
   repository: https://nscaledev.github.io/uni-helm-common
