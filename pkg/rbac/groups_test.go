@@ -102,7 +102,29 @@ func newContext(t *testing.T) context.Context {
 		Actor: "test-principal",
 	})
 
-	return ctx
+	return rbac.NewContext(ctx, seedingACL())
+}
+
+// seedingACL grants every permission carried by the roles in this file's fixture groups,
+// at the scope the grant check needs.  The users handler treats adding someone to a group
+// as granting that group's roles, so the seeding calls below need an authority that holds
+// all of them; these tests are about the ACL the seeded state produces, not about who may
+// seed it.
+func seedingACL() *openapi.Acl {
+	global := openapi.AclEndpoints{
+		{Name: "users:manage", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
+	}
+
+	organization := openapi.AclEndpoints{
+		{Name: "org:manage", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
+		{Name: "org:read", Operations: openapi.AclOperations{openapi.Read}},
+		{Name: "project:deploy", Operations: openapi.AclOperations{openapi.Create, openapi.Update}},
+		{Name: "project:read", Operations: openapi.AclOperations{openapi.Read}},
+	}
+
+	organizations := openapi.AclOrganizationList{{Id: testOrgID, Endpoints: &organization}}
+
+	return &openapi.Acl{Global: &global, Organizations: &organizations}
 }
 
 func createUser(t *testing.T, c client.Client, id, subject string, groups []*unikornv1.Group) {
