@@ -86,8 +86,8 @@ Roles marked `protected: true` are internal-only: never returned by the user-fac
 list and never grantable through the API. They are bound solely via Helm values at
 deployment time.
 
-- `platform-administrator` — global CRUD over every resource; can act in any organization
-  or project.
+- `platform-administrator` — global authority across platform resources; can act in any
+  organization or project.
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
   accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
   only the global permissions the corresponding service actually exercises;
@@ -102,13 +102,26 @@ administrator grants to groups.
 | --- | --- | --- |
 | `administrator` | full CRUD across identity, region, storage, Kubernetes and compute | — |
 | `auditor` | read-only across all of the above | — |
-| `user` | org-wide reads, plus `region:images` create/delete | CRUD on workloads: networks, load balancers, security groups, file storage, object storage, SSH CAs, clusters, instances |
+| `user` | org-wide reads, plus `region:images` create/delete | CRUD on workloads: networks, load balancers, security groups, volumes, file storage, object storage, SSH CAs, clusters, instances |
 | `reader` | org-wide reads (`region:images` read only) | read-only on those same workloads |
 
 `administrator` and `auditor` hold all their authority at organization scope. `user` and
 `reader` keep a thin organization-wide read baseline but place their real workload
 authority in the project block, so it applies only to the projects their group is linked
 to.
+
+Region block-storage scopes preserve that split:
+
+- `region:volumeclasses:v2` follows the Region flavor-discovery model: every user-facing
+  built-in role receives organization-scoped read access, while `platform-administrator`
+  holds the read operation globally.
+- `region:volumes:v2` is a project-owned lifecycle scope. `user` has project CRUD and
+  `reader` has project read, while `administrator` and `auditor` carry the corresponding
+  organization-wide CRUD and read permissions. `platform-administrator` holds global CRUD.
+
+Identity is the rollout dependency for these Region APIs. Deploy the identity role catalogue
+containing both scopes before enabling users to rely on VolumeClass listing or Volume lifecycle
+operations; otherwise Region authorization receives an ACL without the required endpoint grants.
 
 ### Grant relationships
 

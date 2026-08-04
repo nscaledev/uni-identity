@@ -38,6 +38,11 @@ import (
 // against the intended grant relationships.
 const chartValuesPath = "../../charts/identity/values.yaml"
 
+const (
+	volumeClassEndpoint = "region:volumeclasses:v2"
+	volumeEndpoint      = "region:volumes:v2"
+)
+
 // endpointOperations mirrors the map-of-lists shape used under each scope block in
 // values.yaml: endpoint name -> granted CRUD operations.
 type endpointOperations map[string][]string
@@ -225,6 +230,165 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 				} else {
 					require.Errorf(t, err, "%q does not hold a superset of %q and must not be able to grant it, but AllowRole allowed it", granter, grantee)
 				}
+			})
+		}
+	}
+}
+
+// TestBuiltinVolumePermissions exercises the chart values role catalogue through the same
+// scoped policy checks Region handlers use. It protects the distinction between
+// organization-scoped VolumeClass inventory and project-scoped Volume lifecycle access.
+func TestBuiltinVolumePermissions(t *testing.T) {
+	t.Parallel()
+
+	allOperations := []openapi.AclOperation{
+		openapi.Create,
+		openapi.Read,
+		openapi.Update,
+		openapi.Delete,
+	}
+	readOnly := []openapi.AclOperation{openapi.Read}
+	readWrite := allOperations
+
+	tests := []struct {
+		role                   string
+		volumeClassOperations  []openapi.AclOperation
+		volumeOperations       []openapi.AclOperation
+		allowOtherOrganization bool
+		allowOtherProject      bool
+	}{
+		{
+			role:                   "platform-administrator",
+			volumeClassOperations:  readOnly,
+			volumeOperations:       readWrite,
+			allowOtherOrganization: true,
+			allowOtherProject:      true,
+		},
+		{
+			role:                  "administrator",
+			volumeClassOperations: readOnly,
+			volumeOperations:      readWrite,
+			allowOtherProject:     true,
+		},
+		{
+			role:                  "auditor",
+			volumeClassOperations: readOnly,
+			volumeOperations:      readOnly,
+			allowOtherProject:     true,
+		},
+		{
+			role:                  "user",
+			volumeClassOperations: readOnly,
+			volumeOperations:      readWrite,
+		},
+		{
+			role:                  "reader",
+			volumeClassOperations: readOnly,
+			volumeOperations:      readOnly,
+		},
+	}
+
+	roles := loadChartRoles(t)
+	organization := ids.MustParseOrganizationID(organizationID)
+	project := ids.MustParseProjectID(projectID)
+	otherOrganization := ids.MustParseOrganizationID("208c1d08-7e37-45ac-a9ce-a738c3854613")
+	otherProject := ids.MustParseProjectID("3b376e8f-5e34-4199-a527-130b3c2dcd20")
+
+	for _, test := range tests {
+		role, ok := roles[test.role]
+		require.Truef(t, ok, "built-in role %q is missing", test.role)
+
+		ctx := rbac.NewContext(t.Context(), aclForHolder(role))
+
+		for _, operation := range allOperations {
+			t.Run(test.role+" VolumeClass "+string(operation), func(t *testing.T) {
+				t.Parallel()
+
+				err := rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, operation, organization)
+				if slices.Contains(test.volumeClassOperations, operation) {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+			})
+
+			t.Run(test.role+" Volume "+string(operation), func(t *testing.T) {
+				t.Parallel()
+
+				err := rbac.AllowProjectScopeID(ctx, volumeEndpoint, operation, organization, project)
+				if slices.Contains(test.volumeOperations, operation) {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+			})
+		}
+
+		t.Run(test.role+" VolumeClass scope confinement", func(t *testing.T) {
+			t.Parallel()
+
+			err := rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, openapi.Read, otherOrganization)
+			if test.allowOtherOrganization {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+
+		t.Run(test.role+" Volume scope confinement", func(t *testing.T) {
+			t.Parallel()
+
+			err := rbac.AllowProjectScopeID(ctx, volumeEndpoint, openapi.Read, organization, otherProject)
+			if test.allowOtherProject {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+
+		t.Run(test.role+" Volume organization confinement", func(t *testing.T) {
+			t.Parallel()
+
+			err := rbac.AllowProjectScopeID(ctx, volumeEndpoint, openapi.Read, otherOrganization, otherProject)
+			if test.allowOtherOrganization {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
+func TestBuiltinSystemServicesDoNotReceiveVolumePermissions(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+	organization := ids.MustParseOrganizationID(organizationID)
+	project := ids.MustParseProjectID(projectID)
+	operations := []openapi.AclOperation{
+		openapi.Create,
+		openapi.Read,
+		openapi.Update,
+		openapi.Delete,
+	}
+
+	for _, roleName := range []string{"region-service", "kubernetes-service", "compute-service", "storage-service"} {
+		role, ok := roles[roleName]
+		require.Truef(t, ok, "built-in role %q is missing", roleName)
+
+		ctx := rbac.NewContext(t.Context(), aclForHolder(role))
+
+		for _, operation := range operations {
+			t.Run(roleName+" VolumeClass "+string(operation), func(t *testing.T) {
+				t.Parallel()
+
+				require.Error(t, rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, operation, organization))
+			})
+
+			t.Run(roleName+" Volume "+string(operation), func(t *testing.T) {
+				t.Parallel()
+
+				require.Error(t, rbac.AllowProjectScopeID(ctx, volumeEndpoint, operation, organization, project))
 			})
 		}
 	}
