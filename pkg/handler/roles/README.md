@@ -64,7 +64,7 @@ organization and `grantable: false` for the same caller in another.
 
 This is where the handler layer turns the deeper `pkg/rbac` anti-escalation rules into a concrete,
 per-role, per-caller API value: `grantable` is exactly `rbac.AllowRole(ctx, role, organizationID) ==
-nil`. It gates what the caller may do with the role (add it to or remove it from a group), not
+nil`. It gates what the caller may do with the role (grant it to a group), not
 whether the role appears in the list.
 
 ## Invariants
@@ -73,7 +73,7 @@ whether the role appears in the list.
 - every non-protected role is returned exactly once per `List` call, annotated with the caller's
   per-organization `grantable` flag; visibility and grantability are independent
 - `grantable` reflects `rbac.AllowRole` for the supplied organization and does not imply the role can
-  be hidden or shown differently — it only gates add/remove of the role on a group
+  be hidden or shown differently — it only gates granting the role to a group
 - this package is read-only; it does not define or mutate the underlying role resources
 
 ## Caveats
