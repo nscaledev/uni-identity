@@ -36,7 +36,7 @@ the current caller cannot themselves grant — for example one assigned by someo
 authority. Omitting ungrantable roles from this list, rather than flagging them, hides such a role
 from any caller who cannot grant it and invites a client that resends "the roles I can see" back to
 the group to silently revoke the one it cannot see. `grantable: false` avoids that: it lets a caller
-display and reason about a role it does not itself hold, without being able to add or remove it
+display and reason about a role it does not itself hold, without being able to grant it
 (`pkg/rbac`'s `AllowRole` remains the actual enforcement point on group writes).
 
 ### Current Global Definition, Future Local Customization
@@ -62,7 +62,7 @@ organization and `grantable: false` for the same caller in another.
 
 This is where the handler layer turns the deeper `pkg/rbac` anti-escalation rules into a concrete,
 per-role, per-caller API value: `grantable` is exactly `rbac.AllowRole(ctx, role, organizationID) ==
-nil`. It gates what the caller may do with the role (add it to or remove it from a group), not
+nil`. It gates what the caller may do with the role (grant it to a group), not
 whether the role appears in the list.
 
 ## Invariants
@@ -71,7 +71,7 @@ whether the role appears in the list.
 - every non-protected role is returned exactly once per `List` call, annotated with the caller's
   per-organization `grantable` flag; visibility and grantability are independent
 - `grantable` reflects `rbac.AllowRole` for the supplied organization and does not imply the role can
-  be hidden or shown differently — it only gates add/remove of the role on a group
+  be hidden or shown differently — it only gates granting the role to a group
 - this package is read-only; it does not define or mutate the underlying role resources
 
 ## Caveats
