@@ -161,8 +161,12 @@ type groupSubjectFilterGetter func(id string) func(unikornv1.Group) bool
 func (r *RBAC) groupSubjectFilter(ctx context.Context, subject string) func(unikornv1.Group) bool {
 	return func(group unikornv1.Group) bool {
 		if slices.ContainsFunc(group.Spec.Subjects, func(s unikornv1.GroupSubject) bool {
-			// The issuer is not validated here. All subjects are expected to have an empty issuer.
-			// See updateGroups in handler/users/client.go.
+			// The issuer is deliberately ignored: records written before
+			// subject issuers existed carry an empty one, while the users and
+			// groups handlers now write the deployment's issuer URL, and both
+			// forms must keep resolving.  The membership grant gates match the
+			// same way (see GroupSpec.HasMemberByID); if this ever becomes
+			// issuer-qualified, they must move with it.
 			return s.ID == subject
 		}) {
 			return false

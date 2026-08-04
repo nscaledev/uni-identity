@@ -968,6 +968,86 @@ func TestClient_GroupMembershipRepresentations(t *testing.T) {
 		assert.Len(t, alphaGroup.Spec.Subjects, 1, "the same principal must not be stored twice")
 		assert.Equal(t, []string{orgUserAliceID}, alphaGroup.Spec.UserIDs)
 	})
+
+	t.Run("allows re-stating a membership stored as a legacy empty-issuer subject", func(t *testing.T) {
+		t.Parallel()
+
+		// Subject records written before issuers were recorded carry an empty
+		// one, and RBAC resolves them by ID alone, so the user already holds
+		// the group's roles.  The gate must match the way RBAC matches: an
+		// issuer-qualified comparison would read this no-op re-send as an
+		// addition and refuse it on the ungrantable role.
+		stored := unikornv1.GroupSubject{
+			ID:    userAliceSubject,
+			Email: userAliceSubject,
+		}
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(groupAlphaID, nil, []unikornv1.GroupSubject{stored}),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.NoError(t, err)
+
+		// The write completes the canonical representation alongside the
+		// legacy record rather than being refused.
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Equal(t, []string{orgUserAliceID}, alphaGroup.Spec.UserIDs)
+	})
+
+	t.Run("still refuses a genuine addition to a group holding only legacy records", func(t *testing.T) {
+		t.Parallel()
+
+		// The ID-only matching above must not blanket-allow: a legacy record
+		// for someone else confers nothing on this user, so joining the group
+		// is still a grant of the ungrantable role and is refused.
+		stored := unikornv1.GroupSubject{
+			ID:    userBobSubject,
+			Email: userBobSubject,
+		}
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(groupAlphaID, nil, []unikornv1.GroupSubject{stored}),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.Error(t, err)
+		require.True(t, errors.IsForbidden(err))
+		require.Contains(t, err.Error(), "radar")
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs, "a refused addition must not be applied")
+	})
 }
 
 func TestClient_Delete(t *testing.T) {

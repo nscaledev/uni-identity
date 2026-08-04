@@ -96,6 +96,15 @@ write is not an addition. That matters for groups written before `Subjects` exis
 their membership fills in the missing half and must not be read as a grant, or such a group has no
 legal update at all.
 
+The issuer's part in that comparison differs by entry point, deliberately. This client compares
+the request's subjects issuer-qualified: they are client-authored records, and a record at a new
+issuer is a new stored fact the caller is asking to add. The users path derives its subject
+server-side instead, and its already-a-member test matches by ID alone
+(`GroupSpec.HasMemberByID`), mirroring how `pkg/rbac` resolves membership — records written before
+issuers existed carry an empty one and still confer the group's roles, so re-stating such a
+membership is not an addition. See the matching notes in
+[`pkg/handler/users`](../users/README.md).
+
 A group with no roles confers nothing, so membership in it is not a grant and nothing blocks the
 addition. A role reference that no longer resolves is the opposite case and does block it — see
 Decommissioning A Service's Roles below for why that direction is not symmetric with removal.

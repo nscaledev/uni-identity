@@ -128,7 +128,7 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 // keeps a refusal from landing after an earlier group has already been
 // patched.  Groups the user is only leaving, or already belongs to, confer
 // nothing and are skipped.
-func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subject unikornv1.GroupSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	// Reconciliation below can only act on groups that exist, so an ID naming
 	// none of them would otherwise be dropped without the caller being told.
 	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
@@ -143,8 +143,12 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 		}
 
 		// Presence in either membership representation already confers the
-		// group's roles, so writing the other half grants nothing.
-		if group.Spec.HasMember(orgUserID, subject) {
+		// group's roles, so writing the other half grants nothing.  Subjects
+		// are matched by ID alone, mirroring how RBAC resolves membership: a
+		// record written before subject issuers existed carries an empty one
+		// yet still confers the roles, so re-stating that membership must not
+		// read as an addition and be refused.
+		if group.Spec.HasMemberByID(orgUserID, subjectID) {
 			continue
 		}
 
@@ -462,8 +466,6 @@ func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization 
 		return nil
 	}
 
-	subject := c.groupSubject(request.Spec.Subject)
-
 	// Resolve what already exists without creating it.  Either record may be
 	// absent on a first-time create, which just means there is no prior
 	// membership to exempt.
@@ -487,7 +489,7 @@ func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization 
 		return err
 	}
 
-	return c.validateGroupAdditions(ctx, organization.ID, subject, orgUserID, request.Spec.GroupIDs, groups)
+	return c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, orgUserID, request.Spec.GroupIDs, groups)
 }
 
 // Create makes a new user.  This creates a new user in an organization, but they
@@ -601,7 +603,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	// tags and label changes below land on the organization user record, so a
 	// membership refusal discovered after them would have already applied
 	// part of a request the caller was told it could not make.
-	if err := c.validateGroupAdditions(ctx, organization.ID, c.groupSubject(user.Spec.Subject), userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.validateGroupAdditions(ctx, organization.ID, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 

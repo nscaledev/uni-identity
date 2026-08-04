@@ -63,6 +63,13 @@ not gated. That matters for groups written before subjects existed: re-sending t
 derives the missing half for the first time, and reading that as a grant would leave such a group
 with no legal user write at all.
 
+For the same reason, the already-a-member test matches subjects by ID alone, mirroring how
+`pkg/rbac` actually resolves membership (see `GroupSpec.HasMemberByID`). Subject records written
+before issuers were recorded carry an empty issuer and still confer the group's roles, so an
+issuer-qualified comparison would read a no-op re-send of such a membership as an addition and
+refuse it — the frozen-group failure this gate exists to avoid. If RBAC matching ever becomes
+issuer-qualified, the gate must move with it.
+
 Removing a user from a group takes authority away rather than handing it out, so the remove branch
 is unguarded. Deletion is exempt for the same reason — it reconciles against an empty group list,
 so it only ever removes, and a user must remain deletable even when they sit in a group nobody can
