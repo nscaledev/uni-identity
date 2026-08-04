@@ -79,9 +79,41 @@ revocation:
 
 So group writes are also authority-delegation checks, for both grants and revocations.
 
-Group DELETE is an unguarded revocation path. Deleting a group is an explicit, whole-group action
+### Membership Guard Rails
+
+Adding a member to a group hands that member every role the group carries, so it is a grant like
+any other and has to trace to a holder. A `PUT /groups/{id}` that puts a user, subject, or service
+account on a group is refused unless the caller could grant each of the group's roles themselves.
+The roles checked are the ones the group carries after the write, since that is what the new member
+inherits. A refusal names the role.
+
+Membership is compared by principal identity, not by stored record. A subject identifies a
+principal by `(issuer, id)`; its `email` is display data that different writers populate from
+different sources, so it takes no part in the comparison. Both membership representations count as
+already-a-member: `pkg/rbac` resolves a principal's groups through `UserIDs` and through `Subjects`
+alike, so a member listed in one representation and named through the other gains nothing, and the
+write is not an addition. That matters for groups written before `Subjects` existed — re-sending
+their membership fills in the missing half and must not be read as a grant, or such a group has no
+legal update at all.
+
+A group with no roles confers nothing, so membership in it is not a grant and nothing blocks the
+addition. A role reference that no longer resolves is the opposite case and does block it — see
+Decommissioning A Service's Roles below for why that direction is not symmetric with removal.
+
+Create needs no separate membership check. Every role on a new group counts as an addition and is
+already grant-checked, so the creator holds everything the new group confers.
+
+This gate sits on the groups path. [`pkg/handler/users`](../users/README.md) and
+[`pkg/handler/serviceaccounts`](../serviceaccounts/README.md) also write group membership, by
+reconciling a requested `groupIDs` list into the groups that name the principal, and those paths do
+not run this check.
+
+Removals are ungated. Taking a member out of a group takes authority away rather than handing it
+out, so a caller who could not add a member to a group may still remove one. Group DELETE is an
+unguarded revocation path for the same reason: deleting a group is an explicit, whole-group action
 by the caller, not a silent side effect of an update, so the role-removal guard — which exists to
-catch omission — does not apply to it.
+catch omission — does not apply to it. Deleting a user or service account strips its memberships as
+cleanup, and is likewise unguarded.
 
 ### Decommissioning A Service's Roles
 
@@ -100,6 +132,20 @@ member of the affected group cannot perform the repair through the API at all �
 fails closed on the dangling reference — so if an organization's only admins sit in that group,
 repair falls back to direct CR access.)
 
+Adding a member to a group carrying a dangling reference is refused, and the refusal names the
+unresolvable role ID. The two directions are deliberately asymmetric, and the reason is that role
+IDs are not random: a role ID is derived from the role name, so deleting a `Role` CR and re-applying
+it later brings back the *same* ID, which immediately re-binds to every group that still references
+it. Anyone added to the group during that window silently acquires the role when it returns, without
+a grant check ever having run — and for a service account, that authority rides a long-lived token.
+Skipping an unresolvable role therefore errs towards less authority on a removal and towards more on
+an addition, so only the removal side is safe to skip. Refusing additions also matches what
+`pkg/rbac` already does with the same reference: it fails closed.
+
+A side effect worth naming: because ACL construction fails closed, adding someone to a
+dangling-reference group breaks their whole organization ACL, not just their access to that group.
+Refusing the addition closes that off as well, at least on the groups path.
+
 The trap is the window before that. While the `Role` CR still exists, removing it from a group is a
 guarded revocation like any other — the caller must hold its permissions. That is unremarkable for a
 live service, but once a service is being decommissioned, nobody may hold those permissions any
@@ -110,9 +156,13 @@ access would). Strip the references while permission holders still exist instead
 Protected roles are the one case exempt from that trap entirely: they are always droppable from a
 group regardless of who holds what, as invariant repair (see Role Assignment Guard Rails above).
 
-Deleting the group outright is the other way out, since group DELETE is unguarded. That takes the
-group's members with it, so it is only the right move when the group exists to carry the retiring
-service's roles and nothing else.
+Membership is the easier half of the job. Emptying a group of its members needs no authority over
+the roles it carries, so members can be pulled out of a group carrying a live ungrantable role at
+any point in the sequence, and the group can then be deleted outright — group DELETE is unguarded.
+Deleting the group takes the members with it, so it is only the right move when the group exists to
+carry the retiring service's roles and nothing else. What does not work while the `Role` CR is still
+installed is putting anyone *into* such a group through `PUT /groups/{id}`: a decommissioning
+service's group cannot take on new members that way once nobody holds its permissions.
 
 ### Project Reference Cleanup
 
@@ -131,6 +181,11 @@ would drift.
   group are not re-checked on subsequent writes
 - callers may only drop a role from a group on update if they are allowed to grant that role,
   unless the role no longer resolves or is protected
+- adding a member to a group through this client is a grant of that group's roles, so it is allowed
+  only where the caller could grant every role the group carries
+- a principal is the same member in either representation, identified by `(issuer, id)`; a subject's
+  `email` is display data and takes no part in that comparison
+- removing a member from a group confers nothing and is not gated
 - group DELETE revokes without a role check, by design
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible
 - group membership and role/service-account ID lists are normalized to first-occurrence unique values
@@ -138,11 +193,16 @@ would drift.
 
 ## Caveats
 
-- A group seeded with a role from a broader-authority admin is role-frozen for everyone who cannot
-  grant that role: they can still rename it, resend its role list, change its members and delete it
-  outright, but they cannot drop the role. That is the intended trade — dropping a role is a
-  revocation the caller has to be entitled to make — and the way out is to give the editor the
-  role's permissions, not to relax the check.
+- A group seeded with a role from a broader-authority admin is frozen for everyone who cannot grant
+  that role: they can still rename it, resend its role list, remove members and delete it outright,
+  but they cannot drop the role and cannot add a member through this client. That is the intended
+  trade — dropping a role is a revocation, and adding a member is a grant, and the caller has to be
+  entitled to make either — and the way out is to give the editor the role's permissions, not to
+  relax the check.
+- The membership gate covers `PUT /groups/{id}` only. The same membership can be written through
+  `pkg/handler/users` and `pkg/handler/serviceaccounts`, which reconcile a requested `groupIDs` list
+  without this check, so a caller holding `identity:users` or `identity:serviceaccounts` write can
+  still put a principal into a group whose roles it cannot grant.
 - The package is partly a migration bridge because it must support both deprecated `UserIDs` and
   forward-looking `Subjects`.
 - Groups may include external subjects that do not resolve to local `User` objects, so not every
