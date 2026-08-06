@@ -140,7 +140,7 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 		quota := &in.Spec.Quotas[i]
 
 		metaIndex := slices.IndexFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool {
-			return m.Name == quota.Kind
+			return m.ResourceKind() == quota.Kind
 		})
 
 		meta := &metadata.Items[metaIndex]

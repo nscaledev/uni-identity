@@ -431,6 +431,11 @@ quotas:
     description: Persistent network file storage.
     default: 1Ti
     format: binary
+  volumegib:
+    kind: volumeGiB
+    displayName: Volume Capacity
+    description: Total requested block storage capacity in GiB.
+    default: 0
 
 ingress:
   # Sets the ingress class to use.

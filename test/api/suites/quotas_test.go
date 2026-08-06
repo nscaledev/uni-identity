@@ -39,8 +39,11 @@ var _ = Describe("Quota Management", func() {
 
 				expectedQuotaKinds := []string{"clusters", "servers", "networks", "gpus"}
 				foundCoreQuotas := 0
+				actualQuotaKinds := make([]string, 0, len(quotasResponse.Quotas))
 
 				for _, quota := range quotasResponse.Quotas {
+					actualQuotaKinds = append(actualQuotaKinds, quota.Kind)
+
 					Expect(quota.Kind).NotTo(BeEmpty(), "Quota kind should not be empty")
 					Expect(quota.DisplayName).NotTo(BeEmpty(), "Quota display name should not be empty")
 					Expect(quota.Description).NotTo(BeEmpty(), "Quota description should not be empty")
@@ -50,6 +53,9 @@ var _ = Describe("Quota Management", func() {
 					Expect(quota.Reserved).To(BeNumerically(">=", 0), "Quota reserved should be non-negative")
 					Expect(quota.Committed).To(BeNumerically(">=", 0), "Quota committed should be non-negative")
 					Expect(quota.Default).To(BeNumerically(">=", 0), "Quota default should be non-negative")
+					if quota.Kind == "volumeGiB" {
+						Expect(quota.Default).To(Equal(0), "Block storage capacity should default to denied")
+					}
 
 					totalQuota := quota.Used + quota.Free
 					Expect(totalQuota).To(Equal(quota.Quantity),
@@ -73,6 +79,10 @@ var _ = Describe("Quota Management", func() {
 
 				Expect(foundCoreQuotas).To(BeNumerically(">", 0),
 					"At least one core quota type should be present (clusters, servers, networks, or gpus)")
+				Expect(actualQuotaKinds).To(ContainElement("volumeGiB"),
+					"Block storage capacity quota should be registered")
+				Expect(actualQuotaKinds).NotTo(ContainElement("volumes"),
+					"Volume count should not be a built-in quota kind")
 			})
 		})
 

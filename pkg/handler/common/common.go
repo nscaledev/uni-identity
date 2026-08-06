@@ -150,10 +150,22 @@ func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID
 	names := make([]string, len(metadata.Items))
 
 	for i, meta := range metadata.Items {
-		names[i] = meta.Name
+		kind := meta.ResourceKind()
+		names[i] = kind
+
+		if kind != meta.Name && slices.ContainsFunc(quota.Spec.Quotas, func(q unikornv1.ResourceQuota) bool {
+			return q.Kind == meta.Name
+		}) {
+			return nil, false, fmt.Errorf(
+				"%w: existing quota kind %q conflicts with built-in %q; migrate the quota before enabling the built-in kind",
+				coreerrors.ErrConsistency,
+				meta.Name,
+				kind,
+			)
+		}
 
 		findQuota := func(q unikornv1.ResourceQuota) bool {
-			return q.Kind == meta.Name
+			return q.Kind == kind
 		}
 
 		if index := slices.IndexFunc(quota.Spec.Quotas, findQuota); index >= 0 {
@@ -161,7 +173,7 @@ func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID
 		}
 
 		quota.Spec.Quotas = append(quota.Spec.Quotas, unikornv1.ResourceQuota{
-			Kind:     meta.Name,
+			Kind:     kind,
 			Quantity: meta.Spec.Default,
 		})
 	}
@@ -253,7 +265,18 @@ func checkQuotaConsistency(quota *unikornv1.Quota, allocations *unikornv1.Alloca
 	}
 
 	for k, v := range totals {
-		if capacity, ok := capacities[k]; ok && v > capacity {
+		capacity, ok := capacities[k]
+		if !ok {
+			for kind := range capacities {
+				if unikornv1.IsQuotaKindAlias(k, kind) {
+					return fmt.Errorf("%w: allocation kind %q has no matching quota", coreerrors.ErrConsistency, k)
+				}
+			}
+
+			continue
+		}
+
+		if v > capacity {
 			// NOTE: AI has given the options as 403 (forbidden), 402 (payment required)
 			// and 507 (insufficient storage).  403 with a good error message is the
 			// most prevalent.

@@ -28,9 +28,30 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
+const (
+	quotaKindAnnotation        = "identity.unikorn-cloud.org/quota-kind"
+	volumeGiBQuotaMetadataName = "volumegib"
+	volumeGiBQuotaKind         = "volumeGiB"
+)
+
 var (
 	ErrReference = errors.New("resource reference error")
 )
+
+// ResourceKind returns the quota kind exposed to allocation clients.
+func (q *QuotaMetadata) ResourceKind() string {
+	kind := q.Annotations[quotaKindAnnotation]
+	if IsQuotaKindAlias(q.Name, kind) {
+		return kind
+	}
+
+	return q.Name
+}
+
+// IsQuotaKindAlias reports whether a metadata name maps to a distinct public quota kind.
+func IsQuotaKindAlias(metadataName, kind string) bool {
+	return metadataName == volumeGiBQuotaMetadataName && kind == volumeGiBQuotaKind
+}
 
 // Paused implements the ReconcilePauser interface.
 func (c *OAuth2Client) Paused() bool {

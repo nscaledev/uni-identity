@@ -34,6 +34,14 @@ machinery also implement helper behaviour such as:
 The schema/helper mix is by design. The package is part of the common contract that lets
 the controller layer in `core` handle resources generically.
 
+## Quota Metadata Kinds
+
+The `QuotaMetadata` resource name is normally the quota kind used by allocation clients. Block
+storage is the exception: its built-in metadata object is named `volumegib`, following the compact
+lowercase style of the catalogue, and identity exposes it as the ticket-defined public kind
+`volumeGiB`. The chart marks that built-in object with the public-kind annotation, so an existing
+custom `volumegib` or `volume-gib` object without the marker keeps its original meaning.
+
 ## Scoping Model
 
 Kubernetes namespace layout and platform tenancy are separate concerns.

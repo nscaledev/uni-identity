@@ -4,8 +4,12 @@ apiVersion: identity.unikorn-cloud.org/v1alpha1
 kind: QuotaMetadata
 metadata:
   name: {{ $name }}
+  {{- with $metadata.kind }}
+  annotations:
+    identity.unikorn-cloud.org/quota-kind: {{ . | quote }}
+  {{- end }}
   labels:
     {{- include "unikorn.labels" $ | nindent 4 }}
 spec:
-  {{- toYaml $metadata | nindent 2 }}
+  {{- toYaml (omit $metadata "kind") | nindent 2 }}
 {{- end }}

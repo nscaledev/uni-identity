@@ -34,6 +34,22 @@ used, free, committed, and reserved totals.
 
 Without that metadata, the numeric values are not meaningfully usable.
 
+### Built-In Block Storage Kind
+
+The default Helm catalogue registers one quota kind for Region block storage:
+
+| Kind | Meaning | Default |
+|---|---|---:|
+| `volumeGiB` | Total block storage capacity requested by Volumes, measured in GiB | 0 |
+
+`volumeGiB` is a count of GiB units rather than a byte quantity. Region allocation calls therefore
+submit the requested Volume capacity directly in GiB; Volume count is not quota-controlled. The
+zero default denies block storage capacity until an operator overrides it through the chart's
+`quotas` values. Its backing `QuotaMetadata` object is named `volumegib`, following the compact
+lowercase style of the other built-in quota metadata names. A chart-managed annotation maps it to
+the public `volumeGiB` kind required by Region without reinterpreting an unmarked custom
+`volumegib` kind.
+
 ### Missing Internal Partitioning
 
 The main current model gap is that quotas are organization-wide only.
@@ -49,6 +65,8 @@ reporting and dashboard problem.
 - quota reads are derived from stored quota values, quota metadata, and current allocation totals
 - quota updates must not reduce capacity below already committed plus reserved usage
 - `QuotaMetadata` is mandatory contextual data, not optional display garnish
+- stored quota or allocation kinds that would be orphaned by an alias fail with a consistency error
+  instead of being silently retired or ignored
 
 ## Caveats
 
