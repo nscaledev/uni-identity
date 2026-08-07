@@ -21,7 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 
@@ -39,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
@@ -163,8 +163,10 @@ type RBAC struct {
 func New(client client.Client, namespace string, options *Options) *RBAC {
 	bindings := effectiveGlobalRoleBindings(options)
 
+	logger := log.Log.WithName("rbac")
+
 	for _, b := range bindings {
-		slog.Info("global role binding active", "issuer", b.Issuer, "subject", b.Subject, "roleIDs", b.RoleIDs)
+		logger.Info("global role binding active", "issuer", b.Issuer, "subject", b.Subject, "roleIDs", b.RoleIDs)
 	}
 
 	return &RBAC{
@@ -197,7 +199,7 @@ func (r *RBAC) groupSubjectFilter(ctx context.Context, subject string) func(unik
 		if len(group.Spec.UserIDs) > 0 {
 			if orgUserName, err := r.resolveOrganizationUserName(ctx, group.Namespace, subject); err == nil {
 				if slices.Contains(group.Spec.UserIDs, orgUserName) {
-					slog.Warn("group matched via deprecated userIDs field, migration to subjects required",
+					log.FromContext(ctx).Info("group matched via deprecated userIDs field, migration to subjects required",
 						"group", group.Name, "namespace", group.Namespace, "userID", orgUserName)
 
 					return false
