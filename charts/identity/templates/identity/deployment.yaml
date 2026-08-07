@@ -51,11 +51,9 @@ spec:
             {{- fail (printf "globalRoleBindings[%d]: issuer must not contain whitespace" $i) }}
           {{- end }}
           {{- /*
-          The server parses issuer::subject::roles right-anchored on the last
-          two separators, so a "::" anywhere in the issuer or subject silently
-          shifts the boundary. Only the chart still knows the intended split —
-          once the flag string is built the mis-parse is undetectable — so both
-          sides are rejected here rather than in pkg/rbac.
+          Right-anchored parsing means a "::" in either field silently shifts
+          the boundary, undetectably once the flag is built. Reject it here,
+          while the intended split is still known.
           */}}
           {{- if contains "::" $b.issuer }}
             {{- fail (printf "globalRoleBindings[%d]: issuer must not contain \"::\"" $i) }}
@@ -73,10 +71,8 @@ spec:
             {{- fail (printf "globalRoleBindings[%d]: exactly one of subject or non-empty subjects required" $i) }}
           {{- end }}
           {{- /*
-          Trim once, up front: the server trims the subject before matching, so
-          every guard below and the emitted flag must agree on the same value.
-          Guarding the raw string lets a padded " * " slip past the wildcard
-          checks and deploy as a real wildcard binding.
+          Trim before validating and emitting, so a padded " * " cannot slip
+          past the wildcard guards and then match as a wildcard server-side.
           */}}
           {{- $trimmedSubjects := list }}
           {{- range $si, $subject := $subjects }}

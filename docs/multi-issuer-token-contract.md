@@ -72,22 +72,18 @@ UNI distinguishes two different not-found-or-not-usable cases:
   decides what that principal can reach. This is intended for global-role-binding subjects that
   are not registered as ordinary UNI users (e.g. CI service identities or staff accounts).
 - **Exists but inactive** (the global `User` record's `state` is not `Active`): the request is
-  always rejected with `access_denied`, **regardless of `allowExternalIdentity`**. A local
-  suspension is a deliberate revocation; `allowExternalIdentity` only widens admission for
-  identities UNI has never seen, never re-admits one UNI has explicitly deactivated. This check is
-  scoped to the global `User` record only — nothing in the product currently writes a non-active
-  global `User`, and a user suspended (or removed) from every organization instead resolves to an
-  empty `orgIds` list with no error. That path is not closed by this change.
+  always rejected with `access_denied`, **regardless of `allowExternalIdentity`**, because a local
+  suspension is a deliberate revocation. The check covers the global `User` record only — nothing
+  currently writes a non-active global `User`, while a user suspended in (or removed from) every
+  organization still resolves to an empty `orgIds` list with no error.
 
-  The check can only fire on a record the lookup actually finds, and the lookup is **case
-  sensitive**: `UserDatabase.GetUser` compares `spec.subject` verbatim, while the bearer path
-  lower-cases the email claim before lookup (`auth0.Validator.validateEmail`). A `User` created
-  with a mixed-case subject — the create API stores `spec.subject` as supplied — is therefore
-  never matched, falls into the *never onboarded* branch above, and is admitted with empty
-  `orgIds` when `allowExternalIdentity: true`, even while its record says suspended. Global role
-  bindings match case-insensitively, so such a principal keeps its bound authority. Until the
-  lookup and storage agree on normalization, revocation is only reliable for subjects stored
-  lower-case; create users with lower-case subjects.
+  It can also only fire on a record the lookup finds, and the lookup is **case sensitive**:
+  `UserDatabase.GetUser` compares `spec.subject` verbatim, while the bearer path lower-cases the
+  email claim first (`auth0.Validator.validateEmail`) and the create API stores `spec.subject` as
+  supplied. A mixed-case record is therefore treated as *never onboarded* and admitted with empty
+  `orgIds` under `allowExternalIdentity: true`, even while suspended — and global role bindings,
+  which match case-insensitively, still grant it authority. Until storage and lookup agree on
+  normalization, create users with lower-case subjects.
 
 ## The `https://unikorn-cloud.org/authz` claim
 
@@ -141,17 +137,12 @@ authenticated by that issuer. Parsing is right-anchored — the role list follow
 `::` (IPv6 literals) parse unambiguously.
 
 **Wildcard semantics.** A wildcard-subject binding is clamped to the `read` operation of each
-referenced role's global scopes, regardless of role content — but the clamp bounds verbs only, not
-response sensitivity, so any role referenced by a wildcard binding must be individually
-read-surface-audited before use (some read endpoints return credential material). Full rationale:
-[`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings). A wildcard
-subject can never be combined with the `uni` sentinel issuer, since that would grant every
-UNI-local user.
-
-**Chart guard, not a substitute for the clamp.** The Helm chart also fails to render a wildcard
-binding whose role(s) declare any non-`read` global operation, naming the offending binding, role,
-and scope — no role shipped in `charts/identity/values.yaml` passes it today, so a wildcard binding
-needs a dedicated, audited read-only role. It does not replace the runtime clamp above; why:
+referenced role's global scopes, and can never be combined with the `uni` sentinel issuer, which
+would grant every UNI-local user. The clamp bounds verbs, not response sensitivity — some read
+endpoints return credential material — so any role used this way needs a read-surface audit first.
+The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
+global operation; no role shipped in `charts/identity/values.yaml` passes that guard today. Why
+both layers exist:
 [`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings).
 
 **Parse-time rejections.** The process fails to start on: malformed grammar (fewer than two `::`
@@ -175,27 +166,13 @@ value and `globalRoleBindings` as one `--global-role-binding` flag per subject i
 
 ### Operator invariants
 
-**(1) Migration to explicit `issuer::subject` form is recommended but not forced.** A deployment
-that has at least one `bearerTrust` provider and still carries a bare (UNI-sentinel)
-`--platform-administrator-subjects` entry logs a startup warning (`Options.Validate`) and
-continues to boot. The always-on runtime control is the issuer-qualified match in
-`processUserAccountACL`, not the warning.
-
-**(2) Every `--global-role-binding` issuer should be a trusted issuer.** `Options.Validate` also
-warns, without blocking startup, when a binding's issuer is neither the `uni` sentinel nor one of
-the currently trusted non-UNI `bearerTrust` issuers — note the deprecated `--auth0-exchange-issuer`
-value is deliberately excluded from that trusted set, so a binding aimed at the legacy exchange
-issuer warns too, even though it can still match a real token. Most often, though, this catches a
-mistyped or stale issuer that can never match a real token. As with (1), the warning is advisory;
-the issuer-qualified runtime match is the actual control.
-
-Only (1) is skipped when the trusted non-UNI issuer list is empty — a bare admin entry only matters
-once a non-UNI issuer is trusted to migrate away from. (2) has no such gate: it runs even against a
-genuinely empty list, so with no `bearerTrust` providers configured every non-UNI binding issuer is
-reported as untrusted. The caller that computes the trusted-issuer list distinguishes a `List`
-failure on the `OAuth2Provider` resources from a genuinely empty result — on failure it logs that
-the advisory check was skipped and does not call `Validate` at all, rather than risk misreading
-"provider list unavailable" as "no non-UNI issuers trusted".
+`Options.Validate` logs two advisory startup warnings and never blocks boot: a bare (UNI-sentinel)
+`--platform-administrator-subjects` entry that should migrate to explicit `issuer::subject` form,
+and a `--global-role-binding` issuer outside the currently trusted set — usually a stale or
+mistyped issuer that can never match a real token. Neither warning is a security control; the
+issuer-qualified runtime match in `processUserAccountACL` is. Their gating, the deliberately
+excluded legacy exchange issuer, and provider-list failure handling are documented in
+[`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings).
 
 Note the legacy-flag mirror copies the flag value verbatim: a flag issuer lacking Auth0's canonical
 trailing slash will not match the emitted `iss` — the same match-`iss`-verbatim rule stated above

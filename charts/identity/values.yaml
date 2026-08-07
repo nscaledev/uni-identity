@@ -144,19 +144,14 @@ platformAdministrators:
   subjects: []
 
 # Global role bindings grant the global scopes of the named roles to matched
-# subjects, replacing membership resolution for that session. Exactly one of
-# `subject` (single) or `subjects` (list, non-empty) per entry. subject "*"
-# matches every subject from the issuer and is clamped to read-only in code.
-# `issuer` must be the verbatim `iss` the IdP emits (Auth0: trailing slash),
-# or `uni` for locally issued tokens (exact subjects only). Neither issuer nor
-# subject may contain "::" (the flag's separator) and subjects are trimmed;
-# both are enforced at render time. Subjects match case-insensitively, but the
-# UNI user lookup does not — see docs/multi-issuer-token-contract.md.
-# Render-time guard: a wildcard binding ("*" as subject or a member of
-# subjects) may only reference roles whose global scopes (if any) are
-# read-only; the render fails otherwise. The runtime clamp still applies on
-# top (roles are live CRDs). None of the roles shipped below qualify for
-# wildcard use today. See pkg/rbac/README.md#global-role-bindings.
+# subjects, replacing membership resolution for that session. Each entry takes
+# exactly one of `subject` or a non-empty `subjects`, plus one or more roles
+# defined below. `issuer` is the verbatim `iss` the IdP emits (Auth0: trailing
+# slash), or `uni` for locally issued tokens, which allows exact subjects only.
+# Subject "*" matches every subject from the issuer and is clamped to read.
+# Full semantics: pkg/rbac/README.md#global-role-bindings.
+# Helm rejects invalid separators and wildcard bindings on roles that grant any
+# non-read global operation — no role shipped below qualifies for wildcard use.
 # Rollout ordering: the flag is emitted only when this list is non-empty, and
 # older server binaries do not recognise it — deploy a binary that understands
 # --global-role-binding before enabling bindings; on rollback, clear this

@@ -55,12 +55,9 @@ that keeps those two models separate while presenting handlers with one normaliz
   of authorization.
 - Service identity and delegated principal identity are separate concepts.
 - ACL cache keys must distinguish direct calls from impersonated calls so cached results do not
-  overgrant. Keys are also qualified by the authenticated issuer (`src_iss`), since a subject is
-  only unique within its issuer: identities sharing a subject value across issuers never share a
-  cache entry. Every user-influenced segment (subject, issuer, impersonation actor) is
-  length-prefixed before being joined, since subjects such as Auth0's `auth0|<id>` routinely
-  contain the join delimiter and could otherwise be crafted to collide with a different identity's
-  key.
+  overgrant. Keys are also qualified by the authenticated issuer (`src_iss`), and every
+  user-influenced segment is length-prefixed so a subject containing the join delimiter cannot be
+  crafted to collide with another identity's key.
 - OpenAPI validation, authentication, principal propagation, and ACL resolution are colocated so
   handlers receive already-normalized request context.
 

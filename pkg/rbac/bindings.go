@@ -146,13 +146,10 @@ func (v *GlobalRoleBindingsValue) String() string {
 
 func (*GlobalRoleBindingsValue) Type() string { return "issuer::subject::roles" }
 
-// accumulateGlobalReadPermissions is accumulateGlobalPermissions with the
-// wildcard clamp, applied at authorization time because Role CRDs are live
-// and can gain write scopes after the chart's render-time guard
-// (charts/identity/templates/identity/deployment.yaml) has already run. This
-// clamp is the defence-in-depth backstop for that gap and must not be
-// removed; see pkg/rbac/README.md#global-role-bindings for the full
-// two-layer rationale.
+// accumulateGlobalReadPermissions clamps wildcard bindings at authorization
+// time, because live Role CRDs can gain write scopes after the chart's
+// render-time guard has run. See pkg/rbac/README.md#global-role-bindings for
+// the two-layer rationale.
 func accumulateGlobalReadPermissions(acl *openapi.Acl, roleIDs []string, roles map[string]*unikornv1.Role) error {
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
@@ -160,8 +157,6 @@ func accumulateGlobalReadPermissions(acl *openapi.Acl, roleIDs []string, roles m
 			return fmt.Errorf("%w: role %s referenced by global role binding", errors.ErrConsistency, roleID)
 		}
 
-		// Clamp: project each scope down to its read operation only, dropping
-		// scopes that don't grant read at all.
 		readScopes := make([]unikornv1.RoleScope, 0, len(role.Spec.Scopes.Global))
 
 		for _, scope := range role.Spec.Scopes.Global {

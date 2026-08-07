@@ -30,8 +30,8 @@ role_id_of() { awk -v want="$1" '$1=="name:"{n=$2} $0 ~ "unikorn-cloud.org/name:
 # empty/absent ID (or a duplicate/missing flag) can't pass vacuously.
 assert_one_match() { [[ $(grep -c -- "$2" <<<"$1") -eq 1 ]] || die "expected exactly one match for: $2"; }
 
-# must_fail asserts the render fails for the SPECIFIC reason under test, not
-# merely that it failed somehow (else a different broken guard would pass).
+# must_fail requires the expected message, so another failing guard cannot
+# satisfy the check.
 must_fail() {
 	local out
 	if out=$(render "$1" 2>&1 >/dev/null); then

@@ -61,9 +61,7 @@ organization-local membership is active before returning it.
 - organization membership is resolved through labeled `OrganizationUser` records
 - service accounts are part of the same local identity-resolution surface as users
 - unresolved, inactive, or multiply-resolved identities are normalized into
-  `ErrResourceReference`; only the global-user path (`GetActiveUser`) distinguishes inactive as
-  `ErrUserInactive`, which wraps `ErrResourceReference` — the organization-user path
-  (`GetActiveOrganizationUser`) still collapses its inactive case into `ErrResourceReference`
+  `ErrResourceReference`, with one exception noted under Caveats
 
 ## Caveats
 
@@ -71,16 +69,12 @@ organization-local membership is active before returning it.
   though its purpose is to shield other packages from that coupling.
 - Several lookups are implemented as list-and-filter operations, so they depend on label hygiene
   and on the current storage layout remaining coherent.
-- The package flattens most unusable-identity cases into one read-side failure surface: missing
-  and multiply-resolved identities are all treated as "not a usable local reference" via
-  `ErrResourceReference`. On the global-user path, the exists-but-inactive case
-  (`GetActiveUser`) is distinguishable as `ErrUserInactive`, which wraps `ErrResourceReference` so
-  existing `errors.Is(err, ErrResourceReference)` callers keep working unchanged. Bearer-path
-  admission relies on this distinction — see
+- Missing and multiply-resolved identities return `ErrResourceReference`. `GetActiveUser` instead
+  returns `ErrUserInactive` for an inactive global user, which wraps `ErrResourceReference` so
+  existing `errors.Is` callers are unaffected; `GetActiveOrganizationUser` still returns the plain
+  error. See
   [`docs/multi-issuer-token-contract.md#membership-resolution`](../../docs/multi-issuer-token-contract.md#membership-resolution)
-  for why, and for the org-suspension gap it does not close. The organization-user path
-  (`GetActiveOrganizationUser`) is a different path, out of scope for that distinction: it still
-  collapses its inactive case into plain `ErrResourceReference`.
+  for the bearer-admission consequences and the organization-suspension gap this leaves open.
 - The package intentionally does not provide mutation or transactional semantics; it is a read-side
   adapter boundary only.
 

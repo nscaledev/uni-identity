@@ -177,11 +177,9 @@ audit label, e.g. the `OAuth2Provider` name) and a `SrcIss` (the issuer URL verb
 (`(srcIss, subject)` matching against `--global-role-binding` / legacy
 `--platform-administrator-subjects` entries — see [`pkg/rbac/README.md`](../rbac/README.md#global-role-bindings)).
 The sentinel `"uni"` is deliberately not a valid URL so it cannot collide with a real issuer.
-`externalUserinfo` rejects an existing-but-inactive local user regardless of
-`allowExternalIdentity`; that check covers only the global `User` record, not org-level suspension
-— see
-[`docs/multi-issuer-token-contract.md#membership-resolution`](../../docs/multi-issuer-token-contract.md#membership-resolution)
-for the scope of that check and the gap it leaves open.
+Membership admission — including `externalUserinfo`'s inactive-user rejection and the gaps it
+leaves — is defined in
+[`docs/multi-issuer-token-contract.md#membership-resolution`](../../docs/multi-issuer-token-contract.md#membership-resolution).
 
 ### Per-provider claim contract
 

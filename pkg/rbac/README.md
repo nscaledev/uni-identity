@@ -185,10 +185,10 @@ as `https://[2001:db8::1]/`) unambiguous. `issuer` must be either the verbatim `
 (exact string match, including Auth0's trailing slash) or the `uni` sentinel for UNI-local tokens.
 `subject` is either an exact subject (matched case-insensitively, with surrounding whitespace
 trimmed on both sides) or the literal wildcard `*`, which matches any subject authenticated by
-that issuer. Malformed grammar, empty segments (issuer, subject, or any role in
-the list), a wildcard subject on the `uni` sentinel, and an issuer that is neither the sentinel nor
-an absolute URL (no commas or whitespace) are all rejected at flag-parse time — the process does
-not boot on a malformed binding.
+that issuer. Malformed grammar, empty segments (issuer, subject, or any role in the list), a
+wildcard subject on the `uni` sentinel, and an issuer that is neither the sentinel nor an absolute
+URL (no commas or whitespace) are all rejected at flag-parse time — the process does not boot on a
+malformed binding.
 
 **Replace, not additive.** When one or more bindings match the authenticated `(srcIss, subject)`,
 the resulting ACL is exactly the union of those bindings' global scopes (read-clamped for wildcard
@@ -196,38 +196,33 @@ bindings), and organization/project membership resolution is skipped entirely fo
 This is a deliberate session-level privilege separation: a hybrid principal (bound issuer/subject
 *and* a UNI organization membership) loses their own-org write permissions while authenticated
 through the bound issuer — authenticating via the other issuer restores them. Multiple matching
-bindings (for example an
-exact and a wildcard entry on the same issuer) accumulate together.
+bindings (for example an exact and a wildcard entry on the same issuer) accumulate together.
 
-**The wildcard clamp bounds verbs, not sensitivity.** A wildcard-subject binding is clamped in
-code (`accumulateGlobalReadPermissions`) to the `read` operation of each
-referenced role's global scopes, regardless of what the role otherwise grants — pointing a
-wildcard at a CRUD role yields read-everything, never write. That clamp says nothing about what a
-read endpoint *returns*: some read endpoints return credential material (for example object-storage
-access keys), so any role referenced by a wildcard binding needs its own read-surface audit before
-being used that way. `platform-reader` receives that audit under ID-399; this mechanism only
-bounds the verb, not the payload sensitivity.
+**The wildcard clamp bounds verbs, not sensitivity.** A wildcard-subject binding is clamped in code
+(`accumulateGlobalReadPermissions`) to the `read` operation of each referenced role's global scopes,
+so pointing a wildcard at a CRUD role yields read-everything, never write. It says nothing about
+what a read endpoint *returns* — some return credential material, such as object-storage access
+keys — so any role referenced by a wildcard binding needs its own read-surface audit first.
+`platform-reader` receives that audit under ID-399.
 
 **A chart render-time guard complements the runtime clamp.** The chart
 (`charts/identity/templates/identity/deployment.yaml`) fails to render if a wildcard binding
 references a role whose global scopes include any non-`read` operation, naming the binding index,
-role, and offending scope. This is config-time enforcement, not a substitute for the clamp above:
-it keeps the Role CRD authoritative for what an operator *configures* a wildcard binding to grant,
-but Roles are live CRDs that can gain write scopes after the binding is rendered, which no
-render-time check can see — the runtime clamp remains the defence-in-depth backstop for that case.
-As a consequence, no role currently shipped in `charts/identity/values.yaml` passes this guard;
-only a dedicated, audited read-only role (`platform-reader`, ID-399) will.
+role, and offending scope. That keeps the Role CRD authoritative for what an operator can
+*configure*, but Roles are live and can gain write scopes after the render — which no render-time
+check can see, so the clamp above remains the backstop. No role currently shipped in
+`charts/identity/values.yaml` passes this guard; only a dedicated, audited read-only role
+(`platform-reader`, ID-399) will.
 
 **Sentinel and impersonation rules.** A wildcard subject can never match the `uni` sentinel or an
-empty issuer — rejected at parse time for the sentinel case, and guarded again at match time
-(`resolveGlobalRoleBindings`) as defence in depth for an issuer left unset by any future caller;
-today, impersonated principals and pre-`src_iss` passports are always given the UNI sentinel before
-reaching this check, so the empty-issuer branch is currently unreachable. Bindings resolve against
-the *authenticating* issuer: impersonated principals are always evaluated against the UNI sentinel
-(`processImpersonatedPrincipalACL` /
-`srcIssOrUNISentinel`), so an external-issuer binding never applies on a delegated service hop —
-it fails closed — while a `uni`-exact binding still applies there, intersected with the service's
-ACL, exactly as legacy bare admin subjects always have.
+empty issuer — rejected at parse time for the sentinel, and guarded again at match time
+(`resolveGlobalRoleBindings`) as defence in depth should a future caller leave the issuer unset;
+today impersonated principals and pre-`src_iss` passports always carry the sentinel, so that branch
+is unreachable. Bindings resolve against the *authenticating* issuer: impersonated principals are
+evaluated against the sentinel (`processImpersonatedPrincipalACL` / `srcIssOrUNISentinel`), so an
+external-issuer binding never applies on a delegated service hop — it fails closed — while a
+`uni`-exact binding still applies there, intersected with the service's ACL, exactly as legacy bare
+admin subjects always have.
 
 **Legacy flags translate verbatim.** `--platform-administrator-subjects` and
 `--platform-administrator-role-ids` continue to work: each subject is translated into an exact
@@ -258,23 +253,21 @@ entire user population is itself an authorization decision — for example a sta
 "authenticated by this issuer" already means "should see this data" — never for a general-purpose
 IdP with a mixed user base.
 
-**`Options.Validate` checks two startup-only, advisory conditions and reports every offending entry
-in each** (joined with the stdlib `errors.Join`, so `errors.Is` still matches each individually); it
-does not block startup: (1) a bare (UNI-sentinel) `--platform-administrator-subjects` entry while a
-non-UNI issuer is trusted (the pre-existing migration check), and (2) a `--global-role-binding`
-entry whose issuer is neither the UNI sentinel nor one of the currently trusted non-UNI issuers
-(`ErrUntrustedBindingIssuer`) — the deprecated `--auth0-exchange-issuer` value is deliberately
-excluded from that trusted set, so a binding aimed at the legacy exchange issuer also warns even
-though it can still match a real token. Both surface the dominant failure mode — most often a stray
-or mistyped issuer that can never match a real token — as an operator-visible warning; the warning
-is not the runtime security control. Only condition (1) is gated on a non-empty trusted-issuer list:
-a bare admin entry only matters once a non-UNI issuer is trusted to migrate away from. Condition (2)
-has no such gate and runs even against a genuinely empty trusted-issuer list, where every non-UNI
-binding issuer is reported as untrusted — the caller must not call `Validate` at all if it cannot
-tell "no trusted issuers configured" apart from "the provider `List` call failed"
-(`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case). The always-on control
-is the issuer-qualified `(srcIss, subject)` match performed by `resolveGlobalRoleBindings` inside
-`processUserAccountACL`. Operators must not rely on `Options.Validate` as a protection.
+**`Options.Validate` reports every finding from two advisory startup checks**, joined with the
+stdlib `errors.Join` so `errors.Is` still matches each individually. It never blocks startup:
+(1) a bare (UNI-sentinel) `--platform-administrator-subjects` entry while a non-UNI issuer is
+trusted, and (2) a `--global-role-binding` issuer that is neither the UNI sentinel nor a currently
+trusted non-UNI issuer (`ErrUntrustedBindingIssuer`). Check (2) excludes the deprecated
+`--auth0-exchange-issuer` value from the trusted set, so a binding aimed at the legacy exchange
+issuer warns even though it can still match a real token.
+
+Only check (1) is gated on a non-empty trusted-issuer list — a bare admin entry only matters once
+there is a non-UNI issuer to migrate away from. Check (2) runs even against an empty list, where
+every non-UNI binding issuer is reported, so the caller must skip `Validate` entirely when it
+cannot tell "no trusted issuers configured" from "the provider `List` call failed"
+(`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case). These warnings are
+not the security control: that is the issuer-qualified `(srcIss, subject)` match performed by
+`resolveGlobalRoleBindings` inside `processUserAccountACL`.
 
 ## Invariants
 
@@ -288,23 +281,17 @@ is the issuer-qualified `(srcIss, subject)` match performed by `resolveGlobalRol
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
 - Global role binding matching is always issuer-qualified at runtime via `(srcIss, subject)`,
-  evaluated by `resolveGlobalRoleBindings`. `Options.Validate` checks two startup-only advisory
-  conditions (stale bare admin entries; untrusted binding issuers) and reports every offending
-  entry in each, not just the first, and does not replace the runtime control. The bare-admin-entry
-  check is skipped when the trusted non-UNI issuer list is empty (nothing to migrate away from yet);
-  the untrusted-binding-issuer check has no such gate. Bare legacy admin entries match only the UNI
-  sentinel plus, via the startup mirror in `pkg/server`, the legacy auth0-exchange flag issuer —
-  never a CRD-declared issuer.
-- A wildcard-subject binding is always clamped to the `read` operation at authorization time. The
-  clamp bounds verbs only; it says nothing about a read endpoint's response sensitivity, so any
-  role referenced by a wildcard binding must be individually read-surface-audited before use.
-- The chart additionally fails to render a wildcard binding whose role(s) declare any non-`read`
-  global operation, config-time enforcement that keeps the Role CRD authoritative for what an
-  operator can configure — but roles can gain write scopes after render time, so the runtime clamp
-  above still applies as a backstop and is not made redundant by the render-time guard.
+  evaluated by `resolveGlobalRoleBindings`. `Options.Validate` is startup-only and advisory and
+  does not replace it. Bare legacy admin entries match only the UNI sentinel plus, via the startup
+  mirror in `pkg/server`, the legacy auth0-exchange flag issuer — never a CRD-declared issuer.
+- A wildcard-subject binding is always clamped to `read` at authorization time. The clamp bounds
+  verbs, not response sensitivity, so any role it references needs a read-surface audit first.
+- The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
+  global operation. This does not make the runtime clamp redundant: roles can gain write scopes
+  after the render.
 - Bindings resolve against the authenticating issuer, never a client-supplied one. Impersonated
-  principals are always evaluated against the UNI sentinel, so an external-issuer binding can
-  never apply through a delegated service hop — it fails closed.
+  principals are evaluated against the UNI sentinel, so an external-issuer binding never applies
+  on a delegated service hop — it fails closed.
 - The confused-deputy invariant: a system service acting as an impersonated principal cannot hold
   permissions that either the principal's ACL or the service's ACL denies. The ACL intersection
   enforces this regardless of which IdP authenticated the principal.

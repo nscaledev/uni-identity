@@ -120,22 +120,15 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
 }
 
-// Validate reports two advisory (log-only) migration/hygiene issues without
-// blocking startup: any bare (UNI-sentinel) admin entry while a non-UNI
-// issuer is trusted, and any GlobalRoleBindings issuer that is neither the
-// UNI sentinel nor in trustedNonUNIIssuers. Every offending entry in each
-// category is reported (joined with errors.Join, so errors.Is still matches
-// each sentinel). The runtime issuer-match in resolveGlobalRoleBindings
-// remains the sole security control; see
-// pkg/rbac/README.md#global-role-bindings for the full rationale.
+// Validate reports advisory (log-only) startup findings: bare (UNI-sentinel)
+// admin entries while a non-UNI issuer is trusted, and GlobalRoleBindings
+// issuers outside trustedNonUNIIssuers. Every offender is reported, joined
+// with errors.Join so errors.Is still matches each sentinel.
 //
-// The bare-admin-subject check is gated on a non-empty trustedNonUNIIssuers:
-// a bare entry only matters once a non-UNI issuer is trusted to migrate away
-// from. The binding-issuer check has no such gate — it runs even against a
-// genuinely empty list, where every non-sentinel binding issuer is reported
-// as untrusted. Callers that cannot distinguish "no trusted issuers
-// configured" from "provider list unavailable" must not call Validate in the
-// latter case.
+// Only the bare-admin check is gated on a non-empty trustedNonUNIIssuers, so
+// a caller that cannot tell "none configured" from "provider list
+// unavailable" must not call Validate in the latter case. See
+// pkg/rbac/README.md#global-role-bindings for gating and security semantics.
 func (o *Options) Validate(trustedNonUNIIssuers []string) error {
 	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings))
 

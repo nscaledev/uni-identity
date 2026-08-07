@@ -34,9 +34,8 @@ var (
 	// ErrResourceReference is raised when a resource cannot be looked up.
 	ErrResourceReference = fmt.Errorf("resource reference error")
 
-	// ErrUserInactive wraps ErrResourceReference so existing callers keep
-	// rejecting; the bearer path distinguishes it to refuse inactive users
-	// regardless of allowExternalIdentity.
+	// ErrUserInactive identifies an inactive global user and wraps
+	// ErrResourceReference for compatibility.
 	ErrUserInactive = fmt.Errorf("%w: user is not active", ErrResourceReference)
 )
 

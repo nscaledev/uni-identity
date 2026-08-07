@@ -146,12 +146,9 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
-	// Advisory nudge: Validate's checks (bare admin entries, untrusted
-	// global-role-binding issuers) can never match a real token or
-	// CRD-declared issuer, so an unmigrated/misconfigured entry is hygiene,
-	// not a vulnerability — warn, don't block boot. A hard failure here would
-	// fire at an unrelated pod restart long after the first bearerTrust CRD
-	// was created.
+	// Advisory only: warn, don't block boot. Issuer-qualified matching is the
+	// runtime control, and a hard failure here would fire at an unrelated pod
+	// restart long after the first bearerTrust CRD was created.
 	if trustedNonUNIIssuers, err := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace); err != nil {
 		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", err)
 	} else if err := s.RBACOptions.Validate(trustedNonUNIIssuers); err != nil {
@@ -213,11 +210,9 @@ func expandBareAdminSubjects(subjects []rbac.PlatformAdministratorSubject, legac
 
 // computeTrustedNonUNIIssuers returns the issuers (verbatim) of all
 // BearerTrust-enabled OAuth2Providers in the identity namespace, minus the
-// UNI sentinel. The legacy Auth0 flag issuer is deliberately excluded: bare
-// admin entries are mirrored onto it by expandBareAdminSubjects, so its
-// presence alone leaves nothing to migrate. The result feeds the advisory
-// migration warning only; the runtime issuer-match in validatorForIssuer is
-// the real control.
+// UNI sentinel. The legacy Auth0 flag issuer is deliberately excluded:
+// expandBareAdminSubjects already mirrors bare admin entries onto it, so its
+// presence alone leaves nothing to migrate.
 //
 // A List failure (e.g. informer cache not yet warm) is returned as an error
 // so the caller can skip the advisory check rather than mistake it for a
