@@ -167,7 +167,7 @@ value and `globalRoleBindings` as one `--global-role-binding` flag per subject i
 ### Operator invariants
 
 `Options.Validate` logs two advisory startup warnings and never blocks boot: a bare (UNI-sentinel)
-`--platform-administrator-subjects` entry that should migrate to explicit `issuer::subject` form,
+`--platform-administrator-subjects` entry that should migrate to a `globalRoleBindings` entry,
 and a `--global-role-binding` issuer outside the currently trusted set — usually a stale or
 mistyped issuer that can never match a real token. Neither warning is a security control; the
 issuer-qualified runtime match in `processUserAccountACL` is. Their gating, the deliberately

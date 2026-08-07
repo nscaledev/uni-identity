@@ -47,7 +47,7 @@ var (
 	ErrWrongOrganizationCount = goerrors.New("expected exactly one organization ID")
 	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
 	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
-	ErrBareAdminSubject       = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to issuer::subject")
+	ErrBareAdminSubject       = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to globalRoleBindings")
 	ErrUntrustedBindingIssuer = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
 )
 
