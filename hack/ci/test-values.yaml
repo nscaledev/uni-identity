@@ -2,3 +2,16 @@
 # Passed to hack/ci/install via --values.
 systemAccounts:
   ci-fixtures: platform-administrator
+
+# Bound via the legacy platformAdministrators.subjects path; map-merges with
+# the chart default so the default platformAdministrators.roles survives.
+platformAdministrators:
+  subjects:
+  - ci-legacy-admin@nscale.test
+
+# Bound via the new globalRoleBindings path, for equivalence testing against
+# the legacy platformAdministrators.subjects binding above.
+globalRoleBindings:
+- issuer: uni
+  subject: ci-binding-admin@nscale.test
+  roles: [platform-administrator]
