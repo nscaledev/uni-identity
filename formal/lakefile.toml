@@ -1,0 +1,8 @@
+name = "unirbac"
+defaultTargets = ["UniRbac"]
+
+# Deliberately dependency-free: no Mathlib. The model uses only Lean core so a
+# clean `lake build` needs nothing beyond the pinned toolchain. See README.md.
+
+[[lean_lib]]
+name = "UniRbac"
