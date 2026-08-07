@@ -860,6 +860,10 @@ const (
 
 	// externalTestAudience is the audience used by externalUserinfo tests.
 	externalTestAudience = "https://external-idp.example.com"
+
+	// emailInactiveUser is the email of a UNI user record that exists but is
+	// not active.
+	emailInactiveUser = "inactive@example.com"
 )
 
 type externalUserinfoTestIssuer struct {
@@ -946,12 +950,19 @@ func (i *externalUserinfoTestIssuer) token(t *testing.T, audience, email string,
 // helpers below.
 type externalUserinfoTestConfig struct {
 	allowExternalIdentity bool
+	seedObjects           []client.Object
 }
 
 type externalUserinfoOpt func(*externalUserinfoTestConfig)
 
 func withAllowExternalIdentity(v bool) externalUserinfoOpt {
 	return func(c *externalUserinfoTestConfig) { c.allowExternalIdentity = v }
+}
+
+// withSeedObjects pre-populates the fake client backing the test environment,
+// e.g. with a User record to exercise lookups that must find something.
+func withSeedObjects(objs ...client.Object) externalUserinfoOpt {
+	return func(c *externalUserinfoTestConfig) { c.seedObjects = objs }
 }
 
 // buildExternalUserinfoEnv constructs a minimal Authenticator backed by a fake
@@ -970,7 +981,7 @@ func buildExternalUserinfoEnv(t *testing.T, opts ...externalUserinfoOpt) (*Authe
 	require.NoError(t, scheme.AddToScheme(s))
 	require.NoError(t, unikornv1.AddToScheme(s))
 
-	cli := fake.NewClientBuilder().WithScheme(s).Build()
+	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(cfg.seedObjects...).Build()
 
 	udb := userdb.NewUserDatabase(cli, passportTestNamespace)
 
@@ -1046,6 +1057,27 @@ func TestExternalUserinfoRejectsUnknownWhenNotAllowed(t *testing.T) {
 	if _, _, err := tryExternalUserinfo(t, withAllowExternalIdentity(false)); err == nil {
 		t.Fatal("expected reject for unknown user when AllowExternalIdentity is false")
 	}
+}
+
+// Inactive is a deliberate local revocation: allowExternalIdentity must not
+// resurrect the subject with an empty-membership passport.
+func TestExternalUserinfoRejectsInactiveUserDespiteAllowExternalIdentity(t *testing.T) {
+	t.Parallel()
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "inactive-user"},
+		Spec:       unikornv1.UserSpec{Subject: emailInactiveUser, State: unikornv1.UserStateSuspended},
+	}
+
+	a, iss, trust, v := buildExternalUserinfoEnv(t, withAllowExternalIdentity(true), withSeedObjects(user))
+
+	tok := iss.token(t, externalTestAudience, emailInactiveUser, time.Now().Add(30*time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
+
+	_, _, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "user identity not found or inactive")
 }
 
 func TestExternalUserinfoStampsIssuer(t *testing.T) {

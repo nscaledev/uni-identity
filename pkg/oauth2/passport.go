@@ -434,7 +434,11 @@ func peekIssuer(token string) (string, error) {
 // and trust.AllowExternalIdentity is true, the subject is accepted with an
 // empty orgIds slice — RBAC decides what it can reach. If AllowExternalIdentity
 // is false, the request is rejected with the same error message as the prior
-// unconditional rejection, preserving the existing wire contract.
+// unconditional rejection, preserving the existing wire contract. A user record
+// that exists but is not active (ErrUserInactive) is always rejected, regardless
+// of AllowExternalIdentity: a locally-suspended user must not be re-admitted
+// with an empty-membership passport just because the identity is externally
+// asserted.
 //
 // sourceClaims.Issuer is stamped with rawIss (the verbatim issuer the IdP
 // emitted, as resolved by validatorForIssuer) so that srcIssForSource can compute
@@ -450,13 +454,16 @@ func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, t
 	// membership. Claimed orgIds from the external token are discarded.
 	orgIDs, err := a.userdb.GetOrganizationIDs(ctx, user.Email)
 	if err != nil {
-		if goerrors.Is(err, userdb.ErrResourceReference) {
-			if !trust.AllowExternalIdentity {
-				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
-			}
-
+		switch {
+		case goerrors.Is(err, userdb.ErrUserInactive):
+			// Inactive is a deliberate local revocation: reject regardless of
+			// AllowExternalIdentity, never resurrect with an empty membership.
+			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+		case goerrors.Is(err, userdb.ErrResourceReference) && !trust.AllowExternalIdentity:
+			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+		case goerrors.Is(err, userdb.ErrResourceReference):
 			orgIDs = nil // accepted with no memberships; authority decided by RBAC
-		} else {
+		default:
 			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
 		}
 	}

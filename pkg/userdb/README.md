@@ -61,7 +61,9 @@ organization-local membership is active before returning it.
 - organization membership is resolved through labeled `OrganizationUser` records
 - service accounts are part of the same local identity-resolution surface as users
 - unresolved, inactive, or multiply-resolved identities are normalized into
-  `ErrResourceReference`
+  `ErrResourceReference`; only the global-user path (`GetActiveUser`) distinguishes inactive as
+  `ErrUserInactive`, which wraps `ErrResourceReference` — the organization-user path
+  (`GetActiveOrganizationUser`) still collapses its inactive case into `ErrResourceReference`
 
 ## Caveats
 
@@ -69,9 +71,15 @@ organization-local membership is active before returning it.
   though its purpose is to shield other packages from that coupling.
 - Several lookups are implemented as list-and-filter operations, so they depend on label hygiene
   and on the current storage layout remaining coherent.
-- The package intentionally flattens several different unusable-identity cases into one read-side
-  failure surface. Missing, inactive, and multiply-resolved identities are all treated as "not a
-  usable local reference" for callers.
+- The package flattens most unusable-identity cases into one read-side failure surface: missing
+  and multiply-resolved identities are all treated as "not a usable local reference" via
+  `ErrResourceReference`. On the global-user path, the exists-but-inactive case
+  (`GetActiveUser`) is distinguishable as `ErrUserInactive`, which wraps `ErrResourceReference` so
+  existing `errors.Is(err, ErrResourceReference)` callers keep working unchanged. The distinction
+  exists because bearer-path admission must not resurrect a locally-suspended user with an
+  empty-membership passport just because an external identity provider still vouches for them.
+  The organization-user path (`GetActiveOrganizationUser`) is a different path, out of scope for
+  that distinction: it still collapses its inactive case into plain `ErrResourceReference`.
 - The package intentionally does not provide mutation or transactional semantics; it is a read-side
   adapter boundary only.
 

@@ -173,8 +173,15 @@ token are discarded.
 **The `src_iss` claim.** The resulting `dispatchResult` carries both a `Source` (coarse provider
 audit label, e.g. the `OAuth2Provider` name) and a `SrcIss` (the issuer URL verbatim, or the
 `PassportSourceUNI` sentinel for UNI-local tokens). `SrcIss` is stamped on the minted passport as
-`src_iss` and is the security-load-bearing value used by RBAC's platform-administrator fast-path.
+`src_iss` and is the security-load-bearing value used by RBAC's global role binding resolution
+(`(srcIss, subject)` matching against `--global-role-binding` / legacy
+`--platform-administrator-subjects` entries — see [`pkg/rbac/README.md`](../rbac/README.md#global-role-bindings)).
 The sentinel `"uni"` is deliberately not a valid URL so it cannot collide with a real issuer.
+`externalUserinfo` rejects an existing-but-inactive local user regardless of
+`allowExternalIdentity`, but that check only covers a globally-inactive `User` record — a user
+suspended (or removed) from every organization instead resolves to an empty `orgIds` list with no
+error, so that path can still ride an external token into an empty-`orgIds` passport. This change
+does not close it.
 
 ### Per-provider claim contract
 
