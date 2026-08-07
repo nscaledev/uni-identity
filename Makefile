@@ -153,6 +153,14 @@ test-unit:
 	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api -e /test/contracts)
 	go tool cover -html cover.out -o cover.html
 
+# Regenerate the RBAC conformance vectors from the Lean formal model in ./formal.
+# Requires a Lean toolchain (elan/lake).  The unit tests deliberately do NOT --
+# they read the checked-in JSON -- and CI verifies the committed file still
+# matches this output.  See formal/README.md.
+.PHONY: regenerate-vectors
+regenerate-vectors:
+	cd formal && lake exe gen-vectors > ../pkg/rbac/testdata/model_vectors.json
+
 # Build a binary and install it.
 $(PREFIX)/%: $(BINDIR)/%
 	install -m 750 $< $@
