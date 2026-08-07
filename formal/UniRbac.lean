@@ -10,5 +10,7 @@
   UNI RBAC (`pkg/rbac`). It is a proof artifact only — it lives outside the Go
   module on purpose, so the Go build and CI never see it.
 
-  Right now this is just the scaffold: the model itself lands in later commits.
+  See README.md for the map from theorems to the Go code they mirror.
 -/
+
+import UniRbac.Basic
