@@ -20,3 +20,4 @@ import UniRbac.ProjectCaveat
 import UniRbac.Intersect
 import UniRbac.Accumulate
 import UniRbac.Exec
+import UniRbac.Vectors

@@ -25,13 +25,15 @@ namespace UniRbac
     * `DecidableEq Op` — an algorithm that decides whether two `Op`s are equal.
       This is what later lets the `decide` tactic settle `Op` (in)equalities.
     * `Repr Op` — a way to print an `Op`, handy if you ever `#eval` one.
+  `BEq Op` (Boolean equality, `==`) is also derived so the vector generator can
+  test membership of an `Op` in a list.
 -/
 inductive Op where
   | create
   | read
   | update
   | delete
-deriving DecidableEq, Repr
+deriving DecidableEq, Repr, BEq
 
 /-
   A *permission set* answers one yes/no question: "is operation `o` on endpoint

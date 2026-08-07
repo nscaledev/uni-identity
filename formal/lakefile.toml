@@ -6,3 +6,9 @@ defaultTargets = ["UniRbac"]
 
 [[lean_lib]]
 name = "UniRbac"
+
+# The conformance-vector generator. `lake exe gen-vectors` prints the JSON that
+# pkg/rbac tests consume. See Main.lean and `make regenerate-vectors`.
+[[lean_exe]]
+name = "gen-vectors"
+root = "Main"
