@@ -133,13 +133,33 @@ issuer:
 # platformAdministratorRole is a role that can be implicitly added to users
 # and service accounts.
 platformAdministrators:
-  # Protected role as defined below to grant.
+  # Protected role as defined below to grant. Also feeds the server's internal
+  # super-context: keep populated even if all subjects move to
+  # globalRoleBindings.
   roles:
   - platform-administrator
 
   # Subjects the role applies to, must be the canonical name from the IdP
   # and not an alias.
   subjects: []
+
+# Global role bindings grant the global scopes of the named roles to matched
+# subjects, replacing membership resolution for that session. Exactly one of
+# `subject` (single) or `subjects` (list, non-empty) per entry. subject "*"
+# matches every subject from the issuer and is clamped to read-only in code.
+# `issuer` must be the verbatim `iss` the IdP emits (Auth0: trailing slash),
+# or `uni` for locally issued tokens (exact subjects only).
+# Rollout ordering: the flag is emitted only when this list is non-empty, and
+# older server binaries do not recognise it — deploy a binary that understands
+# --global-role-binding before enabling bindings; on rollback, clear this
+# value before reverting the binary.
+globalRoleBindings: []
+#  - issuer: https://staff.example.auth0.com/
+#    subject: "*"
+#    roles: [platform-reader] # example only: role must already exist in roles/additionalRoles
+#  - issuer: uni
+#    subjects: [alice@example.com, bob@example.com]
+#    roles: [platform-administrator]
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:
