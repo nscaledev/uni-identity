@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -42,7 +43,20 @@ const (
 func setupImpersonationEnvironment(t *testing.T, serviceGlobalScopes []unikornv1.RoleScope) fixture {
 	t.Helper()
 
+	return setupImpersonationEnvironmentWithBindings(t, serviceGlobalScopes, rbac.Options{})
+}
+
+// setupImpersonationEnvironmentWithBindings is setupImpersonationEnvironment
+// with control over the full rbac.Options (so tests can set GlobalRoleBindings)
+// and extra Role fixtures beyond the fixed impersonation-service role.
+func setupImpersonationEnvironmentWithBindings(t *testing.T, serviceGlobalScopes []unikornv1.RoleScope, opts rbac.Options, extraRoles ...*unikornv1.Role) fixture {
+	t.Helper()
+
 	f, c := setupTestEnvironment(t)
+
+	for _, r := range extraRoles {
+		require.NoError(t, c.Create(t.Context(), r))
+	}
 
 	serviceRole := &unikornv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -57,9 +71,8 @@ func setupImpersonationEnvironment(t *testing.T, serviceGlobalScopes []unikornv1
 	}
 	require.NoError(t, c.Create(t.Context(), serviceRole))
 
-	f.rbac = rbac.New(c, testNamespace, &rbac.Options{
-		SystemAccountRoleIDs: map[string]string{impersonationServiceCN: roleImpersonationService},
-	})
+	opts.SystemAccountRoleIDs = map[string]string{impersonationServiceCN: roleImpersonationService}
+	f.rbac = rbac.New(c, testNamespace, &opts)
 
 	return f
 }
@@ -215,6 +228,68 @@ func TestImpersonation_ServiceHasNoPermissions_EmptyACLReturned(t *testing.T) {
 	acl := impersonate(t, f, userCharlieSubject)
 
 	assert.Nil(t, acl.Global)
+	assert.Nil(t, acl.Organization)
+	assert.Nil(t, acl.Organizations)
+	assert.Nil(t, acl.Projects)
+}
+
+// TestImpersonation_UniExactBindingIntersectsWithServiceACL pins the full
+// impersonation path for the ID-398 spec requirement that a uni-exact global
+// role binding stays intersected with the calling service's ACL. The
+// impersonated actor's subject matches a binding on the UNI sentinel
+// (processImpersonatedPrincipalACL always resolves impersonated user
+// principals at that issuer), so processUserAccountACL grants the binding's
+// global scopes and skips membership resolution entirely (replace
+// semantics) — but the confused-deputy intersection in getSystemAccountACL
+// still strips whatever the impersonating service itself is not permitted
+// to touch.
+func TestImpersonation_UniExactBindingIntersectsWithServiceACL(t *testing.T) {
+	t.Parallel()
+
+	const boundRoleID = "role-uni-binding"
+
+	boundRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      boundRoleID,
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+					{Name: "identity:other", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+
+	f := setupImpersonationEnvironmentWithBindings(t,
+		// Service ACL allows read on identity:organizations — a strict
+		// subset of the binding's grant, giving the intersection something
+		// to strip on both endpoints (partial-verb strip, full-endpoint drop).
+		// It also allows org:read: if replace semantics did NOT hold and Bob's
+		// own org membership were resolved, his org-scoped org:read grant
+		// would survive the intersection and land in acl.Organization,
+		// falsifying the assert.Nil below.
+		[]unikornv1.RoleScope{
+			{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Read}},
+			{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+		},
+		rbac.Options{
+			GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+				{Issuer: constants.UNISentinel, Subject: userBobSubject, RoleIDs: []string{boundRoleID}},
+			},
+		},
+		boundRole,
+	)
+
+	acl := impersonate(t, f, userBobSubject)
+
+	require.NotNil(t, acl.Global)
+	assert.Equal(t, openapi.AclEndpoints{{Name: "identity:organizations", Operations: []openapi.AclOperation{openapi.Read}}}, *acl.Global)
+
+	// Replace semantics under impersonation: membership resolution was
+	// skipped for the bound actor, so nothing outside Global should appear.
 	assert.Nil(t, acl.Organization)
 	assert.Nil(t, acl.Organizations)
 	assert.Nil(t, acl.Projects)

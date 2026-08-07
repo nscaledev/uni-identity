@@ -72,7 +72,19 @@ func TestPlatformAdminSubjectsValueParse(t *testing.T) {
 
 // getACLForSubject builds a minimal RBAC environment with the given opts and
 // calls GetACL for the given subject+srcIss pair. It returns the resulting ACL.
-func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) *openapi.Acl {
+// extraRoles are created alongside the fixed "admin" role fixture, letting
+// tests that need additional role fixtures (e.g. wildcard-clamp/union
+// scenarios) inject them without a bespoke fake-client setup.
+func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, extraRoles ...*unikornv1.Role) *openapi.Acl {
+	t.Helper()
+
+	return getACLForSubjectWithOrgIDs(t, opts, subject, srcIss, nil, extraRoles...)
+}
+
+// getACLForSubjectWithOrgIDs is getACLForSubject with control over the
+// authz.OrgIds claim, used to prove that a bound subject skips membership
+// resolution entirely even when org memberships are present.
+func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
 	t.Helper()
 
 	scheme, err := unikornv1.SchemeBuilder.Build()
@@ -94,7 +106,13 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) 
 		},
 	}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adminRole).Build()
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adminRole)
+
+	for _, r := range extraRoles {
+		builder = builder.WithObjects(r)
+	}
+
+	c := builder.Build()
 	rbacClient := rbac.New(c, testNamespace, opts)
 
 	info := &authorization.Info{
@@ -102,6 +120,7 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) 
 			Sub: subject,
 			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
 				Acctype: openapi.User,
+				OrgIds:  orgIDs,
 			},
 		},
 		SrcIss: srcIss,

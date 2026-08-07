@@ -146,13 +146,14 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
-	// Migration nudge: bare admin entries can never match a CRD-declared
-	// issuer (the runtime issuer-match in validatorForIssuer is the real
-	// control), so an unmigrated admin list is hygiene, not a vulnerability —
-	// warn, don't block boot. A hard failure here would fire at an unrelated
-	// pod restart long after the first bearerTrust CRD was created.
+	// Advisory nudge: Validate's checks (bare admin entries, untrusted
+	// global-role-binding issuers) can never match a real token or
+	// CRD-declared issuer, so an unmigrated/misconfigured entry is hygiene,
+	// not a vulnerability — warn, don't block boot. A hard failure here would
+	// fire at an unrelated pod restart long after the first bearerTrust CRD
+	// was created.
 	if err := s.RBACOptions.Validate(computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)); err != nil {
-		log.FromContext(context.TODO()).Info("platform-administrator-subjects migration pending", "error", err)
+		log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
 	}
 
 	// Setup middleware.

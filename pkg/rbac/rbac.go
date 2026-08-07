@@ -48,6 +48,7 @@ var (
 	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
 	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
 	ErrBareAdminSubject       = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to issuer::subject")
+	ErrUntrustedBindingIssuer = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
 )
 
 // PlatformAdministratorSubject binds an admin subject to the issuer that must
@@ -109,31 +110,59 @@ type Options struct {
 	PlatformAdministratorRoleIDs  []string
 	PlatformAdministratorSubjects []PlatformAdministratorSubject
 	SystemAccountRoleIDs          map[string]string
+	GlobalRoleBindings            GlobalRoleBindingsValue
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringSliceVar(&o.PlatformAdministratorRoleIDs, "platform-administrator-role-ids", nil, "Platform administrator role ID.")
 	f.Var((*PlatformAdministratorSubjectsValue)(&o.PlatformAdministratorSubjects), "platform-administrator-subjects", "Platform administrators as issuer::subject (bare value = UNI issuer).")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
+	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
 }
 
-// Validate reports whether the admin list still needs migrating: any bare
-// (UNI-sentinel) entry while a non-UNI issuer is trusted. Advisory only — the
-// caller logs the result rather than refusing to start; bare entries can
-// never match a CRD-declared issuer, so the runtime issuer-match in
-// processUserAccountACL remains the security control.
+// Validate reports two advisory (log-only) migration/hygiene issues, both if
+// present (joined with errors.Join, so errors.Is still matches each
+// individually): any bare (UNI-sentinel) admin entry while a non-UNI issuer
+// is trusted, and any GlobalRoleBindings issuer that is neither the UNI
+// sentinel nor in trustedNonUNIIssuers. Within each category only the first
+// offending entry is reported. Neither check blocks startup — bare entries
+// can never match a CRD-declared issuer and a stray binding issuer can never
+// match a real token, so the runtime issuer-match in processUserAccountACL /
+// resolveGlobalRoleBindings remains the sole security control; this only
+// surfaces the dominant failure mode (silent non-match on a mistyped or
+// stale issuer) to operators.
+//
+// Both checks are gated on a non-empty trustedNonUNIIssuers: the caller
+// (computeTrustedNonUNIIssuers) returns an empty slice both when there are
+// genuinely no trusted non-UNI issuers configured and when the provider
+// List call failed (treated as non-fatal), and Validate cannot tell those
+// two cases apart. Reporting on the failure case would be a false advisory
+// on every startup where the provider list happened to be unavailable, so
+// an empty list skips both checks entirely rather than risk that.
 func (o *Options) Validate(trustedNonUNIIssuers []string) error {
-	if len(trustedNonUNIIssuers) == 0 {
-		return nil
-	}
+	var bareAdminErr, untrustedIssuerErr error
 
-	for _, s := range o.PlatformAdministratorSubjects {
-		if s.Issuer == idconstants.UNISentinel {
-			return fmt.Errorf("%w: %q", ErrBareAdminSubject, s.Subject)
+	if len(trustedNonUNIIssuers) != 0 {
+		for _, s := range o.PlatformAdministratorSubjects {
+			if s.Issuer == idconstants.UNISentinel {
+				bareAdminErr = fmt.Errorf("%w: %q", ErrBareAdminSubject, s.Subject)
+
+				break
+			}
+		}
+
+		for _, b := range o.GlobalRoleBindings {
+			if b.Issuer == idconstants.UNISentinel || slices.Contains(trustedNonUNIIssuers, b.Issuer) {
+				continue
+			}
+
+			untrustedIssuerErr = fmt.Errorf("%w: %q", ErrUntrustedBindingIssuer, b.Issuer)
+
+			break
 		}
 	}
 
-	return nil
+	return goerrors.Join(bareAdminErr, untrustedIssuerErr)
 }
 
 // RBAC contains all the scoping rules for services across the platform.
@@ -141,14 +170,22 @@ type RBAC struct {
 	client    client.Client
 	namespace string
 	options   *Options
+	bindings  []GlobalRoleBinding
 }
 
 // New creates a new RBAC client.
 func New(client client.Client, namespace string, options *Options) *RBAC {
+	bindings := effectiveGlobalRoleBindings(options)
+
+	for _, b := range bindings {
+		slog.Info("global role binding active", "issuer", b.Issuer, "subject", b.Subject, "roleIDs", b.RoleIDs)
+	}
+
 	return &RBAC{
 		client:    client,
 		namespace: namespace,
 		options:   options,
+		bindings:  bindings,
 	}
 }
 
@@ -719,13 +756,19 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 
 	acl := &openapi.Acl{}
 
-	if slices.ContainsFunc(r.options.PlatformAdministratorSubjects, func(p PlatformAdministratorSubject) bool {
-		return p.Issuer == srcIss && strings.EqualFold(strings.TrimSpace(p.Subject), strings.TrimSpace(subject))
-	}) {
-		if err := accumulateGlobalPermissions(acl, r.options.PlatformAdministratorRoleIDs, roles); err != nil {
-			return nil, err
+	if bindings := r.resolveGlobalRoleBindings(srcIss, subject); len(bindings) > 0 {
+		for _, b := range bindings {
+			accumulate := accumulateGlobalPermissions
+			if b.Wildcard {
+				accumulate = accumulateGlobalReadPermissions
+			}
+
+			if err := accumulate(acl, b.RoleIDs, roles); err != nil {
+				return nil, err
+			}
 		}
 
+		// Replace semantics: bound principals skip membership resolution.
 		return acl, nil
 	}
 
