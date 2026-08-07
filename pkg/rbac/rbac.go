@@ -1040,26 +1040,3 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 
 	return r.processUserAccountACL(ctx, subject, srcIss, organizationID, authz)
 }
-
-func (r *RBAC) NewSuperContext(ctx context.Context) (context.Context, error) {
-	roles, err := r.getRoles(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var globalACL openapi.AclEndpoints
-
-	for _, id := range r.options.PlatformAdministratorRoleIDs {
-		if role, ok := roles[id]; ok {
-			addScopesToEndpointList(&globalACL, role.Spec.Scopes.Global)
-		}
-	}
-
-	acl := &openapi.Acl{}
-
-	if len(globalACL) != 0 {
-		acl.Global = &globalACL
-	}
-
-	return NewContext(ctx, acl), nil
-}

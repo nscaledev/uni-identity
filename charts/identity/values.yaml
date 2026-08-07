@@ -133,9 +133,9 @@ issuer:
 # platformAdministratorRole is a role that can be implicitly added to users
 # and service accounts.
 platformAdministrators:
-  # Protected role as defined below to grant. Also feeds the server's internal
-  # super-context: keep populated even if all subjects move to
-  # globalRoleBindings.
+  # Protected role as defined below to grant. Translated verbatim into global
+  # role bindings for each subject below, so it is only needed while subjects
+  # remain here rather than in globalRoleBindings.
   roles:
   - platform-administrator
 

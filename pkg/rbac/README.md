@@ -238,11 +238,10 @@ sessions (via the retained sentinel entry) and Auth0-exchange sessions (via the 
 a CRD-declared `bearerTrust` issuer. The mirror grants nothing the old issuer-blind match did not
 already grant.
 
-`--platform-administrator-role-ids` also independently feeds `NewSuperContext`, which derives the
-server's internal super-ACL directly from that role list. That path is untouched by bindings and is
-not a principal-facing decision, so it must not be shaped by the wildcard clamp or by
-`GlobalRoleBindings`; the flag remains required even for deployments that express every admin
-*subject* through `--global-role-binding`.
+`--platform-administrator-role-ids` supplies the role list for those translated bindings and has no
+other consumer, so it is needed only while admin subjects are still expressed through
+`--platform-administrator-subjects`. A deployment that expresses every admin through
+`--global-role-binding` does not need it.
 
 **Operator guidance.** An issuer-wide (wildcard) binding is only appropriate for an issuer whose
 entire user population is itself an authorization decision — for example a staff-only IdP, where
