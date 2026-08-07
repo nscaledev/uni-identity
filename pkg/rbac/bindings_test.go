@@ -19,6 +19,7 @@ package rbac_test
 import (
 	goerrors "errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/unikorn-cloud/core/pkg/errors"
@@ -71,6 +72,7 @@ func TestGlobalRoleBindingsValueParse(t *testing.T) {
 		"https://a .com/::x::r",               // whitespace in issuer
 		"uni::a@x.com:: r1 ",                  // whitespace-padded role ID
 		"uni::a@x.com::   ",                   // whitespace-only role ID
+		"https://a.com/::alice::bob::r1",      // "::" in issuer path swallows a subject segment
 	}
 
 	for _, in := range reject {
@@ -196,10 +198,11 @@ func TestResolveGlobalRoleBindings(t *testing.T) {
 	}
 }
 
-// TestOptionsValidateGlobalRoleBindingIssuer covers the three outcomes of the
+// TestOptionsValidateGlobalRoleBindingIssuer covers the outcomes of the
 // GlobalRoleBindings loop in Options.Validate: an untrusted issuer is
-// reported, a trusted issuer is not, and the UNI sentinel is skipped
-// regardless of the trusted-issuer list.
+// reported (even against an empty trusted-issuer list, since this check is
+// ungated), a trusted issuer is not, and the UNI sentinel is always skipped.
+// See TestOptionsValidateReportsEveryOffender for the multiple-offenders case.
 func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 	t.Parallel()
 
@@ -264,17 +267,41 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		t.Fatalf("got %v, want ErrUntrustedBindingIssuer also reported", err)
 	}
 
-	// empty trusted-issuer list (e.g. a transient provider List failure in the
-	// caller) → the binding-issuer check is skipped entirely, even though the
-	// configured issuer would be reported as untrusted against a non-empty list.
+	// empty trusted-issuer list → the binding-issuer check still runs (it has
+	// no gate), so a genuinely-untrusted issuer is reported even though no
+	// non-UNI issuer is trusted at all.
 	emptyTrustedList := &rbac.Options{
 		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
 			{Issuer: "https://untrusted.example.com/", Subject: "alice@x.com", RoleIDs: []string{"r"}},
 		},
 	}
 
-	if err := emptyTrustedList.Validate(nil); err != nil {
-		t.Fatalf("unexpected error with empty trusted-issuer list: %v", err)
+	err = emptyTrustedList.Validate(nil)
+	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, want ErrUntrustedBindingIssuer even with an empty trusted-issuer list", err)
+	}
+}
+
+// TestOptionsValidateReportsEveryOffender pins that Options.Validate reports
+// every offending GlobalRoleBindings entry, not just the first, mirroring the
+// same errors.Join behaviour already covered per-category above.
+func TestOptionsValidateReportsEveryOffender(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: "https://untrusted-a.example.com/", Subject: "alice@x.com", RoleIDs: []string{"r"}},
+			{Issuer: "https://untrusted-b.example.com/", Subject: "bob@x.com", RoleIDs: []string{"r"}},
+		},
+	}
+
+	err := opts.Validate([]string{"https://staff.example.com/"})
+	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, want ErrUntrustedBindingIssuer", err)
+	}
+
+	if !strings.Contains(err.Error(), "untrusted-a.example.com") || !strings.Contains(err.Error(), "untrusted-b.example.com") {
+		t.Fatalf("expected both offending issuers named in error, got: %v", err)
 	}
 }
 

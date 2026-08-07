@@ -47,6 +47,9 @@ spec:
           {{- if not (trim (default "" $b.issuer)) }}
             {{- fail (printf "globalRoleBindings[%d]: issuer is required" $i) }}
           {{- end }}
+          {{- if regexMatch "\\s" $b.issuer }}
+            {{- fail (printf "globalRoleBindings[%d]: issuer must not contain whitespace" $i) }}
+          {{- end }}
           {{- if and (hasKey $b "subject") (hasKey $b "subjects") }}
             {{- fail (printf "globalRoleBindings[%d]: subject and subjects are mutually exclusive" $i) }}
           {{- end }}
@@ -62,6 +65,9 @@ spec:
           {{- range $si, $subject := $subjects }}
             {{- if not (trim (default "" $subject)) }}
               {{- fail (printf "globalRoleBindings[%d].subjects[%d]: empty or whitespace-only subject" $i $si) }}
+            {{- end }}
+            {{- if and (eq $b.issuer "uni") (eq $subject "*") }}
+              {{- fail (printf "globalRoleBindings[%d]: wildcard subject not allowed on the UNI sentinel issuer" $i) }}
             {{- end }}
           {{- end }}
           {{- if not $b.roles }}

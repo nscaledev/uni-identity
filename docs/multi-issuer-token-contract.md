@@ -173,12 +173,13 @@ issuer warns too, even though it can still match a real token. Most often, thoug
 mistyped or stale issuer that can never match a real token. As with (1), the warning is advisory;
 the issuer-qualified runtime match is the actual control.
 
-Both (1) and (2) are skipped entirely when the trusted non-UNI issuer list is empty. The caller
-that computes that list treats a `List` failure on the `OAuth2Provider` resources as non-fatal and
-returns an empty slice in that case too, indistinguishable from "no non-UNI issuers are actually
-trusted". Reporting on an empty list would therefore produce a false advisory — every external
-binding flagged as untrusted — on any startup where the provider list could not be read, so the
-check is skipped rather than risking that.
+Only (1) is skipped when the trusted non-UNI issuer list is empty — a bare admin entry only matters
+once a non-UNI issuer is trusted to migrate away from. (2) has no such gate: it runs even against a
+genuinely empty list, so with no `bearerTrust` providers configured every non-UNI binding issuer is
+reported as untrusted. The caller that computes the trusted-issuer list distinguishes a `List`
+failure on the `OAuth2Provider` resources from a genuinely empty result — on failure it logs that
+the advisory check was skipped and does not call `Validate` at all, rather than risk misreading
+"provider list unavailable" as "no non-UNI issuers trusted".
 
 Note the legacy-flag mirror copies the flag value verbatim: a flag issuer lacking Auth0's canonical
 trailing slash will not match the emitted `iss` — the same match-`iss`-verbatim rule stated above

@@ -152,7 +152,9 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// not a vulnerability — warn, don't block boot. A hard failure here would
 	// fire at an unrelated pod restart long after the first bearerTrust CRD
 	// was created.
-	if err := s.RBACOptions.Validate(computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)); err != nil {
+	if trustedNonUNIIssuers, err := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace); err != nil {
+		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", err)
+	} else if err := s.RBACOptions.Validate(trustedNonUNIIssuers); err != nil {
 		log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
 	}
 
@@ -217,13 +219,14 @@ func expandBareAdminSubjects(subjects []rbac.PlatformAdministratorSubject, legac
 // migration warning only; the runtime issuer-match in validatorForIssuer is
 // the real control.
 //
-// A List failure (e.g. informer cache not yet warm) is treated as non-fatal:
-// the check is skipped and returns an empty slice so startup is not blocked.
-func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace string) []string {
+// A List failure (e.g. informer cache not yet warm) is returned as an error
+// so the caller can skip the advisory check rather than mistake it for a
+// genuinely empty trusted-issuer list.
+func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace string) ([]string, error) {
 	var providers unikornv1.OAuth2ProviderList
 
 	if err := cli.List(ctx, &providers, &client.ListOptions{Namespace: namespace}); err != nil {
-		return nil
+		return nil, err
 	}
 
 	seen := make(map[string]struct{})
@@ -252,5 +255,5 @@ func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespa
 		}
 	}
 
-	return result
+	return result, nil
 }

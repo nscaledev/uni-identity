@@ -24,7 +24,7 @@ die() { echo "FAIL: $*" >&2; exit 1; }
 
 # role_id_of <friendly-name> resolves a Role manifest name from a render on
 # stdin: remember the most recent metadata name, emit it on the matching label.
-role_id_of() { awk -v want="$1" '$1=="name:"{n=$2} $0 ~ "unikorn-cloud.org/name: "want{print n; exit}'; }
+role_id_of() { awk -v want="$1" '$1=="name:"{n=$2} $0 ~ "unikorn-cloud.org/name: "want"$"{print n; exit}'; }
 
 # assert_one_match <output> <pattern> — anchors on a resolved role ID so an
 # empty/absent ID (or a duplicate/missing flag) can't pass vacuously.
@@ -67,5 +67,9 @@ must_fail '[{"issuer":"uni","subject":"a@x.com","roles":["no-such-role"]}]' \
 	'unknown role "no-such-role"'
 must_fail '[{"subject":"a@x.com","roles":["reader"]}]' \
 	"issuer is required"
+must_fail '[{"issuer":"uni","subject":"*","roles":["reader"]}]' \
+	"globalRoleBindings[0]: wildcard subject not allowed on the UNI sentinel issuer"
+must_fail '[{"issuer":"https://a.com/ ","subject":"a@x.com","roles":["reader"]}]' \
+	"globalRoleBindings[0]: issuer must not contain whitespace"
 
 echo "chart render checks OK"

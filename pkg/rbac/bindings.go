@@ -44,6 +44,7 @@ var (
 	errSentinelWildcard   = goerrors.New("wildcard subject not allowed on the UNI sentinel issuer")
 	errIssuerCommaOrSpace = goerrors.New("issuer contains comma or whitespace")
 	errIssuerNotURL       = goerrors.New("issuer is neither the UNI sentinel nor an absolute URL")
+	errIssuerPathSep      = goerrors.New("issuer URL path contains \"::\"")
 )
 
 // GlobalRoleBinding grants the global scopes of RoleIDs to Subject when
@@ -118,8 +119,16 @@ func validateBindingIssuer(issuer, subject string) error {
 		return errIssuerCommaOrSpace
 	}
 
-	if u, err := url.Parse(issuer); err != nil || u.Scheme == "" || u.Host == "" {
+	u, err := url.Parse(issuer)
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return errIssuerNotURL
+	}
+
+	// A "::" in the path (not the IPv6-host brackets url.Parse already
+	// consumed) would let a subject containing "::" parse right-anchored
+	// into the issuer instead, silently producing a never-matching binding.
+	if strings.Contains(u.Path, "::") {
+		return errIssuerPathSep
 	}
 
 	return nil

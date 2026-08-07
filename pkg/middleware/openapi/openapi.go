@@ -181,9 +181,12 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // All key shapes also include info.SrcIss (the authenticated issuer). Subjects
 // are only unique within an issuer, so omitting it would let the same subject
 // value from two different issuers collide on one cached ACL (ID-367 finding 6).
-// Every user-influenced segment is length-prefixed, because subjects (e.g.
+// Every segment preceding scope is length-prefixed, because subjects (e.g.
 // Auth0's "auth0|<id>") routinely contain the "|" delimiter and could
 // otherwise be crafted to collide with a different (subject, issuer) pair.
+// scope itself is not length-prefixed, but it is terminal — nothing follows
+// it in the key — so it cannot be crafted to shift the boundaries of the
+// prefixed segments before it, and the key stays injective.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
 	scope := organizationID
 	if scope == "" {

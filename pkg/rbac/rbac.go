@@ -120,49 +120,44 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
 }
 
-// Validate reports two advisory (log-only) migration/hygiene issues, both if
-// present (joined with errors.Join, so errors.Is still matches each
-// individually): any bare (UNI-sentinel) admin entry while a non-UNI issuer
-// is trusted, and any GlobalRoleBindings issuer that is neither the UNI
-// sentinel nor in trustedNonUNIIssuers. Within each category only the first
-// offending entry is reported. Neither check blocks startup — bare entries
-// can never match a CRD-declared issuer and a stray binding issuer can never
-// match a real token, so the runtime issuer-match in processUserAccountACL /
-// resolveGlobalRoleBindings remains the sole security control; this only
-// surfaces the dominant failure mode (silent non-match on a mistyped or
-// stale issuer) to operators.
+// Validate reports two advisory (log-only) migration/hygiene issues: any bare
+// (UNI-sentinel) admin entry while a non-UNI issuer is trusted, and any
+// GlobalRoleBindings issuer that is neither the UNI sentinel nor in
+// trustedNonUNIIssuers. Every offending entry in each category is reported
+// (joined with errors.Join, so errors.Is still matches each sentinel).
+// Neither check blocks startup — bare entries can never match a CRD-declared
+// issuer and a stray binding issuer can never match a real token, so the
+// runtime issuer-match in processUserAccountACL / resolveGlobalRoleBindings
+// remains the sole security control; this only surfaces the dominant failure
+// mode (silent non-match on a mistyped or stale issuer) to operators.
 //
-// Both checks are gated on a non-empty trustedNonUNIIssuers: the caller
-// (computeTrustedNonUNIIssuers) returns an empty slice both when there are
-// genuinely no trusted non-UNI issuers configured and when the provider
-// List call failed (treated as non-fatal), and Validate cannot tell those
-// two cases apart. Reporting on the failure case would be a false advisory
-// on every startup where the provider list happened to be unavailable, so
-// an empty list skips both checks entirely rather than risk that.
+// The bare-admin-subject check is gated on a non-empty trustedNonUNIIssuers:
+// a bare entry only matters once a non-UNI issuer is trusted to migrate away
+// from. The binding-issuer check has no such gate — it runs even against a
+// genuinely empty list, where every non-sentinel binding issuer is reported
+// as untrusted. Callers that cannot distinguish "no trusted issuers
+// configured" from "provider list unavailable" must not call Validate in the
+// latter case.
 func (o *Options) Validate(trustedNonUNIIssuers []string) error {
-	var bareAdminErr, untrustedIssuerErr error
+	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings))
 
 	if len(trustedNonUNIIssuers) != 0 {
 		for _, s := range o.PlatformAdministratorSubjects {
 			if s.Issuer == idconstants.UNISentinel {
-				bareAdminErr = fmt.Errorf("%w: %q", ErrBareAdminSubject, s.Subject)
-
-				break
+				errs = append(errs, fmt.Errorf("%w: %q", ErrBareAdminSubject, s.Subject))
 			}
-		}
-
-		for _, b := range o.GlobalRoleBindings {
-			if b.Issuer == idconstants.UNISentinel || slices.Contains(trustedNonUNIIssuers, b.Issuer) {
-				continue
-			}
-
-			untrustedIssuerErr = fmt.Errorf("%w: %q", ErrUntrustedBindingIssuer, b.Issuer)
-
-			break
 		}
 	}
 
-	return goerrors.Join(bareAdminErr, untrustedIssuerErr)
+	for _, b := range o.GlobalRoleBindings {
+		if b.Issuer == idconstants.UNISentinel || slices.Contains(trustedNonUNIIssuers, b.Issuer) {
+			continue
+		}
+
+		errs = append(errs, fmt.Errorf("%w: %q", ErrUntrustedBindingIssuer, b.Issuer))
+	}
+
+	return goerrors.Join(errs...)
 }
 
 // RBAC contains all the scoping rules for services across the platform.

@@ -249,22 +249,22 @@ entire user population is itself an authorization decision — for example a sta
 "authenticated by this issuer" already means "should see this data" — never for a general-purpose
 IdP with a mixed user base.
 
-**`Options.Validate` checks two startup-only, advisory conditions and reports both when present**
-(joined with the stdlib `errors.Join`, so `errors.Is` still matches each individually); it does not
-block startup: (1) a bare (UNI-sentinel) `--platform-administrator-subjects` entry while a non-UNI
-issuer is trusted (the pre-existing migration check), and (2) a `--global-role-binding` entry whose
-issuer is neither the UNI sentinel nor one of the currently trusted non-UNI issuers
+**`Options.Validate` checks two startup-only, advisory conditions and reports every offending entry
+in each** (joined with the stdlib `errors.Join`, so `errors.Is` still matches each individually); it
+does not block startup: (1) a bare (UNI-sentinel) `--platform-administrator-subjects` entry while a
+non-UNI issuer is trusted (the pre-existing migration check), and (2) a `--global-role-binding`
+entry whose issuer is neither the UNI sentinel nor one of the currently trusted non-UNI issuers
 (`ErrUntrustedBindingIssuer`) — the deprecated `--auth0-exchange-issuer` value is deliberately
 excluded from that trusted set, so a binding aimed at the legacy exchange issuer also warns even
 though it can still match a real token. Both surface the dominant failure mode — most often a stray
 or mistyped issuer that can never match a real token — as an operator-visible warning; the warning
-is not the runtime security control. Within each of the two conditions, only the first offending
-entry is reported, so a second offending entry of the *same* kind stays silent until the first is
-fixed. Both checks are gated on a non-empty trusted-issuer list: the caller
-(`computeTrustedNonUNIIssuers`) cannot distinguish "genuinely no trusted non-UNI issuers" from "the
-provider `List` failed", so an empty list skips both checks rather than risk a false advisory on
-every startup where the list is transiently unavailable. The always-on control is the
-issuer-qualified `(srcIss, subject)` match performed by `resolveGlobalRoleBindings` inside
+is not the runtime security control. Only condition (1) is gated on a non-empty trusted-issuer list:
+a bare admin entry only matters once a non-UNI issuer is trusted to migrate away from. Condition (2)
+has no such gate and runs even against a genuinely empty trusted-issuer list, where every non-UNI
+binding issuer is reported as untrusted — the caller must not call `Validate` at all if it cannot
+tell "no trusted issuers configured" apart from "the provider `List` call failed"
+(`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case). The always-on control
+is the issuer-qualified `(srcIss, subject)` match performed by `resolveGlobalRoleBindings` inside
 `processUserAccountACL`. Operators must not rely on `Options.Validate` as a protection.
 
 ## Invariants
@@ -280,12 +280,12 @@ issuer-qualified `(srcIss, subject)` match performed by `resolveGlobalRoleBindin
   construction affects both authorization and UX.
 - Global role binding matching is always issuer-qualified at runtime via `(srcIss, subject)`,
   evaluated by `resolveGlobalRoleBindings`. `Options.Validate` checks two startup-only advisory
-  conditions (stale bare admin entries; untrusted binding issuers) and reports both when present,
-  but within each condition only the first offending entry, and does not replace the runtime
-  control. Both conditions are skipped outright when the trusted non-UNI issuer list is empty,
-  since the caller cannot distinguish that from a transient failure to list providers. Bare legacy
-  admin entries match only the UNI sentinel plus, via the startup mirror in `pkg/server`, the
-  legacy auth0-exchange flag issuer — never a CRD-declared issuer.
+  conditions (stale bare admin entries; untrusted binding issuers) and reports every offending
+  entry in each, not just the first, and does not replace the runtime control. The bare-admin-entry
+  check is skipped when the trusted non-UNI issuer list is empty (nothing to migrate away from yet);
+  the untrusted-binding-issuer check has no such gate. Bare legacy admin entries match only the UNI
+  sentinel plus, via the startup mirror in `pkg/server`, the legacy auth0-exchange flag issuer —
+  never a CRD-declared issuer.
 - A wildcard-subject binding is always clamped to the `read` operation at authorization time. The
   clamp bounds verbs only; it says nothing about a read endpoint's response sensitivity, so any
   role referenced by a wildcard binding must be individually read-surface-audited before use.
