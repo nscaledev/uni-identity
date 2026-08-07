@@ -14,3 +14,4 @@
 -/
 
 import UniRbac.Basic
+import UniRbac.Enforce
