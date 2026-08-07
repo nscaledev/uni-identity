@@ -81,6 +81,27 @@ spec:
             {{- end }}
             {{- $roles = append $roles (include "resource.id" .) }}
           {{- end }}
+          {{- /*
+          Render-time guard: a wildcard binding's roles must declare no
+          non-read global operation. Complementary to the runtime clamp in
+          accumulateGlobalReadPermissions (pkg/rbac/bindings.go); full
+          rationale in pkg/rbac/README.md#global-role-bindings.
+          */}}
+          {{- if has "*" $subjects }}
+            {{- range $b.roles }}
+              {{- $roleName := . }}
+              {{- $role := index $allRoles $roleName }}
+              {{- $roleScopes := default (dict) $role.scopes }}
+              {{- $globalScopes := default (dict) $roleScopes.global }}
+              {{- range $scopeName, $ops := $globalScopes }}
+                {{- range $ops }}
+                  {{- if ne . "read" }}
+                    {{- fail (printf "globalRoleBindings[%d]: wildcard binding role %q grants non-read global operation %q on scope %q" $i $roleName . $scopeName) }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
           {{- range $subject := $subjects }}
         - {{ printf "--global-role-binding=%s::%s::%s" $b.issuer $subject (join "," $roles) | quote }}
           {{- end }}

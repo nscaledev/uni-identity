@@ -149,6 +149,11 @@ platformAdministrators:
 # matches every subject from the issuer and is clamped to read-only in code.
 # `issuer` must be the verbatim `iss` the IdP emits (Auth0: trailing slash),
 # or `uni` for locally issued tokens (exact subjects only).
+# Render-time guard: a wildcard binding ("*" as subject or a member of
+# subjects) may only reference roles whose global scopes (if any) are
+# read-only; the render fails otherwise. The runtime clamp still applies on
+# top (roles are live CRDs). None of the roles shipped below qualify for
+# wildcard use today. See pkg/rbac/README.md#global-role-bindings.
 # Rollout ordering: the flag is emitted only when this list is non-empty, and
 # older server binaries do not recognise it — deploy a binary that understands
 # --global-role-binding before enabling bindings; on rollback, clear this

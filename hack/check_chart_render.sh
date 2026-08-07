@@ -71,5 +71,9 @@ must_fail '[{"issuer":"uni","subject":"*","roles":["reader"]}]' \
 	"globalRoleBindings[0]: wildcard subject not allowed on the UNI sentinel issuer"
 must_fail '[{"issuer":"https://a.com/ ","subject":"a@x.com","roles":["reader"]}]' \
 	"globalRoleBindings[0]: issuer must not contain whitespace"
+must_fail '[{"issuer":"https://staff.example.com/","subject":"*","roles":["platform-administrator"]}]' \
+	'globalRoleBindings[0]: wildcard binding role "platform-administrator" grants non-read global operation'
+must_fail '[{"issuer":"https://staff.example.com/","subjects":["alice@x.com","*"],"roles":["platform-administrator"]}]' \
+	'globalRoleBindings[0]: wildcard binding role "platform-administrator" grants non-read global operation'
 
 echo "chart render checks OK"
