@@ -50,6 +50,16 @@ spec:
           {{- if regexMatch "\\s" $b.issuer }}
             {{- fail (printf "globalRoleBindings[%d]: issuer must not contain whitespace" $i) }}
           {{- end }}
+          {{- /*
+          The server parses issuer::subject::roles right-anchored on the last
+          two separators, so a "::" anywhere in the issuer or subject silently
+          shifts the boundary. Only the chart still knows the intended split —
+          once the flag string is built the mis-parse is undetectable — so both
+          sides are rejected here rather than in pkg/rbac.
+          */}}
+          {{- if contains "::" $b.issuer }}
+            {{- fail (printf "globalRoleBindings[%d]: issuer must not contain \"::\"" $i) }}
+          {{- end }}
           {{- if and (hasKey $b "subject") (hasKey $b "subjects") }}
             {{- fail (printf "globalRoleBindings[%d]: subject and subjects are mutually exclusive" $i) }}
           {{- end }}
@@ -62,13 +72,25 @@ spec:
           {{- if not $subjects }}
             {{- fail (printf "globalRoleBindings[%d]: exactly one of subject or non-empty subjects required" $i) }}
           {{- end }}
+          {{- /*
+          Trim once, up front: the server trims the subject before matching, so
+          every guard below and the emitted flag must agree on the same value.
+          Guarding the raw string lets a padded " * " slip past the wildcard
+          checks and deploy as a real wildcard binding.
+          */}}
+          {{- $trimmedSubjects := list }}
           {{- range $si, $subject := $subjects }}
-            {{- if not (trim (default "" $subject)) }}
+            {{- $trimmed := trim (default "" $subject) }}
+            {{- if not $trimmed }}
               {{- fail (printf "globalRoleBindings[%d].subjects[%d]: empty or whitespace-only subject" $i $si) }}
             {{- end }}
-            {{- if and (eq $b.issuer "uni") (eq $subject "*") }}
+            {{- if contains "::" $trimmed }}
+              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: subject must not contain \"::\"" $i $si) }}
+            {{- end }}
+            {{- if and (eq $b.issuer "uni") (eq $trimmed "*") }}
               {{- fail (printf "globalRoleBindings[%d]: wildcard subject not allowed on the UNI sentinel issuer" $i) }}
             {{- end }}
+            {{- $trimmedSubjects = append $trimmedSubjects $trimmed }}
           {{- end }}
           {{- if not $b.roles }}
             {{- fail (printf "globalRoleBindings[%d]: roles must be non-empty" $i) }}
@@ -87,7 +109,7 @@ spec:
           accumulateGlobalReadPermissions (pkg/rbac/bindings.go); full
           rationale in pkg/rbac/README.md#global-role-bindings.
           */}}
-          {{- if has "*" $subjects }}
+          {{- if has "*" $trimmedSubjects }}
             {{- range $b.roles }}
               {{- $roleName := . }}
               {{- $role := index $allRoles $roleName }}
@@ -102,7 +124,7 @@ spec:
               {{- end }}
             {{- end }}
           {{- end }}
-          {{- range $subject := $subjects }}
+          {{- range $subject := $trimmedSubjects }}
         - {{ printf "--global-role-binding=%s::%s::%s" $b.issuer $subject (join "," $roles) | quote }}
           {{- end }}
         {{- end }}

@@ -148,7 +148,10 @@ platformAdministrators:
 # `subject` (single) or `subjects` (list, non-empty) per entry. subject "*"
 # matches every subject from the issuer and is clamped to read-only in code.
 # `issuer` must be the verbatim `iss` the IdP emits (Auth0: trailing slash),
-# or `uni` for locally issued tokens (exact subjects only).
+# or `uni` for locally issued tokens (exact subjects only). Neither issuer nor
+# subject may contain "::" (the flag's separator) and subjects are trimmed;
+# both are enforced at render time. Subjects match case-insensitively, but the
+# UNI user lookup does not — see docs/multi-issuer-token-contract.md.
 # Render-time guard: a wildcard binding ("*" as subject or a member of
 # subjects) may only reference roles whose global scopes (if any) are
 # read-only; the render fails otherwise. The runtime clamp still applies on

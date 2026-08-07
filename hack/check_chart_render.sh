@@ -76,4 +76,23 @@ must_fail '[{"issuer":"https://staff.example.com/","subject":"*","roles":["platf
 must_fail '[{"issuer":"https://staff.example.com/","subjects":["alice@x.com","*"],"roles":["platform-administrator"]}]' \
 	'globalRoleBindings[0]: wildcard binding role "platform-administrator" grants non-read global operation'
 
+# A padded subject must reach every guard trimmed: the server trims before
+# matching, so guarding the raw string would deploy " * " as a real wildcard.
+must_fail '[{"issuer":"https://staff.example.com/","subject":" * ","roles":["platform-administrator"]}]' \
+	'globalRoleBindings[0]: wildcard binding role "platform-administrator" grants non-read global operation'
+must_fail '[{"issuer":"uni","subject":" * ","roles":["reader"]}]' \
+	"globalRoleBindings[0]: wildcard subject not allowed on the UNI sentinel issuer"
+
+# "::" on either side shifts the right-anchored parse boundary; unrejected here
+# it is undetectable server-side, so it must fail the render, not the pod.
+must_fail '[{"issuer":"uni","subject":"a::b","roles":["reader"]}]' \
+	'globalRoleBindings[0].subjects[0]: subject must not contain "::"'
+must_fail '[{"issuer":"https://x.com/?q=a::b","subject":"alice@x.com","roles":["reader"]}]' \
+	'globalRoleBindings[0]: issuer must not contain "::"'
+
+# The trimmed subject is what gets emitted, not the padded original.
+out=$(render '[{"issuer":"https://staff.example.com/","subject":" alice@x.com ","roles":["reader"]}]')
+reader_role_id=$(role_id_of reader <<<"$out")
+assert_one_match "$out" "--global-role-binding=https://staff.example.com/::alice@x.com::${reader_role_id}\""
+
 echo "chart render checks OK"
