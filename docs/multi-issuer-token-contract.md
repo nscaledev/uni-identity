@@ -79,6 +79,16 @@ UNI distinguishes two different not-found-or-not-usable cases:
   global `User`, and a user suspended (or removed) from every organization instead resolves to an
   empty `orgIds` list with no error. That path is not closed by this change.
 
+  The check can only fire on a record the lookup actually finds, and the lookup is **case
+  sensitive**: `UserDatabase.GetUser` compares `spec.subject` verbatim, while the bearer path
+  lower-cases the email claim before lookup (`auth0.Validator.validateEmail`). A `User` created
+  with a mixed-case subject — the create API stores `spec.subject` as supplied — is therefore
+  never matched, falls into the *never onboarded* branch above, and is admitted with empty
+  `orgIds` when `allowExternalIdentity: true`, even while its record says suspended. Global role
+  bindings match case-insensitively, so such a principal keeps its bound authority. Until the
+  lookup and storage agree on normalization, revocation is only reliable for subjects stored
+  lower-case; create users with lower-case subjects.
+
 ## The `https://unikorn-cloud.org/authz` claim
 
 The `https://unikorn-cloud.org/authz` claim is an optional UNI-defined claim emitted by the
