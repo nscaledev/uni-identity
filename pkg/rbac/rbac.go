@@ -120,16 +120,14 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
 }
 
-// Validate reports two advisory (log-only) migration/hygiene issues: any bare
-// (UNI-sentinel) admin entry while a non-UNI issuer is trusted, and any
-// GlobalRoleBindings issuer that is neither the UNI sentinel nor in
-// trustedNonUNIIssuers. Every offending entry in each category is reported
-// (joined with errors.Join, so errors.Is still matches each sentinel).
-// Neither check blocks startup — bare entries can never match a CRD-declared
-// issuer and a stray binding issuer can never match a real token, so the
-// runtime issuer-match in processUserAccountACL / resolveGlobalRoleBindings
-// remains the sole security control; this only surfaces the dominant failure
-// mode (silent non-match on a mistyped or stale issuer) to operators.
+// Validate reports two advisory (log-only) migration/hygiene issues without
+// blocking startup: any bare (UNI-sentinel) admin entry while a non-UNI
+// issuer is trusted, and any GlobalRoleBindings issuer that is neither the
+// UNI sentinel nor in trustedNonUNIIssuers. Every offending entry in each
+// category is reported (joined with errors.Join, so errors.Is still matches
+// each sentinel). The runtime issuer-match in resolveGlobalRoleBindings
+// remains the sole security control; see
+// pkg/rbac/README.md#global-role-bindings for the full rationale.
 //
 // The bare-admin-subject check is gated on a non-empty trustedNonUNIIssuers:
 // a bare entry only matters once a non-UNI issuer is trusted to migrate away

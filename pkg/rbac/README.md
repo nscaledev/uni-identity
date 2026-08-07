@@ -208,6 +208,16 @@ access keys), so any role referenced by a wildcard binding needs its own read-su
 being used that way. `platform-reader` receives that audit under ID-399; this mechanism only
 bounds the verb, not the payload sensitivity.
 
+**A chart render-time guard complements the runtime clamp.** The chart
+(`charts/identity/templates/identity/deployment.yaml`) fails to render if a wildcard binding
+references a role whose global scopes include any non-`read` operation, naming the binding index,
+role, and offending scope. This is config-time enforcement, not a substitute for the clamp above:
+it keeps the Role CRD authoritative for what an operator *configures* a wildcard binding to grant,
+but Roles are live CRDs that can gain write scopes after the binding is rendered, which no
+render-time check can see — the runtime clamp remains the defence-in-depth backstop for that case.
+As a consequence, no role currently shipped in `charts/identity/values.yaml` passes this guard;
+only a dedicated, audited read-only role (`platform-reader`, ID-399) will.
+
 **Sentinel and impersonation rules.** A wildcard subject can never match the `uni` sentinel or an
 empty issuer — rejected at parse time for the sentinel case, and guarded again at match time
 (`resolveGlobalRoleBindings`) as defence in depth for an issuer left unset by any future caller;
@@ -288,6 +298,10 @@ is the issuer-qualified `(srcIss, subject)` match performed by `resolveGlobalRol
 - A wildcard-subject binding is always clamped to the `read` operation at authorization time. The
   clamp bounds verbs only; it says nothing about a read endpoint's response sensitivity, so any
   role referenced by a wildcard binding must be individually read-surface-audited before use.
+- The chart additionally fails to render a wildcard binding whose role(s) declare any non-`read`
+  global operation, config-time enforcement that keeps the Role CRD authoritative for what an
+  operator can configure — but roles can gain write scopes after render time, so the runtime clamp
+  above still applies as a backstop and is not made redundant by the render-time guard.
 - Bindings resolve against the authenticating issuer, never a client-supplied one. Impersonated
   principals are always evaluated against the UNI sentinel, so an external-issuer binding can
   never apply through a delegated service hop — it fails closed.

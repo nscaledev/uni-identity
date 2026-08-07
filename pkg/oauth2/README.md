@@ -178,10 +178,10 @@ audit label, e.g. the `OAuth2Provider` name) and a `SrcIss` (the issuer URL verb
 `--platform-administrator-subjects` entries — see [`pkg/rbac/README.md`](../rbac/README.md#global-role-bindings)).
 The sentinel `"uni"` is deliberately not a valid URL so it cannot collide with a real issuer.
 `externalUserinfo` rejects an existing-but-inactive local user regardless of
-`allowExternalIdentity`, but that check only covers a globally-inactive `User` record — a user
-suspended (or removed) from every organization instead resolves to an empty `orgIds` list with no
-error, so that path can still ride an external token into an empty-`orgIds` passport. This change
-does not close it.
+`allowExternalIdentity`; that check covers only the global `User` record, not org-level suspension
+— see
+[`docs/multi-issuer-token-contract.md#membership-resolution`](../../docs/multi-issuer-token-contract.md#membership-resolution)
+for the scope of that check and the gap it leaves open.
 
 ### Per-provider claim contract
 

@@ -130,13 +130,19 @@ authenticated by that issuer. Parsing is right-anchored — the role list follow
 *last* `::`, the subject sits between the second-to-last and last `::` — so issuer URLs containing
 `::` (IPv6 literals) parse unambiguously.
 
-**Wildcard semantics.** A wildcard-subject binding is clamped in code to the `read` operation of
-each referenced role's global scopes, never the role's write operations, regardless of role
-content. That clamp bounds verbs only — it does not vet what a read endpoint's response contains —
-so the role(s) referenced by a wildcard binding must be individually audited for read-surface
-sensitivity (some read endpoints return credential material) before being used with a wildcard
-binding. A wildcard subject can never be combined with the `uni` sentinel issuer, since that would
-grant every UNI-local user.
+**Wildcard semantics.** A wildcard-subject binding is clamped to the `read` operation of each
+referenced role's global scopes, regardless of role content — but the clamp bounds verbs only, not
+response sensitivity, so any role referenced by a wildcard binding must be individually
+read-surface-audited before use (some read endpoints return credential material). Full rationale:
+[`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings). A wildcard
+subject can never be combined with the `uni` sentinel issuer, since that would grant every
+UNI-local user.
+
+**Chart guard, not a substitute for the clamp.** The Helm chart also fails to render a wildcard
+binding whose role(s) declare any non-`read` global operation, naming the offending binding, role,
+and scope — no role shipped in `charts/identity/values.yaml` passes it today, so a wildcard binding
+needs a dedicated, audited read-only role. It does not replace the runtime clamp above; why:
+[`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings).
 
 **Parse-time rejections.** The process fails to start on: malformed grammar (fewer than two `::`
 separators); an empty issuer, empty subject, or empty role-list member; a wildcard subject
