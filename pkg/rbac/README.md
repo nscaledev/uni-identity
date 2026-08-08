@@ -89,6 +89,10 @@ deployment time.
 
 - `platform-administrator` — global authority across platform resources; can act in any
   organization or project.
+- `platform-reader` — global read-only visibility for staff support tooling; the
+  read-projection of `platform-administrator` minus credential-bearing scopes,
+  pinned by the contract test in `platform_reader_contract_test.go`. Audit
+  record, revocation story, and runbook: [docs/platform-reader.md](../../docs/platform-reader.md).
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
   accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
   only the global permissions the corresponding service actually exercises;
@@ -171,10 +175,11 @@ cannot exercise permissions that either side lacks.
 
 Global privileges are expressed through a single mechanism: a **global role binding** maps an
 `(issuer, subject | "*")` pair to a set of role IDs. Every kind of global principal — platform
-administrators today, and any future issuer-wide grant such as ID-399's planned platform-reader —
-is expressed as data through this one mechanism; no per-class fast-path or role name is hardcoded
-in Go. `resolveGlobalRoleBindings` is the only path by which global privileges are granted,
-evaluated at the top of `processUserAccountACL` before membership resolution.
+administrators and platform-reader (ID-399's issuer-wide read grant) today, and any future
+issuer-wide grant — is expressed as data through this one mechanism; no per-class fast-path or
+role name is hardcoded in Go. `resolveGlobalRoleBindings` is the only path by which global
+privileges are granted, evaluated at the top of `processUserAccountACL` before membership
+resolution.
 
 Bindings are configured with the repeated flag
 `--global-role-binding=<issuer>::<subject>::<roleID>[,<roleID>...]`, rendered by the chart from
@@ -211,16 +216,16 @@ bindings (for example an exact and a wildcard entry on the same issuer) accumula
 so pointing a wildcard at a CRUD role yields read-everything, never write. It says nothing about
 what a read endpoint *returns* — some return credential material, such as object-storage access
 keys — so any role referenced by a wildcard binding needs its own read-surface audit first.
-`platform-reader` receives that audit under ID-399.
+`platform-reader` received that audit — see [docs/platform-reader.md](../../docs/platform-reader.md).
 
 **A chart render-time guard complements the runtime clamp.** The chart
 (`charts/identity/templates/identity/deployment.yaml`) fails to render if a wildcard binding
 references a role whose global scopes include any non-`read` operation, naming the binding index,
 role, and offending scope. That keeps the Role CRD authoritative for what an operator can
 *configure*, but Roles are live and can gain write scopes after the render — which no render-time
-check can see, so the clamp above remains the backstop. No role currently shipped in
-`charts/identity/values.yaml` passes this guard; only a dedicated, audited read-only role
-(`platform-reader`, ID-399) will.
+check can see, so the clamp above remains the backstop. `platform-reader` is the only role shipped in
+`charts/identity/values.yaml` with a global scope block that passes this guard — a dedicated,
+audited read-only role (see [docs/platform-reader.md](../../docs/platform-reader.md)).
 
 **Sentinel and impersonation rules.** A wildcard subject can never match the `uni` sentinel or an
 empty issuer — rejected at parse time for the sentinel, and guarded again at match time
