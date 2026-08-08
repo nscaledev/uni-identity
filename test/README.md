@@ -62,6 +62,11 @@ Optional variables for richer coverage:
 - `IDENTITY_CA_CERT`
 - `PLATFORM_ADMIN_AUTH_TOKEN` — user token bound via legacy `platformAdministrators.subjects`
 - `BINDING_ADMIN_AUTH_TOKEN` — user token bound via `globalRoleBindings`
+- `PLATFORM_READER_AUTH_TOKEN` — token for a subject bound to the protected `platform-reader` role
+  via an exact `uni` global role binding; the platform-reader suite skips without it.
+- `TEST_PLATFORM_READER_ROLE_ID` — Role CRD ID of `platform-reader`, resolved by the fixtures from
+  the cluster (protected roles are invisible via the API); the non-grantability test skips without
+  it.
 
 Notes:
 
