@@ -15,3 +15,11 @@ globalRoleBindings:
 - issuer: uni
   subject: ci-binding-admin@nscale.test
   roles: [platform-administrator]
+# Exact uni binding for the ID-399 platform-reader canary: exercises the real
+# role's ACL end-to-end, unclamped (exact bindings bypass the wildcard clamp),
+# so a write verb sneaking into the role fails the suite instead of being
+# masked. A wildcard binding is untestable here: KinD hosts no external JWKS
+# issuer and wildcards are rejected on the uni sentinel.
+- issuer: uni
+  subject: ci-platform-reader@nscale.test
+  roles: [platform-reader]

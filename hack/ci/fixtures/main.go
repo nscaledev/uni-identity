@@ -44,6 +44,7 @@ import (
 	"path/filepath"
 	"time"
 
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
@@ -347,6 +348,24 @@ func findGlobalUserID(ctx context.Context, k8s client.Client, namespace, subject
 	return ""
 }
 
+// findRoleID resolves a Role CRD ID by its friendly name label. Protected
+// roles never appear in the user-facing role listing, so the API cannot be
+// used for this.
+func findRoleID(ctx context.Context, k8s client.Client, namespace, name string) string {
+	roles := &unikornv1.RoleList{}
+
+	if err := k8s.List(ctx, roles, client.InNamespace(namespace),
+		client.MatchingLabels{coreconstants.NameLabel: name}); err != nil {
+		fatalf("failed to list roles: %v", err)
+	}
+
+	if len(roles.Items) != 1 {
+		fatalf("expected exactly one role named %q, got %d", name, len(roles.Items))
+	}
+
+	return roles.Items[0].Name
+}
+
 func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, subject, globalUserID string) string {
 	issuer := handlercommon.IssuerValue{}
 	if err := issuer.Set(baseURL); err != nil {
@@ -595,6 +614,21 @@ func main() {
 	bindingAdminToken := issueUserToken(ctx, k8s, *namespace, *baseURL, bindingAdminSubject,
 		findGlobalUserID(ctx, k8s, *namespace, bindingAdminSubject))
 
+	// ci-platform-reader: bound to the protected platform-reader role via an
+	// exact uni binding in hack/ci/test-values.yaml. Like legacyAdminSubject,
+	// it needs no group membership — its authority comes entirely from the
+	// binding.
+	const platformReaderSubject = "ci-platform-reader@nscale.test"
+
+	createUser(ctx, ac, orgID, platformReaderSubject, []string{})
+	platformReaderToken := issueUserToken(ctx, k8s, *namespace, *baseURL, platformReaderSubject,
+		findGlobalUserID(ctx, k8s, *namespace, platformReaderSubject))
+
+	// Protected roles are invisible through the API by design, so the role ID
+	// for the non-grantability test is resolved from the Role CRD by its
+	// unikorn-cloud.org/name label.
+	platformReaderRoleID := findRoleID(ctx, k8s, *namespace, "platform-reader")
+
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
@@ -614,4 +648,6 @@ func main() {
 	fmt.Printf("AUDIT_AUTH_TOKEN=%s\n", auditToken)
 	fmt.Printf("PLATFORM_ADMIN_AUTH_TOKEN=%s\n", legacyAdminToken)
 	fmt.Printf("BINDING_ADMIN_AUTH_TOKEN=%s\n", bindingAdminToken)
+	fmt.Printf("PLATFORM_READER_AUTH_TOKEN=%s\n", platformReaderToken)
+	fmt.Printf("TEST_PLATFORM_READER_ROLE_ID=%s\n", platformReaderRoleID)
 }
