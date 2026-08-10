@@ -140,7 +140,8 @@ platformAdministrators:
   - platform-administrator
 
   # Subjects the role applies to, must be the canonical name from the IdP
-  # and not an alias.
+  # and not an alias, in its lower-case form — matching is case-sensitive and
+  # the render fails on an upper-case letter.
   subjects: []
 
 # Global role bindings grant the global scopes of the named roles to matched
@@ -149,6 +150,8 @@ platformAdministrators:
 # defined below. `issuer` is the verbatim `iss` the IdP emits (Auth0: trailing
 # slash), or `uni` for locally issued tokens, which allows exact subjects only.
 # Subject "*" matches every subject from the issuer and is clamped to read.
+# Every other subject is matched case-sensitively, so it must be the
+# canonical lower-case form — the render fails on an upper-case letter.
 # Group membership never grants global scopes for user accounts; exact,
 # per-subject bindings here are the only route to global write authority.
 # Full semantics: pkg/rbac/README.md#global-role-bindings.

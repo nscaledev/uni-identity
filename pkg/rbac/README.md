@@ -183,12 +183,20 @@ follows the *last* `::`, the subject sits between the second-to-last and last `:
 before that is the issuer — this keeps issuer URLs that themselves contain `::` (IPv6 literals such
 as `https://[2001:db8::1]/`) unambiguous. `issuer` must be either the verbatim `iss` the IdP emits
 (exact string match, including Auth0's trailing slash) or the `uni` sentinel for UNI-local tokens.
-`subject` is either an exact subject (matched case-insensitively, with surrounding whitespace
+`subject` is either an exact subject (matched case-sensitively, with surrounding whitespace
 trimmed on both sides) or the literal wildcard `*`, which matches any subject authenticated by
 that issuer. Malformed grammar, empty segments (issuer, subject, or any role in the list), a
 wildcard subject on the `uni` sentinel, and an issuer that is neither the sentinel nor an absolute
 URL (no commas or whitespace) are all rejected at flag-parse time — the process does not boot on a
 malformed binding.
+
+**Subjects must be in their canonical lower-case form.** Matching is case-sensitive end to end: the
+authenticated subject arrives already lower-cased (Auth0's `validateEmail` normalizes the claim
+before it reaches RBAC), so a binding subject typed in any other case would simply stop matching.
+The chart fails to render if a `globalRoleBindings` or `platformAdministrators.subjects` entry
+contains an upper-case ASCII letter (the literal wildcard `*` is exempt, having no letters to
+begin with), catching the mistake before deploy rather than deploying a binding that silently
+never matches.
 
 **Replace, not additive.** When one or more bindings match the authenticated `(srcIss, subject)`,
 the resulting ACL is exactly the union of those bindings' global scopes (read-clamped for wildcard

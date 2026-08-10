@@ -81,9 +81,11 @@ UNI distinguishes two different not-found-or-not-usable cases:
   `UserDatabase.GetUser` compares `spec.subject` verbatim, while the bearer path lower-cases the
   email claim first (`auth0.Validator.validateEmail`) and the create API stores `spec.subject` as
   supplied. A mixed-case record is therefore treated as *never onboarded* and admitted with empty
-  `orgIds` under `allowExternalIdentity: true`, even while suspended — and global role bindings,
-  which match case-insensitively, still grant it authority. Until storage and lookup agree on
-  normalization, create users with lower-case subjects.
+  `orgIds` under `allowExternalIdentity: true`, even while suspended. Global role binding matching
+  is case-sensitive too, so a mixed-case record gains no unearned authority through that path — the
+  residual gap is narrower than a bypass: the inactive-user rejection simply cannot fire on a record
+  its case-sensitive lookup cannot find. Until storage and lookup agree on normalization, create
+  users with lower-case subjects.
 
 ## The `https://unikorn-cloud.org/authz` claim
 
@@ -130,11 +132,13 @@ Bindings are registered with the repeated flag:
 
 `issuer` must be the exact issuer URL the authenticating IdP emits (verbatim, matching the token's
 `iss` — for Auth0, including the trailing slash) or the `uni` sentinel for UNI-local tokens.
-`subject` is either an exact subject (an email address, matched case-insensitively with surrounding
+`subject` is either an exact subject (an email address, matched case-sensitively with surrounding
 whitespace trimmed on both sides) or the literal wildcard `*`, which matches every subject
 authenticated by that issuer. Parsing is right-anchored — the role list follows the
 *last* `::`, the subject sits between the second-to-last and last `::` — so issuer URLs containing
-`::` (IPv6 literals) parse unambiguously.
+`::` (IPv6 literals) parse unambiguously. Because matching is case-sensitive and the authenticated
+subject always arrives lower-cased, a binding's subject must be in its canonical lower-case form;
+the chart fails to render one that contains an upper-case ASCII letter (the wildcard `*` is exempt).
 
 **Wildcard semantics.** A wildcard-subject binding is clamped to the `read` operation of each
 referenced role's global scopes, and can never be combined with the `uni` sentinel issuer, which
