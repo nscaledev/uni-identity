@@ -95,4 +95,38 @@ out=$(render '[{"issuer":"https://staff.example.com/","subject":" alice@x.com ",
 reader_role_id=$(role_id_of reader <<<"$out")
 assert_one_match "$out" "--global-role-binding=https://staff.example.com/::alice@x.com::${reader_role_id}\""
 
+# The server matches subjects case-sensitively, so a mixed-case subject would
+# silently stop matching once deployed; reject it at render time instead.
+must_fail '[{"issuer":"https://staff.example.com/","subject":"Alice@x.com","roles":["reader"]}]' \
+	"globalRoleBindings[0].subjects[0]: subject must be its canonical lower-case form"
+must_fail '[{"issuer":"https://staff.example.com/","subjects":["alice@x.com","Bob@x.com"],"roles":["reader"]}]' \
+	"globalRoleBindings[0].subjects[1]: subject must be its canonical lower-case form"
+
+# The wildcard subject itself must never trip the case guard: it has no
+# letters to begin with, but the guard explicitly skips it for clarity.
+out=$(render '[{"issuer":"https://staff.example.com/","subject":"*","roles":["reader"]}]')
+reader_role_id=$(role_id_of reader <<<"$out")
+assert_one_match "$out" "--global-role-binding=https://staff.example.com/::\*::${reader_role_id}\""
+
+# platformAdministrators.subjects is translated into the same bindings and
+# must be guarded equivalently, for both the bare (UNI-sentinel) and
+# issuer-qualified forms.
+render_admin() { helm template test "$CHART" --set-json "platformAdministrators.subjects=$1"; }
+must_fail_admin() {
+	local out
+	if out=$(render_admin "$1" 2>&1 >/dev/null); then
+		die "expected render failure (fragment: $2), but render succeeded"
+	fi
+	if ! grep -qF -- "$2" <<<"$out"; then
+		die "render failed, but not for the expected reason
+  expected fragment: $2
+  actual output:     $out"
+	fi
+}
+
+must_fail_admin '["Admin@x.com"]' \
+	"platformAdministrators.subjects[0]: subject must be its canonical lower-case form"
+must_fail_admin '["https://staff.example.com/::Admin@x.com"]' \
+	"platformAdministrators.subjects[0]: subject must be its canonical lower-case form"
+
 echo "chart render checks OK"

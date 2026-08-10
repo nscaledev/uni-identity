@@ -235,10 +235,13 @@ func TestAdminFastPathRequiresServerSideGrant(t *testing.T) {
 	}
 }
 
-// TestAdminFastPathCaseInsensitiveSubject verifies that the platform-admin
-// fast-path matches regardless of case differences between the admin-list
-// entry subject and the (lowercased) token subject.
-func TestAdminFastPathCaseInsensitiveSubject(t *testing.T) {
+// TestAdminFastPathCaseSensitiveSubject verifies that the platform-admin
+// fast-path requires the admin-list entry subject to match the (lowercased,
+// trimmed) token subject exactly, including case. The validator already
+// normalizes the token subject to lower case, so an admin-list entry typed
+// in any other case is a configuration mistake, not an alternate spelling —
+// it must not match.
+func TestAdminFastPathCaseSensitiveSubject(t *testing.T) {
 	t.Parallel()
 
 	const staffIss = "https://staff.auth0.com"
@@ -250,19 +253,25 @@ func TestAdminFastPathCaseInsensitiveSubject(t *testing.T) {
 		wantAdminACL bool
 	}{
 		{
-			name:         "mixed-case entry matches lowercased token subject",
-			entrySubject: "Admin@Nscale.Com",
+			name:         "exact-case entry matches lowercased token subject",
+			entrySubject: "admin@nscale.com",
 			tokenSubject: "admin@nscale.com",
 			wantAdminACL: true,
 		},
 		{
-			name:         "lowercased entry matches mixed-case token subject",
-			entrySubject: "admin@nscale.com",
-			tokenSubject: "Admin@Nscale.Com",
-			wantAdminACL: true,
+			name:         "mixed-case entry does not match lowercased token subject",
+			entrySubject: "Admin@Nscale.Com",
+			tokenSubject: "admin@nscale.com",
+			wantAdminACL: false,
 		},
 		{
-			name:         "non-matching subject is denied even after normalisation",
+			name:         "lowercased entry does not match mixed-case token subject",
+			entrySubject: "admin@nscale.com",
+			tokenSubject: "Admin@Nscale.Com",
+			wantAdminACL: false,
+		},
+		{
+			name:         "non-matching subject is denied",
 			entrySubject: "Admin@Nscale.Com",
 			tokenSubject: "other@nscale.com",
 			wantAdminACL: false,

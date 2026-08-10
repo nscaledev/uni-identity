@@ -37,6 +37,21 @@ spec:
           {{- $adminRoles = append $adminRoles (include "resource.id" $name) }}
         {{- end }}
         - --platform-administrator-role-ids={{ join "," $adminRoles }}
+        {{- range $i, $s := .Values.platformAdministrators.subjects }}
+          {{- /*
+          The server matches subjects case-sensitively; only the "::"-separated
+          subject part is checked, mirroring how the flag parser splits issuer
+          from subject.
+          */}}
+          {{- $subj := $s }}
+          {{- $cut := splitn "::" 2 $s }}
+          {{- if $cut._1 }}
+            {{- $subj = $cut._1 }}
+          {{- end }}
+          {{- if and (ne $subj "*") (regexMatch "[A-Z]" $subj) }}
+            {{- fail (printf "platformAdministrators.subjects[%d]: subject must be its canonical lower-case form" $i) }}
+          {{- end }}
+        {{- end }}
         - --platform-administrator-subjects={{ join "," .Values.platformAdministrators.subjects }}
         {{- $systemAccounts := list }}
         {{- range $k, $v := .Values.systemAccounts }}
@@ -82,6 +97,9 @@ spec:
             {{- end }}
             {{- if contains "::" $trimmed }}
               {{- fail (printf "globalRoleBindings[%d].subjects[%d]: subject must not contain \"::\"" $i $si) }}
+            {{- end }}
+            {{- if and (ne $trimmed "*") (regexMatch "[A-Z]" $trimmed) }}
+              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: subject must be its canonical lower-case form" $i $si) }}
             {{- end }}
             {{- if and (eq $b.issuer "uni") (eq $trimmed "*") }}
               {{- fail (printf "globalRoleBindings[%d]: wildcard subject not allowed on the UNI sentinel issuer" $i) }}

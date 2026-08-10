@@ -173,7 +173,8 @@ func TestResolveGlobalRoleBindings(t *testing.T) {
 		wantSubjects    []string
 	}{
 		{"https://staff.example.com/", "anyone@x.com", []string{"*"}},
-		{"https://staff.example.com/", " BOSS@x.com ", []string{"*", "boss@x.com"}}, // exact match is EqualFold+TrimSpace; both match
+		{"https://staff.example.com/", " boss@x.com ", []string{"*", "boss@x.com"}}, // exact match trims whitespace on both sides
+		{"https://staff.example.com/", " BOSS@x.com ", []string{"*"}},               // mixed case does NOT match the exact binding; only the wildcard catches it
 		{constants.UNISentinel, "local@x.com", []string{"local@x.com"}},
 		{constants.UNISentinel, "anyone@x.com", nil}, // sentinel wildcard guarded
 		{"", "anyone@x.com", nil},                    // empty srcIss guarded

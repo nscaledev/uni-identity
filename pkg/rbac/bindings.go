@@ -186,7 +186,11 @@ func effectiveGlobalRoleBindings(o *Options) []GlobalRoleBinding {
 
 // resolveGlobalRoleBindings returns the bindings matching the authenticated
 // (issuer, subject) pair. Wildcards never match the sentinel or an unset
-// issuer (impersonated principals, pre-src_iss passports).
+// issuer (impersonated principals, pre-src_iss passports). A non-wildcard
+// subject match is exact (case-sensitive) after trimming surrounding
+// whitespace on both sides: the authenticated subject already arrives
+// lower-cased and trimmed (pkg/oauth2's Auth0 email normalization), so this
+// trim only absorbs whitespace in a configured binding's subject.
 func (r *RBAC) resolveGlobalRoleBindings(srcIss, subject string) []GlobalRoleBinding {
 	var out []GlobalRoleBinding
 
@@ -205,7 +209,7 @@ func (r *RBAC) resolveGlobalRoleBindings(srcIss, subject string) []GlobalRoleBin
 			continue
 		}
 
-		if strings.EqualFold(strings.TrimSpace(b.Subject), strings.TrimSpace(subject)) {
+		if strings.TrimSpace(b.Subject) == strings.TrimSpace(subject) {
 			out = append(out, b)
 		}
 	}
