@@ -57,6 +57,8 @@ var _ = Describe("OAuth2Provider bearerTrust", func() {
 	Context("When an operator creates a provider with a bearerTrust-relevant issuer", func() {
 		Describe("the persisted resource", func() {
 			It("retains the canonical issuer and is accepted", func() {
+				requireGlobalAdminClient()
+
 				// bearerTrust is CRD-only and not settable via the OpenAPI surface;
 				// we create a standard OAuth2Provider and assert that the issuer and
 				// ID round-trip correctly, confirming the provider CRD path works.
@@ -66,7 +68,7 @@ var _ = Describe("OAuth2Provider bearerTrust", func() {
 					WithIssuer(canonicalIssuer).
 					Build()
 
-				created, providerID := api.CreateOauth2ProviderWithCleanup(client, ctx, config, payload)
+				created, providerID := api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config, payload)
 
 				Expect(providerID).NotTo(BeEmpty(),
 					"Metadata.Id must be set on the created OAuth2Provider")
