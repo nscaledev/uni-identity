@@ -253,6 +253,18 @@ entire user population is itself an authorization decision — for example a sta
 "authenticated by this issuer" already means "should see this data" — never for a general-purpose
 IdP with a mixed user base.
 
+**There is no group-based path to global authority.** `acl.Global` is populated from exactly two
+sources: `resolveGlobalRoleBindings` (feeding `accumulateGlobalPermissions` or, for wildcard
+bindings, `accumulateGlobalReadPermissions`) and `processSystemAccountACL`'s X.509-CN-to-role
+mapping for system accounts. Group membership resolves only `Role.Spec.Scopes.Organization` and
+`Role.Spec.Scopes.Project` (`accumulateOrganizationPermissions`, `accumulateProjectPermissions`);
+`accumulateGlobalPermissions` deliberately takes a role ID list rather than groups, precisely so
+standard users cannot be granted global permissions through membership. This means "grant platform
+administrators via a group" is not an available alternative to exact per-subject bindings — a
+group-based grant would be runtime-mutable and centrally auditable in a way an exact binding is
+not, so the absence of that path is a real limitation of the current mechanism, not just an
+unused option.
+
 **`Options.Validate` reports every finding from two advisory startup checks**, joined with the
 stdlib `errors.Join` so `errors.Is` still matches each individually. It never blocks startup:
 (1) a bare (UNI-sentinel) `--platform-administrator-subjects` entry while a non-UNI issuer is
