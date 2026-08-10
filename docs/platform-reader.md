@@ -115,10 +115,11 @@ included here; that route-level semantics is owned by the downstream service. Se
 
 ## Revocation
 
-IdP offboarding is the only revocation lever for a principal granted `platform-reader` through a
-wildcard global role binding. No local compensating control is built for this role, deliberately:
-introducing one would re-establish per-principal local state that the wildcard binding mechanism
-exists to remove.
+IdP offboarding is the only **per-principal** revocation lever for a subject granted
+`platform-reader` through a wildcard global role binding. No per-principal local control is
+built, deliberately: it would re-establish the local state the wildcard mechanism exists to
+remove. Revoking **every** holder at once is different — the platform owns a fast lever for
+that: see [Break-glass](#break-glass-revoking-the-whole-binding) in the Runbook.
 
 Concretely:
 
@@ -153,6 +154,31 @@ granted through a group (`pkg/handler/groups/client.go:357`) — there is no rol
 in the API at all to guard against. Neither mechanism prevents chart or CRD drift: an operator can
 still rename or remove the role at the Helm/CRD layer, leaving a binding that references it
 unresolvable and failing closed exactly as above.
+
+### Break-glass: revoking the whole binding
+
+The blast radius above is also the deliberate incident lever — the only fast, self-owned
+revocation the platform has. To cut off every holder of the binding at once, empty the role's
+global scopes (the resource name must be fully qualified — bare `roles` resolves to the
+Kubernetes RBAC kind):
+
+```sh
+kubectl -n unikorn-identity get roles.identity.unikorn-cloud.org \
+  -l unikorn-cloud.org/name=platform-reader
+kubectl -n unikorn-identity patch roles.identity.unikorn-cloud.org <ID> \
+  --type=merge -p '{"spec":{"scopes":{"global":null}}}'
+```
+
+- **Takes effect within `--acl-cache-timeout` (default 1m)** as cached ACLs expire — no
+  restart, no deploy. Unlike IdP offboarding, already-issued tokens and passports do not
+  extend the window: the role is read live on the next uncached ACL computation.
+- Emptying scopes denies as clean **403s** ("no global-scope permissions"). Deleting the Role
+  CRD also works but fails closed as **500s** for every user of the bound issuer — the
+  unresolvable-role path above. The patch is the calmer signal for downstream tooling.
+- `protected: true` blocks neither — it gates the API surface; there is no admission webhook.
+- **Pair it with the durable fix**: remove the binding from the deployment repo's values. Any
+  `helm upgrade` — including one unrelated to this role — reverts the patch, because Helm's
+  three-way merge restores drifted fields the chart specifies.
 
 ### Rollout
 
