@@ -34,7 +34,9 @@ var _ = Describe("OAuth2 Provider Management", func() {
 	Context("When listing OAuth2 providers", func() {
 		Describe("Given valid organization", func() {
 			It("should return all OAuth2 providers in the organization", func() {
-				api.CreateOauth2ProviderWithCleanup(client, ctx, config, api.NewOauth2ProviderPayload().Build())
+				requireGlobalAdminClient()
+
+				api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config, api.NewOauth2ProviderPayload().Build())
 
 				providers, err := client.ListOauth2Providers(ctx, config.OrgID)
 
@@ -61,11 +63,14 @@ var _ = Describe("OAuth2 Provider Management", func() {
 		})
 	})
 
+	// Provider writes are platform-operator only; organization roles hold read.
 	Context("When creating OAuth2 providers", func() {
+		BeforeEach(requireGlobalAdminClient)
+
 		Describe("Given valid provider data", func() {
 			It("should create a provider and return complete metadata", func() {
 				payload := api.NewOauth2ProviderPayload().Build()
-				created, providerID := api.CreateOauth2ProviderWithCleanup(client, ctx, config, payload)
+				created, providerID := api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config, payload)
 
 				Expect(providerID).NotTo(BeEmpty())
 				Expect(created.Metadata.Id).To(Equal(providerID))
@@ -78,7 +83,7 @@ var _ = Describe("OAuth2 Provider Management", func() {
 
 			It("should create a provider and find it in the organization list", func() {
 				payload := api.NewOauth2ProviderPayload().Build()
-				created, providerID := api.CreateOauth2ProviderWithCleanup(client, ctx, config, payload)
+				created, providerID := api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config, payload)
 
 				providers, err := client.ListOauth2Providers(ctx, config.OrgID)
 
@@ -104,7 +109,7 @@ var _ = Describe("OAuth2 Provider Management", func() {
 			It("should return error when creating in non-existent organization", func() {
 				payload := api.NewOauth2ProviderPayload().Build()
 
-				_, err := client.CreateOauth2Provider(ctx, "invalid-org-id", payload)
+				_, err := globalAdminClient.CreateOauth2Provider(ctx, "invalid-org-id", payload)
 
 				Expect(err).To(HaveOccurred())
 			})
@@ -112,16 +117,18 @@ var _ = Describe("OAuth2 Provider Management", func() {
 	})
 
 	Context("When updating OAuth2 providers", func() {
+		BeforeEach(requireGlobalAdminClient)
+
 		Describe("Given existing provider", func() {
 			It("should update provider name successfully", func() {
 				payload := api.NewOauth2ProviderPayload().Build()
-				original, providerID := api.CreateOauth2ProviderWithCleanup(client, ctx, config, payload)
+				original, providerID := api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config, payload)
 
 				updatedPayload := api.NewOauth2ProviderPayload().
 					WithName(original.Metadata.Name + "-updated").
 					Build()
 
-				err := client.UpdateOauth2Provider(ctx, config.OrgID, providerID, updatedPayload)
+				err := globalAdminClient.UpdateOauth2Provider(ctx, config.OrgID, providerID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -149,13 +156,13 @@ var _ = Describe("OAuth2 Provider Management", func() {
 
 			It("should update provider client ID successfully", func() {
 				payload := api.NewOauth2ProviderPayload().Build()
-				_, providerID := api.CreateOauth2ProviderWithCleanup(client, ctx, config, payload)
+				_, providerID := api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config, payload)
 
 				updatedPayload := api.NewOauth2ProviderPayload().
 					WithClientID("updated-client-id").
 					Build()
 
-				err := client.UpdateOauth2Provider(ctx, config.OrgID, providerID, updatedPayload)
+				err := globalAdminClient.UpdateOauth2Provider(ctx, config.OrgID, providerID, updatedPayload)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -182,7 +189,7 @@ var _ = Describe("OAuth2 Provider Management", func() {
 			It("should return not-found error", func() {
 				payload := api.NewOauth2ProviderPayload().Build()
 
-				err := client.UpdateOauth2Provider(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
+				err := globalAdminClient.UpdateOauth2Provider(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
 
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue())
@@ -191,12 +198,14 @@ var _ = Describe("OAuth2 Provider Management", func() {
 	})
 
 	Context("When deleting OAuth2 providers", func() {
+		BeforeEach(requireGlobalAdminClient)
+
 		Describe("Given existing provider", func() {
 			It("should delete provider and verify it is gone from the list", func() {
 				payload := api.NewOauth2ProviderPayload().Build()
-				_, providerID := api.CreateOauth2ProviderWithCleanup(client, ctx, config, payload)
+				_, providerID := api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config, payload)
 
-				err := client.DeleteOauth2Provider(ctx, config.OrgID, providerID)
+				err := globalAdminClient.DeleteOauth2Provider(ctx, config.OrgID, providerID)
 
 				Expect(err).NotTo(HaveOccurred())
 
@@ -215,7 +224,7 @@ var _ = Describe("OAuth2 Provider Management", func() {
 
 		Describe("Given invalid provider ID", func() {
 			It("should return not-found error", func() {
-				err := client.DeleteOauth2Provider(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000")
+				err := globalAdminClient.DeleteOauth2Provider(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000")
 
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue())
