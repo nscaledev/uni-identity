@@ -76,6 +76,31 @@ var _ = Describe("Quota Management", func() {
 			})
 		})
 
+		Describe("Given built-in volume quota metadata", func() {
+			It("should expose binary formatting for capacity values", func() {
+				quotasResponse, err := client.GetQuotas(ctx, config.OrgID)
+
+				Expect(err).NotTo(HaveOccurred())
+
+				var volumeQuota identityopenapi.QuotaRead
+				found := false
+
+				for i := range quotasResponse.Quotas {
+					if quotasResponse.Quotas[i].Kind == "volume" {
+						volumeQuota = quotasResponse.Quotas[i]
+						found = true
+
+						break
+					}
+				}
+
+				Expect(found).To(BeTrue(), "volume quota should be registered")
+				Expect(volumeQuota.Default).To(Equal(0))
+				Expect(volumeQuota.Description).To(ContainSubstring("GiB"))
+				Expect(string(volumeQuota.Format)).To(Equal("binary"))
+			})
+		})
+
 		Describe("Given invalid organization ID", func() {
 			It("should return error for non-existent organization", func() {
 				_, err := client.GetQuotas(ctx, "invalid-org-id")

@@ -2267,6 +2267,7 @@ components:
       - displayName
       - description
       - default
+      - format
       properties:
         kind:
           description: The kind of resource.
@@ -2295,6 +2296,12 @@ components:
         default:
           description: The default value of the quota.
           type: integer
+        format:
+          description: A hint for clients on how to format quota values.
+          type: string
+          enum:
+          - decimal
+          - binary
     quotaWrite:
       description: A single quota.
       type: object
@@ -3024,6 +3031,7 @@ components:
               displayName: Clusters
               description: All cluster types e.g. Kubernetes, compute, etc.
               default: 5
+              format: decimal
     allocationResponse:
       description: An allocation.
       content:
