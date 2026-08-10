@@ -61,7 +61,9 @@ Optional variables for richer coverage:
 - `TEST_USER_SA_ID`
 - `IDENTITY_CA_CERT`
 - `PLATFORM_ADMIN_AUTH_TOKEN` — user token bound via legacy `platformAdministrators.subjects`
-- `BINDING_ADMIN_AUTH_TOKEN` — user token bound via `globalRoleBindings`
+- `BINDING_ADMIN_AUTH_TOKEN` — user token bound via `globalRoleBindings`; also carries the
+  global `identity:oauth2providers` writes no organization role holds, so the oauth2provider
+  write specs skip without it.
 - `PLATFORM_READER_AUTH_TOKEN` — token for a subject bound to the protected `platform-reader` role
   via an exact `uni` global role binding; the platform-reader suite skips without it.
 - `TEST_PLATFORM_READER_ROLE_ID` — Role CRD ID of `platform-reader`, resolved by the fixtures from

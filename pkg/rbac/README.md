@@ -105,10 +105,15 @@ administrator grants to groups.
 
 | Role | organization block | project block |
 | --- | --- | --- |
-| `administrator` | full CRUD across identity, region, storage, Kubernetes and compute | — |
+| `administrator` | full CRUD across identity, region, storage, Kubernetes and compute, except read-only `identity:oauth2providers` | — |
 | `auditor` | read-only across all of the above | — |
 | `user` | org-wide reads, plus `region:images` create/delete | CRUD on workloads: networks, load balancers, security groups, volumes, file storage, object storage, SSH CAs, clusters, instances |
 | `reader` | org-wide reads (`region:images` read only) | read-only on those same workloads |
+
+Upstream provider configuration is the one organization resource no organization role may
+write. `administrator` and `auditor` both hold `identity:oauth2providers: [read]`; writes
+belong to `platform-administrator` at global scope, so an organization cannot delete its
+own provider and lock its users out of login.
 
 `administrator` and `auditor` hold all their authority at organization scope. `user` and
 `reader` keep a thin organization-wide read baseline but place their real workload
