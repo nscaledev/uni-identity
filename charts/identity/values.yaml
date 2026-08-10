@@ -325,13 +325,15 @@ roles:
         identity:projects/references: [create,delete]
         identity:allocations: [create,read,update,delete]
         region:networks:v2/references: [create,read,update,delete]
-  # An administrator can do anything within an organization.
+  # An administrator can do anything within an organization, except configure
+  # its upstream identity providers: provider writes would let an organization
+  # lock its own users out of login, so they stay with the platform operator.
   administrator:
     description: Organization administrator
     scopes:
       organization:
         identity:organizations: [read,update]
-        identity:oauth2providers: [create,read,update,delete]
+        identity:oauth2providers: [read]
         identity:serviceaccounts: [create,read,update,delete]
         identity:users: [create,read,update,delete]
         identity:roles: [create,read,update,delete]

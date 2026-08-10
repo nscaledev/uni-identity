@@ -393,3 +393,16 @@ func TestBuiltinSystemServicesDoNotReceiveVolumePermissions(t *testing.T) {
 		}
 	}
 }
+
+// TestAdministratorCannotWriteOAuth2Providers pins the organization administrator to read-only
+// access on upstream providers. The grant lattice is satisfied by both read and full CRUD, and
+// the chart render guard only inspects global scopes, so nothing else catches a restored write
+// verb here.
+func TestAdministratorCannotWriteOAuth2Providers(t *testing.T) {
+	t.Parallel()
+
+	role, ok := loadChartRoles(t)["administrator"]
+	require.True(t, ok, "built-in role \"administrator\" is missing")
+
+	require.Equal(t, []string{"read"}, role.Scopes.Organization["identity:oauth2providers"])
+}
