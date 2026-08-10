@@ -149,6 +149,8 @@ platformAdministrators:
 # defined below. `issuer` is the verbatim `iss` the IdP emits (Auth0: trailing
 # slash), or `uni` for locally issued tokens, which allows exact subjects only.
 # Subject "*" matches every subject from the issuer and is clamped to read.
+# Group membership never grants global scopes for user accounts; exact,
+# per-subject bindings here are the only route to global write authority.
 # Full semantics: pkg/rbac/README.md#global-role-bindings.
 # Helm rejects invalid separators and wildcard bindings on roles that grant any
 # non-read global operation — no role shipped below qualifies for wildcard use.
