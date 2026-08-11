@@ -565,6 +565,36 @@ func main() {
 	userGlobalID := findGlobalUserID(ctx, k8s, *namespace, ciFixtureUserSubject)
 	userToken := issueUserToken(ctx, k8s, *namespace, *baseURL, ciFixtureUserSubject, userGlobalID)
 
+	// ── Create identities bound via the legacy and new global admin paths ─────
+	// Each subject is pre-bound in hack/ci/test-values.yaml: legacyAdminSubject
+	// via platformAdministrators.subjects, bindingAdminSubject via
+	// globalRoleBindings. Used to prove the two paths grant equivalent authority.
+	const (
+		legacyAdminSubject  = "ci-legacy-admin@nscale.test"
+		bindingAdminSubject = "ci-binding-admin@nscale.test"
+	)
+
+	// legacyAdminSubject's authority comes entirely from the legacy
+	// platformAdministrators.subjects binding, so it needs no group membership
+	// at all; userSpec.groupIDs has no minItems constraint and updateGroups
+	// tolerates an empty list, so this is a supported shape, not a workaround.
+	createUser(ctx, ac, orgID, legacyAdminSubject, []string{})
+	legacyAdminToken := issueUserToken(ctx, k8s, *namespace, *baseURL, legacyAdminSubject,
+		findGlobalUserID(ctx, k8s, *namespace, legacyAdminSubject))
+
+	// ci-bound-admin-group: dedicated group for bindingAdminSubject, kept
+	// separate from ci-user-group so its org membership doesn't inflate
+	// TEST_USER_GROUP_ID's UserIDs/Subjects (see groups_test.go's fixture
+	// assertions). bindingAdminSubject must remain an organization member (via
+	// this group) so the replace-semantics assertion in
+	// global_role_bindings_test.go — that the resolved ACL is Global-only with
+	// Organizations nil, not both — is non-vacuous.
+	boundAdminGroupID := createGroup(ctx, ac, orgID, "ci-bound-admin-group", []string{userRoleID})
+
+	createUser(ctx, ac, orgID, bindingAdminSubject, []string{boundAdminGroupID})
+	bindingAdminToken := issueUserToken(ctx, k8s, *namespace, *baseURL, bindingAdminSubject,
+		findGlobalUserID(ctx, k8s, *namespace, bindingAdminSubject))
+
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
 	fmt.Printf("IDENTITY_CA_CERT=%s\n", *caCertPath)
@@ -582,4 +612,6 @@ func main() {
 	fmt.Printf("USER_AUTH_TOKEN=%s\n", userToken)
 	fmt.Printf("SERVICE_ACCOUNT_TOKEN=%s\n", serviceAccountToken)
 	fmt.Printf("AUDIT_AUTH_TOKEN=%s\n", auditToken)
+	fmt.Printf("PLATFORM_ADMIN_AUTH_TOKEN=%s\n", legacyAdminToken)
+	fmt.Printf("BINDING_ADMIN_AUTH_TOKEN=%s\n", bindingAdminToken)
 }

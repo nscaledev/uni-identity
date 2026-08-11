@@ -430,11 +430,10 @@ func peekIssuer(token string) (string, error) {
 // source-claims pair. It is the single implementation for all bearer-trust
 // paths; dispatchUserinfo wires it for every JWS path via validatorForIssuer.
 //
-// When the email is not found in the UNI user database (ErrResourceReference)
-// and trust.AllowExternalIdentity is true, the subject is accepted with an
-// empty orgIds slice — RBAC decides what it can reach. If AllowExternalIdentity
-// is false, the request is rejected with the same error message as the prior
-// unconditional rejection, preserving the existing wire contract.
+// A user missing from the UNI database is admitted without memberships only
+// when trust.AllowExternalIdentity is true; an inactive one is always
+// rejected. Rejections reuse the prior error message, preserving the existing
+// wire contract. See docs/multi-issuer-token-contract.md#membership-resolution.
 //
 // sourceClaims.Issuer is stamped with rawIss (the verbatim issuer the IdP
 // emitted, as resolved by validatorForIssuer) so that srcIssForSource can compute
@@ -450,13 +449,15 @@ func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, t
 	// membership. Claimed orgIds from the external token are discarded.
 	orgIDs, err := a.userdb.GetOrganizationIDs(ctx, user.Email)
 	if err != nil {
-		if goerrors.Is(err, userdb.ErrResourceReference) {
-			if !trust.AllowExternalIdentity {
-				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
-			}
-
+		switch {
+		// Must precede the ErrResourceReference cases: ErrUserInactive wraps it.
+		case goerrors.Is(err, userdb.ErrUserInactive):
+			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+		case goerrors.Is(err, userdb.ErrResourceReference) && !trust.AllowExternalIdentity:
+			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+		case goerrors.Is(err, userdb.ErrResourceReference):
 			orgIDs = nil // accepted with no memberships; authority decided by RBAC
-		} else {
+		default:
 			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
 		}
 	}

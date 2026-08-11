@@ -56,8 +56,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(t.Context(), directInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|user-1|_global", global)
-		require.Equal(t, "direct|user-1|org-1", scoped)
+		require.Equal(t, "direct|6:user-1|0:|_global", global)
+		require.Equal(t, "direct|6:user-1|0:|org-1", scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
@@ -71,7 +71,7 @@ func TestACLCacheKey(t *testing.T) {
 		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", key)
+		require.Equal(t, "direct|15:compute-service|0:|org-1", key)
 	})
 
 	t.Run("ImpersonatedDiffersFromDirect", func(t *testing.T) {
@@ -88,8 +88,8 @@ func TestACLCacheKey(t *testing.T) {
 		impersonated, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", direct)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", impersonated)
+		require.Equal(t, "direct|15:compute-service|0:|org-1", direct)
+		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|org-1", impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
 
@@ -115,8 +115,8 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotEqual(t, computeKey, regionKey)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", computeKey)
-		require.Equal(t, "impersonated|region-service|user-1|org-1", regionKey)
+		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|org-1", computeKey)
+		require.Equal(t, "impersonated|14:region-service|0:|6:user-1|org-1", regionKey)
 	})
 
 	t.Run("ImpersonatedIncludesOrganizationScope", func(t *testing.T) {
@@ -133,9 +133,46 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "impersonated|compute-service|user-1|_global", global)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", scoped)
+		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|_global", global)
+		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|org-1", scoped)
 		require.NotEqual(t, global, scoped)
+	})
+
+	t.Run("DirectIncludesSrcIss", func(t *testing.T) {
+		t.Parallel()
+
+		issA := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "alice@x.com"}, SrcIss: "https://a.com/"}
+		issB := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "alice@x.com"}, SrcIss: "https://b.com/"}
+
+		keyA, err := aclCacheKey(t.Context(), issA, "")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(t.Context(), issB, "")
+		require.NoError(t, err)
+
+		// Same email from two issuers must never share an ACL (ID-367 finding 6).
+		require.NotEqual(t, keyA, keyB)
+	})
+
+	t.Run("SubjectContainingDelimiterCannotForgeAnotherIdentity", func(t *testing.T) {
+		t.Parallel()
+
+		// Auth0 subjects look like "auth0|507f1f77bcf86cd799439011": the
+		// subject itself contains the "|" join delimiter. Under the old
+		// unescaped "sub|srcIss" concatenation, this pair and the pair below
+		// render to the identical string "auth0|abc|def" for the sub+srcIss
+		// segment even though they are two different (subject, issuer)
+		// tuples. Length-prefixing must keep them apart.
+		infoA := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "auth0|abc"}, SrcIss: "def"}
+		infoB := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "auth0"}, SrcIss: "abc|def"}
+
+		keyA, err := aclCacheKey(t.Context(), infoA, "org-1")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(t.Context(), infoB, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyA, keyB)
 	})
 
 	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {

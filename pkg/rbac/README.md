@@ -29,8 +29,9 @@ The package enforces several important security rules:
 - a caller may only grant a role if the caller already holds all permissions contained in that role
 - when a system service acts as an impersonated principal, the effective ACL is the intersection of
   the principal's ACL and the service's ACL
-- platform-administrator matching is issuer-qualified: a subject is only recognized as a
-  platform administrator when the token's `src_iss` matches the registered issuer entry
+- global role binding matching is issuer-qualified: a principal is only granted a binding's
+  roles when the token's `src_iss` matches the binding's registered issuer exactly — this covers
+  both platform-administrator entries and the general `--global-role-binding` mechanism
 
 Those rules prevent several different forms of privilege escalation:
 
@@ -166,36 +167,127 @@ When a system account carries an impersonated principal, RBAC does not simply sw
 principal's ACL. Instead, it intersects the principal ACL with the system account ACL so the service
 cannot exercise permissions that either side lacks.
 
-### Platform-administrator issuer-aware fast-path
+### Global role bindings
 
-User account ACL resolution includes a fast-path for platform administrators. The match is on the
-pair `(srcIss, subject)` where `srcIss` is the issuer URL (verbatim, as the IdP emits it) carried in
-the passport's `src_iss` claim (or the `"uni"` sentinel for UNI-local tokens). The match is an exact
-string comparison against each `PlatformAdministratorSubject` entry registered via
-`--platform-administrator-subjects`; the configured issuer must equal the emitted `iss` exactly
-(for Auth0, including the trailing slash).
+Global privileges are expressed through a single mechanism: a **global role binding** maps an
+`(issuer, subject | "*")` pair to a set of role IDs. Every kind of global principal — platform
+administrators today, and any future issuer-wide grant such as ID-399's planned platform-reader —
+is expressed as data through this one mechanism; no per-class fast-path or role name is hardcoded
+in Go. `resolveGlobalRoleBindings` is the only path by which global privileges are granted,
+evaluated at the top of `processUserAccountACL` before membership resolution.
 
-Platform-administrator subjects should be registered in `issuer::subject` form when any non-UNI
-bearer-trust provider is configured. A bare subject (no `::` prefix) defaults the issuer to the
-UNI sentinel, which cannot be forged by an external token because the sentinel is deliberately
-not a valid URL.
+Bindings are configured with the repeated flag
+`--global-role-binding=<issuer>::<subject>::<roleID>[,<roleID>...]`, rendered by the chart from
+`globalRoleBindings` (`charts/identity/values.yaml`). Parsing is **right-anchored**: the role list
+follows the *last* `::`, the subject sits between the second-to-last and last `::`, and everything
+before that is the issuer — this keeps issuer URLs that themselves contain `::` (IPv6 literals such
+as `https://[2001:db8::1]/`) unambiguous. `issuer` must be either the verbatim `iss` the IdP emits
+(exact string match, including Auth0's trailing slash) or the `uni` sentinel for UNI-local tokens.
+`subject` is either an exact subject (matched case-sensitively, with surrounding whitespace
+trimmed on both sides) or the literal wildcard `*`, which matches any subject authenticated by
+that issuer. Malformed grammar, empty segments (issuer, subject, or any role in the list), a
+wildcard subject on the `uni` sentinel, and an issuer that is neither the sentinel nor an absolute
+URL (no commas or whitespace) are all rejected at flag-parse time — the process does not boot on a
+malformed binding.
 
-**Bare entries are mirrored onto the legacy Auth0 issuer at server construction.** When the
-deprecated `--auth0-exchange-issuer` flag is set, `expandBareAdminSubjects` (in `pkg/server`)
-appends, for every bare entry, a concrete issuer-qualified duplicate for that flag's issuer. This
-reproduces the issuer-unaware matching that predates issuer qualification: a bare entry matches
-both UNI-login sessions (via the retained sentinel entry) and Auth0-exchange sessions (via the
-mirror), and never a CRD-declared `bearerTrust` issuer. The mirror grants nothing the old
-issuer-blind match did not already grant.
+**Subjects must be in their canonical lower-case form.** Matching is case-sensitive end to end: the
+authenticated subject arrives already lower-cased (Auth0's `validateEmail` normalizes the claim
+before it reaches RBAC), so a binding subject typed in any other case would simply stop matching.
+The chart fails to render if a `globalRoleBindings` or `platformAdministrators.subjects` entry
+contains an upper-case ASCII letter (the literal wildcard `*` is exempt, having no letters to
+begin with), catching the mistake before deploy rather than deploying a binding that silently
+never matches.
 
-**`Options.Validate` is a startup-only, advisory migration check.** When called during startup
-with the list of non-UNI `bearerTrust` issuers currently present in the operator namespace (the
-legacy flag issuer is deliberately excluded — the mirroring above already covers it), it reports
-any admin entry still in bare (UNI-sentinel) form. The caller logs a warning; startup is never
-rejected, since a bare entry cannot match a CRD-declared issuer and a boot-time failure would
-otherwise fire at an unrelated pod restart long after the first `bearerTrust` CRD was created.
-The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match in
-`processUserAccountACL`. Operators must not rely on `Options.Validate` as a protection.
+**Replace, not additive.** When one or more bindings match the authenticated `(srcIss, subject)`,
+the resulting ACL is exactly the union of those bindings' global scopes (read-clamped for wildcard
+bindings), and organization/project membership resolution is skipped entirely for that session.
+This is a deliberate session-level privilege separation: a hybrid principal (bound issuer/subject
+*and* a UNI organization membership) loses their own-org write permissions while authenticated
+through the bound issuer — authenticating via the other issuer restores them. Multiple matching
+bindings (for example an exact and a wildcard entry on the same issuer) accumulate together.
+
+**The wildcard clamp bounds verbs, not sensitivity.** A wildcard-subject binding is clamped in code
+(`accumulateGlobalReadPermissions`) to the `read` operation of each referenced role's global scopes,
+so pointing a wildcard at a CRUD role yields read-everything, never write. It says nothing about
+what a read endpoint *returns* — some return credential material, such as object-storage access
+keys — so any role referenced by a wildcard binding needs its own read-surface audit first.
+`platform-reader` receives that audit under ID-399.
+
+**A chart render-time guard complements the runtime clamp.** The chart
+(`charts/identity/templates/identity/deployment.yaml`) fails to render if a wildcard binding
+references a role whose global scopes include any non-`read` operation, naming the binding index,
+role, and offending scope. That keeps the Role CRD authoritative for what an operator can
+*configure*, but Roles are live and can gain write scopes after the render — which no render-time
+check can see, so the clamp above remains the backstop. No role currently shipped in
+`charts/identity/values.yaml` passes this guard; only a dedicated, audited read-only role
+(`platform-reader`, ID-399) will.
+
+**Sentinel and impersonation rules.** A wildcard subject can never match the `uni` sentinel or an
+empty issuer — rejected at parse time for the sentinel, and guarded again at match time
+(`resolveGlobalRoleBindings`) as defence in depth should a future caller leave the issuer unset;
+today impersonated principals and pre-`src_iss` passports always carry the sentinel, so that branch
+is unreachable. Bindings resolve against the *authenticating* issuer: impersonated principals are
+evaluated against the sentinel (`processImpersonatedPrincipalACL` / `srcIssOrUNISentinel`), so an
+external-issuer binding never applies on a delegated service hop — it fails closed — while a
+`uni`-exact binding still applies there, intersected with the service's ACL, exactly as legacy bare
+admin subjects always have.
+
+**Legacy flags translate verbatim.** `--platform-administrator-subjects` and
+`--platform-administrator-role-ids` continue to work: each subject is translated into an exact
+(non-wildcard) `GlobalRoleBinding` at RBAC construction (`effectiveGlobalRoleBindings`),
+byte-for-byte reproducing today's admin behavior, including the `pkg/server` mirroring onto the
+deprecated `--auth0-exchange-issuer` flag for bare entries (see below). Translation is verbatim in
+the literal sense too: a legacy subject that happens to be the string `*` stays an exact-match
+subject and never gains wildcard semantics — only the new `--global-role-binding` flag's subject
+`*` is treated as a wildcard.
+
+A bare legacy subject (no `::` prefix) defaults the issuer to the UNI sentinel, which cannot be
+forged by an external token because the sentinel is deliberately not a valid URL. **Bare entries
+are mirrored onto the legacy Auth0 issuer at server construction:** when the deprecated
+`--auth0-exchange-issuer` flag is set, `expandBareAdminSubjects` (in `pkg/server`) appends, for
+every bare entry, a concrete issuer-qualified duplicate for that flag's issuer. This reproduces the
+issuer-unaware matching that predates issuer qualification: a bare entry matches both UNI-login
+sessions (via the retained sentinel entry) and Auth0-exchange sessions (via the mirror), and never
+a CRD-declared `bearerTrust` issuer. The mirror grants nothing the old issuer-blind match did not
+already grant.
+
+`--platform-administrator-role-ids` supplies the role list for those translated bindings and has no
+other consumer, so it is needed only while admin subjects are still expressed through
+`--platform-administrator-subjects`. A deployment that expresses every admin through
+`--global-role-binding` does not need it.
+
+**Operator guidance.** An issuer-wide (wildcard) binding is only appropriate for an issuer whose
+entire user population is itself an authorization decision — for example a staff-only IdP, where
+"authenticated by this issuer" already means "should see this data" — never for a general-purpose
+IdP with a mixed user base.
+
+**There is no group-based path to global authority.** `acl.Global` is populated from exactly two
+sources: `resolveGlobalRoleBindings` (feeding `accumulateGlobalPermissions` or, for wildcard
+bindings, `accumulateGlobalReadPermissions`) and `processSystemAccountACL`'s X.509-CN-to-role
+mapping for system accounts. Group membership resolves only `Role.Spec.Scopes.Organization` and
+`Role.Spec.Scopes.Project` (`accumulateOrganizationPermissions`, `accumulateProjectPermissions`);
+`accumulateGlobalPermissions` deliberately takes a role ID list rather than groups, precisely so
+standard users cannot be granted global permissions through membership. This means "grant platform
+administrators via a group" is not an available alternative to exact per-subject bindings — a
+group-based grant would be runtime-mutable and centrally auditable in a way an exact binding is
+not, so the absence of that path is a real limitation of the current mechanism, not just an
+unused option.
+
+**`Options.Validate` reports every finding from two advisory startup checks**, joined with the
+stdlib `errors.Join` so `errors.Is` still matches each individually. It never blocks startup:
+(1) a bare (UNI-sentinel) `--platform-administrator-subjects` entry while a non-UNI issuer is
+trusted, and (2) a `--global-role-binding` issuer that is neither the UNI sentinel nor a currently
+trusted non-UNI issuer (`ErrUntrustedBindingIssuer`). Check (2) excludes the deprecated
+`--auth0-exchange-issuer` value from the trusted set, so a binding aimed at the legacy exchange
+issuer warns even though it can still match a real token.
+
+Only check (1) is gated on a non-empty trusted-issuer list — a bare admin entry only matters once
+there is a non-UNI issuer to migrate away from. Check (2) runs even against an empty list, where
+every non-UNI binding issuer is reported, so the caller must skip `Validate` entirely when it
+cannot tell "no trusted issuers configured" from "the provider `List` call failed"
+(`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case). These warnings are
+not the security control: that is the issuer-qualified `(srcIss, subject)` match performed by
+`resolveGlobalRoleBindings` inside `processUserAccountACL`.
 
 ## Invariants
 
@@ -208,10 +300,18 @@ The always-on, runtime control is the issuer-qualified `(srcIss, subject)` match
 - Group membership is the main route from actors to roles.
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
-- Platform-administrator matching is always issuer-qualified at runtime via `(srcIss, subject)`.
-  `Options.Validate` is a startup-only advisory warning; it does not replace the runtime control.
-  Bare entries match only the UNI sentinel plus, via the startup mirror in `pkg/server`, the
-  legacy auth0-exchange flag issuer — never a CRD-declared issuer.
+- Global role binding matching is always issuer-qualified at runtime via `(srcIss, subject)`,
+  evaluated by `resolveGlobalRoleBindings`. `Options.Validate` is startup-only and advisory and
+  does not replace it. Bare legacy admin entries match only the UNI sentinel plus, via the startup
+  mirror in `pkg/server`, the legacy auth0-exchange flag issuer — never a CRD-declared issuer.
+- A wildcard-subject binding is always clamped to `read` at authorization time. The clamp bounds
+  verbs, not response sensitivity, so any role it references needs a read-surface audit first.
+- The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
+  global operation. This does not make the runtime clamp redundant: roles can gain write scopes
+  after the render.
+- Bindings resolve against the authenticating issuer, never a client-supplied one. Impersonated
+  principals are evaluated against the UNI sentinel, so an external-issuer binding never applies
+  on a delegated service hop — it fails closed.
 - The confused-deputy invariant: a system service acting as an impersonated principal cannot hold
   permissions that either the principal's ACL or the service's ACL denies. The ACL intersection
   enforces this regardless of which IdP authenticated the principal.

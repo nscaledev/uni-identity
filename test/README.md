@@ -60,6 +60,8 @@ Optional variables for richer coverage:
 - `USER_AUTH_TOKEN`
 - `TEST_USER_SA_ID`
 - `IDENTITY_CA_CERT`
+- `PLATFORM_ADMIN_AUTH_TOKEN` — user token bound via legacy `platformAdministrators.subjects`
+- `BINDING_ADMIN_AUTH_TOKEN` — user token bound via `globalRoleBindings`
 
 Notes:
 

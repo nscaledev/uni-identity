@@ -133,13 +133,41 @@ issuer:
 # platformAdministratorRole is a role that can be implicitly added to users
 # and service accounts.
 platformAdministrators:
-  # Protected role as defined below to grant.
+  # Protected role as defined below to grant. Translated verbatim into global
+  # role bindings for each subject below, so it is only needed while subjects
+  # remain here rather than in globalRoleBindings.
   roles:
   - platform-administrator
 
   # Subjects the role applies to, must be the canonical name from the IdP
-  # and not an alias.
+  # and not an alias, in its lower-case form — matching is case-sensitive and
+  # the render fails on an upper-case letter.
   subjects: []
+
+# Global role bindings grant the global scopes of the named roles to matched
+# subjects, replacing membership resolution for that session. Each entry takes
+# exactly one of `subject` or a non-empty `subjects`, plus one or more roles
+# defined below. `issuer` is the verbatim `iss` the IdP emits (Auth0: trailing
+# slash), or `uni` for locally issued tokens, which allows exact subjects only.
+# Subject "*" matches every subject from the issuer and is clamped to read.
+# Every other subject is matched case-sensitively, so it must be the
+# canonical lower-case form — the render fails on an upper-case letter.
+# Group membership never grants global scopes for user accounts; exact,
+# per-subject bindings here are the only route to global write authority.
+# Full semantics: pkg/rbac/README.md#global-role-bindings.
+# Helm rejects invalid separators and wildcard bindings on roles that grant any
+# non-read global operation — no role shipped below qualifies for wildcard use.
+# Rollout ordering: the flag is emitted only when this list is non-empty, and
+# older server binaries do not recognise it — deploy a binary that understands
+# --global-role-binding before enabling bindings; on rollback, clear this
+# value before reverting the binary.
+globalRoleBindings: []
+#  - issuer: https://staff.example.auth0.com/
+#    subject: "*"
+#    roles: [platform-reader] # example only: role must already exist in roles/additionalRoles
+#  - issuer: uni
+#    subjects: [alice@example.com, bob@example.com]
+#    roles: [platform-administrator]
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:
