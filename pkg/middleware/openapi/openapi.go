@@ -177,6 +177,12 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // The impersonated cache key therefore includes both:
 // - the authenticated calling service subject.
 // - the impersonated actor.
+//
+// All key shapes also include info.SrcIss, because subjects are only unique
+// within an issuer (ID-367 finding 6). Every segment preceding scope is
+// length-prefixed, since subjects such as Auth0's "auth0|<id>" contain the "|"
+// delimiter and could otherwise be crafted to collide with another identity's
+// key. scope needs no prefix: it is terminal, so the key stays injective.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
 	scope := organizationID
 	if scope == "" {
@@ -193,10 +199,17 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
-		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + scope, nil
+		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%s",
+			len(info.Userinfo.Sub), info.Userinfo.Sub,
+			len(info.SrcIss), info.SrcIss,
+			len(p.Actor), p.Actor,
+			scope), nil
 	}
 
-	return "direct|" + info.Userinfo.Sub + "|" + scope, nil
+	return fmt.Sprintf("direct|%d:%s|%d:%s|%s",
+		len(info.Userinfo.Sub), info.Userinfo.Sub,
+		len(info.SrcIss), info.SrcIss,
+		scope), nil
 }
 
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
