@@ -49,6 +49,14 @@ reader_role_id=$(role_id_of reader <<<"$out")
 [[ -n "$reader_role_id" ]] || die "could not resolve role ID for 'reader'"
 assert_one_match "$out" "--global-role-binding=https://staff.example.com/::\*::${reader_role_id}\""
 
+# The first non-vacuous positive for the wildcard guard: platform-reader is a
+# genuinely read-only GLOBAL role, so this proves the guard accepts read-only
+# global scopes rather than merely roles with no global block at all.
+out=$(render '[{"issuer":"https://staff.example.com/","subject":"*","roles":["platform-reader"]}]')
+platform_reader_role_id=$(role_id_of platform-reader <<<"$out")
+[[ -n "$platform_reader_role_id" ]] || die "could not resolve role ID for 'platform-reader'"
+assert_one_match "$out" "--global-role-binding=https://staff.example.com/::\*::${platform_reader_role_id}\""
+
 out=$(render '[{"issuer":"uni","subjects":["a@x.com","b@x.com"],"roles":["platform-administrator"]}]')
 role_id=$(role_id_of platform-administrator <<<"$out")
 [[ -n "$role_id" ]] || die "could not resolve role ID for 'platform-administrator'"
