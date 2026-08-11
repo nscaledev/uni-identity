@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"time"
 
 	gojose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -172,6 +173,26 @@ var _ = Describe("Passport Token Exchange", func() {
 					"Passport must not embed ACLs; authorization stays on the remote authorizer path")
 
 				GinkgoWriter.Printf("Passport exchanged successfully, expires_in: %d\n", result.ExpiresIn)
+			})
+
+			It("should be expired after its exp time", func() {
+				result, err := client.ExchangePassport(ctx, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).NotTo(BeNil())
+				Expect(result.AccessToken).NotTo(BeEmpty())
+
+				claims := decodePassportClaims(result.AccessToken)
+				Expect(claims.IssuedAt).NotTo(BeNil(), "Passport iat claim should be present")
+				Expect(claims.Expiry).NotTo(BeNil(), "Passport exp claim should be present")
+				Expect(passportTTLSeconds(claims)).To(Equal(int64(60)))
+
+				wait := time.Until(claims.Expiry.Time()) + time.Second
+				if wait > 0 {
+					time.Sleep(wait)
+				}
+
+				Expect(time.Now()).NotTo(BeTemporally("<", claims.Expiry.Time()))
 			})
 		})
 
@@ -380,6 +401,39 @@ var _ = Describe("Passport Token Exchange", func() {
 			})
 		})
 
+		Describe("Given legacy organizationId and projectId form names", func() {
+			It("should not accept them as scoped passport claims", func() {
+				form := url.Values{
+					"grant_type":           {tokenExchangeGrantType()},
+					"subject_token":        {config.AuthToken},
+					"subject_token_type":   {accessTokenSubjectTokenType()},
+					"requested_token_type": {passportIssuedTokenType()},
+					"organizationId":       {config.OrgID},
+					"projectId":            {config.ProjectID},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, 0, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+
+				if resp.StatusCode == http.StatusOK {
+					var result identityopenapi.Token
+					Expect(json.Unmarshal(respBody, &result)).To(Succeed())
+					Expect(result.AccessToken).NotTo(BeEmpty())
+
+					claims := decodePassportClaims(result.AccessToken)
+					Expect(claims.OrgID).To(BeEmpty())
+					Expect(claims.ProjectID).To(BeEmpty())
+
+					return
+				}
+
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
+			})
+		})
+
 		Describe("Given an invalid resource URI", func() {
 			It("should reject the exchange with an OAuth2 invalid_request response", func() {
 				resource := "not-a-uri"
@@ -429,6 +483,23 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(resp).NotTo(BeNil())
 				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 				expectExchangeOAuth2Error(respBody, identityopenapi.AccessDenied, "token validation failed")
+			})
+
+			It("should reject a garbage source token without minting a passport", func() {
+				form := url.Values{
+					"grant_type":           {tokenExchangeGrantType()},
+					"subject_token":        {"not-an-auth0-token"},
+					"subject_token_type":   {accessTokenSubjectTokenType()},
+					"requested_token_type": {passportIssuedTokenType()},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, 0, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+				Expect(resp.StatusCode).To(BeElementOf(http.StatusBadRequest, http.StatusUnauthorized))
+				Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
+				Expect(string(respBody)).NotTo(ContainSubstring("passport"))
 			})
 		})
 
