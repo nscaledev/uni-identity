@@ -421,6 +421,12 @@ KIND_SUFFIX    := $(KIND_SUFFIX)
 KIND_NAMESPACE ?= unikorn-identity-$(KIND_SUFFIX)
 KIND_RELEASE   ?= identity-$(KIND_SUFFIX)
 
+# Extra Helm values files, layered on top of hack/ci/test-values.yaml in the order given, so
+# a later file wins. Space separated, e.g.
+#   make integration-install EXTRA_VALUES="$$HOME/.config/unikorn/local/identity.yaml"
+EXTRA_VALUES      ?=
+EXTRA_VALUES_ARGS := $(foreach f,$(EXTRA_VALUES),--values $(f))
+
 .PHONY: kind-cluster
 kind-cluster:  ## Create KinD cluster (skips if KIND_CLUSTER already exists)
 	kind get clusters | grep -q '^$(KIND_CLUSTER)$$' || \
@@ -436,6 +442,7 @@ integration-install:  ## Deploy identity into the current cluster with random na
 	  --namespace $(KIND_NAMESPACE) \
 	  --release-name $(KIND_RELEASE) \
 	  --values hack/ci/test-values.yaml \
+	  $(EXTRA_VALUES_ARGS) \
 	  > test/.env.install
 
 .PHONY: integration-fixtures
