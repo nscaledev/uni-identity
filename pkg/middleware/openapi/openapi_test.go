@@ -58,6 +58,8 @@ const (
 	userActor = "joe@acme.com"
 	// serviceActor is used as a sentinel to track service propagation.
 	serviceActor = "my-service"
+	// spiffeIDActor is used as a sentinel to track SPIFFE identified service propagation.
+	spiffeIDActor = "spiffe://my-platform/region-server"
 	// serviceActorURI is encoded in the certificate, just in case.
 	// serviceActorURI = "spiffe://my-platform/my-service"
 	// servicePrivateKey is the pkey of an invoking service, base64 encoded
@@ -111,6 +113,45 @@ func addCertificateHeaderForCN(t *testing.T, r *http.Request, verified bool, com
 		Subject: pkix.Name{
 			CommonName: commonName,
 		},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	require.NoError(t, err)
+
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: der,
+	})
+
+	r.Header.Set("Ssl-Client-Cert", url.QueryEscape(string(certPEM)))
+
+	if verified {
+		r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+	}
+}
+
+// addCertificateHeaderForSPIFFEID adds a client certificate shaped like an X509-SVID:
+// the SPIFFE ID is in a URI SAN and there is no common name.
+func addCertificateHeaderForSPIFFEID(t *testing.T, r *http.Request, verified bool, spiffeID string) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	uri, err := url.Parse(spiffeID)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Country:      []string{"US"},
+			Organization: []string{"SPIRE"},
+		},
+		URIs:                  []*url.URL{uri},
 		NotBefore:             time.Now().Add(-time.Minute),
 		NotAfter:              time.Now().Add(time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
@@ -707,6 +748,35 @@ func TestServiceToServiceImpersonatedACLsDoNotShareCacheEntriesAcrossServices(t 
 	w2 := httptest.NewRecorder()
 	m.ServeHTTP(w2, r2)
 	require.Equal(t, http.StatusOK, w2.Result().StatusCode)
+}
+
+// TestServiceToServiceAuthenticationSVIDSubject asserts that a service presenting an
+// X509-SVID is identified by the SPIFFE ID in its URI SAN. SPIRE issues no common name,
+// so without this the subject is empty and the system account lookup cannot match.
+func TestServiceToServiceAuthenticationSVIDSubject(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	addCertificateHeaderForSPIFFEID(t, r, true, spiffeIDActor)
+	addPrincipalHeader(t, r)
+
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	h.validate(t, spiffeIDActor, "")
 }
 
 type poisonReader struct{}

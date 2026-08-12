@@ -96,3 +96,21 @@ func GetClientCertifcateThumbprint(certificate *x509.Certificate) string {
 
 	return base64.URLEncoding.EncodeToString(sum[:])
 }
+
+// GetClientCertificateSubject resolves the identity of a calling service from its already
+// verified certificate.  A common name is used when there is one.  An X509-SVID has no
+// common name and carries its SPIFFE ID in a URI SAN instead, so that is the fallback.
+// Only the spiffe scheme is accepted, so an unrelated URI SAN cannot become an identity.
+func GetClientCertificateSubject(certificate *x509.Certificate) string {
+	if certificate.Subject.CommonName != "" {
+		return certificate.Subject.CommonName
+	}
+
+	for _, uri := range certificate.URIs {
+		if uri.Scheme == "spiffe" {
+			return uri.String()
+		}
+	}
+
+	return ""
+}

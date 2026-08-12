@@ -1360,7 +1360,7 @@ func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Re
 	info := &IssueInfo{
 		Issuer:   a.getInternalIssuer(),
 		Audience: a.getAudience(),
-		Subject:  certificate.Subject.CommonName,
+		Subject:  util.GetClientCertificateSubject(certificate),
 		Type:     TokenTypeService,
 		Service: &ServiceClaims{
 			X509Thumbprint: thumbprint,

@@ -19,8 +19,16 @@ package oauth2_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -418,6 +426,122 @@ func TestUserinfoCustomClaims(t *testing.T) {
 			} else {
 				assert.Nil(t, userinfo.HttpsunikornCloudOrgauthz.OrgIds)
 			}
+		})
+	}
+}
+
+// svidTestSPIFFEID is the identity the SVID shaped test certificate carries.
+const svidTestSPIFFEID = "spiffe://my-platform/region-server"
+
+// addServiceCertificateHeader sets the client certificate header the ingress injects, with a
+// certificate identified either by a common name or, when commonName is empty, the way SPIRE
+// issues an X509-SVID: no common name, and the SPIFFE ID in a URI SAN.
+func addServiceCertificateHeader(t *testing.T, r *http.Request, commonName, spiffeID string) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	subject := pkix.Name{}
+
+	if commonName != "" {
+		subject.CommonName = commonName
+	} else {
+		subject.Country = []string{"US"}
+		subject.Organization = []string{"SPIRE"}
+	}
+
+	var uris []*url.URL
+
+	if spiffeID != "" {
+		uri, err := url.Parse(spiffeID)
+		require.NoError(t, err)
+
+		uris = append(uris, uri)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               subject,
+		URIs:                  uris,
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	require.NoError(t, err)
+
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: der,
+	})
+
+	r.Header.Set("Ssl-Client-Cert", url.QueryEscape(string(certPEM)))
+	r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+}
+
+// TestTokenClientCredentialsSubject asserts what names a service in a service token.
+//
+// An X509-SVID has no common name, so reading only that field yields an empty subject.  The
+// grant still succeeds and the token is still correctly bound to the certificate, so nothing
+// fails here: the first call that uses the token fails instead, as an unregistered system
+// account, which is a diagnostic pointing nowhere near the mint that caused it.  The common
+// name case is asserted alongside because the SPIFFE ID is a fallback and must not displace
+// it for the callers that have one.
+func TestTokenClientCredentialsSubject(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		commonName string
+		spiffeID   string
+		expected   string
+	}{
+		{
+			name:     "an SVID is named by its SPIFFE ID",
+			spiffeID: svidTestSPIFFEID,
+			expected: svidTestSPIFFEID,
+		},
+		{
+			name:       "a common name is preferred when there is one",
+			commonName: "uni-region",
+			expected:   "uni-region",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := setupPassportTestEnv(t)
+
+			r := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
+				strings.NewReader(url.Values{
+					"grant_type": {"client_credentials"},
+				}.Encode()))
+			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+			addServiceCertificateHeader(t, r, tc.commonName, tc.spiffeID)
+
+			result, err := env.authenticator.TokenClientCredentials(httptest.NewRecorder(), r)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			var claims oauth2.Claims
+
+			require.NoError(t, env.jwtIssuer.DecodeJWEToken(
+				t.Context(),
+				result.AccessToken,
+				&claims,
+				jose.TokenTypeAccessToken,
+			))
+
+			assert.Equal(t, tc.expected, claims.Subject)
+
+			// The binding is what makes the subject load bearing rather than cosmetic: the
+			// token is usable only by a caller presenting this same certificate.
+			require.NotNil(t, claims.Service)
+			assert.NotEmpty(t, claims.Service.X509Thumbprint)
 		})
 	}
 }

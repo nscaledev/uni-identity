@@ -240,7 +240,7 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 			// fast-path that consumes SrcIss. The empty value is fail-closed: cannot match
 			// an external admin entry.
 			Userinfo: &identityapi.Userinfo{
-				Sub: certificate.Subject.CommonName,
+				Sub: util.GetClientCertificateSubject(certificate),
 				HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
 					Acctype: identityapi.System,
 				},
