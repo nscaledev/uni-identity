@@ -63,13 +63,29 @@ UNI is authoritative for organization membership. The external token's claimed `
 are discarded. Organization membership is always resolved through the UNI user database by
 email address lookup.
 
-When the email is found, the resolved `orgIds` from UNI are used. When the email is not found:
+When the email is found and the local user is active, the resolved `orgIds` from UNI are used.
+UNI distinguishes two different not-found-or-not-usable cases:
 
-- If `allowExternalIdentity: false` (the default), the request is rejected with
-  `access_denied`.
-- If `allowExternalIdentity: true`, the subject is accepted with an empty `orgIds` slice.
-  RBAC decides what that principal can reach. This is intended for platform-administrator
-  subjects that are not registered as ordinary UNI users (e.g. CI service identities).
+- **Never onboarded** (no local user record for the email at all): if
+  `allowExternalIdentity: false` (the default), the request is rejected with `access_denied`.
+  If `allowExternalIdentity: true`, the subject is accepted with an empty `orgIds` slice — RBAC
+  decides what that principal can reach. This is intended for global-role-binding subjects that
+  are not registered as ordinary UNI users (e.g. CI service identities or staff accounts).
+- **Exists but inactive** (the global `User` record's `state` is not `Active`): the request is
+  always rejected with `access_denied`, **regardless of `allowExternalIdentity`**, because a local
+  suspension is a deliberate revocation. The check covers the global `User` record only — nothing
+  currently writes a non-active global `User`, while a user suspended in (or removed from) every
+  organization still resolves to an empty `orgIds` list with no error.
+
+  It can also only fire on a record the lookup finds, and the lookup is **case sensitive**:
+  `UserDatabase.GetUser` compares `spec.subject` verbatim, while the bearer path lower-cases the
+  email claim first (`auth0.Validator.validateEmail`) and the create API stores `spec.subject` as
+  supplied. A mixed-case record is therefore treated as *never onboarded* and admitted with empty
+  `orgIds` under `allowExternalIdentity: true`, even while suspended. Global role binding matching
+  is case-sensitive too, so a mixed-case record gains no unearned authority through that path — the
+  residual gap is narrower than a bypass: the inactive-user rejection simply cannot fire on a record
+  its case-sensitive lookup cannot find. Until storage and lookup agree on normalization, create
+  users with lower-case subjects.
 
 ## The `https://unikorn-cloud.org/authz` claim
 
@@ -88,10 +104,10 @@ database, not from the token.
 ## `allowExternalIdentity` semantics
 
 `allowExternalIdentity: true` does not grant any permissions by itself. A subject accepted with
-an empty `orgIds` slice can only reach resources through the platform-administrator fast-path in
-RBAC (if listed in `--platform-administrator-subjects`) or through other RBAC paths that do not
-require organization membership. Ordinary user access to organization resources requires a UNI
-user record and group membership.
+an empty `orgIds` slice can only reach resources through RBAC's global role binding resolution (if
+matched by a `--global-role-binding` or legacy `--platform-administrator-subjects` entry) or
+through other RBAC paths that do not require organization membership. Ordinary user access to
+organization resources requires a UNI user record and group membership.
 
 ## Signing algorithms
 
@@ -100,34 +116,71 @@ When empty, it defaults to `[RS256]`. Only asymmetric algorithms are permitted; 
 algorithms (e.g. `HS256`) and `none` are rejected at trust-list build time. This constraint
 applies regardless of what the provider's JWKS endpoint advertises.
 
-## The `issuer::subject` admin-list contract
+## The `--global-role-binding` contract
 
-Platform administrators are registered via the `--platform-administrator-subjects` flag using the
-`issuer::subject` syntax, where `issuer` is the exact issuer URL of the authenticating IdP (verbatim,
-matching the token's `iss`) and `subject` is the email address of the administrator:
+Global privileges — platform administrators and any future issuer-wide grant — are all expressed
+through one mechanism: a **global role binding**, mapping an `(issuer, subject | "*")` pair to a
+set of role IDs. Implementation and full rationale live in
+[`pkg/rbac/README.md`](../pkg/rbac/README.md#global-role-bindings); this section states the
+operator-facing contract.
+
+Bindings are registered with the repeated flag:
 
 ```
---platform-administrator-subjects https://my-idp.example.com/::admin@example.com
+--global-role-binding=<issuer>::<subject>::<roleID>[,<roleID>...]
 ```
 
-Multiple administrators may be given as repeated flags or as a single comma-separated value —
-the Helm chart renders `platformAdministrators.subjects` as the latter.
+`issuer` must be the exact issuer URL the authenticating IdP emits (verbatim, matching the token's
+`iss` — for Auth0, including the trailing slash) or the `uni` sentinel for UNI-local tokens.
+`subject` is either an exact subject (an email address, matched case-sensitively with surrounding
+whitespace trimmed on both sides) or the literal wildcard `*`, which matches every subject
+authenticated by that issuer. Parsing is right-anchored — the role list follows the
+*last* `::`, the subject sits between the second-to-last and last `::` — so issuer URLs containing
+`::` (IPv6 literals) parse unambiguously. Because matching is case-sensitive and the authenticated
+subject always arrives lower-cased, a binding's subject must be in its canonical lower-case form;
+the chart fails to render one that contains an upper-case ASCII letter (the wildcard `*` is exempt).
 
-For UNI-local tokens (access tokens issued by the UNI identity service itself), the issuer is the
-`uni` sentinel and a bare subject without the `::` prefix is equivalent.
+**Wildcard semantics.** A wildcard-subject binding is clamped to the `read` operation of each
+referenced role's global scopes, and can never be combined with the `uni` sentinel issuer, which
+would grant every UNI-local user. The clamp bounds verbs, not response sensitivity — some read
+endpoints return credential material — so any role used this way needs a read-surface audit first.
+The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
+global operation; no role shipped in `charts/identity/values.yaml` passes that guard today. Why
+both layers exist:
+[`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings).
 
-Bare entries carry legacy-compatible semantics: while the deprecated `--auth0-exchange-issuer`
-flag is set, each bare entry is mirrored at server construction onto that flag's issuer, so it
-matches both UNI-login and Auth0-exchange sessions — exactly the issuer-unaware behaviour that
-predates issuer qualification. A bare entry never matches a CRD-declared `bearerTrust` issuer.
-Migration to explicit `issuer::subject` form is therefore recommended but not forced: a
-deployment that has at least one `bearerTrust` provider and still carries a bare admin subject
-logs a startup warning (`Options.Validate`) and continues to boot. The always-on runtime control
-is the issuer-qualified match in `processUserAccountACL`.
+**Parse-time rejections.** The process fails to start on: malformed grammar (fewer than two `::`
+separators); an empty issuer, empty subject, or empty role-list member; a wildcard subject
+combined with the `uni` sentinel; and an issuer that is neither the `uni` sentinel nor an absolute
+URL (scheme + host, no commas or whitespace — this specifically catches accidentally comma-joining
+multiple bindings into one flag value).
 
-Note the mirror copies the flag value verbatim: a flag issuer lacking Auth0's canonical trailing
-slash will not match the emitted `iss` — the same match-`iss`-verbatim rule stated above for the
-`issuer::subject` syntax applies to the flag too.
+Legacy `--platform-administrator-subjects` / `--platform-administrator-role-ids` continue to work,
+each subject translated into an exact (non-wildcard) global role binding. For UNI-local tokens the
+issuer is the `uni` sentinel and a bare subject without the `::` prefix is equivalent. Bare entries
+carry legacy-compatible semantics: while the deprecated `--auth0-exchange-issuer` flag is set, each
+bare entry is mirrored at server construction onto that flag's issuer, so it matches both UNI-login
+and Auth0-exchange sessions — exactly the issuer-unaware behaviour that predates issuer
+qualification. A bare entry never matches a CRD-declared `bearerTrust` issuer, and a legacy subject
+that is literally `*` stays an exact match — it never gains wildcard semantics.
+
+Multiple administrators, or multiple bindings, may be given as repeated flags; the Helm chart
+renders `platformAdministrators.subjects` as a single comma-joined `--platform-administrator-subjects`
+value and `globalRoleBindings` as one `--global-role-binding` flag per subject in each entry.
+
+### Operator invariants
+
+`Options.Validate` logs two advisory startup warnings and never blocks boot: a bare (UNI-sentinel)
+`--platform-administrator-subjects` entry that should migrate to a `globalRoleBindings` entry,
+and a `--global-role-binding` issuer outside the currently trusted set — usually a stale or
+mistyped issuer that can never match a real token. Neither warning is a security control; the
+issuer-qualified runtime match in `processUserAccountACL` is. Their gating, the deliberately
+excluded legacy exchange issuer, and provider-list failure handling are documented in
+[`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings).
+
+Note the legacy-flag mirror copies the flag value verbatim: a flag issuer lacking Auth0's canonical
+trailing slash will not match the emitted `iss` — the same match-`iss`-verbatim rule stated above
+applies to the flag too.
 
 ## Invariants
 

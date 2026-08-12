@@ -37,12 +37,111 @@ spec:
           {{- $adminRoles = append $adminRoles (include "resource.id" $name) }}
         {{- end }}
         - --platform-administrator-role-ids={{ join "," $adminRoles }}
+        {{- range $i, $s := .Values.platformAdministrators.subjects }}
+          {{- /*
+          The server matches subjects case-sensitively; only the "::"-separated
+          subject part is checked, mirroring how the flag parser splits issuer
+          from subject.
+          */}}
+          {{- $subj := $s }}
+          {{- $cut := splitn "::" 2 $s }}
+          {{- if $cut._1 }}
+            {{- $subj = $cut._1 }}
+          {{- end }}
+          {{- if and (ne $subj "*") (regexMatch "[A-Z]" $subj) }}
+            {{- fail (printf "platformAdministrators.subjects[%d]: subject must be its canonical lower-case form" $i) }}
+          {{- end }}
+        {{- end }}
         - --platform-administrator-subjects={{ join "," .Values.platformAdministrators.subjects }}
         {{- $systemAccounts := list }}
         {{- range $k, $v := .Values.systemAccounts }}
           {{- $systemAccounts = append $systemAccounts (printf "%s=%s" $k (include "resource.id" $v)) }}
         {{- end }}
         - --system-account-roles-ids={{ join "," $systemAccounts }}
+        {{- range $i, $b := .Values.globalRoleBindings }}
+          {{- if not (trim (default "" $b.issuer)) }}
+            {{- fail (printf "globalRoleBindings[%d]: issuer is required" $i) }}
+          {{- end }}
+          {{- if regexMatch "\\s" $b.issuer }}
+            {{- fail (printf "globalRoleBindings[%d]: issuer must not contain whitespace" $i) }}
+          {{- end }}
+          {{- /*
+          Right-anchored parsing means a "::" in either field silently shifts
+          the boundary, undetectably once the flag is built. Reject it here,
+          while the intended split is still known.
+          */}}
+          {{- if contains "::" $b.issuer }}
+            {{- fail (printf "globalRoleBindings[%d]: issuer must not contain \"::\"" $i) }}
+          {{- end }}
+          {{- if and (hasKey $b "subject") (hasKey $b "subjects") }}
+            {{- fail (printf "globalRoleBindings[%d]: subject and subjects are mutually exclusive" $i) }}
+          {{- end }}
+          {{- $subjects := list }}
+          {{- if hasKey $b "subject" }}
+            {{- $subjects = list $b.subject }}
+          {{- else }}
+            {{- $subjects = default (list) $b.subjects }}
+          {{- end }}
+          {{- if not $subjects }}
+            {{- fail (printf "globalRoleBindings[%d]: exactly one of subject or non-empty subjects required" $i) }}
+          {{- end }}
+          {{- /*
+          Trim before validating and emitting, so a padded " * " cannot slip
+          past the wildcard guards and then match as a wildcard server-side.
+          */}}
+          {{- $trimmedSubjects := list }}
+          {{- range $si, $subject := $subjects }}
+            {{- $trimmed := trim (default "" $subject) }}
+            {{- if not $trimmed }}
+              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: empty or whitespace-only subject" $i $si) }}
+            {{- end }}
+            {{- if contains "::" $trimmed }}
+              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: subject must not contain \"::\"" $i $si) }}
+            {{- end }}
+            {{- if and (ne $trimmed "*") (regexMatch "[A-Z]" $trimmed) }}
+              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: subject must be its canonical lower-case form" $i $si) }}
+            {{- end }}
+            {{- if and (eq $b.issuer "uni") (eq $trimmed "*") }}
+              {{- fail (printf "globalRoleBindings[%d]: wildcard subject not allowed on the UNI sentinel issuer" $i) }}
+            {{- end }}
+            {{- $trimmedSubjects = append $trimmedSubjects $trimmed }}
+          {{- end }}
+          {{- if not $b.roles }}
+            {{- fail (printf "globalRoleBindings[%d]: roles must be non-empty" $i) }}
+          {{- end }}
+          {{- $allRoles := merge (dict) (default (dict) $.Values.roles) (default (dict) $.Values.additionalRoles) }}
+          {{- $roles := list }}
+          {{- range $b.roles }}
+            {{- if not (hasKey $allRoles .) }}
+              {{- fail (printf "globalRoleBindings[%d]: unknown role %q" $i .) }}
+            {{- end }}
+            {{- $roles = append $roles (include "resource.id" .) }}
+          {{- end }}
+          {{- /*
+          Render-time guard: a wildcard binding's roles must declare no
+          non-read global operation. Complementary to the runtime clamp in
+          accumulateGlobalReadPermissions (pkg/rbac/bindings.go); full
+          rationale in pkg/rbac/README.md#global-role-bindings.
+          */}}
+          {{- if has "*" $trimmedSubjects }}
+            {{- range $b.roles }}
+              {{- $roleName := . }}
+              {{- $role := index $allRoles $roleName }}
+              {{- $roleScopes := default (dict) $role.scopes }}
+              {{- $globalScopes := default (dict) $roleScopes.global }}
+              {{- range $scopeName, $ops := $globalScopes }}
+                {{- range $ops }}
+                  {{- if ne . "read" }}
+                    {{- fail (printf "globalRoleBindings[%d]: wildcard binding role %q grants non-read global operation %q on scope %q" $i $roleName . $scopeName) }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
+          {{- range $subject := $trimmedSubjects }}
+        - {{ printf "--global-role-binding=%s::%s::%s" $b.issuer $subject (join "," $roles) | quote }}
+          {{- end }}
+        {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}

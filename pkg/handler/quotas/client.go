@@ -158,6 +158,7 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 			DisplayName: meta.Spec.DisplayName,
 			Description: meta.Spec.Description,
 			Default:     int(meta.Spec.Default.Value()),
+			Format:      openapi.QuotaReadFormat(meta.Spec.Format),
 		}
 	}
 

@@ -133,13 +133,42 @@ issuer:
 # platformAdministratorRole is a role that can be implicitly added to users
 # and service accounts.
 platformAdministrators:
-  # Protected role as defined below to grant.
+  # Protected role as defined below to grant. Translated verbatim into global
+  # role bindings for each subject below, so it is only needed while subjects
+  # remain here rather than in globalRoleBindings.
   roles:
   - platform-administrator
 
   # Subjects the role applies to, must be the canonical name from the IdP
-  # and not an alias.
+  # and not an alias, in its lower-case form — matching is case-sensitive and
+  # the render fails on an upper-case letter.
   subjects: []
+
+# Global role bindings grant the global scopes of the named roles to matched
+# subjects, replacing membership resolution for that session. Each entry takes
+# exactly one of `subject` or a non-empty `subjects`, plus one or more roles
+# defined below. `issuer` is the verbatim `iss` the IdP emits (Auth0: trailing
+# slash), or `uni` for locally issued tokens, which allows exact subjects only.
+# Subject "*" matches every subject from the issuer and is clamped to read.
+# Every other subject is matched case-sensitively, so it must be the
+# canonical lower-case form — the render fails on an upper-case letter.
+# Group membership never grants global scopes for user accounts; exact,
+# per-subject bindings here are the only route to global write authority.
+# Full semantics: pkg/rbac/README.md#global-role-bindings.
+# Helm rejects invalid separators and wildcard bindings on roles that grant any
+# non-read global operation — platform-reader is the only role shipped below
+# with global scopes that qualifies for wildcard use.
+# Rollout ordering: the flag is emitted only when this list is non-empty, and
+# older server binaries do not recognise it — deploy a binary that understands
+# --global-role-binding before enabling bindings; on rollback, clear this
+# value before reverting the binary.
+globalRoleBindings: []
+#  - issuer: https://staff.example.auth0.com/
+#    subject: "*"
+#    roles: [platform-reader]
+#  - issuer: uni
+#    subjects: [alice@example.com, bob@example.com]
+#    roles: [platform-administrator]
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:
@@ -204,6 +233,47 @@ roles:
         storage:objectstorageclasses: [create,read,update,delete]
         storage:objectstorageendpoints: [create,read,update,delete]
         storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
+  # A platform-reader has global read-only visibility for support tooling.
+  # Definition = read-projection of platform-administrator's global scopes
+  # minus credential-bearing and unserved scopes. The projection, the
+  # exclusion list, and read-only-ness are pinned by the contract test in
+  # pkg/rbac (see docs/platform-reader.md for the audit record and runbook).
+  platform-reader:
+    description: Platform reader
+    protected: true
+    scopes:
+      global:
+        identity:organizations: [read]
+        identity:oauth2providers: [read]
+        identity:roles: [read]
+        identity:serviceaccounts: [read]
+        identity:users: [read]
+        identity:groups: [read]
+        identity:projects: [read]
+        identity:quotas: [read]
+        identity:allocations: [read]
+        region:regions: [read]
+        region:flavors: [read]
+        region:images: [read]
+        region:externalnetworks: [read]
+        region:networks: [read]
+        region:networks:v2: [read]
+        region:loadbalancers:v2: [read]
+        region:securitygroups: [read]
+        region:securitygroups:v2: [read]
+        region:volumeclasses:v2: [read]
+        region:filestorage:v2: [read]
+        region:filestorageclass:v2: [read]
+        region:sshcertificateauthorities:v2: [read]
+        kubernetes:regions: [read]
+        kubernetes:flavors: [read]
+        kubernetes:images: [read]
+        kubernetes:clustermanagers: [read]
+        compute:regions: [read]
+        compute:flavors: [read]
+        compute:images: [read]
+        storage:objectstorageclasses: [read]
+        storage:objectstorageendpoints: [read]
   region-service:
     decription: Region service
     protected: true
@@ -430,6 +500,11 @@ quotas:
     displayName: File Storage
     description: Persistent network file storage.
     default: 1Ti
+    format: binary
+  volume:
+    displayName: Volume Capacity
+    description: Total requested block storage capacity in GiB.
+    default: 0
     format: binary
 
 ingress:

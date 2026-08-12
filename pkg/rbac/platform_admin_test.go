@@ -72,7 +72,19 @@ func TestPlatformAdminSubjectsValueParse(t *testing.T) {
 
 // getACLForSubject builds a minimal RBAC environment with the given opts and
 // calls GetACL for the given subject+srcIss pair. It returns the resulting ACL.
-func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) *openapi.Acl {
+// extraRoles are created alongside the fixed "admin" role fixture, letting
+// tests that need additional role fixtures (e.g. wildcard-clamp/union
+// scenarios) inject them without a bespoke fake-client setup.
+func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, extraRoles ...*unikornv1.Role) *openapi.Acl {
+	t.Helper()
+
+	return getACLForSubjectWithOrgIDs(t, opts, subject, srcIss, nil, extraRoles...)
+}
+
+// getACLForSubjectWithOrgIDs is getACLForSubject with control over the
+// authz.OrgIds claim, used to prove that a bound subject skips membership
+// resolution entirely even when org memberships are present.
+func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
 	t.Helper()
 
 	scheme, err := unikornv1.SchemeBuilder.Build()
@@ -94,7 +106,13 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) 
 		},
 	}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adminRole).Build()
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adminRole)
+
+	for _, r := range extraRoles {
+		builder = builder.WithObjects(r)
+	}
+
+	c := builder.Build()
 	rbacClient := rbac.New(c, testNamespace, opts)
 
 	info := &authorization.Info{
@@ -102,6 +120,7 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) 
 			Sub: subject,
 			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
 				Acctype: openapi.User,
+				OrgIds:  orgIDs,
 			},
 		},
 		SrcIss: srcIss,
@@ -216,10 +235,13 @@ func TestAdminFastPathRequiresServerSideGrant(t *testing.T) {
 	}
 }
 
-// TestAdminFastPathCaseInsensitiveSubject verifies that the platform-admin
-// fast-path matches regardless of case differences between the admin-list
-// entry subject and the (lowercased) token subject.
-func TestAdminFastPathCaseInsensitiveSubject(t *testing.T) {
+// TestAdminFastPathCaseSensitiveSubject verifies that the platform-admin
+// fast-path requires the admin-list entry subject to match the (lowercased,
+// trimmed) token subject exactly, including case. The validator already
+// normalizes the token subject to lower case, so an admin-list entry typed
+// in any other case is a configuration mistake, not an alternate spelling —
+// it must not match.
+func TestAdminFastPathCaseSensitiveSubject(t *testing.T) {
 	t.Parallel()
 
 	const staffIss = "https://staff.auth0.com"
@@ -231,19 +253,25 @@ func TestAdminFastPathCaseInsensitiveSubject(t *testing.T) {
 		wantAdminACL bool
 	}{
 		{
-			name:         "mixed-case entry matches lowercased token subject",
-			entrySubject: "Admin@Nscale.Com",
+			name:         "exact-case entry matches lowercased token subject",
+			entrySubject: "admin@nscale.com",
 			tokenSubject: "admin@nscale.com",
 			wantAdminACL: true,
 		},
 		{
-			name:         "lowercased entry matches mixed-case token subject",
-			entrySubject: "admin@nscale.com",
-			tokenSubject: "Admin@Nscale.Com",
-			wantAdminACL: true,
+			name:         "mixed-case entry does not match lowercased token subject",
+			entrySubject: "Admin@Nscale.Com",
+			tokenSubject: "admin@nscale.com",
+			wantAdminACL: false,
 		},
 		{
-			name:         "non-matching subject is denied even after normalisation",
+			name:         "lowercased entry does not match mixed-case token subject",
+			entrySubject: "admin@nscale.com",
+			tokenSubject: "Admin@Nscale.Com",
+			wantAdminACL: false,
+		},
+		{
+			name:         "non-matching subject is denied",
 			entrySubject: "Admin@Nscale.Com",
 			tokenSubject: "other@nscale.com",
 			wantAdminACL: false,

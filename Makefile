@@ -208,6 +208,7 @@ lint: $(GENDIR)
 	@go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(LINT_VERSION)
 	$(GOBIN)/golangci-lint run ./...
 	helm lint --strict charts/identity
+	./hack/check_chart_render.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate

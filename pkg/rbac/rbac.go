@@ -21,7 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 
@@ -39,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
@@ -47,7 +47,8 @@ var (
 	ErrWrongOrganizationCount = goerrors.New("expected exactly one organization ID")
 	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
 	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
-	ErrBareAdminSubject       = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to issuer::subject")
+	ErrBareAdminSubject       = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to globalRoleBindings")
+	ErrUntrustedBindingIssuer = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
 )
 
 // PlatformAdministratorSubject binds an admin subject to the issuer that must
@@ -109,31 +110,45 @@ type Options struct {
 	PlatformAdministratorRoleIDs  []string
 	PlatformAdministratorSubjects []PlatformAdministratorSubject
 	SystemAccountRoleIDs          map[string]string
+	GlobalRoleBindings            GlobalRoleBindingsValue
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringSliceVar(&o.PlatformAdministratorRoleIDs, "platform-administrator-role-ids", nil, "Platform administrator role ID.")
 	f.Var((*PlatformAdministratorSubjectsValue)(&o.PlatformAdministratorSubjects), "platform-administrator-subjects", "Platform administrators as issuer::subject (bare value = UNI issuer).")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
+	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
 }
 
-// Validate reports whether the admin list still needs migrating: any bare
-// (UNI-sentinel) entry while a non-UNI issuer is trusted. Advisory only — the
-// caller logs the result rather than refusing to start; bare entries can
-// never match a CRD-declared issuer, so the runtime issuer-match in
-// processUserAccountACL remains the security control.
+// Validate reports advisory (log-only) startup findings: bare (UNI-sentinel)
+// admin entries while a non-UNI issuer is trusted, and GlobalRoleBindings
+// issuers outside trustedNonUNIIssuers. Every offender is reported, joined
+// with errors.Join so errors.Is still matches each sentinel.
+//
+// Only the bare-admin check is gated on a non-empty trustedNonUNIIssuers, so
+// a caller that cannot tell "none configured" from "provider list
+// unavailable" must not call Validate in the latter case. See
+// pkg/rbac/README.md#global-role-bindings for gating and security semantics.
 func (o *Options) Validate(trustedNonUNIIssuers []string) error {
-	if len(trustedNonUNIIssuers) == 0 {
-		return nil
-	}
+	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings))
 
-	for _, s := range o.PlatformAdministratorSubjects {
-		if s.Issuer == idconstants.UNISentinel {
-			return fmt.Errorf("%w: %q", ErrBareAdminSubject, s.Subject)
+	if len(trustedNonUNIIssuers) != 0 {
+		for _, s := range o.PlatformAdministratorSubjects {
+			if s.Issuer == idconstants.UNISentinel {
+				errs = append(errs, fmt.Errorf("%w: %q", ErrBareAdminSubject, s.Subject))
+			}
 		}
 	}
 
-	return nil
+	for _, b := range o.GlobalRoleBindings {
+		if b.Issuer == idconstants.UNISentinel || slices.Contains(trustedNonUNIIssuers, b.Issuer) {
+			continue
+		}
+
+		errs = append(errs, fmt.Errorf("%w: %q", ErrUntrustedBindingIssuer, b.Issuer))
+	}
+
+	return goerrors.Join(errs...)
 }
 
 // RBAC contains all the scoping rules for services across the platform.
@@ -141,14 +156,24 @@ type RBAC struct {
 	client    client.Client
 	namespace string
 	options   *Options
+	bindings  []GlobalRoleBinding
 }
 
 // New creates a new RBAC client.
 func New(client client.Client, namespace string, options *Options) *RBAC {
+	bindings := effectiveGlobalRoleBindings(options)
+
+	logger := log.Log.WithName("rbac")
+
+	for _, b := range bindings {
+		logger.Info("global role binding active", "issuer", b.Issuer, "subject", b.Subject, "roleIDs", b.RoleIDs)
+	}
+
 	return &RBAC{
 		client:    client,
 		namespace: namespace,
 		options:   options,
+		bindings:  bindings,
 	}
 }
 
@@ -174,7 +199,7 @@ func (r *RBAC) groupSubjectFilter(ctx context.Context, subject string) func(unik
 		if len(group.Spec.UserIDs) > 0 {
 			if orgUserName, err := r.resolveOrganizationUserName(ctx, group.Namespace, subject); err == nil {
 				if slices.Contains(group.Spec.UserIDs, orgUserName) {
-					slog.Warn("group matched via deprecated userIDs field, migration to subjects required",
+					log.FromContext(ctx).Info("group matched via deprecated userIDs field, migration to subjects required",
 						"group", group.Name, "namespace", group.Namespace, "userID", orgUserName)
 
 					return false
@@ -719,13 +744,19 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 
 	acl := &openapi.Acl{}
 
-	if slices.ContainsFunc(r.options.PlatformAdministratorSubjects, func(p PlatformAdministratorSubject) bool {
-		return p.Issuer == srcIss && strings.EqualFold(strings.TrimSpace(p.Subject), strings.TrimSpace(subject))
-	}) {
-		if err := accumulateGlobalPermissions(acl, r.options.PlatformAdministratorRoleIDs, roles); err != nil {
-			return nil, err
+	if bindings := r.resolveGlobalRoleBindings(srcIss, subject); len(bindings) > 0 {
+		for _, b := range bindings {
+			accumulate := accumulateGlobalPermissions
+			if b.Wildcard {
+				accumulate = accumulateGlobalReadPermissions
+			}
+
+			if err := accumulate(acl, b.RoleIDs, roles); err != nil {
+				return nil, err
+			}
 		}
 
+		// Replace semantics: bound principals skip membership resolution.
 		return acl, nil
 	}
 
@@ -1001,27 +1032,4 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	srcIss := srcIssOrUNISentinel(info.SrcIss)
 
 	return r.processUserAccountACL(ctx, subject, srcIss, organizationID, authz)
-}
-
-func (r *RBAC) NewSuperContext(ctx context.Context) (context.Context, error) {
-	roles, err := r.getRoles(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var globalACL openapi.AclEndpoints
-
-	for _, id := range r.options.PlatformAdministratorRoleIDs {
-		if role, ok := roles[id]; ok {
-			addScopesToEndpointList(&globalACL, role.Spec.Scopes.Global)
-		}
-	}
-
-	acl := &openapi.Acl{}
-
-	if len(globalACL) != 0 {
-		acl.Global = &globalACL
-	}
-
-	return NewContext(ctx, acl), nil
 }
