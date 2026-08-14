@@ -83,6 +83,60 @@ func TestGlobalRoleBindingsValueParse(t *testing.T) {
 	}
 }
 
+func TestGlobalGroupRoleBindingsValueSet(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		value   string
+		want    []rbac.GroupRoleBinding
+		wantErr bool
+	}{
+		{name: "valid", value: "https://staff.example.com/::Platform Engineering::role-a,role-b",
+			want: []rbac.GroupRoleBinding{{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"role-a", "role-b"}}}},
+		{name: "surrounding whitespace trimmed", value: "https://staff.example.com/:: SRE ::role-a",
+			want: []rbac.GroupRoleBinding{{Issuer: "https://staff.example.com/", Group: "SRE", RoleIDs: []string{"role-a"}}}},
+		{name: "uni sentinel rejected", value: "uni::SRE::role-a", wantErr: true},
+		{name: "wildcard group rejected", value: "https://staff.example.com/::*::role-a", wantErr: true},
+		{name: "empty group rejected", value: "https://staff.example.com/::::role-a", wantErr: true},
+		{name: "group with :: shifts into issuer and fails (path issuer)", value: "https://staff.example.com/::my::group::role-a", wantErr: true},
+		{name: "group with :: shifts into issuer and fails (pathless issuer)", value: "https://staff.example.com::my::group::role-a", wantErr: true},
+		{name: "malformed", value: "no-separators", wantErr: true},
+		{name: "empty role", value: "https://staff.example.com/::SRE::", wantErr: true},
+		{name: "role with whitespace", value: "https://staff.example.com/::SRE::role a", wantErr: true},
+		{name: "issuer not a URL", value: "not a url::SRE::role-a", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var v rbac.GlobalGroupRoleBindingsValue
+
+			err := v.Set(tc.value)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("%q: expected error", tc.value)
+				}
+
+				if strings.Contains(tc.name, "shifts into issuer") && !strings.Contains(err.Error(), "group name contains") {
+					t.Fatalf("%q: error %q does not mention the group-name possibility", tc.value, err.Error())
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("%q: %v", tc.value, err)
+			}
+
+			if !reflect.DeepEqual([]rbac.GroupRoleBinding(v), tc.want) {
+				t.Fatalf("%q: got %+v, want %+v", tc.value, v, tc.want)
+			}
+		})
+	}
+}
+
 func TestAccumulateGlobalReadPermissionsClampsWrites(t *testing.T) {
 	t.Parallel()
 
