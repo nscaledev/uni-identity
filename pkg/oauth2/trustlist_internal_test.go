@@ -270,6 +270,33 @@ func TestGroupsClaimByIssuerFirstMatchWins(t *testing.T) {
 	}
 }
 
+// TestValidatorForIssuerRejectsBareGroupsClaim pins that a non-empty
+// groupsClaim without "://" fails the provider's trust-list entry the same
+// way an invalid audience or algorithm does today, rather than being
+// silently normalised, defaulted, or dropped somewhere between the
+// OAuth2Provider spec and auth0.NewValidator. auth0.NewValidator already
+// rejects a bare groupsClaim on its own (see
+// TestNewValidatorRejectsBareGroupsClaim in pkg/oauth2/auth0), but nothing
+// pinned that cachedValidator actually propagates that construction error up
+// through validatorForIssuer instead of swallowing it for this one field.
+func TestValidatorForIssuerRejectsBareGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	provider := providerWithBearerTrust("https://staff.auth0.com", "aud")
+	provider.Spec.BearerTrust.GroupsClaim = "groups" // bare: no "://"
+
+	a := setupAuthenticator(t, provider)
+
+	res, err := a.validatorForIssuer(t.Context(), "https://staff.auth0.com")
+	if err == nil {
+		t.Fatal("expected the trust-list entry to fail for a bare groupsClaim, got no error")
+	}
+
+	if res != nil {
+		t.Fatalf("expected no validated issuer for a bare groupsClaim, got %+v", res)
+	}
+}
+
 // TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange pins that the map
 // includes the synthetic legacy auth0-exchange provider mapped to an empty
 // groupsClaim. That provider is built from flags, has no CRD, and can never

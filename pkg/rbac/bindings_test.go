@@ -103,6 +103,7 @@ func TestGlobalGroupRoleBindingsValueSet(t *testing.T) {
 		{name: "uni sentinel rejected", value: "uni::SRE::role-a", wantErr: true},
 		{name: "wildcard group rejected", value: "https://staff.example.com/::*::role-a", wantErr: true},
 		{name: "empty group rejected", value: "https://staff.example.com/::::role-a", wantErr: true},
+		{name: "empty issuer rejected", value: "::SRE::role-a", wantErr: true},
 		{name: "group with :: shifts into issuer and fails (path issuer)", value: "https://staff.example.com/::my::group::role-a", wantErr: true},
 		{name: "group with :: shifts into issuer and fails (pathless issuer)", value: "https://staff.example.com::my::group::role-a", wantErr: true},
 		{name: "malformed", value: "no-separators", wantErr: true},
@@ -125,6 +126,12 @@ func TestGlobalGroupRoleBindingsValueSet(t *testing.T) {
 
 				if strings.Contains(tc.name, "shifts into issuer") && !strings.Contains(err.Error(), "group name contains") {
 					t.Fatalf("%q: error %q does not mention the group-name possibility", tc.value, err.Error())
+				}
+
+				// Pin the specific rejection reason validateGroupBindingIssuer
+				// returns for an empty issuer, not merely that some error fired.
+				if tc.name == "empty issuer rejected" && !strings.Contains(err.Error(), "issuer is not an absolute URL") {
+					t.Fatalf("%q: error %q does not report the empty-issuer-is-not-a-URL reason", tc.value, err.Error())
 				}
 
 				return
@@ -433,6 +440,65 @@ func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
 	}
 }
 
+// TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly covers the
+// nil-vs-empty-map contract documented on Options.Validate: nil means "the
+// claims lookup failed" and must skip the GlobalGroupRoleBindings advisory
+// entirely, while a non-nil empty map means "no issuers configured" and runs
+// that check normally. The fixture's group binding issuer is absent from
+// trustedNonUNIIssuers, so the empty-map case reports it as untrusted; a
+// nil map must report neither that nor the dead-binding error for it. A bare
+// admin subject is also present so the unrelated, ungated checks are
+// observed to run identically in both cases.
+func TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly(t *testing.T) {
+	t.Parallel()
+
+	const (
+		trustedIssuer = "https://staff.example.com/"
+		groupIssuer   = "https://untrusted.example.com/"
+	)
+
+	opts := &rbac.Options{
+		PlatformAdministratorSubjects: []rbac.PlatformAdministratorSubject{
+			{Issuer: constants.UNISentinel, Subject: "bare@nscale.com"},
+		},
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: groupIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	// nil groupsClaimByIssuer ("the claims lookup failed") → the
+	// GlobalGroupRoleBindings check is skipped entirely: neither
+	// ErrGroupBindingNoGroupsClaim nor ErrUntrustedBindingIssuer is reported
+	// for groupIssuer, even though groupIssuer is not in trustedNonUNIIssuers.
+	// The unrelated bare-admin check is ungated by groupsClaimByIssuer and
+	// still runs.
+	err := opts.Validate([]string{trustedIssuer}, nil)
+	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
+		t.Fatalf("got %v, want ErrBareAdminSubject reported even when the group check is skipped", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrGroupBindingNoGroupsClaim) {
+		t.Fatalf("got %v, unexpectedly ErrGroupBindingNoGroupsClaim with a nil groupsClaimByIssuer", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, unexpectedly ErrUntrustedBindingIssuer with a nil groupsClaimByIssuer", err)
+	}
+
+	// non-nil empty map ("no issuers configured") → the check runs: groupIssuer
+	// is absent from the map and not in trustedNonUNIIssuers, so it IS
+	// reported as untrusted. This is the contrast that proves the nil case
+	// above is a real skip, not an incidental non-match.
+	err = opts.Validate([]string{trustedIssuer}, map[string]string{})
+	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
+		t.Fatalf("got %v, want ErrBareAdminSubject still reported with a non-nil empty groupsClaimByIssuer", err)
+	}
+
+	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, want ErrUntrustedBindingIssuer reported with a non-nil empty groupsClaimByIssuer", err)
+	}
+}
+
 // Legacy flags and equivalent bindings must produce identical ACLs.
 func TestLegacyFlagsEquivalentToBindings(t *testing.T) {
 	t.Parallel()
@@ -525,7 +591,7 @@ func TestWildcardClampAndMultiBindingUnion(t *testing.T) {
 		t.Fatalf("exact contribution missing full verbs: %+v", byName)
 	}
 
-	// Direct same-role comparison (spec §5 "Tests"): binding the SAME role
+	// Direct same-role comparison: binding the SAME role
 	// (crud-role) exactly, rather than via wildcard, must yield its full
 	// operation set — contrasted directly against the wildcard-bound
 	// "anyone@x.com" case above, which got only read on this same endpoint.
@@ -843,5 +909,76 @@ func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 
 	if !found {
 		t.Fatal("expected unmatched-groups diagnostic even though a subject binding matched")
+	}
+}
+
+// TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail pins the content of
+// the "global role bindings matched" log line emitted by
+// accumulateMatchedBindings. Group membership lives in the IdP, outside this
+// system, so this line is the only record anywhere of who exercised global
+// authority via a group and why: it must carry the subject, the issuer, the
+// matched binding identities and the role IDs each one granted, and the
+// count of organization memberships skipped by replace semantics. The
+// fixture matches both a subject binding and a group binding on the same
+// principal so both describeSubjectBindings and describeGroupBindings are
+// exercised, and supplies a non-empty authz.OrgIds so the skipped count is a
+// real number rather than a vacuous zero.
+func TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer  = "https://staff.example.com/"
+		subject = "boss@x.com"
+		group   = "Platform Engineering"
+	)
+
+	opts := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: issuer, Subject: subject, RoleIDs: []string{"admin"}},
+		},
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: issuer, Group: group, RoleIDs: []string{"admin"}},
+		},
+	}
+
+	var lines []string
+
+	logger := funcr.New(func(_, args string) { lines = append(lines, args) }, funcr.Options{})
+	ctx := log.IntoContext(t.Context(), logger)
+
+	acl, err := aclOrErrForSubjectWithContext(ctx, t, opts, subject, issuer, []string{"org-a", "org-b"}, []string{group})
+	if err != nil {
+		t.Fatalf("GetACL: %v", err)
+	}
+
+	// The exercise log is additive, not a substitute for the grant.
+	if acl.Global == nil {
+		t.Fatal("matched bindings granted no global ACL")
+	}
+
+	var found bool
+
+	for _, l := range lines {
+		if !strings.Contains(l, "global role bindings matched") {
+			continue
+		}
+
+		found = true
+
+		for _, want := range []string{
+			subject,
+			issuer,
+			"subject " + subject + " -> admin", // describeSubjectBindings
+			"group " + group + " -> admin",     // describeGroupBindings
+			"organizationMembershipsSkipped\"=2",
+		} {
+			if !strings.Contains(l, want) {
+				t.Fatalf("exercise log missing %q: %q", want, l)
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected a \"global role bindings matched\" exercise log line")
 	}
 }

@@ -124,7 +124,6 @@ type testTokenClaims struct {
 
 	// Groups is loosely typed so malformed-claim test cases (non-array,
 	// non-string entries) can be expressed directly.
-	//nolint:tagliatelle
 	Groups any `json:"https://unikorn-cloud.org/groups,omitempty"`
 }
 

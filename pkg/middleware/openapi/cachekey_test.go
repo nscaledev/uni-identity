@@ -21,6 +21,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -37,6 +39,46 @@ func tokenDigest(token string) string {
 	sum := sha256.Sum256([]byte(token))
 
 	return base64.RawStdEncoding.EncodeToString(sum[:])
+}
+
+// digestSegment extracts the token-digest segment from a real aclCacheKey
+// return value, rather than recomputing the digest independently. The key
+// is "<mode>|" followed by a run of length-prefixed "<len>:<value>" segments
+// and a terminal, unprefixed scope segment; the digest is always the last
+// length-prefixed segment, immediately before scope.
+//
+// Only the direct shape is parsed: it has three length-prefixed segments
+// (sub, srcIss, digest). The impersonated shape's digest position is pinned
+// by the exact-key assertions elsewhere in this file, so teaching this helper
+// to parse a shape nothing here builds would be untested code in a helper
+// whose whole job is to model the real format faithfully.
+func digestSegment(t *testing.T, key string) string {
+	t.Helper()
+
+	mode, rest, ok := strings.Cut(key, "|")
+	require.True(t, ok, "key %q missing mode tag", key)
+	require.Equal(t, "direct", mode, "digestSegment only parses direct-shape keys, got %q", key)
+
+	const segmentCount = 3
+
+	var digest string
+
+	for i := range segmentCount {
+		colon := strings.IndexByte(rest, ':')
+		require.GreaterOrEqual(t, colon, 0, "segment %d missing length prefix in key %q", i, key)
+
+		length, err := strconv.Atoi(rest[:colon])
+		require.NoError(t, err, "segment %d length prefix in key %q", i, key)
+
+		value := rest[colon+1 : colon+1+length]
+		digest = value
+		rest = rest[colon+1+length:]
+
+		require.True(t, strings.HasPrefix(rest, "|"), "segment %d not followed by a delimiter in key %q", i, key)
+		rest = rest[1:]
+	}
+
+	return digest
 }
 
 func TestACLCacheKey(t *testing.T) {
@@ -204,7 +246,43 @@ func TestACLCacheKey(t *testing.T) {
 	// This makes the boundary safe by construction, not merely by the
 	// length-prefix convention used for the other segments; there is no
 	// adversarial (scope, token) pair that can be constructed to defeat it, so
-	// no such test is written here.
+	// no such test is written here. DigestSegmentEncodingInvariant below pins
+	// the encoding facts (fixed 43-character length, "|"-free alphabet) that
+	// this construction argument rests on, without attempting the dropped
+	// collision proof. It reads the digest out of aclCacheKey's actual
+	// returned key via digestSegment rather than recomputing it, so a change
+	// to the real encoding is what the assertions below observe.
+
+	t.Run("DigestSegmentEncodingInvariant", func(t *testing.T) {
+		t.Parallel()
+
+		const base64StdAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+		// Token content varies in length and character set; the digest segment
+		// must not. A switch to base64.URLEncoding (which pads with "=" and
+		// swaps "+/" for "-_") or a truncated digest would change the length or
+		// alphabet asserted below.
+		for _, token := range []string{"", "short-token", "a much longer token value with unicode: héllo wörld"} {
+			info := &authorization.Info{
+				Token:    token,
+				Userinfo: &identityapi.Userinfo{Sub: "user-1"},
+			}
+
+			key, err := aclCacheKey(t.Context(), info, "org-1")
+			require.NoError(t, err)
+
+			digest := digestSegment(t, key)
+
+			require.Len(t, digest, 43, "digest for token %q", token)
+
+			for _, c := range digest {
+				require.True(t, strings.ContainsRune(base64StdAlphabet, c),
+					"digest character %q for token %q is outside base64.RawStdEncoding's alphabet", c, token)
+			}
+
+			require.NotContains(t, digest, "|")
+		}
+	})
 
 	t.Run("DistinctTokensSameSubjectGetDistinctKeys", func(t *testing.T) {
 		t.Parallel()

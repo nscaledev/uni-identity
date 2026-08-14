@@ -295,10 +295,14 @@ func TestImpersonation_UniExactBindingIntersectsWithServiceACL(t *testing.T) {
 	assert.Nil(t, acl.Projects)
 }
 
-// TestImpersonatedPrincipalNeverMatchesGroupBindings pins spec §2: an
+// TestImpersonatedPrincipalNeverMatchesGroupBindings pins that an
 // impersonated principal whose (hypothetical) groups would match a
-// configured group binding still gets NO group-derived global scopes.
-// processImpersonatedPrincipalACL always resolves impersonated user
+// configured group binding still gets NO group-derived global scopes: group
+// membership is an IdP-issued token claim, and an impersonated principal
+// never carries the impersonated actor's original token, so granting
+// group-derived authority here would attribute someone else's IdP membership
+// to the service doing the impersonating. processImpersonatedPrincipalACL
+// always resolves impersonated user
 // principals against the UNI sentinel issuer with nil groups. The binding
 // below is constructed directly on the sentinel issuer (bypassing
 // GlobalGroupRoleBindingsValue.Set's flag-parse validation, which rejects the
