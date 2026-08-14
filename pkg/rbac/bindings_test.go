@@ -108,7 +108,7 @@ func TestGlobalGroupRoleBindingsValueSet(t *testing.T) {
 		{name: "malformed", value: "no-separators", wantErr: true},
 		{name: "empty role", value: "https://staff.example.com/::SRE::", wantErr: true},
 		{name: "role with whitespace", value: "https://staff.example.com/::SRE::role a", wantErr: true},
-		{name: "issuer not a URL", value: "not a url::SRE::role-a", wantErr: true},
+		{name: "issuer with whitespace rejected", value: "not a url::SRE::role-a", wantErr: true},
 	}
 
 	for _, tc := range cases {
