@@ -155,10 +155,11 @@ func (o *Options) Validate(trustedNonUNIIssuers []string) error {
 
 // RBAC contains all the scoping rules for services across the platform.
 type RBAC struct {
-	client    client.Client
-	namespace string
-	options   *Options
-	bindings  []GlobalRoleBinding
+	client        client.Client
+	namespace     string
+	options       *Options
+	bindings      []GlobalRoleBinding
+	groupBindings []GroupRoleBinding
 }
 
 // New creates a new RBAC client.
@@ -171,11 +172,16 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 		logger.Info("global role binding active", "issuer", b.Issuer, "subject", b.Subject, "roleIDs", b.RoleIDs)
 	}
 
+	for _, b := range options.GlobalGroupRoleBindings {
+		logger.Info("global group role binding active", "issuer", b.Issuer, "group", b.Group, "roleIDs", b.RoleIDs)
+	}
+
 	return &RBAC{
-		client:    client,
-		namespace: namespace,
-		options:   options,
-		bindings:  bindings,
+		client:        client,
+		namespace:     namespace,
+		options:       options,
+		bindings:      bindings,
+		groupBindings: options.GlobalGroupRoleBindings,
 	}
 }
 
@@ -397,16 +403,18 @@ func addScopesToEndpointList(e *openapi.AclEndpoints, scopes []unikornv1.RoleSco
 	return &endpoints
 }
 
-// accumulateGlobalPermissions adds any global permissions referenced in roles by the
-// supplied groups the subject is a member of to the ACL.
-// NOTE: this deliberately doesn't accept groups, as standard users should never be
-// granted global permissions.  If someone changes this interface alarm bells should
-// start ringing.
+// accumulateGlobalPermissions adds the global scopes of the given roles to
+// the ACL. NOTE: this deliberately accepts role IDs, never UNI Group
+// resources — group membership stored in UNI must not grant global
+// permissions. The role IDs arriving here come from deployment-configured
+// bindings (exact subject, wildcard subject, or IdP-group — see
+// pkg/rbac/README.md#global-role-bindings) or system-account mappings. If
+// someone plumbs UNI Groups into this interface alarm bells should ring.
 func accumulateGlobalPermissions(acl *openapi.Acl, roleIDs []string, roles map[string]*unikornv1.Role) error {
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
 		if !ok {
-			return fmt.Errorf("%w: role %s referenced by global subject", errors.ErrConsistency, roleID)
+			return fmt.Errorf("%w: role %s referenced by global role binding", errors.ErrConsistency, roleID)
 		}
 
 		acl.Global = addScopesToEndpointList(acl.Global, role.Spec.Scopes.Global)
@@ -730,11 +738,51 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 	return acl, nil
 }
 
+// accumulateMatchedBindings builds the ACL for a principal with one or more
+// matched bindings (subject, wildcard subject, or group), and emits the
+// exercise record: group membership lives in the IdP, so this log line is
+// the only place that records who used global authority and why. It covers
+// all binding kinds uniformly, each with its matched identity and granted
+// role IDs. The skipped count is len(authz.OrgIds) — already in the claim,
+// so producing it performs no membership resolution. Callers return this ACL
+// directly: matching implies replace semantics, so membership resolution is
+// skipped entirely.
+func (r *RBAC) accumulateMatchedBindings(ctx context.Context, subject, srcIss string, authz *openapi.AuthClaims, subjectBindings []GlobalRoleBinding, groupBindings []GroupRoleBinding, roles map[string]*unikornv1.Role) (*openapi.Acl, error) {
+	acl := &openapi.Acl{}
+
+	for _, b := range subjectBindings {
+		accumulate := accumulateGlobalPermissions
+		if b.Wildcard {
+			accumulate = accumulateGlobalReadPermissions
+		}
+
+		if err := accumulate(acl, b.RoleIDs, roles); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, b := range groupBindings {
+		if err := accumulateGlobalPermissions(acl, b.RoleIDs, roles); err != nil {
+			return nil, err
+		}
+	}
+
+	log.FromContext(ctx).Info("global role bindings matched",
+		"subject", subject,
+		"srcIss", srcIss,
+		"subjectBindings", describeSubjectBindings(subjectBindings),
+		"groupBindings", describeGroupBindings(groupBindings),
+		"organizationMembershipsSkipped", len(authz.OrgIds),
+	)
+
+	return acl, nil
+}
+
 // processUserAccountACL ensures the user exists and is active, looks up any groups it's
 // a member of and adds their permissions to the ACL.
 //
 //nolint:cyclop,nestif
-func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
+func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organizationID string, authz *openapi.AuthClaims, groups []string) (*openapi.Acl, error) {
 	if authz == nil {
 		return nil, ErrNoAuthz
 	}
@@ -744,23 +792,23 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 		return nil, err
 	}
 
-	acl := &openapi.Acl{}
+	subjectBindings := r.resolveGlobalRoleBindings(srcIss, subject)
+	groupBindings := r.resolveGroupRoleBindings(srcIss, groups)
 
-	if bindings := r.resolveGlobalRoleBindings(srcIss, subject); len(bindings) > 0 {
-		for _, b := range bindings {
-			accumulate := accumulateGlobalPermissions
-			if b.Wildcard {
-				accumulate = accumulateGlobalReadPermissions
-			}
-
-			if err := accumulate(acl, b.RoleIDs, roles); err != nil {
-				return nil, err
-			}
-		}
-
-		// Replace semantics: bound principals skip membership resolution.
-		return acl, nil
+	// Replace semantics: any match, subject or group, skips organization/
+	// project membership resolution entirely.
+	if len(subjectBindings)+len(groupBindings) > 0 {
+		return r.accumulateMatchedBindings(ctx, subject, srcIss, authz, subjectBindings, groupBindings, roles)
 	}
+
+	if len(groups) > 0 {
+		// The only diagnostic surface for a wrong-case or wrong-name binding:
+		// UNI cannot enumerate IdP groups to validate configuration against.
+		log.FromContext(ctx).Info("token groups matched no global group role binding",
+			"subject", subject, "srcIss", srcIss, "groups", groups)
+	}
+
+	acl := &openapi.Acl{}
 
 	if organizationID != "" {
 		if !slices.Contains(authz.OrgIds, organizationID) {
@@ -975,7 +1023,9 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 		// For impersonated principals the srcIss is not yet propagated through the
 		// X-Principal header; default to the UNI sentinel. See srcIssOrUNISentinel's
 		// doc comment for why this default is safe.
-		return r.processUserAccountACL(ctx, p.Actor, idconstants.UNISentinel, organizationID, authz)
+		// Groups are never propagated through X-Principal: group bindings must
+		// fail closed on delegated hops.
+		return r.processUserAccountACL(ctx, p.Actor, idconstants.UNISentinel, organizationID, authz, nil)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
 	case openapi.System:
@@ -1033,5 +1083,5 @@ func (r *RBAC) GetACL(ctx context.Context, organizationID string) (*openapi.Acl,
 	// See srcIssOrUNISentinel's doc comment for why an empty src_iss default is safe.
 	srcIss := srcIssOrUNISentinel(info.SrcIss)
 
-	return r.processUserAccountACL(ctx, subject, srcIss, organizationID, authz)
+	return r.processUserAccountACL(ctx, subject, srcIss, organizationID, authz, info.Groups)
 }

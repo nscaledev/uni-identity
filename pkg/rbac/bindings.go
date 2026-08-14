@@ -323,3 +323,48 @@ func (r *RBAC) resolveGlobalRoleBindings(srcIss, subject string) []GlobalRoleBin
 
 	return out
 }
+
+// resolveGroupRoleBindings returns the group bindings matching the
+// authenticated issuer whose Group appears byte-exact in the token's groups.
+// srcIss can never be the UNI sentinel here in a matching state: sentinel
+// issuers are rejected at flag parse, and impersonated principals carry the
+// sentinel plus nil groups, so delegated hops fail closed (pinned by
+// TestImpersonatedPrincipalNeverMatchesGroupBindings).
+func (r *RBAC) resolveGroupRoleBindings(srcIss string, groups []string) []GroupRoleBinding {
+	var out []GroupRoleBinding
+
+	for _, b := range r.groupBindings {
+		if b.Issuer != srcIss {
+			continue
+		}
+
+		if slices.Contains(groups, b.Group) {
+			out = append(out, b)
+		}
+	}
+
+	return out
+}
+
+// describeSubjectBindings renders matched subject bindings for the exercise
+// log: the matched subject (or "*") and the roles it granted.
+func describeSubjectBindings(bindings []GlobalRoleBinding) []string {
+	out := make([]string, 0, len(bindings))
+
+	for _, b := range bindings {
+		out = append(out, "subject "+b.Subject+" -> "+strings.Join(b.RoleIDs, ","))
+	}
+
+	return out
+}
+
+// describeGroupBindings renders matched group bindings for the exercise log.
+func describeGroupBindings(bindings []GroupRoleBinding) []string {
+	out := make([]string, 0, len(bindings))
+
+	for _, b := range bindings {
+		out = append(out, "group "+b.Group+" -> "+strings.Join(b.RoleIDs, ","))
+	}
+
+	return out
+}
