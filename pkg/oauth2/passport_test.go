@@ -269,10 +269,10 @@ func (i *auth0TestIssuer) token(t *testing.T, audience, email string, expiry tim
 // group role binding end to end, through a real external issuer.
 const groupClaimURI = "https://unikorn-cloud.org/groups"
 
-// tokenWithGroups mints a token like token, but it also carries groups under
-// groupClaimURI. An exchange test can therefore drive group role binding
-// matching through the real dispatch and validator path, instead of
-// constructing authorization.Info by hand.
+// tokenWithGroups mints a token like token, but also carries groups under
+// groupClaimURI, so an exchange test can drive group role binding matching through
+// the real dispatch and validator path instead of constructing
+// authorization.Info by hand.
 func (i *auth0TestIssuer) tokenWithGroups(t *testing.T, audience, email string, expiry time.Time, groups []string) string {
 	t.Helper()
 
@@ -988,16 +988,16 @@ func TestExchangePlatformAdminUserWithOrganizationScopeOutsideMembership(t *test
 }
 
 // TestExchangeGroupRoleBindingGrantsOrganizationScope pins the group-binding leg
-// of ExchangePassport end to end. An external subject with no UNI organization
-// membership at all receives authorization for a requested organization scope,
-// solely because its bearer token carries a group that matches a configured
-// global group role binding.
+// of ExchangePassport end to end: an external subject with no UNI organization
+// membership at all is authorized for a requested organization scope, solely
+// because its bearer token carries a group matching a configured global group role
+// binding.
 //
-// This is the load-bearing test for the "Groups:" field that runs from
+// This is the load-bearing test for the "Groups:" field carried from
 // dispatchUserinfo's result into the authorization.Info passed to rbac.GetACL
-// (pkg/oauth2/passport.go). Drop that field and the group binding can never
-// match. GetACL then falls through to ordinary membership resolution, and this
-// exchange fails with "organization not in scope" instead of succeeding.
+// (pkg/oauth2/passport.go). Drop that field and the binding can never match:
+// GetACL falls through to ordinary membership resolution, and this exchange fails
+// with "organization not in scope".
 func TestExchangeGroupRoleBindingGrantsOrganizationScope(t *testing.T) {
 	t.Parallel()
 

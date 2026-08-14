@@ -950,9 +950,9 @@ func (i *externalUserinfoTestIssuer) token(t *testing.T, audience, email string,
 	return tok
 }
 
-// tokenWithGroups mints an access token like token, but it also carries the
-// externalTestGroupsClaim claim. Dispatch tests can therefore exercise the
-// groups-claim extraction path end to end, through the real validator.
+// tokenWithGroups mints an access token like token, but also carries the
+// externalTestGroupsClaim claim, so dispatch tests can exercise the groups-claim
+// extraction path end to end through the real validator.
 func (i *externalUserinfoTestIssuer) tokenWithGroups(t *testing.T, audience, email string, expiry time.Time, groups []string) string {
 	t.Helper()
 
@@ -1158,8 +1158,8 @@ func TestExternalUserinfoStampsIssuer(t *testing.T) {
 
 // TestDispatchUserinfoCarriesExternalGroups checks that dispatchUserinfo carries
 // the validator's extracted groups verbatim into DispatchResult.Groups when
-// BearerTrustSpec.GroupsClaim is configured. RBAC group-role-binding matching
-// downstream can then consume them.
+// BearerTrustSpec.GroupsClaim is configured, so RBAC group-role-binding matching
+// downstream can consume them.
 func TestDispatchUserinfoCarriesExternalGroups(t *testing.T) {
 	t.Parallel()
 

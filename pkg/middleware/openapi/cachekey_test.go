@@ -32,26 +32,25 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 )
 
-// tokenDigest mirrors the digest computation inside aclCacheKey. It keeps the
-// literal expectations below readable, and it does not repeat the hash
-// algorithm choice as an opaque magic string.
+// tokenDigest mirrors the digest computation inside aclCacheKey, so the literal
+// expectations below stay readable rather than carrying the hash choice as an
+// opaque magic string.
 func tokenDigest(token string) string {
 	sum := sha256.Sum256([]byte(token))
 
 	return base64.RawStdEncoding.EncodeToString(sum[:])
 }
 
-// digestSegment extracts the token-digest segment from a real aclCacheKey
-// return value. It does not recompute the digest independently. The key is
-// "<mode>|" followed by a run of length-prefixed "<len>:<value>" segments and a
-// terminal, unprefixed scope segment. The digest is always the last
-// length-prefixed segment, immediately before scope.
+// digestSegment extracts the token-digest segment from a real aclCacheKey return
+// value, rather than recomputing the digest. The key is "<mode>|" followed by a
+// run of length-prefixed "<len>:<value>" segments and a terminal, unprefixed
+// scope segment, so the digest is always the last length-prefixed segment.
 //
-// This helper parses the direct shape only, which has three length-prefixed
-// segments (sub, srcIss, digest). The exact-key assertions elsewhere in this
-// file pin the impersonated shape's digest position. This helper exists to
-// model the real format faithfully, so support for a shape that nothing here
-// builds would be untested code.
+// It parses the direct shape only, which has three length-prefixed segments (sub,
+// srcIss, digest). The exact-key assertions elsewhere in this file pin the
+// impersonated shape's digest position, and support for a shape nothing here
+// builds would be untested code in a helper whose job is to model the real
+// format faithfully.
 func digestSegment(t *testing.T, key string) string {
 	t.Helper()
 
@@ -233,27 +232,18 @@ func TestACLCacheKey(t *testing.T) {
 		require.NotEqual(t, keyA, keyB)
 	})
 
-	// This file deliberately has no "craft a colliding (scope, token) pair" test
-	// at the digest/scope boundary, unlike
-	// SubjectContainingDelimiterCannotForgeAnotherIdentity above. That test
-	// needs a real crafted collision, because sub and srcIss are
-	// attacker-controlled, variable-length strings. An attacker could otherwise
-	// shift them across the "|" delimiter. The token digest cannot shift the
-	// same way. sha256.Sum256 output, base64.RawStdEncoding-encoded, is always
-	// exactly 43 bytes, drawn from an alphabet that never contains "|". For any
-	// two calls, the first 43 characters of the digest segment are therefore
-	// unambiguously the digest, and nothing else can borrow that space. This
-	// holds whatever scope (the unprefixed terminal segment) contains.
+	// There is deliberately no crafted (scope, token) collision test at the
+	// digest/scope boundary, unlike SubjectContainingDelimiterCannotForgeAnotherIdentity
+	// above: sub and srcIss are attacker-controlled variable-length strings that
+	// could be shifted across the "|" delimiter, but a digest cannot be (see
+	// aclCacheKey's doc comment for the construction argument). No such pair
+	// exists to test.
 	//
-	// The boundary is therefore safe by construction, not merely by the
-	// length-prefix convention that the other segments use. No adversarial
-	// (scope, token) pair can defeat it, so this file has no such test.
-	// DigestSegmentEncodingInvariant below pins the encoding facts that this
-	// construction argument rests on: the fixed 43-character length and the
-	// "|"-free alphabet. It does not attempt the dropped collision proof. It
-	// reads the digest out of aclCacheKey's actual returned key through
-	// digestSegment, rather than recomputing it, so the assertions below observe
-	// any change to the real encoding.
+	// DigestSegmentEncodingInvariant below pins the encoding facts that argument
+	// rests on — the fixed 43-character length and the "|"-free alphabet. It reads
+	// the digest out of aclCacheKey's returned key through digestSegment rather
+	// than recomputing it, so the assertions observe any change to the real
+	// encoding.
 
 	t.Run("DigestSegmentEncodingInvariant", func(t *testing.T) {
 		t.Parallel()

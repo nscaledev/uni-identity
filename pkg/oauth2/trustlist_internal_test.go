@@ -85,10 +85,9 @@ func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trust
 	}, objects...)
 }
 
-// setupAuthenticatorWithOptions is like setupAuthenticatorWithClient, but it
-// lets the caller supply the full Options. A caller can use it, for example, to
-// configure the deprecated Auth0ExchangeIssuer flag that produces the synthetic
-// legacy provider.
+// setupAuthenticatorWithOptions is like setupAuthenticatorWithClient, but lets the
+// caller supply the full Options, e.g. to configure the deprecated
+// Auth0ExchangeIssuer flag that produces the synthetic legacy provider.
 func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...client.Object) *trustlistTestEnv {
 	t.Helper()
 
@@ -236,11 +235,11 @@ func TestValidatorFingerprintIncludesGroupsClaim(t *testing.T) {
 }
 
 // TestGroupsClaimByIssuerFirstMatchWins pins that GroupsClaimByIssuer resolves
-// first-match, exactly like validatorForIssuer. It must not report "some
-// provider configured a claim" for an issuer that two providers share.
-// providerA sorts before providerB, because the fake client List orders by name
-// within a namespace. providerA's empty GroupsClaim must therefore win, even
-// though providerB, later in the list, has one configured.
+// first-match, exactly like validatorForIssuer, rather than reporting "some
+// provider configured a claim" for an issuer two providers share. providerA sorts
+// before providerB, because the fake client List orders by name within a
+// namespace, so providerA's empty GroupsClaim must win even though providerB,
+// later in the list, has one configured.
 func TestGroupsClaimByIssuerFirstMatchWins(t *testing.T) {
 	t.Parallel()
 
@@ -273,12 +272,12 @@ func TestGroupsClaimByIssuerFirstMatchWins(t *testing.T) {
 
 // TestValidatorForIssuerRejectsBareGroupsClaim pins that a non-empty groupsClaim
 // without "://" fails the provider's trust-list entry, the same way an invalid
-// audience or algorithm does today. Nothing between the OAuth2Provider spec and
-// auth0.NewValidator may silently normalise it, default it, or drop it.
+// audience or algorithm does today, rather than being silently normalised,
+// defaulted, or dropped between the OAuth2Provider spec and auth0.NewValidator.
 // auth0.NewValidator already rejects a bare groupsClaim on its own (see
-// TestNewValidatorRejectsBareGroupsClaim in pkg/oauth2/auth0). No test pinned
+// TestNewValidatorRejectsBareGroupsClaim in pkg/oauth2/auth0), but nothing pinned
 // that cachedValidator propagates that construction error up through
-// validatorForIssuer, instead of swallowing it for this one field.
+// validatorForIssuer instead of swallowing it for this one field.
 func TestValidatorForIssuerRejectsBareGroupsClaim(t *testing.T) {
 	t.Parallel()
 
