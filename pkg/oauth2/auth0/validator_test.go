@@ -495,9 +495,9 @@ func TestValidateExtractsGroupsClaimTolerantly(t *testing.T) {
 			name:        "well-formed array is preserved byte-exact",
 			groupsClaim: testGroupsClaim,
 			mutate: func(claims *testTokenClaims) {
-				claims.Groups = []any{"Platform Engineering", "SRE"}
+				claims.Groups = []any{"Platform Engineering", "SRE", " Mixed-Case Group "}
 			},
-			expected: []string{"Platform Engineering", "SRE"},
+			expected: []string{"Platform Engineering", "SRE", " Mixed-Case Group "},
 		},
 		{
 			name:        "absent claim yields nil",

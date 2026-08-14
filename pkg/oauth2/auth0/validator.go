@@ -263,9 +263,10 @@ func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) 
 
 	payload, ok := raw[v.options.GroupsClaim]
 	if !ok {
-		// V(1): expected for tokens minted before the IdP Action was wired;
-		// per-token Info logging here would be noise, but the spec wants the
-		// degradation observable.
+		// Absent-claim logging uses V(1), not Info: this is expected for
+		// tokens minted before the IdP Action was wired, so per-token Info
+		// logging here would be noise, but the degradation still needs to
+		// be observable.
 		logger.V(1).Info("groups claim absent", "claim", v.options.GroupsClaim)
 
 		return nil
