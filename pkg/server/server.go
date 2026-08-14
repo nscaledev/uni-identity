@@ -149,10 +149,18 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// Advisory only: warn, don't block boot. Issuer-qualified matching is the
 	// runtime control, and a hard failure here would fire at an unrelated pod
 	// restart long after the first bearerTrust CRD was created.
-	if trustedNonUNIIssuers, err := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace); err != nil {
-		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", err)
-	} else if err := s.RBACOptions.Validate(trustedNonUNIIssuers); err != nil {
-		log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
+	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)
+	groupsClaimByIssuer, claimsErr := oauth2.GroupsClaimByIssuer(context.TODO())
+
+	switch {
+	case issuersErr != nil:
+		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", issuersErr)
+	case claimsErr != nil:
+		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: groups claim map unavailable", "error", claimsErr)
+	default:
+		if err := s.RBACOptions.Validate(trustedNonUNIIssuers, groupsClaimByIssuer); err != nil {
+			log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
+		}
 	}
 
 	// Setup middleware.

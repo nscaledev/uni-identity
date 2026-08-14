@@ -340,12 +340,12 @@ func TestOptionsValidateMigrationGate(t *testing.T) {
 	}
 
 	// a non-UNI trusted issuer exists AND a bare admin entry → report.
-	if err := opts.Validate([]string{"https://staff.auth0.com"}); err == nil {
+	if err := opts.Validate([]string{"https://staff.auth0.com"}, nil); err == nil {
 		t.Fatal("expected migration-gate error, got nil")
 	}
 
 	// no non-UNI issuer → fine.
-	if err := opts.Validate(nil); err != nil {
+	if err := opts.Validate(nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -270,7 +270,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	err := untrusted.Validate([]string{trustedIssuer})
+	err := untrusted.Validate([]string{trustedIssuer}, nil)
 	if err == nil {
 		t.Fatal("expected untrusted-binding-issuer error, got nil")
 	}
@@ -286,7 +286,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	if err := trusted.Validate([]string{trustedIssuer}); err != nil {
+	if err := trusted.Validate([]string{trustedIssuer}, nil); err != nil {
 		t.Fatalf("unexpected error for trusted issuer: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	if err := sentinel.Validate(nil); err != nil {
+	if err := sentinel.Validate(nil, nil); err != nil {
 		t.Fatalf("unexpected error for UNI sentinel issuer: %v", err)
 	}
 
@@ -313,7 +313,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	err = both.Validate([]string{trustedIssuer})
+	err = both.Validate([]string{trustedIssuer}, nil)
 	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
 		t.Fatalf("got %v, want ErrBareAdminSubject also reported", err)
 	}
@@ -331,7 +331,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	err = emptyTrustedList.Validate(nil)
+	err = emptyTrustedList.Validate(nil, nil)
 	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
 		t.Fatalf("got %v, want ErrUntrustedBindingIssuer even with an empty trusted-issuer list", err)
 	}
@@ -350,7 +350,7 @@ func TestOptionsValidateReportsEveryOffender(t *testing.T) {
 		},
 	}
 
-	err := opts.Validate([]string{"https://staff.example.com/"})
+	err := opts.Validate([]string{"https://staff.example.com/"}, nil)
 	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
 		t.Fatalf("got %v, want ErrUntrustedBindingIssuer", err)
 	}

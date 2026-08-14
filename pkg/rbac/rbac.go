@@ -42,13 +42,14 @@ import (
 )
 
 var (
-	ErrResourceReference      = goerrors.New("resource reference error")
-	ErrNoAuthz                = goerrors.New("no authorization data in userinfo")
-	ErrWrongOrganizationCount = goerrors.New("expected exactly one organization ID")
-	ErrNotInOrganization      = goerrors.New("subject not a member of organization")
-	ErrInvalidPrincipalType   = goerrors.New("invalid impersonated principal type")
-	ErrBareAdminSubject       = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to globalRoleBindings")
-	ErrUntrustedBindingIssuer = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
+	ErrResourceReference         = goerrors.New("resource reference error")
+	ErrNoAuthz                   = goerrors.New("no authorization data in userinfo")
+	ErrWrongOrganizationCount    = goerrors.New("expected exactly one organization ID")
+	ErrNotInOrganization         = goerrors.New("subject not a member of organization")
+	ErrInvalidPrincipalType      = goerrors.New("invalid impersonated principal type")
+	ErrBareAdminSubject          = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to globalRoleBindings")
+	ErrUntrustedBindingIssuer    = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
+	ErrGroupBindingNoGroupsClaim = goerrors.New("global group role binding issuer has no groupsClaim configured; the binding can never match")
 )
 
 // PlatformAdministratorSubject binds an admin subject to the issuer that must
@@ -123,16 +124,25 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 }
 
 // Validate reports advisory (log-only) startup findings: bare (UNI-sentinel)
-// admin entries while a non-UNI issuer is trusted, and GlobalRoleBindings
-// issuers outside trustedNonUNIIssuers. Every offender is reported, joined
-// with errors.Join so errors.Is still matches each sentinel.
+// admin entries while a non-UNI issuer is trusted, GlobalRoleBindings issuers
+// outside trustedNonUNIIssuers, and GlobalGroupRoleBindings issuers that are
+// either untrusted or configured with no groupsClaim (so the binding can
+// never match). Every offender is reported, joined with errors.Join so
+// errors.Is still matches each sentinel.
 //
 // Only the bare-admin check is gated on a non-empty trustedNonUNIIssuers, so
 // a caller that cannot tell "none configured" from "provider list
 // unavailable" must not call Validate in the latter case. See
 // pkg/rbac/README.md#global-role-bindings for gating and security semantics.
-func (o *Options) Validate(trustedNonUNIIssuers []string) error {
-	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings))
+//
+// groupsClaimByIssuer must be built by the same candidate resolution
+// validatorForIssuer uses (first-match per issuer), including the synthetic
+// legacy auth0-exchange provider mapped to an empty claim. Map membership is
+// checked before the trusted-issuers fallback: that synthetic provider is
+// deliberately absent from trustedNonUNIIssuers, so checking trust first
+// would misreport it as untrusted instead of dead-because-no-groups.
+func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer map[string]string) error {
+	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings)+len(o.GlobalGroupRoleBindings))
 
 	if len(trustedNonUNIIssuers) != 0 {
 		for _, s := range o.PlatformAdministratorSubjects {
@@ -150,7 +160,36 @@ func (o *Options) Validate(trustedNonUNIIssuers []string) error {
 		errs = append(errs, fmt.Errorf("%w: %q", ErrUntrustedBindingIssuer, b.Issuer))
 	}
 
+	for _, b := range o.GlobalGroupRoleBindings {
+		if err := validateGroupBindingAdvisory(b.Issuer, trustedNonUNIIssuers, groupsClaimByIssuer); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
 	return goerrors.Join(errs...)
+}
+
+// validateGroupBindingAdvisory reports the advisory finding, if any, for a
+// single GlobalGroupRoleBindings issuer. Map membership is checked FIRST:
+// groupsClaimByIssuer covers every bearer-trust candidate including the
+// synthetic legacy auth0-exchange provider, which is deliberately absent from
+// trustedNonUNIIssuers. A binding on it must be reported as
+// dead-because-no-groups (the flag path can never carry a groups claim), not
+// misreported as untrusted.
+func validateGroupBindingAdvisory(issuer string, trustedNonUNIIssuers []string, groupsClaimByIssuer map[string]string) error {
+	if claim, ok := groupsClaimByIssuer[issuer]; ok {
+		if claim == "" {
+			return fmt.Errorf("%w: %q", ErrGroupBindingNoGroupsClaim, issuer)
+		}
+
+		return nil
+	}
+
+	if !slices.Contains(trustedNonUNIIssuers, issuer) {
+		return fmt.Errorf("%w: %q", ErrUntrustedBindingIssuer, issuer)
+	}
+
+	return nil
 }
 
 // RBAC contains all the scoping rules for services across the platform.

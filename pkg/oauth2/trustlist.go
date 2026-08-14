@@ -221,6 +221,31 @@ func (a *Authenticator) validatorForIssuer(ctx context.Context, rawIss string) (
 	return nil, ErrUnknownIssuer
 }
 
+// GroupsClaimByIssuer returns the effective groupsClaim for every trusted
+// bearer issuer, resolved first-match exactly like validatorForIssuer —
+// including the synthetic legacy auth0-exchange provider, which is built
+// from flags, has no CRD, and therefore always maps to "" (it can never
+// carry a groups claim). Consumed by the rbac Options.Validate advisory.
+func (a *Authenticator) GroupsClaimByIssuer(ctx context.Context) (map[string]string, error) {
+	var providers unikornv1.OAuth2ProviderList
+
+	if err := a.client.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrCacheNotReady, err)
+	}
+
+	out := map[string]string{}
+
+	for _, p := range a.bearerTrustProviders(providers.Items) {
+		if _, ok := out[p.Spec.Issuer]; ok {
+			continue // first-match wins, same as validatorForIssuer
+		}
+
+		out[p.Spec.Issuer] = p.Spec.BearerTrust.GroupsClaim
+	}
+
+	return out, nil
+}
+
 // newValidatorCache creates an LRU cache for built validators. size is
 // typically Options.ValidatorCacheSize.
 func newValidatorCache(size int) *cache.LRUExpireCache {
