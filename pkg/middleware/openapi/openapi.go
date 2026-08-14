@@ -196,14 +196,18 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // The mTLS system-account path leaves info.Token empty, giving every system
 // account request the same constant digest; that is harmless because
 // system-account ACLs do not depend on token content.
+//
+// Unlike sub and srcIss, the digest/scope boundary needs no adversarial
+// collision argument: sha256.Sum256, base64.RawStdEncoding-encoded, is always
+// exactly 43 bytes drawn from an alphabet that never contains "|", so no
+// scope value can borrow space from, or be mistaken for, the digest segment.
+// The boundary is safe by construction, not merely by the length-prefix
+// convention that protects the variable-length sub/srcIss segments.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
 	scope := organizationID
 	if scope == "" {
 		scope = "_global"
 	}
-
-	sum := sha256.Sum256([]byte(info.Token))
-	tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
 
 	if principal.ImpersonateFromContext(ctx) {
 		p, err := principal.FromContext(ctx)
@@ -215,6 +219,9 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
+		sum := sha256.Sum256([]byte(info.Token))
+		tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
+
 		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%d:%s|%s",
 			len(info.Userinfo.Sub), info.Userinfo.Sub,
 			len(info.SrcIss), info.SrcIss,
@@ -222,6 +229,9 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			len(tokenDigest), tokenDigest,
 			scope), nil
 	}
+
+	sum := sha256.Sum256([]byte(info.Token))
+	tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
 
 	return fmt.Sprintf("direct|%d:%s|%d:%s|%d:%s|%s",
 		len(info.Userinfo.Sub), info.Userinfo.Sub,
