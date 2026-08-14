@@ -18,6 +18,9 @@ limitations under the License.
 package openapi
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,8 +30,21 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 )
 
+// tokenDigest mirrors the digest computation inside aclCacheKey so the
+// literal expectations below stay readable without duplicating the hash
+// algorithm choice as an opaque magic string.
+func tokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+
+	return base64.RawStdEncoding.EncodeToString(sum[:])
+}
+
 func TestACLCacheKey(t *testing.T) {
 	t.Parallel()
+
+	// d is the digest of the empty token, shared by every fixture below that
+	// does not set Token explicitly.
+	d := tokenDigest("")
 
 	// directInfo models a direct bearer-token call. The same cache key shape is
 	// also used for attributed service-to-service calls where the principal
@@ -56,8 +72,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(t.Context(), directInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|6:user-1|0:|_global", global)
-		require.Equal(t, "direct|6:user-1|0:|org-1", scoped)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
@@ -71,7 +87,7 @@ func TestACLCacheKey(t *testing.T) {
 		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|15:compute-service|0:|org-1", key)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|%d:%s|org-1", len(d), d), key)
 	})
 
 	t.Run("ImpersonatedDiffersFromDirect", func(t *testing.T) {
@@ -88,8 +104,8 @@ func TestACLCacheKey(t *testing.T) {
 		impersonated, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|15:compute-service|0:|org-1", direct)
-		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|org-1", impersonated)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|%d:%s|org-1", len(d), d), direct)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
 
@@ -115,8 +131,8 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotEqual(t, computeKey, regionKey)
-		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|org-1", computeKey)
-		require.Equal(t, "impersonated|14:region-service|0:|6:user-1|org-1", regionKey)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), computeKey)
+		require.Equal(t, fmt.Sprintf("impersonated|14:region-service|0:|6:user-1|%d:%s|org-1", len(d), d), regionKey)
 	})
 
 	t.Run("ImpersonatedIncludesOrganizationScope", func(t *testing.T) {
@@ -133,8 +149,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|_global", global)
-		require.Equal(t, "impersonated|15:compute-service|0:|6:user-1|org-1", scoped)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
