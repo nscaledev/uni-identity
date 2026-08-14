@@ -90,10 +90,10 @@ type Options struct {
 	// one orgId.
 	RequireAuthzClaim bool
 
-	// GroupsClaim names the access-token claim carrying IdP group names.
-	// Empty disables group extraction. A non-empty value must be a
-	// namespaced URI (contain "://"); bare user-settable profile claims are
-	// rejected at construction time. See BearerTrustSpec.GroupsClaim.
+	// GroupsClaim names the access-token claim that carries IdP group names.
+	// Empty disables group extraction. A non-empty value must be a namespaced
+	// URI that contains "://". Construction rejects a bare user-settable
+	// profile claim. See BearerTrustSpec.GroupsClaim.
 	GroupsClaim string
 
 	// JWKSMinRefreshInterval is the minimum interval between requests to
@@ -141,9 +141,10 @@ type User struct {
 	Email  string
 	Expiry time.Time
 
-	// Groups is the verbatim string entries of the configured groups claim;
-	// nil when the claim is absent, malformed, or extraction is disabled.
-	// Entries are preserved byte-exact: no case folding, no trimming.
+	// Groups holds the verbatim string entries of the configured groups claim.
+	// It is nil when the claim is absent, when the claim is malformed, or when
+	// extraction is disabled. Entries stay byte-exact: no case folding, no
+	// trimming.
 	Groups []string
 }
 
@@ -242,11 +243,11 @@ func (v *Validator) validateAuthzClaim(claims *tokenClaims) error {
 	return nil
 }
 
-// extractGroups reads the configured groups claim tolerantly: a missing
-// claim or a non-array value yields nil, and a non-string entry in an
-// otherwise valid array is skipped, keeping the string entries. It never
-// fails the token — a malformed groups claim must not break authentication
-// for the whole issuer (see pkg/oauth2/README.md).
+// extractGroups reads the configured groups claim tolerantly. A missing claim
+// or a non-array value yields nil. It skips a non-string entry in an otherwise
+// valid array, and keeps the string entries. It never fails the token, because
+// a malformed groups claim must not break authentication for the whole issuer
+// (see pkg/oauth2/README.md).
 func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) []string {
 	if v.options.GroupsClaim == "" {
 		return nil
@@ -263,10 +264,10 @@ func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) 
 
 	payload, ok := raw[v.options.GroupsClaim]
 	if !ok {
-		// Absent-claim logging uses V(1), not Info: this is expected for
-		// tokens minted before the IdP Action was wired, so per-token Info
-		// logging here would be noise, but the degradation still needs to
-		// be observable.
+		// Absent-claim logging uses V(1), not Info. An absent claim is
+		// expected for tokens minted before the IdP Action was configured, so
+		// per-token Info logging here would be noise. The degradation must
+		// still be observable.
 		logger.V(1).Info("groups claim absent", "claim", v.options.GroupsClaim)
 
 		return nil
@@ -295,18 +296,17 @@ func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) 
 	}
 
 	if skipped > 0 {
-		// A single line per validation, not one per element: a trusted issuer
-		// emitting a large malformed array must not produce a log line per
-		// entry.
+		// One line per validation, not one per element. A trusted issuer that
+		// emits a large malformed array must not produce a log line per entry.
 		logger.Info("groups claim entries skipped: not a string", "claim", v.options.GroupsClaim, "skipped", skipped)
 	}
 
 	if len(groups) == 0 {
-		// Distinct from claim-absent, and worth a real Info line: the claim
-		// was stamped but yielded nothing usable — the signature of an
-		// over-aggressive IdP-side group filter, which would otherwise
-		// present as silent nothing (the unmatched-groups log never fires
-		// on an empty set).
+		// This case differs from claim-absent, and deserves a real Info line.
+		// The IdP stamped the claim, but it yielded nothing usable. That is
+		// the signature of an over-aggressive IdP-side group filter, which
+		// would otherwise stay silent: the unmatched-groups log never fires on
+		// an empty set.
 		logger.Info("groups claim present but yielded no usable entries", "claim", v.options.GroupsClaim)
 
 		return nil

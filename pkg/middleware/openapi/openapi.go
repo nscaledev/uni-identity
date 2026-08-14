@@ -185,24 +185,24 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // delimiter and could otherwise be crafted to collide with another identity's
 // key. scope needs no prefix: it is terminal, so the key stays injective.
 //
-// The key also carries a digest of the presented token, inserted immediately
-// before the terminal scope segment. The ACL is a function of the presented
-// token plus cluster state, not only (sub, srcIss): two live tokens for the
-// same subject are not guaranteed to resolve to the same ACL, so they must
-// never share a cache entry. Keying by token is strictly finer than keying by
-// subject, so this can only under-share, never over-share, an entry. A digest
-// rather than the raw token is used because cache keys live in a large LRU in
-// every downstream service and must not themselves be credential material.
-// The mTLS system-account path leaves info.Token empty, giving every system
-// account request the same constant digest; that is harmless because
-// system-account ACLs do not depend on token content.
+// The key also carries a digest of the presented token, immediately before the
+// terminal scope segment. The ACL is a function of the presented token plus
+// cluster state, not only of (sub, srcIss). Two live tokens for the same
+// subject can resolve to different ACLs, so they must never share a cache
+// entry. Keying by token is strictly finer than keying by subject, so this can
+// only under-share an entry, never over-share one. The key carries a digest
+// rather than the raw token, because cache keys live in a large LRU in every
+// downstream service and must not themselves be credential material. The mTLS
+// system-account path leaves info.Token empty, so every system-account request
+// gets the same constant digest. That is harmless, because system-account ACLs
+// do not depend on token content.
 //
-// Unlike sub and srcIss, the digest/scope boundary needs no adversarial
-// collision argument: sha256.Sum256, base64.RawStdEncoding-encoded, is always
-// exactly 43 bytes drawn from an alphabet that never contains "|", so no
-// scope value can borrow space from, or be mistaken for, the digest segment.
-// The boundary is safe by construction, not merely by the length-prefix
-// convention that protects the variable-length sub/srcIss segments.
+// The digest/scope boundary needs no adversarial collision argument, unlike sub
+// and srcIss. sha256.Sum256 output, base64.RawStdEncoding-encoded, is always
+// exactly 43 bytes, drawn from an alphabet that never contains "|". No scope
+// value can therefore borrow space from the digest segment, or be mistaken for
+// it. The boundary is safe by construction, not merely by the length-prefix
+// convention that protects the variable-length sub and srcIss segments.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
 	scope := organizationID
 	if scope == "" {

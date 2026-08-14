@@ -123,31 +123,31 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var(&o.GlobalGroupRoleBindings, "global-group-role-binding", "Global group role binding as issuer::group::role[,role...]; grants the roles' full global scopes to any subject whose token from issuer carries the group in the issuer's groupsClaim.")
 }
 
-// Validate reports advisory (log-only) startup findings: bare (UNI-sentinel)
-// admin entries while a non-UNI issuer is trusted, GlobalRoleBindings issuers
-// outside trustedNonUNIIssuers, and GlobalGroupRoleBindings issuers that are
-// either untrusted or configured with no groupsClaim (so the binding can
-// never match). Every offender is reported, joined with errors.Join so
-// errors.Is still matches each sentinel.
+// Validate reports advisory (log-only) startup findings. It reports three:
+// bare (UNI-sentinel) admin entries while a non-UNI issuer is trusted,
+// GlobalRoleBindings issuers outside trustedNonUNIIssuers, and
+// GlobalGroupRoleBindings issuers that are either untrusted or configured with
+// no groupsClaim (so the binding can never match). Validate reports every
+// offender, joined with errors.Join so errors.Is still matches each sentinel.
 //
-// Only the bare-admin check is gated on a non-empty trustedNonUNIIssuers, so
-// a caller that cannot tell "none configured" from "provider list
-// unavailable" must not call Validate in the latter case. See
+// Only the bare-admin check is gated on a non-empty trustedNonUNIIssuers. A
+// caller that cannot tell "none configured" from "provider list unavailable"
+// must therefore not call Validate in the latter case. See
 // pkg/rbac/README.md#global-role-bindings for gating and security semantics.
 //
-// groupsClaimByIssuer must be built by the same candidate resolution
-// validatorForIssuer uses (first-match per issuer), including the synthetic
-// legacy auth0-exchange provider mapped to an empty claim. Map membership is
-// checked before the trusted-issuers fallback: that synthetic provider is
-// deliberately absent from trustedNonUNIIssuers, so checking trust first
-// would misreport it as untrusted instead of dead-because-no-groups.
+// The caller must build groupsClaimByIssuer with the same candidate resolution
+// that validatorForIssuer uses (first-match per issuer), and must include the
+// synthetic legacy auth0-exchange provider mapped to an empty claim. Validate
+// checks map membership before the trusted-issuers fallback. That synthetic
+// provider is deliberately absent from trustedNonUNIIssuers, so a trust check
+// first would misreport it as untrusted instead of dead-because-no-groups.
 //
-// A nil groupsClaimByIssuer skips the GlobalGroupRoleBindings check entirely,
-// distinct from a non-nil-but-empty map (a genuine "nothing configured"
-// result). A caller that cannot tell "the claims lookup failed" from "no
-// issuers are configured" must pass nil rather than a zero-value map, or a
-// failed lookup would be misread as "no dead bindings" — the other two
-// checks are unaffected, since neither reads groupsClaimByIssuer.
+// A nil groupsClaimByIssuer skips the GlobalGroupRoleBindings check entirely. A
+// non-nil-but-empty map is different: it means a genuine "nothing configured"
+// result. A caller that cannot tell "the claims lookup failed" from "no issuers
+// are configured" must pass nil rather than a zero-value map. Otherwise
+// Validate reads a failed lookup as "no dead bindings". The other two checks
+// are unaffected, because neither reads groupsClaimByIssuer.
 func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer map[string]string) error {
 	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings)+len(o.GlobalGroupRoleBindings))
 
@@ -179,12 +179,12 @@ func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer ma
 }
 
 // validateGroupBindingAdvisory reports the advisory finding, if any, for a
-// single GlobalGroupRoleBindings issuer. Map membership is checked FIRST:
-// groupsClaimByIssuer covers every bearer-trust candidate including the
+// single GlobalGroupRoleBindings issuer. It checks map membership FIRST.
+// groupsClaimByIssuer covers every bearer-trust candidate, including the
 // synthetic legacy auth0-exchange provider, which is deliberately absent from
-// trustedNonUNIIssuers. A binding on it must be reported as
-// dead-because-no-groups (the flag path can never carry a groups claim), not
-// misreported as untrusted.
+// trustedNonUNIIssuers. A binding on that provider must be reported as
+// dead-because-no-groups, because the flag path can never carry a groups claim.
+// A trust check first would misreport it as untrusted.
 func validateGroupBindingAdvisory(issuer string, trustedNonUNIIssuers []string, groupsClaimByIssuer map[string]string) error {
 	if claim, ok := groupsClaimByIssuer[issuer]; ok {
 		if claim == "" {
@@ -451,13 +451,13 @@ func addScopesToEndpointList(e *openapi.AclEndpoints, scopes []unikornv1.RoleSco
 	return &endpoints
 }
 
-// accumulateGlobalPermissions adds the global scopes of the given roles to
-// the ACL. NOTE: this deliberately accepts role IDs, never UNI Group
-// resources — group membership stored in UNI must not grant global
-// permissions. The role IDs arriving here come from deployment-configured
-// bindings (exact subject, wildcard subject, or IdP-group — see
-// pkg/rbac/README.md#global-role-bindings) or system-account mappings. If
-// someone plumbs UNI Groups into this interface alarm bells should ring.
+// accumulateGlobalPermissions adds the global scopes of the given roles to the
+// ACL. NOTE: it deliberately accepts role IDs, never UNI Group resources. Group
+// membership stored in UNI must not grant global permissions. The role IDs that
+// arrive here come from deployment-configured bindings (exact subject, wildcard
+// subject, or IdP-group — see pkg/rbac/README.md#global-role-bindings) or from
+// system-account mappings. If someone adds UNI Groups to this interface, alarm
+// bells should ring.
 func accumulateGlobalPermissions(acl *openapi.Acl, roleIDs []string, roles map[string]*unikornv1.Role) error {
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
@@ -787,14 +787,14 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 }
 
 // accumulateMatchedBindings builds the ACL for a principal with one or more
-// matched bindings (subject, wildcard subject, or group), and emits the
-// exercise record: group membership lives in the IdP, so this log line is
-// the only place that records who used global authority and why. It covers
-// all binding kinds uniformly, each with its matched identity and granted
-// role IDs. The skipped count is len(authz.OrgIds) — already in the claim,
-// so producing it performs no membership resolution. Callers return this ACL
-// directly: matching implies replace semantics, so membership resolution is
-// skipped entirely.
+// matched bindings (subject, wildcard subject, or group). It also emits the
+// exercise record. Group membership lives in the IdP, so that log line is the
+// only place that records who used global authority, and why. The line covers
+// all binding kinds uniformly, each with its matched identity and granted role
+// IDs. The skipped count is len(authz.OrgIds), already in the claim, so
+// producing it performs no membership resolution. Callers return this ACL
+// directly, because a match implies replace semantics and skips membership
+// resolution entirely.
 func (r *RBAC) accumulateMatchedBindings(ctx context.Context, subject, srcIss string, authz *openapi.AuthClaims, subjectBindings []GlobalRoleBinding, groupBindings []GroupRoleBinding, roles map[string]*unikornv1.Role) (*openapi.Acl, error) {
 	acl := &openapi.Acl{}
 
@@ -843,17 +843,17 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 	subjectBindings := r.resolveGlobalRoleBindings(srcIss, subject)
 	groupBindings := r.resolveGroupRoleBindings(srcIss, groups)
 
-	// Fires whenever the token carried groups and none matched — including
-	// when a subject binding matched and the replace branch below returns
-	// early. The only diagnostic surface for a wrong-case or wrong-name
-	// binding: UNI cannot enumerate IdP groups to validate configuration
-	// against.
+	// This fires whenever the token carried groups and none of them matched. It
+	// fires even when a subject binding matched and the replace branch below
+	// returns early. It is the only diagnostic surface for a wrong-case or
+	// wrong-name binding, because UNI cannot enumerate IdP groups to check the
+	// configuration against.
 	if len(groups) > 0 && len(groupBindings) == 0 {
 		log.FromContext(ctx).Info("token groups matched no global group role binding",
 			"subject", subject, "srcIss", srcIss, "groups", groups)
 	}
 
-	// Replace semantics: any match, subject or group, skips organization/
+	// Replace semantics: any match, subject or group, skips organization and
 	// project membership resolution entirely.
 	if len(subjectBindings)+len(groupBindings) > 0 {
 		return r.accumulateMatchedBindings(ctx, subject, srcIss, authz, subjectBindings, groupBindings, roles)
@@ -1074,8 +1074,8 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 		// For impersonated principals the srcIss is not yet propagated through the
 		// X-Principal header; default to the UNI sentinel. See srcIssOrUNISentinel's
 		// doc comment for why this default is safe.
-		// Groups are never propagated through X-Principal: group bindings must
-		// fail closed on delegated hops.
+		// X-Principal never carries groups, because group bindings must fail
+		// closed on delegated hops.
 		return r.processUserAccountACL(ctx, p.Actor, idconstants.UNISentinel, organizationID, authz, nil)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)

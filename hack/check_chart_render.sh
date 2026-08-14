@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Render assertions for globalRoleBindings and globalGroupRoleBindings;
-# wired into `make lint`.
+# Render assertions for globalRoleBindings and globalGroupRoleBindings.
+# `make lint` runs this script.
 set -euo pipefail
 
 CHART=charts/identity
@@ -152,8 +152,8 @@ must_fail_group() {
 	fi
 }
 
-# Title Case group names must render — group names are byte-exact and are
-# NOT subject to the lower-case guard that applies to subjects.
+# Title Case group names must render. Group names are byte-exact, and the
+# lower-case guard that applies to subjects does NOT apply to them.
 out=$(render_group '[{"issuer":"https://staff.example.com/","group":"Platform Engineering","roles":["platform-administrator"]}]')
 admin_role_id=$(role_id_of platform-administrator <<<"$out")
 [[ -n "$admin_role_id" ]] || die "could not resolve role ID for 'platform-administrator'"

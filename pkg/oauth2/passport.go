@@ -231,7 +231,8 @@ type DispatchResult struct {
 	Claims   *Claims
 	Source   string // passport audit label (provider name or PassportSourceUNI)
 	SrcIss   string // issuer URL (verbatim), or the UNI sentinel
-	// Groups is the external token's configured groups-claim entries; nil on the UNI-local path.
+	// Groups holds the external token's configured groups-claim entries. It is
+	// nil on the UNI-local path.
 	Groups []string
 }
 

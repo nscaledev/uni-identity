@@ -152,9 +152,9 @@ platformAdministrators:
 # Subject "*" matches every subject from the issuer and is clamped to read.
 # Every other subject is matched case-sensitively, so it must be the
 # canonical lower-case form — the render fails on an upper-case letter.
-# UNI Group membership never grants global scopes for user accounts; global
-# authority comes only from these bindings, globalGroupRoleBindings below,
-# and system-account mappings.
+# UNI Group membership never grants global scopes for user accounts. Global
+# authority comes only from these bindings, from globalGroupRoleBindings
+# below, and from system-account mappings.
 # Full semantics: pkg/rbac/README.md#global-role-bindings.
 # Helm rejects invalid separators and wildcard bindings on roles that grant any
 # non-read global operation — platform-reader is the only role shipped below
@@ -171,29 +171,31 @@ globalRoleBindings: []
 #    subjects: [alice@example.com, bob@example.com]
 #    roles: [platform-administrator]
 
-# Group role bindings grant the FULL global scopes of the named roles to any
-# user authenticated by `issuer` whose token carries `group` in the issuer's
-# groupsClaim (see the OAuth2Provider bearerTrust block; the issuer must be a
-# CRD-declared provider — the legacy auth0-exchange flags cannot carry a
-# groups claim). Matching is byte-exact and case-sensitive: copy the group
-# name from the IdP verbatim (group names are NOT lower-cased, unlike
-# subjects; Title Case is expected). Unlike wildcard subject bindings these
-# are NOT clamped to read. Groups only exist on external bearer tokens, so
-# `uni` is not a valid issuer here — and consequently these bindings act only
-# on direct external bearer usage: a staff member who signs in through the
-# UNI interactive login (even federated via the same IdP) holds a UNI-local
-# token with no groups and never matches a group binding. Only appropriate
-# for issuers whose group namespace is administratively controlled; see
-# pkg/rbac/README.md#global-role-bindings.
-# Rollout ordering: the flag is emitted only when this list is non-empty, and
-# older server binaries do not recognise it — deploy a binary that understands
-# --global-group-role-binding before enabling bindings; on rollback, clear
-# this value before reverting the binary. Additionally, every downstream
-# service (region, compute, kubernetes, ...) must be running a build that
-# vendors an identity middleware with the token-keyed ACL cache before any
-# binding here is enabled: older middleware keys ACLs by subject only, so a
-# subject's non-elevated token could be served a cached group-elevated ACL
-# in that service until its cache entry expires.
+# Group role bindings grant the FULL global scopes of the named roles. They
+# apply to any user authenticated by `issuer` whose token carries `group` in
+# that issuer's groupsClaim (see the OAuth2Provider bearerTrust block). The
+# issuer must be a CRD-declared provider: the legacy auth0-exchange flags
+# cannot carry a groups claim.
+# Matching is byte-exact and case-sensitive. Copy the group name from the IdP
+# verbatim. Group names are NOT lower-cased, unlike subjects, and Title Case
+# is expected. Unlike wildcard subject bindings, these are NOT clamped to
+# read.
+# Groups exist only on external bearer tokens, so `uni` is not a valid issuer
+# here. These bindings consequently act only on direct external bearer usage.
+# A staff member who signs in through the UNI interactive login holds a
+# UNI-local token with no groups, and never matches a group binding. This
+# holds even when that login federates through the same IdP.
+# Use these bindings only for issuers whose group namespace is
+# administratively controlled. See pkg/rbac/README.md#global-role-bindings.
+# Rollout ordering: the chart emits the flag only when this list is non-empty,
+# and older server binaries do not recognise it. Deploy a binary that
+# understands --global-group-role-binding before you enable bindings. On
+# rollback, clear this value before you revert the binary.
+# Every downstream service (region, compute, kubernetes, ...) must also run a
+# build that vendors an identity middleware with the token-keyed ACL cache
+# before you enable any binding here. Older middleware keys ACLs by subject
+# only, so such a service can serve a subject's non-elevated token a cached
+# group-elevated ACL until that cache entry expires.
 globalGroupRoleBindings: []
 #  - issuer: https://staff.example.auth0.com/
 #    group: Platform Engineering

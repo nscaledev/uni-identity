@@ -79,14 +79,15 @@ spec:
                     type: string
                   groupsClaim:
                     description: |-
-                      GroupsClaim names the access-token claim carrying the IdP group names
-                      for this issuer, e.g. "https://unikorn-cloud.org/groups". The claim
-                      value must be a JSON array of strings; non-string entries are skipped.
-                      Empty means this issuer emits no groups: group-based global role
-                      bindings never match tokens from it (fail closed). The name must be a
-                      namespaced URI (contain "://") so user-settable bare profile claims
-                      (nickname, name) cannot be designated as an authorization source; the
-                      check runs at trust-list build time like the other cross-field rules.
+                      GroupsClaim names the access-token claim that carries the IdP group
+                      names for this issuer, e.g. "https://unikorn-cloud.org/groups". The
+                      claim value must be a JSON array of strings. The validator skips
+                      non-string entries. Empty means this issuer emits no groups, so
+                      group-based global role bindings never match tokens from it (fail
+                      closed). The name must be a namespaced URI that contains "://", so
+                      nobody can designate a user-settable bare profile claim (nickname,
+                      name) as an authorization source. The trust-list build checks this
+                      rule together with the other cross-field rules.
                     type: string
                   requireAuthzClaim:
                     description: |-
