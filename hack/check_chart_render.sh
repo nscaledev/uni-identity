@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Render assertions for globalRoleBindings; wired into `make lint`.
+# Render assertions for globalRoleBindings and globalGroupRoleBindings;
+# wired into `make lint`.
 set -euo pipefail
 
 CHART=charts/identity
@@ -136,5 +137,32 @@ must_fail_admin '["Admin@x.com"]' \
 	"platformAdministrators.subjects[0]: subject must be its canonical lower-case form"
 must_fail_admin '["https://staff.example.com/::Admin@x.com"]' \
 	"platformAdministrators.subjects[0]: subject must be its canonical lower-case form"
+
+render_group() { helm template test "$CHART" --set-json "globalGroupRoleBindings=$1"; }
+
+must_fail_group() {
+	local out
+	if out=$(render_group "$1" 2>&1 >/dev/null); then
+		die "expected render failure (fragment: $2), but render succeeded"
+	fi
+	if ! grep -qF -- "$2" <<<"$out"; then
+		die "render failed, but not for the expected reason
+  expected fragment: $2
+  actual output:     $out"
+	fi
+}
+
+# Title Case group names must render — group names are byte-exact and are
+# NOT subject to the lower-case guard that applies to subjects.
+out=$(render_group '[{"issuer":"https://staff.example.com/","group":"Platform Engineering","roles":["platform-administrator"]}]')
+admin_role_id=$(role_id_of platform-administrator <<<"$out")
+[[ -n "$admin_role_id" ]] || die "could not resolve role ID for 'platform-administrator'"
+assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Platform Engineering::${admin_role_id}\""
+
+must_fail_group '[{"issuer":"uni","group":"SRE","roles":["platform-administrator"]}]' "the uni sentinel issuer cannot carry groups"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"*","roles":["platform-administrator"]}]' "wildcard group not allowed"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"a::b","roles":["platform-administrator"]}]' "group must not contain"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["platform-administrator"]}]' "group is required"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
 
 echo "chart render checks OK"
