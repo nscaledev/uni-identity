@@ -141,6 +141,13 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 // checked before the trusted-issuers fallback: that synthetic provider is
 // deliberately absent from trustedNonUNIIssuers, so checking trust first
 // would misreport it as untrusted instead of dead-because-no-groups.
+//
+// A nil groupsClaimByIssuer skips the GlobalGroupRoleBindings check entirely,
+// distinct from a non-nil-but-empty map (a genuine "nothing configured"
+// result). A caller that cannot tell "the claims lookup failed" from "no
+// issuers are configured" must pass nil rather than a zero-value map, or a
+// failed lookup would be misread as "no dead bindings" — the other two
+// checks are unaffected, since neither reads groupsClaimByIssuer.
 func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer map[string]string) error {
 	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings)+len(o.GlobalGroupRoleBindings))
 
@@ -160,9 +167,11 @@ func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer ma
 		errs = append(errs, fmt.Errorf("%w: %q", ErrUntrustedBindingIssuer, b.Issuer))
 	}
 
-	for _, b := range o.GlobalGroupRoleBindings {
-		if err := validateGroupBindingAdvisory(b.Issuer, trustedNonUNIIssuers, groupsClaimByIssuer); err != nil {
-			errs = append(errs, err)
+	if groupsClaimByIssuer != nil {
+		for _, b := range o.GlobalGroupRoleBindings {
+			if err := validateGroupBindingAdvisory(b.Issuer, trustedNonUNIIssuers, groupsClaimByIssuer); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 
