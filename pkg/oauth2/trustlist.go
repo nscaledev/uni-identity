@@ -111,10 +111,10 @@ func validatorFingerprint(rawIss, audience string, signingAlgorithms []string, s
 	copy(algs, signingAlgorithms)
 	sort.Strings(algs)
 
-	// groupsClaim is joined unprefixed, like rawIss and audience above.
-	// Nothing keeps "|" out of the claim name, so a claim name that contains
-	// it could in theory collide with a different configuration. The worst
-	// case is a spurious cache rebuild, not a security issue.
+	// groupsClaim is joined unprefixed, like rawIss and audience above. Nothing
+	// keeps "|" out of the claim name, so a name containing it could in theory
+	// collide with a different configuration. The worst case is a spurious
+	// cache rebuild, not a security issue.
 	return strings.Join([]string{
 		rawIss,
 		audience,
@@ -221,11 +221,11 @@ func (a *Authenticator) validatorForIssuer(ctx context.Context, rawIss string) (
 	return nil, ErrUnknownIssuer
 }
 
-// GroupsClaimByIssuer returns the effective groupsClaim for every trusted
-// bearer issuer. It resolves first-match, exactly like validatorForIssuer. The
-// map includes the synthetic legacy auth0-exchange provider, which comes from
-// flags and has no CRD, so it always maps to "" and can never carry a groups
-// claim. The rbac Options.Validate advisory consumes this map.
+// GroupsClaimByIssuer returns the effective groupsClaim for every trusted bearer
+// issuer, resolved first-match exactly like validatorForIssuer. The map includes
+// the synthetic legacy auth0-exchange provider, which comes from flags and has no
+// CRD, so it always maps to "" and can never carry a groups claim. The rbac
+// Options.Validate advisory consumes this map.
 func (a *Authenticator) GroupsClaimByIssuer(ctx context.Context) (map[string]string, error) {
 	var providers unikornv1.OAuth2ProviderList
 

@@ -176,26 +176,26 @@ globalRoleBindings: []
 # that issuer's groupsClaim (see the OAuth2Provider bearerTrust block). The
 # issuer must be a CRD-declared provider: the legacy auth0-exchange flags
 # cannot carry a groups claim.
-# Matching is byte-exact and case-sensitive. Copy the group name from the IdP
-# verbatim. Group names are NOT lower-cased, unlike subjects, and Title Case
-# is expected. Unlike wildcard subject bindings, these are NOT clamped to
+# Matching is byte-exact and case-sensitive, so copy the group name from the
+# IdP verbatim. Group names are NOT lower-cased, unlike subjects, and Title
+# Case is expected. Unlike wildcard subject bindings, these are NOT clamped to
 # read.
 # Groups exist only on external bearer tokens, so `uni` is not a valid issuer
-# here. These bindings consequently act only on direct external bearer usage.
-# A staff member who signs in through the UNI interactive login holds a
-# UNI-local token with no groups, and never matches a group binding. This
-# holds even when that login federates through the same IdP.
+# here, and these bindings act only on direct external bearer usage. A staff
+# member who signs in through the UNI interactive login holds a UNI-local
+# token with no groups and never matches a group binding, even when that login
+# federates through the same IdP.
 # Use these bindings only for issuers whose group namespace is
 # administratively controlled. See pkg/rbac/README.md#global-role-bindings.
 # Rollout ordering: the chart emits the flag only when this list is non-empty,
 # and older server binaries do not recognise it. Deploy a binary that
-# understands --global-group-role-binding before you enable bindings. On
-# rollback, clear this value before you revert the binary.
+# understands --global-group-role-binding before you enable bindings, and
+# clear this value before you revert the binary on rollback.
 # Every downstream service (region, compute, kubernetes, ...) must also run a
-# build that vendors an identity middleware with the token-keyed ACL cache
-# before you enable any binding here. Older middleware keys ACLs by subject
-# only, so such a service can serve a subject's non-elevated token a cached
-# group-elevated ACL until that cache entry expires.
+# build whose identity middleware keys the ACL cache by token before you
+# enable any binding here. Older middleware keys ACLs by subject only, so it
+# can serve a subject's non-elevated token a cached group-elevated ACL until
+# that entry expires.
 globalGroupRoleBindings: []
 #  - issuer: https://staff.example.auth0.com/
 #    group: Platform Engineering

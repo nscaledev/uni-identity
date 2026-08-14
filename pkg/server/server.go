@@ -150,14 +150,13 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// runtime control, and a hard failure here would fire at an unrelated pod
 	// restart long after the first bearerTrust CRD was created.
 	//
-	// The code fetches the groups-claim map only after the issuer list proves
-	// usable. A fetch after issuersErr already failed would be wasted work,
-	// because every check below needs trustedNonUNIIssuers. A later
-	// GroupsClaimByIssuer failure skips only the group-binding check that
-	// consumes the map. The code still calls Validate with a nil map, so the
-	// subject-binding advisory keeps running, because it never touches the
-	// claims map. Validate treats nil differently from an empty-but-successful
-	// map, so it never reads a failed fetch as "no dead bindings".
+	// The groups-claim map is fetched only after the issuer list proves usable: a
+	// fetch after issuersErr already failed would be wasted work, because every
+	// check below needs trustedNonUNIIssuers. A later GroupsClaimByIssuer failure
+	// skips only the group-binding check that consumes the map, and Validate
+	// still runs with a nil map, so the subject-binding advisory keeps working.
+	// Validate treats nil differently from an empty-but-successful map, so it
+	// never reads a failed fetch as "no dead bindings".
 	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)
 
 	if issuersErr != nil {

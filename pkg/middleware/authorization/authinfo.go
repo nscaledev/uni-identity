@@ -52,10 +52,9 @@ type Info struct {
 	// BearerTrustSpec.GroupsClaim). It is nil for UNI-local tokens, system
 	// accounts, and issuers with no claim configured. Only the identity
 	// process populates it, in the local authorizer and in passport exchange.
-	// The remote authorizer that downstream services use always leaves it
-	// nil, because passports deliberately do not carry groups. The
-	// X-Principal header never carries groups either: the caller asserts that
-	// header, and groups feed authorization.
+	// The remote authorizer used downstream always leaves it nil: passports
+	// deliberately do not carry groups, and neither does the X-Principal
+	// header, which the caller asserts.
 	Groups []string
 }
 

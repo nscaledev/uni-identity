@@ -142,9 +142,8 @@ type User struct {
 	Expiry time.Time
 
 	// Groups holds the verbatim string entries of the configured groups claim.
-	// It is nil when the claim is absent, when the claim is malformed, or when
-	// extraction is disabled. Entries stay byte-exact: no case folding, no
-	// trimming.
+	// It is nil when the claim is absent or malformed, or when extraction is
+	// disabled. Entries stay byte-exact: no case folding, no trimming.
 	Groups []string
 }
 
@@ -243,11 +242,11 @@ func (v *Validator) validateAuthzClaim(claims *tokenClaims) error {
 	return nil
 }
 
-// extractGroups reads the configured groups claim tolerantly. A missing claim
-// or a non-array value yields nil. It skips a non-string entry in an otherwise
-// valid array, and keeps the string entries. It never fails the token, because
-// a malformed groups claim must not break authentication for the whole issuer
-// (see pkg/oauth2/README.md).
+// extractGroups reads the configured groups claim tolerantly. A missing claim or
+// a non-array value yields nil. It skips non-string entries in an otherwise
+// valid array and keeps the string ones. It never fails the token, because a
+// malformed groups claim must not break authentication for the whole issuer (see
+// pkg/oauth2/README.md).
 func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) []string {
 	if v.options.GroupsClaim == "" {
 		return nil
@@ -264,10 +263,10 @@ func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) 
 
 	payload, ok := raw[v.options.GroupsClaim]
 	if !ok {
-		// Absent-claim logging uses V(1), not Info. An absent claim is
-		// expected for tokens minted before the IdP Action was configured, so
-		// per-token Info logging here would be noise. The degradation must
-		// still be observable.
+		// Absent-claim logging uses V(1), not Info. An absent claim is expected
+		// for tokens minted before the IdP Action was configured, so per-token
+		// Info logging would be noise, but the degradation must stay
+		// observable.
 		logger.V(1).Info("groups claim absent", "claim", v.options.GroupsClaim)
 
 		return nil
@@ -302,11 +301,11 @@ func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) 
 	}
 
 	if len(groups) == 0 {
-		// This case differs from claim-absent, and deserves a real Info line.
-		// The IdP stamped the claim, but it yielded nothing usable. That is
-		// the signature of an over-aggressive IdP-side group filter, which
-		// would otherwise stay silent: the unmatched-groups log never fires on
-		// an empty set.
+		// This differs from claim-absent and deserves a real Info line: the IdP
+		// stamped the claim, but it yielded nothing usable. That is the
+		// signature of an over-aggressive IdP-side group filter, which would
+		// otherwise stay silent, because the unmatched-groups log never fires
+		// on an empty set.
 		logger.Info("groups claim present but yielded no usable entries", "claim", v.options.GroupsClaim)
 
 		return nil

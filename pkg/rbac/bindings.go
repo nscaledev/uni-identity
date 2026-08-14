@@ -158,11 +158,11 @@ var (
 	errGroupIssuerPathSep    = goerrors.New("issuer URL path contains \"::\" (or the group name contains \"::\", which is not supported)")
 )
 
-// GroupRoleBinding grants the global scopes of RoleIDs to a user-account
-// subject. The subject qualifies when its token from Issuer carries Group in
-// that issuer's configured groups claim (BearerTrustSpec.GroupsClaim). Matching
-// is byte-exact: no case folding, no trimming inside the name. Unlike wildcard
-// subject bindings, group bindings are NOT clamped to read.
+// GroupRoleBinding grants the global scopes of RoleIDs to a user-account subject
+// whose token from Issuer carries Group in that issuer's configured groups claim
+// (BearerTrustSpec.GroupsClaim). Matching is byte-exact: no case folding, no
+// trimming inside the name. Unlike wildcard subject bindings, group bindings are
+// NOT clamped to read.
 type GroupRoleBinding struct {
 	Issuer  string
 	Group   string
@@ -216,11 +216,11 @@ func (v *GlobalGroupRoleBindingsValue) Set(value string) error {
 	return nil
 }
 
-// validateGroupBindingIssuer rejects the UNI sentinel outright, because
-// UNI-local tokens carry no groups claim and a sentinel group binding is
-// therefore dead configuration. For every other issuer it applies the same
-// absolute-URL rules as subject bindings, with error messages that also name
-// the group-name-contains-"::" cause.
+// validateGroupBindingIssuer rejects the UNI sentinel outright, because UNI-local
+// tokens carry no groups claim and a sentinel group binding is therefore dead
+// configuration. Every other issuer gets the same absolute-URL rules as subject
+// bindings, with error messages that also name the group-name-contains-"::"
+// cause.
 func validateGroupBindingIssuer(issuer string) error {
 	if issuer == idconstants.UNISentinel {
 		return errGroupSentinelIssuer
@@ -327,11 +327,11 @@ func (r *RBAC) resolveGlobalRoleBindings(srcIss, subject string) []GlobalRoleBin
 
 // resolveGroupRoleBindings returns the group bindings that match the
 // authenticated issuer and whose Group appears byte-exact in the token's groups.
-// With flag-parsed configuration, srcIss can never be the UNI sentinel in a
+// With flag-parsed configuration srcIss can never be the UNI sentinel in a
 // matching state, because flag parsing rejects sentinel issuers. Impersonated
-// principals carry the sentinel plus nil groups, so delegated hops fail closed
-// on the nil groups alone, even if that gate is disregarded.
-// TestImpersonatedPrincipalNeverMatchesGroupBindings pins this: it constructs a
+// principals carry the sentinel plus nil groups, so delegated hops fail closed on
+// the nil groups alone, even disregarding that gate.
+// TestImpersonatedPrincipalNeverMatchesGroupBindings constructs a
 // sentinel-issuer binding directly to isolate exactly that.
 func (r *RBAC) resolveGroupRoleBindings(srcIss string, groups []string) []GroupRoleBinding {
 	var out []GroupRoleBinding
