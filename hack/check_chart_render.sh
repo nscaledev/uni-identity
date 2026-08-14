@@ -159,6 +159,9 @@ admin_role_id=$(role_id_of platform-administrator <<<"$out")
 [[ -n "$admin_role_id" ]] || die "could not resolve role ID for 'platform-administrator'"
 assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Platform Engineering::${admin_role_id}\""
 
+must_fail_group '[{"group":"SRE","roles":["platform-administrator"]}]' "issuer is required"
+must_fail_group '[{"issuer":"https://a.com/ ","group":"SRE","roles":["platform-administrator"]}]' "issuer must not contain whitespace"
+must_fail_group '[{"issuer":"https://x.com/?q=a::b","group":"SRE","roles":["platform-administrator"]}]' 'issuer must not contain "::"'
 must_fail_group '[{"issuer":"uni","group":"SRE","roles":["platform-administrator"]}]' "the uni sentinel issuer cannot carry groups"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"*","roles":["platform-administrator"]}]' "wildcard group not allowed"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"a::b","roles":["platform-administrator"]}]' "group must not contain"
