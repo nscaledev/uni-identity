@@ -60,7 +60,11 @@ that keeps those two models separate while presenting handlers with one normaliz
   crafted to collide with another identity's key.
 - ACL cache keys also carry a digest of the presented token. The ACL is a function of the presented
   token plus cluster state, not only `(sub, srcIss)`: two live tokens for the same subject are not
-  guaranteed to resolve to the same ACL, so they must never share a cache entry. Keying by token is
+  guaranteed to resolve to the same ACL — for example, a global group role binding
+  ([`pkg/rbac/README.md#global-role-bindings`](../../rbac/README.md#global-role-bindings)) grants
+  global authority based on the groups asserted in the specific token presented, so a subject's
+  next token, carrying different groups, can resolve to a different ACL — so they must never share
+  a cache entry. Keying by token is
   strictly finer than keying by subject, so this can only under-share, never over-share, an entry. A
   digest is used rather than the raw token because cache keys live in a large LRU in every
   downstream service and must not themselves be credential material. The mTLS system-account path
