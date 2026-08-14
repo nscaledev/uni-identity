@@ -299,13 +299,17 @@ func TestImpersonation_UniExactBindingIntersectsWithServiceACL(t *testing.T) {
 // impersonated principal whose (hypothetical) groups would match a
 // configured group binding still gets NO group-derived global scopes.
 // processImpersonatedPrincipalACL always resolves impersonated user
-// principals against the UNI sentinel issuer with nil groups, and group
-// bindings are rejected outright on the sentinel at flag-parse time
-// (validateGroupBindingIssuer rejects idconstants.UNISentinel), so a group
-// binding is structurally unreachable on this path, not merely unmatched.
-// This gap is functional as well as protective: group-derived authority
-// deliberately does not survive a delegated hop, exactly like today's
-// external-issuer subject bindings.
+// principals against the UNI sentinel issuer with nil groups. The binding
+// below is constructed directly on the sentinel issuer (bypassing
+// GlobalGroupRoleBindingsValue.Set's flag-parse validation, which rejects the
+// sentinel for group bindings — mirroring the precedent in
+// TestImpersonation_UniExactBindingIntersectsWithServiceACL) so that the
+// issuer already matches and the only thing left standing between the
+// impersonated principal and this binding is the nil groups passed at the
+// impersonation call site. That isolates the actual property under test:
+// if a future change ever plumbed real groups through the impersonation
+// path, this test would fail the moment it did, which is exactly the
+// regression it exists to catch.
 func TestImpersonatedPrincipalNeverMatchesGroupBindings(t *testing.T) {
 	t.Parallel()
 
@@ -334,7 +338,7 @@ func TestImpersonatedPrincipalNeverMatchesGroupBindings(t *testing.T) {
 		},
 		rbac.Options{
 			GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
-				{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{boundRoleID}},
+				{Issuer: constants.UNISentinel, Group: "Platform Engineering", RoleIDs: []string{boundRoleID}},
 			},
 		},
 		boundRole,
