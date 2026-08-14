@@ -298,11 +298,13 @@ the mismatch rather than remove it. Consequently a group binding configured with
 for the IdP's actual group name **fails silently** — the token is still accepted, RBAC falls
 through to ordinary organization/project membership resolution as if the group had never matched,
 and there is no error, only the unmatched-groups log below. Get the case exactly right by copying
-the group name from the IdP verbatim. `resolveGroupRoleBindings` logs a line whenever a token
-carries at least one group and none of them matched any configured binding ("token groups matched
-no global group role binding", with the subject, issuer, and groups attached) — the only
-diagnostic surface for a wrong-case or wrong-name binding, since UNI has no way to enumerate an
-IdP's groups to validate configuration against.
+the group name from the IdP verbatim. `processUserAccountACL` logs a line whenever a token carries
+at least one group and none of them matched any configured group binding ("token groups matched no
+global group role binding", with the subject, issuer, and groups attached) — this fires even when a
+subject binding matched and the principal received a global ACL through that binding instead, so an
+operator adding a group binding for someone who already has an exact subject binding still gets the
+diagnostic. It is the only diagnostic surface for a wrong-case or wrong-name binding, since UNI has
+no way to enumerate an IdP's groups to validate configuration against.
 
 **Full global scopes, no read clamp, no UNI-user gate.** Group bindings accumulate roles' global
 scopes through the same `accumulateGlobalPermissions` used for exact-subject bindings — never
@@ -430,20 +432,23 @@ trusted non-UNI issuer (`ErrUntrustedBindingIssuer`), and (3) a `--global-group-
 issuer that is either untrusted (`ErrUntrustedBindingIssuer` again) or a recognized bearer-trust
 candidate configured with no `groupsClaim` (`ErrGroupBindingNoGroupsClaim`) — see
 [Group bindings](#group-bindings) above for what that third check covers. Check (2) excludes the
-deprecated `--auth0-exchange-issuer`
-value from the trusted set, so a binding aimed at the legacy exchange issuer warns even though it
-can still match a real token; check (3) instead reports that same legacy issuer as
-dead-because-no-groupsClaim, because its groups-claim lookup runs before the trusted-issuer
-fallback (`validateGroupBindingAdvisory`).
+deprecated `--auth0-exchange-issuer` value from the trusted set, so a binding aimed at the legacy
+exchange issuer warns even though it can still match a real token; check (3) instead reports that
+same legacy issuer as dead-because-no-groupsClaim, because its groups-claim lookup runs before the
+trusted-issuer fallback (`validateGroupBindingAdvisory`).
 
 Only check (1) is gated on a non-empty trusted-issuer list — a bare admin entry only matters once
 there is a non-UNI issuer to migrate away from. Checks (2) and (3) run even against an empty
 trusted-issuer list, where every non-UNI binding issuer is reported, so the caller must skip
 `Validate` entirely when it cannot tell "no trusted issuers configured" from "the provider `List`
-call failed" (`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case). These
-warnings are not the security control: that is the issuer-qualified `(srcIss, subject)` match
-performed by `resolveGlobalRoleBindings`, and the `(srcIss, group)` match performed by
-`resolveGroupRoleBindings`, both inside `processUserAccountACL`.
+call failed" (`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case). The
+`groupsClaimByIssuer` map that feeds check (3) has a narrower version of the same rule: `Validate`
+treats a `nil` map as "the claims lookup failed" and skips check (3) alone, so a `pkg/server` caller
+that already has usable `trustedNonUNIIssuers` still runs checks (1) and (2) even when the claims
+fetch fails — passing a non-nil-but-empty map in that situation would misreport it as "no dead
+bindings" instead. These warnings are not the security control: that is the issuer-qualified
+`(srcIss, subject)` match performed by `resolveGlobalRoleBindings`, and the `(srcIss, group)` match
+performed by `resolveGroupRoleBindings`, both inside `processUserAccountACL`.
 
 ## Invariants
 

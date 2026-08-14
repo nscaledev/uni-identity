@@ -17,6 +17,7 @@ limitations under the License.
 package rbac_test
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -124,6 +125,15 @@ func mustACL(t *testing.T, acl *openapi.Acl, err error) *openapi.Acl {
 func aclOrErrForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
 	t.Helper()
 
+	return aclOrErrForSubjectWithContext(t.Context(), t, opts, subject, srcIss, orgIDs, groups, extraRoles...)
+}
+
+// aclOrErrForSubjectWithContext is aclOrErrForSubject with control over the
+// base context, used to inject a capturing logger (via log.IntoContext)
+// without disturbing the fixed-context callers above.
+func aclOrErrForSubjectWithContext(baseCtx context.Context, t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
+	t.Helper()
+
 	scheme, err := unikornv1.SchemeBuilder.Build()
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +174,7 @@ func aclOrErrForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string
 		Groups: groups,
 	}
 
-	ctx := authorization.NewContext(t.Context(), info)
+	ctx := authorization.NewContext(baseCtx, info)
 
 	return rbacClient.GetACL(ctx, "")
 }

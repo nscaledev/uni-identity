@@ -834,17 +834,20 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 	subjectBindings := r.resolveGlobalRoleBindings(srcIss, subject)
 	groupBindings := r.resolveGroupRoleBindings(srcIss, groups)
 
+	// Fires whenever the token carried groups and none matched — including
+	// when a subject binding matched and the replace branch below returns
+	// early. The only diagnostic surface for a wrong-case or wrong-name
+	// binding: UNI cannot enumerate IdP groups to validate configuration
+	// against.
+	if len(groups) > 0 && len(groupBindings) == 0 {
+		log.FromContext(ctx).Info("token groups matched no global group role binding",
+			"subject", subject, "srcIss", srcIss, "groups", groups)
+	}
+
 	// Replace semantics: any match, subject or group, skips organization/
 	// project membership resolution entirely.
 	if len(subjectBindings)+len(groupBindings) > 0 {
 		return r.accumulateMatchedBindings(ctx, subject, srcIss, authz, subjectBindings, groupBindings, roles)
-	}
-
-	if len(groups) > 0 {
-		// The only diagnostic surface for a wrong-case or wrong-name binding:
-		// UNI cannot enumerate IdP groups to validate configuration against.
-		log.FromContext(ctx).Info("token groups matched no global group role binding",
-			"subject", subject, "srcIss", srcIss, "groups", groups)
 	}
 
 	acl := &openapi.Acl{}

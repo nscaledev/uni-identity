@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
+
 	"github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
@@ -29,6 +31,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func TestGlobalRoleBindingsValueParse(t *testing.T) {
@@ -784,5 +788,60 @@ func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
 	want := []openapi.AclOperation{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}
 	if !reflect.DeepEqual(byName["identity:users"], want) {
 		t.Fatalf("group leg not full/unclamped: got %+v, want %+v", byName["identity:users"], want)
+	}
+}
+
+// TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched pins that the
+// unmatched-groups diagnostic fires whenever the token carried groups and
+// none matched a group binding, even when a SUBJECT binding matched and
+// accumulateMatchedBindings returns early with a global ACL. Without the
+// hoisted check, an operator adding a group binding for someone who already
+// has an exact subject binding would get a silently-missing grant and zero
+// diagnostic.
+func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer  = "https://staff.example.com/"
+		subject = "boss@x.com"
+	)
+
+	opts := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: issuer, Subject: subject, RoleIDs: []string{"admin"}},
+		},
+		// No matching GlobalGroupRoleBindings entry for "unmapped-group".
+	}
+
+	var lines []string
+
+	logger := funcr.New(func(_, args string) { lines = append(lines, args) }, funcr.Options{})
+	ctx := log.IntoContext(t.Context(), logger)
+
+	acl, err := aclOrErrForSubjectWithContext(ctx, t, opts, subject, issuer, nil, []string{"unmapped-group"})
+	if err != nil {
+		t.Fatalf("GetACL: %v", err)
+	}
+
+	// The subject binding still granted its ACL — the diagnostic is additive,
+	// not a substitute for the grant.
+	if acl.Global == nil {
+		t.Fatal("matched subject binding granted no global ACL")
+	}
+
+	var found bool
+
+	for _, l := range lines {
+		if strings.Contains(l, "token groups matched no global group role binding") {
+			found = true
+
+			if !strings.Contains(l, "unmapped-group") {
+				t.Fatalf("unmatched-groups log missing the groups field: %q", l)
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected unmatched-groups diagnostic even though a subject binding matched")
 	}
 }
