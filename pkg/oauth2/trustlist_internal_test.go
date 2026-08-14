@@ -213,3 +213,14 @@ func TestValidatorForIssuerRevokedOnDelete(t *testing.T) {
 		t.Fatalf("deleted provider must not remain trusted (no TTL lag); res=%v err=%v", res, err)
 	}
 }
+
+func TestValidatorFingerprintIncludesGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	a := validatorFingerprint("https://iss/", "aud", nil, false, false, "")
+	b := validatorFingerprint("https://iss/", "aud", nil, false, false, "https://unikorn-cloud.org/groups")
+
+	if a == b {
+		t.Fatal("fingerprint must change when groupsClaim changes")
+	}
+}

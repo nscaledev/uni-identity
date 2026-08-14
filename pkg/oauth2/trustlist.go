@@ -103,19 +103,25 @@ func (a *Authenticator) bearerTrustProviders(items []unikornv1.OAuth2Provider) [
 }
 
 // validatorFingerprint produces a deterministic string that uniquely identifies
-// the effective validator configuration for a provider. When the fingerprint
-// changes a cached validator is discarded and rebuilt.
-func validatorFingerprint(rawIss, audience string, signingAlgorithms []string, skipEmail, requireAuthz bool) string {
+// the effective validator configuration for a provider, including groupsClaim.
+// When the fingerprint changes a cached validator is discarded and rebuilt.
+func validatorFingerprint(rawIss, audience string, signingAlgorithms []string, skipEmail, requireAuthz bool, groupsClaim string) string {
 	algs := make([]string, len(signingAlgorithms))
 	copy(algs, signingAlgorithms)
 	sort.Strings(algs)
 
+	// groupsClaim is joined unprefixed like rawIss/audience above: nothing
+	// enforces the absence of "|" in the claim name, so a claim name
+	// containing it could theoretically collide with a different
+	// configuration. The worst case is a spurious cache rebuild, not a
+	// security issue.
 	return strings.Join([]string{
 		rawIss,
 		audience,
 		strings.Join(algs, ","),
 		strconv.FormatBool(skipEmail),
 		strconv.FormatBool(requireAuthz),
+		groupsClaim,
 	}, "|")
 }
 
@@ -134,6 +140,7 @@ func (a *Authenticator) cachedValidator(p *unikornv1.OAuth2Provider) (*auth0.Val
 		p.Spec.BearerTrust.SigningAlgorithms,
 		p.Spec.BearerTrust.SkipEmailVerification,
 		p.Spec.BearerTrust.RequireAuthzClaim,
+		p.Spec.BearerTrust.GroupsClaim,
 	)
 
 	if raw, ok := a.validatorCache.Get(p.Name); ok {
@@ -150,6 +157,7 @@ func (a *Authenticator) cachedValidator(p *unikornv1.OAuth2Provider) (*auth0.Val
 		SupportedSigningAlgorithms: p.Spec.BearerTrust.SigningAlgorithms,
 		SkipEmailVerification:      p.Spec.BearerTrust.SkipEmailVerification,
 		RequireAuthzClaim:          p.Spec.BearerTrust.RequireAuthzClaim,
+		GroupsClaim:                p.Spec.BearerTrust.GroupsClaim,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build validator for provider %q: %w", p.Name, err)
