@@ -196,23 +196,27 @@ Each bearer-trusted provider has a `BearerTrustSpec` that governs claim validati
   accepted with an empty `orgIds` slice instead of being rejected.
 - **`signingAlgorithms`** (default `[RS256]`): permitted JWS algorithms. Only asymmetric algorithms
   are accepted; symmetric algorithms (e.g. `HS256`) and `none` are rejected at trust-list build time.
-- **`groupsClaim`** (default empty): names the access-token claim carrying this issuer's IdP group
-  names, e.g. `https://unikorn-cloud.org/groups`. Empty means the issuer emits no groups. A
-  non-empty value must be a namespaced URI (contain `://`), rejected otherwise at validator
-  construction — this is a v1 restriction against bare user-settable profile claims (`nickname`,
-  `name`) being designated as an authorization source, and could be relaxed later as a compatible
-  widening if a real provider needs it, not a permanent constraint of the claim shape itself.
+- **`groupsClaim`** (default empty): names the access-token claim that carries this issuer's IdP
+  group names, e.g. `https://unikorn-cloud.org/groups`. Empty means the issuer emits no groups. A
+  non-empty value must be a namespaced URI that contains `://`, and validator construction rejects
+  any other value. This is a v1 restriction that stops a bare user-settable profile claim
+  (`nickname`, `name`) from becoming an authorization source. A later release could relax it as a
+  compatible widening if a real provider needs that. It is not a permanent constraint of the claim
+  shape itself.
 
-Extraction of `groupsClaim` (`extractGroups`) is tolerant end to end and never rejects the token
-on its account: a missing claim, a non-array claim value, and individual non-string array entries
-all degrade to fewer or no groups rather than failing validation, because a malformed groups claim
-must not break authentication for the whole issuer. Entries that do parse as strings are kept
-byte-exact, with no case-folding or trimming, since group-binding matching downstream is
-case-sensitive. The claim name is part of the validator-cache fingerprint
-(`validatorFingerprint` in `pkg/oauth2/trustlist.go`), so editing `groupsClaim` on the
-`OAuth2Provider` takes effect on the next lookup rather than waiting out the validator cache's TTL.
-Extracted groups are carried on `authorization.Info.Groups` for RBAC to consume — never embedded in
-the minted passport, and never propagated through the `X-Principal` header — see
+`extractGroups` reads `groupsClaim` tolerantly from end to end, and never rejects the token because
+of it. A missing claim, a non-array claim value, and individual non-string array entries all degrade
+to fewer or no groups instead of failing validation. A malformed groups claim must not break
+authentication for the whole issuer.
+
+`extractGroups` keeps the entries that do parse as strings byte-exact, with no case folding and no
+trimming, because group-binding matching downstream is case-sensitive. The claim name is part of the
+validator-cache fingerprint (`validatorFingerprint` in `pkg/oauth2/trustlist.go`), so an edit to
+`groupsClaim` on the `OAuth2Provider` takes effect on the next lookup. It does not wait out the
+validator cache's TTL.
+
+The validator carries extracted groups on `authorization.Info.Groups` for RBAC to consume. It never
+embeds them in the minted passport, and never propagates them through the `X-Principal` header. See
 [`pkg/rbac/README.md#global-role-bindings`](../rbac/README.md#global-role-bindings) for how a
 trusted issuer's groups become global authority.
 

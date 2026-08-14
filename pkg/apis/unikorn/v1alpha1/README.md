@@ -102,13 +102,13 @@ value simply never matches and the token is rejected as an untrusted issuer.
 - `skipEmailVerification`: skip the `email_verified` check.
 - `requireAuthzClaim`: require the `https://unikorn-cloud.org/authz` claim.
 - `signingAlgorithms`: permitted JWS algorithms (asymmetric only; defaults to `[RS256]`).
-- `groupsClaim`: names the per-issuer token claim carrying IdP group names (a JSON array of
-  strings; non-string entries are skipped). The name must be a namespaced URI (contain `://`),
-  so a user-settable bare profile claim (`nickname`, `name`) cannot be designated as an
-  authorization source; this is checked at trust-list build time alongside the other
-  cross-field rules. Empty means the issuer emits no groups, and group-based global role
-  bindings never match tokens from it (fail closed). This is the consumer-facing field for the
-  global group role binding mechanism documented in
+- `groupsClaim`: names the per-issuer token claim that carries IdP group names. The claim value is a
+  JSON array of strings, and the validator skips non-string entries. The name must be a namespaced
+  URI that contains `://`, so nobody can designate a user-settable bare profile claim (`nickname`,
+  `name`) as an authorization source. The trust-list build checks this rule together with the other
+  cross-field rules. Empty means the issuer emits no groups, and group-based global role bindings
+  never match tokens from it (fail closed). This is the consumer-facing field for the global group
+  role binding mechanism documented in
   [`pkg/rbac/README.md#global-role-bindings`](../../../rbac/README.md#global-role-bindings).
 
 The full bearer-trust operator contract is in

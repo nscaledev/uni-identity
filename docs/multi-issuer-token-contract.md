@@ -44,18 +44,18 @@ The validator checks the following claims on every incoming token from a bearer-
 | `exp` / `nbf` / `iat` | Standard temporal claims validated with the configured leeway. |
 | `https://unikorn-cloud.org/email` | Must be present and non-empty after normalization. |
 | `https://unikorn-cloud.org/email_verified` | Must be `true` unless `skipEmailVerification: true`. |
-| groups claim (name is per-issuer configuration, e.g. `https://unikorn-cloud.org/groups`) | Optional; consumed only when this issuer's `bearerTrust.groupsClaim` names it. Must be a JSON array of strings when present; non-string entries are skipped individually. A missing claim, a non-array value, or an entry-filtering that leaves nothing usable all degrade to "no groups" — the claim never causes token rejection. |
+| groups claim (the name is per-issuer configuration, e.g. `https://unikorn-cloud.org/groups`) | Optional. The validator reads it only when this issuer's `bearerTrust.groupsClaim` names it. The value must be a JSON array of strings when present. The validator skips non-string entries one by one. A missing claim, a non-array value, or entry filtering that leaves nothing usable all degrade to "no groups". The claim never causes token rejection. |
 
 The email and email-verified claims use the `https://unikorn-cloud.org/` namespace because OIDC
 access tokens do not carry bare `email`/`email_verified` claims (those live on the ID token).
 Providers that surface email on access tokens using namespaced claims — as the UNI Auth0 post-login
 Action does — satisfy this requirement directly.
 
-Unlike the fixed claims above, the groups claim has no fixed name: it is whichever claim the
-`OAuth2Provider`'s `bearerTrust.groupsClaim` names for that issuer (a namespaced URI, required to
-contain `://`), not a contract constant every provider must emit under one identical key. An issuer
-with `groupsClaim` unset emits no groups as far as UNI is concerned, and no group-based global role
-binding can ever match its tokens.
+The groups claim has no fixed name, unlike the fixed claims above. It is whichever claim the
+`OAuth2Provider`'s `bearerTrust.groupsClaim` names for that issuer, and that name must be a
+namespaced URI that contains `://`. It is not a contract constant that every provider must emit
+under one identical key. An issuer with `groupsClaim` unset emits no groups as far as UNI is
+concerned, and no group-based global role binding can ever match its tokens.
 
 ## Email normalization
 
@@ -125,12 +125,15 @@ applies regardless of what the provider's JWKS endpoint advertises.
 
 ## The `--global-role-binding` contract
 
-Global privileges — platform administrators and any future issuer-wide grant — are expressed
-through two mechanisms rooted in the same `(issuer, ...)` shape: a **global role binding**, mapping
-an `(issuer, subject | "*")` pair to a set of role IDs, and a **global group role binding**, mapping
-an `(issuer, group)` pair to a set of role IDs for any subject whose token carries that group in
-the issuer's configured `groupsClaim` (above). This section states the operator-facing contract for
-the subject-keyed form; the group-keyed form's grammar, matching rules, and consequences are in
+Two mechanisms express global privileges — platform administrators and any future issuer-wide
+grant. Both are rooted in the same `(issuer, ...)` shape:
+
+- A **global role binding** maps an `(issuer, subject | "*")` pair to a set of role IDs.
+- A **global group role binding** maps an `(issuer, group)` pair to a set of role IDs. It applies to
+  any subject whose token carries that group in the issuer's configured `groupsClaim` (above).
+
+This section states the operator-facing contract for the subject-keyed form. For the group-keyed
+form, its grammar, matching rules, and consequences are in
 [`pkg/rbac/README.md#group-bindings`](../pkg/rbac/README.md#group-bindings). Implementation and
 full rationale for both live in
 [`pkg/rbac/README.md`](../pkg/rbac/README.md#global-role-bindings).
