@@ -58,6 +58,23 @@ that keeps those two models separate while presenting handlers with one normaliz
   overgrant. Keys are also qualified by the authenticated issuer (`src_iss`), and every
   user-influenced segment is length-prefixed so a subject containing the join delimiter cannot be
   crafted to collide with another identity's key.
+- ACL cache keys also carry a digest of the presented token. The ACL is a function of the presented
+  token plus cluster state, not only `(sub, srcIss)`: two live tokens for the same subject are not
+  guaranteed to resolve to the same ACL, so they must never share a cache entry. Keying by token is
+  strictly finer than keying by subject, so this can only under-share, never over-share, an entry. A
+  digest is used rather than the raw token because cache keys live in a large LRU in every
+  downstream service and must not themselves be credential material. The mTLS system-account path
+  leaves the token empty, giving every system-account request the same constant digest; that is
+  harmless because system-account ACLs do not depend on token content. `--acl-cache-size` keeps its
+  default of `1<<16` entries under this change: population is now bounded by live tokens × scopes
+  rather than subjects × scopes, but with the default 1-minute TTL and a per-entry size of a few
+  hundred bytes (key ≈ sub + srcIss + digest + scope, value = ACL), 65,536 entries is still
+  single-digit megabytes, and eviction pressure only appears above roughly 1,000 distinct
+  token+scope pairs per second sustained. There is no pre-deploy measurement of the resulting
+  hit-rate shift; the default is retained on this sizing arithmetic and the hit rate is a
+  post-deploy monitoring item. A client that mints a fresh token per request will miss the cache on
+  every request; that is a client-side anti-pattern to fix at the client, not a reason to grow the
+  cache.
 - OpenAPI validation, authentication, principal propagation, and ACL resolution are colocated so
   handlers receive already-normalized request context.
 
