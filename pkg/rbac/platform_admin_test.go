@@ -94,9 +94,9 @@ func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIs
 }
 
 // getACLForSubjectWithGroups is getACLForSubject with control over both the
-// authz.OrgIds claim and the token's IdP groups, used to exercise group role
-// binding matching (and its replace semantics) without disturbing the
-// subject-only callers above.
+// authz.OrgIds claim and the token's IdP groups. It exercises group role binding
+// matching, and its replace semantics, without disturbing the subject-only
+// callers above.
 func getACLForSubjectWithGroups(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
 	t.Helper()
 
@@ -117,20 +117,20 @@ func mustACL(t *testing.T, acl *openapi.Acl, err error) *openapi.Acl {
 }
 
 // aclOrErrForSubject is the common builder behind getACLForSubject and its
-// variants: constructs a minimal RBAC environment and calls GetACL, returning
-// the error rather than failing the test so a caller can assert on an
-// expected error path (e.g. proving membership resolution actually ran
-// against a fake client with no organization fixtures, when no binding
-// matched).
+// variants. It constructs a minimal RBAC environment and calls GetACL. It
+// returns the error rather than failing the test, so a caller can assert on an
+// expected error path. A caller can, for example, prove that membership
+// resolution really ran against a fake client with no organization fixtures when
+// no binding matched.
 func aclOrErrForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
 	t.Helper()
 
 	return aclOrErrForSubjectWithContext(t.Context(), t, opts, subject, srcIss, orgIDs, groups, extraRoles...)
 }
 
-// aclOrErrForSubjectWithContext is aclOrErrForSubject with control over the
-// base context, used to inject a capturing logger (via log.IntoContext)
-// without disturbing the fixed-context callers above.
+// aclOrErrForSubjectWithContext is aclOrErrForSubject with control over the base
+// context. It injects a capturing logger through log.IntoContext, without
+// disturbing the fixed-context callers above.
 func aclOrErrForSubjectWithContext(baseCtx context.Context, t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
 	t.Helper()
 

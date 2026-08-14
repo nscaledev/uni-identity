@@ -128,8 +128,9 @@ func TestGlobalGroupRoleBindingsValueSet(t *testing.T) {
 					t.Fatalf("%q: error %q does not mention the group-name possibility", tc.value, err.Error())
 				}
 
-				// Pin the specific rejection reason validateGroupBindingIssuer
-				// returns for an empty issuer, not merely that some error fired.
+				// Pin the specific rejection reason that
+				// validateGroupBindingIssuer returns for an empty issuer, not
+				// merely that some error fired.
 				if tc.name == "empty issuer rejected" && !strings.Contains(err.Error(), "issuer is not an absolute URL") {
 					t.Fatalf("%q: error %q does not report the empty-issuer-is-not-a-URL reason", tc.value, err.Error())
 				}
@@ -372,14 +373,17 @@ func TestOptionsValidateReportsEveryOffender(t *testing.T) {
 }
 
 // TestOptionsValidateGroupBindingOutcomes covers the three outcomes of the
-// GlobalGroupRoleBindings loop in Options.Validate: an issuer absent from
-// groupsClaimByIssuer and untrusted reports ErrUntrustedBindingIssuer; an
-// issuer present in the map with an empty groupsClaim (the shape of the
-// synthetic legacy auth0-exchange provider) reports the dead-binding error
-// ErrGroupBindingNoGroupsClaim instead, never the untrusted error; an issuer
-// present with a configured claim reports nothing. Map membership must be
-// checked before the trusted-issuers fallback, or the second case would be
-// misreported as untrusted.
+// GlobalGroupRoleBindings loop in Options.Validate:
+//
+//  1. An issuer that is absent from groupsClaimByIssuer and untrusted reports
+//     ErrUntrustedBindingIssuer.
+//  2. An issuer that is present in the map with an empty groupsClaim, the shape
+//     of the synthetic legacy auth0-exchange provider, reports the dead-binding
+//     error ErrGroupBindingNoGroupsClaim instead, and never the untrusted error.
+//  3. An issuer that is present with a configured claim reports nothing.
+//
+// Validate must check map membership before the trusted-issuers fallback.
+// Otherwise it misreports the second case as untrusted.
 func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
 	t.Parallel()
 
@@ -394,7 +398,7 @@ func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
 		liveIssuer: "https://unikorn-cloud.org/groups",
 	}
 
-	// issuer absent from the map, and untrusted → ErrUntrustedBindingIssuer.
+	// Issuer absent from the map, and untrusted → ErrUntrustedBindingIssuer.
 	untrusted := &rbac.Options{
 		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
 			{Issuer: unknownIssuer, Group: "staff", RoleIDs: []string{"r"}},
@@ -410,7 +414,7 @@ func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
 		t.Fatalf("got %v, unexpectedly ErrGroupBindingNoGroupsClaim", err)
 	}
 
-	// issuer present in the map with an empty groupsClaim →
+	// Issuer present in the map with an empty groupsClaim →
 	// ErrGroupBindingNoGroupsClaim, and NOT ErrUntrustedBindingIssuer, even
 	// though deadIssuer is not in any trusted-issuers list.
 	dead := &rbac.Options{
@@ -428,7 +432,7 @@ func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
 		t.Fatalf("got %v, unexpectedly ErrUntrustedBindingIssuer", err)
 	}
 
-	// issuer present in the map with a configured claim → no error.
+	// Issuer present in the map with a configured claim → no error.
 	live := &rbac.Options{
 		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
 			{Issuer: liveIssuer, Group: "staff", RoleIDs: []string{"r"}},
@@ -441,14 +445,15 @@ func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
 }
 
 // TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly covers the
-// nil-vs-empty-map contract documented on Options.Validate: nil means "the
-// claims lookup failed" and must skip the GlobalGroupRoleBindings advisory
-// entirely, while a non-nil empty map means "no issuers configured" and runs
-// that check normally. The fixture's group binding issuer is absent from
-// trustedNonUNIIssuers, so the empty-map case reports it as untrusted; a
-// nil map must report neither that nor the dead-binding error for it. A bare
-// admin subject is also present so the unrelated, ungated checks are
-// observed to run identically in both cases.
+// nil-versus-empty-map contract documented on Options.Validate. A nil map means
+// "the claims lookup failed" and must skip the GlobalGroupRoleBindings advisory
+// entirely. A non-nil empty map means "no issuers configured" and runs that
+// check normally.
+//
+// The fixture's group binding issuer is absent from trustedNonUNIIssuers, so the
+// empty-map case reports it as untrusted. A nil map must report neither that nor
+// the dead-binding error for it. The fixture also carries a bare admin subject,
+// so both cases show the unrelated, ungated checks running identically.
 func TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly(t *testing.T) {
 	t.Parallel()
 
@@ -466,11 +471,11 @@ func TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly(t *testing.T) 
 		},
 	}
 
-	// nil groupsClaimByIssuer ("the claims lookup failed") → the
-	// GlobalGroupRoleBindings check is skipped entirely: neither
-	// ErrGroupBindingNoGroupsClaim nor ErrUntrustedBindingIssuer is reported
-	// for groupIssuer, even though groupIssuer is not in trustedNonUNIIssuers.
-	// The unrelated bare-admin check is ungated by groupsClaimByIssuer and
+	// A nil groupsClaimByIssuer ("the claims lookup failed") skips the
+	// GlobalGroupRoleBindings check entirely. Validate reports neither
+	// ErrGroupBindingNoGroupsClaim nor ErrUntrustedBindingIssuer for
+	// groupIssuer, even though groupIssuer is not in trustedNonUNIIssuers.
+	// groupsClaimByIssuer does not gate the unrelated bare-admin check, which
 	// still runs.
 	err := opts.Validate([]string{trustedIssuer}, nil)
 	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
@@ -485,10 +490,10 @@ func TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly(t *testing.T) 
 		t.Fatalf("got %v, unexpectedly ErrUntrustedBindingIssuer with a nil groupsClaimByIssuer", err)
 	}
 
-	// non-nil empty map ("no issuers configured") → the check runs: groupIssuer
-	// is absent from the map and not in trustedNonUNIIssuers, so it IS
-	// reported as untrusted. This is the contrast that proves the nil case
-	// above is a real skip, not an incidental non-match.
+	// A non-nil empty map ("no issuers configured") runs the check. groupIssuer
+	// is absent from the map and not in trustedNonUNIIssuers, so Validate DOES
+	// report it as untrusted. This contrast proves that the nil case above is a
+	// real skip, not an incidental non-match.
 	err = opts.Validate([]string{trustedIssuer}, map[string]string{})
 	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
 		t.Fatalf("got %v, want ErrBareAdminSubject still reported with a non-nil empty groupsClaimByIssuer", err)
@@ -666,11 +671,10 @@ func TestBoundSubjectSkipsMembershipResolution(t *testing.T) {
 	}
 }
 
-// TestGroupRoleBindingGrantsFullScopesNoClamp is the core property under
-// test for group bindings: unlike a wildcard subject binding, a matched
-// group binding is NOT clamped to read. Asserting a write operation
-// (Create/Update/Delete) survives is what distinguishes this from the
-// wildcard-clamp behaviour.
+// TestGroupRoleBindingGrantsFullScopesNoClamp covers the core property of group
+// bindings. Unlike a wildcard subject binding, a matched group binding is NOT
+// clamped to read. The assertion that a write operation (Create, Update, Delete)
+// survives is what separates this from the wildcard-clamp behaviour.
 func TestGroupRoleBindingGrantsFullScopesNoClamp(t *testing.T) {
 	t.Parallel()
 
@@ -703,8 +707,8 @@ func TestGroupRoleBindingGrantsFullScopesNoClamp(t *testing.T) {
 	}
 }
 
-// TestGroupRoleBindingCaseMismatchDoesNotMatch pins byte-exact matching: no
-// case folding, no trimming inside the name.
+// TestGroupRoleBindingCaseMismatchDoesNotMatch pins byte-exact matching. There
+// is no case folding, and no trimming inside the name.
 func TestGroupRoleBindingCaseMismatchDoesNotMatch(t *testing.T) {
 	t.Parallel()
 
@@ -721,8 +725,8 @@ func TestGroupRoleBindingCaseMismatchDoesNotMatch(t *testing.T) {
 	}
 }
 
-// TestGroupRoleBindingWrongIssuerDoesNotMatch pins that group binding
-// matching is issuer-qualified, mirroring subject bindings.
+// TestGroupRoleBindingWrongIssuerDoesNotMatch pins that group binding matching
+// is issuer-qualified, like subject binding matching.
 func TestGroupRoleBindingWrongIssuerDoesNotMatch(t *testing.T) {
 	t.Parallel()
 
@@ -739,12 +743,12 @@ func TestGroupRoleBindingWrongIssuerDoesNotMatch(t *testing.T) {
 	}
 }
 
-// TestUnmatchedGroupsFallsThroughToMembershipResolution pins that when no
-// group binding matches (case mismatch here), replace semantics do not fire
-// and membership resolution proceeds as normal. The fake client has no
-// Organization fixture for "some-org", so the normal (non-replace) path's
-// organization lookup deterministically fails on that missing fixture — that
-// failure is the proof: had the implementation incorrectly treated this as a
+// TestUnmatchedGroupsFallsThroughToMembershipResolution pins that replace
+// semantics do not fire when no group binding matches, a case mismatch here, and
+// that membership resolution proceeds as normal. The fake client has no
+// Organization fixture for "some-org", so the normal, non-replace path's
+// organization lookup fails deterministically on that missing fixture. That
+// failure is the proof. If the implementation incorrectly treated this as a
 // match, GetACL would return a global-only ACL with no error instead.
 func TestUnmatchedGroupsFallsThroughToMembershipResolution(t *testing.T) {
 	t.Parallel()
@@ -761,13 +765,12 @@ func TestUnmatchedGroupsFallsThroughToMembershipResolution(t *testing.T) {
 	}
 }
 
-// TestSubjectAndGroupBindingsCombineInOneReplace proves the clamped
-// (wildcard-subject) and unclamped (exact-subject, group) accumulators
-// combine correctly on a single principal inside one replace-semantics
-// block: an exact subject binding, a wildcard subject binding, and a group
-// binding all match, and org memberships present in the claim are skipped
-// entirely (replace semantics), yet each leg's clamp behaviour is preserved
-// independently within the union.
+// TestSubjectAndGroupBindingsCombineInOneReplace proves that the clamped
+// accumulator (wildcard-subject) and the unclamped accumulators (exact-subject,
+// group) combine correctly on a single principal, inside one replace-semantics
+// block. An exact subject binding, a wildcard subject binding, and a group
+// binding all match. Replace semantics skip the org memberships present in the
+// claim entirely. Each leg still keeps its own clamp behaviour inside the union.
 func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
 	t.Parallel()
 
@@ -820,10 +823,10 @@ func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
 		},
 	}
 
-	// Org memberships present in the claim, but no Organization fixture in
-	// the fake client: an accidental additive implementation would attempt
-	// membership resolution and error on the missing organization, rather
-	// than returning the global-only union asserted below.
+	// The claim carries org memberships, but the fake client has no Organization
+	// fixture. An accidental additive implementation would attempt membership
+	// resolution and error on the missing organization, instead of returning the
+	// global-only union asserted below.
 	acl := getACLForSubjectWithGroups(t, opts, subject, issuer, []string{"some-org"}, []string{group}, wildcardRole, exactRole, groupRole)
 
 	if acl.Organizations != nil || acl.Organization != nil {
@@ -849,8 +852,8 @@ func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
 		t.Fatalf("exact subject leg missing full verbs: %+v", byName)
 	}
 
-	// Group leg: full verbs including a write operation, unclamped — this is
-	// the property under test.
+	// Group leg: full verbs including a write operation, unclamped. This is the
+	// property under test.
 	want := []openapi.AclOperation{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}
 	if !reflect.DeepEqual(byName["identity:users"], want) {
 		t.Fatalf("group leg not full/unclamped: got %+v, want %+v", byName["identity:users"], want)
@@ -858,12 +861,12 @@ func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
 }
 
 // TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched pins that the
-// unmatched-groups diagnostic fires whenever the token carried groups and
-// none matched a group binding, even when a SUBJECT binding matched and
-// accumulateMatchedBindings returns early with a global ACL. Without the
-// hoisted check, an operator adding a group binding for someone who already
-// has an exact subject binding would get a silently-missing grant and zero
-// diagnostic.
+// unmatched-groups diagnostic fires whenever the token carried groups and none
+// of them matched a group binding. It fires even when a SUBJECT binding matched
+// and accumulateMatchedBindings returns early with a global ACL. Without the
+// hoisted check, an operator who adds a group binding for someone who already
+// has an exact subject binding would get a silently missing grant, and no
+// diagnostic at all.
 func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 	t.Parallel()
 
@@ -889,8 +892,8 @@ func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 		t.Fatalf("GetACL: %v", err)
 	}
 
-	// The subject binding still granted its ACL — the diagnostic is additive,
-	// not a substitute for the grant.
+	// The subject binding still granted its ACL. The diagnostic is additive, not
+	// a substitute for the grant.
 	if acl.Global == nil {
 		t.Fatal("matched subject binding granted no global ACL")
 	}
@@ -912,17 +915,18 @@ func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 	}
 }
 
-// TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail pins the content of
-// the "global role bindings matched" log line emitted by
-// accumulateMatchedBindings. Group membership lives in the IdP, outside this
-// system, so this line is the only record anywhere of who exercised global
-// authority via a group and why: it must carry the subject, the issuer, the
-// matched binding identities and the role IDs each one granted, and the
-// count of organization memberships skipped by replace semantics. The
-// fixture matches both a subject binding and a group binding on the same
-// principal so both describeSubjectBindings and describeGroupBindings are
-// exercised, and supplies a non-empty authz.OrgIds so the skipped count is a
-// real number rather than a vacuous zero.
+// TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail pins the content of the
+// "global role bindings matched" log line that accumulateMatchedBindings emits.
+// Group membership lives in the IdP, outside this system, so this line is the
+// only record anywhere of who exercised global authority through a group, and
+// why. It must carry the subject, the issuer, the matched binding identities, the
+// role IDs each one granted, and the count of organization memberships that
+// replace semantics skipped.
+//
+// The fixture matches both a subject binding and a group binding on the same
+// principal, so it exercises both describeSubjectBindings and
+// describeGroupBindings. It also supplies a non-empty authz.OrgIds, so the
+// skipped count is a real number rather than a vacuous zero.
 func TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail(t *testing.T) {
 	t.Parallel()
 
@@ -951,7 +955,7 @@ func TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail(t *testing.T) {
 		t.Fatalf("GetACL: %v", err)
 	}
 
-	// The exercise log is additive, not a substitute for the grant.
+	// The exercise log is additive. It is not a substitute for the grant.
 	if acl.Global == nil {
 		t.Fatal("matched bindings granted no global ACL")
 	}

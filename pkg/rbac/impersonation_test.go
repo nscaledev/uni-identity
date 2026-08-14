@@ -295,25 +295,24 @@ func TestImpersonation_UniExactBindingIntersectsWithServiceACL(t *testing.T) {
 	assert.Nil(t, acl.Projects)
 }
 
-// TestImpersonatedPrincipalNeverMatchesGroupBindings pins that an
-// impersonated principal whose (hypothetical) groups would match a
-// configured group binding still gets NO group-derived global scopes: group
-// membership is an IdP-issued token claim, and an impersonated principal
-// never carries the impersonated actor's original token, so granting
-// group-derived authority here would attribute someone else's IdP membership
-// to the service doing the impersonating. processImpersonatedPrincipalACL
-// always resolves impersonated user
-// principals against the UNI sentinel issuer with nil groups. The binding
-// below is constructed directly on the sentinel issuer (bypassing
-// GlobalGroupRoleBindingsValue.Set's flag-parse validation, which rejects the
-// sentinel for group bindings — mirroring the precedent in
-// TestImpersonation_UniExactBindingIntersectsWithServiceACL) so that the
-// issuer already matches and the only thing left standing between the
-// impersonated principal and this binding is the nil groups passed at the
-// impersonation call site. That isolates the actual property under test:
-// if a future change ever plumbed real groups through the impersonation
-// path, this test would fail the moment it did, which is exactly the
-// regression it exists to catch.
+// TestImpersonatedPrincipalNeverMatchesGroupBindings pins that an impersonated
+// principal receives NO group-derived global scopes, even when its hypothetical
+// groups would match a configured group binding. Group membership is an
+// IdP-issued token claim, and an impersonated principal never carries the
+// impersonated actor's original token. A group-derived grant here would
+// therefore attribute someone else's IdP membership to the service that does the
+// impersonating. processImpersonatedPrincipalACL always resolves impersonated
+// user principals against the UNI sentinel issuer, with nil groups.
+//
+// The test constructs the binding below directly on the sentinel issuer. This
+// bypasses GlobalGroupRoleBindingsValue.Set's flag-parse validation, which
+// rejects the sentinel for group bindings, and follows the precedent in
+// TestImpersonation_UniExactBindingIntersectsWithServiceACL. The issuer
+// therefore already matches, and the only thing left between the impersonated
+// principal and this binding is the nil groups that the impersonation call site
+// passes. That isolates the actual property under test. If a future change ever
+// carried real groups through the impersonation path, this test would fail at
+// that moment, which is exactly the regression it exists to catch.
 func TestImpersonatedPrincipalNeverMatchesGroupBindings(t *testing.T) {
 	t.Parallel()
 
@@ -333,9 +332,9 @@ func TestImpersonatedPrincipalNeverMatchesGroupBindings(t *testing.T) {
 		},
 	}
 
-	// The service ACL grants the same scopes the binding would grant, so a
-	// leak isn't hidden by the confused-deputy intersection: if the group
-	// binding matched at all, its scopes would survive to acl.Global below.
+	// The service ACL grants the same scopes that the binding would grant, so the
+	// confused-deputy intersection cannot hide a leak. If the group binding
+	// matched at all, its scopes would survive to acl.Global below.
 	f := setupImpersonationEnvironmentWithBindings(t,
 		[]unikornv1.RoleScope{
 			{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},

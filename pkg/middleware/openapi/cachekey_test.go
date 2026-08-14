@@ -32,8 +32,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 )
 
-// tokenDigest mirrors the digest computation inside aclCacheKey so the
-// literal expectations below stay readable without duplicating the hash
+// tokenDigest mirrors the digest computation inside aclCacheKey. It keeps the
+// literal expectations below readable, and it does not repeat the hash
 // algorithm choice as an opaque magic string.
 func tokenDigest(token string) string {
 	sum := sha256.Sum256([]byte(token))
@@ -42,16 +42,16 @@ func tokenDigest(token string) string {
 }
 
 // digestSegment extracts the token-digest segment from a real aclCacheKey
-// return value, rather than recomputing the digest independently. The key
-// is "<mode>|" followed by a run of length-prefixed "<len>:<value>" segments
-// and a terminal, unprefixed scope segment; the digest is always the last
+// return value. It does not recompute the digest independently. The key is
+// "<mode>|" followed by a run of length-prefixed "<len>:<value>" segments and a
+// terminal, unprefixed scope segment. The digest is always the last
 // length-prefixed segment, immediately before scope.
 //
-// Only the direct shape is parsed: it has three length-prefixed segments
-// (sub, srcIss, digest). The impersonated shape's digest position is pinned
-// by the exact-key assertions elsewhere in this file, so teaching this helper
-// to parse a shape nothing here builds would be untested code in a helper
-// whose whole job is to model the real format faithfully.
+// This helper parses the direct shape only, which has three length-prefixed
+// segments (sub, srcIss, digest). The exact-key assertions elsewhere in this
+// file pin the impersonated shape's digest position. This helper exists to
+// model the real format faithfully, so support for a shape that nothing here
+// builds would be untested code.
 func digestSegment(t *testing.T, key string) string {
 	t.Helper()
 
@@ -84,8 +84,8 @@ func digestSegment(t *testing.T, key string) string {
 func TestACLCacheKey(t *testing.T) {
 	t.Parallel()
 
-	// d is the digest of the empty token, shared by every fixture below that
-	// does not set Token explicitly.
+	// d is the digest of the empty token. Every fixture below that does not set
+	// Token explicitly shares it.
 	d := tokenDigest("")
 
 	// directInfo models a direct bearer-token call. The same cache key shape is
@@ -233,35 +233,37 @@ func TestACLCacheKey(t *testing.T) {
 		require.NotEqual(t, keyA, keyB)
 	})
 
-	// There is deliberately no "craft a colliding (scope, token) pair" test at
-	// the digest/scope boundary, unlike SubjectContainingDelimiterCannotForgeAnotherIdentity
-	// above. That test needs a real crafted collision because sub and srcIss
-	// are attacker-controlled, variable-length strings that could otherwise be
-	// shifted across the "|" delimiter. The token digest cannot be shifted the
-	// same way: sha256.Sum256 output, base64.RawStdEncoding-encoded, is always
-	// exactly 43 bytes and drawn from an alphabet that never contains "|". So
-	// for any two calls, the first 43 characters of the digest segment are
-	// unambiguously the digest and nothing else can borrow that space,
-	// regardless of what scope (the unprefixed terminal segment) contains.
-	// This makes the boundary safe by construction, not merely by the
-	// length-prefix convention used for the other segments; there is no
-	// adversarial (scope, token) pair that can be constructed to defeat it, so
-	// no such test is written here. DigestSegmentEncodingInvariant below pins
-	// the encoding facts (fixed 43-character length, "|"-free alphabet) that
-	// this construction argument rests on, without attempting the dropped
-	// collision proof. It reads the digest out of aclCacheKey's actual
-	// returned key via digestSegment rather than recomputing it, so a change
-	// to the real encoding is what the assertions below observe.
+	// This file deliberately has no "craft a colliding (scope, token) pair" test
+	// at the digest/scope boundary, unlike
+	// SubjectContainingDelimiterCannotForgeAnotherIdentity above. That test
+	// needs a real crafted collision, because sub and srcIss are
+	// attacker-controlled, variable-length strings. An attacker could otherwise
+	// shift them across the "|" delimiter. The token digest cannot shift the
+	// same way. sha256.Sum256 output, base64.RawStdEncoding-encoded, is always
+	// exactly 43 bytes, drawn from an alphabet that never contains "|". For any
+	// two calls, the first 43 characters of the digest segment are therefore
+	// unambiguously the digest, and nothing else can borrow that space. This
+	// holds whatever scope (the unprefixed terminal segment) contains.
+	//
+	// The boundary is therefore safe by construction, not merely by the
+	// length-prefix convention that the other segments use. No adversarial
+	// (scope, token) pair can defeat it, so this file has no such test.
+	// DigestSegmentEncodingInvariant below pins the encoding facts that this
+	// construction argument rests on: the fixed 43-character length and the
+	// "|"-free alphabet. It does not attempt the dropped collision proof. It
+	// reads the digest out of aclCacheKey's actual returned key through
+	// digestSegment, rather than recomputing it, so the assertions below observe
+	// any change to the real encoding.
 
 	t.Run("DigestSegmentEncodingInvariant", func(t *testing.T) {
 		t.Parallel()
 
 		const base64StdAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
-		// Token content varies in length and character set; the digest segment
-		// must not. A switch to base64.URLEncoding (which pads with "=" and
-		// swaps "+/" for "-_") or a truncated digest would change the length or
-		// alphabet asserted below.
+		// Token content varies in length and character set. The digest segment
+		// must not. A change to base64.URLEncoding, which pads with "=" and
+		// swaps "+/" for "-_", or a truncated digest would change the length or
+		// the alphabet asserted below.
 		for _, token := range []string{"", "short-token", "a much longer token value with unicode: héllo wörld"} {
 			info := &authorization.Info{
 				Token:    token,

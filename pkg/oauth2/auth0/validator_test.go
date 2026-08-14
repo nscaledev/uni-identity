@@ -122,8 +122,8 @@ type testTokenClaims struct {
 	EmailVerified *bool           `json:"https://unikorn-cloud.org/email_verified,omitempty"`
 	Authz         testAuthzClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
 
-	// Groups is loosely typed so malformed-claim test cases (non-array,
-	// non-string entries) can be expressed directly.
+	// Groups is loosely typed, so the malformed-claim test cases below can state
+	// a non-array value, or non-string entries, directly.
 	Groups any `json:"https://unikorn-cloud.org/groups,omitempty"`
 }
 
@@ -476,9 +476,9 @@ func TestNewValidatorAcceptsNamespacedGroupsClaim(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestValidateExtractsGroupsClaimTolerantly documents the extraction
-// contract: a malformed groups claim must never fail the token, only
-// degrade to fewer or no groups.
+// TestValidateExtractsGroupsClaimTolerantly documents the extraction contract.
+// A malformed groups claim must never fail the token. It must only degrade to
+// fewer or no groups.
 func TestValidateExtractsGroupsClaimTolerantly(t *testing.T) {
 	t.Parallel()
 
