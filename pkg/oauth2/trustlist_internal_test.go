@@ -77,6 +77,20 @@ func setupAuthenticator(t *testing.T, objects ...client.Object) *Authenticator {
 func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trustlistTestEnv {
 	t.Helper()
 
+	return setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration: accessTokenDurationTL,
+		TokenCacheSize:      64,
+		CodeCacheSize:       64,
+		ValidatorCacheSize:  64,
+	}, objects...)
+}
+
+// setupAuthenticatorWithOptions is like setupAuthenticatorWithClient but lets
+// the caller supply the full Options, e.g. to configure the deprecated
+// Auth0ExchangeIssuer flag that produces the synthetic legacy provider.
+func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...client.Object) *trustlistTestEnv {
+	t.Helper()
+
 	cli := fake.NewClientBuilder().WithScheme(getTrustlistScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
@@ -90,12 +104,7 @@ func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trust
 	}
 
 	authenticator, err := New(
-		&Options{
-			AccessTokenDuration: accessTokenDurationTL,
-			TokenCacheSize:      64,
-			CodeCacheSize:       64,
-			ValidatorCacheSize:  64,
-		},
+		opts,
 		josetesting.Namespace,
 		issuerVal,
 		cli,
@@ -222,5 +231,75 @@ func TestValidatorFingerprintIncludesGroupsClaim(t *testing.T) {
 
 	if a == b {
 		t.Fatal("fingerprint must change when groupsClaim changes")
+	}
+}
+
+// TestGroupsClaimByIssuerFirstMatchWins pins that GroupsClaimByIssuer
+// resolves first-match, exactly like validatorForIssuer, rather than
+// reporting "some provider configured a claim" for an issuer shared by two
+// providers. providerA sorts before providerB (fake client List orders by
+// name within a namespace), so providerA's empty GroupsClaim must win even
+// though providerB, later in the list, has one configured.
+func TestGroupsClaimByIssuerFirstMatchWins(t *testing.T) {
+	t.Parallel()
+
+	const sharedIssuer = "https://staff.auth0.com"
+
+	providerA := providerWithBearerTrust(sharedIssuer, "aud")
+	providerA.Name = "provider-a"
+	providerA.Spec.BearerTrust.GroupsClaim = ""
+
+	providerB := providerWithBearerTrust(sharedIssuer, "aud")
+	providerB.Name = "provider-b"
+	providerB.Spec.BearerTrust.GroupsClaim = "https://unikorn-cloud.org/groups"
+
+	a := setupAuthenticator(t, providerA, providerB)
+
+	claims, err := a.GroupsClaimByIssuer(t.Context())
+	if err != nil {
+		t.Fatalf("GroupsClaimByIssuer: %v", err)
+	}
+
+	got, ok := claims[sharedIssuer]
+	if !ok {
+		t.Fatalf("expected issuer %q in map, got %v", sharedIssuer, claims)
+	}
+
+	if got != "" {
+		t.Fatalf("got groupsClaim %q, want first-match empty claim from provider-a", got)
+	}
+}
+
+// TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange pins that the map
+// includes the synthetic legacy auth0-exchange provider mapped to an empty
+// groupsClaim. That provider is built from flags, has no CRD, and can never
+// carry a groups claim; it is deliberately absent from
+// computeTrustedNonUNIIssuers, so Options.Validate must find it here first.
+func TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange(t *testing.T) {
+	t.Parallel()
+
+	const legacyIssuer = "https://legacy.auth0.com/"
+
+	env := setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration:   accessTokenDurationTL,
+		TokenCacheSize:        64,
+		CodeCacheSize:         64,
+		ValidatorCacheSize:    64,
+		Auth0ExchangeIssuer:   legacyIssuer,
+		Auth0ExchangeAudience: "legacy-aud",
+	})
+
+	claims, err := env.authenticator.GroupsClaimByIssuer(t.Context())
+	if err != nil {
+		t.Fatalf("GroupsClaimByIssuer: %v", err)
+	}
+
+	got, ok := claims[legacyIssuer]
+	if !ok {
+		t.Fatalf("expected legacy auth0-exchange issuer %q in map, got %v", legacyIssuer, claims)
+	}
+
+	if got != "" {
+		t.Fatalf("got groupsClaim %q, want empty claim for the synthetic legacy provider", got)
 	}
 }

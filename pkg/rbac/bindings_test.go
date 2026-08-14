@@ -360,6 +360,75 @@ func TestOptionsValidateReportsEveryOffender(t *testing.T) {
 	}
 }
 
+// TestOptionsValidateGroupBindingOutcomes covers the three outcomes of the
+// GlobalGroupRoleBindings loop in Options.Validate: an issuer absent from
+// groupsClaimByIssuer and untrusted reports ErrUntrustedBindingIssuer; an
+// issuer present in the map with an empty groupsClaim (the shape of the
+// synthetic legacy auth0-exchange provider) reports the dead-binding error
+// ErrGroupBindingNoGroupsClaim instead, never the untrusted error; an issuer
+// present with a configured claim reports nothing. Map membership must be
+// checked before the trusted-issuers fallback, or the second case would be
+// misreported as untrusted.
+func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
+	t.Parallel()
+
+	const (
+		unknownIssuer = "https://unknown.example.com/"
+		deadIssuer    = "https://auth0-legacy.example.com/"
+		liveIssuer    = "https://staff.example.com/"
+	)
+
+	groupsClaimByIssuer := map[string]string{
+		deadIssuer: "",
+		liveIssuer: "https://unikorn-cloud.org/groups",
+	}
+
+	// issuer absent from the map, and untrusted → ErrUntrustedBindingIssuer.
+	untrusted := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: unknownIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	err := untrusted.Validate(nil, groupsClaimByIssuer)
+	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, want ErrUntrustedBindingIssuer", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrGroupBindingNoGroupsClaim) {
+		t.Fatalf("got %v, unexpectedly ErrGroupBindingNoGroupsClaim", err)
+	}
+
+	// issuer present in the map with an empty groupsClaim →
+	// ErrGroupBindingNoGroupsClaim, and NOT ErrUntrustedBindingIssuer, even
+	// though deadIssuer is not in any trusted-issuers list.
+	dead := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: deadIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	err = dead.Validate(nil, groupsClaimByIssuer)
+	if !goerrors.Is(err, rbac.ErrGroupBindingNoGroupsClaim) {
+		t.Fatalf("got %v, want ErrGroupBindingNoGroupsClaim", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, unexpectedly ErrUntrustedBindingIssuer", err)
+	}
+
+	// issuer present in the map with a configured claim → no error.
+	live := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: liveIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	if err := live.Validate(nil, groupsClaimByIssuer); err != nil {
+		t.Fatalf("unexpected error for issuer with a configured groupsClaim: %v", err)
+	}
+}
+
 // Legacy flags and equivalent bindings must produce identical ACLs.
 func TestLegacyFlagsEquivalentToBindings(t *testing.T) {
 	t.Parallel()
