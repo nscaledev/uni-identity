@@ -864,6 +864,10 @@ const (
 	// emailInactiveUser is the email of a UNI user record that exists but is
 	// not active.
 	emailInactiveUser = "inactive@example.com"
+
+	// externalTestGroupsClaim is the groups-claim URI used by dispatch tests
+	// that exercise BearerTrustSpec.GroupsClaim end-to-end.
+	externalTestGroupsClaim = "https://unikorn-cloud.org/groups"
 )
 
 type externalUserinfoTestIssuer struct {
@@ -926,6 +930,55 @@ func (i *externalUserinfoTestIssuer) token(t *testing.T, audience, email string,
 		},
 		Email:         email,
 		EmailVerified: &verified,
+	}
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.RS256,
+			Key: gojose.JSONWebKey{
+				Key:   i.key,
+				KeyID: "test-key",
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	tok, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	return tok
+}
+
+// tokenWithGroups mints an access token like token, but additionally carries
+// the externalTestGroupsClaim claim, so dispatch tests can exercise the
+// groups-claim extraction path end-to-end through the real validator.
+func (i *externalUserinfoTestIssuer) tokenWithGroups(t *testing.T, audience, email string, expiry time.Time, groups []string) string {
+	t.Helper()
+
+	verified := true
+
+	//nolint:tagliatelle
+	type tokenClaims struct {
+		jwt.Claims
+
+		Email         string   `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool    `json:"https://unikorn-cloud.org/email_verified"`
+		Groups        []string `json:"https://unikorn-cloud.org/groups,omitempty"`
+	}
+
+	claims := &tokenClaims{
+		Claims: jwt.Claims{
+			Issuer:    i.issuer(),
+			Subject:   "sub|" + email,
+			Audience:  jwt.Audience{audience},
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now().Add(-1 * time.Second)),
+			Expiry:    jwt.NewNumericDate(expiry),
+		},
+		Email:         email,
+		EmailVerified: &verified,
+		Groups:        groups,
 	}
 
 	signer, err := gojose.NewSigner(
@@ -1101,6 +1154,53 @@ func TestExternalUserinfoStampsIssuer(t *testing.T) {
 	require.NotNil(t, sourceClaims)
 
 	assert.Equal(t, iss.issuer(), sourceClaims.Issuer, "sourceClaims.Issuer must be the verbatim issuer")
+}
+
+// TestDispatchUserinfoCarriesExternalGroups verifies that dispatchUserinfo
+// carries the validator's extracted groups verbatim into
+// DispatchResult.Groups when BearerTrustSpec.GroupsClaim is configured, so
+// RBAC group-role-binding matching downstream can consume them.
+func TestDispatchUserinfoCarriesExternalGroups(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audience = "https://api.example.com"
+		email    = "user@example.com"
+	)
+
+	iss := newExternalUserinfoTestIssuer(t)
+
+	provider := &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "grouped-provider"},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer: iss.issuer(),
+			BearerTrust: &unikornv1.BearerTrustSpec{
+				Audience:              audience,
+				AllowExternalIdentity: true,
+				GroupsClaim:           externalTestGroupsClaim,
+			},
+		},
+	}
+
+	a := newPassportInternalAuthenticatorWithOpts(t, &Options{
+		TokenVerificationLeeway: 0,
+		ValidatorCacheSize:      64,
+	}, provider)
+	a.userdb = userdb.NewUserDatabase(
+		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
+		passportTestNamespace,
+	)
+
+	groups := []string{"Platform Engineering"}
+	tok := iss.tokenWithGroups(t, audience, email, time.Now().Add(time.Hour), groups)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	res, err := a.dispatchUserinfo(t.Context(), req, tok, "bearer")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.Equal(t, groups, res.Groups)
 }
 
 // newPassportInternalAuthenticatorWithOpts builds a minimal Authenticator
