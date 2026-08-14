@@ -87,6 +87,43 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, 
 func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
 	t.Helper()
 
+	acl, err := aclOrErrForSubject(t, opts, subject, srcIss, orgIDs, nil, extraRoles...)
+
+	return mustACL(t, acl, err)
+}
+
+// getACLForSubjectWithGroups is getACLForSubject with control over both the
+// authz.OrgIds claim and the token's IdP groups, used to exercise group role
+// binding matching (and its replace semantics) without disturbing the
+// subject-only callers above.
+func getACLForSubjectWithGroups(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
+	t.Helper()
+
+	acl, err := aclOrErrForSubject(t, opts, subject, srcIss, orgIDs, groups, extraRoles...)
+
+	return mustACL(t, acl, err)
+}
+
+// mustACL fails the test if GetACL returned an error, otherwise returns the ACL.
+func mustACL(t *testing.T, acl *openapi.Acl, err error) *openapi.Acl {
+	t.Helper()
+
+	if err != nil {
+		t.Fatalf("GetACL: %v", err)
+	}
+
+	return acl
+}
+
+// aclOrErrForSubject is the common builder behind getACLForSubject and its
+// variants: constructs a minimal RBAC environment and calls GetACL, returning
+// the error rather than failing the test so a caller can assert on an
+// expected error path (e.g. proving membership resolution actually ran
+// against a fake client with no organization fixtures, when no binding
+// matched).
+func aclOrErrForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
+	t.Helper()
+
 	scheme, err := unikornv1.SchemeBuilder.Build()
 	if err != nil {
 		t.Fatal(err)
@@ -124,16 +161,12 @@ func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIs
 			},
 		},
 		SrcIss: srcIss,
+		Groups: groups,
 	}
 
 	ctx := authorization.NewContext(t.Context(), info)
 
-	acl, err := rbacClient.GetACL(ctx, "")
-	if err != nil {
-		t.Fatalf("GetACL: %v", err)
-	}
-
-	return acl
+	return rbacClient.GetACL(ctx, "")
 }
 
 // aclGrantsGlobalAdmin returns true if the ACL has any global endpoints (indicative of the

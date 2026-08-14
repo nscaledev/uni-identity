@@ -526,3 +526,194 @@ func TestBoundSubjectSkipsMembershipResolution(t *testing.T) {
 		})
 	}
 }
+
+// TestGroupRoleBindingGrantsFullScopesNoClamp is the core property under
+// test for group bindings: unlike a wildcard subject binding, a matched
+// group binding is NOT clamped to read. Asserting a write operation
+// (Create/Update/Delete) survives is what distinguishes this from the
+// wildcard-clamp behaviour.
+func TestGroupRoleBindingGrantsFullScopesNoClamp(t *testing.T) {
+	t.Parallel()
+
+	roleA := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "role-a"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"role-a"}},
+		},
+	}
+
+	acl := getACLForSubjectWithGroups(t, opts, "anyone@x.com", "https://staff.example.com/", nil, []string{"Platform Engineering"}, roleA)
+
+	if acl.Global == nil {
+		t.Fatal("group binding granted nothing")
+	}
+
+	want := openapi.AclEndpoints{{Name: "identity:organizations", Operations: []openapi.AclOperation{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}}}
+	if !reflect.DeepEqual(*acl.Global, want) {
+		t.Fatalf("group binding grant was clamped or otherwise wrong: got %+v, want %+v", *acl.Global, want)
+	}
+}
+
+// TestGroupRoleBindingCaseMismatchDoesNotMatch pins byte-exact matching: no
+// case folding, no trimming inside the name.
+func TestGroupRoleBindingCaseMismatchDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"admin"}},
+		},
+	}
+
+	acl := getACLForSubjectWithGroups(t, opts, "anyone@x.com", "https://staff.example.com/", nil, []string{"platform engineering"})
+
+	if acl.Global != nil {
+		t.Fatalf("case-mismatched group unexpectedly matched: %+v", acl.Global)
+	}
+}
+
+// TestGroupRoleBindingWrongIssuerDoesNotMatch pins that group binding
+// matching is issuer-qualified, mirroring subject bindings.
+func TestGroupRoleBindingWrongIssuerDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"admin"}},
+		},
+	}
+
+	acl := getACLForSubjectWithGroups(t, opts, "anyone@x.com", "https://other.example.com/", nil, []string{"Platform Engineering"})
+
+	if acl.Global != nil {
+		t.Fatalf("wrong-issuer group binding unexpectedly matched: %+v", acl.Global)
+	}
+}
+
+// TestUnmatchedGroupsFallsThroughToMembershipResolution pins that when no
+// group binding matches (case mismatch here), replace semantics do not fire
+// and membership resolution proceeds as normal. The fake client has no
+// Organization fixture for "some-org", so the normal (non-replace) path's
+// organization lookup deterministically fails on that missing fixture — that
+// failure is the proof: had the implementation incorrectly treated this as a
+// match, GetACL would return a global-only ACL with no error instead.
+func TestUnmatchedGroupsFallsThroughToMembershipResolution(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"admin"}},
+		},
+	}
+
+	_, err := aclOrErrForSubject(t, opts, "anyone@x.com", "https://staff.example.com/", []string{"some-org"}, []string{"platform engineering"})
+	if err == nil {
+		t.Fatal("expected organization-lookup error proving membership resolution ran (unmatched group incorrectly treated as bound?)")
+	}
+}
+
+// TestSubjectAndGroupBindingsCombineInOneReplace proves the clamped
+// (wildcard-subject) and unclamped (exact-subject, group) accumulators
+// combine correctly on a single principal inside one replace-semantics
+// block: an exact subject binding, a wildcard subject binding, and a group
+// binding all match, and org memberships present in the claim are skipped
+// entirely (replace semantics), yet each leg's clamp behaviour is preserved
+// independently within the union.
+func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
+	t.Parallel()
+
+	wildcardRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "wildcard-role"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	exactRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "exact-role"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read}},
+				},
+			},
+		},
+	}
+
+	groupRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "group-role"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:users", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	const (
+		issuer  = "https://staff.example.com/"
+		subject = "boss@x.com"
+		group   = "Platform Engineering"
+	)
+
+	opts := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: issuer, Subject: "*", RoleIDs: []string{"wildcard-role"}, Wildcard: true},
+			{Issuer: issuer, Subject: subject, RoleIDs: []string{"exact-role"}},
+		},
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: issuer, Group: group, RoleIDs: []string{"group-role"}},
+		},
+	}
+
+	// Org memberships present in the claim, but no Organization fixture in
+	// the fake client: an accidental additive implementation would attempt
+	// membership resolution and error on the missing organization, rather
+	// than returning the global-only union asserted below.
+	acl := getACLForSubjectWithGroups(t, opts, subject, issuer, []string{"some-org"}, []string{group}, wildcardRole, exactRole, groupRole)
+
+	if acl.Organizations != nil || acl.Organization != nil {
+		t.Fatalf("replace semantics violated: membership resolution ran: %+v", acl)
+	}
+
+	if acl.Global == nil {
+		t.Fatal("no global ACL granted")
+	}
+
+	byName := map[string][]openapi.AclOperation{}
+	for _, e := range *acl.Global {
+		byName[e.Name] = e.Operations
+	}
+
+	// Wildcard leg: clamped to read.
+	if !reflect.DeepEqual(byName["identity:organizations"], []openapi.AclOperation{openapi.Read}) {
+		t.Fatalf("wildcard leg not clamped: %+v", byName)
+	}
+
+	// Exact subject leg: full verbs, unclamped.
+	if len(byName["identity:groups"]) != 2 {
+		t.Fatalf("exact subject leg missing full verbs: %+v", byName)
+	}
+
+	// Group leg: full verbs including a write operation, unclamped — this is
+	// the property under test.
+	want := []openapi.AclOperation{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}
+	if !reflect.DeepEqual(byName["identity:users"], want) {
+		t.Fatalf("group leg not full/unclamped: got %+v, want %+v", byName["identity:users"], want)
+	}
+}

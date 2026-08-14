@@ -294,3 +294,53 @@ func TestImpersonation_UniExactBindingIntersectsWithServiceACL(t *testing.T) {
 	assert.Nil(t, acl.Organizations)
 	assert.Nil(t, acl.Projects)
 }
+
+// TestImpersonatedPrincipalNeverMatchesGroupBindings pins spec §2: an
+// impersonated principal whose (hypothetical) groups would match a
+// configured group binding still gets NO group-derived global scopes.
+// processImpersonatedPrincipalACL always resolves impersonated user
+// principals against the UNI sentinel issuer with nil groups, and group
+// bindings are rejected outright on the sentinel at flag-parse time
+// (validateGroupBindingIssuer rejects idconstants.UNISentinel), so a group
+// binding is structurally unreachable on this path, not merely unmatched.
+// This gap is functional as well as protective: group-derived authority
+// deliberately does not survive a delegated hop, exactly like today's
+// external-issuer subject bindings.
+func TestImpersonatedPrincipalNeverMatchesGroupBindings(t *testing.T) {
+	t.Parallel()
+
+	const boundRoleID = "role-group-bound"
+
+	boundRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      boundRoleID,
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	// The service ACL grants the same scopes the binding would grant, so a
+	// leak isn't hidden by the confused-deputy intersection: if the group
+	// binding matched at all, its scopes would survive to acl.Global below.
+	f := setupImpersonationEnvironmentWithBindings(t,
+		[]unikornv1.RoleScope{
+			{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+		},
+		rbac.Options{
+			GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+				{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{boundRoleID}},
+			},
+		},
+		boundRole,
+	)
+
+	acl := impersonate(t, f, userBobSubject)
+
+	assert.Nil(t, acl.Global, "impersonated principal acquired global scopes from a group binding")
+}
