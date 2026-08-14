@@ -63,24 +63,23 @@ that keeps those two models separate while presenting handlers with one normaliz
   resolve to different ACLs, so they must never share a cache entry.
   - Example: a global group role binding
     ([`pkg/rbac/README.md#global-role-bindings`](../../rbac/README.md#global-role-bindings)) grants
-    global authority from the groups asserted in the specific token presented. A subject's next
-    token can carry different groups, and can therefore resolve to a different ACL.
-  - Keying by token is strictly finer than keying by subject. This can only under-share an entry,
+    global authority from the groups asserted in the specific token presented, so a subject's next
+    token can carry different groups and resolve to a different ACL.
+  - Keying by token is strictly finer than keying by subject, so it can only under-share an entry,
     never over-share one.
   - The key carries a digest rather than the raw token, because cache keys live in a large LRU in
     every downstream service and must not themselves be credential material.
   - The mTLS system-account path leaves the token empty, so every system-account request gets the
-    same constant digest. That is harmless, because system-account ACLs do not depend on token
-    content.
-  - `--acl-cache-size` keeps its default of `1<<16` entries under this change. Live tokens × scopes
-    now bounds the population, rather than subjects × scopes. The default TTL is 1 minute and a
-    per-entry size is a few hundred bytes (key ≈ sub + srcIss + digest + scope, value = ACL), so
-    65,536 entries is still single-digit megabytes. Eviction pressure appears only above roughly
-    1,000 distinct token+scope pairs per second, sustained.
+    same constant digest. That is harmless: system-account ACLs do not depend on token content.
+  - `--acl-cache-size` keeps its default of `1<<16` entries. Live tokens × scopes now bounds the
+    population, rather than subjects × scopes, but with the default 1-minute TTL and a few hundred
+    bytes per entry (key ≈ sub + srcIss + digest + scope, value = ACL), 65,536 entries is still
+    single-digit megabytes. Eviction pressure appears only above roughly 1,000 distinct token+scope
+    pairs per second, sustained.
   - Nobody measured the resulting hit-rate shift before deployment. The default rests on the sizing
     arithmetic above, and the hit rate is a post-deploy monitoring item.
-  - A client that mints a fresh token per request misses the cache on every request. Fix that at the
-    client. It is a client-side anti-pattern, not a reason to grow the cache.
+  - A client that mints a fresh token per request misses the cache every time. That is a client-side
+    anti-pattern to fix at the client, not a reason to grow the cache.
 - OpenAPI validation, authentication, principal propagation, and ACL resolution are colocated so
   handlers receive already-normalized request context.
 

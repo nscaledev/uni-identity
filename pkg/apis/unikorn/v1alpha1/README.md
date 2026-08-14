@@ -105,8 +105,8 @@ value simply never matches and the token is rejected as an untrusted issuer.
 - `groupsClaim`: names the per-issuer token claim that carries IdP group names. The claim value is a
   JSON array of strings, and the validator skips non-string entries. The name must be a namespaced
   URI that contains `://`, so nobody can designate a user-settable bare profile claim (`nickname`,
-  `name`) as an authorization source. The trust-list build checks this rule together with the other
-  cross-field rules. Empty means the issuer emits no groups, and group-based global role bindings
+  `name`) as an authorization source. The trust-list build checks this rule with the other
+  cross-field rules. Empty means the issuer emits no groups, so group-based global role bindings
   never match tokens from it (fail closed). This is the consumer-facing field for the global group
   role binding mechanism documented in
   [`pkg/rbac/README.md#global-role-bindings`](../../../rbac/README.md#global-role-bindings).

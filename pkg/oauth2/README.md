@@ -200,20 +200,18 @@ Each bearer-trusted provider has a `BearerTrustSpec` that governs claim validati
   group names, e.g. `https://unikorn-cloud.org/groups`. Empty means the issuer emits no groups. A
   non-empty value must be a namespaced URI that contains `://`, and validator construction rejects
   any other value. This is a v1 restriction that stops a bare user-settable profile claim
-  (`nickname`, `name`) from becoming an authorization source. A later release could relax it as a
-  compatible widening if a real provider needs that. It is not a permanent constraint of the claim
-  shape itself.
+  (`nickname`, `name`) from becoming an authorization source, not a permanent constraint of the
+  claim shape. A later release could relax it as a compatible widening if a real provider needs that.
 
-`extractGroups` reads `groupsClaim` tolerantly from end to end, and never rejects the token because
-of it. A missing claim, a non-array claim value, and individual non-string array entries all degrade
-to fewer or no groups instead of failing validation. A malformed groups claim must not break
-authentication for the whole issuer.
+`extractGroups` reads `groupsClaim` tolerantly and never rejects the token because of it. A missing
+claim, a non-array claim value, and individual non-string array entries all degrade to fewer or no
+groups instead of failing validation, because a malformed groups claim must not break authentication
+for the whole issuer. Entries that do parse as strings stay byte-exact, with no case folding and no
+trimming, because group-binding matching downstream is case-sensitive.
 
-`extractGroups` keeps the entries that do parse as strings byte-exact, with no case folding and no
-trimming, because group-binding matching downstream is case-sensitive. The claim name is part of the
-validator-cache fingerprint (`validatorFingerprint` in `pkg/oauth2/trustlist.go`), so an edit to
-`groupsClaim` on the `OAuth2Provider` takes effect on the next lookup. It does not wait out the
-validator cache's TTL.
+The claim name is part of the validator-cache fingerprint (`validatorFingerprint` in
+`pkg/oauth2/trustlist.go`), so an edit to `groupsClaim` on the `OAuth2Provider` takes effect on the
+next lookup rather than after the validator cache's TTL.
 
 The validator carries extracted groups on `authorization.Info.Groups` for RBAC to consume. It never
 embeds them in the minted passport, and never propagates them through the `X-Principal` header. See
