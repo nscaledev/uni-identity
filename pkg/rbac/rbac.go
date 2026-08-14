@@ -111,6 +111,7 @@ type Options struct {
 	PlatformAdministratorSubjects []PlatformAdministratorSubject
 	SystemAccountRoleIDs          map[string]string
 	GlobalRoleBindings            GlobalRoleBindingsValue
+	GlobalGroupRoleBindings       GlobalGroupRoleBindingsValue
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
@@ -118,6 +119,7 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var((*PlatformAdministratorSubjectsValue)(&o.PlatformAdministratorSubjects), "platform-administrator-subjects", "Platform administrators as issuer::subject (bare value = UNI issuer).")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
 	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
+	f.Var(&o.GlobalGroupRoleBindings, "global-group-role-binding", "Global group role binding as issuer::group::role[,role...]; grants the roles' full global scopes to any subject whose token from issuer carries the group in the issuer's groupsClaim.")
 }
 
 // Validate reports advisory (log-only) startup findings: bare (UNI-sentinel)
