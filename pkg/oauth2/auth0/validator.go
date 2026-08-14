@@ -281,15 +281,24 @@ func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) 
 
 	groups := make([]string, 0, len(entries))
 
+	var skipped int
+
 	for _, entry := range entries {
 		var group string
 		if err := json.Unmarshal(entry, &group); err != nil {
-			logger.Info("groups claim entry skipped: not a string", "claim", v.options.GroupsClaim)
+			skipped++
 
 			continue
 		}
 
 		groups = append(groups, group)
+	}
+
+	if skipped > 0 {
+		// A single line per validation, not one per element: a trusted issuer
+		// emitting a large malformed array must not produce a log line per
+		// entry.
+		logger.Info("groups claim entries skipped: not a string", "claim", v.options.GroupsClaim, "skipped", skipped)
 	}
 
 	if len(groups) == 0 {
