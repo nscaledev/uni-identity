@@ -191,6 +191,56 @@ func TestACLCacheKey(t *testing.T) {
 		require.NotEqual(t, keyA, keyB)
 	})
 
+	t.Run("TokenDigestScopeBoundaryCannotForgeAnotherEntry", func(t *testing.T) {
+		t.Parallel()
+
+		// scope is the sole unprefixed terminal segment, so a caller-supplied
+		// organizationID is free to contain characters that mimic the
+		// "length:content" shape used by every preceding segment, including
+		// the token digest. Craft a scope that embeds a lookalike digest
+		// header (the real digest of "victim-token", prefixed exactly the
+		// way the implementation prefixes its own digest segment) behind an
+		// unrelated token, then compare against the pair whose real digest
+		// and real scope are genuinely that embedded pair. The two keys must
+		// still differ: the digest segment always reflects the *presented*
+		// token, never text smuggled in through scope.
+		victimDigest := tokenDigest("victim-token")
+
+		forged := &authorization.Info{
+			Userinfo: &identityapi.Userinfo{Sub: "user-1"},
+			Token:    "attacker-token",
+		}
+		forgedScope := fmt.Sprintf("%d:%s|fake-org", len(victimDigest), victimDigest)
+
+		victim := &authorization.Info{
+			Userinfo: &identityapi.Userinfo{Sub: "user-1"},
+			Token:    "victim-token",
+		}
+
+		forgedKey, err := aclCacheKey(t.Context(), forged, forgedScope)
+		require.NoError(t, err)
+
+		victimKey, err := aclCacheKey(t.Context(), victim, "fake-org")
+		require.NoError(t, err)
+
+		require.NotEqual(t, forgedKey, victimKey)
+	})
+
+	t.Run("DistinctTokensSameSubjectGetDistinctKeys", func(t *testing.T) {
+		t.Parallel()
+
+		a := &authorization.Info{Token: "token-with-group", Userinfo: &identityapi.Userinfo{Sub: "user-1"}}
+		b := &authorization.Info{Token: "token-without-group", Userinfo: &identityapi.Userinfo{Sub: "user-1"}}
+
+		keyA, err := aclCacheKey(t.Context(), a, "org-1")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(t.Context(), b, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyA, keyB)
+	})
+
 	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {
 		t.Parallel()
 
