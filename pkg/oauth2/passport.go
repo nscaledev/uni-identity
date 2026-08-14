@@ -174,6 +174,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		Token:    subjectToken,
 		Userinfo: res.Userinfo,
 		SrcIss:   res.SrcIss,
+		Groups:   res.Groups,
 	})
 
 	organizationID, projectID := requestedScope(options)
@@ -224,12 +225,14 @@ const (
 	dispatchSurfaceExchange = "exchange"
 )
 
-// dispatchResult is the resolved identity for a bearer token.
-type dispatchResult struct {
+// DispatchResult is the resolved identity for a bearer token.
+type DispatchResult struct {
 	Userinfo *openapi.Userinfo
 	Claims   *Claims
 	Source   string // passport audit label (provider name or PassportSourceUNI)
 	SrcIss   string // issuer URL (verbatim), or the UNI sentinel
+	// Groups is the external token's configured groups-claim entries; nil on the UNI-local path.
+	Groups []string
 }
 
 // dispatchUserinfo resolves a bearer token to userinfo and claims, routing on
@@ -248,7 +251,7 @@ type dispatchResult struct {
 // surface names the entry point (bearer or exchange) for the unroutable metric
 // and log. It is the single dispatch point shared by the token-exchange
 // endpoint and the local-authorizer bearer path, so the two cannot drift.
-func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, token, surface string) (*dispatchResult, error) {
+func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, token, surface string) (*DispatchResult, error) {
 	if token == "" {
 		return nil, coreerrors.AccessDenied(r, "empty bearer token")
 	}
@@ -281,12 +284,12 @@ func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, t
 			return nil, a.handleValidatorError(ctx, r, err, surface)
 		}
 
-		ui, claims, err := a.externalUserinfo(ctx, r, token, rawIss, res.Trust, res.Validator)
+		ui, claims, groups, err := a.externalUserinfo(ctx, r, token, rawIss, res.Trust, res.Validator)
 		if err != nil {
 			return nil, err
 		}
 
-		return &dispatchResult{Userinfo: ui, Claims: claims, Source: res.ProviderName, SrcIss: rawIss}, nil
+		return &DispatchResult{Userinfo: ui, Claims: claims, Source: res.ProviderName, SrcIss: rawIss, Groups: groups}, nil
 	}
 
 	ui, claims, err := a.GetUserinfo(ctx, r, token)
@@ -294,7 +297,7 @@ func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, t
 		return nil, err
 	}
 
-	return &dispatchResult{Userinfo: ui, Claims: claims, Source: PassportSourceUNI, SrcIss: PassportSourceUNI}, nil
+	return &DispatchResult{Userinfo: ui, Claims: claims, Source: PassportSourceUNI, SrcIss: PassportSourceUNI}, nil
 }
 
 // handleValidatorError returns the appropriate error response for validatorForIssuer failures.
@@ -314,13 +317,8 @@ func (a *Authenticator) handleValidatorError(ctx context.Context, r *http.Reques
 // endpoint (/oauth2/v2/userinfo) — without the token-exchange round-trip. It
 // shares dispatchUserinfo with the exchange path and returns the
 // src_iss alongside userinfo and claims.
-func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*openapi.Userinfo, *Claims, string, error) {
-	res, err := a.dispatchUserinfo(ctx, r, token, dispatchSurfaceBearer)
-	if err != nil {
-		return nil, nil, "", err
-	}
-
-	return res.Userinfo, res.Claims, res.SrcIss, nil
+func (a *Authenticator) GetUserinfoFromBearer(ctx context.Context, r *http.Request, token string) (*DispatchResult, error) {
+	return a.dispatchUserinfo(ctx, r, token, dispatchSurfaceBearer)
 }
 
 // errUnrecognizedToken is returned by bearerTokenIsJWE when a bearer token is
@@ -439,10 +437,10 @@ func peekIssuer(token string) (string, error) {
 // emitted, as resolved by validatorForIssuer) so that srcIssForSource can compute
 // the correct src_iss for the resulting passport regardless of which provider
 // produced the claims.
-func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, token, rawIss string, trust *unikornv1.BearerTrustSpec, v *auth0.Validator) (*openapi.Userinfo, *Claims, error) {
+func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, token, rawIss string, trust *unikornv1.BearerTrustSpec, v *auth0.Validator) (*openapi.Userinfo, *Claims, []string, error) {
 	user, err := v.Validate(ctx, token)
 	if err != nil {
-		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
+		return nil, nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
 
 	// UNI remains authoritative for active user state and organization
@@ -452,13 +450,13 @@ func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, t
 		switch {
 		// Must precede the ErrResourceReference cases: ErrUserInactive wraps it.
 		case goerrors.Is(err, userdb.ErrUserInactive):
-			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+			return nil, nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
 		case goerrors.Is(err, userdb.ErrResourceReference) && !trust.AllowExternalIdentity:
-			return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
+			return nil, nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
 		case goerrors.Is(err, userdb.ErrResourceReference):
 			orgIDs = nil // accepted with no memberships; authority decided by RBAC
 		default:
-			return nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
+			return nil, nil, nil, fmt.Errorf("%w: failed to query organization IDs", err)
 		}
 	}
 
@@ -491,7 +489,7 @@ func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, t
 		},
 	}
 
-	return userinfo, sourceClaims, nil
+	return userinfo, sourceClaims, user.Groups, nil
 }
 
 // srcIssForSource resolves the src_iss stamped on a passport. The UNI-local path

@@ -1737,20 +1737,20 @@ func TestGetUserinfoFromBearerRoutesAuth0JWS(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, _, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.NoError(t, err)
-	require.NotNil(t, userinfo)
-	require.NotNil(t, userinfo.Email)
-	require.NotNil(t, userinfo.EmailVerified)
-	require.NotNil(t, userinfo.HttpsunikornCloudOrgauthz)
+	require.NotNil(t, res.Userinfo)
+	require.NotNil(t, res.Userinfo.Email)
+	require.NotNil(t, res.Userinfo.EmailVerified)
+	require.NotNil(t, res.Userinfo.HttpsunikornCloudOrgauthz)
 
 	// Auth0 path lowercases + trims the email and uses it as the subject;
 	// UNI membership is resolved from userdb (not from the Auth0 claim).
-	assert.Equal(t, "user@example.com", userinfo.Sub)
-	assert.Equal(t, "user@example.com", *userinfo.Email)
-	assert.True(t, *userinfo.EmailVerified)
-	assert.Equal(t, openapi.User, userinfo.HttpsunikornCloudOrgauthz.Acctype)
-	assert.ElementsMatch(t, []string{"org1"}, userinfo.HttpsunikornCloudOrgauthz.OrgIds,
+	assert.Equal(t, "user@example.com", res.Userinfo.Sub)
+	assert.Equal(t, "user@example.com", *res.Userinfo.Email)
+	assert.True(t, *res.Userinfo.EmailVerified)
+	assert.Equal(t, openapi.User, res.Userinfo.HttpsunikornCloudOrgauthz.Acctype)
+	assert.ElementsMatch(t, []string{"org1"}, res.Userinfo.HttpsunikornCloudOrgauthz.OrgIds,
 		"UNI userdb is authoritative for org membership on Auth0 bearers")
 }
 
@@ -1777,15 +1777,15 @@ func TestGetUserinfoFromBearerRoutesUNIJWE(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, claims, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.NoError(t, err)
-	require.NotNil(t, userinfo)
-	require.NotNil(t, claims)
+	require.NotNil(t, res.Userinfo)
+	require.NotNil(t, res.Claims)
 
 	// UNI path populates claims.Type so the local authorizer's downstream
 	// switch can identify the principal kind; the Auth0 path leaves it empty.
-	assert.Equal(t, oauth2.TokenTypeFederated, claims.Type)
-	assert.Equal(t, "user@example.com", userinfo.Sub)
+	assert.Equal(t, oauth2.TokenTypeFederated, res.Claims.Type)
+	assert.Equal(t, "user@example.com", res.Userinfo.Sub)
 }
 
 // TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled verifies that when
@@ -1814,12 +1814,10 @@ func TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled(t *testing.T) {
 	// peekIssuer succeeds but validatorForIssuer returns nil (unknown
 	// issuer). The dispatch rejects with "untrusted token issuer" — a JWS from
 	// an unknown issuer is rejected, not silently routed to the UNI path.
-	userinfo, claims, srcIss, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "untrusted token issuer")
-	assert.Nil(t, userinfo)
-	assert.Nil(t, claims)
-	assert.Empty(t, srcIss)
+	assert.Nil(t, res)
 }
 
 // TestGetUserinfoFromBearerRejectsUnroutableToken verifies that a bearer that
@@ -1836,10 +1834,8 @@ func TestGetUserinfoFromBearerRejectsUnroutableToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, claims, srcIss, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized bearer token format")
-	assert.Nil(t, userinfo)
-	assert.Nil(t, claims)
-	assert.Empty(t, srcIss)
+	assert.Nil(t, res)
 }

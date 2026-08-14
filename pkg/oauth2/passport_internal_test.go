@@ -1010,7 +1010,7 @@ func buildExternalUserinfoEnv(t *testing.T, opts ...externalUserinfoOpt) (*Authe
 }
 
 // tryExternalUserinfo invokes externalUserinfo and returns its results.
-func tryExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) (*openapi.Userinfo, *Claims, error) {
+func tryExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) (*openapi.Userinfo, *Claims, []string, error) {
 	t.Helper()
 
 	a, iss, trust, v := buildExternalUserinfoEnv(t, opts...)
@@ -1026,7 +1026,7 @@ func tryExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) (*openapi.Us
 func mustExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) *openapi.Userinfo {
 	t.Helper()
 
-	ui, _, err := tryExternalUserinfo(t, opts...)
+	ui, _, _, err := tryExternalUserinfo(t, opts...)
 	require.NoError(t, err)
 
 	return ui
@@ -1054,9 +1054,11 @@ func TestExternalUserinfoRejectsUnknownWhenNotAllowed(t *testing.T) {
 	t.Parallel()
 
 	// No UNI user record and AllowExternalIdentity=false → must be rejected.
-	if _, _, err := tryExternalUserinfo(t, withAllowExternalIdentity(false)); err == nil {
-		t.Fatal("expected reject for unknown user when AllowExternalIdentity is false")
-	}
+	userinfo, claims, groups, err := tryExternalUserinfo(t, withAllowExternalIdentity(false))
+	require.Error(t, err, "expected reject for unknown user when AllowExternalIdentity is false")
+	assert.Nil(t, userinfo)
+	assert.Nil(t, claims)
+	assert.Nil(t, groups)
 }
 
 // Inactive is a deliberate local revocation: allowExternalIdentity must not
@@ -1075,9 +1077,12 @@ func TestExternalUserinfoRejectsInactiveUserDespiteAllowExternalIdentity(t *test
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
 
-	_, _, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
+	userinfo, claims, groups, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "user identity not found or inactive")
+	assert.Nil(t, userinfo)
+	assert.Nil(t, claims)
+	assert.Nil(t, groups)
 }
 
 func TestExternalUserinfoStampsIssuer(t *testing.T) {
@@ -1091,7 +1096,7 @@ func TestExternalUserinfoStampsIssuer(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
 
-	_, sourceClaims, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
+	_, sourceClaims, _, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
 	require.NoError(t, err)
 	require.NotNil(t, sourceClaims)
 

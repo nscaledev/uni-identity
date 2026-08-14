@@ -47,6 +47,15 @@ type Info struct {
 	// fast-path matches (SrcIss, Subject); an unset value must never match an
 	// external admin entry (fail closed).
 	SrcIss string
+	// Groups is the set of IdP group names carried by the presented external
+	// access token's configured groups claim (see BearerTrustSpec.GroupsClaim).
+	// Nil for UNI-local tokens, system accounts, and issuers with no claim
+	// configured. Populated only inside the identity process (local
+	// authorizer and passport exchange): the remote authorizer used by
+	// downstream services always leaves this nil — groups are deliberately
+	// not carried on passports. Also never propagated via the X-Principal
+	// header: that header is caller-asserted, and groups feed authorization.
+	Groups []string
 }
 
 type keyType int
