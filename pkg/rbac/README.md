@@ -355,6 +355,21 @@ not the security control: that is the issuer-qualified `(srcIss, subject)` match
   user-supplied scoped resource identifiers, especially create paths that accept project IDs in the
   request body.
 
+## Formal Model
+
+A machine-checked Lean 4 model of this package's enforcement core lives in
+[`formal/`](../../formal/README.md). It proves the security properties this package relies on —
+scope downward-flow, grant safety at global and organization scope (and the project-scope caveat,
+which holds only under external invariants documented in `handler.go`), and the confused-deputy
+soundness of `intersectACL` — and makes the `allowGrantProjectScope` "any accessible project"
+subtlety explicit.
+
+The model is also executable: it generates the conformance vectors in
+[`testdata/model_vectors.json`](testdata/model_vectors.json) that `grant_model_test.go` runs the
+real `AllowRole` against, so the code is checked to agree with the proven model. Regenerate with
+`make regenerate-vectors` (needs a Lean toolchain); CI fails if the committed vectors drift. The
+unit tests themselves need no Lean — they read the committed JSON.
+
 ## Relationship To Other Packages
 
 - `pkg/oauth2` establishes actor identity and session/token validity
@@ -372,3 +387,5 @@ not the security control: that is the issuer-qualified `(srcIss, subject)` match
   signals consumed here
 - [`pkg/apis/unikorn/v1alpha1`](../apis/unikorn/v1alpha1/README.md), which defines the stored role,
   group, organization, project, user, and service-account resources this package resolves
+- [`formal/`](../../formal/README.md), the machine-checked Lean model of this package's enforcement
+  core and the source of the conformance vectors in `testdata/`
