@@ -15,6 +15,7 @@ require (
 	github.com/onsi/gomega v1.36.1
 	github.com/pact-foundation/pact-go/v2 v2.4.2
 	github.com/spf13/pflag v1.0.10
+	github.com/spiffe/go-spiffe/v2 v2.8.1
 	github.com/spjmurray/go-util v0.1.3
 	github.com/stretchr/testify v1.11.1
 	github.com/unikorn-cloud/core v1.19.0

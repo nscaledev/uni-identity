@@ -26,6 +26,22 @@ server:
       cpu: '1'
       memory: 1Gi
 
+# spiffe configures the mutual TLS listener that terminates TLS on the service's own
+# X509-SVID.  Disabled by default: it needs a SPIFFE Workload API in the cluster.
+#
+# This covers the SERVER side only.  uni-identity is also a client of itself, and that
+# client deliberately keeps its Kubernetes-Secret certificate: it dials its own ingress
+# hostname, whose client CA does not contain the SPIRE bundle, so presenting an SVID
+# there would fail every call it makes to itself.  Do NOT add
+# --client-certificate-source=spiffe to this deployment for symmetry with uni-region --
+# the asymmetry is the design.  Repointing it would mean giving it a host that
+# terminates TLS on SPIRE, which is a separate change.
+spiffe:
+  enabled: false
+  # workloadAPISocketPath is where the csi.spiffe.io driver mounts the agent socket.
+  workloadAPISocketPath: /spiffe-workload-api/spire-agent.sock
+  listenPort: 6443
+
 # Organization controller specifc configuration.
 organizationController:
   # Allows override of the image.

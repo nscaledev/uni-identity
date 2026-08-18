@@ -1344,8 +1344,18 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 // TokenClientCredentials issues a token if the client credentials are valid.  We only support
 // mTLS based authentication.
 // TODO: delete me, services should use mTLS alone.
+//
+// The certificate must come from this request's own connection -- a verified TLS
+// peer, or the ingress-terminated header -- and not from the relayed
+// Unikorn-Client-Certificate header: a token minted by this self-service grant is
+// bound to the caller's own identity, and a caller cannot mint one bound to an
+// earlier identity in a relayed chain.  local/authorizer.go validates the resulting
+// bound token against authorization.ClientCertFromContext, which does include the
+// relay header, because a later hop legitimately re-presents the same relayed
+// certificate the token was bound to; minting and validating are different
+// questions and must not share one lookup.
 func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
-	certPEM, err := util.GetClientCertificateHeader(r.Header)
+	certPEM, err := util.GetImmediateCallerCertificatePEM(r)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("mTLS client verification failed").WithError(err)
 	}

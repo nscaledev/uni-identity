@@ -34,17 +34,6 @@ var (
 	ErrClientCertificateError = errors.New("client certificate error")
 )
 
-// HasClientCertificateHeader checks if mTLS is in use, thus we are being called
-// from a trusted service.
-func HasClientCertificateHeader(header http.Header) bool {
-	// Nginx
-	if header.Get("Ssl-Client-Cert") != "" {
-		return true
-	}
-
-	return false
-}
-
 // GetClientCertificateHeader extracts a client certificate from any present headers.
 // TODO: may need to extract into a canonical form.
 // NOTE: propagation at present expects this to be url encoded.
@@ -59,6 +48,57 @@ func GetClientCertificateHeader(header http.Header) (string, error) {
 	}
 
 	return "", ErrClientCertificateNotPresent
+}
+
+// EncodeCertificatePEM renders a certificate as PEM, then URL-encodes it, which is
+// the form the client certificate travels in through the request context and the
+// relay header: GetClientCertificate always url.QueryUnescape's its input, matching
+// the ingress, which sets Ssl-Client-Cert to an escaped PEM.  A raw, un-escaped PEM
+// would round-trip through that unescape corrupted on almost every certificate,
+// because base64 output contains a literal '+' -- which QueryUnescape turns into a
+// space -- far more often than not.
+func EncodeCertificatePEM(certificate *x509.Certificate) string {
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
+
+	return url.QueryEscape(string(certPEM))
+}
+
+// GetVerifiedPeerCertificatePEM returns the peer certificate from the TLS
+// connection, or the empty string when the request did not arrive over mutual TLS.
+//
+// It keys off PeerCertificates and NOT VerifiedChains.  go-spiffe's server config
+// uses RequireAnyClientCert and verifies in VerifyPeerCertificate, so Go never
+// builds a chain and VerifiedChains is empty even for a fully verified peer.  A
+// handshake that failed SPIFFE verification is aborted and never reaches a handler,
+// so the presence of a peer certificate here is the verified case.
+func GetVerifiedPeerCertificatePEM(r *http.Request) string {
+	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return ""
+	}
+
+	return EncodeCertificatePEM(r.TLS.PeerCertificates[0])
+}
+
+// GetImmediateCallerCertificatePEM returns the certificate that authenticated this
+// request's own connection to this process: a peer this process verified in the TLS
+// handshake, or the header the ingress verified and injected into Ssl-Client-Cert.
+// It returns ErrClientCertificateNotPresent if neither is set.
+//
+// This answers "who is the immediate caller", and must never be confused with the
+// relayed Unikorn-Client-Certificate header, which answers "which certificate owns
+// this token" and can name an earlier caller in the chain rather than this
+// connection -- see authorization.ExtractClientCert's precedence for that separate
+// question.  Every caller that needs to know whether *this* connection was
+// certificate-authenticated (the mTLS gate, and legacy signed-principal
+// verification, which checks a signature against the certificate that actually
+// terminated the connection) must use this and not the relay header, or a caller
+// with no mTLS to this service at all could impersonate one that does.
+func GetImmediateCallerCertificatePEM(r *http.Request) (string, error) {
+	if peer := GetVerifiedPeerCertificatePEM(r); peer != "" {
+		return peer, nil
+	}
+
+	return GetClientCertificateHeader(r.Header)
 }
 
 // GetClientCertificate retrieves the client certificate from headers injected by

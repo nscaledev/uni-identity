@@ -11,3 +11,8 @@ spec:
   - name: http
     port: 80
     targetPort: http
+  {{- if .Values.spiffe.enabled }}
+  - name: mtls
+    port: {{ .Values.spiffe.listenPort }}
+    targetPort: mtls
+  {{- end }}

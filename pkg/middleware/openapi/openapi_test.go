@@ -182,6 +182,26 @@ func addRelayedCertificateHeader(t *testing.T, r *http.Request) {
 	r.Header.Set("Unikorn-Client-Certificate", url.QueryEscape(string(certPEM)))
 }
 
+// addVerifiedPeer sets the request's TLS connection state as if it arrived over a
+// mutual TLS connection whose peer presented the standard service certificate --
+// the same certificate addCertificateHeader injects via Ssl-Client-Cert, but here
+// established directly at the TLS layer with no header at all, exercising the
+// mutual TLS listener's identity path rather than the ingress-terminated one.
+func addVerifiedPeer(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	certPEM, err := base64.RawURLEncoding.DecodeString(serviceCertificate)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(t, block)
+
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}}
+}
+
 // addPrincipalHeaderLegacy digitally signs a principal and adds to the request.
 func addPrincipalHeaderLegacy(t *testing.T, r *http.Request) {
 	t.Helper()
@@ -562,6 +582,45 @@ func TestServiceToServiceAuthenticationSuccessLegacy(t *testing.T) {
 	require.NoError(t, err)
 
 	addCertificateHeader(t, r, true)
+	addPrincipalHeaderLegacy(t, r)
+
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	h.validate(t, serviceActor, "")
+}
+
+// TestServiceToServicePeerAuthenticationExtractsSignedPrincipal is the regression
+// test for widening extractOrGeneratePrincipal's gate to a verified TLS peer.
+// Before that fix, the gate only recognised Ssl-Client-Cert, so a request on the
+// mutual TLS listener -- which sets no such header -- fell through to
+// generatePrincipal, and a caller's signed X-Principal was never read or verified
+// even though the connection itself was certificate-authenticated: uni-region's
+// controllers, which carry no Authorization header and sign their principal, would
+// silently have their signed identity discarded and replaced with one derived from
+// the certificate subject, with no error to reveal it. Asserting only "no error"
+// would not catch that regression, because generatePrincipal never errors; this
+// asserts on the resulting principal's Actor, which differs between the extracted
+// (signed, userActor) and generated (derived from the certificate subject,
+// serviceActor) principal.
+func TestServiceToServicePeerAuthenticationExtractsSignedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	addVerifiedPeer(t, r)
 	addPrincipalHeaderLegacy(t, r)
 
 	m.ServeHTTP(w, r)

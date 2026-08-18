@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,7 +30,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/unikorn-cloud/core/pkg/client"
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/server"
@@ -41,6 +42,8 @@ import (
 )
 
 // start is the entry point to server.
+//
+//nolint:cyclop
 func start() {
 	s := &server.Server{}
 	s.AddFlags(pflag.CommandLine)
@@ -65,7 +68,7 @@ func start() {
 		return
 	}
 
-	client, err := client.New(ctx, unikornv1.AddToScheme)
+	client, err := coreclient.New(ctx, unikornv1.AddToScheme)
 	if err != nil {
 		logger.Error(err, "failed to create client")
 
@@ -88,11 +91,40 @@ func start() {
 		return
 	}
 
-	server, err := s.GetServer(client, directclient)
+	var sources coreclient.Sources
+
+	if s.ServerOptions.SPIFFETLSListenAddress != "" {
+		spiffeSources, closer, err := coreclient.NewSPIFFESources(ctx)
+		if err != nil {
+			logger.Error(err, "unable to open the SPIFFE Workload API")
+
+			return
+		}
+
+		defer closer.Close()
+
+		sources = spiffeSources
+	}
+
+	server, err := s.GetServer(client, directclient, sources)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 
 		return
+	}
+
+	// shutdown cancels anything hanging off the root context, then stops every listener
+	// the server opened, which makes ListenAndServe below return so the process exits.
+	shutdown := func() {
+		cancel()
+
+		// Kubernetes gives us 30 seconds before a SIGKILL.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(ctx); err != nil {
+			logger.Error(err, "server shutdown error")
+		}
 	}
 
 	// Register a signal handler to trigger a graceful shutdown.
@@ -103,17 +135,36 @@ func start() {
 	go func() {
 		<-stop
 
-		// Cancel anything hanging off the root context.
-		cancel()
-
-		// Shutdown the server, Kubernetes gives us 30 seconds before a SIGKILL.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(ctx); err != nil {
-			logger.Error(err, "server shutdown error")
-		}
+		shutdown()
 	}()
+
+	if s.ServerOptions.SPIFFETLSListenAddress != "" {
+		listener, err := net.Listen("tcp", s.ServerOptions.SPIFFETLSListenAddress)
+		if err != nil {
+			logger.Error(err, "unable to listen for mTLS")
+
+			return
+		}
+
+		go func() {
+			// A second listener on the same server: Serve and ServeTLS may both be called
+			// on one *http.Server, and Shutdown closes every listener it opened.  Empty
+			// filenames are correct because TLSConfig.GetCertificate is populated by
+			// go-spiffe.  Note ServeTLS populates NextProtos, so this listener negotiates
+			// HTTP/2 while the plaintext one stays HTTP/1.1; r.TLS.PeerCertificates is
+			// populated either way.
+			if err := server.ServeTLS(listener, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error(err, "unexpected mTLS listener error")
+
+				// Losing this listener is fatal, not cosmetic: every service-to-service
+				// caller gets connection-refused on it while the plaintext listener keeps
+				// the pod passing its probes, so nothing would notice.  Take the whole
+				// process down, the same as a failure to listen at all above, and let the
+				// pod restart.
+				shutdown()
+			}
+		}()
+	}
 
 	if err := server.ListenAndServe(); err != nil {
 		if errors.Is(err, http.ErrServerClosed) {

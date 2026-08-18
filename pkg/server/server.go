@@ -25,6 +25,7 @@ import (
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
 
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
@@ -92,7 +93,7 @@ func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
 	return s.CoreOptions.SetupOpenTelemetry(ctx)
 }
 
-func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
+func (s *Server) GetServer(client client.Client, directclient client.Client, sources coreclient.Sources) (*http.Server, error) {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
@@ -182,6 +183,18 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		ReadHeaderTimeout: s.ServerOptions.ReadHeaderTimeout,
 		WriteTimeout:      s.ServerOptions.WriteTimeout,
 		Handler:           openapi.HandlerWithOptions(handlerInterface, chiServerOptions),
+	}
+
+	if s.ServerOptions.SPIFFETLSListenAddress != "" {
+		// main opens the Workload API whenever this address is set, so this cannot happen
+		// today.  It is checked anyway because the alternative failure is a nil
+		// dereference inside go-spiffe at the first handshake, on a listener nothing
+		// probes: the invariant belongs here, where it is local and fails at startup.
+		if sources == nil {
+			return nil, ErrSPIFFESourcesRequired
+		}
+
+		server.TLSConfig = SPIFFEServerTLSConfig(sources)
 	}
 
 	return server, nil

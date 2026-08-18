@@ -43,16 +43,40 @@ spec:
           {{- $systemAccounts = append $systemAccounts (printf "%s=%s" $k (include "resource.id" $v)) }}
         {{- end }}
         - --system-account-roles-ids={{ join "," $systemAccounts }}
+        {{- if .Values.spiffe.enabled }}
+        - --spiffe-tls-listen-address=:{{ .Values.spiffe.listenPort }}
+        {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}
         ports:
         - name: http
           containerPort: 6080
+        {{- if .Values.spiffe.enabled }}
+        - name: mtls
+          containerPort: {{ .Values.spiffe.listenPort }}
+        {{- end }}
+        {{- if .Values.spiffe.enabled }}
+        {{- $socketPath := required "spiffe.workloadAPISocketPath is required when spiffe.enabled is true: empty renders SPIFFE_ENDPOINT_SOCKET as unix://, which go-spiffe rejects, and a mountPath of '.', which the kubelet refuses -- both of which fail at container creation rather than here" .Values.spiffe.workloadAPISocketPath }}
+        env:
+        - name: SPIFFE_ENDPOINT_SOCKET
+          value: unix://{{ $socketPath }}
+        volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: {{ dir $socketPath }}
+          readOnly: true
+        {{- end }}
         resources:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
           readOnlyRootFilesystem: true
+      {{- if .Values.spiffe.enabled }}
+      volumes:
+      - name: spiffe-workload-api
+        csi:
+          driver: csi.spiffe.io
+          readOnly: true
+      {{- end }}
       serviceAccountName: {{ .Release.Name }}-server
       securityContext:
         runAsNonRoot: true

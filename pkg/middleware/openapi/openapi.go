@@ -148,6 +148,42 @@ func hasHTTPAuthorization(r *http.Request) bool {
 	return r.Header.Get("Authorization") != ""
 }
 
+// verifyImmediateCaller checks that this request's own connection was authenticated
+// by a certificate: a peer this process verified in the TLS handshake, or one the
+// ingress verified and injected into Ssl-Client-Cert.  It must check the connection
+// directly and cannot use authorization.ClientCertFromContext, because that also
+// returns the relayed Unikorn-Client-Certificate header, which is attacker-settable
+// from outside the cluster (finding 13); trusting its mere presence here would let a
+// bare relayed header impersonate a system account with no mTLS to this service at
+// all, which is exactly what TestServiceToServiceAuthenticationDenyEscalation exists
+// to catch. Checking the header alone (the old gate) would instead reject every
+// request arriving on the mutual TLS listener, because a real handshake sets no
+// header.
+//
+// This is the one definition of "this connection is certificate-authenticated" for
+// the package: extractOrGeneratePrincipal's gate asks the identical question (see
+// hasImmediateCallerCertificate below) and must stay behind the same function
+// rather than grow a second, divergent spelling of it.
+func verifyImmediateCaller(r *http.Request) error {
+	_, err := util.GetImmediateCallerCertificatePEM(r)
+
+	return err
+}
+
+// hasImmediateCallerCertificate is verifyImmediateCaller in boolean form, for the
+// one caller that needs a bool rather than an error to propagate.
+//
+// This is stricter than the HasClientCertificateHeader it replaced at its call
+// site: that only checked Ssl-Client-Cert's presence, while this (via
+// GetClientCertificateHeader) also requires Ssl-Client-Verify: SUCCESS. That
+// tightening is not reachable in practice, deliberately: validateAndAuthorize calls
+// authorization.ExtractClientCert before extractOrGeneratePrincipal ever runs, and
+// that already errors out on a present-but-unverified certificate, so by the time
+// this runs Ssl-Client-Cert is either absent or already verified.
+func hasImmediateCallerCertificate(r *http.Request) bool {
+	return verifyImmediateCaller(r) == nil
+}
+
 // aclCacheKey returns the key to use when caching an ACL.
 //
 // There are three authorization modes that matter here.
@@ -214,8 +250,8 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 	// with the relaying party, as the ingress controller will not allow those headers to
 	// be set by an end user.  Failure to do so will result in a privilege escalation.
 	if !hasHTTPAuthorization(request) {
-		// This ensures the connection is over MTLS.
-		if _, err := util.GetClientCertificateHeader(request.Header); err != nil {
+		// This ensures the connection is over mTLS; see verifyImmediateCaller.
+		if err := verifyImmediateCaller(request); err != nil {
 			return nil, errors.AccessDenied(request, "authorization header missing").WithError(err)
 		}
 
@@ -246,6 +282,10 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 				},
 			},
 		}
+
+		log.FromContext(ctx).Info("system account authenticated",
+			"subject", util.GetClientCertificateSubject(certificate),
+			"provenance", authorization.ProvenanceFromContext(ctx))
 
 		return info, nil
 	}
@@ -393,9 +433,13 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 	data, err := base64.RawURLEncoding.DecodeString(header)
 	if err != nil {
 		// TODO: fallback, delete me... I am VERY slow.
-		// Use the certificate of the service that actually called us.
-		// The one in the context is used to propagate token binding information.
-		certRaw, err := util.GetClientCertificateHeader(r.Header)
+		// Use the certificate of the service that actually called us -- a peer this
+		// process verified in the TLS handshake, or the header the ingress verified --
+		// to verify the signature below.  This must be the certificate that terminated
+		// this connection, not the relayed Unikorn-Client-Certificate header used
+		// elsewhere for token binding: that can name an earlier caller in the chain,
+		// whose private key did not sign this principal.
+		certRaw, err := util.GetImmediateCallerCertificatePEM(r)
 		if err != nil {
 			return nil, err
 		}
@@ -435,8 +479,14 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
 // API calls, otherwise it generates it from the available information.
+//
+// Extending this to a verified TLS peer, alongside the ingress-terminated header, is
+// safe because the connection itself is certificate-authenticated by the handshake
+// in either case -- it must NOT be extended to the relayed Unikorn-Client-Certificate
+// header, which is attacker-settable from outside the cluster (finding 13) and
+// identifies an earlier caller, not this connection.
 func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, userinfo *identityapi.Userinfo) (context.Context, error) {
-	if util.HasClientCertificateHeader(r.Header) {
+	if hasImmediateCallerCertificate(r) {
 		newCtx, err := extractPrincipal(ctx, r)
 		if err != nil {
 			return nil, err
@@ -460,7 +510,7 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	// be propagated to the identity service during authentication/token exchange and
 	// authorization (ACL call), otherwise you risk it being injected where it's not
 	// wanted.
-	authorizationCtx, err := authorization.ExtractClientCert(ctx, r.Header)
+	authorizationCtx, err := authorization.ExtractClientCert(ctx, r)
 	if err != nil {
 		return nil, nil, errors.OAuth2InvalidRequest("certificate propagation failure").WithError(err)
 	}

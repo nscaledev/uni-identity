@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -36,14 +37,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	"github.com/unikorn-cloud/core/pkg/spiffetest"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/util"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -482,6 +486,55 @@ func addServiceCertificateHeader(t *testing.T, r *http.Request, commonName, spif
 	r.Header.Set("Ssl-Client-Verify", "SUCCESS")
 }
 
+// addVerifiedPeerCertificate sets the request's TLS connection state as if it
+// arrived over a mutual TLS connection whose peer presented a certificate
+// identified either by a common name or, when commonName is empty, the way SPIRE
+// issues an X509-SVID: no common name, and the SPIFFE ID in a URI SAN.  Unlike
+// addServiceCertificateHeader, this sets no Ssl-Client-Cert header at all, which is
+// what a request on the mutual TLS listener actually looks like.
+func addVerifiedPeerCertificate(t *testing.T, r *http.Request, commonName, spiffeID string) {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	subject := pkix.Name{}
+
+	if commonName != "" {
+		subject.CommonName = commonName
+	} else {
+		subject.Country = []string{"US"}
+		subject.Organization = []string{"SPIRE"}
+	}
+
+	var uris []*url.URL
+
+	if spiffeID != "" {
+		uri, err := url.Parse(spiffeID)
+		require.NoError(t, err)
+
+		uris = append(uris, uri)
+	}
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               subject,
+		URIs:                  uris,
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	require.NoError(t, err)
+
+	certificate, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+
+	r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}}
+}
+
 // TestTokenClientCredentialsSubject asserts what names a service in a service token.
 //
 // An X509-SVID has no common name, so reading only that field yields an empty subject.  The
@@ -544,4 +597,92 @@ func TestTokenClientCredentialsSubject(t *testing.T) {
 			assert.NotEmpty(t, claims.Service.X509Thumbprint)
 		})
 	}
+}
+
+// TestTokenClientCredentialsAcceptsVerifiedPeer is the regression test for the mint
+// side of the RFC 8705 binding gap this task closes.  local/authorizer.go validates
+// a bound token's thumbprint against authorization.ClientCertFromContext, which this
+// task already made prefer a verified TLS peer; before this fix, minting still read
+// only Ssl-Client-Cert, so a caller with no such header -- exactly what a request on
+// the mutual TLS listener looks like -- could not mint a bound token at all.  Left
+// open, a later task proving a peer-bound token is accepted end to end would have
+// had to mint over the ingress instead, and would pass without ever exercising the
+// peer path -- the same vacuous-pass failure mode this project has hit before.
+func TestTokenClientCredentialsAcceptsVerifiedPeer(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	r := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
+		strings.NewReader(url.Values{
+			"grant_type": {"client_credentials"},
+		}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	addVerifiedPeerCertificate(t, r, "", svidTestSPIFFEID)
+
+	result, err := env.authenticator.TokenClientCredentials(httptest.NewRecorder(), r)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	var claims oauth2.Claims
+
+	require.NoError(t, env.jwtIssuer.DecodeJWEToken(
+		t.Context(),
+		result.AccessToken,
+		&claims,
+		jose.TokenTypeAccessToken,
+	))
+
+	assert.Equal(t, svidTestSPIFFEID, claims.Subject)
+
+	require.NotNil(t, claims.Service)
+	assert.NotEmpty(t, claims.Service.X509Thumbprint)
+}
+
+// TestTokenClientCredentialsRefusesARelayOnlyRequest is the negative half of the mint
+// side.  A caller carrying only the relayed Unikorn-Client-Certificate header -- no TLS
+// peer this process verified, no Ssl-Client-Cert the ingress verified -- has proven
+// nothing about itself, and must not be able to mint a token naming the identity in that
+// header.
+//
+// This is reachable from outside the cluster.  validateAndAuthorize runs ExtractClientCert
+// for every route, /oauth2/v2/token included, and that endpoint carries no security
+// requirements.  So if this grant were ever "unified" with the validate side by reading
+// authorization.ClientCertFromContext -- a plausible tidy-up, because local/authorizer.go
+// legitimately does exactly that when checking a bound token -- anyone able to reach the
+// endpoint could mint a service token whose Subject is whatever that public certificate
+// names.  Minting and validating are different questions; this pins them apart.
+//
+// The context is built by ExtractClientCert rather than left empty on purpose: that is
+// what the handler sees in production, and an empty context would make this test pass
+// under that substitution for the wrong reason -- a missing context value rather than a
+// refused relay identity.
+func TestTokenClientCredentialsRefusesARelayOnlyRequest(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	r := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
+		strings.NewReader(url.Values{
+			"grant_type": {"client_credentials"},
+		}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// An SVID shaped certificate, encoded the way a service relays one, so the only
+	// thing missing is any proof that this caller holds its private key.
+	svid, _ := spiffetest.NewSVID(t, svidTestSPIFFEID)
+	r.Header.Set("Unikorn-Client-Certificate", util.EncodeCertificatePEM(svid.Certificates[0]))
+
+	ctx, err := authorization.ExtractClientCert(t.Context(), r)
+	require.NoError(t, err)
+
+	// Guards the fixture: if the certificate did not land in the context as the relayed
+	// header, the refusal below would hold for a reason unrelated to the behaviour under
+	// test.
+	require.Equal(t, authorization.ProvenanceRelayedHeader, authorization.ProvenanceFromContext(ctx))
+
+	result, err := env.authenticator.TokenClientCredentials(httptest.NewRecorder(), r.WithContext(ctx))
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "mTLS client verification failed")
 }
