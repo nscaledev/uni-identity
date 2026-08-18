@@ -182,9 +182,9 @@ spec:
           {{- /*
           Render-time guard: a group binding must not carry write on the
           credential and trust scopes. A write there mints credentials or
-          edits issuer trust, which converts a settings grant into an
+          edits issuer trust. That converts a settings grant into an
           identity grant. Other write scopes stay allowed, unlike the
-          wildcard guard above, and no runtime read clamp applies.
+          wildcard guard above. No runtime read clamp applies.
           */}}
           {{- $credentialScopes := list "identity:users" "identity:groups" "identity:roles" "identity:serviceaccounts" "identity:oauth2providers" }}
           {{- range $b.roles }}
@@ -196,7 +196,7 @@ spec:
               {{- if has $scopeName $credentialScopes }}
                 {{- range $ops }}
                   {{- if ne . "read" }}
-                    {{- fail (printf "globalGroupRoleBindings[%d]: role %q grants %q on credential scope %q, which group bindings must not carry" $i $roleName . $scopeName) }}
+                    {{- fail (printf "globalGroupRoleBindings[%d]: role %q grants non-read operation %q on credential scope %q" $i $roleName . $scopeName) }}
                   {{- end }}
                 {{- end }}
               {{- end }}

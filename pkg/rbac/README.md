@@ -320,9 +320,9 @@ IdP-managed population without a parallel UNI-side membership list.
 
 One render-time guard bounds the role choice: the chart refuses a group binding on a role that
 writes `identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`, or
-`identity:oauth2providers`. A write on those scopes mints credentials or edits issuer trust, which
+`identity:oauth2providers`. A write on those scopes mints credentials or edits issuer trust. That
 converts a settings grant into an identity grant. The guard is render-time only, and roles can gain
-write scopes after the render, so it narrows the blast radius rather than replacing the operator
+write scopes after the render. It narrows the blast radius and does not replace the operator
 guidance below.
 
 The consequence is that **UNI configuration no longer enumerates the principals that hold global
@@ -480,7 +480,7 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
   global operation. This does not make the runtime clamp redundant: roles can gain write scopes
   after the render. For group bindings the chart rejects only roles that write the credential and
   trust scopes (`identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`,
-  `identity:oauth2providers`). Other writes render, and no runtime clamp backs that guard.
+  `identity:oauth2providers`). Other writes render. No runtime clamp backs that guard.
 - Subject, wildcard-subject, and group bindings all resolve against the authenticating issuer, never
   a client-supplied one. UNI evaluates impersonated principals against the UNI sentinel with no
   groups, so neither an external-issuer subject binding nor any group binding applies on a delegated
