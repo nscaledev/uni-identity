@@ -199,7 +199,9 @@ Each bearer-trusted provider has a `BearerTrustSpec` that governs claim validati
 - **`groupsClaim`** (default empty): names the access-token claim that carries this issuer's IdP
   group names, e.g. `https://unikorn-cloud.org/groups`. Empty means the issuer emits no groups. A
   non-empty value must be a namespaced URI that contains `://`, and validator construction rejects
-  any other value. This is a v1 restriction that stops a bare user-settable profile claim
+  any other value — lazily, at the first token dispatched for the issuer, so a violation rejects
+  every token from that issuer with HTTP 401 rather than failing the object apply; the rbac startup
+  advisory also reports violations at boot. This is a v1 restriction that stops a bare user-settable profile claim
   (`nickname`, `name`) from becoming an authorization source, not a permanent constraint of the
   claim shape. A later release could relax it as a compatible widening if a real provider needs that.
 

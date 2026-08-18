@@ -256,8 +256,10 @@ func (*GlobalGroupRoleBindingsValue) Type() string { return "issuer::group::role
 
 // accumulateGlobalReadPermissions clamps wildcard bindings at authorization
 // time, because live Role CRDs can gain write scopes after the chart's
-// render-time guard has run. See pkg/rbac/README.md#global-role-bindings for
-// the two-layer rationale.
+// render-time guard has run. The clamp protects nothing for a principal who
+// also matches a group binding granting the same endpoint: group bindings are
+// unclamped, so that leg re-admits the writes. See
+// pkg/rbac/README.md#global-role-bindings for the two-layer rationale.
 func accumulateGlobalReadPermissions(acl *openapi.Acl, roleIDs []string, roles map[string]*unikornv1.Role) error {
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
