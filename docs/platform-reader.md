@@ -36,7 +36,6 @@ This record is a snapshot at those SHAs, not a live guarantee — see Limitation
 | Scope | Reason |
 | --- | --- |
 | `region:identities` | Read returns live cloud credentials: base64 `clouds.yaml` application credential and SSH private key, on both list and get (`uni-region pkg/handler/identity/client.go:61-103`). |
-| `region:servers` | `GET /api/v2/servers/{id}/sshkey` returns the SSH private key; console-session reads return a token-bearing VNC URL; v2 power actions (start/stop/reboot) are gated only by the read check. |
 | `kubernetes:clusters` | Kubeconfig download shares scope+operation with listing and returns the admin kubeconfig verbatim (`uni-kubernetes pkg/server/handler/cluster/client.go:212`). |
 | `kubernetes:virtualclusters` | Same pattern (`virtualcluster/client.go:205`). |
 | `compute:instances` | Proxies the region sshkey endpoint (private key), console sessions, and read-gated power actions. |
@@ -59,7 +58,7 @@ deliberate re-audit before `platform-reader` gains the surface, instead of silen
 
 ### Included scopes
 
-The 31 scopes below are the ones `platform-reader` actually carries, all at global scope with
+The 32 scopes below are the ones `platform-reader` actually carries, all at global scope with
 `[read]` only. This table is the audit's condensed record of what each read surface actually
 returns.
 
@@ -80,6 +79,7 @@ returns.
 | `region:networks:v2` | List/get, clean | uni-region `network/client_v2.go:156,177` |
 | `region:loadbalancers:v2` | List/get, clean | uni-region `loadbalancer/client_v2.go:228,249` |
 | `region:securitygroups` / `:v2` | Rules only | uni-region `handler.go:300,351`; `securitygroup/client_v2.go:161,182` |
+| `region:servers` | **Not metadata-only.** Server inventory, plus — on the same scope and operation — the SSH private key (`GET /api/v2/servers/{id}/sshkey`), a token-bearing console-session URL, and the v2 power actions (start/stop/reboot), which check read where v1 checks update | uni-region `b4b5ab7`: `server/client_v2.go:616` (the shared read gate), `:757`, `:789-814`, `:825` |
 | `region:volumeclasses:v2` | Storage catalog | uni-region `handler_v2_volumeclass.go:31` |
 | `region:filestorage:v2` | Includes `mountSource`/NFS `mountOptions` — data-plane topology, not credentials (deliberately included) | uni-region `storage/client.go:320,354,151` |
 | `region:filestorageclass:v2` | Catalog | uni-region `storage/client.go:746` |
@@ -94,7 +94,11 @@ returns.
 
 The included scopes fall into four sensitivity classes:
 
-- **Credential** — none, by construction. Every scope whose read surface returns credential or
+- **Credential and control** — `region:servers`. Read on that one scope also serves the server
+  SSH private key, a console-session URL that carries its own token, and start/stop/reboot on
+  every server on the platform. It is included because support tooling needs the server
+  inventory, and uni-region offers no narrower scope that yields inventory alone: the split is
+  the first item under Follow-ups. Every other scope whose read surface returns credential or
   control-equivalent material is excluded above.
 - **Data-plane topology** — `region:filestorage:v2` mount coordinates (`mountSource`, NFS
   `mountOptions`), networks, security-group rules, load-balancer members, and private IPs. This
@@ -211,9 +215,12 @@ The audit surfaced seven follow-up items, recorded here. None block this change.
 - **uni-kubernetes:** split kubeconfig retrieval out of `kubernetes:clusters` and
   `kubernetes:virtualclusters` read (for example, a `.../kubeconfig` sub-scope) so that listing
   clusters and virtual clusters can rejoin `platform-reader`.
-- **uni-region:** split `GET /api/v2/servers/{id}/sshkey` and console-session reads out of
-  `region:servers` read. This also carries a security defect found by the audit: v2 power actions
-  (start/stop/reboot) are gated only by the read check, not an update check as v1 requires.
+- **uni-region (blocking a real over-grant):** split `GET /api/v2/servers/{id}/sshkey` and
+  console-session reads out of `region:servers` read, and gate the v2 power actions
+  (start/stop/reboot) on update as v1 does — today they are gated only by the read check. Until
+  both land, every holder of `platform-reader` can retrieve any server's SSH private key, open a
+  console session on it, and power-cycle it. Narrow the role's `region:servers` grant back to
+  inventory as soon as a scope that yields inventory alone exists.
 - **uni-compute:** the same split for `compute:instances` — it proxies the region sshkey
   endpoint, console sessions, and the same read-gated power actions.
 - **uni-region:** `region:identities` read returns live credentials (`clouds.yaml` application
