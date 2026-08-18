@@ -179,6 +179,29 @@ spec:
             {{- end }}
             {{- $roles = append $roles (include "resource.id" .) }}
           {{- end }}
+          {{- /*
+          Render-time guard: a group binding must not carry write on the
+          credential and trust scopes. A write there mints credentials or
+          edits issuer trust, which converts a settings grant into an
+          identity grant. Other write scopes stay allowed, unlike the
+          wildcard guard above, and no runtime read clamp applies.
+          */}}
+          {{- $credentialScopes := list "identity:users" "identity:groups" "identity:roles" "identity:serviceaccounts" "identity:oauth2providers" }}
+          {{- range $b.roles }}
+            {{- $roleName := . }}
+            {{- $role := index $allRoles $roleName }}
+            {{- $roleScopes := default (dict) $role.scopes }}
+            {{- $globalScopes := default (dict) $roleScopes.global }}
+            {{- range $scopeName, $ops := $globalScopes }}
+              {{- if has $scopeName $credentialScopes }}
+                {{- range $ops }}
+                  {{- if ne . "read" }}
+                    {{- fail (printf "globalGroupRoleBindings[%d]: role %q grants %q on credential scope %q, which group bindings must not carry" $i $roleName . $scopeName) }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
         - {{ printf "--global-group-role-binding=%s::%s::%s" $b.issuer $group (join "," $roles) | quote }}
         {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}

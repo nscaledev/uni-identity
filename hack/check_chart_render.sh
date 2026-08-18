@@ -153,11 +153,13 @@ must_fail_group() {
 }
 
 # Title Case group names must render. Group names are byte-exact, and the
-# lower-case guard that applies to subjects does NOT apply to them.
-out=$(render_group '[{"issuer":"https://staff.example.com/","group":"Platform Engineering","roles":["platform-administrator"]}]')
-admin_role_id=$(role_id_of platform-administrator <<<"$out")
-[[ -n "$admin_role_id" ]] || die "could not resolve role ID for 'platform-administrator'"
-assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Platform Engineering::${admin_role_id}\""
+# lower-case guard that applies to subjects does NOT apply to them. The role is
+# platform-reader: it reads the credential scopes but writes none, so it passes
+# the credential-scope guard.
+out=$(render_group '[{"issuer":"https://staff.example.com/","group":"Platform Engineering","roles":["platform-reader"]}]')
+reader_role_id=$(role_id_of platform-reader <<<"$out")
+[[ -n "$reader_role_id" ]] || die "could not resolve role ID for 'platform-reader'"
+assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Platform Engineering::${reader_role_id}\""
 
 must_fail_group '[{"group":"SRE","roles":["platform-administrator"]}]' "issuer is required"
 must_fail_group '[{"issuer":"https://a.com/ ","group":"SRE","roles":["platform-administrator"]}]' "issuer must not contain whitespace"
@@ -168,5 +170,6 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"a::b","roles":
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"Platform\tEngineering","roles":["platform-administrator"]}]' "group must not contain control whitespace"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["platform-administrator"]}]' "group is required"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
 
 echo "chart render checks OK"
