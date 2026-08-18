@@ -125,15 +125,18 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var(&o.GlobalGroupRoleBindings, "global-group-role-binding", "Global group role binding as issuer::group::role[,role...]; grants the roles' full global scopes to any subject whose token from issuer carries the group in the issuer's groupsClaim.")
 }
 
-// Validate reports four advisory (log-only) startup findings: bare
-// (UNI-sentinel) admin entries while a non-UNI issuer is trusted,
-// GlobalRoleBindings issuers outside trustedNonUNIIssuers,
-// GlobalGroupRoleBindings issuers that are either untrusted or configured with no
-// groupsClaim (so the binding can never match), and any issuer whose non-empty
-// groupsClaim is not a namespaced URI (validator construction rejects it lazily
-// at first token dispatch, so it would otherwise surface as a 401 for every
-// token from that issuer). It reports every offender, joined with errors.Join so
-// errors.Is still matches each sentinel.
+// Validate reports four advisory (log-only) startup findings:
+//
+//   - a bare (UNI-sentinel) admin entry while a non-UNI issuer is trusted
+//   - a GlobalRoleBindings issuer outside trustedNonUNIIssuers
+//   - a GlobalGroupRoleBindings issuer that is untrusted, or that has no
+//     groupsClaim (the binding can never match)
+//   - an issuer whose non-empty groupsClaim is not a namespaced URI (validator
+//     construction rejects that claim at first token dispatch, so the fault
+//     otherwise surfaces as a 401 for every token from that issuer)
+//
+// Validate reports every offender, joined with errors.Join, so errors.Is
+// still matches each sentinel.
 //
 // Only the bare-admin check is gated on a non-empty trustedNonUNIIssuers, so a
 // caller that cannot tell "none configured" from "provider list unavailable" must
@@ -152,8 +155,8 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 // caller that cannot tell "the claims lookup failed" from "no issuers are
 // configured" must therefore pass nil rather than a zero-value map, or Validate
 // reads a failed lookup as "no dead bindings". The nil skip also covers the
-// malformed-claim check; the bare-admin and GlobalRoleBindings checks never read
-// groupsClaimByIssuer and are unaffected.
+// malformed-claim check. The bare-admin and GlobalRoleBindings checks never
+// read groupsClaimByIssuer and are unaffected.
 func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer map[string]string) error {
 	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings)+len(o.GlobalGroupRoleBindings))
 
@@ -186,12 +189,12 @@ func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer ma
 	return goerrors.Join(errs...)
 }
 
-// malformedGroupsClaimAdvisories reports ErrMalformedGroupsClaim for every
-// issuer whose non-empty groupsClaim is not a namespaced URI. It runs over the
-// whole map, not the binding loop: validator construction rejects the claim
-// lazily at first token dispatch, so a malformed value 401s every token from
-// its issuer whether or not any binding references it. Keys are sorted so the
-// joined advisory text is stable across boots.
+// malformedGroupsClaimAdvisories reports ErrMalformedGroupsClaim for each
+// issuer whose non-empty groupsClaim is not a namespaced URI. It examines the
+// whole map, not only bound issuers. Validator construction rejects a
+// malformed claim at first token dispatch, so the fault rejects every token
+// from that issuer even when no binding references it. The function sorts the
+// keys, so the joined advisory text is identical on each boot.
 func malformedGroupsClaimAdvisories(groupsClaimByIssuer map[string]string) []error {
 	var errs []error
 
@@ -814,12 +817,13 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 
 // accumulateMatchedBindings builds the ACL for a principal with one or more
 // matched bindings (subject, wildcard subject, or group), and emits the exercise
-// record. That record is a sample, not an audit trail: it fires during ACL
-// computation, so a cache hit skips it — with the default one-minute TTL,
-// roughly once per minute per (token, scope), not once per use. Per-request
-// actor, verb, scope, and resource records come from the audit middleware
-// (pkg/middleware/audit). It covers all binding kinds uniformly, each with its
-// matched identity and granted role IDs. The skipped count is len(authz.OrgIds),
+// record. That record is a sample, not an audit trail. It fires during ACL
+// computation, so a cache hit skips it. With the default one-minute TTL it
+// fires approximately once each minute for each (token, scope), not once for
+// each use. The audit middleware (pkg/middleware/audit) records the actor,
+// verb, scope, and resource for every request. It covers all binding kinds
+// uniformly, each with its matched identity and granted role IDs. The skipped
+// count is len(authz.OrgIds),
 // already in the claim, so producing it resolves no membership. Callers return
 // this ACL directly, because a match implies replace semantics and skips
 // membership resolution entirely.
@@ -875,9 +879,9 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 	// when a subject binding matched and the replace branch below returns early.
 	// It is the only diagnostic surface for a wrong-case or wrong-name binding,
 	// because UNI cannot enumerate IdP groups to check the configuration against.
-	// The group names themselves stay at V(1): IdP group names routinely encode
-	// team, project, or clearance information, and with any binding configured
-	// this path covers most external users on most ACL cache misses.
+	// The group names appear only at V(1). IdP group names often carry team,
+	// project, or clearance information, and with any binding configured this
+	// path covers most external users on most ACL cache misses.
 	if len(groups) > 0 && len(groupBindings) == 0 {
 		log.FromContext(ctx).Info("token groups matched no global group role binding",
 			"subject", subject, "srcIss", srcIss, "groupCount", len(groups))

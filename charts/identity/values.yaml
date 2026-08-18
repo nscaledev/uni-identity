@@ -179,47 +179,45 @@ globalRoleBindings: []
 # Matching is byte-exact and case-sensitive, so copy the group name from the
 # IdP verbatim. Group names are NOT lower-cased, unlike subjects, and Title
 # Case is expected.
-# Replace, not additive: a matched member has organization and project
-# permissions REPLACED for that session, not augmented. Any match skips
-# membership resolution entirely, so an organization admin placed in a bound
-# group trades their organization write access for whatever the bound role
-# grants globally.
+# Replace, not additive: a group match REPLACES the member's organization and
+# project permissions for that session. Any match skips membership resolution
+# entirely. An organization admin placed in a bound group trades organization
+# write access for the bound role's global grants.
 # Cross-tenant reach: a global scope authorizes the operation in every
-# organization and project, including minting a passport scoped to an
-# organization the subject does not belong to.
-# Unlike wildcard subject bindings, these are NOT clamped to read, and there
-# is no render-time guard rejecting write-bearing roles either. Wildcard
-# subject bindings get both defenses; group bindings get neither. Broadening a
-# bound role's scopes out-of-band elevates the whole group within one
-# ACL-cache TTL, so bind only roles whose scopes are themselves under change
-# control.
+# organization and project. That includes minting a passport scoped to an
+# organization where the subject is not a member.
+# Unlike wildcard subject bindings, these are NOT clamped to read, and no
+# render-time guard rejects write-bearing roles. Wildcard subject bindings get
+# both defenses. Group bindings get neither. A role broadened out-of-band
+# elevates the whole group within one ACL-cache TTL. Bind only roles whose
+# scopes are themselves under change control.
 # Groups exist only on external bearer tokens, so `uni` is not a valid issuer
 # here, and these bindings act only on direct external bearer usage. A staff
 # member who signs in through the UNI interactive login holds a UNI-local
 # token with no groups and never matches a group binding, even when that login
 # federates through the same IdP.
 # Use these bindings only for issuers whose group namespace is
-# administratively controlled. No shipped role targets a surface narrow enough
-# for this: define a purpose-built role under additionalRoles scoped to what
-# the group actually needs, rather than binding a broad shipped role. A role's
-# `protected: true` is NOT checked at bind time; that flag guards only the UNI
-# Group role-attach API. See pkg/rbac/README.md#global-role-bindings.
+# administratively controlled. No shipped role targets a narrow surface.
+# Define a purpose-built role under additionalRoles, scoped to what the group
+# needs, instead of binding a broad shipped role. A role's `protected: true`
+# is NOT checked at bind time. That flag guards only the UNI Group role-attach
+# API. See pkg/rbac/README.md#global-role-bindings.
 # Rollout ordering: the chart emits the flag only when this list is non-empty,
 # and older server binaries do not recognise it. Deploy a binary that
 # understands --global-group-role-binding before you enable bindings, and
 # clear this value before you revert the binary on rollback.
 # Downstream ACL caching: region, compute, kubernetes, reservation, and auth0
-# all cache ACLs; watchtower does not, so it is unaffected by this list. No
-# currently released consumer version keys its ACL cache by token: they pin
-# identity v1.17.8 (region), v1.17.1 (compute, kubernetes, reservation), or
-# v1.15.0 (auth0), and all of those key by subject alone. Every one of those
-# five services must run a build whose identity middleware keys the ACL cache
-# by token before you enable any binding here, or it can serve a subject's
-# non-elevated token a cached group-elevated ACL until that entry expires. No
-# safe identity middleware version has shipped yet; name the first one here
-# once it exists. The token-keyed cache costs one entry per (token, scope)
-# against acl-cache-size (default 65536), so token rotation is a guaranteed
-# cache miss — the accepted price of correctness.
+# all cache ACLs. Watchtower does not cache ACLs, so this list does not affect
+# it. No currently released consumer version keys its ACL cache by token. They
+# pin identity v1.17.8 (region), v1.17.1 (compute, kubernetes, reservation),
+# or v1.15.0 (auth0), and all of those key by subject alone. Before you enable
+# any binding here, every one of those five services must run a build whose
+# identity middleware keys the ACL cache by token. Older middleware can serve
+# a subject's non-elevated token a cached group-elevated ACL until that entry
+# expires. No safe identity middleware version has shipped yet. Name the first
+# one here once it exists. The token-keyed cache costs one entry per
+# (token, scope) against acl-cache-size (default 65536), so token rotation is
+# a guaranteed cache miss. That cost is the accepted price of correctness.
 globalGroupRoleBindings: []
 #  - issuer: https://staff.example.auth0.com/
 #    group: Platform Engineering

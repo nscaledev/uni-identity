@@ -184,15 +184,19 @@ value and `globalRoleBindings` as one `--global-role-binding` flag per subject i
 
 ### Operator invariants
 
-`Options.Validate` logs four advisory startup warnings and never blocks boot: a bare (UNI-sentinel)
-`--platform-administrator-subjects` entry that should migrate to a `globalRoleBindings` entry; a
-`--global-role-binding` issuer outside the currently trusted set — usually a stale or mistyped
-issuer that can never match a real token; a `--global-group-role-binding` issuer that is untrusted
-or has no `groupsClaim` configured; and any trusted issuer whose non-empty `groupsClaim` is not a
-namespaced URI, which would otherwise surface only as a 401 for every token from that issuer. None
-of these warnings is a security control; the issuer-qualified runtime match in
-`processUserAccountACL` is. Their gating, the deliberately excluded legacy exchange issuer, and
-provider-list failure handling are documented in
+`Options.Validate` logs four advisory startup warnings and never blocks boot:
+
+- a bare (UNI-sentinel) `--platform-administrator-subjects` entry that should migrate to a
+  `globalRoleBindings` entry
+- a `--global-role-binding` issuer outside the currently trusted set (usually a stale or mistyped
+  issuer that can never match a real token)
+- a `--global-group-role-binding` issuer that is untrusted or has no `groupsClaim` configured
+- a trusted issuer whose non-empty `groupsClaim` is not a namespaced URI, a fault that otherwise
+  surfaces only as a 401 for every token from that issuer
+
+None of these warnings is a security control. The issuer-qualified runtime match in
+`processUserAccountACL` is the security control. Their gating, the deliberately excluded legacy
+exchange issuer, and provider-list failure handling are documented in
 [`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings).
 
 Note the legacy-flag mirror copies the flag value verbatim: a flag issuer lacking Auth0's canonical

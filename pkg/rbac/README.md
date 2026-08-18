@@ -350,13 +350,13 @@ impersonation, for the same reason subject-bound authority never has.
 
 **The legacy Auth0-exchange issuer is dead for group bindings only while the flag path serves
 it.** The deprecated `--auth0-exchange-issuer` and `--auth0-exchange-audience` flags build a
-synthetic `auth0-legacy` provider that carries no `groupsClaim`, and no flag value can add one. But
-CRD providers precede the synthetic in the name-sorted candidate list, so declaring an
-`OAuth2Provider` whose `spec.issuer` matches the legacy issuer deterministically shadows the
-synthetic — the CRD provider's `groupsClaim` takes effect and the binding comes alive, with no flag
-replacement needed. Migration hazard: the synthetic hardcodes `requireAuthzClaim: true` while the
-CRD field defaults `false`, so migrating the issuer to a CRD provider silently relaxes authz-claim
-enforcement unless the operator sets it explicitly.
+synthetic `auth0-legacy` provider that carries no `groupsClaim`, and no flag value can add one.
+CRD providers precede the synthetic in the name-sorted candidate list. An `OAuth2Provider` whose
+`spec.issuer` matches the legacy issuer therefore always wins against the synthetic: its
+`groupsClaim` takes effect and the binding becomes live, with no flag replacement needed. One
+migration hazard exists. The synthetic hardcodes `requireAuthzClaim: true`, while the CRD field
+defaults to `false`, so a migration to a CRD provider silently relaxes authz-claim enforcement
+unless the operator sets the field.
 
 Group bindings also add two findings to `Options.Validate`, described with the other startup checks
 below: `ErrGroupBindingNoGroupsClaim` for a bearer-trust candidate whose `groupsClaim` is empty, and
@@ -417,18 +417,18 @@ startup. The four checks report:
    again) or a recognized bearer-trust candidate configured with no `groupsClaim`
    (`ErrGroupBindingNoGroupsClaim`). See [Group bindings](#group-bindings) above for what this
    check covers.
-4. Any trusted issuer whose non-empty `groupsClaim` is not a namespaced URI
-   (`ErrMalformedGroupsClaim`). This check runs over every issuer in the claims map, not only bound
-   ones, because validator construction rejects the claim lazily at first token dispatch — a
-   malformed value therefore rejects every token from its issuer with HTTP 401, whether or not any
-   binding references it.
+4. A trusted issuer whose non-empty `groupsClaim` is not a namespaced URI
+   (`ErrMalformedGroupsClaim`). This check examines every issuer in the claims map, not only bound
+   ones. Validator construction rejects a malformed claim at the first token dispatched for the
+   issuer, so the fault rejects every token from that issuer with HTTP 401, even when no binding
+   references it.
 
 Check (2) excludes the deprecated `--auth0-exchange-issuer` value from the trusted set. A binding
 aimed at the legacy exchange issuer therefore warns, even though it can still match a real token.
 Check (3) reports that same legacy issuer as dead-because-no-`groupsClaim` instead, because its
-groups-claim lookup runs before the trusted-issuer fallback (`validateGroupBindingAdvisory`) —
-unless a CRD provider shadows the synthetic and supplies a claim, in which case the binding is live
-and the check stays silent.
+groups-claim lookup runs before the trusted-issuer fallback (`validateGroupBindingAdvisory`). When
+a CRD provider shadows the synthetic and supplies a claim, the binding is live and the check stays
+silent.
 
 Only check (1) is gated on a non-empty trusted-issuer list. A bare admin entry only matters once
 there is a non-UNI issuer to migrate away from. Checks (2) and (3) run even against an empty

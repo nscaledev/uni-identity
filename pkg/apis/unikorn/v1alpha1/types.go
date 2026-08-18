@@ -169,10 +169,11 @@ type BearerTrustSpec struct {
 	// group-based global role bindings never match tokens from it (fail
 	// closed). The name must be a namespaced URI that contains "://", so
 	// nobody can designate a user-settable bare profile claim (nickname,
-	// name) as an authorization source. Validator construction enforces the
-	// rule lazily, at the first token dispatched for the issuer — a violation
-	// therefore rejects every token from this issuer with HTTP 401, not the
-	// object apply. The rbac startup advisory also reports violations at boot.
+	// name) as an authorization source. Validator construction applies the
+	// rule at the first token dispatched for the issuer, not at object
+	// admission. A violation therefore rejects every token from this issuer
+	// with HTTP 401. The rbac startup advisory also reports violations at
+	// boot.
 	GroupsClaim string `json:"groupsClaim,omitempty"`
 }
 
