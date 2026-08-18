@@ -190,7 +190,7 @@ globalRoleBindings: []
 # render-time guard rejects only roles that write the credential and trust
 # scopes (identity:users, identity:groups, identity:roles,
 # identity:serviceaccounts, identity:oauth2providers). Other write scopes are
-# allowed, and no runtime clamp backs the guard. A role broadened out-of-band
+# allowed. No runtime clamp backs the guard. A role broadened out-of-band
 # elevates the whole group within one ACL-cache TTL. Bind only roles whose
 # scopes are themselves under change control.
 # Groups exist only on external bearer tokens, so `uni` is not a valid issuer
@@ -204,6 +204,17 @@ globalRoleBindings: []
 # needs, instead of binding a broad shipped role. A role's `protected: true`
 # is NOT checked at bind time. That flag guards only the UNI Group role-attach
 # API. See pkg/rbac/README.md#global-role-bindings.
+# The example below binds a purpose-built role that can edit customer quotas
+# and nothing else. It writes no credential scope, so the render-time guard
+# accepts it. Declare the role under additionalRoles, further below:
+#   support-quota-editor:
+#     description: Support quota editor
+#     protected: true
+#     scopes:
+#       global:
+#         identity:organizations: [read]
+#         identity:projects: [read]
+#         identity:quotas: [read,update]
 # Rollout ordering: the chart emits the flag only when this list is non-empty,
 # and older server binaries do not recognise it. Deploy a binary that
 # understands --global-group-role-binding before you enable bindings, and
@@ -223,8 +234,8 @@ globalRoleBindings: []
 # a guaranteed cache miss. That cost is the accepted price of correctness.
 globalGroupRoleBindings: []
 #  - issuer: https://staff.example.auth0.com/
-#    group: Platform Engineering
-#    roles: [platform-reader]
+#    group: Support Engineering
+#    roles: [support-quota-editor]
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:
