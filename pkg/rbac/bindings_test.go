@@ -501,6 +501,52 @@ func TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly(t *testing.T) 
 	}
 }
 
+// TestOptionsValidateMalformedGroupsClaim covers the malformed-claim advisory:
+// any issuer in groupsClaimByIssuer whose non-empty claim lacks "://" reports
+// ErrMalformedGroupsClaim, with no binding required — validator construction
+// rejects such a claim lazily at first token dispatch, so it would otherwise
+// 401 every token from that issuer whether or not a binding references it. An
+// empty claim and a namespaced URI stay silent, the advisory text is
+// key-sorted so it is stable across boots, and a nil map skips the check like
+// the other map-fed advisories.
+func TestOptionsValidateMalformedGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{}
+
+	// No binding configured anywhere: the check must still fire for both
+	// malformed issuers, and stay silent for the empty and well-formed claims.
+	groupsClaimByIssuer := map[string]string{
+		"https://b.example.com/": "groups",
+		"https://a.example.com/": "roles",
+		"https://c.example.com/": "",
+		"https://d.example.com/": "https://unikorn-cloud.org/groups",
+	}
+
+	err := opts.Validate(nil, groupsClaimByIssuer)
+	if !goerrors.Is(err, rbac.ErrMalformedGroupsClaim) {
+		t.Fatalf("got %v, want ErrMalformedGroupsClaim with no binding configured", err)
+	}
+
+	if !strings.Contains(err.Error(), "https://a.example.com/") || !strings.Contains(err.Error(), "https://b.example.com/") {
+		t.Fatalf("expected both malformed issuers named, got: %v", err)
+	}
+
+	if strings.Contains(err.Error(), "https://c.example.com/") || strings.Contains(err.Error(), "https://d.example.com/") {
+		t.Fatalf("empty and namespaced-URI claims must stay silent, got: %v", err)
+	}
+
+	// Sorted keys make the joined text deterministic: a must precede b.
+	if strings.Index(err.Error(), "https://a.example.com/") > strings.Index(err.Error(), "https://b.example.com/") {
+		t.Fatalf("expected key-sorted advisory text, got: %v", err)
+	}
+
+	// A nil map ("the claims lookup failed") skips this check too.
+	if err := opts.Validate(nil, nil); err != nil {
+		t.Fatalf("got %v, want no error with a nil groupsClaimByIssuer", err)
+	}
+}
+
 // Legacy flags and equivalent bindings must produce identical ACLs.
 func TestLegacyFlagsEquivalentToBindings(t *testing.T) {
 	t.Parallel()
@@ -862,7 +908,9 @@ func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
 // them matched, even when a SUBJECT binding matched and accumulateMatchedBindings
 // returns early with a global ACL. Without the hoisted check, an operator adding a
 // group binding for someone who already has an exact subject binding would get a
-// silently missing grant and no diagnostic at all.
+// silently missing grant and no diagnostic at all. The Info line carries only the
+// count; the group names sit on a separate V(1) line, because IdP group names
+// routinely encode team or clearance information.
 func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 	t.Parallel()
 
@@ -880,7 +928,7 @@ func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 
 	var lines []string
 
-	logger := funcr.New(func(_, args string) { lines = append(lines, args) }, funcr.Options{})
+	logger := funcr.New(func(_, args string) { lines = append(lines, args) }, funcr.Options{Verbosity: 1})
 	ctx := log.IntoContext(t.Context(), logger)
 
 	acl, err := aclOrErrForSubjectWithContext(ctx, t, opts, subject, issuer, nil, []string{"unmapped-group"})
@@ -894,29 +942,45 @@ func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 		t.Fatal("matched subject binding granted no global ACL")
 	}
 
-	var found bool
+	infoLine := firstLineContaining(lines, "token groups matched no global group role binding")
+	if infoLine == "" {
+		t.Fatal("expected unmatched-groups diagnostic even though a subject binding matched")
+	}
 
+	if !strings.Contains(infoLine, "groupCount") {
+		t.Fatalf("unmatched-groups Info line missing the count: %q", infoLine)
+	}
+
+	if strings.Contains(infoLine, "unmapped-group") {
+		t.Fatalf("group names must not appear on the Info line: %q", infoLine)
+	}
+
+	namesLine := firstLineContaining(lines, "unmatched token groups")
+	if namesLine == "" {
+		t.Fatal("expected the group names on a V(1) line")
+	}
+
+	if !strings.Contains(namesLine, "unmapped-group") {
+		t.Fatalf("V(1) line missing the group names: %q", namesLine)
+	}
+}
+
+func firstLineContaining(lines []string, substr string) string {
 	for _, l := range lines {
-		if strings.Contains(l, "token groups matched no global group role binding") {
-			found = true
-
-			if !strings.Contains(l, "unmapped-group") {
-				t.Fatalf("unmatched-groups log missing the groups field: %q", l)
-			}
+		if strings.Contains(l, substr) {
+			return l
 		}
 	}
 
-	if !found {
-		t.Fatal("expected unmatched-groups diagnostic even though a subject binding matched")
-	}
+	return ""
 }
 
 // TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail pins the content of the
 // "global role bindings matched" log line that accumulateMatchedBindings emits.
-// Group membership lives in the IdP, outside this system, so that line is the only
-// record of who exercised global authority through a group and why. It must carry
-// the subject, the issuer, the matched binding identities, the role IDs each one
-// granted, and the count of organization memberships replace semantics skipped.
+// The line samples binding exercise during ACL computation (per-request records
+// come from the audit middleware), and it must carry the subject, the issuer, the
+// matched binding identities, the role IDs each one granted, and the count of
+// organization memberships replace semantics skipped.
 //
 // The fixture matches both a subject binding and a group binding on the same
 // principal, exercising describeSubjectBindings and describeGroupBindings, and

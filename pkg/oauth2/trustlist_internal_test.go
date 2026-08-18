@@ -18,6 +18,7 @@ package oauth2
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -236,10 +237,11 @@ func TestValidatorFingerprintIncludesGroupsClaim(t *testing.T) {
 
 // TestGroupsClaimByIssuerFirstMatchWins pins that GroupsClaimByIssuer resolves
 // first-match, exactly like validatorForIssuer, rather than reporting "some
-// provider configured a claim" for an issuer two providers share. providerA sorts
-// before providerB, because the fake client List orders by name within a
-// namespace, so providerA's empty GroupsClaim must win even though providerB,
-// later in the list, has one configured.
+// provider configured a claim" for an issuer two providers share. providerA
+// precedes providerB because bearerTrustProviders name-sorts the CRD subset —
+// the sort, not the client's List order, is the ordering guarantee — so
+// providerA's empty GroupsClaim must win even though providerB, later by name,
+// has one configured.
 func TestGroupsClaimByIssuerFirstMatchWins(t *testing.T) {
 	t.Parallel()
 
@@ -296,11 +298,13 @@ func TestValidatorForIssuerRejectsBareGroupsClaim(t *testing.T) {
 	}
 }
 
-// TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange pins that the map includes
-// the synthetic legacy auth0-exchange provider, mapped to an empty groupsClaim.
-// That provider comes from flags, has no CRD, and can never carry a groups
-// claim. It is deliberately absent from computeTrustedNonUNIIssuers, so
-// Options.Validate must find it here first.
+// TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange pins the no-CRD case: the
+// map includes the synthetic legacy auth0-exchange provider, mapped to an empty
+// groupsClaim, because the flag path carries none. A CRD provider declaring the
+// same issuer shadows the synthetic instead — see
+// TestGroupsClaimByIssuerCRDShadowsLegacySynthetic. The synthetic is
+// deliberately absent from computeTrustedNonUNIIssuers, so Options.Validate
+// must find it here first.
 func TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange(t *testing.T) {
 	t.Parallel()
 
@@ -327,5 +331,78 @@ func TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange(t *testing.T) {
 
 	if got != "" {
 		t.Fatalf("got groupsClaim %q, want empty claim for the synthetic legacy provider", got)
+	}
+}
+
+// TestGroupsClaimByIssuerCRDShadowsLegacySynthetic pins that a CRD provider
+// declaring the legacy auth0-exchange issuer deterministically wins over the
+// synthetic — CRD items always precede the synthetic, which is appended last —
+// so the issuer's groupsClaim is settable without replacing the legacy flags.
+func TestGroupsClaimByIssuerCRDShadowsLegacySynthetic(t *testing.T) {
+	t.Parallel()
+
+	const (
+		legacyIssuer = "https://legacy.auth0.com/"
+		claim        = "https://unikorn-cloud.org/groups"
+	)
+
+	provider := providerWithBearerTrust(legacyIssuer, "aud")
+	provider.Spec.BearerTrust.GroupsClaim = claim
+
+	env := setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration:   accessTokenDurationTL,
+		TokenCacheSize:        64,
+		CodeCacheSize:         64,
+		ValidatorCacheSize:    64,
+		Auth0ExchangeIssuer:   legacyIssuer,
+		Auth0ExchangeAudience: "legacy-aud",
+	}, provider)
+
+	claims, err := env.authenticator.GroupsClaimByIssuer(t.Context())
+	if err != nil {
+		t.Fatalf("GroupsClaimByIssuer: %v", err)
+	}
+
+	if got := claims[legacyIssuer]; got != claim {
+		t.Fatalf("got groupsClaim %q, want %q from the CRD provider shadowing the synthetic", got, claim)
+	}
+}
+
+// TestBearerTrustProvidersSortsByName pins the ordering invariant directly: the
+// CRD subset comes back name-sorted regardless of input order, and the synthetic
+// legacy provider is always last. The input is deliberately reverse-ordered —
+// a pass with the sort deleted would require the input to arrive pre-sorted,
+// which this test rules out.
+func TestBearerTrustProvidersSortsByName(t *testing.T) {
+	t.Parallel()
+
+	const legacyIssuer = "https://legacy.auth0.com/"
+
+	providerZ := providerWithBearerTrust("https://z.auth0.com", "aud")
+	providerZ.Name = "z-provider"
+
+	providerA := providerWithBearerTrust("https://a.auth0.com", "aud")
+	providerA.Name = "a-provider"
+
+	env := setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration:   accessTokenDurationTL,
+		TokenCacheSize:        64,
+		CodeCacheSize:         64,
+		ValidatorCacheSize:    64,
+		Auth0ExchangeIssuer:   legacyIssuer,
+		Auth0ExchangeAudience: "legacy-aud",
+	})
+
+	candidates := env.authenticator.bearerTrustProviders([]unikornv1.OAuth2Provider{*providerZ, *providerA})
+
+	want := []string{"a-provider", "z-provider", auth0LegacyProviderName}
+
+	got := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		got = append(got, c.Name)
+	}
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("got candidate order %v, want %v", got, want)
 	}
 }
