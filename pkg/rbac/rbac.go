@@ -21,6 +21,7 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -50,6 +51,7 @@ var (
 	ErrBareAdminSubject          = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to globalRoleBindings")
 	ErrUntrustedBindingIssuer    = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
 	ErrGroupBindingNoGroupsClaim = goerrors.New("global group role binding issuer has no groupsClaim configured; the binding can never match")
+	ErrMalformedGroupsClaim      = goerrors.New("groupsClaim is not a namespaced URI (no \"://\"); validator construction will reject it and every token from this issuer will fail")
 )
 
 // PlatformAdministratorSubject binds an admin subject to the issuer that must
@@ -123,12 +125,15 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var(&o.GlobalGroupRoleBindings, "global-group-role-binding", "Global group role binding as issuer::group::role[,role...]; grants the roles' full global scopes to any subject whose token from issuer carries the group in the issuer's groupsClaim.")
 }
 
-// Validate reports three advisory (log-only) startup findings: bare
+// Validate reports four advisory (log-only) startup findings: bare
 // (UNI-sentinel) admin entries while a non-UNI issuer is trusted,
-// GlobalRoleBindings issuers outside trustedNonUNIIssuers, and
+// GlobalRoleBindings issuers outside trustedNonUNIIssuers,
 // GlobalGroupRoleBindings issuers that are either untrusted or configured with no
-// groupsClaim (so the binding can never match). It reports every offender, joined
-// with errors.Join so errors.Is still matches each sentinel.
+// groupsClaim (so the binding can never match), and any issuer whose non-empty
+// groupsClaim is not a namespaced URI (validator construction rejects it lazily
+// at first token dispatch, so it would otherwise surface as a 401 for every
+// token from that issuer). It reports every offender, joined with errors.Join so
+// errors.Is still matches each sentinel.
 //
 // Only the bare-admin check is gated on a non-empty trustedNonUNIIssuers, so a
 // caller that cannot tell "none configured" from "provider list unavailable" must
@@ -146,7 +151,8 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 // unlike a non-nil-but-empty map, which means a genuine "nothing configured". A
 // caller that cannot tell "the claims lookup failed" from "no issuers are
 // configured" must therefore pass nil rather than a zero-value map, or Validate
-// reads a failed lookup as "no dead bindings". The other two checks never read
+// reads a failed lookup as "no dead bindings". The nil skip also covers the
+// malformed-claim check; the bare-admin and GlobalRoleBindings checks never read
 // groupsClaimByIssuer and are unaffected.
 func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer map[string]string) error {
 	errs := make([]error, 0, len(o.PlatformAdministratorSubjects)+len(o.GlobalRoleBindings)+len(o.GlobalGroupRoleBindings))
@@ -173,9 +179,29 @@ func (o *Options) Validate(trustedNonUNIIssuers []string, groupsClaimByIssuer ma
 				errs = append(errs, err)
 			}
 		}
+
+		errs = append(errs, malformedGroupsClaimAdvisories(groupsClaimByIssuer)...)
 	}
 
 	return goerrors.Join(errs...)
+}
+
+// malformedGroupsClaimAdvisories reports ErrMalformedGroupsClaim for every
+// issuer whose non-empty groupsClaim is not a namespaced URI. It runs over the
+// whole map, not the binding loop: validator construction rejects the claim
+// lazily at first token dispatch, so a malformed value 401s every token from
+// its issuer whether or not any binding references it. Keys are sorted so the
+// joined advisory text is stable across boots.
+func malformedGroupsClaimAdvisories(groupsClaimByIssuer map[string]string) []error {
+	var errs []error
+
+	for _, issuer := range slices.Sorted(maps.Keys(groupsClaimByIssuer)) {
+		if claim := groupsClaimByIssuer[issuer]; claim != "" && !strings.Contains(claim, "://") {
+			errs = append(errs, fmt.Errorf("%w: issuer %q, groupsClaim %q", ErrMalformedGroupsClaim, issuer, claim))
+		}
+	}
+
+	return errs
 }
 
 // validateGroupBindingAdvisory reports the advisory finding, if any, for a single
@@ -788,12 +814,15 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 
 // accumulateMatchedBindings builds the ACL for a principal with one or more
 // matched bindings (subject, wildcard subject, or group), and emits the exercise
-// record. Group membership lives in the IdP, so that log line is the only record
-// of who used global authority and why. It covers all binding kinds uniformly,
-// each with its matched identity and granted role IDs. The skipped count is
-// len(authz.OrgIds), already in the claim, so producing it resolves no
-// membership. Callers return this ACL directly, because a match implies replace
-// semantics and skips membership resolution entirely.
+// record. That record is a sample, not an audit trail: it fires during ACL
+// computation, so a cache hit skips it — with the default one-minute TTL,
+// roughly once per minute per (token, scope), not once per use. Per-request
+// actor, verb, scope, and resource records come from the audit middleware
+// (pkg/middleware/audit). It covers all binding kinds uniformly, each with its
+// matched identity and granted role IDs. The skipped count is len(authz.OrgIds),
+// already in the claim, so producing it resolves no membership. Callers return
+// this ACL directly, because a match implies replace semantics and skips
+// membership resolution entirely.
 func (r *RBAC) accumulateMatchedBindings(ctx context.Context, subject, srcIss string, authz *openapi.AuthClaims, subjectBindings []GlobalRoleBinding, groupBindings []GroupRoleBinding, roles map[string]*unikornv1.Role) (*openapi.Acl, error) {
 	acl := &openapi.Acl{}
 
@@ -846,8 +875,13 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 	// when a subject binding matched and the replace branch below returns early.
 	// It is the only diagnostic surface for a wrong-case or wrong-name binding,
 	// because UNI cannot enumerate IdP groups to check the configuration against.
+	// The group names themselves stay at V(1): IdP group names routinely encode
+	// team, project, or clearance information, and with any binding configured
+	// this path covers most external users on most ACL cache misses.
 	if len(groups) > 0 && len(groupBindings) == 0 {
 		log.FromContext(ctx).Info("token groups matched no global group role binding",
+			"subject", subject, "srcIss", srcIss, "groupCount", len(groups))
+		log.FromContext(ctx).V(1).Info("unmatched token groups",
 			"subject", subject, "srcIss", srcIss, "groups", groups)
 	}
 
