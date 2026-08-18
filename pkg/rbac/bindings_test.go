@@ -501,14 +501,14 @@ func TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly(t *testing.T) 
 	}
 }
 
-// TestOptionsValidateMalformedGroupsClaim covers the malformed-claim advisory:
-// any issuer in groupsClaimByIssuer whose non-empty claim lacks "://" reports
-// ErrMalformedGroupsClaim, with no binding required — validator construction
-// rejects such a claim lazily at first token dispatch, so it would otherwise
-// 401 every token from that issuer whether or not a binding references it. An
-// empty claim and a namespaced URI stay silent, the advisory text is
-// key-sorted so it is stable across boots, and a nil map skips the check like
-// the other map-fed advisories.
+// TestOptionsValidateMalformedGroupsClaim covers the malformed-claim advisory.
+// Each issuer in groupsClaimByIssuer whose non-empty claim lacks "://" reports
+// ErrMalformedGroupsClaim, with no binding required. Validator construction
+// rejects such a claim at first token dispatch, so the fault otherwise rejects
+// every token from that issuer even when no binding references it. An empty
+// claim and a namespaced URI stay silent. The advisory text is key-sorted, so
+// it is identical on each boot. A nil map skips the check, the same as the
+// other map-fed advisories.
 func TestOptionsValidateMalformedGroupsClaim(t *testing.T) {
 	t.Parallel()
 
@@ -908,9 +908,9 @@ func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
 // them matched, even when a SUBJECT binding matched and accumulateMatchedBindings
 // returns early with a global ACL. Without the hoisted check, an operator adding a
 // group binding for someone who already has an exact subject binding would get a
-// silently missing grant and no diagnostic at all. The Info line carries only the
-// count; the group names sit on a separate V(1) line, because IdP group names
-// routinely encode team or clearance information.
+// silently missing grant and no diagnostic at all. The Info line carries only
+// the count. The group names sit on a separate V(1) line, because IdP group
+// names often carry team or clearance information.
 func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
 	t.Parallel()
 
@@ -977,10 +977,10 @@ func firstLineContaining(lines []string, substr string) string {
 
 // TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail pins the content of the
 // "global role bindings matched" log line that accumulateMatchedBindings emits.
-// The line samples binding exercise during ACL computation (per-request records
-// come from the audit middleware), and it must carry the subject, the issuer, the
-// matched binding identities, the role IDs each one granted, and the count of
-// organization memberships replace semantics skipped.
+// The line samples binding exercise during ACL computation. Per-request
+// records come from the audit middleware. The line must carry the subject, the
+// issuer, the matched binding identities, the role IDs each one granted, and
+// the count of organization memberships replace semantics skipped.
 //
 // The fixture matches both a subject binding and a group binding on the same
 // principal, exercising describeSubjectBindings and describeGroupBindings, and
