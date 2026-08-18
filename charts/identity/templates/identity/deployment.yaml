@@ -165,6 +165,9 @@ spec:
           {{- if contains "::" $group }}
             {{- fail (printf "globalGroupRoleBindings[%d]: group must not contain \"::\"" $i) }}
           {{- end }}
+          {{- if regexMatch "[\t\n\r]" $group }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: group must not contain control whitespace" $i) }}
+          {{- end }}
           {{- if not $b.roles }}
             {{- fail (printf "globalGroupRoleBindings[%d]: roles must be non-empty" $i) }}
           {{- end }}
