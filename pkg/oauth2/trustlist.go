@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,7 +89,7 @@ func (a *Authenticator) bearerTrustProviders(items []unikornv1.OAuth2Provider) [
 		}
 	}
 
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
+	slices.SortFunc(candidates, func(a, b unikornv1.OAuth2Provider) int { return strings.Compare(a.Name, b.Name) })
 
 	if a.options.Auth0ExchangeIssuer != "" {
 		// Issuer is used verbatim; a malformed value just never matches a token's

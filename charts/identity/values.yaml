@@ -217,7 +217,9 @@ globalRoleBindings: []
 # by token before you enable any binding here, or it can serve a subject's
 # non-elevated token a cached group-elevated ACL until that entry expires. No
 # safe identity middleware version has shipped yet; name the first one here
-# once it exists.
+# once it exists. The token-keyed cache costs one entry per (token, scope)
+# against acl-cache-size (default 65536), so token rotation is a guaranteed
+# cache miss — the accepted price of correctness.
 globalGroupRoleBindings: []
 #  - issuer: https://staff.example.auth0.com/
 #    group: Platform Engineering
