@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/cache"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // auth0LegacyProviderName is the synthetic provider name used for the
@@ -66,7 +67,15 @@ type validatorCacheEntry struct {
 }
 
 // bearerTrustProviders returns the subset of items that have BearerTrust set,
-// plus a synthetic auth0-legacy entry when Auth0ExchangeIssuer is configured.
+// name-sorted, plus a synthetic auth0-legacy entry when Auth0ExchangeIssuer is
+// configured, always last. Name-sorting the CRD subset makes first-match
+// resolution deterministic when two providers declare the same issuer — the
+// cache-backed List order is not stable across calls, so without it the
+// effective winner could vary per request. The sort freezes what was
+// intermittent: a duplicate-issuer misconfiguration (one broken provider, one
+// good) now fails or works consistently, and becomes permanently dead if the
+// broken provider sorts first. Deliberate — a stable hard failure plus the
+// duplicate-skip boot log beats a flaky one.
 // The synthetic entry's BearerTrust sets RequireAuthzClaim=true to preserve
 // the prior unconditional authz-claim enforcement of the legacy --auth0-exchange-*
 // path; SkipEmailVerification stays false (safe default).
@@ -78,6 +87,8 @@ func (a *Authenticator) bearerTrustProviders(items []unikornv1.OAuth2Provider) [
 			candidates = append(candidates, items[i])
 		}
 	}
+
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
 
 	if a.options.Auth0ExchangeIssuer != "" {
 		// Issuer is used verbatim; a malformed value just never matches a token's
@@ -223,9 +234,12 @@ func (a *Authenticator) validatorForIssuer(ctx context.Context, rawIss string) (
 
 // GroupsClaimByIssuer returns the effective groupsClaim for every trusted bearer
 // issuer, resolved first-match exactly like validatorForIssuer. The map includes
-// the synthetic legacy auth0-exchange provider, which comes from flags and has no
-// CRD, so it always maps to "" and can never carry a groups claim. The rbac
-// Options.Validate advisory consumes this map.
+// the synthetic legacy auth0-exchange provider, which comes from flags, carries
+// no claim, and is always the last candidate — so its issuer maps to "" unless a
+// CRD provider declares the same issuer, in which case that provider wins and
+// supplies the claim. The map is audience-blind: validatorForIssuer additionally
+// hard-errors on an empty-audience winner, which this lookup does not see. The
+// rbac Options.Validate advisory consumes this map.
 func (a *Authenticator) GroupsClaimByIssuer(ctx context.Context) (map[string]string, error) {
 	var providers unikornv1.OAuth2ProviderList
 
@@ -237,7 +251,13 @@ func (a *Authenticator) GroupsClaimByIssuer(ctx context.Context) (map[string]str
 
 	for _, p := range a.bearerTrustProviders(providers.Items) {
 		if _, ok := out[p.Spec.Issuer]; ok {
-			continue // first-match wins, same as validatorForIssuer
+			// First-match wins, same as validatorForIssuer; with name-sorted
+			// candidates the winner is the first provider by name. This is the
+			// boot advisory path, so the line fires once per boot.
+			log.FromContext(ctx).Info("duplicate issuer among bearer trust providers, skipping later candidate",
+				"issuer", p.Spec.Issuer, "skippedProvider", p.Name)
+
+			continue
 		}
 
 		out[p.Spec.Issuer] = p.Spec.BearerTrust.GroupsClaim
