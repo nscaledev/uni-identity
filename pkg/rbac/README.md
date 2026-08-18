@@ -303,7 +303,8 @@ A wrong-case binding therefore **fails silently**. UNI still accepts the token, 
 through to ordinary organization and project membership resolution as if the group had never
 matched. The only signal is a log line from `processUserAccountACL`, emitted whenever a token
 carries groups and none of them matched a configured binding: "token groups matched no global group
-role binding", with the subject, the issuer, and the groups. It fires even when a subject binding
+role binding", with the subject, the issuer, and the group count at Info, and the group names on a
+separate V(1) line. It fires even when a subject binding
 matched, so an operator adding a group binding for someone who already has an exact subject binding
 still gets the diagnostic. It is the only diagnostic surface here, because UNI cannot enumerate an
 IdP's groups to check the configuration against.
@@ -316,6 +317,13 @@ corresponds to an active UNI `User` record, or to any UNI record at all: a subje
 `allowExternalIdentity: true` and an empty `orgIds` slice matches exactly as a UNI-registered user
 does. Both properties are deliberate, so that a fixed set of full-scope roles can go to an
 IdP-managed population without a parallel UNI-side membership list.
+
+One render-time guard bounds the role choice: the chart refuses a group binding on a role that
+writes `identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`, or
+`identity:oauth2providers`. A write on those scopes mints credentials or edits issuer trust, which
+converts a settings grant into an identity grant. The guard is render-time only, and roles can gain
+write scopes after the render, so it narrows the blast radius rather than replacing the operator
+guidance below.
 
 The consequence is that **UNI configuration no longer enumerates the principals that hold global
 write authority through this path.** A subject or wildcard binding names every principal it can ever
@@ -470,8 +478,9 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
   group binding carries no equivalent clamp — see [Group bindings](#group-bindings).
 - The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
   global operation. This does not make the runtime clamp redundant: roles can gain write scopes
-  after the render. The chart has no equivalent guard for group bindings, which carry no clamp at
-  all.
+  after the render. For group bindings the chart rejects only roles that write the credential and
+  trust scopes (`identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`,
+  `identity:oauth2providers`). Other writes render, and no runtime clamp backs that guard.
 - Subject, wildcard-subject, and group bindings all resolve against the authenticating issuer, never
   a client-supplied one. UNI evaluates impersonated principals against the UNI sentinel with no
   groups, so neither an external-issuer subject binding nor any group binding applies on a delegated
