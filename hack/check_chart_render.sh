@@ -154,12 +154,23 @@ must_fail_group() {
 
 # Title Case group names must render. Group names are byte-exact, and the
 # lower-case guard that applies to subjects does NOT apply to them. The role is
-# platform-reader: it reads the credential scopes but writes none, so it passes
+# platform-reader. It reads the credential scopes and writes none, so it passes
 # the credential-scope guard.
 out=$(render_group '[{"issuer":"https://staff.example.com/","group":"Platform Engineering","roles":["platform-reader"]}]')
 reader_role_id=$(role_id_of platform-reader <<<"$out")
 [[ -n "$reader_role_id" ]] || die "could not resolve role ID for 'platform-reader'"
 assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Platform Engineering::${reader_role_id}\""
+
+# The values.yaml example pattern must render: a purpose-built additionalRoles
+# role with a non-credential write (identity:quotas update) passes the
+# credential-scope guard. This pins the guard's allow path for write-bearing
+# roles, not only its read-only path above.
+support_role='{"support-quota-editor":{"description":"Support quota editor","protected":true,"scopes":{"global":{"identity:organizations":["read"],"identity:projects":["read"],"identity:quotas":["read","update"]}}}}'
+out=$(helm template test "$CHART" --set-json "additionalRoles=$support_role" \
+	--set-json 'globalGroupRoleBindings=[{"issuer":"https://staff.example.com/","group":"Support Engineering","roles":["support-quota-editor"]}]')
+support_role_id=$(role_id_of support-quota-editor <<<"$out")
+[[ -n "$support_role_id" ]] || die "could not resolve role ID for 'support-quota-editor'"
+assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Support Engineering::${support_role_id}\""
 
 must_fail_group '[{"group":"SRE","roles":["platform-administrator"]}]' "issuer is required"
 must_fail_group '[{"issuer":"https://a.com/ ","group":"SRE","roles":["platform-administrator"]}]' "issuer must not contain whitespace"
