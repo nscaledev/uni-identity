@@ -261,6 +261,14 @@ roles:
         region:loadbalancers:v2: [read]
         region:securitygroups: [read]
         region:securitygroups:v2: [read]
+        # uni-region checks read on this scope for the routes that list and get
+        # servers. uni-region also checks read on these routes:
+        # - GET /api/v2/servers/{id}/sshkey returns the SSH private key.
+        # - The v2 console-session route returns a URL that contains a token.
+        # - The v2 start, stop, and reboot routes check read, not update.
+        # This role therefore permits all of those routes on every server. The
+        # grant stays this wide until uni-region moves them to separate scopes.
+        region:servers: [read]
         region:volumeclasses:v2: [read]
         region:filestorage:v2: [read]
         region:filestorageclass:v2: [read]

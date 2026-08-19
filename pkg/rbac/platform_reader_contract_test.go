@@ -42,7 +42,6 @@ import (
 func platformReaderExcludedScopes() map[string]string {
 	return map[string]string{
 		"region:identities":                         "read returns clouds.yaml application credential and SSH private key",
-		"region:servers":                            "sshkey/console-session reads return credentials; v2 power actions are read-gated",
 		"kubernetes:clusters":                       "kubeconfig download shares scope+read with listing and returns admin kubeconfig",
 		"kubernetes:virtualclusters":                "kubeconfig download shares scope+read with listing and returns admin kubeconfig",
 		"compute:instances":                         "proxies region sshkey/console-session; power actions are read-gated",
