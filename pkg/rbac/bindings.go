@@ -146,10 +146,120 @@ func (v *GlobalRoleBindingsValue) String() string {
 
 func (*GlobalRoleBindingsValue) Type() string { return "issuer::subject::roles" }
 
+// Sentinel errors for group bindings. The two issuer-slot errors also name the
+// group-name cause, because right-anchored parsing shifts a "::" inside a group
+// name into the issuer slot. The parser cannot tell the two causes apart.
+var (
+	errMalformedGroupBinding = goerrors.New("want issuer::group::role[,role...]")
+	errGroupSentinelIssuer   = goerrors.New("group bindings are not valid on the UNI sentinel issuer: UNI-local tokens carry no groups claim")
+	errWildcardGroup         = goerrors.New("wildcard group not allowed; use a wildcard subject binding instead")
+	errEmptyGroup            = goerrors.New("empty group")
+	errGroupIssuerNotURL     = goerrors.New("issuer is not an absolute URL (or the group name contains \"::\", which is not supported)")
+	errGroupIssuerPathSep    = goerrors.New("issuer URL path contains \"::\" (or the group name contains \"::\", which is not supported)")
+)
+
+// GroupRoleBinding grants the global scopes of RoleIDs to a user-account subject
+// whose token from Issuer carries Group in that issuer's configured groups claim
+// (BearerTrustSpec.GroupsClaim). Matching is byte-exact: no case folding, no
+// trimming inside the name. Unlike wildcard subject bindings, group bindings are
+// NOT clamped to read.
+type GroupRoleBinding struct {
+	Issuer  string
+	Group   string
+	RoleIDs []string
+}
+
+// GlobalGroupRoleBindingsValue parses repeated issuer::group::role[,role...]
+// flags, one binding per flag occurrence, right-anchored like its sibling
+// GlobalRoleBindingsValue.
+type GlobalGroupRoleBindingsValue []GroupRoleBinding
+
+var _ pflag.Value = (*GlobalGroupRoleBindingsValue)(nil)
+
+func (v *GlobalGroupRoleBindingsValue) Set(value string) error {
+	bad := func(err error) error { return fmt.Errorf("invalid global group role binding %q: %w", value, err) }
+
+	last := strings.LastIndex(value, "::")
+	if last < 0 {
+		return bad(errMalformedGroupBinding)
+	}
+
+	prev := strings.LastIndex(value[:last], "::")
+	if prev < 0 {
+		return bad(errMalformedGroupBinding)
+	}
+
+	issuer, roleList := value[:prev], value[last+2:]
+	group := strings.TrimSpace(value[prev+2 : last])
+
+	if group == "" {
+		return bad(errEmptyGroup)
+	}
+
+	if group == WildcardSubject {
+		return bad(errWildcardGroup)
+	}
+
+	if err := validateGroupBindingIssuer(issuer); err != nil {
+		return bad(err)
+	}
+
+	roleIDs := strings.Split(roleList, ",")
+	for _, id := range roleIDs {
+		if id == "" || strings.ContainsFunc(id, unicode.IsSpace) {
+			return bad(errBadRoleID)
+		}
+	}
+
+	*v = append(*v, GroupRoleBinding{Issuer: issuer, Group: group, RoleIDs: roleIDs})
+
+	return nil
+}
+
+// validateGroupBindingIssuer rejects the UNI sentinel outright, because UNI-local
+// tokens carry no groups claim and a sentinel group binding is therefore dead
+// configuration. Every other issuer gets the same absolute-URL rules as subject
+// bindings, with error messages that also name the group-name-contains-"::"
+// cause.
+func validateGroupBindingIssuer(issuer string) error {
+	if issuer == idconstants.UNISentinel {
+		return errGroupSentinelIssuer
+	}
+
+	if strings.ContainsRune(issuer, ',') || strings.ContainsFunc(issuer, unicode.IsSpace) {
+		return errIssuerCommaOrSpace
+	}
+
+	u, err := url.Parse(issuer)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return errGroupIssuerNotURL
+	}
+
+	if strings.Contains(u.Path, "::") {
+		return errGroupIssuerPathSep
+	}
+
+	return nil
+}
+
+func (v *GlobalGroupRoleBindingsValue) String() string {
+	parts := make([]string, 0, len(*v))
+
+	for _, b := range *v {
+		parts = append(parts, b.Issuer+"::"+b.Group+"::"+strings.Join(b.RoleIDs, ","))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func (*GlobalGroupRoleBindingsValue) Type() string { return "issuer::group::roles" }
+
 // accumulateGlobalReadPermissions clamps wildcard bindings at authorization
 // time, because live Role CRDs can gain write scopes after the chart's
-// render-time guard has run. See pkg/rbac/README.md#global-role-bindings for
-// the two-layer rationale.
+// render-time guard has run. The clamp gives no protection for a principal
+// who also matches a group binding that grants the same endpoint. Group
+// bindings are not clamped, so that path grants the writes again. See
+// pkg/rbac/README.md#global-role-bindings for the two-layer rationale.
 func accumulateGlobalReadPermissions(acl *openapi.Acl, roleIDs []string, roles map[string]*unikornv1.Role) error {
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
@@ -212,6 +322,53 @@ func (r *RBAC) resolveGlobalRoleBindings(srcIss, subject string) []GlobalRoleBin
 		if strings.TrimSpace(b.Subject) == strings.TrimSpace(subject) {
 			out = append(out, b)
 		}
+	}
+
+	return out
+}
+
+// resolveGroupRoleBindings returns the group bindings that match the
+// authenticated issuer and whose Group appears byte-exact in the token's groups.
+// With flag-parsed configuration srcIss can never be the UNI sentinel in a
+// matching state, because flag parsing rejects sentinel issuers. Impersonated
+// principals carry the sentinel plus nil groups, so delegated hops fail closed on
+// the nil groups alone, even disregarding that gate.
+// TestImpersonatedPrincipalNeverMatchesGroupBindings constructs a
+// sentinel-issuer binding directly to isolate exactly that.
+func (r *RBAC) resolveGroupRoleBindings(srcIss string, groups []string) []GroupRoleBinding {
+	var out []GroupRoleBinding
+
+	for _, b := range r.groupBindings {
+		if b.Issuer != srcIss {
+			continue
+		}
+
+		if slices.Contains(groups, b.Group) {
+			out = append(out, b)
+		}
+	}
+
+	return out
+}
+
+// describeSubjectBindings renders matched subject bindings for the exercise
+// log. Each line gives the matched subject (or "*") and the roles it granted.
+func describeSubjectBindings(bindings []GlobalRoleBinding) []string {
+	out := make([]string, 0, len(bindings))
+
+	for _, b := range bindings {
+		out = append(out, "subject "+b.Subject+" -> "+strings.Join(b.RoleIDs, ","))
+	}
+
+	return out
+}
+
+// describeGroupBindings renders matched group bindings for the exercise log.
+func describeGroupBindings(bindings []GroupRoleBinding) []string {
+	out := make([]string, 0, len(bindings))
+
+	for _, b := range bindings {
+		out = append(out, "group "+b.Group+" -> "+strings.Join(b.RoleIDs, ","))
 	}
 
 	return out

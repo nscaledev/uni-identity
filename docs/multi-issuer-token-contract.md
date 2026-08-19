@@ -44,11 +44,18 @@ The validator checks the following claims on every incoming token from a bearer-
 | `exp` / `nbf` / `iat` | Standard temporal claims validated with the configured leeway. |
 | `https://unikorn-cloud.org/email` | Must be present and non-empty after normalization. |
 | `https://unikorn-cloud.org/email_verified` | Must be `true` unless `skipEmailVerification: true`. |
+| groups claim (the name is per-issuer configuration, e.g. `https://unikorn-cloud.org/groups`) | Optional, and read only when this issuer's `bearerTrust.groupsClaim` names it. The value must be a JSON array of strings when present, and the validator skips non-string entries one by one. A missing claim, a non-array value, or entry filtering that leaves nothing usable all degrade to "no groups". The claim never causes token rejection. |
 
 The email and email-verified claims use the `https://unikorn-cloud.org/` namespace because OIDC
 access tokens do not carry bare `email`/`email_verified` claims (those live on the ID token).
 Providers that surface email on access tokens using namespaced claims — as the UNI Auth0 post-login
 Action does — satisfy this requirement directly.
+
+The groups claim, unlike the claims above, has no fixed name. It is whichever claim the
+`OAuth2Provider`'s `bearerTrust.groupsClaim` names for that issuer, and that name must be a
+namespaced URI containing `://`. It is not a contract constant that every provider must emit under
+one identical key. An issuer with `groupsClaim` unset emits no groups as far as UNI is concerned, and
+no group-based global role binding can ever match its tokens.
 
 ## Email normalization
 
@@ -118,11 +125,18 @@ applies regardless of what the provider's JWKS endpoint advertises.
 
 ## The `--global-role-binding` contract
 
-Global privileges — platform administrators and any future issuer-wide grant — are all expressed
-through one mechanism: a **global role binding**, mapping an `(issuer, subject | "*")` pair to a
-set of role IDs. Implementation and full rationale live in
-[`pkg/rbac/README.md`](../pkg/rbac/README.md#global-role-bindings); this section states the
-operator-facing contract.
+Two mechanisms express global privileges — platform administrators and any future issuer-wide
+grant. Both are rooted in the same `(issuer, ...)` shape:
+
+- A **global role binding** maps an `(issuer, subject | "*")` pair to a set of role IDs.
+- A **global group role binding** maps an `(issuer, group)` pair to a set of role IDs, for any
+  subject whose token carries that group in the issuer's configured `groupsClaim` (above).
+
+This section states the operator-facing contract for the subject-keyed form. The group-keyed form's
+grammar, matching rules, and consequences are in
+[`pkg/rbac/README.md#group-bindings`](../pkg/rbac/README.md#group-bindings), and implementation and
+full rationale for both live in
+[`pkg/rbac/README.md`](../pkg/rbac/README.md#global-role-bindings).
 
 Bindings are registered with the repeated flag:
 
@@ -170,12 +184,19 @@ value and `globalRoleBindings` as one `--global-role-binding` flag per subject i
 
 ### Operator invariants
 
-`Options.Validate` logs two advisory startup warnings and never blocks boot: a bare (UNI-sentinel)
-`--platform-administrator-subjects` entry that should migrate to a `globalRoleBindings` entry,
-and a `--global-role-binding` issuer outside the currently trusted set — usually a stale or
-mistyped issuer that can never match a real token. Neither warning is a security control; the
-issuer-qualified runtime match in `processUserAccountACL` is. Their gating, the deliberately
-excluded legacy exchange issuer, and provider-list failure handling are documented in
+`Options.Validate` logs four advisory startup warnings and never blocks boot:
+
+- a bare (UNI-sentinel) `--platform-administrator-subjects` entry that should migrate to a
+  `globalRoleBindings` entry
+- a `--global-role-binding` issuer outside the currently trusted set (usually a stale or mistyped
+  issuer that can never match a real token)
+- a `--global-group-role-binding` issuer that is untrusted or has no `groupsClaim` configured
+- a trusted issuer whose non-empty `groupsClaim` is not a namespaced URI, a fault that otherwise
+  surfaces only as a 401 for every token from that issuer
+
+None of these warnings is a security control. The issuer-qualified runtime match in
+`processUserAccountACL` is the security control. Their gating, the deliberately excluded legacy
+exchange issuer, and provider-list failure handling are documented in
 [`pkg/rbac/README.md#global-role-bindings`](../pkg/rbac/README.md#global-role-bindings).
 
 Note the legacy-flag mirror copies the flag value verbatim: a flag issuer lacking Auth0's canonical

@@ -17,6 +17,7 @@ limitations under the License.
 package rbac_test
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -87,6 +88,51 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, 
 func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
 	t.Helper()
 
+	acl, err := aclOrErrForSubject(t, opts, subject, srcIss, orgIDs, nil, extraRoles...)
+
+	return mustACL(t, acl, err)
+}
+
+// getACLForSubjectWithGroups is getACLForSubject with control over both the
+// authz.OrgIds claim and the token's IdP groups, exercising group role binding
+// matching and its replace semantics without disturbing the subject-only callers
+// above.
+func getACLForSubjectWithGroups(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
+	t.Helper()
+
+	acl, err := aclOrErrForSubject(t, opts, subject, srcIss, orgIDs, groups, extraRoles...)
+
+	return mustACL(t, acl, err)
+}
+
+// mustACL fails the test if GetACL returned an error, otherwise returns the ACL.
+func mustACL(t *testing.T, acl *openapi.Acl, err error) *openapi.Acl {
+	t.Helper()
+
+	if err != nil {
+		t.Fatalf("GetACL: %v", err)
+	}
+
+	return acl
+}
+
+// aclOrErrForSubject is the common builder behind getACLForSubject and its
+// variants: it constructs a minimal RBAC environment and calls GetACL, returning
+// the error rather than failing the test so a caller can assert on an expected
+// error path — e.g. proving that membership resolution really ran against a fake
+// client with no organization fixtures when no binding matched.
+func aclOrErrForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
+	t.Helper()
+
+	return aclOrErrForSubjectWithContext(t.Context(), t, opts, subject, srcIss, orgIDs, groups, extraRoles...)
+}
+
+// aclOrErrForSubjectWithContext is aclOrErrForSubject with control over the base
+// context, used to inject a capturing logger through log.IntoContext without
+// disturbing the fixed-context callers above.
+func aclOrErrForSubjectWithContext(baseCtx context.Context, t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
+	t.Helper()
+
 	scheme, err := unikornv1.SchemeBuilder.Build()
 	if err != nil {
 		t.Fatal(err)
@@ -124,16 +170,12 @@ func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIs
 			},
 		},
 		SrcIss: srcIss,
+		Groups: groups,
 	}
 
-	ctx := authorization.NewContext(t.Context(), info)
+	ctx := authorization.NewContext(baseCtx, info)
 
-	acl, err := rbacClient.GetACL(ctx, "")
-	if err != nil {
-		t.Fatalf("GetACL: %v", err)
-	}
-
-	return acl
+	return rbacClient.GetACL(ctx, "")
 }
 
 // aclGrantsGlobalAdmin returns true if the ACL has any global endpoints (indicative of the
@@ -307,12 +349,12 @@ func TestOptionsValidateMigrationGate(t *testing.T) {
 	}
 
 	// a non-UNI trusted issuer exists AND a bare admin entry → report.
-	if err := opts.Validate([]string{"https://staff.auth0.com"}); err == nil {
+	if err := opts.Validate([]string{"https://staff.auth0.com"}, nil); err == nil {
 		t.Fatal("expected migration-gate error, got nil")
 	}
 
 	// no non-UNI issuer → fine.
-	if err := opts.Validate(nil); err != nil {
+	if err := opts.Validate(nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

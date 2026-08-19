@@ -152,8 +152,9 @@ platformAdministrators:
 # Subject "*" matches every subject from the issuer and is clamped to read.
 # Every other subject is matched case-sensitively, so it must be the
 # canonical lower-case form — the render fails on an upper-case letter.
-# Group membership never grants global scopes for user accounts; exact,
-# per-subject bindings here are the only route to global write authority.
+# UNI Group membership never grants global scopes for user accounts. Global
+# authority comes only from these bindings, from globalGroupRoleBindings
+# below, and from system-account mappings.
 # Full semantics: pkg/rbac/README.md#global-role-bindings.
 # Helm rejects invalid separators and wildcard bindings on roles that grant any
 # non-read global operation — platform-reader is the only role shipped below
@@ -169,6 +170,72 @@ globalRoleBindings: []
 #  - issuer: uni
 #    subjects: [alice@example.com, bob@example.com]
 #    roles: [platform-administrator]
+
+# Group role bindings grant the FULL global scopes of the named roles. They
+# apply to any user authenticated by `issuer` whose token carries `group` in
+# that issuer's groupsClaim (see the OAuth2Provider bearerTrust block). The
+# issuer must be a CRD-declared provider: the legacy auth0-exchange flags
+# cannot carry a groups claim.
+# Matching is byte-exact and case-sensitive, so copy the group name from the
+# IdP verbatim. Group names are NOT lower-cased, unlike subjects, and Title
+# Case is expected.
+# Replace, not additive: a group match REPLACES the member's organization and
+# project permissions for that session. Any match skips membership resolution
+# entirely. An organization admin placed in a bound group trades organization
+# write access for the bound role's global grants.
+# Cross-tenant reach: a global scope authorizes the operation in every
+# organization and project. That includes minting a passport scoped to an
+# organization where the subject is not a member.
+# Unlike wildcard subject bindings, these are NOT clamped to read. A
+# render-time guard rejects only roles that write the credential and trust
+# scopes (identity:users, identity:groups, identity:roles,
+# identity:serviceaccounts, identity:oauth2providers). Other write scopes are
+# allowed. No runtime clamp backs the guard. A role broadened out-of-band
+# elevates the whole group within one ACL-cache TTL. Bind only roles whose
+# scopes are themselves under change control.
+# Groups exist only on external bearer tokens, so `uni` is not a valid issuer
+# here, and these bindings act only on direct external bearer usage. A staff
+# member who signs in through the UNI interactive login holds a UNI-local
+# token with no groups and never matches a group binding, even when that login
+# federates through the same IdP.
+# Use these bindings only for issuers whose group namespace is
+# administratively controlled. No shipped role targets a narrow surface.
+# Define a purpose-built role under additionalRoles, scoped to what the group
+# needs, instead of binding a broad shipped role. A role's `protected: true`
+# is NOT checked at bind time. That flag guards only the UNI Group role-attach
+# API. See pkg/rbac/README.md#global-role-bindings.
+# The example below binds a purpose-built role that can edit customer quotas
+# and nothing else. It writes no credential scope, so the render-time guard
+# accepts it. Declare the role under additionalRoles, further below:
+#   support-quota-editor:
+#     description: Support quota editor
+#     protected: true
+#     scopes:
+#       global:
+#         identity:organizations: [read]
+#         identity:projects: [read]
+#         identity:quotas: [read,update]
+# Rollout ordering: the chart emits the flag only when this list is non-empty,
+# and older server binaries do not recognise it. Deploy a binary that
+# understands --global-group-role-binding before you enable bindings, and
+# clear this value before you revert the binary on rollback.
+# Downstream ACL caching: region, compute, kubernetes, reservation, and auth0
+# all cache ACLs. A consumer that fetches the ACL for each request has no
+# cache and needs no upgrade. No currently released consumer version keys its
+# ACL cache by token. They pin identity v1.17.8 (region), v1.17.1 (compute,
+# kubernetes, reservation),
+# or v1.15.0 (auth0), and all of those key by subject alone. Before you enable
+# any binding here, every one of those five services must run a build whose
+# identity middleware keys the ACL cache by token. Older middleware can serve
+# a subject's non-elevated token a cached group-elevated ACL until that entry
+# expires. No safe identity middleware version has shipped yet. Name the first
+# one here once it exists. The token-keyed cache costs one entry per
+# (token, scope) against acl-cache-size (default 65536), so token rotation is
+# a guaranteed cache miss. That cost is the accepted price of correctness.
+globalGroupRoleBindings: []
+#  - issuer: https://staff.example.auth0.com/
+#    group: Support Engineering
+#    roles: [support-quota-editor]
 
 # System accounts map X.509 Common Names to roles.
 systemAccounts:

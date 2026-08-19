@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
+
 	"github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
@@ -29,6 +31,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func TestGlobalRoleBindingsValueParse(t *testing.T) {
@@ -80,6 +84,68 @@ func TestGlobalRoleBindingsValueParse(t *testing.T) {
 		if err := v.Set(in); err == nil {
 			t.Fatalf("%q: expected error", in)
 		}
+	}
+}
+
+func TestGlobalGroupRoleBindingsValueSet(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		value   string
+		want    []rbac.GroupRoleBinding
+		wantErr bool
+	}{
+		{name: "valid", value: "https://staff.example.com/::Platform Engineering::role-a,role-b",
+			want: []rbac.GroupRoleBinding{{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"role-a", "role-b"}}}},
+		{name: "surrounding whitespace trimmed", value: "https://staff.example.com/:: SRE ::role-a",
+			want: []rbac.GroupRoleBinding{{Issuer: "https://staff.example.com/", Group: "SRE", RoleIDs: []string{"role-a"}}}},
+		{name: "uni sentinel rejected", value: "uni::SRE::role-a", wantErr: true},
+		{name: "wildcard group rejected", value: "https://staff.example.com/::*::role-a", wantErr: true},
+		{name: "empty group rejected", value: "https://staff.example.com/::::role-a", wantErr: true},
+		{name: "empty issuer rejected", value: "::SRE::role-a", wantErr: true},
+		{name: "group with :: shifts into issuer and fails (path issuer)", value: "https://staff.example.com/::my::group::role-a", wantErr: true},
+		{name: "group with :: shifts into issuer and fails (pathless issuer)", value: "https://staff.example.com::my::group::role-a", wantErr: true},
+		{name: "malformed", value: "no-separators", wantErr: true},
+		{name: "empty role", value: "https://staff.example.com/::SRE::", wantErr: true},
+		{name: "role with whitespace", value: "https://staff.example.com/::SRE::role a", wantErr: true},
+		{name: "issuer with whitespace rejected", value: "not a url::SRE::role-a", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var v rbac.GlobalGroupRoleBindingsValue
+
+			err := v.Set(tc.value)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("%q: expected error", tc.value)
+				}
+
+				if strings.Contains(tc.name, "shifts into issuer") && !strings.Contains(err.Error(), "group name contains") {
+					t.Fatalf("%q: error %q does not mention the group-name possibility", tc.value, err.Error())
+				}
+
+				// Pin the specific rejection reason that
+				// validateGroupBindingIssuer returns for an empty issuer, not
+				// merely that some error fired.
+				if tc.name == "empty issuer rejected" && !strings.Contains(err.Error(), "issuer is not an absolute URL") {
+					t.Fatalf("%q: error %q does not report the empty-issuer-is-not-a-URL reason", tc.value, err.Error())
+				}
+
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("%q: %v", tc.value, err)
+			}
+
+			if !reflect.DeepEqual([]rbac.GroupRoleBinding(v), tc.want) {
+				t.Fatalf("%q: got %+v, want %+v", tc.value, v, tc.want)
+			}
+		})
 	}
 }
 
@@ -216,7 +282,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	err := untrusted.Validate([]string{trustedIssuer})
+	err := untrusted.Validate([]string{trustedIssuer}, nil)
 	if err == nil {
 		t.Fatal("expected untrusted-binding-issuer error, got nil")
 	}
@@ -232,7 +298,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	if err := trusted.Validate([]string{trustedIssuer}); err != nil {
+	if err := trusted.Validate([]string{trustedIssuer}, nil); err != nil {
 		t.Fatalf("unexpected error for trusted issuer: %v", err)
 	}
 
@@ -244,7 +310,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	if err := sentinel.Validate(nil); err != nil {
+	if err := sentinel.Validate(nil, nil); err != nil {
 		t.Fatalf("unexpected error for UNI sentinel issuer: %v", err)
 	}
 
@@ -259,7 +325,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	err = both.Validate([]string{trustedIssuer})
+	err = both.Validate([]string{trustedIssuer}, nil)
 	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
 		t.Fatalf("got %v, want ErrBareAdminSubject also reported", err)
 	}
@@ -277,7 +343,7 @@ func TestOptionsValidateGlobalRoleBindingIssuer(t *testing.T) {
 		},
 	}
 
-	err = emptyTrustedList.Validate(nil)
+	err = emptyTrustedList.Validate(nil, nil)
 	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
 		t.Fatalf("got %v, want ErrUntrustedBindingIssuer even with an empty trusted-issuer list", err)
 	}
@@ -296,13 +362,188 @@ func TestOptionsValidateReportsEveryOffender(t *testing.T) {
 		},
 	}
 
-	err := opts.Validate([]string{"https://staff.example.com/"})
+	err := opts.Validate([]string{"https://staff.example.com/"}, nil)
 	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
 		t.Fatalf("got %v, want ErrUntrustedBindingIssuer", err)
 	}
 
 	if !strings.Contains(err.Error(), "untrusted-a.example.com") || !strings.Contains(err.Error(), "untrusted-b.example.com") {
 		t.Fatalf("expected both offending issuers named in error, got: %v", err)
+	}
+}
+
+// TestOptionsValidateGroupBindingOutcomes covers the three outcomes of the
+// GlobalGroupRoleBindings loop in Options.Validate:
+//
+//  1. An issuer absent from groupsClaimByIssuer and untrusted reports
+//     ErrUntrustedBindingIssuer.
+//  2. An issuer present in the map with an empty groupsClaim — the shape of the
+//     synthetic legacy auth0-exchange provider — reports the dead-binding error
+//     ErrGroupBindingNoGroupsClaim instead, never the untrusted error.
+//  3. An issuer present with a configured claim reports nothing.
+//
+// Validate must check map membership before the trusted-issuers fallback, or it
+// misreports the second case as untrusted.
+func TestOptionsValidateGroupBindingOutcomes(t *testing.T) {
+	t.Parallel()
+
+	const (
+		unknownIssuer = "https://unknown.example.com/"
+		deadIssuer    = "https://auth0-legacy.example.com/"
+		liveIssuer    = "https://staff.example.com/"
+	)
+
+	groupsClaimByIssuer := map[string]string{
+		deadIssuer: "",
+		liveIssuer: "https://unikorn-cloud.org/groups",
+	}
+
+	// Issuer absent from the map, and untrusted → ErrUntrustedBindingIssuer.
+	untrusted := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: unknownIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	err := untrusted.Validate(nil, groupsClaimByIssuer)
+	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, want ErrUntrustedBindingIssuer", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrGroupBindingNoGroupsClaim) {
+		t.Fatalf("got %v, unexpectedly ErrGroupBindingNoGroupsClaim", err)
+	}
+
+	// Issuer present in the map with an empty groupsClaim →
+	// ErrGroupBindingNoGroupsClaim, and NOT ErrUntrustedBindingIssuer, even
+	// though deadIssuer is not in any trusted-issuers list.
+	dead := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: deadIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	err = dead.Validate(nil, groupsClaimByIssuer)
+	if !goerrors.Is(err, rbac.ErrGroupBindingNoGroupsClaim) {
+		t.Fatalf("got %v, want ErrGroupBindingNoGroupsClaim", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, unexpectedly ErrUntrustedBindingIssuer", err)
+	}
+
+	// Issuer present in the map with a configured claim → no error.
+	live := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: liveIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	if err := live.Validate(nil, groupsClaimByIssuer); err != nil {
+		t.Fatalf("unexpected error for issuer with a configured groupsClaim: %v", err)
+	}
+}
+
+// TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly covers the
+// nil-versus-empty-map contract documented on Options.Validate: a nil map means
+// "the claims lookup failed" and must skip the GlobalGroupRoleBindings advisory
+// entirely, while a non-nil empty map means "no issuers configured" and runs it.
+//
+// The fixture's group binding issuer is absent from trustedNonUNIIssuers, so the
+// empty-map case reports it as untrusted and the nil case must report neither
+// that nor the dead-binding error. The fixture also carries a bare admin subject,
+// so both cases show the unrelated, ungated checks running identically.
+func TestOptionsValidateNilGroupsClaimByIssuerSkipsGroupCheckOnly(t *testing.T) {
+	t.Parallel()
+
+	const (
+		trustedIssuer = "https://staff.example.com/"
+		groupIssuer   = "https://untrusted.example.com/"
+	)
+
+	opts := &rbac.Options{
+		PlatformAdministratorSubjects: []rbac.PlatformAdministratorSubject{
+			{Issuer: constants.UNISentinel, Subject: "bare@nscale.com"},
+		},
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: groupIssuer, Group: "staff", RoleIDs: []string{"r"}},
+		},
+	}
+
+	// A nil groupsClaimByIssuer ("the claims lookup failed") skips the
+	// GlobalGroupRoleBindings check entirely: neither ErrGroupBindingNoGroupsClaim
+	// nor ErrUntrustedBindingIssuer is reported for groupIssuer, even though it is
+	// not in trustedNonUNIIssuers. The bare-admin check is ungated and still runs.
+	err := opts.Validate([]string{trustedIssuer}, nil)
+	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
+		t.Fatalf("got %v, want ErrBareAdminSubject reported even when the group check is skipped", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrGroupBindingNoGroupsClaim) {
+		t.Fatalf("got %v, unexpectedly ErrGroupBindingNoGroupsClaim with a nil groupsClaimByIssuer", err)
+	}
+
+	if goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, unexpectedly ErrUntrustedBindingIssuer with a nil groupsClaimByIssuer", err)
+	}
+
+	// A non-nil empty map ("no issuers configured") runs the check: groupIssuer is
+	// absent from the map and not in trustedNonUNIIssuers, so Validate DOES report
+	// it as untrusted. That contrast proves the nil case above is a real skip, not
+	// an incidental non-match.
+	err = opts.Validate([]string{trustedIssuer}, map[string]string{})
+	if !goerrors.Is(err, rbac.ErrBareAdminSubject) {
+		t.Fatalf("got %v, want ErrBareAdminSubject still reported with a non-nil empty groupsClaimByIssuer", err)
+	}
+
+	if !goerrors.Is(err, rbac.ErrUntrustedBindingIssuer) {
+		t.Fatalf("got %v, want ErrUntrustedBindingIssuer reported with a non-nil empty groupsClaimByIssuer", err)
+	}
+}
+
+// TestOptionsValidateMalformedGroupsClaim covers the malformed-claim advisory.
+// Each issuer in groupsClaimByIssuer whose non-empty claim lacks "://" reports
+// ErrMalformedGroupsClaim, with no binding required. Validator construction
+// rejects such a claim at first token dispatch, so the fault otherwise rejects
+// every token from that issuer even when no binding references it. An empty
+// claim and a namespaced URI stay silent. The advisory text is key-sorted, so
+// it is identical on each boot. A nil map skips the check, the same as the
+// other map-fed advisories.
+func TestOptionsValidateMalformedGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{}
+
+	// No binding configured anywhere: the check must still fire for both
+	// malformed issuers, and stay silent for the empty and well-formed claims.
+	groupsClaimByIssuer := map[string]string{
+		"https://b.example.com/": "groups",
+		"https://a.example.com/": "roles",
+		"https://c.example.com/": "",
+		"https://d.example.com/": "https://unikorn-cloud.org/groups",
+	}
+
+	err := opts.Validate(nil, groupsClaimByIssuer)
+	if !goerrors.Is(err, rbac.ErrMalformedGroupsClaim) {
+		t.Fatalf("got %v, want ErrMalformedGroupsClaim with no binding configured", err)
+	}
+
+	if !strings.Contains(err.Error(), "https://a.example.com/") || !strings.Contains(err.Error(), "https://b.example.com/") {
+		t.Fatalf("expected both malformed issuers named, got: %v", err)
+	}
+
+	if strings.Contains(err.Error(), "https://c.example.com/") || strings.Contains(err.Error(), "https://d.example.com/") {
+		t.Fatalf("empty and namespaced-URI claims must stay silent, got: %v", err)
+	}
+
+	// Sorted keys make the joined text deterministic: a must precede b.
+	if strings.Index(err.Error(), "https://a.example.com/") > strings.Index(err.Error(), "https://b.example.com/") {
+		t.Fatalf("expected key-sorted advisory text, got: %v", err)
+	}
+
+	// A nil map ("the claims lookup failed") skips this check too.
+	if err := opts.Validate(nil, nil); err != nil {
+		t.Fatalf("got %v, want no error with a nil groupsClaimByIssuer", err)
 	}
 }
 
@@ -398,7 +639,7 @@ func TestWildcardClampAndMultiBindingUnion(t *testing.T) {
 		t.Fatalf("exact contribution missing full verbs: %+v", byName)
 	}
 
-	// Direct same-role comparison (spec §5 "Tests"): binding the SAME role
+	// Direct same-role comparison: binding the SAME role
 	// (crud-role) exactly, rather than via wildcard, must yield its full
 	// operation set — contrasted directly against the wildcard-bound
 	// "anyone@x.com" case above, which got only read on this same endpoint.
@@ -470,5 +711,337 @@ func TestBoundSubjectSkipsMembershipResolution(t *testing.T) {
 				t.Fatalf("expected global-only ACL, got %+v", acl)
 			}
 		})
+	}
+}
+
+// TestGroupRoleBindingGrantsFullScopesNoClamp covers the core property of group
+// bindings: unlike a wildcard subject binding, a matched group binding is NOT
+// clamped to read. Asserting that a write operation (Create, Update, Delete)
+// survives is what separates this from the wildcard-clamp behaviour.
+func TestGroupRoleBindingGrantsFullScopesNoClamp(t *testing.T) {
+	t.Parallel()
+
+	roleA := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "role-a"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"role-a"}},
+		},
+	}
+
+	acl := getACLForSubjectWithGroups(t, opts, "anyone@x.com", "https://staff.example.com/", nil, []string{"Platform Engineering"}, roleA)
+
+	if acl.Global == nil {
+		t.Fatal("group binding granted nothing")
+	}
+
+	want := openapi.AclEndpoints{{Name: "identity:organizations", Operations: []openapi.AclOperation{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}}}
+	if !reflect.DeepEqual(*acl.Global, want) {
+		t.Fatalf("group binding grant was clamped or otherwise wrong: got %+v, want %+v", *acl.Global, want)
+	}
+}
+
+// TestGroupRoleBindingCaseMismatchDoesNotMatch pins byte-exact matching. There
+// is no case folding, and no trimming inside the name.
+func TestGroupRoleBindingCaseMismatchDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"admin"}},
+		},
+	}
+
+	acl := getACLForSubjectWithGroups(t, opts, "anyone@x.com", "https://staff.example.com/", nil, []string{"platform engineering"})
+
+	if acl.Global != nil {
+		t.Fatalf("case-mismatched group unexpectedly matched: %+v", acl.Global)
+	}
+}
+
+// TestGroupRoleBindingWrongIssuerDoesNotMatch pins that group binding matching
+// is issuer-qualified, like subject binding matching.
+func TestGroupRoleBindingWrongIssuerDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"admin"}},
+		},
+	}
+
+	acl := getACLForSubjectWithGroups(t, opts, "anyone@x.com", "https://other.example.com/", nil, []string{"Platform Engineering"})
+
+	if acl.Global != nil {
+		t.Fatalf("wrong-issuer group binding unexpectedly matched: %+v", acl.Global)
+	}
+}
+
+// TestUnmatchedGroupsFallsThroughToMembershipResolution pins that replace
+// semantics do not fire when no group binding matches (a case mismatch here) and
+// that membership resolution proceeds as normal. The fake client has no
+// Organization fixture for "some-org", so the non-replace path's organization
+// lookup fails deterministically on that missing fixture. That failure is the
+// proof: had the implementation treated this as a match, GetACL would return a
+// global-only ACL with no error.
+func TestUnmatchedGroupsFallsThroughToMembershipResolution(t *testing.T) {
+	t.Parallel()
+
+	opts := &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: "https://staff.example.com/", Group: "Platform Engineering", RoleIDs: []string{"admin"}},
+		},
+	}
+
+	_, err := aclOrErrForSubject(t, opts, "anyone@x.com", "https://staff.example.com/", []string{"some-org"}, []string{"platform engineering"})
+	if err == nil {
+		t.Fatal("expected organization-lookup error proving membership resolution ran (unmatched group incorrectly treated as bound?)")
+	}
+}
+
+// TestSubjectAndGroupBindingsCombineInOneReplace proves that the clamped
+// accumulator (wildcard-subject) and the unclamped accumulators (exact-subject,
+// group) combine correctly on a single principal inside one replace-semantics
+// block. An exact subject binding, a wildcard subject binding, and a group binding
+// all match, replace semantics skip the org memberships present in the claim, and
+// each leg still keeps its own clamp behaviour inside the union.
+func TestSubjectAndGroupBindingsCombineInOneReplace(t *testing.T) {
+	t.Parallel()
+
+	wildcardRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "wildcard-role"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	exactRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "exact-role"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read}},
+				},
+			},
+		},
+	}
+
+	groupRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "group-role"},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:users", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	const (
+		issuer  = "https://staff.example.com/"
+		subject = "boss@x.com"
+		group   = "Platform Engineering"
+	)
+
+	opts := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: issuer, Subject: "*", RoleIDs: []string{"wildcard-role"}, Wildcard: true},
+			{Issuer: issuer, Subject: subject, RoleIDs: []string{"exact-role"}},
+		},
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: issuer, Group: group, RoleIDs: []string{"group-role"}},
+		},
+	}
+
+	// The claim carries org memberships, but the fake client has no Organization
+	// fixture: an accidental additive implementation would attempt membership
+	// resolution and error on the missing organization instead of returning the
+	// global-only union asserted below.
+	acl := getACLForSubjectWithGroups(t, opts, subject, issuer, []string{"some-org"}, []string{group}, wildcardRole, exactRole, groupRole)
+
+	if acl.Organizations != nil || acl.Organization != nil {
+		t.Fatalf("replace semantics violated: membership resolution ran: %+v", acl)
+	}
+
+	if acl.Global == nil {
+		t.Fatal("no global ACL granted")
+	}
+
+	byName := map[string][]openapi.AclOperation{}
+	for _, e := range *acl.Global {
+		byName[e.Name] = e.Operations
+	}
+
+	// Wildcard leg: clamped to read.
+	if !reflect.DeepEqual(byName["identity:organizations"], []openapi.AclOperation{openapi.Read}) {
+		t.Fatalf("wildcard leg not clamped: %+v", byName)
+	}
+
+	// Exact subject leg: full verbs, unclamped.
+	if len(byName["identity:groups"]) != 2 {
+		t.Fatalf("exact subject leg missing full verbs: %+v", byName)
+	}
+
+	// Group leg: full verbs including a write operation, unclamped. This is the
+	// property under test.
+	want := []openapi.AclOperation{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}
+	if !reflect.DeepEqual(byName["identity:users"], want) {
+		t.Fatalf("group leg not full/unclamped: got %+v, want %+v", byName["identity:users"], want)
+	}
+}
+
+// TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched pins that the
+// unmatched-groups diagnostic fires whenever the token carried groups and none of
+// them matched, even when a SUBJECT binding matched and accumulateMatchedBindings
+// returns early with a global ACL. Without the hoisted check, an operator adding a
+// group binding for someone who already has an exact subject binding would get a
+// silently missing grant and no diagnostic at all. The Info line carries only
+// the count. The group names sit on a separate V(1) line, because IdP group
+// names often carry team or clearance information.
+func TestUnmatchedGroupsLoggedEvenWhenSubjectBindingMatched(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer  = "https://staff.example.com/"
+		subject = "boss@x.com"
+	)
+
+	opts := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: issuer, Subject: subject, RoleIDs: []string{"admin"}},
+		},
+		// No matching GlobalGroupRoleBindings entry for "unmapped-group".
+	}
+
+	var lines []string
+
+	logger := funcr.New(func(_, args string) { lines = append(lines, args) }, funcr.Options{Verbosity: 1})
+	ctx := log.IntoContext(t.Context(), logger)
+
+	acl, err := aclOrErrForSubjectWithContext(ctx, t, opts, subject, issuer, nil, []string{"unmapped-group"})
+	if err != nil {
+		t.Fatalf("GetACL: %v", err)
+	}
+
+	// The subject binding still granted its ACL. The diagnostic is additive, not
+	// a substitute for the grant.
+	if acl.Global == nil {
+		t.Fatal("matched subject binding granted no global ACL")
+	}
+
+	infoLine := firstLineContaining(lines, "token groups matched no global group role binding")
+	if infoLine == "" {
+		t.Fatal("expected unmatched-groups diagnostic even though a subject binding matched")
+	}
+
+	if !strings.Contains(infoLine, "groupCount") {
+		t.Fatalf("unmatched-groups Info line missing the count: %q", infoLine)
+	}
+
+	if strings.Contains(infoLine, "unmapped-group") {
+		t.Fatalf("group names must not appear on the Info line: %q", infoLine)
+	}
+
+	namesLine := firstLineContaining(lines, "unmatched token groups")
+	if namesLine == "" {
+		t.Fatal("expected the group names on a V(1) line")
+	}
+
+	if !strings.Contains(namesLine, "unmapped-group") {
+		t.Fatalf("V(1) line missing the group names: %q", namesLine)
+	}
+}
+
+func firstLineContaining(lines []string, substr string) string {
+	for _, l := range lines {
+		if strings.Contains(l, substr) {
+			return l
+		}
+	}
+
+	return ""
+}
+
+// TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail pins the content of the
+// "global role bindings matched" log line that accumulateMatchedBindings emits.
+// The line samples binding exercise during ACL computation. Per-request
+// records come from the audit middleware. The line must carry the subject, the
+// issuer, the matched binding identities, the role IDs each one granted, and
+// the count of organization memberships replace semantics skipped.
+//
+// The fixture matches both a subject binding and a group binding on the same
+// principal, exercising describeSubjectBindings and describeGroupBindings, and
+// supplies a non-empty authz.OrgIds so the skipped count is a real number rather
+// than a vacuous zero.
+func TestGlobalRoleBindingsMatchedLogRecordsExerciseDetail(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer  = "https://staff.example.com/"
+		subject = "boss@x.com"
+		group   = "Platform Engineering"
+	)
+
+	opts := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: issuer, Subject: subject, RoleIDs: []string{"admin"}},
+		},
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: issuer, Group: group, RoleIDs: []string{"admin"}},
+		},
+	}
+
+	var lines []string
+
+	logger := funcr.New(func(_, args string) { lines = append(lines, args) }, funcr.Options{})
+	ctx := log.IntoContext(t.Context(), logger)
+
+	acl, err := aclOrErrForSubjectWithContext(ctx, t, opts, subject, issuer, []string{"org-a", "org-b"}, []string{group})
+	if err != nil {
+		t.Fatalf("GetACL: %v", err)
+	}
+
+	// The exercise log is additive. It is not a substitute for the grant.
+	if acl.Global == nil {
+		t.Fatal("matched bindings granted no global ACL")
+	}
+
+	var found bool
+
+	for _, l := range lines {
+		if !strings.Contains(l, "global role bindings matched") {
+			continue
+		}
+
+		found = true
+
+		for _, want := range []string{
+			subject,
+			issuer,
+			"subject " + subject + " -> admin", // describeSubjectBindings
+			"group " + group + " -> admin",     // describeGroupBindings
+			"organizationMembershipsSkipped\"=2",
+		} {
+			if !strings.Contains(l, want) {
+				t.Fatalf("exercise log missing %q: %q", want, l)
+			}
+		}
+	}
+
+	if !found {
+		t.Fatal("expected a \"global role bindings matched\" exercise log line")
 	}
 }

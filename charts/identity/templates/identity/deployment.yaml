@@ -142,6 +142,68 @@ spec:
         - {{ printf "--global-role-binding=%s::%s::%s" $b.issuer $subject (join "," $roles) | quote }}
           {{- end }}
         {{- end }}
+        {{- range $i, $b := .Values.globalGroupRoleBindings }}
+          {{- if not (trim (default "" $b.issuer)) }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: issuer is required" $i) }}
+          {{- end }}
+          {{- if regexMatch "\\s" $b.issuer }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: issuer must not contain whitespace" $i) }}
+          {{- end }}
+          {{- if contains "::" $b.issuer }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: issuer must not contain \"::\"" $i) }}
+          {{- end }}
+          {{- if eq $b.issuer "uni" }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: the uni sentinel issuer cannot carry groups" $i) }}
+          {{- end }}
+          {{- $group := trim (default "" $b.group) }}
+          {{- if not $group }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: group is required" $i) }}
+          {{- end }}
+          {{- if eq $group "*" }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: wildcard group not allowed; use a wildcard subject binding" $i) }}
+          {{- end }}
+          {{- if contains "::" $group }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: group must not contain \"::\"" $i) }}
+          {{- end }}
+          {{- if regexMatch "[\t\n\r]" $group }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: group must not contain control whitespace" $i) }}
+          {{- end }}
+          {{- if not $b.roles }}
+            {{- fail (printf "globalGroupRoleBindings[%d]: roles must be non-empty" $i) }}
+          {{- end }}
+          {{- $allRoles := merge (dict) (default (dict) $.Values.roles) (default (dict) $.Values.additionalRoles) }}
+          {{- $roles := list }}
+          {{- range $b.roles }}
+            {{- if not (hasKey $allRoles .) }}
+              {{- fail (printf "globalGroupRoleBindings[%d]: unknown role %q" $i .) }}
+            {{- end }}
+            {{- $roles = append $roles (include "resource.id" .) }}
+          {{- end }}
+          {{- /*
+          Render-time guard: a group binding must not carry write on the
+          credential and trust scopes. A write there mints credentials or
+          edits issuer trust. That converts a settings grant into an
+          identity grant. Other write scopes stay allowed, unlike the
+          wildcard guard above. No runtime read clamp applies.
+          */}}
+          {{- $credentialScopes := list "identity:users" "identity:groups" "identity:roles" "identity:serviceaccounts" "identity:oauth2providers" }}
+          {{- range $b.roles }}
+            {{- $roleName := . }}
+            {{- $role := index $allRoles $roleName }}
+            {{- $roleScopes := default (dict) $role.scopes }}
+            {{- $globalScopes := default (dict) $roleScopes.global }}
+            {{- range $scopeName, $ops := $globalScopes }}
+              {{- if has $scopeName $credentialScopes }}
+                {{- range $ops }}
+                  {{- if ne . "read" }}
+                    {{- fail (printf "globalGroupRoleBindings[%d]: role %q grants non-read operation %q on credential scope %q" $i $roleName . $scopeName) }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+          {{- end }}
+        - {{ printf "--global-group-role-binding=%s::%s::%s" $b.issuer $group (join "," $roles) | quote }}
+        {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}

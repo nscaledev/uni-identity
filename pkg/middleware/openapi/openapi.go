@@ -20,6 +20,7 @@ package openapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	goerrors "errors"
@@ -183,6 +184,25 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // length-prefixed, since subjects such as Auth0's "auth0|<id>" contain the "|"
 // delimiter and could otherwise be crafted to collide with another identity's
 // key. scope needs no prefix: it is terminal, so the key stays injective.
+//
+// The key also carries a digest of the presented token, immediately before the
+// terminal scope segment. The ACL is a function of the presented token plus
+// cluster state, not only of (sub, srcIss), so two live tokens for the same
+// subject can resolve to different ACLs and must never share a cache entry.
+// Keying by token is strictly finer than keying by subject, so it can only
+// under-share an entry, never over-share one. The key carries a digest rather
+// than the raw token, because cache keys live in a large LRU in every
+// downstream service and must not themselves be credential material. The mTLS
+// system-account path leaves info.Token empty, so every system-account request
+// gets the same constant digest. That is harmless: system-account ACLs do not
+// depend on token content.
+//
+// The digest/scope boundary needs no adversarial collision argument, unlike sub
+// and srcIss. sha256.Sum256 output, base64.RawStdEncoding-encoded, is always
+// exactly 43 bytes drawn from an alphabet that never contains "|", so no scope
+// value can borrow space from the digest segment or be mistaken for it. The
+// boundary is safe by construction, not merely by the length-prefix convention
+// that protects the variable-length sub and srcIss segments.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
 	scope := organizationID
 	if scope == "" {
@@ -199,16 +219,24 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
-		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%s",
+		sum := sha256.Sum256([]byte(info.Token))
+		tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
+
+		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%d:%s|%s",
 			len(info.Userinfo.Sub), info.Userinfo.Sub,
 			len(info.SrcIss), info.SrcIss,
 			len(p.Actor), p.Actor,
+			len(tokenDigest), tokenDigest,
 			scope), nil
 	}
 
-	return fmt.Sprintf("direct|%d:%s|%d:%s|%s",
+	sum := sha256.Sum256([]byte(info.Token))
+	tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
+
+	return fmt.Sprintf("direct|%d:%s|%d:%s|%d:%s|%s",
 		len(info.Userinfo.Sub), info.Userinfo.Sub,
 		len(info.SrcIss), info.SrcIss,
+		len(tokenDigest), tokenDigest,
 		scope), nil
 }
 

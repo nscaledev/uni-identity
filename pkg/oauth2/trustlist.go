@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/cache"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // auth0LegacyProviderName is the synthetic provider name used for the
@@ -65,8 +67,16 @@ type validatorCacheEntry struct {
 	fingerprint string
 }
 
-// bearerTrustProviders returns the subset of items that have BearerTrust set,
-// plus a synthetic auth0-legacy entry when Auth0ExchangeIssuer is configured.
+// bearerTrustProviders returns the items that have BearerTrust set, sorted by
+// name. When Auth0ExchangeIssuer is configured, it appends a synthetic
+// auth0-legacy entry, always last. The sort makes first-match resolution
+// deterministic when two providers declare the same issuer: the cache-backed
+// List order is not stable across calls, so without the sort the effective
+// winner could change on each request. The sort also makes an intermittent
+// fault permanent. When one of two same-issuer providers is broken, the
+// issuer now fails or works consistently, and it stays dead if the broken
+// provider sorts first. This is deliberate: a stable hard failure plus the
+// duplicate-skip boot log is better than an intermittent one.
 // The synthetic entry's BearerTrust sets RequireAuthzClaim=true to preserve
 // the prior unconditional authz-claim enforcement of the legacy --auth0-exchange-*
 // path; SkipEmailVerification stays false (safe default).
@@ -78,6 +88,8 @@ func (a *Authenticator) bearerTrustProviders(items []unikornv1.OAuth2Provider) [
 			candidates = append(candidates, items[i])
 		}
 	}
+
+	slices.SortFunc(candidates, func(a, b unikornv1.OAuth2Provider) int { return strings.Compare(a.Name, b.Name) })
 
 	if a.options.Auth0ExchangeIssuer != "" {
 		// Issuer is used verbatim; a malformed value just never matches a token's
@@ -103,19 +115,25 @@ func (a *Authenticator) bearerTrustProviders(items []unikornv1.OAuth2Provider) [
 }
 
 // validatorFingerprint produces a deterministic string that uniquely identifies
-// the effective validator configuration for a provider. When the fingerprint
-// changes a cached validator is discarded and rebuilt.
-func validatorFingerprint(rawIss, audience string, signingAlgorithms []string, skipEmail, requireAuthz bool) string {
+// the effective validator configuration for a provider, including groupsClaim.
+// When the fingerprint changes, the cache discards the validator and rebuilds
+// it.
+func validatorFingerprint(rawIss, audience string, signingAlgorithms []string, skipEmail, requireAuthz bool, groupsClaim string) string {
 	algs := make([]string, len(signingAlgorithms))
 	copy(algs, signingAlgorithms)
 	sort.Strings(algs)
 
+	// groupsClaim is joined unprefixed, like rawIss and audience above. Nothing
+	// keeps "|" out of the claim name, so a name containing it could in theory
+	// collide with a different configuration. The worst case is a spurious
+	// cache rebuild, not a security issue.
 	return strings.Join([]string{
 		rawIss,
 		audience,
 		strings.Join(algs, ","),
 		strconv.FormatBool(skipEmail),
 		strconv.FormatBool(requireAuthz),
+		groupsClaim,
 	}, "|")
 }
 
@@ -134,6 +152,7 @@ func (a *Authenticator) cachedValidator(p *unikornv1.OAuth2Provider) (*auth0.Val
 		p.Spec.BearerTrust.SigningAlgorithms,
 		p.Spec.BearerTrust.SkipEmailVerification,
 		p.Spec.BearerTrust.RequireAuthzClaim,
+		p.Spec.BearerTrust.GroupsClaim,
 	)
 
 	if raw, ok := a.validatorCache.Get(p.Name); ok {
@@ -150,6 +169,7 @@ func (a *Authenticator) cachedValidator(p *unikornv1.OAuth2Provider) (*auth0.Val
 		SupportedSigningAlgorithms: p.Spec.BearerTrust.SigningAlgorithms,
 		SkipEmailVerification:      p.Spec.BearerTrust.SkipEmailVerification,
 		RequireAuthzClaim:          p.Spec.BearerTrust.RequireAuthzClaim,
+		GroupsClaim:                p.Spec.BearerTrust.GroupsClaim,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to build validator for provider %q: %w", p.Name, err)
@@ -211,6 +231,41 @@ func (a *Authenticator) validatorForIssuer(ctx context.Context, rawIss string) (
 	}
 
 	return nil, ErrUnknownIssuer
+}
+
+// GroupsClaimByIssuer returns the effective groupsClaim for every trusted
+// bearer issuer, resolved first-match exactly like validatorForIssuer. The map
+// includes the synthetic legacy auth0-exchange provider. That provider comes
+// from flags, carries no claim, and is always the last candidate, so its
+// issuer maps to "" unless a CRD provider declares the same issuer and
+// supplies the claim. The map ignores the audience. validatorForIssuer also
+// rejects a winner whose audience is empty, and this map does not show that
+// failure. The rbac Options.Validate advisory consumes this map.
+func (a *Authenticator) GroupsClaimByIssuer(ctx context.Context) (map[string]string, error) {
+	var providers unikornv1.OAuth2ProviderList
+
+	if err := a.client.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrCacheNotReady, err)
+	}
+
+	out := map[string]string{}
+
+	for _, p := range a.bearerTrustProviders(providers.Items) {
+		if _, ok := out[p.Spec.Issuer]; ok {
+			// First-match wins, the same as in validatorForIssuer. The
+			// candidates are name-sorted, so the winner is the first provider
+			// by name. This function serves the boot advisory path, so the
+			// log line fires once for each boot.
+			log.FromContext(ctx).Info("duplicate issuer among bearer trust providers, skipping later candidate",
+				"issuer", p.Spec.Issuer, "skippedProvider", p.Name)
+
+			continue
+		}
+
+		out[p.Spec.Issuer] = p.Spec.BearerTrust.GroupsClaim
+	}
+
+	return out, nil
 }
 
 // newValidatorCache creates an LRU cache for built validators. size is

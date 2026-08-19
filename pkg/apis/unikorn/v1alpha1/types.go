@@ -162,6 +162,19 @@ type BearerTrustSpec struct {
 	// [RS256]. Only asymmetric algorithms are allowed; none/HMAC are rejected
 	// at trust-list build time.
 	SigningAlgorithms []string `json:"signingAlgorithms,omitempty"`
+	// GroupsClaim names the access-token claim that carries the IdP group
+	// names for this issuer, e.g. "https://unikorn-cloud.org/groups". The
+	// claim value must be a JSON array of strings, and the validator skips
+	// non-string entries. Empty means this issuer emits no groups, so
+	// group-based global role bindings never match tokens from it (fail
+	// closed). The name must be a namespaced URI that contains "://", so
+	// nobody can designate a user-settable bare profile claim (nickname,
+	// name) as an authorization source. Validator construction applies the
+	// rule at the first token dispatched for the issuer, not at object
+	// admission. A violation therefore rejects every token from this issuer
+	// with HTTP 401. The rbac startup advisory also reports violations at
+	// boot.
+	GroupsClaim string `json:"groupsClaim,omitempty"`
 }
 
 // OAuth2ProviderStatus defines the status of the server.

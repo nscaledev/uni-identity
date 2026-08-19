@@ -149,10 +149,27 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// Advisory only: warn, don't block boot. Issuer-qualified matching is the
 	// runtime control, and a hard failure here would fire at an unrelated pod
 	// restart long after the first bearerTrust CRD was created.
-	if trustedNonUNIIssuers, err := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace); err != nil {
-		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", err)
-	} else if err := s.RBACOptions.Validate(trustedNonUNIIssuers); err != nil {
-		log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
+	//
+	// The groups-claim map is fetched only after the issuer list proves usable: a
+	// fetch after issuersErr already failed would be wasted work, because every
+	// check below needs trustedNonUNIIssuers. A later GroupsClaimByIssuer failure
+	// skips only the group-binding check that consumes the map, and Validate
+	// still runs with a nil map, so the subject-binding advisory keeps working.
+	// Validate treats nil differently from an empty-but-successful map, so it
+	// never reads a failed fetch as "no dead bindings".
+	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)
+
+	if issuersErr != nil {
+		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", issuersErr)
+	} else {
+		groupsClaimByIssuer, claimsErr := oauth2.GroupsClaimByIssuer(context.TODO())
+		if claimsErr != nil {
+			log.FromContext(context.TODO()).Info("group role binding advisory check skipped: groups claim map unavailable", "error", claimsErr)
+		}
+
+		if err := s.RBACOptions.Validate(trustedNonUNIIssuers, groupsClaimByIssuer); err != nil {
+			log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
+		}
 	}
 
 	// Setup middleware.

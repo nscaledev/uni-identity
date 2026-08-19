@@ -36,7 +36,10 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 )
 
-const validatorTestAudience = "https://identity.example.com"
+const (
+	validatorTestAudience = "https://identity.example.com"
+	testGroupsClaim       = "https://unikorn-cloud.org/groups"
+)
 
 type validatorTestIssuer struct {
 	server      *httptest.Server
@@ -118,6 +121,10 @@ type testTokenClaims struct {
 	Email         string          `json:"https://unikorn-cloud.org/email,omitempty"`
 	EmailVerified *bool           `json:"https://unikorn-cloud.org/email_verified,omitempty"`
 	Authz         testAuthzClaims `json:"https://unikorn-cloud.org/authz,omitempty"`
+
+	// Groups is loosely typed, so the malformed-claim cases below can state a
+	// non-array value or non-string entries directly.
+	Groups any `json:"https://unikorn-cloud.org/groups,omitempty"`
 }
 
 func (i *validatorTestIssuer) token(t *testing.T, mutate func(*testTokenClaims)) string {
@@ -445,4 +452,97 @@ func TestValidateRequireAuthzClaimOffToleratesMissing(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "user@example.com", user.Email)
+}
+
+func TestNewValidatorRejectsBareGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	_, err := auth0.NewValidator(auth0.Options{
+		Issuer:      "https://issuer.example.com/",
+		Audience:    "aud",
+		GroupsClaim: "groups", // no "://"
+	})
+	require.ErrorIs(t, err, auth0.ErrInvalidConfig)
+}
+
+func TestNewValidatorAcceptsNamespacedGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	_, err := auth0.NewValidator(auth0.Options{
+		Issuer:      "https://issuer.example.com/",
+		Audience:    "aud",
+		GroupsClaim: testGroupsClaim,
+	})
+	require.NoError(t, err)
+}
+
+// TestValidateExtractsGroupsClaimTolerantly documents the extraction contract: a
+// malformed groups claim must never fail the token, only degrade to fewer or no
+// groups.
+func TestValidateExtractsGroupsClaimTolerantly(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+
+	testCases := []struct {
+		name        string
+		groupsClaim string
+		mutate      func(*testTokenClaims)
+		expected    []string
+	}{
+		{
+			name:        "well-formed array is preserved byte-exact",
+			groupsClaim: testGroupsClaim,
+			mutate: func(claims *testTokenClaims) {
+				claims.Groups = []any{"Platform Engineering", "SRE", " Mixed-Case Group "}
+			},
+			expected: []string{"Platform Engineering", "SRE", " Mixed-Case Group "},
+		},
+		{
+			name:        "absent claim yields nil",
+			groupsClaim: testGroupsClaim,
+			mutate:      nil,
+			expected:    nil,
+		},
+		{
+			name:        "non-array value yields nil and the token is still accepted",
+			groupsClaim: testGroupsClaim,
+			mutate: func(claims *testTokenClaims) {
+				claims.Groups = "not-an-array"
+			},
+			expected: nil,
+		},
+		{
+			name:        "non-string entries are skipped per-entry",
+			groupsClaim: testGroupsClaim,
+			mutate: func(claims *testTokenClaims) {
+				claims.Groups = []any{"ok", 42, map[string]any{"x": 1}, "also ok"}
+			},
+			expected: []string{"ok", "also ok"},
+		},
+		{
+			name:        "extraction disabled when GroupsClaim option is empty",
+			groupsClaim: "",
+			mutate: func(claims *testTokenClaims) {
+				claims.Groups = []any{"Platform Engineering"}
+			},
+			expected: nil,
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			validator := newTestValidator(t, auth0.Options{
+				Issuer:      issuer.issuer(),
+				Audience:    validatorTestAudience,
+				GroupsClaim: test.groupsClaim,
+			})
+
+			user, err := validator.Validate(t.Context(), issuer.token(t, test.mutate))
+			require.NoError(t, err)
+			assert.Equal(t, test.expected, user.Groups)
+		})
+	}
 }

@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Render assertions for globalRoleBindings; wired into `make lint`.
+# Render assertions for globalRoleBindings and globalGroupRoleBindings.
+# `make lint` runs this script.
 set -euo pipefail
 
 CHART=charts/identity
@@ -136,5 +137,50 @@ must_fail_admin '["Admin@x.com"]' \
 	"platformAdministrators.subjects[0]: subject must be its canonical lower-case form"
 must_fail_admin '["https://staff.example.com/::Admin@x.com"]' \
 	"platformAdministrators.subjects[0]: subject must be its canonical lower-case form"
+
+render_group() { helm template test "$CHART" --set-json "globalGroupRoleBindings=$1"; }
+
+must_fail_group() {
+	local out
+	if out=$(render_group "$1" 2>&1 >/dev/null); then
+		die "expected render failure (fragment: $2), but render succeeded"
+	fi
+	if ! grep -qF -- "$2" <<<"$out"; then
+		die "render failed, but not for the expected reason
+  expected fragment: $2
+  actual output:     $out"
+	fi
+}
+
+# Title Case group names must render. Group names are byte-exact, and the
+# lower-case guard that applies to subjects does NOT apply to them. The role is
+# platform-reader. It reads the credential scopes and writes none, so it passes
+# the credential-scope guard.
+out=$(render_group '[{"issuer":"https://staff.example.com/","group":"Platform Engineering","roles":["platform-reader"]}]')
+reader_role_id=$(role_id_of platform-reader <<<"$out")
+[[ -n "$reader_role_id" ]] || die "could not resolve role ID for 'platform-reader'"
+assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Platform Engineering::${reader_role_id}\""
+
+# The values.yaml example pattern must render: a purpose-built additionalRoles
+# role with a non-credential write (identity:quotas update) passes the
+# credential-scope guard. This pins the guard's allow path for write-bearing
+# roles, not only its read-only path above.
+support_role='{"support-quota-editor":{"description":"Support quota editor","protected":true,"scopes":{"global":{"identity:organizations":["read"],"identity:projects":["read"],"identity:quotas":["read","update"]}}}}'
+out=$(helm template test "$CHART" --set-json "additionalRoles=$support_role" \
+	--set-json 'globalGroupRoleBindings=[{"issuer":"https://staff.example.com/","group":"Support Engineering","roles":["support-quota-editor"]}]')
+support_role_id=$(role_id_of support-quota-editor <<<"$out")
+[[ -n "$support_role_id" ]] || die "could not resolve role ID for 'support-quota-editor'"
+assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Support Engineering::${support_role_id}\""
+
+must_fail_group '[{"group":"SRE","roles":["platform-administrator"]}]' "issuer is required"
+must_fail_group '[{"issuer":"https://a.com/ ","group":"SRE","roles":["platform-administrator"]}]' "issuer must not contain whitespace"
+must_fail_group '[{"issuer":"https://x.com/?q=a::b","group":"SRE","roles":["platform-administrator"]}]' 'issuer must not contain "::"'
+must_fail_group '[{"issuer":"uni","group":"SRE","roles":["platform-administrator"]}]' "the uni sentinel issuer cannot carry groups"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"*","roles":["platform-administrator"]}]' "wildcard group not allowed"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"a::b","roles":["platform-administrator"]}]' "group must not contain"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"Platform\tEngineering","roles":["platform-administrator"]}]' "group must not contain control whitespace"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["platform-administrator"]}]' "group is required"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
+must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
 
 echo "chart render checks OK"

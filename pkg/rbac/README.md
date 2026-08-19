@@ -29,9 +29,11 @@ The package enforces several important security rules:
 - a caller may only grant a role if the caller already holds all permissions contained in that role
 - when a system service acts as an impersonated principal, the effective ACL is the intersection of
   the principal's ACL and the service's ACL
-- global role binding matching is issuer-qualified: a principal is only granted a binding's
-  roles when the token's `src_iss` matches the binding's registered issuer exactly — this covers
-  both platform-administrator entries and the general `--global-role-binding` mechanism
+- global role binding matching is issuer-qualified: a principal receives a binding's roles only
+  when the token's `src_iss` matches the binding's registered issuer exactly. This covers
+  platform-administrator entries, the general `--global-role-binding` mechanism, and the
+  group-scoped `--global-group-role-binding` mechanism, which also requires the token's asserted
+  IdP group to match
 
 Those rules prevent several different forms of privilege escalation:
 
@@ -266,33 +268,190 @@ entire user population is itself an authorization decision — for example a sta
 "authenticated by this issuer" already means "should see this data" — never for a general-purpose
 IdP with a mixed user base.
 
-**There is no group-based path to global authority.** `acl.Global` is populated from exactly two
-sources: `resolveGlobalRoleBindings` (feeding `accumulateGlobalPermissions` or, for wildcard
-bindings, `accumulateGlobalReadPermissions`) and `processSystemAccountACL`'s X.509-CN-to-role
-mapping for system accounts. Group membership resolves only `Role.Spec.Scopes.Organization` and
-`Role.Spec.Scopes.Project` (`accumulateOrganizationPermissions`, `accumulateProjectPermissions`);
-`accumulateGlobalPermissions` deliberately takes a role ID list rather than groups, precisely so
-standard users cannot be granted global permissions through membership. This means "grant platform
-administrators via a group" is not an available alternative to exact per-subject bindings — a
-group-based grant would be runtime-mutable and centrally auditable in a way an exact binding is
-not, so the absence of that path is a real limitation of the current mechanism, not just an
-unused option.
+#### Group bindings
 
-**`Options.Validate` reports every finding from two advisory startup checks**, joined with the
-stdlib `errors.Join` so `errors.Is` still matches each individually. It never blocks startup:
-(1) a bare (UNI-sentinel) `--platform-administrator-subjects` entry while a non-UNI issuer is
-trusted, and (2) a `--global-role-binding` issuer that is neither the UNI sentinel nor a currently
-trusted non-UNI issuer (`ErrUntrustedBindingIssuer`). Check (2) excludes the deprecated
-`--auth0-exchange-issuer` value from the trusted set, so a binding aimed at the legacy exchange
-issuer warns even though it can still match a real token.
+A **global group role binding** grants the full global scopes of one or more roles to a
+user-account subject. The subject qualifies when its bearer token comes from a specific trusted
+issuer and carries a specific group name in that issuer's configured `groupsClaim`
+(`BearerTrustSpec.GroupsClaim` — see
+[`pkg/oauth2/README.md`](../oauth2/README.md#per-provider-claim-contract) and
+[`docs/multi-issuer-token-contract.md`](../../docs/multi-issuer-token-contract.md)).
+`resolveGroupRoleBindings` resolves these bindings separately from subject bindings, but the result
+joins the same replace-semantics ACL.
 
-Only check (1) is gated on a non-empty trusted-issuer list — a bare admin entry only matters once
-there is a non-UNI issuer to migrate away from. Check (2) runs even against an empty list, where
-every non-UNI binding issuer is reported, so the caller must skip `Validate` entirely when it
-cannot tell "no trusted issuers configured" from "the provider `List` call failed"
-(`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case). These warnings are
-not the security control: that is the issuer-qualified `(srcIss, subject)` match performed by
-`resolveGlobalRoleBindings` inside `processUserAccountACL`.
+Configure bindings with the repeated flag
+`--global-group-role-binding=<issuer>::<group>::<roleID>[,<roleID>...]`. The chart renders it from
+`globalGroupRoleBindings` (`charts/identity/values.yaml`). Parsing is right-anchored exactly like
+`--global-role-binding`: the role list follows the *last* `::`, the group sits between the
+second-to-last and the last `::`, and the issuer is everything before that.
+
+The process rejects the following at flag-parse time and does not boot:
+
+- Malformed grammar: fewer than two `::` separators.
+- An empty issuer, an empty group, or an empty role-list member.
+- The literal wildcard `*` as a group. Group bindings have no wildcard form. Use a wildcard
+  *subject* binding for a wildcard-scope grant.
+- The `uni` sentinel as the issuer. UNI-local tokens carry no groups claim, so a sentinel group
+  binding could never match.
+
+**Matching is byte-exact and case-sensitive**, against the group value verbatim from the flag.
+Subjects get a chart-render check that forces canonical lower case, group values do not: IdP group
+names commonly use Title Case, and lower-casing the configured value would relocate the mismatch
+rather than remove it. Copy the group name from the IdP verbatim.
+
+A wrong-case binding therefore **fails silently**. UNI still accepts the token, and RBAC falls
+through to ordinary organization and project membership resolution as if the group had never
+matched. The only signal is a log line from `processUserAccountACL`, emitted whenever a token
+carries groups and none of them matched a configured binding: "token groups matched no global group
+role binding", with the subject, the issuer, and the group count at Info, and the group names on a
+separate V(1) line. It fires even when a subject binding
+matched, so an operator adding a group binding for someone who already has an exact subject binding
+still gets the diagnostic. It is the only diagnostic surface here, because UNI cannot enumerate an
+IdP's groups to check the configuration against.
+
+**Full global scopes, no read clamp, no UNI-user gate.** Group bindings accumulate the roles' global
+scopes through the same `accumulateGlobalPermissions` that exact-subject bindings use, never through
+`accumulateGlobalReadPermissions`, which stays reserved for wildcard *subject* bindings. A group
+binding that references a CRUD role grants CRUD globally. Nothing checks that the matched subject
+corresponds to an active UNI `User` record, or to any UNI record at all: a subject admitted with
+`allowExternalIdentity: true` and an empty `orgIds` slice matches exactly as a UNI-registered user
+does. Both properties are deliberate, so that a fixed set of full-scope roles can go to an
+IdP-managed population without a parallel UNI-side membership list.
+
+One render-time guard bounds the role choice: the chart refuses a group binding on a role that
+writes `identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`, or
+`identity:oauth2providers`. A write on those scopes mints credentials or edits issuer trust. That
+converts a settings grant into an identity grant. The guard is render-time only, and roles can gain
+write scopes after the render. It narrows the blast radius and does not replace the operator
+guidance below.
+
+The consequence is that **UNI configuration no longer enumerates the principals that hold global
+write authority through this path.** A subject or wildcard binding names every principal it can ever
+grant to, in the flag or chart value itself. A group binding names only the group, and the actual
+principals are whoever the IdP currently places in it — a population UNI cannot see, list, or audit.
+
+**Replace semantics shared with subject bindings.** `processUserAccountACL` resolves subject
+bindings and group bindings together, and treats a match of either kind as a total replacement: the
+ACL is exactly the union of every matched binding's granted scopes, and organization and project
+membership resolution is skipped for that session. `accumulateMatchedBindings` emits one
+exercise-log line covering both kinds: the matched subject, the matched groups, the granted role IDs
+for each, and the count of skipped organization memberships (`len(authz.OrgIds)`, already in the
+claim, so producing it resolves no membership). Group membership lives in the IdP, invisible to UNI
+storage, so that line is the only place UNI records who exercised global authority through a group.
+
+**Direct bearer tokens only.** UNI populates `authorization.Info.Groups` only for tokens that pass
+external-bearer validation inside the identity process — the local authorizer and the RFC 8693
+passport-exchange path. UNI does not proxy an external IdP's groups back onto its own tokens, so a
+UNI-issued interactive-login access token carries no groups claim at all, even when that login
+federates to the same IdP. Only a token presented directly as a bearer, or as the token-exchange
+`subject_token`, can carry groups.
+
+**Impersonated hops never carry groups. This is by design, not by gap.**
+`processImpersonatedPrincipalACL` passes `nil` for `groups`, and, independently, always evaluates
+impersonated principals against the UNI sentinel issuer, which no group binding can be configured
+against (rejected at flag-parse time, above). Either fact alone is sufficient, and both hold as
+defence in depth. `TestImpersonatedPrincipalNeverMatchesGroupBindings` constructs a sentinel-issuer
+binding directly, which isolates the groups-is-nil path from the sentinel-issuer path.
+External-issuer *subject* bindings have never applied across a delegated service hop either, so this
+is settled behavior rather than a gap: group-derived global authority does not survive
+impersonation, for the same reason subject-bound authority never has.
+
+**The legacy Auth0-exchange issuer is dead for group bindings only while the flag path serves
+it.** The deprecated `--auth0-exchange-issuer` and `--auth0-exchange-audience` flags build a
+synthetic `auth0-legacy` provider that carries no `groupsClaim`, and no flag value can add one.
+CRD providers precede the synthetic in the name-sorted candidate list. An `OAuth2Provider` whose
+`spec.issuer` matches the legacy issuer therefore always wins against the synthetic: its
+`groupsClaim` takes effect and the binding becomes live, with no flag replacement needed. One
+migration hazard exists. The synthetic hardcodes `requireAuthzClaim: true`, while the CRD field
+defaults to `false`, so a migration to a CRD provider silently relaxes authz-claim enforcement
+unless the operator sets the field.
+
+Group bindings also add two findings to `Options.Validate`, described with the other startup checks
+below: `ErrGroupBindingNoGroupsClaim` for a bearer-trust candidate whose `groupsClaim` is empty, and
+`ErrUntrustedBindingIssuer` for an issuer that is no candidate at all.
+
+**Revocation is not symmetric with grant.** Deleting a binding from configuration and redeploying
+takes effect immediately, because every ACL resolution reads the current flag value. The *group
+membership* side is not under UNI's control at all: removing a person from the IdP group revokes
+nothing until their outstanding access tokens expire and they must obtain a new one without the
+group, and UNI neither tracks those tokens nor can invalidate them early. For a subject admitted
+through `allowExternalIdentity: true`, with no UNI `User` record to deactivate, there is no UNI-side
+lever at all. The only real-time path is at the IdP: remove the group membership and, if urgency
+demands it, revoke or rotate the subject's credentials so its outstanding tokens stop being
+renewable.
+
+**Operator guidance.** Use a group binding only for an issuer whose group namespace is
+administratively controlled — the same population discipline a wildcard-subject binding requires of
+its entire user base, narrowed to the subset of users the operator deliberately places in that one
+group. Never reuse a `groupsClaim`-enabled issuer between a group binding and any future
+self-service or organization-scoped group feature: the binding grants unclamped global scopes to
+*every* current and future member of the named group, so a namespace that becomes user-editable
+tomorrow would silently hand global authority to whoever a user later adds to it.
+
+**Rollout precondition.** Every downstream service (region, compute, kubernetes, storage, …) must
+run a build whose identity middleware keys its ACL cache by the presented token, not only by subject
+(see [`pkg/middleware/openapi/README.md`](../middleware/openapi/README.md)). Deploy it everywhere
+the binding's granted roles are enforced before you enable the binding, not after. Middleware that
+keys by subject alone can serve a subject's non-elevated token a cached ACL computed for that same
+subject's group-elevated token, until the stale entry's TTL expires.
+
+**UNI `Group` resources still never grant global authority. IdP-asserted groups now can, by
+deployment configuration.** Three sources populate `acl.Global`:
+
+1. `resolveGlobalRoleBindings` — subject and wildcard-subject bindings, feeding
+   `accumulateGlobalPermissions`, or `accumulateGlobalReadPermissions` for wildcard bindings.
+2. `resolveGroupRoleBindings` — group bindings, described above, also feeding
+   `accumulateGlobalPermissions`, unclamped.
+3. `processSystemAccountACL`'s X.509-CN-to-role mapping for system accounts.
+
+UNI `Group` membership resolves only `Role.Spec.Scopes.Organization` and
+`Role.Spec.Scopes.Project` (`accumulateOrganizationPermissions`, `accumulateProjectPermissions`).
+`accumulateGlobalPermissions` deliberately takes a role ID list rather than a `Group`, precisely so
+that membership in a UNI `Group` resource cannot itself confer global permissions. That constraint
+still holds. What has changed is that a subject's *IdP* group membership now reaches global authority
+directly through a group binding, unclamped and with no requirement that the subject be a UNI user.
+"Grant global authority through group membership" is therefore an available mechanism — just not
+through UNI's own `Group` resource, or anything UNI's membership bookkeeping tracks.
+
+**`Options.Validate` reports every finding from four advisory startup checks.** It joins them with
+the stdlib `errors.Join`, so `errors.Is` still matches each one individually. It never blocks
+startup. The four checks report:
+
+1. A bare (UNI-sentinel) `--platform-administrator-subjects` entry while a non-UNI issuer is
+   trusted.
+2. A `--global-role-binding` issuer that is neither the UNI sentinel nor a currently trusted non-UNI
+   issuer (`ErrUntrustedBindingIssuer`).
+3. A `--global-group-role-binding` issuer that is either untrusted (`ErrUntrustedBindingIssuer`
+   again) or a recognized bearer-trust candidate configured with no `groupsClaim`
+   (`ErrGroupBindingNoGroupsClaim`). See [Group bindings](#group-bindings) above for what this
+   check covers.
+4. A trusted issuer whose non-empty `groupsClaim` is not a namespaced URI
+   (`ErrMalformedGroupsClaim`). This check examines every issuer in the claims map, not only bound
+   ones. Validator construction rejects a malformed claim at the first token dispatched for the
+   issuer, so the fault rejects every token from that issuer with HTTP 401, even when no binding
+   references it.
+
+Check (2) excludes the deprecated `--auth0-exchange-issuer` value from the trusted set. A binding
+aimed at the legacy exchange issuer therefore warns, even though it can still match a real token.
+Check (3) reports that same legacy issuer as dead-because-no-`groupsClaim` instead, because its
+groups-claim lookup runs before the trusted-issuer fallback (`validateGroupBindingAdvisory`). When
+a CRD provider shadows the synthetic and supplies a claim, the binding is live and the check stays
+silent.
+
+Only check (1) is gated on a non-empty trusted-issuer list. A bare admin entry only matters once
+there is a non-UNI issuer to migrate away from. Checks (2) and (3) run even against an empty
+trusted-issuer list, where they report every non-UNI binding issuer. The caller must therefore skip
+`Validate` entirely when it cannot tell "no trusted issuers configured" from "the provider `List`
+call failed" (`computeTrustedNonUNIIssuers` in `pkg/server` returns an error for that case).
+
+The `groupsClaimByIssuer` map that feeds checks (3) and (4) has a narrower version of the same rule.
+`Validate` treats a `nil` map as "the claims lookup failed" and skips check (3) alone, so a caller
+with usable `trustedNonUNIIssuers` still runs checks (1) and (2) when the claims fetch fails. A
+non-nil-but-empty map would misreport that situation as "no dead bindings".
+
+These warnings are not the security control. The security control is the issuer-qualified
+`(srcIss, subject)` match that `resolveGlobalRoleBindings` performs, and the `(srcIss, group)` match
+that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
 ## Invariants
 
@@ -302,21 +461,30 @@ not the security control: that is the issuer-qualified `(srcIss, subject)` match
 - ACL intersection for impersonated system-account calls is deliberate least-privilege behaviour.
 - Service accounts are organization-bound and their scoped access must remain consistent with that
   binding.
-- Group membership is the main route from actors to roles.
+- UNI `Group` membership routes actors to organization- and project-scoped roles only.
+  `accumulateGlobalPermissions` accepts a role ID list, never a `Group`, so UNI group membership
+  alone can never reach global authority. IdP-asserted groups do reach it: a global group role
+  binding grants unclamped global authority to a `groupsClaim` group by deployment configuration,
+  with no check that the subject is a UNI user. See [Group bindings](#group-bindings).
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
-- Global role binding matching is always issuer-qualified at runtime via `(srcIss, subject)`,
-  evaluated by `resolveGlobalRoleBindings`. `Options.Validate` is startup-only and advisory and
-  does not replace it. Bare legacy admin entries match only the UNI sentinel plus, via the startup
-  mirror in `pkg/server`, the legacy auth0-exchange flag issuer — never a CRD-declared issuer.
+- Global role binding matching is always issuer-qualified at runtime. Subject and wildcard-subject
+  bindings match on `(srcIss, subject)` (`resolveGlobalRoleBindings`), group bindings on
+  `(srcIss, group)` (`resolveGroupRoleBindings`). `Options.Validate` is startup-only and advisory,
+  and replaces neither. Bare legacy admin entries match only the UNI sentinel, plus the legacy
+  auth0-exchange flag issuer through the startup mirror in `pkg/server`, never a CRD-declared issuer.
 - A wildcard-subject binding is always clamped to `read` at authorization time. The clamp bounds
-  verbs, not response sensitivity, so any role it references needs a read-surface audit first.
+  verbs, not response sensitivity, so any role it references needs a read-surface audit first. A
+  group binding carries no equivalent clamp — see [Group bindings](#group-bindings).
 - The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
   global operation. This does not make the runtime clamp redundant: roles can gain write scopes
-  after the render.
-- Bindings resolve against the authenticating issuer, never a client-supplied one. Impersonated
-  principals are evaluated against the UNI sentinel, so an external-issuer binding never applies
-  on a delegated service hop — it fails closed.
+  after the render. For group bindings the chart rejects only roles that write the credential and
+  trust scopes (`identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`,
+  `identity:oauth2providers`). Other writes render. No runtime clamp backs that guard.
+- Subject, wildcard-subject, and group bindings all resolve against the authenticating issuer, never
+  a client-supplied one. UNI evaluates impersonated principals against the UNI sentinel with no
+  groups, so neither an external-issuer subject binding nor any group binding applies on a delegated
+  service hop. Both fail closed.
 - The confused-deputy invariant: a system service acting as an impersonated principal cannot hold
   permissions that either the principal's ACL or the service's ACL denies. The ACL intersection
   enforces this regardless of which IdP authenticated the principal.

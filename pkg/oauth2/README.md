@@ -170,7 +170,7 @@ optional authz-claim), looks up UNI organization membership by email, and builds
 source-claims pair. UNI membership is always authoritative; claimed `orgIds` from the external
 token are discarded.
 
-**The `src_iss` claim.** The resulting `dispatchResult` carries both a `Source` (coarse provider
+**The `src_iss` claim.** The resulting `DispatchResult` carries both a `Source` (coarse provider
 audit label, e.g. the `OAuth2Provider` name) and a `SrcIss` (the issuer URL verbatim, or the
 `PassportSourceUNI` sentinel for UNI-local tokens). `SrcIss` is stamped on the minted passport as
 `src_iss` and is the security-load-bearing value used by RBAC's global role binding resolution
@@ -196,6 +196,29 @@ Each bearer-trusted provider has a `BearerTrustSpec` that governs claim validati
   accepted with an empty `orgIds` slice instead of being rejected.
 - **`signingAlgorithms`** (default `[RS256]`): permitted JWS algorithms. Only asymmetric algorithms
   are accepted; symmetric algorithms (e.g. `HS256`) and `none` are rejected at trust-list build time.
+- **`groupsClaim`** (default empty): names the access-token claim that carries this issuer's IdP
+  group names, e.g. `https://unikorn-cloud.org/groups`. Empty means the issuer emits no groups. A
+  non-empty value must be a namespaced URI that contains `://`, and validator construction rejects
+  any other value at the first token dispatched for the issuer. A violation therefore rejects every
+  token from that issuer with HTTP 401 and does not fail the object apply. The rbac startup
+  advisory also reports violations at boot. This is a v1 restriction that stops a bare user-settable profile claim
+  (`nickname`, `name`) from becoming an authorization source, not a permanent constraint of the
+  claim shape. A later release could relax it as a compatible widening if a real provider needs that.
+
+`extractGroups` reads `groupsClaim` tolerantly and never rejects the token because of it. A missing
+claim, a non-array claim value, and individual non-string array entries all degrade to fewer or no
+groups instead of failing validation, because a malformed groups claim must not break authentication
+for the whole issuer. Entries that do parse as strings stay byte-exact, with no case folding and no
+trimming, because group-binding matching downstream is case-sensitive.
+
+The claim name is part of the validator-cache fingerprint (`validatorFingerprint` in
+`pkg/oauth2/trustlist.go`), so an edit to `groupsClaim` on the `OAuth2Provider` takes effect on the
+next lookup rather than after the validator cache's TTL.
+
+The validator carries extracted groups on `authorization.Info.Groups` for RBAC to consume. It never
+embeds them in the minted passport, and never propagates them through the `X-Principal` header. See
+[`pkg/rbac/README.md#global-role-bindings`](../rbac/README.md#global-role-bindings) for how a
+trusted issuer's groups become global authority.
 
 The full claim contract and operator invariants are specified in
 [`docs/multi-issuer-token-contract.md`](../../docs/multi-issuer-token-contract.md).
