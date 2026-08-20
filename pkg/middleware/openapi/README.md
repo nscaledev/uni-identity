@@ -124,6 +124,50 @@ is no fallback to the legacy userinfo path. Passports are consumed in-process an
 forwarded on outbound calls — internal service-to-service communication continues to use mTLS plus
 `X-Principal` exactly as before.
 
+## Validation Error Disclosure
+
+Request and response schema validation are both performed here, and the two get very different
+treatment on the way out.
+
+**Request** validation failures are returned to the caller, so they go through
+`clientValidationError`, which builds a description from the location of the fault and a reason.
+`err.Error()` must never be used here. kin-openapi appends the whole schema and the value that
+failed validation to a schema error, and prints the unparsable value in a parse error, so returning
+it echoes the request body — bearer tokens included — back to the caller (OWASP API8:2023,
+CWE-209). The specific fields that may and may not be used are recorded in the comments on
+`schemaErrorDescription` and `parseErrorDescription`; the short version is that only the statically
+written `Reason` fields are safe, and `Error()`, `Origin`, `Value` and `Cause` are not.
+
+Two things this deliberately does not promise:
+
+- Reasons may name a property the caller sent, and may quote `enum` or `const` values from the
+  schema. Both are published API contract and both are needed to correct the request, so both are
+  allowed. What is excluded is the caller's own data and anything naming the implementation — which
+  is why the `format` reason is rewritten rather than passed on, as the library's version quotes its
+  own internal regex rather than the format name.
+- The library detail is not logged. Core's `errors.Error.Write` logs the description we build, so
+  the fault is still recorded, but the raw error is not attached, as it would relocate the caller's
+  credentials into the log store.
+
+This is not solely a `kin-openapi` 0.144.0 problem. On 0.132.0 the same code path already returned
+the full body for JSON requests; what 0.144.0 changed is form-encoded bodies, where absent
+properties stopped being decoded as nil, so a missing required property now fails the object-level
+`required` check whose error value is the entire decoded body. The token endpoint is form encoded,
+which is how it surfaced.
+
+**Response** validation failures never reach the client as a body, so they keep the library's full
+rendering. The schema and the offending value are the whole point: that output is what tells you
+which part of a handler response does not match the specification.
+
+### Known Issue: Response Validation On Token Endpoints
+
+`runtimeSchemaValidationPanic` defaults to on, and the panic text includes the response body. On
+`/oauth2/v2/token` that body contains a freshly minted access token, so a response schema mismatch
+writes a live credential into the pod log, and the panic aborts the connection rather than
+returning a clean 500. Nothing installs a recovery middleware. Response validation is a
+development aid, so this is not urgent, but the token endpoints want either redaction or the panic
+disabled before anyone leans on it in production.
+
 ## Ingress And Header Invariants
 
 The package relies on an important ingress invariant:

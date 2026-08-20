@@ -28,8 +28,10 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/spf13/pflag"
@@ -314,6 +316,116 @@ func (v *Validator) getACL(ctx context.Context, info *authorization.Info, organi
 	return acl, nil
 }
 
+// clientValidationError renders a request validation failure as an error description
+// that is safe to hand to the client.  The library's own rendering is not: a schema
+// error appends the whole schema and the value that failed validation, and a parse
+// error prints the value it couldn't parse, so returning err.Error() echoes the
+// request — bearer tokens included — straight back out again.  OWASP API8:2023 and
+// CWE-209 say a description carries only what the caller needs to correct the
+// request, so that is all we build here.
+func clientValidationError(err error) string {
+	if description := validationErrorDescription(err); description != "" {
+		return description
+	}
+
+	return "the request is not valid"
+}
+
+// validationErrorDescription renders what can be safely said about a validation
+// failure, or an empty string when nothing can be, so callers can fall back to
+// something less specific.
+func validationErrorDescription(err error) string {
+	var requestError *openapi3filter.RequestError
+
+	if goerrors.As(err, &requestError) {
+		subject := "the request body"
+
+		if requestError.Parameter != nil {
+			subject = fmt.Sprintf("parameter %q in %s", requestError.Parameter.Name, requestError.Parameter.In)
+		}
+
+		detail := validationErrorDescription(requestError.Err)
+		if detail == "" {
+			detail = staticReason(requestError.Reason)
+		}
+
+		if detail == "" {
+			return subject + " is not valid"
+		}
+
+		return subject + " is not valid: " + detail
+	}
+
+	var schemaError *openapi3.SchemaError
+
+	if goerrors.As(err, &schemaError) {
+		return schemaErrorDescription(schemaError)
+	}
+
+	var parseError *openapi3filter.ParseError
+
+	if goerrors.As(err, &parseError) {
+		return parseErrorDescription(parseError)
+	}
+
+	return ""
+}
+
+// schemaErrorDescription says what is wrong with a value without disclosing the
+// value itself.
+func schemaErrorDescription(err *openapi3.SchemaError) string {
+	// NOTE: err.Error() appends the schema and the value, and err.Origin may quote
+	// the value, so neither can be used.  err.Reason is written from static text at
+	// every site bar two: "format", which quotes the library's own pattern for the
+	// format rather than the format itself, and the 3.1 JSON schema validator,
+	// which is unreachable while our specification declares 3.0.x.
+	reason := err.Reason
+
+	if err.SchemaField == "format" && err.Schema != nil {
+		reason = fmt.Sprintf("does not match format %q", err.Schema.Format)
+	}
+
+	if reason == "" {
+		reason = fmt.Sprintf("does not satisfy %q", err.SchemaField)
+	}
+
+	if path := err.JSONPointer(); len(path) > 0 {
+		return fmt.Sprintf("%q %s", "/"+strings.Join(path, "/"), reason)
+	}
+
+	return reason
+}
+
+// parseErrorDescription finds the innermost reason a value could not be parsed.
+// The outer error of a nested parse failure carries no reason of its own, and
+// neither its value nor its cause can be used, as both quote the input.
+func parseErrorDescription(err *openapi3filter.ParseError) string {
+	for {
+		if err.Reason != "" {
+			return err.Reason
+		}
+
+		var cause *openapi3filter.ParseError
+
+		if !goerrors.As(err.Cause, &cause) {
+			return ""
+		}
+
+		err = cause
+	}
+}
+
+// staticReason returns a library reason string that is safe to pass on.  The
+// schema mismatch variant embeds a schema pointer, which may be an external URL
+// and tells the caller nothing actionable, so it is dropped.
+func staticReason(reason string) string {
+	if strings.Contains(reason, "#/") || strings.Contains(reason, "://") {
+		return ""
+	}
+
+	return reason
+}
+
 func (v *Validator) validateRequest(r *http.Request, route *routers.Route, params map[string]string) (*openapi3filter.ResponseValidationInput, error) {
 	// This authorization callback is fired if the API endpoint is marked as
 	// requiring it.
@@ -377,7 +489,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 	}
 
 	if err := openapi3filter.ValidateRequest(r.Context(), requestValidationInput); err != nil {
-		return nil, errors.OAuth2InvalidRequest(err.Error())
+		return nil, errors.OAuth2InvalidRequest(clientValidationError(err))
 	}
 
 	// Only restore it if we took it away. The validation filter will read r.Body into
