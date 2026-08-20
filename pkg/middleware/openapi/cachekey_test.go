@@ -18,6 +18,11 @@ limitations under the License.
 package openapi
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,8 +32,60 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 )
 
+// tokenDigest mirrors the digest computation inside aclCacheKey, so the literal
+// expectations below stay readable rather than carrying the hash choice as an
+// opaque magic string.
+func tokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+
+	return base64.RawStdEncoding.EncodeToString(sum[:])
+}
+
+// digestSegment extracts the token-digest segment from a real aclCacheKey return
+// value, rather than recomputing the digest. The key is "<mode>|" followed by a
+// run of length-prefixed "<len>:<value>" segments and a terminal, unprefixed
+// scope segment, so the digest is always the last length-prefixed segment.
+//
+// It parses the direct shape only, which has three length-prefixed segments (sub,
+// srcIss, digest). The exact-key assertions elsewhere in this file pin the
+// impersonated shape's digest position, and support for a shape nothing here
+// builds would be untested code in a helper whose job is to model the real
+// format faithfully.
+func digestSegment(t *testing.T, key string) string {
+	t.Helper()
+
+	mode, rest, ok := strings.Cut(key, "|")
+	require.True(t, ok, "key %q missing mode tag", key)
+	require.Equal(t, "direct", mode, "digestSegment only parses direct-shape keys, got %q", key)
+
+	const segmentCount = 3
+
+	var digest string
+
+	for i := range segmentCount {
+		colon := strings.IndexByte(rest, ':')
+		require.GreaterOrEqual(t, colon, 0, "segment %d missing length prefix in key %q", i, key)
+
+		length, err := strconv.Atoi(rest[:colon])
+		require.NoError(t, err, "segment %d length prefix in key %q", i, key)
+
+		value := rest[colon+1 : colon+1+length]
+		digest = value
+		rest = rest[colon+1+length:]
+
+		require.True(t, strings.HasPrefix(rest, "|"), "segment %d not followed by a delimiter in key %q", i, key)
+		rest = rest[1:]
+	}
+
+	return digest
+}
+
 func TestACLCacheKey(t *testing.T) {
 	t.Parallel()
+
+	// d is the digest of the empty token. Every fixture below that does not set
+	// Token explicitly shares it.
+	d := tokenDigest("")
 
 	// directInfo models a direct bearer-token call. The same cache key shape is
 	// also used for attributed service-to-service calls where the principal
@@ -56,8 +113,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(t.Context(), directInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|user-1|_global", global)
-		require.Equal(t, "direct|user-1|org-1", scoped)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
@@ -71,7 +128,7 @@ func TestACLCacheKey(t *testing.T) {
 		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", key)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|%d:%s|org-1", len(d), d), key)
 	})
 
 	t.Run("ImpersonatedDiffersFromDirect", func(t *testing.T) {
@@ -88,8 +145,8 @@ func TestACLCacheKey(t *testing.T) {
 		impersonated, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "direct|compute-service|org-1", direct)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", impersonated)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|%d:%s|org-1", len(d), d), direct)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
 
@@ -115,8 +172,8 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotEqual(t, computeKey, regionKey)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", computeKey)
-		require.Equal(t, "impersonated|region-service|user-1|org-1", regionKey)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), computeKey)
+		require.Equal(t, fmt.Sprintf("impersonated|14:region-service|0:|6:user-1|%d:%s|org-1", len(d), d), regionKey)
 	})
 
 	t.Run("ImpersonatedIncludesOrganizationScope", func(t *testing.T) {
@@ -133,9 +190,105 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, "impersonated|compute-service|user-1|_global", global)
-		require.Equal(t, "impersonated|compute-service|user-1|org-1", scoped)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
+	})
+
+	t.Run("DirectIncludesSrcIss", func(t *testing.T) {
+		t.Parallel()
+
+		issA := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "alice@x.com"}, SrcIss: "https://a.com/"}
+		issB := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "alice@x.com"}, SrcIss: "https://b.com/"}
+
+		keyA, err := aclCacheKey(t.Context(), issA, "")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(t.Context(), issB, "")
+		require.NoError(t, err)
+
+		// Same email from two issuers must never share an ACL (ID-367 finding 6).
+		require.NotEqual(t, keyA, keyB)
+	})
+
+	t.Run("SubjectContainingDelimiterCannotForgeAnotherIdentity", func(t *testing.T) {
+		t.Parallel()
+
+		// Auth0 subjects look like "auth0|507f1f77bcf86cd799439011": the
+		// subject itself contains the "|" join delimiter. Under the old
+		// unescaped "sub|srcIss" concatenation, this pair and the pair below
+		// render to the identical string "auth0|abc|def" for the sub+srcIss
+		// segment even though they are two different (subject, issuer)
+		// tuples. Length-prefixing must keep them apart.
+		infoA := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "auth0|abc"}, SrcIss: "def"}
+		infoB := &authorization.Info{Userinfo: &identityapi.Userinfo{Sub: "auth0"}, SrcIss: "abc|def"}
+
+		keyA, err := aclCacheKey(t.Context(), infoA, "org-1")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(t.Context(), infoB, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyA, keyB)
+	})
+
+	// There is deliberately no crafted (scope, token) collision test at the
+	// digest/scope boundary, unlike SubjectContainingDelimiterCannotForgeAnotherIdentity
+	// above: sub and srcIss are attacker-controlled variable-length strings that
+	// could be shifted across the "|" delimiter, but a digest cannot be (see
+	// aclCacheKey's doc comment for the construction argument). No such pair
+	// exists to test.
+	//
+	// DigestSegmentEncodingInvariant below pins the encoding facts that argument
+	// rests on — the fixed 43-character length and the "|"-free alphabet. It reads
+	// the digest out of aclCacheKey's returned key through digestSegment rather
+	// than recomputing it, so the assertions observe any change to the real
+	// encoding.
+
+	t.Run("DigestSegmentEncodingInvariant", func(t *testing.T) {
+		t.Parallel()
+
+		const base64StdAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+		// Token content varies in length and character set. The digest segment
+		// must not. A change to base64.URLEncoding, which pads with "=" and
+		// swaps "+/" for "-_", or a truncated digest would change the length or
+		// the alphabet asserted below.
+		for _, token := range []string{"", "short-token", "a much longer token value with unicode: héllo wörld"} {
+			info := &authorization.Info{
+				Token:    token,
+				Userinfo: &identityapi.Userinfo{Sub: "user-1"},
+			}
+
+			key, err := aclCacheKey(t.Context(), info, "org-1")
+			require.NoError(t, err)
+
+			digest := digestSegment(t, key)
+
+			require.Len(t, digest, 43, "digest for token %q", token)
+
+			for _, c := range digest {
+				require.True(t, strings.ContainsRune(base64StdAlphabet, c),
+					"digest character %q for token %q is outside base64.RawStdEncoding's alphabet", c, token)
+			}
+
+			require.NotContains(t, digest, "|")
+		}
+	})
+
+	t.Run("DistinctTokensSameSubjectGetDistinctKeys", func(t *testing.T) {
+		t.Parallel()
+
+		a := &authorization.Info{Token: "token-with-group", Userinfo: &identityapi.Userinfo{Sub: "user-1"}}
+		b := &authorization.Info{Token: "token-without-group", Userinfo: &identityapi.Userinfo{Sub: "user-1"}}
+
+		keyA, err := aclCacheKey(t.Context(), a, "org-1")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(t.Context(), b, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyA, keyB)
 	})
 
 	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {

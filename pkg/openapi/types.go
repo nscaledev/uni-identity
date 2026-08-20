@@ -99,6 +99,12 @@ const (
 	Organization ProviderScope = "organization"
 )
 
+// Defines values for QuotaReadFormat.
+const (
+	Binary  QuotaReadFormat = "binary"
+	Decimal QuotaReadFormat = "decimal"
+)
+
 // Defines values for ResponseMode.
 const (
 	Fragment ResponseMode = "fragment"
@@ -569,6 +575,9 @@ type QuotaRead struct {
 	// DisplayName The name that should be displayed to end users.
 	DisplayName string `json:"displayName"`
 
+	// Format A hint for clients on how to format quota values.
+	Format QuotaReadFormat `json:"format"`
+
 	// Free The amount of that resource that is free.
 	Free int `json:"free"`
 
@@ -584,6 +593,9 @@ type QuotaRead struct {
 	// Used The amount of that resource that is used.
 	Used int `json:"used"`
 }
+
+// QuotaReadFormat A hint for clients on how to format quota values.
+type QuotaReadFormat string
 
 // QuotaReadList A list of quotas.
 type QuotaReadList = []QuotaRead
@@ -635,6 +647,14 @@ type ResponseType string
 
 // RoleRead A role.
 type RoleRead struct {
+	// Grantable Whether the calling principal holds every permission in this role
+	// and may therefore grant it to groups. Roles with grantable set to
+	// false are returned so clients can resolve and display them — for
+	// example a role a group already carries — but this caller cannot
+	// grant them: a group write whose role list contains a role the
+	// caller cannot grant is refused.
+	Grantable bool `json:"grantable"`
+
 	// Metadata Metadata required by all resource reads.
 	Metadata externalRef0.ResourceReadMetadata `json:"metadata"`
 }

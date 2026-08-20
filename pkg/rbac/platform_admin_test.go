@@ -17,6 +17,7 @@ limitations under the License.
 package rbac_test
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -72,7 +73,64 @@ func TestPlatformAdminSubjectsValueParse(t *testing.T) {
 
 // getACLForSubject builds a minimal RBAC environment with the given opts and
 // calls GetACL for the given subject+srcIss pair. It returns the resulting ACL.
-func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) *openapi.Acl {
+// extraRoles are created alongside the fixed "admin" role fixture, letting
+// tests that need additional role fixtures (e.g. wildcard-clamp/union
+// scenarios) inject them without a bespoke fake-client setup.
+func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, extraRoles ...*unikornv1.Role) *openapi.Acl {
+	t.Helper()
+
+	return getACLForSubjectWithOrgIDs(t, opts, subject, srcIss, nil, extraRoles...)
+}
+
+// getACLForSubjectWithOrgIDs is getACLForSubject with control over the
+// authz.OrgIds claim, used to prove that a bound subject skips membership
+// resolution entirely even when org memberships are present.
+func getACLForSubjectWithOrgIDs(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
+	t.Helper()
+
+	acl, err := aclOrErrForSubject(t, opts, subject, srcIss, orgIDs, nil, extraRoles...)
+
+	return mustACL(t, acl, err)
+}
+
+// getACLForSubjectWithGroups is getACLForSubject with control over both the
+// authz.OrgIds claim and the token's IdP groups, exercising group role binding
+// matching and its replace semantics without disturbing the subject-only callers
+// above.
+func getACLForSubjectWithGroups(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) *openapi.Acl {
+	t.Helper()
+
+	acl, err := aclOrErrForSubject(t, opts, subject, srcIss, orgIDs, groups, extraRoles...)
+
+	return mustACL(t, acl, err)
+}
+
+// mustACL fails the test if GetACL returned an error, otherwise returns the ACL.
+func mustACL(t *testing.T, acl *openapi.Acl, err error) *openapi.Acl {
+	t.Helper()
+
+	if err != nil {
+		t.Fatalf("GetACL: %v", err)
+	}
+
+	return acl
+}
+
+// aclOrErrForSubject is the common builder behind getACLForSubject and its
+// variants: it constructs a minimal RBAC environment and calls GetACL, returning
+// the error rather than failing the test so a caller can assert on an expected
+// error path — e.g. proving that membership resolution really ran against a fake
+// client with no organization fixtures when no binding matched.
+func aclOrErrForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
+	t.Helper()
+
+	return aclOrErrForSubjectWithContext(t.Context(), t, opts, subject, srcIss, orgIDs, groups, extraRoles...)
+}
+
+// aclOrErrForSubjectWithContext is aclOrErrForSubject with control over the base
+// context, used to inject a capturing logger through log.IntoContext without
+// disturbing the fixed-context callers above.
+func aclOrErrForSubjectWithContext(baseCtx context.Context, t *testing.T, opts *rbac.Options, subject, srcIss string, orgIDs, groups []string, extraRoles ...*unikornv1.Role) (*openapi.Acl, error) {
 	t.Helper()
 
 	scheme, err := unikornv1.SchemeBuilder.Build()
@@ -94,7 +152,13 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) 
 		},
 	}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adminRole).Build()
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(adminRole)
+
+	for _, r := range extraRoles {
+		builder = builder.WithObjects(r)
+	}
+
+	c := builder.Build()
 	rbacClient := rbac.New(c, testNamespace, opts)
 
 	info := &authorization.Info{
@@ -102,19 +166,16 @@ func getACLForSubject(t *testing.T, opts *rbac.Options, subject, srcIss string) 
 			Sub: subject,
 			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
 				Acctype: openapi.User,
+				OrgIds:  orgIDs,
 			},
 		},
 		SrcIss: srcIss,
+		Groups: groups,
 	}
 
-	ctx := authorization.NewContext(t.Context(), info)
+	ctx := authorization.NewContext(baseCtx, info)
 
-	acl, err := rbacClient.GetACL(ctx, "")
-	if err != nil {
-		t.Fatalf("GetACL: %v", err)
-	}
-
-	return acl
+	return rbacClient.GetACL(ctx, "")
 }
 
 // aclGrantsGlobalAdmin returns true if the ACL has any global endpoints (indicative of the
@@ -216,10 +277,13 @@ func TestAdminFastPathRequiresServerSideGrant(t *testing.T) {
 	}
 }
 
-// TestAdminFastPathCaseInsensitiveSubject verifies that the platform-admin
-// fast-path matches regardless of case differences between the admin-list
-// entry subject and the (lowercased) token subject.
-func TestAdminFastPathCaseInsensitiveSubject(t *testing.T) {
+// TestAdminFastPathCaseSensitiveSubject verifies that the platform-admin
+// fast-path requires the admin-list entry subject to match the (lowercased,
+// trimmed) token subject exactly, including case. The validator already
+// normalizes the token subject to lower case, so an admin-list entry typed
+// in any other case is a configuration mistake, not an alternate spelling —
+// it must not match.
+func TestAdminFastPathCaseSensitiveSubject(t *testing.T) {
 	t.Parallel()
 
 	const staffIss = "https://staff.auth0.com"
@@ -231,19 +295,25 @@ func TestAdminFastPathCaseInsensitiveSubject(t *testing.T) {
 		wantAdminACL bool
 	}{
 		{
-			name:         "mixed-case entry matches lowercased token subject",
-			entrySubject: "Admin@Nscale.Com",
+			name:         "exact-case entry matches lowercased token subject",
+			entrySubject: "admin@nscale.com",
 			tokenSubject: "admin@nscale.com",
 			wantAdminACL: true,
 		},
 		{
-			name:         "lowercased entry matches mixed-case token subject",
-			entrySubject: "admin@nscale.com",
-			tokenSubject: "Admin@Nscale.Com",
-			wantAdminACL: true,
+			name:         "mixed-case entry does not match lowercased token subject",
+			entrySubject: "Admin@Nscale.Com",
+			tokenSubject: "admin@nscale.com",
+			wantAdminACL: false,
 		},
 		{
-			name:         "non-matching subject is denied even after normalisation",
+			name:         "lowercased entry does not match mixed-case token subject",
+			entrySubject: "admin@nscale.com",
+			tokenSubject: "Admin@Nscale.Com",
+			wantAdminACL: false,
+		},
+		{
+			name:         "non-matching subject is denied",
 			entrySubject: "Admin@Nscale.Com",
 			tokenSubject: "other@nscale.com",
 			wantAdminACL: false,
@@ -279,12 +349,12 @@ func TestOptionsValidateMigrationGate(t *testing.T) {
 	}
 
 	// a non-UNI trusted issuer exists AND a bare admin entry → report.
-	if err := opts.Validate([]string{"https://staff.auth0.com"}); err == nil {
+	if err := opts.Validate([]string{"https://staff.auth0.com"}, nil); err == nil {
 		t.Fatal("expected migration-gate error, got nil")
 	}
 
 	// no non-UNI issuer → fine.
-	if err := opts.Validate(nil); err != nil {
+	if err := opts.Validate(nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

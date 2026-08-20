@@ -229,14 +229,14 @@ func (h *Handler) GetOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userinfo, _, _, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, parts[1])
+	res, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, parts[1])
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
 
 	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, userinfo)
+	util.WriteJSONResponse(w, r, http.StatusOK, res.Userinfo)
 }
 
 func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
@@ -253,14 +253,14 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		userinfo, _, _, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, parts[1])
+		res, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, parts[1])
 		if err != nil {
 			errors.HandleError(w, r, err)
 			return
 		}
 
 		h.setUncacheable(w)
-		util.WriteJSONResponse(w, r, http.StatusOK, userinfo)
+		util.WriteJSONResponse(w, r, http.StatusOK, res.Userinfo)
 
 		return
 	}
@@ -270,14 +270,14 @@ func (h *Handler) PostOauth2V2Userinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userinfo, _, _, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, r.Form.Get("access_token"))
+	res, err := h.oauth2.GetUserinfoFromBearer(r.Context(), r, r.Form.Get("access_token"))
 	if err != nil {
 		errors.HandleError(w, r, errors.AccessDenied(r, "access token is invalid").WithError(err))
 		return
 	}
 
 	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, userinfo)
+	util.WriteJSONResponse(w, r, http.StatusOK, res.Userinfo)
 }
 
 func (h *Handler) GetOauth2V2Jwks(w http.ResponseWriter, r *http.Request) {

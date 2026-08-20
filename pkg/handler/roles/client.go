@@ -43,19 +43,25 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func convert(in unikornv1.Role) openapi.RoleRead {
+func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
 	out := openapi.RoleRead{
-		Metadata: conversion.ResourceReadMetadata(&in, in.Spec.Tags),
+		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),
+		Grantable: grantable,
 	}
 
 	return out
 }
 
-func convertList(in unikornv1.RoleList) openapi.Roles {
-	var out openapi.Roles
+func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID) openapi.Roles {
+	// Allocated rather than declared nil: the schema types this response as a
+	// non-nullable array, and a nil slice marshals to null, which response
+	// validation rejects.
+	out := make(openapi.Roles, 0, len(in.Items))
 
 	for _, resource := range in.Items {
-		out = append(out, convert(resource))
+		grantable := rbac.AllowRole(ctx, &resource, organizationID) == nil
+
+		out = append(out, convert(resource, grantable))
 	}
 
 	slices.SortFunc(out, func(a, b openapi.RoleRead) int {
@@ -72,9 +78,13 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return nil, err
 	}
 
+	// Protected roles are internal and never exposed.  Ungrantable roles ARE
+	// exposed (grantable: false), because a client has to be able to resolve
+	// every role ID a group carries in order to display it.  These are two
+	// different reasons for absence and must not share a filter.
 	result.Items = slices.DeleteFunc(result.Items, func(role unikornv1.Role) bool {
-		return role.Spec.Protected || rbac.AllowRole(ctx, &role, organizationID) != nil
+		return role.Spec.Protected
 	})
 
-	return convertList(result), nil
+	return convertList(ctx, result, organizationID), nil
 }

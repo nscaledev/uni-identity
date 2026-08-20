@@ -61,7 +61,7 @@ organization-local membership is active before returning it.
 - organization membership is resolved through labeled `OrganizationUser` records
 - service accounts are part of the same local identity-resolution surface as users
 - unresolved, inactive, or multiply-resolved identities are normalized into
-  `ErrResourceReference`
+  `ErrResourceReference`, with one exception noted under Caveats
 
 ## Caveats
 
@@ -69,9 +69,12 @@ organization-local membership is active before returning it.
   though its purpose is to shield other packages from that coupling.
 - Several lookups are implemented as list-and-filter operations, so they depend on label hygiene
   and on the current storage layout remaining coherent.
-- The package intentionally flattens several different unusable-identity cases into one read-side
-  failure surface. Missing, inactive, and multiply-resolved identities are all treated as "not a
-  usable local reference" for callers.
+- Missing and multiply-resolved identities return `ErrResourceReference`. `GetActiveUser` instead
+  returns `ErrUserInactive` for an inactive global user, which wraps `ErrResourceReference` so
+  existing `errors.Is` callers are unaffected; `GetActiveOrganizationUser` still returns the plain
+  error. See
+  [`docs/multi-issuer-token-contract.md#membership-resolution`](../../docs/multi-issuer-token-contract.md#membership-resolution)
+  for the bearer-admission consequences and the organization-suspension gap this leaves open.
 - The package intentionally does not provide mutation or transactional semantics; it is a read-side
   adapter boundary only.
 

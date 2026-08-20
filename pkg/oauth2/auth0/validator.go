@@ -18,6 +18,7 @@ package auth0
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,6 +32,8 @@ import (
 	"go.opentelemetry.io/otel"
 
 	"github.com/unikorn-cloud/identity/pkg/constants"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // DefaultJWKSMinRefreshInterval is the default minimum interval between
@@ -87,6 +90,12 @@ type Options struct {
 	// one orgId.
 	RequireAuthzClaim bool
 
+	// GroupsClaim names the access-token claim that carries IdP group names.
+	// Empty disables group extraction. A non-empty value must be a namespaced
+	// URI that contains "://". Construction rejects a bare user-settable
+	// profile claim. See BearerTrustSpec.GroupsClaim.
+	GroupsClaim string
+
 	// JWKSMinRefreshInterval is the minimum interval between requests to
 	// the upstream JWKS endpoint. go-oidc refetches the JWKS whenever no
 	// cached key verifies a token's signature, so without a bound, forged
@@ -131,6 +140,11 @@ type tokenClaims struct {
 type User struct {
 	Email  string
 	Expiry time.Time
+
+	// Groups holds the verbatim string entries of the configured groups claim.
+	// It is nil when the claim is absent or malformed, or when extraction is
+	// disabled. Entries stay byte-exact: no case folding, no trimming.
+	Groups []string
 }
 
 // Validator validates Auth0 JWT access tokens using the tenant JWKS.
@@ -179,6 +193,10 @@ func NewValidator(options Options) (*Validator, error) {
 		}
 	}
 
+	if options.GroupsClaim != "" && !strings.Contains(options.GroupsClaim, "://") {
+		return nil, fmt.Errorf("%w: groups claim %q must be a namespaced URI", ErrInvalidConfig, options.GroupsClaim)
+	}
+
 	if options.JWKSMinRefreshInterval <= 0 {
 		options.JWKSMinRefreshInterval = DefaultJWKSMinRefreshInterval
 	}
@@ -224,6 +242,78 @@ func (v *Validator) validateAuthzClaim(claims *tokenClaims) error {
 	return nil
 }
 
+// extractGroups reads the configured groups claim tolerantly. A missing claim or
+// a non-array value yields nil. It skips non-string entries in an otherwise
+// valid array and keeps the string ones. It never fails the token, because a
+// malformed groups claim must not break authentication for the whole issuer (see
+// pkg/oauth2/README.md).
+func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) []string {
+	if v.options.GroupsClaim == "" {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	var raw map[string]json.RawMessage
+	if err := idToken.Claims(&raw); err != nil {
+		logger.Info("groups claim skipped: unparseable claim set", "claim", v.options.GroupsClaim, "error", err)
+
+		return nil
+	}
+
+	payload, ok := raw[v.options.GroupsClaim]
+	if !ok {
+		// Absent-claim logging uses V(1), not Info. An absent claim is expected
+		// for tokens minted before the IdP Action was configured, so per-token
+		// Info logging would be noise, but the degradation must stay
+		// observable.
+		logger.V(1).Info("groups claim absent", "claim", v.options.GroupsClaim)
+
+		return nil
+	}
+
+	var entries []json.RawMessage
+	if err := json.Unmarshal(payload, &entries); err != nil {
+		logger.Info("groups claim skipped: not a JSON array", "claim", v.options.GroupsClaim)
+
+		return nil
+	}
+
+	groups := make([]string, 0, len(entries))
+
+	var skipped int
+
+	for _, entry := range entries {
+		var group string
+		if err := json.Unmarshal(entry, &group); err != nil {
+			skipped++
+
+			continue
+		}
+
+		groups = append(groups, group)
+	}
+
+	if skipped > 0 {
+		// One line per validation, not one per element. A trusted issuer that
+		// emits a large malformed array must not produce a log line per entry.
+		logger.Info("groups claim entries skipped: not a string", "claim", v.options.GroupsClaim, "skipped", skipped)
+	}
+
+	if len(groups) == 0 {
+		// This differs from claim-absent and deserves a real Info line: the IdP
+		// stamped the claim, but it yielded nothing usable. That is the
+		// signature of an over-aggressive IdP-side group filter, which would
+		// otherwise stay silent, because the unmatched-groups log never fires
+		// on an empty set.
+		logger.Info("groups claim present but yielded no usable entries", "claim", v.options.GroupsClaim)
+
+		return nil
+	}
+
+	return groups
+}
+
 // Validate verifies the token signature, issuer, audience, temporal claims,
 // verified email, and UNI authorization context emitted by Auth0.
 func (v *Validator) Validate(ctx context.Context, token string) (*User, error) {
@@ -266,9 +356,12 @@ func (v *Validator) Validate(ctx context.Context, token string) (*User, error) {
 		return nil, err
 	}
 
+	groups := v.extractGroups(ctx, idToken)
+
 	return &User{
 		Email:  email,
 		Expiry: claims.Expiry.Time(),
+		Groups: groups,
 	}, nil
 }
 
