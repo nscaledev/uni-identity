@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.17.3
+    controller-gen.kubebuilder.io/version: v0.20.0
   name: oauth2providers.identity.unikorn-cloud.org
 spec:
   group: identity.unikorn-cloud.org
@@ -86,8 +86,11 @@ spec:
                       group-based global role bindings never match tokens from it (fail
                       closed). The name must be a namespaced URI that contains "://", so
                       nobody can designate a user-settable bare profile claim (nickname,
-                      name) as an authorization source. The trust-list build checks this rule
-                      with the other cross-field rules.
+                      name) as an authorization source. Validator construction applies the
+                      rule at the first token dispatched for the issuer, not at object
+                      admission. A violation therefore rejects every token from this issuer
+                      with HTTP 401. The rbac startup advisory also reports violations at
+                      boot.
                     type: string
                   requireAuthzClaim:
                     description: |-
