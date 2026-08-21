@@ -389,6 +389,7 @@ roles:
         region:networks:v2: [read]
         region:servers: [create,read,update,delete]
         region:servers:v2: [create,read,update,delete]
+        region:servers:v2/provider-create-gates: [update]
         region:securitygroups: [create,read,update,delete]
         region:securitygroups:v2: [read]
         region:sshcertificateauthorities:v2: [read]
