@@ -35,10 +35,23 @@ var (
 	adminClient          *api.APIClient
 	userClient           *api.APIClient
 	auditClient          *api.APIClient
+	globalAdminClient    *api.APIClient
 	serviceAccountClient *api.APIClient
 	ctx                  context.Context
 	config               *api.TestConfig
 )
+
+// requireGlobalAdminClient gates specs that need a write verb the organization roles no longer
+// hold. BINDING_ADMIN_AUTH_TOKEN rather than PLATFORM_ADMIN_AUTH_TOKEN: both carry global
+// authority, but the latter comes from the transitional platformAdministrators.subjects path,
+// so it would vanish with that path and skip these specs into silence.
+func requireGlobalAdminClient() {
+	GinkgoHelper()
+
+	if globalAdminClient == nil {
+		Skip("BINDING_ADMIN_AUTH_TOKEN is required for platform-operator writes")
+	}
+}
 
 var _ = BeforeSuite(func() {
 	patchTLSTransport()
@@ -69,6 +82,13 @@ var _ = BeforeEach(func() {
 		auditConfig := *config
 		auditConfig.AuthToken = config.AuditToken
 		auditClient = api.NewAPIClientWithConfig(&auditConfig)
+	}
+
+	globalAdminClient = nil
+	if config.BindingAdminToken != "" {
+		globalAdminConfig := *config
+		globalAdminConfig.AuthToken = config.BindingAdminToken
+		globalAdminClient = api.NewAPIClientWithConfig(&globalAdminConfig)
 	}
 
 	serviceAccountClient = nil

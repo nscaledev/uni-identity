@@ -33,7 +33,7 @@ import (
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
-func expectUserRequestForbidden(method, path string, payload any) {
+func expectRequestForbidden(c *api.APIClient, actor, method, path string, payload any) {
 	GinkgoHelper()
 
 	var body io.Reader
@@ -44,11 +44,17 @@ func expectUserRequestForbidden(method, path string, payload any) {
 		body = bytes.NewReader(bodyBytes)
 	}
 
-	resp, _, err := userClient.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	resp, _, err := c.DoRequest(ctx, method, path, body, http.StatusForbidden)
 	Expect(err).NotTo(HaveOccurred(),
-		"user %s %s should return 403 Forbidden", method, path)
+		"%s %s %s should return 403 Forbidden", actor, method, path)
 	Expect(resp).NotTo(BeNil())
 	Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+}
+
+func expectUserRequestForbidden(method, path string, payload any) {
+	GinkgoHelper()
+
+	expectRequestForbidden(userClient, "user", method, path, payload)
 }
 
 var _ = Describe("RBAC Enforcement", func() {
@@ -224,6 +230,24 @@ var _ = Describe("RBAC Enforcement", func() {
 			})
 		})
 
+		// Upstream provider writes are platform-operator only: an organization administrator
+		// could otherwise delete their own provider and lock the organization out of login.
+		// A synthetic ID suffices — the handler authorizes before it looks the provider up,
+		// which also keeps these specs free of a platform-operator fixture.
+		Describe("Given a request to create an OAuth2 provider", func() {
+			It("should be denied with a forbidden response", func() {
+				expectRequestForbidden(adminClient, "administrator", http.MethodPost,
+					api.NewEndpoints().ListOauth2Providers(config.OrgID),
+					api.NewOauth2ProviderPayload().Build())
+			})
+		})
+
+		Describe("Given a request to delete an OAuth2 provider", func() {
+			It("should be denied with a forbidden response", func() {
+				expectRequestForbidden(adminClient, "administrator", http.MethodDelete,
+					api.NewEndpoints().GetOauth2Provider(config.OrgID, "00000000-0000-0000-0000-000000000000"), nil)
+			})
+		})
 	})
 
 	Context("When authenticated as a user", func() {
@@ -407,7 +431,9 @@ var _ = Describe("RBAC Enforcement", func() {
 
 		Describe("Given a request to delete an OAuth2 provider", func() {
 			It("should be denied with a forbidden response", func() {
-				_, providerID := api.CreateOauth2ProviderWithCleanup(adminClient, ctx, config,
+				requireGlobalAdminClient()
+
+				_, providerID := api.CreateOauth2ProviderWithCleanup(globalAdminClient, ctx, config,
 					api.NewOauth2ProviderPayload().Build())
 
 				expectUserRequestForbidden(http.MethodDelete,
