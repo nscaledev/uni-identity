@@ -22,7 +22,6 @@ package suites
 
 import (
 	"errors"
-	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,7 +29,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
-	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/test/api"
 
@@ -46,32 +44,33 @@ import (
 // not exist, until those caches catch up.  Every spec here must pass through
 // this before its first API call.
 //
-// Group visibility is checked with a read.  Role visibility needs a write:
-// the role is deliberately one nobody can grant, so it is filtered out of the
-// role list and there is nothing to read it back from.  Re-sending the group's
-// own role list is the probe, because it is refused while the role is missing
-// from the cache and accepted once it lands, and it changes nothing either
-// way.
-func waitForFixtureVisibility(roleID, groupID, groupName string) {
+// Both probes are plain reads: the group through its GET, and the role through
+// the roles list, which returns every non-protected role — ungrantable ones
+// included, flagged `grantable: false` — so the fixture role appears there
+// once the cache holds it.  Neither probe exercises the group-update path
+// these specs are about, so a regression there fails inside a spec where it
+// belongs, not here as a fixture-visibility timeout blaming the cluster.
+func waitForFixtureVisibility(roleID, groupID string) {
 	GinkgoHelper()
+
+	Eventually(func(g Gomega) {
+		roles, err := client.ListRoles(ctx, config.OrgID)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		roleIDs := make([]string, len(roles))
+		for i := range roles {
+			roleIDs[i] = roles[i].Metadata.Id
+		}
+
+		g.Expect(roleIDs).To(ContainElement(roleID),
+			"the role fixture is not visible to the API yet")
+	}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())
 
 	Eventually(func(g Gomega) {
 		group, err := client.GetGroup(ctx, config.OrgID, groupID)
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(group.Spec.RoleIDs).To(ContainElement(roleID),
 			"the group fixture is not visible to the API yet")
-	}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())
-
-	payload := api.NewGroupPayload().
-		WithName(groupName).
-		WithRoleIDs([]string{roleID}).
-		Build()
-
-	Eventually(func(g Gomega) {
-		response, err := client.UpdateGroupWithResponse(ctx, config.OrgID, groupID, payload)
-		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(response.StatusCode()).To(Equal(http.StatusOK),
-			"the role fixture is not visible to the API yet: %s", string(response.Body))
 	}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())
 }
 
@@ -132,7 +131,7 @@ var _ = Describe("Group role changes with ungrantable roles", func() {
 
 				// The role grants an endpoint no built-in role mentions, so no
 				// caller in this deployment holds it and it can never be
-				// granted or removed by them.
+				// granted by them.
 				role := &unikornv1.Role{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      roleID,
@@ -183,7 +182,7 @@ var _ = Describe("Group role changes with ungrantable roles", func() {
 				GinkgoWriter.Printf("Installed role %s (%s) and group %s (%s)\n",
 					roleName, roleID, groupName, groupID)
 
-				waitForFixtureVisibility(roleID, groupID, groupName)
+				waitForFixtureVisibility(roleID, groupID)
 			})
 
 			It("should accept an edit that resends the existing role list unchanged", func() {
@@ -204,30 +203,18 @@ var _ = Describe("Group role changes with ungrantable roles", func() {
 					"the ungrantable role must survive the round-trip")
 			})
 
-			It("should refuse to drop the role, naming it in the error", func() {
+			It("should allow dropping the role even though the caller cannot grant it", func() {
 				payload := api.NewGroupPayload().
 					WithName(groupName).
 					WithRoleIDs([]string{}).
 					Build()
 
-				response, err := client.UpdateGroupWithResponse(ctx, config.OrgID, groupID, payload)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(response.StatusCode()).To(Equal(http.StatusForbidden))
-				Expect(response.JSON403).NotTo(BeNil(),
-					"a refusal must come back as a typed forbidden response")
-				Expect(response.JSON403.Error).To(Equal(coreopenapi.Forbidden))
-				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleID),
-					"the error must name the role that blocked the update")
-				Expect(response.JSON403.ErrorDescription).To(ContainSubstring(roleName),
-					"the error must give the role's display name, not only its ID")
-				Expect(response.JSON403.ErrorDescription).To(ContainSubstring("cannot be removed from the group"),
-					"the removal guard must be the one that refused, not the role grant guard")
+				Expect(client.UpdateGroup(ctx, config.OrgID, groupID, payload)).To(Succeed(),
+					"removals are not grant-checked: dropping a role confers nothing on anybody")
 
 				stored := readGroupResource(kube, orgNamespace, groupID)
-				Expect(stored.Spec.RoleIDs).To(ContainElement(roleID),
-					"a refused update must leave the group untouched")
-
-				GinkgoWriter.Printf("Refused role removal: %s\n", response.JSON403.ErrorDescription)
+				Expect(stored.Spec.RoleIDs).To(BeEmpty(),
+					"the removal the caller asked for must have been applied")
 			})
 		})
 	})
