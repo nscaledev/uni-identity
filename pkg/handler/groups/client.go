@@ -361,7 +361,9 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 		// Only roles being ADDED are grant-checked.  Re-sending a group's
 		// existing role list (e.g. a rename, or dropping a member) must not
 		// fail on roles the caller could not grant; the escalation guard
-		// applies to the delta.  Removals are guarded separately.
+		// applies to the delta.  Removals are not gated at all: dropping a
+		// role confers nothing, and group DELETE is an unguarded revocation
+		// path anyway.
 		if slices.Contains(currentRoleIDs, roleID) {
 			continue
 		}
@@ -376,48 +378,6 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 	}
 
 	return normalizedRoleIDs, nil
-}
-
-// validateRoleRemovals rejects updates that drop a role the caller cannot
-// grant, so a client that cannot see an ungrantable role cannot silently
-// revoke it by round-tripping the group.  Roles that no longer exist may
-// always be dropped: a dangling reference conveys no permissions, and
-// dropping it is how a group carrying one gets repaired.  Protected roles may
-// also always be dropped: they should never be on a group at all, so removing
-// one is invariant repair rather than a revocation the caller needs permission
-// for.
-func (c *Client) validateRoleRemovals(ctx context.Context, organizationID ids.OrganizationID, current *unikornv1.Group, requestedRoleIDs []string) error {
-	for _, roleID := range current.Spec.RoleIDs {
-		if slices.Contains(requestedRoleIDs, roleID) {
-			continue
-		}
-
-		var resource unikornv1.Role
-
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: roleID}, &resource); err != nil {
-			if kerrors.IsNotFound(err) {
-				continue
-			}
-
-			return fmt.Errorf("%w: failed to validate role removal", err)
-		}
-
-		// Protected roles are internal and must never sit on an
-		// API-managed group; validateRoleIDs refuses them on any re-send,
-		// so a group invalidly carrying one (only reachable via direct CR
-		// access) needs this drop to stay updatable at all. Dropping it is
-		// repair toward that invariant, not revocation, so it is always
-		// allowed.
-		if resource.Spec.Protected {
-			continue
-		}
-
-		if err := rbac.AllowRole(ctx, &resource, organizationID); err != nil {
-			return errors.HTTPForbidden(fmt.Sprintf("role %q (%s) cannot be removed from the group: the caller does not hold all its permissions", common.RoleDisplayName(&resource), roleID)).WithError(err)
-		}
-	}
-
-	return nil
 }
 
 // generate builds the group the request asks for.  current is the stored group
@@ -485,10 +445,6 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	current, err := c.get(ctx, organization, groupID)
 	if err != nil {
-		return err
-	}
-
-	if err := c.validateRoleRemovals(ctx, organizationID, current, request.Spec.RoleIDs); err != nil {
 		return err
 	}
 

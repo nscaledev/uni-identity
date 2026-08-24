@@ -513,16 +513,10 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
   over the parsed chart values.
   Grantability against this lattice is enforced on the role *delta* for group updates, not on
   a group's full `RoleIDs` on every write: `pkg/handler/groups` grant-checks a role being
-  added, leaves an already-present role unchecked, and separately requires grant authority to
-  drop a role from the group. Create has no prior state, so every role in the request counts
-  as an addition. The guard test suite covers more than the four built-ins: `loadChartRoles`
-  merges any `additionalRoles` chart entry into the role set under test, so
-  `TestBuiltinRoleGrantability` requires every non-protected role — `additionalRoles`
-  included — to have declared grant relationships, and `TestNonBuiltinRolesAdminGrantable`
-  separately asserts every role outside the built-in family is grantable by `administrator`
-  from its own spec. The chart ships no `additionalRoles`, so that second check has no real
-  role to run over; it asserts against a synthetic role of the shape it exists to catch
-  first, so it cannot pass vacuously.
+  added and leaves an already-present role unchecked, so a group carrying a role from outside
+  this lattice (a third-party service's `Role` CR) stays editable. Removals are not gated —
+  dropping a role confers nothing. Create has no prior state, so every role in the request
+  counts as an addition.
 - The `application:*` endpoints (`application:applications`, `application:applicationsets`) were
   removed because the application service was never implemented and never will be — they were dead
   configuration. The removal also fixed a live bug: they were present on `platform-administrator`,

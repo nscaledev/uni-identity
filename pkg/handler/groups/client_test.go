@@ -621,12 +621,12 @@ func aclContext(t *testing.T, endpoints openapi.AclEndpoints) context.Context {
 	return rbac.NewContext(newContext(t), &openapi.Acl{Organizations: &organizations})
 }
 
-// TestUpdateGroupRejectsRemovalOfUngrantableRole exercises the removal guard through the
-// public Update() entrypoint, not just the unexported validateRoleRemovals helper directly:
-// a group already carries "radar-id" (as if granted by a more privileged earlier write), and
-// the caller — who cannot grant radar:things — submits an update that omits it. Update must
-// refuse the request, naming the role, and leave the stored group unchanged.
-func TestUpdateGroupRejectsRemovalOfUngrantableRole(t *testing.T) {
+// TestUpdateGroupAllowsRemovalOfUngrantableRole pins removals being ungated through the
+// public Update() entrypoint: a group already carries "radar-id" (as if granted by a more
+// privileged earlier write), and the caller — who cannot grant radar:things — submits an
+// update that omits it. Dropping a role confers nothing on anybody, so the write must
+// succeed and the role must be gone.
+func TestUpdateGroupAllowsRemovalOfUngrantableRole(t *testing.T) {
 	t.Parallel()
 
 	f := setupGroupTestFixture(t)
@@ -638,22 +638,18 @@ func TestUpdateGroupRejectsRemovalOfUngrantableRole(t *testing.T) {
 		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
 	})
 
-	// The request omits "radar-id" entirely — a silent removal attempt.
+	// The request omits "radar-id" entirely.
 	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(nil, nil))
-	require.Error(t, err)
-	require.True(t, errors.IsForbidden(err))
-	require.Contains(t, err.Error(), "radar")
+	require.NoError(t, err)
 
-	// The group must be unchanged: the role was refused, not silently dropped.
 	stored := f.getGroup(t)
-	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
+	assert.Empty(t, stored.Spec.RoleIDs)
 }
 
 // TestUpdateGroupKeepsUngrantableRoleWhenResent is the companion happy path: a caller who
 // cannot grant radar:things may still resend a group's existing radar-id role untouched
-// alongside an unrelated change (here, dropping one of two user members). Neither guard
-// may fire — the role is not being added, so the grant check skips it, and it is not being
-// dropped, so the removal check skips it too.
+// alongside an unrelated change (here, dropping one of two user members). The grant check
+// must skip it — the role is not being added.
 func TestUpdateGroupKeepsUngrantableRoleWhenResent(t *testing.T) {
 	t.Parallel()
 
