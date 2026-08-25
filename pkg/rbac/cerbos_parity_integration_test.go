@@ -229,6 +229,14 @@ func parityCases() []parityCase {
 		// binding matches).  Same deny verdict, different mechanism: the
 		// UserProjectWrongOrg precedent.
 		{name: "ImpersonatedUserWrongOrg", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedUser(parityAliceSubject, parityOrgA), organizationID: parityOrgB, endpoint: "identity:groups", operation: openapi.Read, wantLegacyError: true},
+		// The same subject is globally bound only at the UNI issuer. Both
+		// engines must preserve the propagated issuer: the UNI principal allows,
+		// and an external principal matches no binding. A header from a service
+		// that does not yet propagate the issuer reads as UNI, as it did before
+		// issuer propagation, so deploying identity first changes nothing.
+		{name: "ImpersonatedUNIExactBindingAllowed", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: &principal.Principal{Actor: parityIssuerBoundSubject, Issuer: parityAdminIssuer, Type: openapi.User}, endpoint: "identity:groups", operation: openapi.Read, expectAllow: true},
+		{name: "ImpersonatedSameSubjectExternalIssuerDenied", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: &principal.Principal{Actor: parityIssuerBoundSubject, Issuer: parityExternalIssuer, Type: openapi.User}, endpoint: "identity:groups", operation: openapi.Read},
+		{name: "ImpersonatedLegacyHeaderMissingIssuerReadsAsUNI", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: &principal.Principal{Actor: parityIssuerBoundSubject, Type: openapi.User}, endpoint: "identity:groups", operation: openapi.Read, expectAllow: true},
 
 		// The impersonated SERVICE ACCOUNT (sa-1, home org A).
 		{name: "ImpersonatedServiceOrgAllowedByBoth", info: paritySystemInfo(paritySystemImpersonatorCN), impersonated: impersonatedService(paritySA1, parityOrgA), organizationID: parityOrgA, endpoint: "identity:projects", operation: openapi.Read, expectAllow: true},
@@ -254,7 +262,7 @@ func parityCases() []parityCase {
 // user-account actor, the shape generatePrincipal propagates through the
 // X-Principal header.
 func impersonatedUser(subject string, orgIDs ...string) *principal.Principal {
-	return &principal.Principal{Actor: subject, Type: openapi.User, OrganizationIDs: orgIDs}
+	return &principal.Principal{Actor: subject, Issuer: parityAdminIssuer, Type: openapi.User, OrganizationIDs: orgIDs}
 }
 
 // impersonatedService builds the propagated principal for an impersonated
@@ -415,6 +423,7 @@ func TestCerbosDecisionParity(t *testing.T) {
 		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
 			PlatformAdministratorSubjects: []rbac.PlatformAdministratorSubject{{Issuer: parityAdminIssuer, Subject: parityAdminSubject}},
 			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+			GlobalRoleBindings:            fx.options.GlobalRoleBindings,
 			SystemAccountRoleIDs: map[string]string{
 				paritySystemCN:             parityRoleGlobalAdmin,
 				paritySystemImpersonatorCN: parityRoleImpersonator,
@@ -486,6 +495,7 @@ func TestCerbosDecisionParity(t *testing.T) {
 		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
 			PlatformAdministratorSubjects: []rbac.PlatformAdministratorSubject{{Issuer: parityAdminIssuer, Subject: parityAdminSubject}},
 			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+			GlobalRoleBindings:            fx.options.GlobalRoleBindings,
 			SystemAccountRoleIDs: map[string]string{
 				paritySystemCN:             parityRoleGlobalAdmin,
 				paritySystemImpersonatorCN: parityRoleImpersonator,
@@ -527,6 +537,7 @@ func TestCerbosDecisionParity(t *testing.T) {
 		engine := rbac.New(fx.client, parityNamespace, &rbac.Options{
 			PlatformAdministratorSubjects: []rbac.PlatformAdministratorSubject{{Issuer: parityAdminIssuer, Subject: parityAdminSubject}},
 			PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+			GlobalRoleBindings:            fx.options.GlobalRoleBindings,
 			SystemAccountRoleIDs: map[string]string{
 				paritySystemCN:             parityRoleGlobalAdmin,
 				paritySystemImpersonatorCN: parityRoleImpersonator,

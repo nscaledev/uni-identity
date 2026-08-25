@@ -27,6 +27,7 @@ import (
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/authz/cerbos"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
@@ -87,6 +88,34 @@ func TestDecisionCacheCachesDenyNotAllow(t *testing.T) {
 	require.NoError(t, rbac.AllowOrganizationScope(allowCtx, "identity:groups", openapi.Create, parityOrgA))
 	require.NoError(t, rbac.AllowOrganizationScope(allowCtx, "identity:groups", openapi.Create, parityOrgA))
 	require.Equal(t, 2, allow.calls, "an allow is never cached; it is re-evaluated against the PDP every time")
+}
+
+func TestDecisionCacheSeparatesDirectGroupClaims(t *testing.T) {
+	t.Parallel()
+
+	// External group claims participate in ResolveBindings. A denial cached for
+	// one token's groups must not suppress a fresh decision for the same
+	// subject and issuer carrying a different group set.
+	pdp := &capturePDP{allow: false}
+	engine := newDispatchEngine(t, rbac.EngineCerbos, pdp).WithPolicyStoreHash(&stubHasher{hash: "H1", ok: true})
+
+	newContext := func(group string) context.Context {
+		info := parityUserInfo(parityAliceSubject, parityOrgA)
+		info.SrcIss = parityExternalIssuer
+		info.Groups = []string{group}
+
+		return rbac.NewEngineContext(authorization.NewContext(t.Context(), info), engine)
+	}
+
+	groupACtx := newContext("group-a")
+	groupBCtx := newContext("group-b")
+
+	require.Error(t, rbac.AllowOrganizationScope(groupACtx, "identity:groups", openapi.Read, parityOrgA))
+	require.Error(t, rbac.AllowOrganizationScope(groupBCtx, "identity:groups", openapi.Read, parityOrgA))
+	require.Equal(t, 2, pdp.calls, "different group claims must not share the first token's cached denial")
+
+	require.Error(t, rbac.AllowOrganizationScope(groupBCtx, "identity:groups", openapi.Read, parityOrgA))
+	require.Equal(t, 2, pdp.calls, "an identical group set should reuse its own cached denial")
 }
 
 func TestDecisionCacheNoStaleAllowPastRevocation(t *testing.T) {

@@ -331,8 +331,8 @@ func (r *RBAC) resolveGlobalRoleBindings(srcIss, subject string) []GlobalRoleBin
 // authenticated issuer and whose Group appears byte-exact in the token's groups.
 // With flag-parsed configuration srcIss can never be the UNI sentinel in a
 // matching state, because flag parsing rejects sentinel issuers. Impersonated
-// principals carry the sentinel plus nil groups, so delegated hops fail closed on
-// the nil groups alone, even disregarding that gate.
+// principals retain their issuer but carry nil groups, so delegated hops fail
+// closed on the unavailable group claim.
 // TestImpersonatedPrincipalNeverMatchesGroupBindings constructs a
 // sentinel-issuer binding directly to isolate exactly that.
 func (r *RBAC) resolveGroupRoleBindings(srcIss string, groups []string) []GroupRoleBinding {

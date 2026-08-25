@@ -76,7 +76,7 @@ func (r *RBAC) ResolveBindings(ctx context.Context, info *authorization.Info) ([
 
 	// The user-account binding path matches global role bindings by the
 	// issuer-aware (srcIss, subject) pair and by the token's IdP groups,
-	// mirroring processUserAccountACL.
+	// mirroring processUserAccountACL, including its empty-issuer default.
 	srcIss := srcIssOrUNISentinel(info.SrcIss)
 
 	var bindings []cerbos.RoleBinding

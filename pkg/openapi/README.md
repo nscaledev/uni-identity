@@ -120,6 +120,8 @@ fully encoded here:
   behaviour, authentication paths, request/response validation
 - [pkg/server](../server/README.md): runtime composition of the generated router
   into the actual middleware and handler stack
+- [pkg/rbac](../rbac/README.md#the-remote-decision-endpoint): decision semantics
+  behind `POST /api/v1/authorization/check`
 - [pkg/oauth2](../oauth2/README.md): token, session, and protocol semantics
   behind the OAuth2/OIDC endpoints
 

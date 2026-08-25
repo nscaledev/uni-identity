@@ -55,15 +55,55 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 }
 
 // dispatchCoarse is the single dispatch point the three Allow* scope forks
-// below call: the local (Cerbos) engine when this kind was cut over
+// below call. A remote CoarseEngine seeded into the context (the remote-engine
+// context seam, NewRemoteEngineContext) takes priority over today's local
+// dispatch when present: RemoteEnforce serves the remote engine's verdict
+// authoritatively, fail-closed, and RemoteShadow runs the remote-shadow
+// comparator. Neither case falls through below. A context carrying no remote
+// engine — or one explicitly seeded as RemoteOff — falls through unchanged to
+// today's dispatch: the local (Cerbos) engine when this kind was cut over
 // (engineForDispatch), else the legacy ACL walk, optionally shadow-compared
 // (shadowed).
 //
 // legacy is a CLOSURE, not a precomputed value, so its evaluation can be
-// deferred: the Cerbos path reaches engine.allowCoarse without ever calling
-// legacy(), while the shadow and fall-through paths call it because they need
-// its verdict — to shadow-compare against Cerbos, or to serve.
+// deferred: RemoteEnforce must reach engine.AllowCoarse WITHOUT ever calling
+// legacy() — a downstream consumer wiring a remote engine has no local
+// ACL/CRD access to run the legacy walk, so enforce can never depend on it,
+// let alone fall back to it on a remote deny or outage. The shadow and
+// fall-through paths call legacy() because they need its verdict: RemoteShadow
+// to compare against, and the local paths to serve or shadow-compare against
+// Cerbos exactly as before.
+//
+// Front-door audit capture: this is a thin wrapper around dispatchCoarseImpl
+// (below) purely to record the outcome into the request-scoped decision
+// accumulator, if one is present (see decision_stash.go) — a plain local
+// variable rather than a named return + defer, which the repo's nonamedreturns
+// lint rule forbids. This is the single choke point behind AllowGlobalScope/
+// AllowOrganizationScope/AllowProjectScope (and their …ID/…Reader
+// delegates), so every dispatch path — remote-enforce, remote-shadow, Cerbos
+// cutover, and the legacy/local-shadow fallback — appends exactly once, with
+// zero change to the returned verdict itself.
 func dispatchCoarse(ctx context.Context, resource Resource, operation openapi.AclOperation, legacy func() error) error {
+	err := dispatchCoarseImpl(ctx, resource, operation, legacy)
+
+	appendDecision(ctx, resource, operation, err)
+
+	return err
+}
+
+// dispatchCoarseImpl is dispatchCoarse's actual dispatch logic, unchanged by
+// the front-door audit capture.
+func dispatchCoarseImpl(ctx context.Context, resource Resource, operation openapi.AclOperation, legacy func() error) error {
+	if engine, mode := remoteEngineFromContext(ctx); engine != nil {
+		//nolint:exhaustive // RemoteOff deliberately has no case: it falls through to the local dispatch below.
+		switch mode {
+		case RemoteEnforce:
+			return engine.AllowCoarse(ctx, resource, operation) // authoritative, fail-closed
+		case RemoteShadow:
+			return remoteShadowed(ctx, engine, resource, operation, legacy())
+		}
+	}
+
 	if engine := engineForDispatch(ctx, resource.Kind); engine != nil {
 		return engine.allowCoarse(ctx, resource, operation)
 	}
@@ -296,7 +336,23 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 // project-existence verification) is entangled with legacy ACL structure,
 // and its Cerbos equivalent is a deferred follow-up (see
 // pkg/authz/cerbos/README.md).
+//
+// Front-door audit capture: this function deliberately never calls
+// dispatchCoarse (see the NOTE above), so it needs its own
+// decision-accumulator append, mirroring dispatchCoarse's thin-wrapper pattern
+// (a plain local variable, not a named return + defer, which the repo's
+// nonamedreturns lint rule forbids).
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	err := allowProjectScopeCreateImpl(ctx, client, endpoint, operation, organizationID, projectID)
+
+	appendDecision(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation, err)
+
+	return err
+}
+
+// allowProjectScopeCreateImpl is AllowProjectScopeCreate's actual logic,
+// unchanged by the front-door audit capture.
+func allowProjectScopeCreateImpl(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
 	if isAllowedByProjectACL(ctx, endpoint, operation, organizationID, projectID) {

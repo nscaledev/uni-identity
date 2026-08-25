@@ -311,9 +311,9 @@ type RBAC struct {
 	// path's taxonomy).  Never set on a served engine.
 	shadowEvaluation bool
 
-	// decisionCache memoizes coarse cerbos-mode policy denials (never allows,
-	// never failures) keyed by (subject, impersonation+actor, scope, action,
-	// policy hash); see engine.go allowCoarse/decisionCacheKey.  It
+	// decisionCache memoizes coarse cerbos-mode policy denials keyed by every
+	// binding-resolution input plus the decision scope, action and policy hash;
+	// see engine.go allowCoarse/decisionCacheKey. It
 	// is only consulted when a policyHasher is configured — without one every
 	// decision bypasses it, so downstream and legacy paths are unaffected.
 	decisionCache    *cache.LRUExpireCache[string, bool]
@@ -1158,16 +1158,16 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal.Principal, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	switch p.Type {
 	case openapi.User:
-		// For impersonated principals the srcIss is not yet propagated through the
-		// X-Principal header; default to the UNI sentinel. See srcIssOrUNISentinel's
-		// doc comment for why this default is safe.
+		// A header from a service that does not yet propagate the issuer
+		// carries none; it defaults to the UNI sentinel, as it did before
+		// issuer propagation. See srcIssOrUNISentinel.
 		// X-Principal never carries groups, because group bindings must fail
 		// closed on delegated hops.
 		//
 		// Fold the actor, so that it matches a global role binding the way a
 		// direct call's subject does.  The actor comes from userinfo.Sub, and a
 		// token from an earlier release can carry another case.
-		return r.processUserAccountACL(ctx, unikornv1.NormalizeSubject(p.Actor), idconstants.UNISentinel, organizationID, authz, nil)
+		return r.processUserAccountACL(ctx, unikornv1.NormalizeSubject(p.Actor), srcIssOrUNISentinel(p.Issuer), organizationID, authz, nil)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
 	case openapi.System:
@@ -1178,14 +1178,14 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 }
 
 // srcIssOrUNISentinel returns srcIss unchanged if set, otherwise the UNI sentinel.
-// This default is safe because external tokens always carry a real src_iss stamped
-// at validation, so they can never resolve to the sentinel; the consumers that do
-// hit the empty default (passports minted by pre-src_iss code during a rolling
-// upgrade, impersonated principals — see processImpersonatedPrincipalACL — and
-// other non-external paths) match only sentinel admin entries, which is the
-// intended legacy semantic deliberately reproduced by expandBareAdminSubjects in
-// pkg/server. See TestSrcIssDefaultMatchesMigrationGateSentinel, which pins the
-// coupling between this default and the sentinel constant.
+// External tokens always carry a real src_iss stamped at validation, so they never
+// resolve to the sentinel. The consumers that hit the empty default are passports
+// minted by pre-src_iss code during a rolling upgrade, impersonated principals
+// from services that do not yet propagate the issuer (see
+// processImpersonatedPrincipalACL), and other non-external paths. They match only
+// sentinel admin entries, the legacy semantic that expandBareAdminSubjects in
+// pkg/server reproduces. See TestSrcIssDefaultMatchesMigrationGateSentinel, which
+// pins the coupling between this default and the sentinel constant.
 func srcIssOrUNISentinel(srcIss string) string {
 	if srcIss == "" {
 		return idconstants.UNISentinel

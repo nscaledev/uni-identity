@@ -21,6 +21,7 @@ import (
 	goerrors "errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/pflag"
@@ -266,17 +267,21 @@ func CoarseForbidden(resource Resource, operation openapi.AclOperation, err erro
 }
 
 // decisionCacheKey builds the coarse-decision cache key and reports whether the
-// cache is usable for this request (ok=false ⇒ bypass).  It mirrors the ACL
-// cache key (pkg/middleware/openapi aclCacheKey) in delimiter style but keys on
-// the FULL coarse authorization scope plus the policy-store hash, so:
+// cache is usable for this request (ok=false ⇒ bypass). It keys on the FULL
+// binding-resolution input, coarse authorization scope and policy-store hash,
+// so:
 //
 //   - a policy republish changes the hash, so no entry keyed on the previous
 //     store can ever serve a stale verdict (the bust guarantee);
-//   - an impersonated request carries the calling subject, the actor, the
-//     actor's principal TYPE and organization set, and a distinct
-//     "impersonated|" discriminator, so it can never collide with a direct
-//     request, nor can two distinct impersonated principals that merely share
-//     an actor string (over- or under-granting).
+//   - every request carries the caller's subject, issuer, auth-claims presence,
+//     account type, organization set and groups;
+//   - an impersonated request additionally carries the actor, actor issuer,
+//     principal TYPE and organization set, so it can never collide with a
+//     direct request or another impersonated identity.
+//
+// Every scalar is length-prefixed. Collections are sorted and preceded by an
+// element count, so delimiters in any caller-, principal-, resource- or
+// configuration-controlled value cannot shift field boundaries.
 //
 // The impersonation predicate is the SAME impersonationFromContext the decision
 // path uses (not the raw principal helpers), so the key can never disagree with
@@ -300,46 +305,62 @@ func (r *RBAC) decisionCacheKey(ctx context.Context, resource Resource, operatio
 		return "", false
 	}
 
-	scope := resource.Kind + "|" + resource.OrganizationID + "|" + resource.ProjectID
-	action := string(operation)
+	claimsPresent := "0"
+	callerType := ""
 
-	if p := impersonationFromContext(ctx); p != nil {
-		// The impersonated verdict resolves the actor's bindings from its
-		// principal TYPE and organization set (impersonatedInfo ->
-		// ResolveBindings, check.go/bindings.go), both caller-asserted per
-		// request: Type selects the resolution source (User subjects vs
-		// Service-account IDs) and the org set scopes membership.  Both must
-		// key the entry, or two distinct impersonated principals sharing an
-		// actor string would collide on one cached verdict.  The org set is
-		// the SAME principal.ResolvedOrganizationIDs the decision resolves
-		// against (so the singular-OrganizationID fallback is keyed too, not
-		// just OrganizationIDs), sorted so a semantically identical set always
-		// yields one key.
-		orgs := p.ResolvedOrganizationIDs()
-		slices.Sort(orgs)
-
-		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + string(p.Type) + "|" + strings.Join(orgs, ",") + "|" + scope + "|" + action + "|" + hash, true
-	}
-
-	// A direct request resolves the caller's OWN bindings from the token's
-	// subject, account type AND organization set (ResolveBindings reads all
-	// three — bindings.go).  All three therefore key the entry: keying on the
-	// subject alone would serve one principal's verdict to a different
-	// principal that shares a subject string but asserts a different account
-	// type or organization set — the platform's cache-scope-isolation invariant
-	// forbids a decision key coarser than the full authorization scope.  The
-	// claims block is absent on a principal that carries none (empty type/set).
-	var (
-		directType string
-		directOrgs []string
-	)
+	var callerOrgs []string
 
 	if authz := info.Userinfo.HttpsunikornCloudOrgauthz; authz != nil {
-		directType = string(authz.Acctype)
-		directOrgs = slices.Clone(authz.OrgIds)
+		claimsPresent = "1"
+		callerType = string(authz.Acctype)
+		callerOrgs = authz.OrgIds
 	}
 
-	slices.Sort(directOrgs)
+	var key strings.Builder
 
-	return "direct|" + info.Userinfo.Sub + "|" + directType + "|" + strings.Join(directOrgs, ",") + "|" + scope + "|" + action + "|" + hash, true
+	appendValue := func(value string) {
+		key.WriteString(strconv.Itoa(len(value)))
+		key.WriteByte(':')
+		key.WriteString(value)
+		key.WriteByte('|')
+	}
+
+	appendValues := func(values []string) {
+		values = slices.Clone(values)
+		slices.Sort(values)
+
+		appendValue(strconv.Itoa(len(values)))
+
+		for _, value := range values {
+			appendValue(value)
+		}
+	}
+
+	appendCaller := func(mode string) {
+		appendValue(mode)
+		appendValue(info.Userinfo.Sub)
+		appendValue(info.SrcIss)
+		appendValue(claimsPresent)
+		appendValue(callerType)
+		appendValues(callerOrgs)
+		appendValues(info.Groups)
+	}
+
+	if p := impersonationFromContext(ctx); p != nil {
+		appendCaller("impersonated")
+		appendValue(p.Actor)
+		appendValue(p.Issuer)
+		appendValue(string(p.Type))
+		appendValues(p.ResolvedOrganizationIDs())
+	} else {
+		appendCaller("direct")
+	}
+
+	appendValue(resource.Kind)
+	appendValue(resource.OrganizationID)
+	appendValue(resource.ProjectID)
+	appendValue(string(operation))
+	appendValue(hash)
+
+	return key.String(), true
 }
