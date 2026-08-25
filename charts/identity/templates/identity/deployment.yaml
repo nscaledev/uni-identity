@@ -41,6 +41,20 @@ spec:
         - --auth0-exchange-audience={{ .audience }}
         {{- end }}
         {{- end }}
+        {{- with .Values.identity.authorizationEngine }}
+        {{- if and (ne . "legacy") (not $.Values.cerbos.enabled) }}
+        {{- fail "set cerbos.enabled to true to use identity.authorizationEngine shadow or cerbos" }}
+        {{- end }}
+        - --authorization-engine={{ . }}
+        {{- end }}
+        {{- if .Values.cerbos.enabled }}
+        # The controller-owned policy store ConfigMap, read to key the
+        # coarse-decision cache on the policy-store hash so a republish busts
+        # it.  Same expression the cerbos sidecar's policy volume and the
+        # policy controller reference, so publisher, consumer and cache cannot
+        # drift.
+        - --cerbos-policies-configmap={{ .Release.Name }}-cerbos-policies
+        {{- end }}
         {{- $adminRoles := list }}
         {{- range $index, $name := .Values.platformAdministrators.roles }}
           {{- $adminRoles = append $adminRoles (include "resource.id" $name) }}

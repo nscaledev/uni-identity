@@ -32,10 +32,18 @@ type Options struct {
 	// CheckTimeout bounds every call to the PDP with a per-call context
 	// deadline.
 	CheckTimeout time.Duration
+
+	// PoliciesConfigMap names the controller-owned policy store ConfigMap
+	// (the same expression the policy controller publishes to and the sidecar
+	// mounts), read by the PolicyStoreHasher to fingerprint the store for the
+	// coarse-decision cache.  Empty disables the hasher, so the cache stays
+	// inert (safe default); the chart sets it.
+	PoliciesConfigMap string
 }
 
 // AddFlags registers the client flags with the flag set.
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringVar(&o.Endpoint, "cerbos-endpoint", "localhost:3593", "Address of the Cerbos PDP gRPC listener.")
 	f.DurationVar(&o.CheckTimeout, "cerbos-check-timeout", 2*time.Second, "Per-call deadline for Cerbos PDP requests.")
+	f.StringVar(&o.PoliciesConfigMap, "cerbos-policies-configmap", "", "Name of the Cerbos policy store ConfigMap, read to key the coarse-decision cache on the policy-store hash (empty disables caching).")
 }

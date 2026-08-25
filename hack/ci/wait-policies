@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Composable wait unit: block until the Cerbos policy store has been
+# published by the policy controller AND verifiably loaded by the Cerbos
+# sidecar.  Run after hack/ci/install, before fixtures.
+#
+# Why this exists (the gate-poisoning hazard): the policies ConfigMap is
+# created at runtime by the policy controller and the identity pod mounts it
+# `optional`, so the pod usually starts BEFORE the first publish — Cerbos
+# comes up on an empty directory and denies everything.  In shadow mode every
+# request served during that window logs "cerbos shadow divergence" (legacy
+# allow vs Cerbos deny), which would poison the divergence gate
+# (hack/ci/divergence-gate) with false policy-parity signal.  Fixture traffic
+# must therefore wait here.
+#
+# Empirically verified against the pinned image (ghcr.io/cerbos/cerbos:0.53.0):
+#   - at startup the PDP logs `"Found N executable policies"` (logger
+#     cerbos.index) with the loaded policy count;
+#   - a live reload after the kubelet back-fills the ConfigMap volume logs
+#     NOTHING at info level — the reload is invisible in the logs.
+# So when the sidecar started before the first publish (its startup line says
+# "Found 0"), no amount of log-watching can confirm the load: restart the
+# deployment so Cerbos starts against the published store and logs a
+# verifiable non-zero count.  (The hot-reload path itself is exercised and
+# asserted later by hack/ci/decision-flip.)
+#
+# Usage:
+#   hack/ci/wait-policies --namespace NS --release-name RNAME
+set -euo pipefail
+
+NAMESPACE=""
+RELEASE_NAME=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --namespace)
+      NAMESPACE="$2"
+      shift 2
+      ;;
+    --release-name)
+      RELEASE_NAME="$2"
+      shift 2
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "${NAMESPACE}" || -z "${RELEASE_NAME}" ]]; then
+  echo "Usage: $0 --namespace NS --release-name RNAME" >&2
+  exit 1
+fi
+
+CONFIGMAP="${RELEASE_NAME}-cerbos-policies"
+DEPLOYMENT="deploy/${RELEASE_NAME}-server"
+
+# ── Wait for the policy controller's first non-empty publish ─────────────────
+echo "==> Waiting for the policy controller to publish ${CONFIGMAP}..." >&2
+for i in $(seq 1 60); do
+  KEYS=$(kubectl get configmap "${CONFIGMAP}" -n "${NAMESPACE}" -o json 2>/dev/null \
+    | jq '.data | length' || echo 0)
+  if [[ "${KEYS}" -gt 0 ]]; then
+    echo "==> Policy store published: ${KEYS} files." >&2
+    break
+  fi
+  if [[ "${i}" -eq 60 ]]; then
+    echo "ERROR: ${CONFIGMAP} not published (or empty) after 120s" >&2
+    kubectl logs "deploy/${RELEASE_NAME}-policy-controller" -n "${NAMESPACE}" --tail=50 >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
+
+# loaded_policy_count echoes the policy count from the Cerbos container's most
+# recent startup line, or nothing if the line is absent (container too young).
+loaded_policy_count() {
+  kubectl logs "${DEPLOYMENT}" -c cerbos -n "${NAMESPACE}" 2>/dev/null \
+    | sed -n 's/.*"Found \([0-9][0-9]*\) executable policies".*/\1/p' | tail -n 1
+}
+
+# ── Ensure Cerbos observably loaded the store ────────────────────────────────
+COUNT=$(loaded_policy_count)
+if [[ -z "${COUNT}" || "${COUNT}" -eq 0 ]]; then
+  echo "==> Cerbos started before the first publish (count='${COUNT:-none}'); reloads are silent at info level — restarting the server so the load is observable..." >&2
+  kubectl rollout restart "${DEPLOYMENT}" -n "${NAMESPACE}" >&2
+  kubectl rollout status "${DEPLOYMENT}" -n "${NAMESPACE}" --timeout=180s >&2
+fi
+
+echo "==> Waiting for Cerbos to report a non-zero policy count..." >&2
+for i in $(seq 1 30); do
+  COUNT=$(loaded_policy_count)
+  if [[ -n "${COUNT}" && "${COUNT}" -gt 0 ]]; then
+    echo "==> Cerbos loaded ${COUNT} policies." >&2
+    exit 0
+  fi
+  if [[ "${i}" -eq 30 ]]; then
+    echo "ERROR: Cerbos did not report loading a non-empty policy store after 60s" >&2
+    kubectl logs "${DEPLOYMENT}" -c cerbos -n "${NAMESPACE}" --tail=50 >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
