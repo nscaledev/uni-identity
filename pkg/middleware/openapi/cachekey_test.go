@@ -80,6 +80,10 @@ func digestSegment(t *testing.T, key string) string {
 	return digest
 }
 
+// The table is the point: every field of the key gets a row, so the
+// function is long by design and splitting it would hide the matrix.
+//
+//nolint:maintidx
 func TestACLCacheKey(t *testing.T) {
 	t.Parallel()
 
@@ -113,8 +117,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(t.Context(), directInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|0:|0:|%d:%s|_global", len(d), d), global)
-		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|0:|0:|%d:%s|org-1", len(d), d), scoped)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|0:|1:0|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|0:|1:0|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
@@ -128,7 +132,7 @@ func TestACLCacheKey(t *testing.T) {
 		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|0:|0:|%d:%s|org-1", len(d), d), key)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|0:|1:0|%d:%s|org-1", len(d), d), key)
 	})
 
 	t.Run("ImpersonatedDiffersFromDirect", func(t *testing.T) {
@@ -145,8 +149,8 @@ func TestACLCacheKey(t *testing.T) {
 		impersonated, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|0:|0:|%d:%s|org-1", len(d), d), direct)
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), impersonated)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|0:|1:0|%d:%s|org-1", len(d), d), direct)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|1:0|%d:%s|org-1", len(d), d), impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
 
@@ -172,8 +176,8 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotEqual(t, computeKey, regionKey)
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), computeKey)
-		require.Equal(t, fmt.Sprintf("impersonated|14:region-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), regionKey)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|1:0|%d:%s|org-1", len(d), d), computeKey)
+		require.Equal(t, fmt.Sprintf("impersonated|14:region-service|0:|6:user-1|0:|0:|1:0|%d:%s|org-1", len(d), d), regionKey)
 	})
 
 	t.Run("ImpersonatedIncludesOrganizationScope", func(t *testing.T) {
@@ -190,8 +194,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|_global", len(d), d), global)
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), scoped)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|1:0|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|1:0|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
@@ -239,6 +243,21 @@ func TestACLCacheKey(t *testing.T) {
 		require.Equal(t, keyAB, keyBA, "org-set order must not change the key (sorted)")
 	})
 
+	t.Run("ImpersonatedIssuerDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		issuerA := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Issuer: "https://a.example.com/", Type: identityapi.User}))
+		issuerB := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Issuer: "https://b.example.com/", Type: identityapi.User}))
+
+		keyA, err := aclCacheKey(issuerA, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(issuerB, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyA, keyB, "the same actor authenticated by different issuers must never share an impersonated ACL")
+	})
+
 	t.Run("DirectAccountTypeAndOrgSetDistinguishTheKey", func(t *testing.T) {
 		t.Parallel()
 
@@ -269,6 +288,27 @@ func TestACLCacheKey(t *testing.T) {
 
 		require.NotEqual(t, baseKey, typeKey, "account type must key the direct entry")
 		require.NotEqual(t, baseKey, orgKey, "org set must key the direct entry")
+	})
+
+	t.Run("OrganizationSetsCannotFlattenIntoOneField", func(t *testing.T) {
+		t.Parallel()
+
+		// X-Principal is unsigned JSON and extractPrincipal validates nothing
+		// but Actor, so a caller can put the list separator inside an
+		// organization ID. A comma-joined field encoded ["org-a,org-b"] and
+		// ["org-a", "org-b"] as the same bytes, so two different asserted
+		// organization sets shared one cached ACL. Framing each element keeps
+		// them apart.
+		merged := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-a,org-b"}}))
+		separate := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-a", "org-b"}}))
+
+		mergedKey, err := aclCacheKey(merged, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		separateKey, err := aclCacheKey(separate, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, mergedKey, separateKey)
 	})
 
 	t.Run("ImpersonatedSingularOrganizationIsKeyed", func(t *testing.T) {

@@ -28,6 +28,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,6 +152,30 @@ func hasHTTPAuthorization(r *http.Request) bool {
 	return r.Header.Get("Authorization") != ""
 }
 
+// framedList encodes a string list as ONE cache-key field: the element count
+// first, then every element carrying its own byte length.  A comma-joined
+// field would be ambiguous, because the length prefix protects the boundary
+// AROUND the field, not the separators inside it: ["a,b"] and ["a", "b"] join
+// to the same bytes.  That matters most for an impersonated principal's
+// organizations, which arrive in X-Principal as unsigned JSON trusted from
+// the mTLS channel (extractPrincipal validates nothing but Actor), so their
+// values are the one collection here a caller can shape.  Same encoding as
+// pkg/rbac's decision key, so both caches frame a collection alike.
+func framedList(values []string) string {
+	var field strings.Builder
+
+	field.WriteString(strconv.Itoa(len(values)))
+
+	for _, value := range values {
+		field.WriteByte('|')
+		field.WriteString(strconv.Itoa(len(value)))
+		field.WriteByte(':')
+		field.WriteString(value)
+	}
+
+	return field.String()
+}
+
 // aclCacheKey returns the key to use when caching an ACL.
 //
 // There are three authorization modes that matter here.
@@ -179,7 +204,7 @@ func hasHTTPAuthorization(r *http.Request) bool {
 //
 // The impersonated cache key therefore includes:
 // - the authenticated calling service subject.
-// - the impersonated actor.
+// - the impersonated actor and its issuer.
 // - the impersonated actor's principal type and sorted organization set.
 //
 // All key shapes also include info.SrcIss, because subjects are only unique
@@ -244,14 +269,15 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 
 		sum := sha256.Sum256([]byte(info.Token))
 		tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
-		joinedOrgs := strings.Join(orgs, ",")
+		orgsField := framedList(orgs)
 
-		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%s",
+		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%s",
 			len(info.Userinfo.Sub), info.Userinfo.Sub,
 			len(info.SrcIss), info.SrcIss,
 			len(p.Actor), p.Actor,
+			len(p.Issuer), p.Issuer,
 			len(p.Type), string(p.Type),
-			len(joinedOrgs), joinedOrgs,
+			len(orgsField), orgsField,
 			len(tokenDigest), tokenDigest,
 			scope), nil
 	}
@@ -277,13 +303,13 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 
 	sum := sha256.Sum256([]byte(info.Token))
 	tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
-	joinedDirectOrgs := strings.Join(directOrgs, ",")
+	directOrgsField := framedList(directOrgs)
 
 	return fmt.Sprintf("direct|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%s",
 		len(info.Userinfo.Sub), info.Userinfo.Sub,
 		len(info.SrcIss), info.SrcIss,
 		len(directType), directType,
-		len(joinedDirectOrgs), joinedDirectOrgs,
+		len(directOrgsField), directOrgsField,
 		len(tokenDigest), tokenDigest,
 		scope), nil
 }
@@ -493,7 +519,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 		// Add the principal to the context, the ACL call will use the internal
 		// identity client, and that requires a principal to be present.
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info)
 		if err != nil {
 			authInfo.err = errors.OAuth2InvalidRequest("principal propagation failure for authentication").WithError(err)
 			return err
@@ -554,11 +580,13 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 // generatePrincipal is called by non-system API services e.g. CLI/UI, and creates
 // principal information from the request itself.
-func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, userinfo *identityapi.Userinfo) context.Context {
+func (v *Validator) generatePrincipal(ctx context.Context, params map[string]string, info *authorization.Info) context.Context {
 	var (
 		organizationIDs []string
 		principalType   = identityapi.User
 	)
+
+	userinfo := info.Userinfo
 
 	if userinfo.HttpsunikornCloudOrgauthz != nil {
 		organizationIDs = userinfo.HttpsunikornCloudOrgauthz.OrgIds
@@ -569,6 +597,7 @@ func (v *Validator) generatePrincipal(ctx context.Context, params map[string]str
 	}
 
 	p := &principal.Principal{
+		Issuer:          info.SrcIss,
 		OrganizationID:  params["organizationID"],
 		OrganizationIDs: organizationIDs,
 		ProjectID:       params["projectID"],
@@ -650,7 +679,7 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
 // API calls, otherwise it generates it from the available information.
-func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, userinfo *identityapi.Userinfo) (context.Context, error) {
+func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, info *authorization.Info) (context.Context, error) {
 	if util.HasClientCertificateHeader(r.Header) {
 		newCtx, err := extractPrincipal(ctx, r)
 		if err != nil {
@@ -660,7 +689,7 @@ func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Requ
 		return newCtx, nil
 	}
 
-	return v.generatePrincipal(ctx, params, userinfo), nil
+	return v.generatePrincipal(ctx, params, info), nil
 }
 
 // validateAndAuthorize performs OpenAPI schema validation of the request, and also
@@ -690,17 +719,32 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	return r, responseValidationInput, nil
 }
 
-// seedDecisionEngines seeds the decision engine the configured Authorizer
-// optionally supplies into ctx, for the Allow* facade's dual-path
-// (DecisionEngineProvider) dispatch fork to consult.  This is the single
-// production seeding point — deliberately called next to the ACL, on the
-// context the handlers actually receive (the derived context getACL hands to
-// GetACL is discarded).  Contexts without an engine always take the legacy
-// path.
+// seedDecisionEngines seeds the local and/or remote decision engines the
+// configured Authorizer optionally supplies into ctx, for the Allow* facade's
+// dual-path (DecisionEngineProvider) and remote (RemoteDecisionEngineProvider)
+// dispatch forks to consult.  This is the single production seeding point —
+// deliberately called next to the ACL, on the context the handlers actually
+// receive (the derived context getACL hands to GetACL is discarded).
+// Contexts without an engine always take the legacy path.  The two
+// assertions are independent — local.Authorizer and remote.Authorizer each
+// implement only one of the two optional interfaces in practice (see
+// TestLocalAuthorizerDoesNotImplementRemoteDecisionEngineProvider and
+// TestRemoteAuthorizerDoesNotImplementDecisionEngineProvider), so at most one
+// of the two context values is actually added, but nothing here depends on
+// that exclusivity to behave correctly.  A remote RemoteMode of RemoteOff
+// (the default absent a WithRemoteEngineMode option) is harmless — dispatch
+// falls through to the path above — so seeding it never changes behavior on
+// its own.
 func (v *Validator) seedDecisionEngines(ctx context.Context) context.Context {
 	if provider, ok := v.authorizer.(DecisionEngineProvider); ok {
 		if engine := provider.DecisionEngine(); engine != nil {
 			ctx = rbac.NewEngineContext(ctx, engine)
+		}
+	}
+
+	if provider, ok := v.authorizer.(RemoteDecisionEngineProvider); ok {
+		if engine := provider.RemoteDecisionEngine(); engine != nil {
+			ctx = rbac.NewRemoteEngineContext(ctx, engine, provider.RemoteEngineMode())
 		}
 	}
 
@@ -729,7 +773,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 		// data.
 		var err error
 
-		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo)
+		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info)
 		if err != nil {
 			return errors.OAuth2InvalidRequest("identity info propagation failure").WithError(err)
 		}
