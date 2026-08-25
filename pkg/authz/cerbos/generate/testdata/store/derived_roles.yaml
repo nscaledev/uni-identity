@@ -8,11 +8,21 @@ derivedRoles:
       condition:
         match:
           expr: '"00000000-0000-0000-0000-000000000001#global" in P.attr.bindings'
+    - name: role_00000000-0000-0000-0000-000000000001_global-read
+      parentRoles: [principal]
+      condition:
+        match:
+          expr: '"00000000-0000-0000-0000-000000000001#global-read" in P.attr.bindings'
     - name: role_00000000-0000-0000-0000-000000000002_global
       parentRoles: [principal]
       condition:
         match:
           expr: '"00000000-0000-0000-0000-000000000002#global" in P.attr.bindings'
+    - name: role_00000000-0000-0000-0000-000000000002_global-read
+      parentRoles: [principal]
+      condition:
+        match:
+          expr: '"00000000-0000-0000-0000-000000000002#global-read" in P.attr.bindings'
     - name: role_00000000-0000-0000-0000-000000000003_org
       parentRoles: [principal]
       condition:
@@ -48,16 +58,31 @@ derivedRoles:
       condition:
         match:
           expr: '"00000000-0000-0000-0000-000000000007#global" in P.attr.bindings'
+    - name: role_00000000-0000-0000-0000-000000000007_global-read
+      parentRoles: [principal]
+      condition:
+        match:
+          expr: '"00000000-0000-0000-0000-000000000007#global-read" in P.attr.bindings'
     - name: role_00000000-0000-0000-0000-000000000008_global
       parentRoles: [principal]
       condition:
         match:
           expr: '"00000000-0000-0000-0000-000000000008#global" in P.attr.bindings'
+    - name: role_00000000-0000-0000-0000-000000000008_global-read
+      parentRoles: [principal]
+      condition:
+        match:
+          expr: '"00000000-0000-0000-0000-000000000008#global-read" in P.attr.bindings'
     - name: role_00000000-0000-0000-0000-000000000009_global
       parentRoles: [principal]
       condition:
         match:
           expr: '"00000000-0000-0000-0000-000000000009#global" in P.attr.bindings'
+    - name: role_00000000-0000-0000-0000-000000000009_global-read
+      parentRoles: [principal]
+      condition:
+        match:
+          expr: '"00000000-0000-0000-0000-000000000009#global-read" in P.attr.bindings'
     - name: role_00000000-0000-0000-0000-000000000101_org
       parentRoles: [principal]
       condition:
