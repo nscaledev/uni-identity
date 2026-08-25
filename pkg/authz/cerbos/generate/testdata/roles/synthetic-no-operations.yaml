@@ -1,0 +1,16 @@
+# Synthetic fixture (not transcribed from a chart).  A RoleScope with no
+# operations grants nothing: the generator must skip the scope (and the whole
+# role, since it has no other grants), so its presence in the fixture set must
+# not change the golden output.
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000203
+  labels:
+    unikorn-cloud.org/name: synthetic-no-operations
+spec:
+  scopes:
+    organization:
+      - name: identity:groups
+        operations: []

@@ -1,0 +1,34 @@
+# Transcribed from charts/identity/values.yaml (roles.kubernetes-service).
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000007
+  labels:
+    unikorn-cloud.org/name: kubernetes-service
+spec:
+  protected: true
+  scopes:
+    global:
+      - name: identity:projects
+        operations: [read]
+      - name: identity:projects/references
+        operations: [create, delete]
+      - name: identity:allocations
+        operations: [create, read, update, delete]
+      - name: region:identities
+        operations: [create, read, delete]
+      - name: region:identities/references
+        operations: [create, delete]
+      - name: region:regions
+        operations: [read]
+      - name: region:regions/detail
+        operations: [read]
+      - name: region:flavors
+        operations: [read]
+      - name: region:images
+        operations: [read]
+      - name: region:externalnetworks
+        operations: [read]
+      - name: region:networks
+        operations: [create, read, delete]
