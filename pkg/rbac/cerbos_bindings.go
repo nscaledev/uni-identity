@@ -77,7 +77,15 @@ func (r *RBAC) ResolveBindings(ctx context.Context, info *authorization.Info) ([
 	// The user-account binding path matches global role bindings by the
 	// issuer-aware (srcIss, subject) pair and by the token's IdP groups,
 	// mirroring processUserAccountACL.
-	srcIss := srcIssOrUNISentinel(info.SrcIss)
+	// Direct pre-src_iss passports retain their legacy UNI default. A missing
+	// issuer on an impersonated principal is different: the actor may have been
+	// authenticated externally by an older downstream service, so defaulting it
+	// to UNI could match a UNI-local global binding. Empty therefore remains
+	// empty on impersonated requests and matches no valid binding.
+	srcIss := info.SrcIss
+	if impersonationFromContext(ctx) == nil {
+		srcIss = srcIssOrUNISentinel(srcIss)
+	}
 
 	var bindings []cerbos.RoleBinding
 

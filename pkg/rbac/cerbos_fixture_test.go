@@ -83,7 +83,8 @@ const (
 
 	// Subjects.  parityAdminSubject is a platform administrator who ALSO has
 	// a group membership (parityGroupMixed) that must be ignored.
-	parityAdminSubject = "parity-admin@example.com"
+	parityAdminSubject       = "parity-admin@example.com"
+	parityIssuerBoundSubject = "parity-issuer-bound@example.com"
 
 	// An external IdP issuer and one of its group names: wildcard subject
 	// bindings are rejected on the UNI sentinel, and Info.Groups is only
@@ -359,6 +360,9 @@ func newParityFixture(t *testing.T) *parityFixture {
 	options := &rbac.Options{
 		PlatformAdministratorSubjects: []rbac.PlatformAdministratorSubject{{Issuer: parityAdminIssuer, Subject: parityAdminSubject}},
 		PlatformAdministratorRoleIDs:  []string{parityRoleGlobalAdmin},
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: parityAdminIssuer, Subject: parityIssuerBoundSubject, RoleIDs: []string{parityRoleImpersonator}},
+		},
 		SystemAccountRoleIDs: map[string]string{
 			paritySystemCN:             parityRoleGlobalAdmin,
 			paritySystemImpersonatorCN: parityRoleImpersonator,

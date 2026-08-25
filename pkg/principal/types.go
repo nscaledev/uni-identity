@@ -25,6 +25,9 @@ import (
 
 // Principal records information about what user insigated a request.
 type Principal struct {
+	// Issuer is the identity provider that authenticated Actor. Empty preserves
+	// compatibility with principal headers emitted before issuer propagation.
+	Issuer string `json:"issuer,omitempty"`
 	// OrganizationID of the originating request (optional).
 	OrganizationID string `json:"organizationId,omitempty"`
 	// OrganizationIDs records the full set of organizations the actor can access.

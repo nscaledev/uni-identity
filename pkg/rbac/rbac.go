@@ -311,9 +311,9 @@ type RBAC struct {
 	// path's taxonomy).  Never set on a served engine.
 	shadowEvaluation bool
 
-	// decisionCache memoizes coarse cerbos-mode policy denials (never allows,
-	// never failures) keyed by (subject, impersonation+actor, scope, action,
-	// policy hash); see engine.go allowCoarse/decisionCacheKey.  It
+	// decisionCache memoizes coarse cerbos-mode policy denials keyed by every
+	// binding-resolution input plus the decision scope, action and policy hash;
+	// see engine.go allowCoarse/decisionCacheKey. It
 	// is only consulted when a policyHasher is configured — without one every
 	// decision bypasses it, so downstream and legacy paths are unaffected.
 	decisionCache    *cache.LRUExpireCache[string, bool]
@@ -1221,12 +1221,12 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal.Principal, organizationID string, authz *openapi.AuthClaims) (*openapi.Acl, error) {
 	switch p.Type {
 	case openapi.User:
-		// For impersonated principals the srcIss is not yet propagated through the
-		// X-Principal header; default to the UNI sentinel. See srcIssOrUNISentinel's
-		// doc comment for why this default is safe.
+		// An empty issuer is retained for compatibility with older X-Principal
+		// headers and deliberately matches no global binding. Defaulting it to UNI
+		// would let an externally authenticated actor match a UNI-local binding.
 		// X-Principal never carries groups, because group bindings must fail
 		// closed on delegated hops.
-		return r.processUserAccountACL(ctx, p.Actor, idconstants.UNISentinel, organizationID, authz, nil)
+		return r.processUserAccountACL(ctx, p.Actor, p.Issuer, organizationID, authz, nil)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
 	case openapi.System:
@@ -1237,14 +1237,13 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 }
 
 // srcIssOrUNISentinel returns srcIss unchanged if set, otherwise the UNI sentinel.
-// This default is safe because external tokens always carry a real src_iss stamped
-// at validation, so they can never resolve to the sentinel; the consumers that do
-// hit the empty default (passports minted by pre-src_iss code during a rolling
-// upgrade, impersonated principals — see processImpersonatedPrincipalACL — and
-// other non-external paths) match only sentinel admin entries, which is the
-// intended legacy semantic deliberately reproduced by expandBareAdminSubjects in
-// pkg/server. See TestSrcIssDefaultMatchesMigrationGateSentinel, which pins the
-// coupling between this default and the sentinel constant.
+// This default is safe for direct authentication because external tokens carry a
+// real src_iss stamped at validation. It is retained for passports minted by
+// pre-src_iss code during a rolling upgrade and other direct non-external paths.
+// Impersonated principals do not use this default: an older X-Principal header
+// may omit its issuer, and treating that ambiguity as UNI could match a UNI-local
+// global binding. See TestSrcIssDefaultMatchesMigrationGateSentinel, which pins
+// the remaining direct-path default to the sentinel constant.
 func srcIssOrUNISentinel(srcIss string) string {
 	if srcIss == "" {
 		return idconstants.UNISentinel

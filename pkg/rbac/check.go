@@ -323,21 +323,22 @@ func impersonationTypeGate(p *principal.Principal) error {
 
 // impersonatedInfo synthesizes the authorization info the impersonated side
 // of the dual check resolves bindings from, mirroring the legacy claims
-// rebuild EXACTLY (getSystemAccountACL, rbac.go): Sub is the propagated
-// actor, Acctype the propagated principal type, and OrgIds the principal's
-// organizations with the defensive singular-OrganizationID fallback (a
-// caller that only sets OrganizationID still resolves the scoped
+// rebuild (getSystemAccountACL, rbac.go): Sub is the propagated actor, SrcIss
+// the propagated issuer, Acctype the propagated principal type, and OrgIds the
+// principal's organizations with the defensive singular-OrganizationID
+// fallback (a caller that only sets OrganizationID still resolves the scoped
 // organization rather than an empty grant set).
 //
-// COUPLING: ResolveBindings reads ONLY Userinfo.Sub and the
-// HttpsunikornCloudOrgauthz claims (Acctype, OrgIds) — see
-// pkg/middleware/authorization/authinfo.go and bindings.go — so this
-// synthesized Info is a complete resolution input.  The impersonated
-// principal has no token of its own and none is fabricated.
+// COUPLING: ResolveBindings reads SrcIss, Groups, Userinfo.Sub and the
+// HttpsunikornCloudOrgauthz claims (Acctype, OrgIds) — see bindings.go. This
+// synthesized Info supplies the propagated fields and deliberately leaves
+// Groups empty: the impersonated principal has no token of its own and none is
+// fabricated.
 func impersonatedInfo(p *principal.Principal) *authorization.Info {
 	organizationIDs := p.ResolvedOrganizationIDs()
 
 	return &authorization.Info{
+		SrcIss: p.Issuer,
 		Userinfo: &openapi.Userinfo{
 			Sub: p.Actor,
 			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{

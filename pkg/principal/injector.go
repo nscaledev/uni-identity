@@ -63,7 +63,12 @@ func Injector(cli client.Client, options *coreclient.HTTPClientOptions) func(con
 	}
 }
 
-// FromResource loads the identity principal stored in the resource.
+// FromResource loads the attribution principal stored in the resource. Core
+// metadata currently has no canonical issuer field, so Issuer cannot be
+// reconstructed here. ControllerInjector uses this principal for
+// attribution-only propagation and does not enable downstream impersonation;
+// persisting issuer here requires a coordinated core metadata and platform
+// specification change.
 func FromResource(resource metav1.Object) (*Principal, error) {
 	// Check the consistency of the resource, we should always have some
 	// labels and annotations.

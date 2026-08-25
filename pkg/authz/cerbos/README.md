@@ -202,7 +202,7 @@ Each reconcile:
    **compile gate**: it exec's the vendored pinned `cerbos compile` binary
    (`--cerbos-binary`, baked into the controller image by
    `docker/unikorn-policy-controller/Dockerfile` from the same pinned image
-   the sidecar runs, so both must match `CERBOS_VERSION` in the Makefile);
+   the sidecar runs — the `validate-cerbos-version` guard covers the pin);
 4. publishes to the ConfigMap named by `--cerbos-policies-configmap` only on
    exit 0.
 

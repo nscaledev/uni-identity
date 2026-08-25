@@ -29,6 +29,7 @@ import (
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -961,6 +962,7 @@ func getACLForSystemAccount(t *testing.T, rbacClient *rbac.RBAC, serviceCN strin
 func impersonatedPrincipal(subject string, accountType openapi.AuthClaimsAcctype) *principal.Principal {
 	return &principal.Principal{
 		Actor:           subject,
+		Issuer:          idconstants.UNISentinel,
 		Type:            accountType,
 		OrganizationIDs: []string{testOrgID},
 	}

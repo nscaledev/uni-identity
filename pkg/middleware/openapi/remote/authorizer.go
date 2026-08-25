@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -40,6 +41,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -50,6 +52,30 @@ const (
 	// cacheTTLFudge absorbs clock skew between identity and this middleware
 	// when deriving cache TTLs from passport expiry.
 	cacheTTLFudge = 10 * time.Second
+
+	// defaultCheckTimeout is the hard per-call deadline CheckMany applies when
+	// no WithCheckTimeout option overrides it, guaranteeing a bounded remote
+	// authorization-check call even before a consumer wires a flag.
+	defaultCheckTimeout = 250 * time.Millisecond
+
+	// The five constants below configure the safe-default circuit breaker
+	// guarding the CheckMany round trip (see NewAuthorizer, WithCircuitBreaker):
+	// a time-based failure RATE -- not a raw consecutive count -- opens the
+	// breaker once at least defaultBreakerFailureExecutionThreshold executions
+	// have landed within the trailing defaultBreakerFailureThresholdingPeriod
+	// and a majority of them failed (defaultBreakerFailureRateThreshold),
+	// tolerating an occasional flaky call while still tripping quickly on a
+	// genuine outage. Once open, it waits defaultBreakerDelay before probing
+	// recovery in half-open state, where defaultBreakerSuccessThreshold
+	// consecutive successes close it again (any half-open failure reopens it
+	// immediately). "Failure" here is CheckMany's own error return -- no
+	// verdict obtained -- never a returned allow/deny verdict; see CheckMany's
+	// doc comment.
+	defaultBreakerFailureRateThreshold      = 0.5
+	defaultBreakerFailureExecutionThreshold = 10
+	defaultBreakerFailureThresholdingPeriod = 10 * time.Second
+	defaultBreakerDelay                     = 5 * time.Second
+	defaultBreakerSuccessThreshold          = 2
 )
 
 // Authorizer provides OpenAPI based authorization middleware backed by remote
@@ -61,9 +87,37 @@ type Authorizer struct {
 	httpClient    *http.Client
 	exchange      TokenExchange
 	tokenCache    *cache.LRUExpireCache[tokenCacheKey, *oauth2.PassportClaims]
+
+	// checkTimeout is the hard per-call deadline CheckMany applies to the
+	// remote authorization-check call.
+	checkTimeout time.Duration
+
+	// breaker guards the CheckMany round trip (see decision.go): once open it
+	// fails every call instantly with no HTTP round trip, protecting a
+	// struggling identity from further load until a cooldown elapses.
+	// Constructed once per Authorizer and shared across every request --
+	// that is the point, and failsafe-go's CircuitBreaker is
+	// concurrency-safe. nil disables the breaker entirely (see
+	// WithCircuitBreaker), reverting CheckMany to exactly its pre-breaker
+	// behavior.
+	breaker circuitbreaker.CircuitBreaker[[]bool]
+
+	// remoteMode selects how the RemoteDecisionEngine seeded into handler
+	// contexts (see RemoteDecisionEngine, RemoteEngineMode) participates in
+	// Allow* dispatch.  Defaults to the zero value rbac.RemoteOff — under
+	// which dispatchCoarse falls through to the legacy path — overridable by
+	// WithRemoteEngineMode.
+	remoteMode rbac.RemoteMode
+
+	// remoteEngine is the cached rbac.CoarseEngine view of this Authorizer,
+	// built once in NewAuthorizer so RemoteDecisionEngine — called on every
+	// request by seedDecisionEngines — need not re-register OTel instruments
+	// each time. It holds no per-request state.
+	remoteEngine *RemoteEngine
 }
 
 var _ openapi.Authorizer = &Authorizer{}
+var _ openapi.RemoteDecisionEngineProvider = &Authorizer{}
 
 type tokenCacheKey struct {
 	sourceToken    string
@@ -79,14 +133,81 @@ func newTokenCacheKey(sourceToken string, scope tokenExchangeOptions) tokenCache
 	}
 }
 
+// Option configures an Authorizer at construction time.
+type Option func(*Authorizer)
+
+// WithCheckTimeout overrides the default hard per-call deadline CheckMany
+// applies to the remote authorization-check call.
+func WithCheckTimeout(d time.Duration) Option {
+	return func(a *Authorizer) {
+		a.checkTimeout = d
+	}
+}
+
+// WithCircuitBreaker overrides the default circuit breaker guarding the
+// CheckMany round trip (see NewAuthorizer for the default profile). Pass nil
+// to disable the breaker entirely -- e.g. for rollback -- reverting
+// CheckMany to a plain call bounded only by checkTimeout, exactly as it
+// behaved before this guardrail existed.
+func WithCircuitBreaker(cb circuitbreaker.CircuitBreaker[[]bool]) Option {
+	return func(a *Authorizer) {
+		a.breaker = cb
+	}
+}
+
+// WithRemoteEngineMode sets the dispatch mode the RemoteDecisionEngine seeded
+// into handler contexts participates under (see rbac.RemoteMode).  Unset,
+// remoteMode defaults to rbac.RemoteOff — the zero value — under which
+// dispatchCoarse falls through to the legacy path, preserving today's
+// behavior for every existing remote-authorizer caller.
+func WithRemoteEngineMode(m rbac.RemoteMode) Option {
+	return func(a *Authorizer) {
+		a.remoteMode = m
+	}
+}
+
+// isBreakerFailure classifies which CheckMany errors count toward opening the
+// circuit breaker: ONLY a genuine failure to obtain a verdict from a
+// struggling identity — a transport error, a 5xx, a malformed 200, or this
+// package's own checkTimeout expiry, all folded into ErrDecisionUnavailable.
+// Two error classes are deliberately EXCLUDED so caller behaviour can never
+// open a breaker that fail-closes authorization for unrelated users:
+//
+//   - a caller-canceled request (context.Canceled, wrapped inside
+//     ErrDecisionUnavailable by the transport path): the client aborted, so the
+//     PDP's health is unknown, not bad. This package's own deadline expiry is
+//     context.DeadlineExceeded, NOT Canceled, so it still counts — that is the
+//     intended trip signal.
+//   - a deterministic 4xx (propagated verbatim, so NOT ErrDecisionUnavailable):
+//     a rejected request is the caller's fault, not an availability failure.
+//
+// Without this, failsafe-go's default predicate counts EVERY non-nil error, so
+// a client that repeatedly cancels (or sends rejected) requests could trip the
+// shared breaker and deny authorization for everyone on the instance.
+func isBreakerFailure(_ []bool, err error) bool {
+	return goerrors.Is(err, ErrDecisionUnavailable) && !goerrors.Is(err, context.Canceled)
+}
+
 // NewAuthorizer returns a new authorizer with required parameters.
-func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*Authorizer, error) {
+func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, opts ...Option) (*Authorizer, error) {
 	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
 	if err != nil {
 		return nil, err
 	}
 
 	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *oauth2.PassportClaims](tokenCacheSize)
+
+	// The safe-default breaker (see the constants above): every consumer
+	// (region/compute/kubernetes) gets a working breaker for free from this
+	// constructor, with no flag or config required; WithCircuitBreaker tunes
+	// or disables it.
+	breaker := circuitbreaker.NewBuilder[[]bool]().
+		WithFailureRateThreshold(defaultBreakerFailureRateThreshold, defaultBreakerFailureExecutionThreshold, defaultBreakerFailureThresholdingPeriod).
+		WithDelay(defaultBreakerDelay).
+		WithSuccessThreshold(defaultBreakerSuccessThreshold).
+		HandleIf(isBreakerFailure).
+		OnStateChanged(newBreakerStateChangedListener(newRemoteBreakerStateInstrument())).
+		Build()
 
 	a := &Authorizer{
 		httpClient:    httpClient,
@@ -95,7 +216,17 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		clientOptions: clientOptions,
 		exchange:      NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
 		tokenCache:    tokenCache,
+		checkTimeout:  defaultCheckTimeout,
+		breaker:       breaker,
 	}
+
+	for _, opt := range opts {
+		opt(a)
+	}
+
+	// Build the CoarseEngine view once, now that options are applied; see
+	// RemoteDecisionEngine for why it must not be rebuilt per request.
+	a.remoteEngine = NewRemoteEngine(a)
 
 	return a, nil
 }
@@ -379,4 +510,12 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 	}
 
 	return response.JSON200, nil
+}
+
+// RemoteEngineMode implements the middleware's optional
+// RemoteDecisionEngineProvider interface: it reports the dispatch mode the
+// RemoteDecisionEngine seeded into handler contexts participates under,
+// defaulting to rbac.RemoteOff unless WithRemoteEngineMode configured it.
+func (a *Authorizer) RemoteEngineMode() rbac.RemoteMode {
+	return a.remoteMode
 }
