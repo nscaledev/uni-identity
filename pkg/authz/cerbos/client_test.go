@@ -63,6 +63,32 @@ func TestNewEnforcesLoopbackEndpoint(t *testing.T) {
 	}
 }
 
+// TestNewRejectsInvalidEndpointPort pins construction-time validation: an
+// unusable port must fail startup rather than becoming a lazy gRPC dial error
+// on authorization traffic.
+func TestNewRejectsInvalidEndpointPort(t *testing.T) {
+	t.Parallel()
+
+	for _, endpoint := range []string{
+		"localhost:",
+		"localhost:http",
+		"localhost:+1",
+		"localhost:0",
+		"localhost:-1",
+		"localhost:65536",
+	} {
+		client, err := cerbos.New(&cerbos.Options{Endpoint: endpoint, CheckTimeout: time.Second})
+		require.ErrorIs(t, err, cerbos.ErrOptions, "endpoint %q must be rejected at construction", endpoint)
+		require.Nil(t, client)
+	}
+
+	for _, endpoint := range []string{"localhost:1", "localhost:65535"} {
+		client, err := cerbos.New(&cerbos.Options{Endpoint: endpoint, CheckTimeout: time.Second})
+		require.NoError(t, err, "endpoint %q is within the valid port range", endpoint)
+		require.NotNil(t, client)
+	}
+}
+
 // TestNewRejectsNonPositiveCheckTimeout pins the timeout validation: a
 // zero-value timeout would hand every call an already-expired context, so
 // every check would be denied while the sidecar looks perfectly healthy.
