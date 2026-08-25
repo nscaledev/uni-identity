@@ -384,19 +384,48 @@ func TestShadowAbsentEngineTakesPlainLegacy(t *testing.T) {
 	require.Empty(t, capture.messages(shadowFailureMessage))
 }
 
-func TestShadowCreateAndRoleStayUnshadowed(t *testing.T) {
+func TestShadowProjectScopeCreateIsCompared(t *testing.T) {
 	t.Parallel()
 
 	capture := &logCapture{}
 
-	// AllowProjectScopeCreate and AllowRole are never shadowed — their Cerbos
-	// stories are the deferred project-scope-create equivalent and grantability
-	// cross-parity respectively: zero PDP calls, zero shadow logs.
+	// A body-supplied project create is the one dispatch whose behaviour
+	// changes at the flip: an authoritative engine verdict does not report the
+	// granting scope, so the flip starts validating a project the legacy global
+	// shortcut took on trust. Shadow mode therefore has to cover creates, or
+	// that change reaches enforce with no divergence telemetry behind it. The
+	// PDP denies what the ACL grants here: the legacy allow is still served.
 	pdp := &capturePDP{}
 	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
-
 	ctx := shadowContext(t, capture, engine, globalACL("candy", openapi.Create))
-	require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID))
+
+	require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID),
+		"the served verdict must be the legacy allow")
+	require.Equal(t, 1, pdp.calls, "a create must reach the comparator like any other coarse check")
+
+	records := capture.messages(shadowDivergenceMessage)
+	require.Len(t, records, 1)
+
+	attrs := logAttrs(t, records[0])
+	require.Equal(t, "candy", attrs["endpoint"])
+	require.Equal(t, "create", attrs["operation"])
+	require.Equal(t, organizationID, attrs["organization_id"])
+	require.Equal(t, projectID, attrs["project_id"], "the divergence must name the body-supplied project")
+	require.Equal(t, "allow", attrs["legacy_verdict"])
+	require.Equal(t, "deny", attrs["cerbos_verdict"])
+
+	require.Empty(t, capture.messages(shadowFailureMessage))
+}
+
+func TestShadowRoleGrantabilityStaysUnshadowed(t *testing.T) {
+	t.Parallel()
+
+	capture := &logCapture{}
+
+	// AllowRole is not shadowed: grantability is covered by cross-parity
+	// instead, so zero PDP calls and zero shadow logs here.
+	pdp := &capturePDP{}
+	engine := newDispatchEngine(t, rbac.EngineShadow, pdp)
 
 	roleCtx := rbac.NewEngineContext(rbac.NewContext(capture.into(aliceContext(t)), aclFixture()), engine)
 
@@ -412,7 +441,7 @@ func TestShadowCreateAndRoleStayUnshadowed(t *testing.T) {
 
 	require.NoError(t, rbac.AllowRole(roleCtx, role, ids.MustParseOrganizationID(organizationID)))
 
-	require.Zero(t, pdp.calls, "create and role grantability must stay legacy-only in shadow mode")
+	require.Zero(t, pdp.calls, "role grantability must stay unshadowed in shadow mode")
 	require.Empty(t, capture.messages(shadowDivergenceMessage))
 	require.Empty(t, capture.messages(shadowFailureMessage))
 }

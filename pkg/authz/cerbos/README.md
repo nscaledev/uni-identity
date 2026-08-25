@@ -422,8 +422,7 @@ and the acting service, one `CheckResources` call each — with
 principal TYPES, so **the shadow comparator compares impersonated requests too**
 (see the shadow-mode notes in [pkg/rbac](../../rbac/README.md) — in particular the
 divergence-vs-evaluation-failure split the cutover gate reads, and the policy
-correlate — the policy-store hash wired into the decision records); and the
-`AllowProjectScopeCreate` orchestration follows as a deferred Cerbos equivalent.
+correlate — the policy-store hash wired into the decision records).
 The builder is actor-class-agnostic: it renders whatever bindings it is given,
 and the actor-class shapes (user, platform admin, service account, system
 account) are pinned as table tests which the resolver's own tests mirror.

@@ -75,8 +75,8 @@ func getResource(capture *middleware.Capture, r *http.Request, route *routers.Ro
 // parameter for a create: that parameter is the PARENT collection's id (e.g.
 // the organization id), and stamping it as the created resource's id would
 // misattribute the record — a denied group create would be logged against the
-// organization id. Every other audited op (read, update, delete, and
-// body-less actions like rotate) addresses an existing instance by its last
+// organization id. Every other audited op (update, delete, and body-less
+// actions like rotate) addresses an existing instance by its last
 // path parameter.
 func resourceID(capture *middleware.Capture, r *http.Request, route *routers.Route, params map[string]string) string {
 	if r.Method == http.MethodPost && route.Operation != nil && route.Operation.RequestBody != nil && !strings.HasSuffix(route.Path, "}") {
@@ -89,7 +89,7 @@ func resourceID(capture *middleware.Capture, r *http.Request, route *routers.Rou
 // primaryKind returns the authoritative resource kind for the audited
 // request — the kind the handler passed to Allow* (e.g.
 // "identity:serviceaccounts"), read back from the decision accumulator. An
-// audited request (a mutation or a sensitive read) makes a single scope
+// audited mutation makes a single scope
 // check, so its sole decision names the resource; the loop takes the last
 // non-empty kind defensively should a handler ever make more. "" when the
 // handler made no Allow* call.
@@ -137,29 +137,6 @@ func createdResourceID(capture *middleware.Capture) string {
 	return body.Metadata.Id
 }
 
-// sensitiveAuditExtension is the OpenAPI operation extension a spec uses to
-// opt an otherwise-routine read into audit logging: x-unikorn-audit:
-// sensitive. Declarative and central — each consumer marks its own
-// sensitive reads (e.g. console URLs, credentials/kubeconfig, SSH keys) in
-// its own spec; this middleware only needs to look for the one key.
-const (
-	sensitiveAuditExtension      = "x-unikorn-audit"
-	sensitiveAuditExtensionValue = "sensitive"
-)
-
-// isSensitiveRead reports whether route is marked x-unikorn-audit:
-// sensitive, opting an otherwise-skipped GET into the same logging a
-// mutation gets below.
-func isSensitiveRead(route *routers.Route) bool {
-	if route == nil || route.Operation == nil {
-		return false
-	}
-
-	value, ok := route.Operation.Extensions[sensitiveAuditExtension].(string)
-
-	return ok && value == sensitiveAuditExtensionValue
-}
-
 // newDecisions converts the rbac accumulator's entries to this package's
 // own DTO, mirroring Resource/Operation/etc.: the audit record's shape
 // stays decoupled from pkg/rbac's internal type.
@@ -179,47 +156,30 @@ func newDecisions(accumulated []rbac.Decision) []Decision {
 	return decisions
 }
 
-// isRoutineRead reports whether a request is a routine read — a GET that is not
-// a marked sensitive read (x-unikorn-audit: sensitive), or a GET whose route
-// did not resolve. Users and auditors care about things coming, going and
-// changing (who did what, and when), not periodic polling that is par for the
-// course; but a failed read may indicate someone probing the API, so a spec
-// opts specific reads (console URLs, credentials/kubeconfig, SSH keys) into
-// logging via the sensitive marker. A routine read is neither seeded a decision
-// accumulator nor logged; every mutation and every sensitive read is. A GET
-// whose route did not resolve is treated as routine here — the mutation case
-// that must surface a resolution failure is handled separately (the
-// errors.HandleError call in handle).
-func isRoutineRead(method string, route *routeresolver.RouteInfo, routeErr error) bool {
-	if method != http.MethodGet {
-		return false
-	}
-
-	return routeErr != nil || !isSensitiveRead(route.Route)
+// isUnauditedMethod implements the platform audit contract: read and preflight
+// methods are never audit logged, regardless of route metadata or outcome.
+func isUnauditedMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
 // ServeHTTP implements the http.Handler interface.
 func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	if isUnauditedMethod(r.Method) {
+		next.ServeHTTP(w, r)
+
+		return
+	}
+
 	// The route is resolved pre-routing (server.go wires routeresolver ahead of
 	// this middleware), so it is available here, BEFORE next.
 	route, routeErr := routeresolver.FromContext(r.Context())
 
-	routineRead := isRoutineRead(r.Method, route, routeErr)
-
 	// Seed the request-scoped decision accumulator (pkg/rbac) BEFORE
 	// calling next, so any Allow* dispatch the handler chain performs appends
-	// to it (read back below). Skip it for a routine read — which is never
-	// audited (the early return below), so seeding would only make the
-	// handler's Allow* calls do mutex-guarded appends nothing ever reads.
-	if !routineRead {
-		r = r.WithContext(rbac.NewDecisionAccumulatorContext(r.Context()))
-	}
+	// to it (read back below).
+	r = r.WithContext(rbac.NewDecisionAccumulatorContext(r.Context()))
 
 	capture := middleware.CaptureResponse(w, r, next)
-
-	if routineRead {
-		return
-	}
 
 	// If there is not accountibility e.g. a global call, it's not worth logging.
 	info, err := authorization.FromContext(r.Context())

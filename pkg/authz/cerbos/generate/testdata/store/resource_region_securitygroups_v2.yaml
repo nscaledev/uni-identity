@@ -11,6 +11,9 @@ resourcePolicy:
       derivedRoles: [role_00000000-0000-0000-0000-000000000001_global]
       effect: EFFECT_ALLOW
     - actions: [create, delete, read, update]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000002_global]
+      effect: EFFECT_ALLOW
+    - actions: [create, delete, read, update]
       derivedRoles: [role_00000000-0000-0000-0000-000000000003_org]
       effect: EFFECT_ALLOW
     - actions: [read]

@@ -143,6 +143,16 @@ type Options struct {
 	// there dispatch additionally requires an engine-seeded context.
 	AuthorizationEngine EngineMode
 
+	// CerbosAuthoritativeKinds is the strangle-by-kind cutover set: the
+	// endpoint/kind strings (e.g. "identity:groups") for which the Cerbos PDP
+	// is AUTHORITATIVE regardless of the global AuthorizationEngine baseline —
+	// served by the PDP with no legacy fallback and fail-closed (see
+	// modeForKind in engine.go).  Empty (the default) means no kind is cut
+	// over, so dispatch is byte-identical to the global mode: the mechanism is
+	// inert until an operator sets it per-kind post shadow-soak, and clearing a
+	// kind is a config-only rollback.
+	CerbosAuthoritativeKinds []string
+
 	// DecisionCacheSize is the capacity of the coarse-decision cache
 	// (cerbos-mode allowCoarse; see engine.go).
 	DecisionCacheSize int
@@ -162,6 +172,7 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.Var((*PlatformAdministratorSubjectsValue)(&o.PlatformAdministratorSubjects), "platform-administrator-subjects", "Platform administrators as issuer::subject (bare value = UNI issuer).")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
 	f.Var(&o.AuthorizationEngine, "authorization-engine", "Authorization engine serving Allow* enforcement decisions (legacy, shadow or cerbos).")
+	f.StringSliceVar(&o.CerbosAuthoritativeKinds, "cerbos-authoritative-kinds", nil, "Endpoint kinds (e.g. identity:groups) for which Cerbos is authoritative regardless of --authorization-engine: the strangle-by-kind cutover (served by the PDP, no legacy fallback, fail-closed). Exact-match on the endpoint (no wildcards); a value that does not exactly match an endpoint silently leaves that kind on the baseline. Empty means no cutover.")
 	f.IntVar(&o.DecisionCacheSize, "decision-cache-size", defaultDecisionCacheSize, "Size of the coarse Cerbos decision cache.")
 	f.DurationVar(&o.DecisionCacheTimeout, "decision-cache-timeout", defaultDecisionCacheTimeout, "Duration to cache coarse Cerbos decisions for.")
 	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
@@ -326,6 +337,51 @@ type RBAC struct {
 	policyHasher PolicyStoreHasher
 }
 
+// newCutoverKinds builds the O(1) cutover set New stores once.  It is nil when
+// unset (downstream services and tests never register the flag), so modeForKind
+// resolves to mode() for every kind — the zero-behaviour-change default.  Each
+// entry is trimmed and empties skipped: --cerbos-authoritative-kinds is a
+// StringSliceVar whose CSV parser does NOT trim, so "identity:groups,
+// identity:projects" would store a leading-space " identity:projects" that could
+// never match a facade endpoint and silently leave that kind on the baseline.
+//
+// The effective set is announced at startup.  Matching is exact and a mismatch
+// fails OPEN (the kind silently stays on the baseline), so surfacing the
+// security-critical set of kinds Cerbos is authoritative for turns a silent
+// misconfiguration into one an operator can eyeball against intent.
+func newCutoverKinds(options *Options) map[string]bool {
+	if options == nil {
+		return nil
+	}
+
+	var cutoverKinds map[string]bool
+
+	for _, raw := range options.CerbosAuthoritativeKinds {
+		kind := strings.TrimSpace(raw)
+		if kind == "" {
+			continue
+		}
+
+		if cutoverKinds == nil {
+			cutoverKinds = map[string]bool{}
+		}
+
+		cutoverKinds[kind] = true
+	}
+
+	if len(cutoverKinds) > 0 {
+		kinds := make([]string, 0, len(cutoverKinds))
+		for kind := range cutoverKinds {
+			kinds = append(kinds, kind)
+		}
+
+		slices.Sort(kinds)
+		log.Log.Info("cerbos authoritative (cutover) kinds configured", "kinds", kinds)
+	}
+
+	return cutoverKinds
+}
+
 // New creates a new RBAC client.
 func New(client client.Client, namespace string, options *Options) *RBAC {
 	decisions, cacheDecisions, pdpLatency := newDecisionInstruments()
@@ -349,6 +405,8 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 	decisionCache := cache.NewLRUExpireCache[string, bool](cacheSize)
 	decisionCache.ZeroCopy()
 
+	cutoverKinds := newCutoverKinds(options)
+
 	bindings := effectiveGlobalRoleBindings(options)
 
 	logger := log.Log.WithName("rbac")
@@ -367,6 +425,7 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 		options:          options,
 		bindings:         bindings,
 		groupBindings:    options.GlobalGroupRoleBindings,
+		cutoverKinds:     cutoverKinds,
 		decisions:        decisions,
 		cacheDecisions:   cacheDecisions,
 		pdpLatency:       pdpLatency,

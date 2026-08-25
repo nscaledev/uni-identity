@@ -353,21 +353,30 @@ func TestAllowDispatchImpersonatedServesDualCheck(t *testing.T) {
 	require.Equal(t, 1, freshPDP.calls)
 }
 
-func TestAllowProjectScopeCreateStaysLegacy(t *testing.T) {
+func TestAllowProjectScopeCreateUsesAuthoritativeCerbos(t *testing.T) {
 	t.Parallel()
 
-	// The PDP would deny everything; the ACL grants at global scope.  Create
-	// must serve from the legacy walk END TO END — its nested scope checks
-	// included — because its project-existence orchestration only moves to
-	// Cerbos in a deferred follow-up.  A nil identity client proves the
-	// global-trust shortcut is also untouched.
-	pdp := &capturePDP{}
-	engine := newDispatchEngine(t, rbac.EngineCerbos, pdp)
+	for _, test := range []struct {
+		name     string
+		pdpError error
+		sentinel error
+	}{
+		{name: "policy deny", sentinel: rbac.ErrPolicyDenied},
+		{name: "decision unavailable", pdpError: errFakeTransport, sentinel: rbac.ErrDecisionUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	ctx := rbac.NewEngineContext(rbac.NewContext(aliceContext(t), globalACL("candy", openapi.Create)), engine)
+			pdp := &capturePDP{err: test.pdpError}
+			engine := newDispatchEngine(t, rbac.EngineCerbos, pdp)
+			ctx := rbac.NewEngineContext(rbac.NewContext(aliceContext(t), globalACL("candy", openapi.Create)), engine)
 
-	require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID))
-	require.Zero(t, pdp.calls, "AllowProjectScopeCreate must stay legacy-only until its Cerbos equivalent lands")
+			err := rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID)
+			require.True(t, coreerrors.IsForbidden(err), "the Cerbos result must not fall back to the granting legacy ACL")
+			require.ErrorIs(t, err, test.sentinel)
+			require.Equal(t, 1, pdp.calls)
+		})
+	}
 }
 
 func TestAllowRoleStaysLegacy(t *testing.T) {
