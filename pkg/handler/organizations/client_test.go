@@ -30,7 +30,9 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -133,4 +135,35 @@ func TestFleetTenantIDIsPlatformAdministratorOnly(t *testing.T) {
 
 	require.NoError(t, client.Update(platformAdmin, organizationID, write(nil)))
 	require.Nil(t, fleetTenantID(), "platform administrator could not clear the tenant link")
+}
+
+// TestFleetTenantIDUnparseableReadsAsAbsent covers the fail-closed read.  Both the
+// generated type and the CRD's uuid format keep a bad value out, so this is reachable
+// only by hand-editing the resource -- at which point resolving to nothing beats
+// resolving to a guess.
+func TestFleetTenantIDUnparseableReadsAsAbsent(t *testing.T) {
+	t.Parallel()
+
+	const namespace = "base"
+
+	organizationID := uuid.MustParse("0198f3a1-4c2e-7a11-9f3b-6d1e2c4a8b92")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      organizationID.String(),
+			Namespace: namespace,
+		},
+		Spec: unikornv1.OrganizationSpec{
+			FleetTenantID: ptr.To("not-a-uuid"),
+		},
+	}
+
+	cli := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization).Build()
+
+	read, err := organizations.New(cli, namespace).Get(t.Context(), ids.MustParseOrganizationID(organizationID.String()))
+	require.NoError(t, err)
+	require.Nil(t, read.Spec.FleetTenantId)
 }
