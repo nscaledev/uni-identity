@@ -104,37 +104,47 @@ func (r *RBAC) ResolveBindings(ctx context.Context, info *authorization.Info) ([
 // normalizeBindings sorts and deduplicates the resolved bindings: the same
 // grant reached through two groups must appear once, and the deterministic
 // order keeps requests, logs and test expectations stable (the request
-// builder sorts the rendered strings again anyway).
+// builder sorts the rendered strings again anyway).  The read-clamped form of a
+// role sorts after its full form; both can be held at once (a wildcard binding
+// beside an exact or group binding on the same role), and the order must come
+// from the data, because slices.Compact only merges neighbours.
 func normalizeBindings(bindings []cerbos.RoleBinding) []cerbos.RoleBinding {
 	slices.SortFunc(bindings, func(a, b cerbos.RoleBinding) int {
 		return cmp.Or(
 			strings.Compare(a.RoleID, b.RoleID),
 			strings.Compare(a.OrganizationID, b.OrganizationID),
 			strings.Compare(a.ProjectID, b.ProjectID),
+			compareGlobalRead(a.GlobalRead, b.GlobalRead),
 		)
 	})
 
 	return slices.Compact(bindings)
 }
 
+// compareGlobalRead orders the full global bucket before the read-clamped one.
+func compareGlobalRead(a, b bool) int {
+	switch {
+	case a == b:
+		return 0
+	case a:
+		return 1
+	default:
+		return -1
+	}
+}
+
 // matchedGlobalBindings converts matched global role bindings into global
-// Cerbos bindings, mirroring accumulateMatchedBindings: exact subject bindings
-// and group bindings alike grant their roles' FULL global scopes.
-//
-// A wildcard subject binding fails closed. The legacy path clamps it to read
-// (accumulateGlobalReadPermissions), but a cerbos.RoleBinding activates the
-// role's whole global bucket, so the clamp cannot be expressed here. Emitting
-// one anyway would grant write scopes the legacy path withholds, so refusing
-// is the only safe option until the generator gains a read-only bucket.
+// Cerbos bindings, mirroring accumulateMatchedBindings: an exact subject
+// binding and a group binding alike grant their roles' FULL global scopes, and
+// a wildcard subject binding grants the read-clamped bucket
+// (accumulateGlobalReadPermissions).  Every matched binding contributes: a
+// principal holding a wildcard binding keeps whatever its exact and group
+// bindings grant.
 func matchedGlobalBindings(subjectBindings []GlobalRoleBinding, groupBindings []GroupRoleBinding, roles map[string]*unikornv1.Role) ([]cerbos.RoleBinding, error) {
 	var bindings []cerbos.RoleBinding
 
 	for _, b := range subjectBindings {
-		if b.Wildcard {
-			return nil, fmt.Errorf("%w: issuer %q", ErrWildcardBindingUnsupported, b.Issuer)
-		}
-
-		matched, err := globalRoleBindings(b.RoleIDs, roles)
+		matched, err := globalRoleBindings(b.RoleIDs, roles, b.Wildcard)
 		if err != nil {
 			return nil, err
 		}
@@ -142,8 +152,12 @@ func matchedGlobalBindings(subjectBindings []GlobalRoleBinding, groupBindings []
 		bindings = append(bindings, matched...)
 	}
 
+	// Group bindings are DELIBERATELY not clamped (see the package README): the
+	// legacy path feeds them to accumulateGlobalPermissions, not to the
+	// read-clamped variant, because a group is operator-curated while a
+	// wildcard matches the whole user base.
 	for _, b := range groupBindings {
-		matched, err := globalRoleBindings(b.RoleIDs, roles)
+		matched, err := globalRoleBindings(b.RoleIDs, roles, false)
 		if err != nil {
 			return nil, err
 		}
@@ -157,8 +171,12 @@ func matchedGlobalBindings(subjectBindings []GlobalRoleBinding, groupBindings []
 // globalRoleBindings emits one global binding per role ID, validating each
 // against the role catalogue exactly like the legacy global accumulation
 // (accumulateGlobalPermissions): a configured role with no Role CR is a hard
-// consistency error, never a silently missing grant.
-func globalRoleBindings(roleIDs []string, roles map[string]*unikornv1.Role) ([]cerbos.RoleBinding, error) {
+// consistency error, never a silently missing grant.  readClamped emits the
+// read-only form, which activates the role's read-only global bucket instead of
+// its full global bucket — the clamp the legacy path applies to a wildcard
+// subject binding.  The catalogue check is identical either way, mirroring
+// accumulateGlobalReadPermissions, which errors on a missing role too.
+func globalRoleBindings(roleIDs []string, roles map[string]*unikornv1.Role, readClamped bool) ([]cerbos.RoleBinding, error) {
 	bindings := make([]cerbos.RoleBinding, 0, len(roleIDs))
 
 	for _, roleID := range roleIDs {
@@ -166,7 +184,7 @@ func globalRoleBindings(roleIDs []string, roles map[string]*unikornv1.Role) ([]c
 			return nil, fmt.Errorf("%w: role %s referenced by a global role grant", errors.ErrConsistency, roleID)
 		}
 
-		bindings = append(bindings, cerbos.RoleBinding{RoleID: roleID})
+		bindings = append(bindings, cerbos.RoleBinding{RoleID: roleID, GlobalRead: readClamped})
 	}
 
 	return bindings, nil
@@ -187,7 +205,7 @@ func (r *RBAC) resolveSystemAccountBindings(ctx context.Context, subject string)
 		return nil, err
 	}
 
-	return globalRoleBindings([]string{roleID}, roles)
+	return globalRoleBindings([]string{roleID}, roles, false)
 }
 
 // resolveServiceAccountBindings mirrors processServiceAccountACL: membership

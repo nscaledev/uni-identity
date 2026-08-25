@@ -18,6 +18,24 @@ principals:
     attr:
       bindings: ["00000000-0000-0000-0000-000000000002#global"]
 
+  # platform-administrator, READ-CLAMPED: what a wildcard subject binding gets
+  # (pkg/rbac accumulateGlobalReadPermissions).  The role's global block is
+  # CRUD, so the clamp must keep read and drop the three write operations.
+  platform_admin_clamped:
+    id: platform-admin-wildcard
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000001#global-read"]
+
+  # region-service, READ-CLAMPED: its global block grants create+delete and no
+  # read on identity:projects/references, so the projection drops that scope
+  # instead of keeping its writes.
+  region_service_clamped:
+    id: region-service-wildcard
+    roles: ["principal"]
+    attr:
+      bindings: ["00000000-0000-0000-0000-000000000002#global-read"]
+
   # administrator bound to org-acme.
   admin_acme:
     id: admin@acme
