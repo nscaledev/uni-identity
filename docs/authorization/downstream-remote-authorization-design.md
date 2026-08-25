@@ -28,9 +28,8 @@ resilience essentials, rolled out **shadow-first** so the cutover is proven befo
 ### Out of scope (explicit follow-ups)
 - The full **circuit-breaker** profile (`failsafe-go`): a follow-up, before broad enforce.
 - **`uni-kubernetes`** adoption: a later follow-up.
-- Remote paths for `AllowProjectScopeCreate*` (the project-scope-create migration) and `AllowRole`
-  (the grantability cross-parity): these intentionally never dispatch to an engine and stay on
-  their existing paths.
+- `AllowRole` remote enforcement (the grantability cross-parity): it intentionally stays on its
+  existing thin-Go path.
 
 ## 2. Current state (verified)
 
@@ -270,11 +269,10 @@ working tree overlays a newer identity via `go.work`, but the cited `uni-compute
   `decisions` list, so the record now carries the referenced resources and the decision on each. The
   record's own resource is now derived authoritatively (kind from the `Allow*` the handler made, id
   from the request's last path parameter) instead of URL-guessing, which also covers the
-  previously-dropped creates and body-less actions (Start/Stop/rotate). Sensitive reads opt in via an
-  `x-unikorn-audit: sensitive` operation extension (routine reads still skipped). Purely additive:
-  no authorization decision changed. **Remaining:** (a) per-service sensitive-read annotations that
-  activate that path (compute console/sshkey, kubernetes kubeconfig), a small consumer follow-up; (b)
-  the **resolved region** was split to the region-dimension finding and is deliberately excluded here.
+  previously-dropped creates and body-less actions (Start/Stop/rotate). `GET`, `HEAD`, and `OPTIONS`
+  remain excluded by the normative audit specification. Purely additive: no authorization decision
+  changed. **Remaining:** the **resolved region** was split to the region-dimension finding and is
+  deliberately excluded here.
 
 **Region is not a first-class authorization/audit dimension (identity; cross-cutting).**
 - ACL scopes are **Global/Org/Project only**; region is never an authz scope, and decision-log fields

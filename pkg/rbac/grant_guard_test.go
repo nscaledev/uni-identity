@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -235,6 +236,66 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 	}
 }
 
+// TestRegionServiceDirectUserSuperset protects the impersonation intersection:
+// every Region permission exposed by a built-in direct-user role must survive
+// intersection with region-service's global permissions.
+func TestRegionServiceDirectUserSuperset(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+	directUserRoles := []string{
+		"platform-administrator",
+		"platform-reader",
+		"administrator",
+		"auditor",
+		"user",
+		"reader",
+	}
+
+	// Derive the checked set by EXCLUSION rather than from the protected flag.
+	// Two of the direct-user roles above are themselves protected
+	// (platform-administrator, platform-reader), so a guard keyed on that flag
+	// cannot fire for the category it exists to guard: a future protected
+	// human-facing role would escape both this check and the loop below, which
+	// only walks the hard-coded slice. Naming the service accounts instead puts
+	// every new role in scope by default.
+	serviceAccountRoles := []string{"region-service", "kubernetes-service", "compute-service", "storage-service"}
+
+	for name := range roles {
+		if slices.Contains(serviceAccountRoles, name) {
+			continue
+		}
+
+		require.Containsf(t, directUserRoles, name, "role %q is neither a listed service account nor part of the region-service superset contract", name)
+	}
+
+	regionService, ok := roles["region-service"]
+	require.True(t, ok, "region-service missing from chart role catalogue")
+	require.True(t, regionService.Protected, "region-service must remain protected")
+	require.Empty(t, regionService.Scopes.Organization, "region-service must be global-only")
+	require.Empty(t, regionService.Scopes.Project, "region-service must be global-only")
+
+	for _, roleName := range directUserRoles {
+		role, ok := roles[roleName]
+		require.Truef(t, ok, "direct-user role %q missing from chart role catalogue", roleName)
+
+		for _, scopes := range []endpointOperations{role.Scopes.Global, role.Scopes.Organization, role.Scopes.Project} {
+			for endpoint, operations := range scopes {
+				if !strings.HasPrefix(endpoint, "region:") {
+					continue
+				}
+
+				serviceOperations, ok := regionService.Scopes.Global[endpoint]
+				require.Truef(t, ok, "region-service must include %q exposed by direct-user role %q", endpoint, roleName)
+
+				for _, operation := range operations {
+					require.Containsf(t, serviceOperations, operation, "region-service must include %s on %q exposed by direct-user role %q", operation, endpoint, roleName)
+				}
+			}
+		}
+	}
+}
+
 // TestBuiltinVolumePermissions exercises the chart values role catalogue through the same
 // scoped policy checks Region handlers use. It protects the distinction between
 // organization-scoped VolumeClass inventory and project-scoped Volume lifecycle access.
@@ -373,10 +434,11 @@ func TestBuiltinSystemServiceVolumePermissions(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		role             string
-		volumeOperations []openapi.AclOperation
+		role                  string
+		volumeClassOperations []openapi.AclOperation
+		volumeOperations      []openapi.AclOperation
 	}{
-		{role: "region-service"},
+		{role: "region-service", volumeClassOperations: []openapi.AclOperation{openapi.Read}, volumeOperations: operations},
 		{role: "kubernetes-service"},
 		{role: "compute-service", volumeOperations: []openapi.AclOperation{openapi.Read}},
 		{role: "storage-service"},
@@ -390,7 +452,12 @@ func TestBuiltinSystemServiceVolumePermissions(t *testing.T) {
 			t.Run(test.role+" VolumeClass "+string(operation), func(t *testing.T) {
 				t.Parallel()
 
-				require.Error(t, rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, operation, organization))
+				err := rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, operation, organization)
+				if slices.Contains(test.volumeClassOperations, operation) {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
 			})
 
 			t.Run(test.role+" Volume "+string(operation), func(t *testing.T) {
