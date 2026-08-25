@@ -656,6 +656,11 @@ func (in *OrganizationSpec) DeepCopyInto(out *OrganizationSpec) {
 		*out = new(OrganizationProviderOptions)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.FleetTenantID != nil {
+		in, out := &in.FleetTenantID, &out.FleetTenantID
+		*out = new(string)
+		**out = **in
+	}
 	return
 }
 

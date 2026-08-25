@@ -1883,6 +1883,13 @@ components:
             When set this identifies the customer ID for the google managed organization.
             This field is currently unused.
           type: string
+        fleetTenantId:
+          description: |-
+            The Fleet Manager tenant this organization owns.  This is the authoritative
+            link between the two systems: consumers resolve an organization to its tenant
+            here rather than trusting an annotation on Fleet's side.
+          type: string
+          format: uuid
     organizationRead:
       description: An organization when read.
       type: object

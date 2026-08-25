@@ -78,6 +78,12 @@ type OrganizationSpec struct {
 	ProviderID *string `json:"providerId,omitempty"`
 	// ProviderOptions is the configuration for a specific provider type.
 	ProviderOptions *OrganizationProviderOptions `json:"providerOptions,omitempty"`
+	// FleetTenantID is the Fleet Manager tenant this organization owns.  It is the
+	// authoritative link between the two systems: consumers resolve an organization
+	// to its tenant here rather than trusting an annotation on Fleet's side, which
+	// is writable by anyone and cannot carry authorization.
+	// +kubebuilder:validation:Format=uuid
+	FleetTenantID *string `json:"fleetTenantId,omitempty"`
 }
 
 type OrganizationProviderOptions struct {

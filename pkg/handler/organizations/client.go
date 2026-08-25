@@ -23,6 +23,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
@@ -110,6 +112,15 @@ func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 	if in.Spec.ProviderOptions != nil {
 		if in.Spec.ProviderOptions.Google != nil {
 			out.Spec.GoogleCustomerID = in.Spec.ProviderOptions.Google.CustomerID
+		}
+	}
+
+	// Unparseable means unresolvable, and unresolvable is the fail-closed answer.
+	// Both the API schema and the CRD enforce uuid, so this only bites a CR that
+	// was hand-edited around both.
+	if in.Spec.FleetTenantID != nil {
+		if id, err := uuid.Parse(*in.Spec.FleetTenantID); err == nil {
+			out.Spec.FleetTenantId = &id
 		}
 	}
 
@@ -289,6 +300,12 @@ func (c *Client) generate(ctx context.Context, in *openapi.OrganizationWrite) (*
 
 	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
+	}
+
+	// Deliberately outside the domain branch below: an adhoc organization owns a
+	// Fleet tenant just as a domain one does.
+	if in.Spec.FleetTenantId != nil {
+		out.Spec.FleetTenantID = ptr.To(in.Spec.FleetTenantId.String())
 	}
 
 	if in.Spec.OrganizationType == openapi.Domain {

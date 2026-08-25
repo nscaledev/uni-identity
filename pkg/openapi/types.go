@@ -6,6 +6,7 @@ package openapi
 import (
 	"time"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
 	externalRef0 "github.com/unikorn-cloud/core/pkg/openapi"
 	identityids "github.com/unikorn-cloud/identity/pkg/ids"
 )
@@ -486,6 +487,11 @@ type OrganizationRead struct {
 type OrganizationSpec struct {
 	// Domain The email domain of the organization.
 	Domain *string `json:"domain,omitempty"`
+
+	// FleetTenantId The Fleet Manager tenant this organization owns.  This is the authoritative
+	// link between the two systems: consumers resolve an organization to its tenant
+	// here rather than trusting an annotation on Fleet's side.
+	FleetTenantId *openapi_types.UUID `json:"fleetTenantId,omitempty"`
 
 	// GoogleCustomerID When set this identifies the customer ID for the google managed organization.
 	// This field is currently unused.
