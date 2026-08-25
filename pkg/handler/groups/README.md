@@ -74,14 +74,17 @@ account on a group is refused unless the caller could grant each of the group's 
 The roles checked are the ones the group carries after the write, since that is what the new member
 inherits. A refusal names the role.
 
-Membership is compared by principal identity, not by stored record. A subject identifies a
-principal by `(issuer, id)`; its `email` is display data that different writers populate from
-different sources, so it takes no part in the comparison. Both membership representations count as
-already-a-member: `pkg/rbac` resolves a principal's groups through `UserIDs` and through `Subjects`
-alike, so a member listed in one representation and named through the other gains nothing, and the
-write is not an addition. That matters for groups written before `Subjects` existed — re-sending
-their membership fills in the missing half and must not be read as a grant, or such a group has no
-legal update at all.
+Membership is compared the way `pkg/rbac` resolves it, not by the stored record. RBAC's
+`groupSubjectFilter` matches a subject by `id` alone and deliberately ignores the recorded
+`issuer` — subjects written before issuers were captured carry an empty one and must still
+resolve — so the gate matches by `id` too (`HasMemberByID`). `email` is display data that different
+writers populate from different sources and takes no part either. Both membership representations
+count as already-a-member: `pkg/rbac` resolves a principal's groups through `UserIDs` and through
+`Subjects` alike, so a member listed in one representation and named through the other gains
+nothing, and the write is not an addition. That matters for a group written before `Subjects`
+existed, and for a member stored as a legacy empty-issuer subject then re-sent as a `userID`: the
+re-send derives a subject at this deployment's issuer, but it names the same principal, so it must
+not read as a grant, or such a group has no legal update at all.
 
 A group with no roles confers nothing, so membership in it is not a grant and nothing blocks the
 addition. A role reference that no longer resolves is the opposite case and does block it — see
@@ -154,8 +157,8 @@ would drift.
   group are not re-checked on subsequent writes
 - adding a member to a group through this client is a grant of that group's roles, so it is allowed
   only where the caller could grant every role the group carries
-- a principal is the same member in either representation, identified by `(issuer, id)`; a subject's
-  `email` is display data and takes no part in that comparison
+- the gate treats a principal as already a member by subject `id` alone (`HasMemberByID`), mirroring
+  how `pkg/rbac` resolves membership; the recorded `issuer` and the display-only `email` take no part
 - removing a member from a group confers nothing and is not gated
 - role removals and group DELETE revoke without a role check, by design
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible

@@ -833,6 +833,41 @@ func TestUpdateGroupAllowsResendWhenOnlySubjectsStored(t *testing.T) {
 	require.Len(t, stored.Spec.Subjects, 1)
 }
 
+// TestUpdateGroupAllowsResendOfLegacyEmptyIssuerSubject pins the gate to RBAC's membership
+// predicate. A subject written before issuers were recorded is stored with an empty issuer, and
+// RBAC's groupSubjectFilter matches it by ID alone, so it already confers the group's role on the
+// principal. A UserIDs-style re-send derives a subject at this deployment's issuer, which differs
+// from the stored empty one but names the same principal — so it is not an addition and must not
+// be refused, even though the caller cannot grant the group's role. Matching on the whole
+// (issuer, id) record here would refuse a write that confers nothing: the ID-368 over-refusal the
+// gate must not reintroduce.
+func TestUpdateGroupAllowsResendOfLegacyEmptyIssuerSubject(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createRadarRole(t)
+	f.createGroupWithSpec(t, unikornv1.GroupSpec{
+		RoleIDs:  []string{"radar-id"},
+		Subjects: []unikornv1.GroupSubject{{ID: userAliceSubject, Issuer: "", Email: userAliceSubject}},
+	})
+
+	ctx := aclContext(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	userIDs := openapi.StringList{orguserAliceID}
+	request := makeGroupUpdateRequest(nil, &userIDs)
+	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
+
+	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
+	require.NoError(t, err,
+		"re-stating a legacy empty-issuer member must not read as an addition")
+
+	stored := f.getGroup(t)
+	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+}
+
 // TestUpdateGroupRejectsExternalSubjectAdditionAlongsideExistingMember guards the relaxation
 // itself: an external subject has no organization user record, so it can only ever be
 // matched in the Subjects list.  Naming it alongside a member who is already present must
