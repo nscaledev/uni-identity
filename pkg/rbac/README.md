@@ -98,7 +98,7 @@ deployment time.
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
   accounts mapped from an mTLS certificate common name (see the Actor Model). By default each
   holds only the global permissions the corresponding service actually exercises. **Exception —
-  the remote-authorization seam**: a
+  the remote-authorization seam** (`docs/authorization/downstream-remote-authorization-design.md`): a
   consumer whose own API routes through identity's central PDP must have its service-account
   role provisioned as a **superset of what its API authorizes**, because that role is the cap in
   the `intersection(user, service)` a direct-user check resolves against — under-provisioning
@@ -610,8 +610,9 @@ IDs for project scope, resource ID always the coarse `*`).
 ### Decision observability
 
 Every PDP-SERVED Cerbos-path decision is audited and counted at the `CheckMany` choke point
-(`decision_log.go`): `Check` wraps `CheckMany`, and cerbos-mode `allowCoarse` wraps `Check`, so
-every dispatched Cerbos-path decision funnels through one audited point. Hooking the choke point rather than decorating
+(`decision_log.go`): `Check` wraps `CheckMany`, cerbos-mode `allowCoarse` wraps `Check`, and the
+remote `/authorization/check` handler lands on `CheckMany` too (delivered — see below) — so remote
+decisions inherit these records with no further work. Hooking the choke point rather than decorating
 the PDP client is deliberate: the pre-PDP fail-closed denials (no client configured, resolution
 failures, refused impersonated principal types) are decisions and must be observed. **One path does
 not reach here: a coarse-cache HIT short-circuits before `CheckMany`, so it emits no audit record
@@ -689,6 +690,121 @@ legacy `intersectACL` oracle against the dual check, covering allowed-by-both (i
 project-scope cell witnessing the service side's global→project flow-down), denied-by-service-only
 (the narrowing proof), denied-by-principal-only, the wrong-org mechanism asymmetries, and
 System-impersonation error parity.
+
+### The remote decision endpoint
+
+`POST /api/v1/authorization/check` (`pkg/handler`, `x-hidden`/`x-no-authorization` in the spec) is
+how a downstream service **without** an in-process Cerbos sidecar obtains a decision: it POSTs a
+batch of `(resource, action)` checks over mTLS and identity resolves bindings, consults the PDP, and
+returns per-check `allowed` booleans in request order. The handler is deliberately thin — it maps
+the wire body to `[]CheckRequest` (absence semantics preserved: an omitted
+`organizationId`/`projectId` stays absent, never an empty string, so an org check cannot gain a
+project attribute) and calls `CheckMany`. Everything else is inherited: the dual check, the decision
+records and metrics all apply with no extra plumbing, off the same context the middleware builds for
+any mTLS caller.
+
+- **Cerbos-authoritative from day one, no legacy twin.** This endpoint IS the Cerbos path regardless
+  of `--authorization-engine` (that flag only selects what serves identity's own `Allow*` facade).
+  It has no legacy `Allow*` equivalent to shadow-compare against, which is exactly why the kind-CI
+  divergence gate dropped its dependency on this endpoint (nothing to feed it).
+- **mTLS-only.** The `oauth2` security scheme multiplexes bearer and mTLS onto the one route, so the
+  handler's single security obligation is to reject non-system-account (bearer) callers (it checks
+  `authorization.Info.SystemAccount`, set by the middleware from the verified peer CN); a bearer
+  caller gets a 401. Hardening the header-strip deploy invariant and moving to signed-principal
+  propagation are named follow-ups, not delivered here.
+- **Fail-closed crosses the wire.** A per-check policy deny is `allowed: false` at HTTP 200; a
+  batch-level failure
+  (`ErrDecisionUnavailable`/`ErrResolutionFailed`/`ErrImpersonationNotSupported`) is a non-200 the
+  calling `remote` authorizer treats as a deny for every check (`pkg/middleware/openapi/remote`
+  `CheckMany`). Remote decisions are indistinguishable from local in the decision records (the
+  closed `class` vocabulary has no remote/local split); if operators ever need that split it is a
+  future attribute, documented as breaking to rename.
+
+`make test-cerbos-remote` (Docker-dependent, not part of `test-unit`) is the deliverable's
+proof: it drives the real router + middleware validator + handler + a real Cerbos-backed RBAC
+through the generated typed client, asserting an allowed and a denied check for a system
+caller, the dual-check verdict for an impersonated call, bearer rejection, and PDP-down
+fail-closed.
+
+### Downstream remote-authorization adoption
+
+This work delivers the identity-side half of routing a **downstream** service's `Allow*` decisions
+through identity's central PDP instead of a locally-resolved ACL walk: the seam and its guardrail
+essentials specified in
+[docs/authorization/downstream-remote-authorization-design.md](../../docs/authorization/downstream-remote-authorization-design.md).
+It reuses the `/authorization/check` endpoint above as the wire call and adds a second, independent
+dispatch fork alongside the local Cerbos path documented above.
+
+- **One seam, two implementations.** `CoarseEngine` (`coarse_engine.go`) is
+  `AllowCoarse`/`AllowCoarseMany` — the same coarse, batch-native shape the local `*RBAC` already
+  serves internally (`AllowCoarseMany` wraps `CheckMany`; `AllowCoarse` is the N=1 case over
+  `allowCoarse`, decision cache included). `RemoteEngine` (`pkg/middleware/openapi/remote`) is a
+  second implementation, adapting the identical interface onto the wire call (`CheckMany` over
+  `POST /authorization/check`): its `AllowCoarseMany` is one `CheckMany` round trip for N resources,
+  re-wrapping any `CheckMany` failure as `ErrDecisionUnavailable` (`%w`-preserved, so `errors.Is`
+  against this package's sentinels answers identically whichever engine served the decision); its
+  `AllowCoarse` funnels through `AllowCoarseMany` for the N=1 case, so it carries no telemetry of
+  its own (below) — one call in, one observation, never two.
+- **`RemoteMode` and dispatch (`remote_engine.go`, `handler.go`).** A remote engine and its
+  mode — `RemoteOff`/`RemoteShadow`/`RemoteEnforce` (`ParseRemoteMode`) — are seeded and read
+  as one atomic context value (`NewRemoteEngineContext`/`remoteEngineFromContext`), under a
+  key independent of the existing local `EngineMode`/`engineKey` seam above: that one selects
+  WHICH local engine serves a decision (legacy walk vs. Cerbos); this one selects WHETHER a
+  remote engine is consulted at all. `dispatchCoarse`, the single dispatch point behind all
+  three `Allow*` scope forks, consults it FIRST, ahead of today's local dispatch:
+  - `RemoteEnforce` serves the remote engine's `AllowCoarse` **authoritatively, fail-closed**
+    — the `legacy` closure is never even invoked. Deliberately so: a downstream consumer
+    wiring a remote engine has no local ACL/CRD access to run the legacy walk, so enforce
+    cannot fall back to it on a remote deny or a decision-endpoint outage.
+  - `RemoteShadow` evaluates `legacy()` (needed both to serve its verdict and to compare it)
+    and hands the pair to `remoteShadowed` (below).
+  - No remote engine in context, or one explicitly seeded `RemoteOff` — the zero value, and what an
+    unseeded context reports — falls through **unchanged** to today's dispatch: the local Cerbos
+    engine when the kind was cut over, else the legacy walk, optionally *locally* shadow-compared
+    (above). The two shadow mechanisms stay independent and are never conflated (next).
+- **The remote shadow comparator (`remote_shadow.go`) is a downstream analog of the local
+  Cerbos shadow comparator above, built for a consumer-side soak gate rather than identity's
+  own.** `remoteShadowed` always returns the legacy verdict UNCHANGED — a policy deny, a
+  decision-endpoint outage, or a recovered panic on the remote side can never alter the
+  served verdict, the same zero-behaviour-change contract the local comparator gives its own
+  path. Disagreement is logged into its own two-class taxonomy, mirroring the local split
+  exactly:
+  - `remote shadow divergence` — a verdict was obtained and it differs from legacy's,
+    compared on allow/deny only, never error strings.
+  - `remote shadow evaluation failure` — no verdict was obtained (unavailability, an
+    unclassified error, or a recovered panic) — infra signal, never divergence signal.
+
+  Both messages are new and distinct from `shadow.go`'s `cerbos shadow …` pair, so the two
+  comparators' signals never blur under the same grep. Unlike the local comparator, a remote
+  divergence carries no `policy_hash` correlate: the remote `CoarseEngine` has no local
+  policy-store hasher to pin a revision against — the generated policy lives at identity, not
+  the consumer.
+- **How a consumer opts in.** A downstream service builds its `remote` authorizer with the
+  `WithRemoteEngineMode` option (left unset, the mode defaults to the zero value
+  `RemoteOff` — today's legacy walk, untouched). That satisfies `RemoteDecisionEngineProvider`
+  (`pkg/middleware/openapi/decision_engine.go`), the sibling of the local engine's
+  `DecisionEngineProvider` (above); `Validator.seedDecisionEngines` (`openapi.go`) — the same
+  production choke point that seeds the local engine — seeds the pair into every handler
+  context via `NewRemoteEngineContext`. No `Allow*` call site changes.
+- **Guardrail essentials, delivered.** The remote call carries its own hard per-call deadline
+  (`WithCheckTimeout`, default 250ms) applied via `context.WithTimeout`, independent of whatever
+  deadline the caller's own context carries, so a slow or wedged identity cannot block a downstream
+  request indefinitely — an expired deadline surfaces through the same fail-closed path as any other
+  transport failure. Every `AllowCoarse`/`AllowCoarseMany` round trip also gets caller-side
+  telemetry, distinct from identity's own server-side decision instruments: a decision log
+  (`remote authorization decision` — denies/unavailable at Info, allows at `V(1)`, deliberately a
+  different message from the server-side `authorization decision`) and two metrics,
+  `unikorn_identity_authz_remote_decision_total` (`outcome=allow|deny|unavailable`) and
+  `unikorn_identity_authz_remote_decision_latency` (network-hop-shaped buckets from 5ms to 5s — an
+  order of magnitude above the localhost-sidecar `pdp_latency` above). This is the consumer's own
+  view of the round trip, one observation per call regardless of batch size, never a duplicate of
+  identity's server-side records.
+- **Mechanism now, adoption deferred.** No consumer in this repo builds a `remote` authorizer with
+  `WithRemoteEngineMode` set — identity's own `Allow*` behaviour is unaffected by construction,
+  since identity's own server always constructs the local authorizer, never the remote one.
+  Provisioning and wiring `uni-region`/`uni-compute` (the shadow-then-enforce rollout) is deferred
+  downstream work; the circuit-breaker profile is a separate follow-up. Neither is delivered by this
+  seam — it ships the mechanism only.
 
 ### The kind-CI divergence gate
 
@@ -774,6 +890,57 @@ shadow divergence coverage and remote decisions are uncached by construction.
   as `outcome=miss` on the coarse-cache counter. The verbose audit log stays miss-only by design
   (the authoritative decision is logged on the miss that populated the entry). Flags:
   `--decision-cache-size` (default `1<<16`) and `--decision-cache-timeout` (default `1m`).
+
+## The decision stash
+
+`decision_stash.go` is a request-scoped accumulator of `Allow*` outcomes, seeded by
+[`pkg/middleware/audit`](../middleware/audit/README.md#decisions-and-the-sensitive-read-marker)
+before it calls the handler chain and read back once the handler returns, so the audit record can
+carry the resources a request actually referenced and the authorization verdict on each — closing
+the front-door-audit gap where the record previously carried neither. It is engine-independent: it
+observes whatever verdict the `Allow*` facade already produced, whether served by the legacy ACL
+walk, Cerbos, or a remote engine, and changes no authorization decision itself.
+`pkg/middleware/audit` also reads this accumulator to type the record's resource itself — the
+authoritative `ResourceKind`, not a URL guess — not only to populate the `decisions` list.
+
+- **Purely additive.** `NewDecisionAccumulatorContext` seeds an accumulator into a context;
+  `appendDecision` — called from the two hook points below — is a no-op unless one is present. Every
+  existing `Allow*` caller and every pre-existing test (none of which seed an accumulator) is
+  therefore unaffected by construction, mirroring the migration's own absence-default discipline
+  (`EngineFromContext`/`remoteEngineFromContext` above).
+- **Hooked at exactly two choke points**, mirroring how `decision_log.go` hooks `CheckMany` rather
+  than decorating every call site: `dispatchCoarse` is the single dispatch point behind
+  `AllowGlobalScope`, `AllowOrganizationScope` and `AllowProjectScope` — and therefore their `…ID`/
+  `…Reader` delegates too — so one append there covers all three scope-check families without
+  duplicating the call at every wrapper. `AllowProjectScopeCreate` is hooked separately since it
+  deliberately never calls `dispatchCoarse` (its live project-existence orchestration is entangled
+  with legacy ACL structure — see its own `NOTE`). Both are thin wrappers around an `…Impl` function
+  carrying the original, unchanged logic verbatim: a plain local variable captures the result, not a
+  named return plus `defer` (the repository's `nonamedreturns` lint rule forbids the latter).
+  **`AllowRole` is deliberately not hooked**: it is a role-*grantability* meta-check over a whole
+  role's scope set (many endpoint/operation pairs, evaluated via the legacy walk directly — see its
+  own docs above), not a single check against one referenced resource, so it does not fit this
+  accumulator's per-resource shape.
+- **The accumulated `Decision`** carries the resource kind (the RBAC endpoint, e.g.
+  `identity:groups`), the resource ID (empty for every coarse check — global/organization/project
+  scope checks never carry a specific instance), the action (`openapi.AclOperation` stringified),
+  and the tri-state outcome described next.
+- **The outcome vocabulary reuses `decision_log.go`'s reason strings (`policy`, `impersonation`,
+  `resolution`, `unavailable`) and adds a tri-state `allow`/`deny`/`unavailable` decision — but
+  `decisionOutcome` is a DELIBERATELY DIFFERENT classifier from `decisionClass`, not a call to it.**
+  `decisionClass` classifies `CheckMany`'s PDP-served errors only, where an error matching none of
+  the sentinels means the PDP/transport failed — correct for that narrower caller. The `Allow*`
+  facade's return spans a wider surface: today's default legacy ACL walk, and whatever
+  shadow/remote-shadow mode always *serves* (both unconditionally return the legacy verdict),
+  produce a plain `errors.HTTPForbidden` denial with **no wrapped sentinel at all** (the legacy
+  `*Legacy` functions never call `.WithError`). Reusing `decisionClass` verbatim would misclassify
+  that extremely common case — the system's own default operating mode — as `unavailable` instead
+  of `deny`. `decisionOutcome` therefore treats an unrecognized non-nil error as an explicit denial
+  (`deny`/`policy`): only the specific fail-closed sentinels (`ErrResolutionFailed`,
+  `ErrDecisionUnavailable`, `ErrImpersonationNotSupported`) classify as `unavailable` — no verdict
+  was reached, so the request was failed closed rather than actually denied by a policy. `nil`
+  classifies `allow`/`policy`, and an explicit `ErrPolicyDenied` classifies `deny`/`policy`, matching
+  `decisionClass` for the cases the two classifiers do agree on.
 
 ## Invariants
 
@@ -885,5 +1052,7 @@ unit tests themselves need no Lean — they read the committed JSON.
   group, organization, project, user, and service-account resources this package resolves
 - [`pkg/authz/cerbos`](../authz/cerbos/README.md), which provides the PDP client, policy
   generator and request builder behind the Cerbos decision path
+- [`docs/authorization/downstream-remote-authorization-design.md`](../../docs/authorization/downstream-remote-authorization-design.md),
+  which specifies the downstream remote-authorization seam documented above
 - [`formal/`](../../formal/README.md), the machine-checked Lean model of this package's enforcement
   core and the source of the conformance vectors in `testdata/`

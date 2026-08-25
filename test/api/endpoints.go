@@ -158,6 +158,13 @@ func (e *Endpoints) GetOauth2Provider(orgID, providerID string) string {
 		url.PathEscape(orgID), url.PathEscape(providerID))
 }
 
+// ListAllocations returns the endpoint for listing allocations in a project.
+// Also the collection POST target for creating an allocation.
+func (e *Endpoints) ListAllocations(orgID, projectID string) string {
+	return fmt.Sprintf("/api/v1/organizations/%s/projects/%s/allocations",
+		url.PathEscape(orgID), url.PathEscape(projectID))
+}
+
 // GetAllocation returns the endpoint for a specific allocation.
 func (e *Endpoints) GetAllocation(orgID, projectID, allocationID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/projects/%s/allocations/%s",

@@ -38,3 +38,21 @@ type Operation struct {
 type Result struct {
 	Status int `json:"status"`
 }
+
+// Decision is one authorization decision reached while handling the
+// request — the referenced resource, the action checked, and the
+// allow/deny/unavailable verdict with its reason — read back from
+// pkg/rbac's request-scoped decision accumulator (seeded by this middleware
+// before calling the handler chain; see rbac.NewDecisionAccumulatorContext).
+// Deliberately a local type rather than an alias of rbac.Decision, matching
+// Resource/Operation/etc. above: the audit record's shape stays decoupled
+// from pkg/rbac's internal type. The field vocabulary reuses
+// pkg/rbac/decision_log.go's outcome/reason vocabulary so an audit record's
+// decisions agree with the PDP decision log.
+type Decision struct {
+	ResourceKind string `json:"resourceKind"`
+	ResourceID   string `json:"resourceId,omitempty"`
+	Action       string `json:"action"`
+	Decision     string `json:"decision"`
+	Reason       string `json:"reason"`
+}

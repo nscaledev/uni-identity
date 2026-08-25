@@ -164,8 +164,23 @@ test-unit:
 # and run the hand-written policy test suites.  Requires Docker, so this is
 # deliberately not part of test-unit; CI runs it alongside the unit tests.
 .PHONY: validate-policies
-validate-policies:
+validate-policies: validate-cerbos-version
 	docker run --rm -v $(CURDIR)/pkg/authz/cerbos/generate/testdata/store:/policies:ro ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) compile /policies
+
+# The pinned Cerbos version appears in seven places; if they drift, CI tests
+# a different PDP than the chart deploys, or the policy controller's compile
+# gate vets stores with a different compiler than the PDP that loads them.
+.PHONY: validate-cerbos-version
+validate-cerbos-version:
+	@if ! grep -q 'default "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' charts/identity/templates/identity/deployment.yaml || \
+	    ! grep -q 'defaultImage = "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' pkg/authz/cerbos/client_integration_test.go || \
+	    ! grep -q 'parityDefaultImage = "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' pkg/rbac/cerbos_parity_integration_test.go || \
+	    ! grep -q 'remoteAuthzDefaultImage = "ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)"' pkg/handler/handler_authorization_integration_test.go || \
+	    ! grep -q 'COPY --from=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) /cerbos' docker/unikorn-policy-controller/Dockerfile || \
+	    ! grep -q 'ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)' hack/ci/wait-policies; then \
+		echo "Cerbos version drift: CERBOS_VERSION in the Makefile ($(CERBOS_VERSION)), the image default tag in charts/identity/templates/identity/deployment.yaml, defaultImage in pkg/authz/cerbos/client_integration_test.go, parityDefaultImage in pkg/rbac/cerbos_parity_integration_test.go, remoteAuthzDefaultImage in pkg/handler/handler_authorization_integration_test.go, the COPY --from tag in docker/unikorn-policy-controller/Dockerfile, and the verified-image note in hack/ci/wait-policies must all match."; \
+		exit 1; \
+	fi
 
 # Integration-test the Cerbos gRPC client against the pinned Cerbos image
 # with a hand-written allow/deny policy.  Requires Docker, so this is
@@ -201,6 +216,16 @@ test-cerbos-controller:
 .PHONY: test-cerbos-decisions
 test-cerbos-decisions:
 	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/rbac/
+
+# Remote decision-endpoint integration test: drives the
+# internal POST /api/v1/authorization/check through the real generated router
+# + openapi validator middleware + handler + a real Cerbos-backed RBAC (pinned
+# image), via the generated typed client, proving a downstream service obtains
+# a decision from identity.  Requires Docker, so this is deliberately not part
+# of test-unit; CI runs it alongside the other Cerbos integration tests.
+.PHONY: test-cerbos-remote
+test-cerbos-remote:
+	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/handler/
 
 # Regenerate the RBAC conformance vectors from the Lean formal model in ./formal.
 # Requires a Lean toolchain (elan/lake).  The unit tests deliberately do NOT --

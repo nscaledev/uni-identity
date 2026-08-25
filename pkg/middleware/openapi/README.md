@@ -123,6 +123,95 @@ actually serves decisions is the dispatch predicate's job (see [`pkg/rbac`](../.
 Until the strangle-by-kind cutover and legacy-path retirement, the per-request ACL resolution above
 still runs even when the engine serves, so cerbos mode carries both resolution costs.
 
+### The Remote Decision-Engine Seed
+
+The gap the previous section calls a designed follow-up has been closed by
+`RemoteDecisionEngineProvider`, the remote-side sibling of `DecisionEngineProvider` — same
+optional-interface, not-widening-`Authorizer` rationale, seeded immediately after it at the same
+production seeding point (`Validator.seedDecisionEngines`, `openapi.go`). **Only the `remote`
+authorizer implements it** — the mirror image of the local split above — handing back the
+`rbac.CoarseEngine` backed by its own decision call (`CheckMany`, described next) plus the
+`rbac.RemoteMode` it should participate under. The mode is set at construction via
+`remote.WithRemoteEngineMode`; left unset it defaults to the zero value `rbac.RemoteOff`, under
+which `pkg/rbac`'s dispatch falls through to the legacy/local path exactly as before, so every
+existing `remote`-authorizer deployment is unaffected until it opts in. `local.Authorizer` and
+`remote.Authorizer` each implement only one of the two provider interfaces, never both, so exactly
+one seed block ever matches for a given deployment (`TestLocalAuthorizerDoesNotImplementRemoteDecisionEngineProvider`
+and `TestRemoteAuthorizerDoesNotImplementDecisionEngineProvider`, this package's
+`remote_decision_engine_test.go`). Deciding what mode a downstream service actually configures
+in production is a separate, later concern — this seam only makes the choice reachable.
+
+### The Remote Decision Call
+
+`remote/decision.go` adds `Authorizer.CheckMany(ctx, []CheckRequest) ([]bool, error)`, the
+downstream side of identity's `POST /api/v1/authorization/check`. It mirrors the `GetACL` wire
+pattern — the generated typed client (`PostApiV1AuthorizationCheckWithResponse`) over the cached
+mTLS/trace-context HTTP client, with the `X-Principal`/`X-Impersonate` principal headers injected
+via `principal.Injector` — with one deliberate divergence: it forwards **no** bearer. The check
+endpoint is system-account-only and rejects any `Authorization` header, so the caller is
+authenticated by the mTLS peer certificate and the acting user is conveyed by `X-Principal`, never a
+token (unlike `GetACL`, which is not system-gated and forwards the bearer to name the user).
+Identity requires `X-Principal` on every mTLS call (even a non-impersonating one —
+`extractPrincipal` rejects its absence with a 400), so a caller that hand-rolls the request instead
+of using this `CheckMany` must inject it itself or be denied. It uses a small local
+`CheckRequest`/`Resource` DTO rather than importing `pkg/rbac`, keeping the seam free of that
+dependency for downstream consumers. Absence semantics are preserved on the wire (a scope field is
+populated only when non-empty, so an org check never gains a project attribute). **Fail-closed**: a
+transport failure or 5xx maps to `ErrDecisionUnavailable`, a 401/other 4xx propagates via
+`errors.PropagateError`, and a result-count mismatch is unavailability — the caller treats any error
+as a deny, while a per-entry `false` is a policy deny. This remote call is uncached (the design's
+no-cache-coarser rule plus impersonation keying). The coarse-decision cache has since been
+delivered, but at identity's OWN dispatch — the `pkg/rbac` `allowCoarse` layer, keyed on the
+policy-store hash (see [`pkg/rbac`](../../rbac/README.md#the-coarse-decision-cache)) — NOT on this
+remote endpoint, which stays uncached. Wiring this call into downstream `Allow*` routing is the
+recorded follow-up above.
+
+### The Circuit Breaker
+
+`CheckMany`'s round trip (above) is additionally guarded by a `failsafe-go` circuit breaker
+(`remote/decision.go`, `remote/authorizer.go`), closing the resilience gap the migration design
+calls out: today, when the central PDP degrades, every remote check would otherwise wait out the
+full per-call timeout, keep hammering the struggling PDP, then fail closed. The breaker detects
+sustained unavailability and **opens** — short-circuiting further calls (fail fast, no round trip,
+no added load on the PDP) for a cooldown — then **half-opens** to probe recovery and **closes**
+again. The security posture is unchanged (still fail-closed): the breaker only makes an
+already-fail-closed system fail closed **faster** and **PDP-protectively**; it never introduces a
+fallback to a legacy path.
+
+**States:** `closed` (normal — every call reaches the transport), `open` (every call fails instantly
+with `ErrDecisionUnavailable`, no HTTP round trip), `half_open` (a small number of trial calls are
+let through to probe recovery). A `failsafe-go` `OnStateChanged` listener logs every transition
+(`"remote authorization circuit breaker state changed"`, unconditional `Info` — including a failed
+half-open probe dropping back to `open`, exactly as actionable as the initial trip) and increments
+the `unikorn_identity_authz_remote_breaker_transitions_total` counter, keyed by the state entered —
+this is how an operator sees the breaker open without reading source.
+
+**Load-bearing invariant — trips on unavailability, never on denies.** `CheckMany` returns
+`([]bool, nil)` for any successfully served check, however many entries denied; it returns
+`(nil, err)` only when no verdict was obtained at all (transport failure, timeout, 5xx, or a
+malformed response — see above). The breaker's default any-error-is-a-failure handling therefore
+already trips on exactly "no verdict obtained" and never on a returned deny: a high deny rate under
+normal load can never open the breaker, only a genuine failure to reach/parse identity can.
+
+**Defaults (`NewAuthorizer`):** a time-based failure **rate** — not a raw consecutive count, so one
+flaky call cannot trip it, but sustained majority failure trips it quickly — opens the breaker once
+at least 10 executions have landed within a trailing 10s window and at least 50% of them failed;
+once open it waits a 5s cooldown before probing recovery in half-open state, where 2 consecutive
+successful probes close it again (any half-open failure reopens it immediately). Every consumer
+(region/compute/kubernetes) gets this working breaker for free from `NewAuthorizer`, with no server
+flag required.
+
+**Tuning and disable (`WithCircuitBreaker`):** an `Option`, mirroring `WithCheckTimeout`'s shape,
+that takes any `failsafe-go` `circuitbreaker.CircuitBreaker[[]bool]` — full control over the
+thresholds/cooldown/half-open profile for a deployment that needs different tuning. Passing `nil`
+disables the breaker entirely (e.g. for rollback): `CheckMany` then behaves exactly as it did before
+this guardrail, still bounded only by `checkTimeout`.
+
+**Deferred:** bounded retry. The migration design names "breaker + timeout + bounded retry" as the
+full resilience profile; retry is deliberately **not** part of this cut — it interacts with the
+tight per-call latency budget (N attempts × timeout) and deserves its own sizing decision, so it is
+left as a follow-up rather than bundled in here.
+
 ### Remote Token Exchange
 
 The `remote` authorizer's bearer-token path is exchange-backed. On a cache miss it performs RFC 8693
@@ -218,7 +307,12 @@ base64url(JSON) (`principal.Injector`), and its trustworthiness rests on two fac
 Consequently `extractPrincipal` reads these headers only on the mTLS path
 (`extractOrGeneratePrincipal` gates on the client-certificate header); a bearer or no-certificate
 caller has its principal **derived from the validated token**, never from the header, and a forged
-`X-Impersonate` on such a hop is ignored. That boundary is a hard invariant of the request model.
+`X-Impersonate` on such a hop is ignored. That boundary is a hard, regression-guarded invariant: see
+the trust-boundary negative tests `TestServiceToServiceForgedPrincipalWithoutMTLSIsNotHonored` and
+`TestForgedPrincipalHeaderWithoutVerifiedPeerRejected` (this package's `openapi_test.go`), the
+endpoint guard `TestAuthorizationCheckIgnoresForgedPrincipalHeaders` (`pkg/handler`), and a genuine
+mTLS-handshake test for `/authorization/check` in the kind suite
+(`test/api/suites/authorization_check_mtls_test.go`).
 
 `extractPrincipal` also has a **signature-verified** path (`client.VerifyAndDecode`), used today for
 principals signed by `principal.ControllerInjector` (uni-core's `EncodeAndSign`). Making

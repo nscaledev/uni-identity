@@ -25,6 +25,12 @@ import (
 // TestConfig extends the base config with Identity-specific fields.
 type TestConfig struct {
 	coreconfig.BaseConfig
+	// MTLSClientCert and MTLSClientKey are the base64-encoded PEM of the
+	// ci-fixtures mTLS client certificate/key, exported by hack/ci/fixtures.
+	// They are optional: the genuine-mTLS authorization-check test skips when
+	// they are absent (e.g. a focused local run without a full fixtures pass).
+	MTLSClientCert       string
+	MTLSClientKey        string
 	AdminToken           string
 	UserToken            string
 	AuditToken           string
@@ -79,6 +85,8 @@ func LoadTestConfig() (*TestConfig, error) {
 			LogRequests:     v.GetBool("LOG_REQUESTS"),
 			LogResponses:    v.GetBool("LOG_RESPONSES"),
 		},
+		MTLSClientCert:       v.GetString("IDENTITY_MTLS_CLIENT_CERT"),
+		MTLSClientKey:        v.GetString("IDENTITY_MTLS_CLIENT_KEY"),
 		AdminToken:           firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN")),
 		UserToken:            v.GetString("USER_AUTH_TOKEN"),
 		AuditToken:           v.GetString("AUDIT_AUTH_TOKEN"),
