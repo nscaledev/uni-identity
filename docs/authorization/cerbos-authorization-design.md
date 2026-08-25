@@ -261,11 +261,13 @@ SAML/API-keys/workload until prioritized.
   effective authorization policy, least privilege applies. Only the controller's
   ServiceAccount may write it; identity/sidecar mount it read-only. The controller
   MUST `cerbos compile` (test-suite pass) each generated bundle and **refuse to
-  publish on failure**, keep last-good and alarm, never fail-open on a broken or
-  well-formed-but-hostile bundle. *(The controller ships this: exec'd pinned-binary
-  gate, refusal keeps last-good + warning event + classified error log; published
-  keys embed content hashes and publishes are logged. Richer provenance/audit
-  records ride with the decision-observability work.)*
+  publish on failure**, alarm, and never fail-open on a broken or
+  well-formed-but-hostile bundle. Deterministic generation, size, compile, or test
+  rejection must withdraw any older grants by publishing deny-all; last-good is
+  retained only when infrastructure/read/publication failure makes replacement
+  unsafe. *(The controller ships this with an exec'd pinned-binary gate, warning
+  events, classified errors, and content-hashed published keys. Richer
+  provenance/audit records ride with the decision-observability work.)*
 - **Deployment hardening (from the deployment review), deferred decisions:**
   - *Policies-ConfigMap ownership.* ✅ **RESOLVED: controller-owned outright; the
     chart no longer templates the ConfigMap.** The sidecar mounts it as an

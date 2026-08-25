@@ -14,15 +14,18 @@ lifecycle semantics themselves. They are intentionally thin factories that:
 - register watches for the concrete resource type
 - register the local API scheme needed by that controller
 
-The actual reconcile behaviour lives in the provisioners:
+The actual reconcile behaviour lives in the provisioners (or, for the policy
+controller, in its domain package):
 
 - [organization](../provisioners/organization/README.md)
 - [project](../provisioners/project/README.md)
 - [oauth2client](../provisioners/oauth2client/README.md)
+- [policy](../authz/cerbos/README.md#the-policy-controller) — domain logic in
+  `pkg/authz/cerbos/controller`
 
 ## Pattern
 
-Each controller package in this repository follows the same pattern:
+Each lifecycle controller package in this repository follows the same pattern:
 
 - implement `coremanager.ControllerFactory`
 - return [pkg/constants](../constants/README.md) service metadata
@@ -35,6 +38,27 @@ Each controller package in this repository follows the same pattern:
 The controller layer is therefore deliberately boring. Its job is to make the
 shared manager framework runnable for a specific resource kind without
 re-implementing reconcile logic locally.
+
+## The Policy Controller (fan-in)
+
+[policy](../authz/cerbos/README.md#the-policy-controller) is the one
+deliberate deviation: it regenerates the Cerbos policy store from the *whole*
+`Role` set, so `coremanager.NewReconciler`'s strict 1:1 object-lifecycle
+model (finalizers, status conditions) does not fit. The factory stays thin
+but:
+
+- returns a custom fan-in reconciler from `pkg/authz/cerbos/controller`
+  instead of constructing the shared one
+- collapses every `Role` event into a single synthetic request, so bursts
+  dedup in the workqueue
+- still uses the generation-changed predicate, which passes create *and
+  delete* events (pinned by unit test — a deleted `Role` must shrink the
+  generated store)
+- exposes controller-local CLI options (`--cerbos-policies-configmap`,
+  `--cerbos-binary`) and validates them via the factory `Initialize` hook,
+  which also builds the uncached client the reconciler needs (a cache-backed
+  ConfigMap read would demand cluster-wide RBAC the chart deliberately does
+  not grant)
 
 ## Why Generation Watches
 
