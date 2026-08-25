@@ -77,6 +77,10 @@ func TestBindingStringFormats(t *testing.T) {
 			binding:  cerbos.RoleBinding{RoleID: "00000000-0000-0000-0000-000000000001"},
 			expected: "00000000-0000-0000-0000-000000000001#global",
 		},
+		"global read": {
+			binding:  cerbos.RoleBinding{RoleID: "00000000-0000-0000-0000-000000000002", GlobalRead: true},
+			expected: "00000000-0000-0000-0000-000000000002#global-read",
+		},
 		"organization": {
 			binding:  cerbos.RoleBinding{RoleID: "00000000-0000-0000-0000-000000000003", OrganizationID: "org-acme"},
 			expected: "00000000-0000-0000-0000-000000000003#org#org-acme",
@@ -102,13 +106,26 @@ func TestBindingStringFormats(t *testing.T) {
 // cannot represent: an empty role ID renders an unmatchable string, and a
 // project without an organization has no format at all (a project binding
 // embeds its organization — that embedding is what stops the same project ID
-// in another organization from matching).
+// in another organization from matching).  A read-clamped binding is global by
+// definition, so pairing it with an organization or a project is a coding
+// error, never a narrower grant.
 func TestBindingStringValidation(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]cerbos.RoleBinding{
 		"empty role ID":                {OrganizationID: "org-acme"},
 		"project without organization": {RoleID: "00000000-0000-0000-0000-000000000006", ProjectID: "proj-1"},
+		"global read with organization": {
+			RoleID:         "00000000-0000-0000-0000-000000000002",
+			GlobalRead:     true,
+			OrganizationID: "org-acme",
+		},
+		"global read with organization and project": {
+			RoleID:         "00000000-0000-0000-0000-000000000002",
+			GlobalRead:     true,
+			OrganizationID: "org-acme",
+			ProjectID:      "proj-1",
+		},
 	}
 
 	for name, binding := range cases {
