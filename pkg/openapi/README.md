@@ -23,6 +23,48 @@ that contract both at build time and at runtime.
 - `builder.go`: a small local adapter used by
   [pkg/client](../client/README.md) to construct generated clients in the shape
   expected by the identity service
+- `enclave/`: a second router, generated from the same spec but filtered to
+  one tag (see [Enclave Authorization Subset](#enclave-authorization-subset))
+
+## Enclave Authorization Subset
+
+`pkg/openapi/enclave` is a second chi router, generated from the same
+`server.spec.yaml`. It serves only the operations tagged
+`EnclaveAuthorization`:
+
+- `POST /api/v1/authorization/check`
+- `GET /api/v1/acl`
+- `GET /api/v1/organizations/{organizationID}/acl`
+
+This subset exists for the enclave authorization profile: a deployment that
+answers authorization questions locally and must not expose any other
+identity route. A route that generation never registers cannot be reached
+by a bug in a runtime check, so omission by generation is a stronger
+guarantee than a runtime refusal.
+
+[`enclave/config.yaml`](./enclave/config.yaml) selects the tag through
+`include-tags` and generates only the `chi-server` output. Because
+oapi-codegen does not generate types for this config, `enclave/types.go` is
+a small, hand written file. It aliases `OrganizationIDParameter` and
+`Oauth2AuthenticationScopes` from the parent `openapi` package, so the
+generated router compiles and shares the same context key as the full
+router.
+
+`enclave/routes_test.go` pins the served route set three ways: against the
+tag read from the embedded spec (`openapi.GetSwagger()`), against the same
+tag read directly from `server.spec.yaml` on disk (a staleness guard the
+embedded-spec check cannot be, because the router and the embedded spec are
+both generated from the spec file in the same step, so a broken `make
+generate` leaves them stale together), and against a literal route list (a
+guard against a path rename that keeps the same tag and the same operationId
+— see the comment on `enclaveRoutes` in that file). A spec change that adds,
+drops, or moves the tag, or a stale regeneration, fails at least one of
+these tests.
+
+`pkg/server.mountAPI` (`pkg/server/server.go`) mounts this router when
+`--api-profile=authorization` is set; see
+[pkg/middleware/openapi](../middleware/openapi/README.md#api-profiles) for
+the profile's write-guard design.
 
 ## Why This Package Matters
 
