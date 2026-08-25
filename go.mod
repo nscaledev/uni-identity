@@ -32,15 +32,59 @@ require (
 )
 
 require (
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260415201107-50325440f8f2.1 // indirect
+	buf.build/go/protovalidate v1.2.0 // indirect
+	cel.dev/expr v0.25.2 // indirect
+	connectrpc.com/connect v1.20.0 // indirect
+	connectrpc.com/otelconnect v0.9.0 // indirect
+	filippo.io/age v1.3.1 // indirect
+	filippo.io/hpke v0.4.0 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
+	github.com/cerbos/cloud-api v0.1.74 // indirect
+	github.com/danieljoos/wincred v1.2.3 // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
+	github.com/ghodss/yaml v1.0.0 // indirect
+	github.com/goccy/go-json v0.10.6 // indirect
+	github.com/godbus/dbus/v5 v5.2.2 // indirect
+	github.com/google/cel-go v0.28.1 // indirect
+	github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.3 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
+	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
+	github.com/jdx/go-netrc v1.0.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/lestrrat-go/blackmagic v1.0.4 // indirect
+	github.com/lestrrat-go/dsig v1.3.0 // indirect
+	github.com/lestrrat-go/dsig-secp256k1 v1.0.0 // indirect
+	github.com/lestrrat-go/httpcc v1.0.1 // indirect
+	github.com/lestrrat-go/httprc/v3 v3.0.5 // indirect
+	github.com/lestrrat-go/jwx/v3 v3.1.1 // indirect
+	github.com/lestrrat-go/option/v2 v2.0.0 // indirect
+	github.com/minio/sha256-simd v1.0.1 // indirect
+	github.com/planetscale/vtprotobuf v0.6.1-0.20250313105119-ba97887b0a25 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/rs/xid v1.6.0 // indirect
+	github.com/segmentio/asm v1.2.1 // indirect
+	github.com/valyala/fastjson v1.6.10 // indirect
+	github.com/zalando/go-keyring v0.2.8 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
+	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
+)
+
+require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/brunoga/deep v1.2.4 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
+	github.com/cerbos/cerbos-sdk-go v0.4.0
+	github.com/cerbos/cerbos/api/genpb v0.53.1-0.20260602120402-cf85ce6cd99e // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.12.2 // indirect
 	github.com/evanphx/json-patch v5.9.0+incompatible // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
+	github.com/failsafe-go/failsafe-go v0.9.6 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
@@ -56,7 +100,7 @@ require (
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20250403155104-27863c87afa6 // indirect
-	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/go-version v1.7.0 // indirect
 	github.com/hashicorp/logutils v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
@@ -105,13 +149,13 @@ require (
 	golang.org/x/time v0.11.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
-	google.golang.org/grpc v1.82.1 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260523011958-0a33c5d7ca68 // indirect
+	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/apiextensions-apiserver v0.35.8 // indirect
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect

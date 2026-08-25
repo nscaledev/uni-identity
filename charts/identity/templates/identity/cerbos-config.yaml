@@ -1,0 +1,28 @@
+# Configuration for the Cerbos PDP sidecar (see deployment.yaml), mounted
+# read-only at /config.  The admin API is deliberately NOT enabled: M1 of the
+# authorization migration forbids it, and the disk driver does not support it
+# anyway — the policy store is only ever written through the policies
+# ConfigMap, which the policy controller owns and publishes at runtime (this
+# chart does not template it; see pkg/authz/cerbos/README.md).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-cerbos-config
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # The PDP is unauthenticated, so it must never bind pod interfaces: bind
+    # loopback only.  Pod containers share the network namespace, so the
+    # identity server dials localhost:3593 and the probes exec the cerbos
+    # healthcheck binary in-container (deployment.yaml).
+    server:
+      httpListenAddr: "127.0.0.1:3592"
+      grpcListenAddr: "127.0.0.1:3593"
+    storage:
+      driver: disk
+      disk:
+        directory: /policies
+        watchForChanges: true
+    telemetry:
+      disabled: true

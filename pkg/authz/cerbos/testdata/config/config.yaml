@@ -1,0 +1,17 @@
+# Mirror of the Cerbos sidecar configuration shipped in
+# charts/identity/templates/identity/cerbos-config.yaml, so the integration
+# test boots the PDP as deployed.  TestChartAndTestConfigsMatch pins the two
+# files to be identical EXCEPT the listen addresses: the chart binds loopback
+# (the PDP is unauthenticated and must never bind pod interfaces), but docker
+# --publish forwards to the container IP, not container-loopback, so this
+# config must bind all interfaces for the test to reach the PDP from the host.
+server:
+  httpListenAddr: "0.0.0.0:3592"
+  grpcListenAddr: "0.0.0.0:3593"
+storage:
+  driver: disk
+  disk:
+    directory: /policies
+    watchForChanges: true
+telemetry:
+  disabled: true

@@ -20,3 +20,7 @@ v{{ .Chart.Version }}
 {{- define "unikorn.projectControllerImage" -}}
 {{- .Values.projectController.image | default (printf "%s/unikorn-project-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
 {{- end }}
+
+{{- define "unikorn.policyControllerImage" -}}
+{{- .Values.policyController.image | default (printf "%s/unikorn-policy-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
+{{- end }}

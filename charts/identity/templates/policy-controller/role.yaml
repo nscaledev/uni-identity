@@ -1,0 +1,45 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-policy-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+rules:
+# Controller prerequisites.
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - update
+# The policy store ConfigMap I publish is the effective authorization policy,
+# so least privilege applies: writes are scoped to that one object.  Create
+# cannot be resourceName-scoped (RBAC evaluates the rule before the object
+# exists), so it lives in the unscoped rule below.
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - list
+  - watch
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - update
+  - patch
+  resourceNames:
+  - {{ .Release.Name }}-cerbos-policies
