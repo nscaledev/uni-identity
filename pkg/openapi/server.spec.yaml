@@ -213,6 +213,8 @@ paths:
       This is used to perform basic RBAC on remote services and to control
       UX.
     get:
+      tags:
+      - EnclaveAuthorization
       x-no-authorization: true
       x-hidden: true
       description: |-
@@ -234,6 +236,8 @@ paths:
       subject's bindings, consults the policy decision point, and returns a
       per-check allow/deny.
     post:
+      tags:
+      - EnclaveAuthorization
       x-no-authorization: true
       x-hidden: true
       description: |-
@@ -389,6 +393,8 @@ paths:
     parameters:
     - $ref: '#/components/parameters/organizationIDParameter'
     get:
+      tags:
+      - EnclaveAuthorization
       x-no-authorization: true
       x-hidden: true
       description: |-

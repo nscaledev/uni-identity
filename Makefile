@@ -84,7 +84,8 @@ OPENAPI_FILES = \
         pkg/openapi/types.go \
         pkg/openapi/schema.go \
         pkg/openapi/client.go \
-        pkg/openapi/router.go
+        pkg/openapi/router.go \
+        pkg/openapi/enclave/router.go
 
 MOCKGEN_VERSION=v0.3.0
 GINKGO_VERSION := $(shell awk '$$1 == "github.com/onsi/ginkgo/v2" { print $$2; exit }' go.mod)
@@ -268,6 +269,12 @@ pkg/openapi/client.go: $(OPENAPI_SCHEMA)
 pkg/openapi/router.go: $(OPENAPI_SCHEMA)
 	@go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OPENAPI_CODEGEN_VERSION)
 	$(GOBIN)/oapi-codegen -generate chi-server $(OPENAPI_CODEGEN_FLAGS) -o $@ $<
+
+# Generate the enclave authorization profile's router: the same spec,
+# filtered by tag to the read-only authorization surface.
+pkg/openapi/enclave/router.go: $(OPENAPI_SCHEMA) pkg/openapi/enclave/config.yaml
+	@go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OPENAPI_CODEGEN_VERSION)
+	$(GOBIN)/oapi-codegen -config pkg/openapi/enclave/config.yaml -o $@ $<
 
 # When checking out, the files timestamps are pretty much random, and make cause
 # spurious rebuilds of generated content.  Call this to prevent that.
