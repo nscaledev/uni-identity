@@ -16,3 +16,39 @@ spec:
         operations: [read]
       - name: identity:projects/references
         operations: [create, delete]
+      - name: region:regions
+        operations: [create, read, update, delete]
+      - name: region:flavors
+        operations: [create, read, update, delete]
+      - name: region:images
+        operations: [create, read, update, delete]
+      - name: region:externalnetworks
+        operations: [create, read, update, delete]
+      - name: region:identities
+        operations: [create, read, update, delete]
+      - name: region:identities/references
+        operations: [create, read, update, delete]
+      - name: region:networks
+        operations: [create, read, update, delete]
+      - name: region:networks/references
+        operations: [create, read, update, delete]
+      - name: region:networks:v2
+        operations: [create, read, update, delete]
+      - name: region:networks:v2/references
+        operations: [create, read, update, delete]
+      - name: region:loadbalancers:v2
+        operations: [create, read, update, delete]
+      - name: region:securitygroups
+        operations: [create, read, update, delete]
+      - name: region:securitygroups:v2
+        operations: [create, read, update, delete]
+      - name: region:servers
+        operations: [create, read, update, delete]
+      - name: region:servers:v2
+        operations: [create, read, update, delete]
+      - name: region:filestorage:v2
+        operations: [create, read, update, delete]
+      - name: region:filestorageclass:v2
+        operations: [create, read, update, delete]
+      - name: region:sshcertificateauthorities:v2
+        operations: [create, read, delete]

@@ -109,8 +109,8 @@ implementer keep compiling and their requests structurally take the legacy path.
 authorizer implements it** (identity's own `RBAC`, whose in-process PDP client backs
 `rbac.Check`/`CheckMany`). The `remote` authorizer deliberately does **not** — a remote
 `DecisionEngineProvider` was a **designed follow-up**, not delivered by the `/authorization/check`
-endpoint, and has since been delivered as a sibling interface rather than by widening this one. What
-that endpoint delivered is the `remote`
+endpoint, and has since been delivered as a sibling interface rather than by widening this one (see
+[below](#the-remote-decision-engine-seed)). What that endpoint delivered is the `remote`
 authorizer's decision **call** (`Authorizer.CheckMany` over `POST /authorization/check`,
 `remote/decision.go`): a downstream service obtains a decision from identity. Routing a downstream
 `Allow*` through that call would need a remote transport **above** `rbac.decide()` (a downstream
