@@ -14,8 +14,9 @@ later fan-out to per-service sidecars stays possible and is not designed here. T
 it.
 
 The driver is **Unikorn 3: Distributed Control Plane** (architecture vision deck, July 2026).
-That deck puts a data plane and a control plane in each region, behind one global management
-plane. Authorization verdicts are data plane, so an enclave serves them locally and keeps serving
+That deck puts a data plane and a control plane in each region, behind three global planes:
+management, aggregation and configuration. This design touches the configuration plane's rule
+and consumes what the management plane pushes. Authorization verdicts are data plane, so an enclave serves them locally and keeps serving
 them through a partition. The configuration-plane rule is that policy is written once, centrally,
 and pushed out. Enclaves never call home to read it.
 
@@ -50,7 +51,8 @@ seam. That fallback is noted here, not designed.
 This design adds the read-only guard on the consuming side (see section 5). The replication side
 belongs to the replicated-state assumption.
 
-**One cluster is one enclave.** Today's single-cluster deployment is the degenerate case.
+**One cluster is the degenerate enclave.** The deck's enclave is a region, with its own etcd and
+its own infrastructure root. Today's single-cluster deployment is the one-region case.
 Everything here runs unchanged in one kind cluster, which is also how CI exercises it.
 
 **The human path does not change.** Humans keep broad Auth0 bearer tokens, because the deck
@@ -59,12 +61,30 @@ from tokens, and the same single resolution path serves service accounts. As a r
 `cerbos-authorization-design.md` section 6 that says the passport carries the bindings a
 distributed PDP needs is **superseded**. The passport carries actor identity only, verified
 against `pkg/middleware/openapi`, where passports are consumed in process and never forwarded, and
-RBAC is resolved separately. It stays that way.
+RBAC is resolved separately.
+
+That describes what the passport carries, not that the exchange survives. Both source documents
+plan to remove the central exchange in its present form: the platform identity architecture
+deletes the broker outright in favour of local validation, and the deck replaces it with a
+two-exchange model whose second leg runs in the enclave. What this design relies on is the
+narrower and durable half — the passport carries actor identity, and bindings come from the
+projection.
 
 ## 3. One new deployment unit: the enclave authorization profile
 
 The enclave authorization profile is the same image and chart family as identity, selected by Helm
-values. It runs four things and nothing else:
+values. It serves identity's **read-only authorization surface** and nothing else. That is wider
+than the check endpoint alone: a consumer's middleware fetches an ACL on every uncached request,
+so the surface is the check endpoint plus both ACL routes. Those three are exactly what the
+consumer-side authorizer calls, which is why one endpoint moves all three.
+
+One authorization call stays central: the untrusted project-ID verification behind a create. It
+rides the consumer's other identity client, alongside quota and lifecycle calls that belong at the
+centre, so relocating it would need a third client in every consumer. The residual is that this
+narrow path fails under a partition. Folding the existence check into the decision itself removes
+the call rather than relocating it, and that is the follow-up. Every write surface is absent.
+
+It runs four things and nothing else:
 
 - The `POST /authorization/check` surface, with its existing mTLS, certificate-relay,
   `X-Principal` and `X-Impersonate` middleware.
@@ -79,8 +99,10 @@ values. It runs four things and nothing else:
 N replicas of this pod behind a Service are the regional PDP fleet. Consumers keep the `pkg/rbac`
 remote seam byte for byte and re-point their check endpoint for each enclave. That is Helm values
 today and platform discovery when it lands. **Central identity stays the only authoring and
-management authority** for roles, organizations and grants, and keeps serving checks itself. It is
-the first enclave.
+management authority** for roles, organizations and grants, and keeps serving checks itself.
+Calling it "the first enclave" is convenient shorthand for the single-cluster case only: in the
+deck the global planes stay structurally distinct from enclaves, and cross-region coordination
+always routes through the centre.
 
 Because generation is local, the policy shape in an enclave always matches the request-building
 code in that same enclave. Both ship in one binary, guarded by the existing store-version check,
@@ -115,16 +137,32 @@ serving the last known good policy and bindings, so decisions keep flowing. This
 freeze-not-destroy rule from the deck: a re-check is a local edge decision against the last known
 policy. Two failure classes stay strictly separate.
 
+The deck's freeze carries two obligations beyond serving stale state: the affected resource is
+marked loudly and queryably, and a two-person rebind is exposed. Neither is in this design.
+Section 7 offers fleet-level freshness signals, which is not per-resource queryable marking, and
+there is no rebind path here at all. Whether an authorization projection needs both is an open
+question: the deck states them for a frozen *resource* under a stalled reconciler, and a stale
+role binding is not a resource in that sense. Recorded rather than resolved.
+
 | Failure class | Behaviour |
 |---|---|
-| **Staleness**, when replication lags or stalls | Serve the last known good state. Never fail closed. Observable through section 7. |
+| **Staleness**, when replication lags or stalls | Serve the last known good state. Never fail closed. Observable through section 7. Accepted residual: an ACL served from the projection lags too, and consumers filter list responses with it, so a user can briefly see resources they have just lost or miss ones they have just gained. The lag is the replication lag plus the consumer's ACL cache TTL. |
 | **Evaluation failure**, when the PDP is down, times out or the transport errors | Fail closed with `ErrDecisionUnavailable`, exactly as today. |
 
 **The accepted residual, stated plainly.** A revocation made centrally does not reach a
 partitioned enclave until it reconnects, so the revocation horizon equals the partition duration.
-This is the same trade the deck accepts for tokens, where service-account tokens ride a partition
-up to a stated horizon. Freeze-not-destroy bounds it on the platform side, because deletion is
-gated by enclave-local reference sets that do not depend on the RBAC check.
+
+**It is a wider trade than the deck's token horizon, not the same one.** The deck derives its
+service-account horizon from an availability budget: TGT expiry equals the centre's single-event
+outage budget, roughly 5 minutes at five nines and 53 minutes at four nines. This design's horizon
+has no cap at all, because it is the partition itself. The direction of the trade matches. The
+bound does not. The deck also still lists the service-account partition trade as an open sign-off,
+so it is not yet accepted there either.
+
+Freeze-not-destroy does not bound this residual. It bounds *deletion*: reference sets are
+enclave-local and deny deletion while dependents exist, independent of the RBAC check, so a
+partition makes a delete hang visibly rather than complete wrongly. Stale authority is deliberately
+preserved, not bounded, and a numeric bound for it is the open question in section 7.
 
 ## 5. No new trust surface is added
 
@@ -135,7 +173,9 @@ added.
 
 **Projections are read only in practice, not only by intent.** The authorization profile serves no
 write surface. Omitting those routes from the profile is the primary guard. Kubernetes RBAC, read
-only on the replicated resources, is the backstop. Every write goes to the centre.
+only on the replicated resources, is the write guard rather than merely a backstop: route omission
+makes the write handlers unreachable through the mux, and only the RBAC denies them if they are ever
+reached. Every write goes to the centre.
 
 **Policy authenticity rides the replication channel**, which is the platform's trusted management
 artery. Signed state snapshots are optional hardening if that trust is later judged insufficient.
@@ -147,15 +187,29 @@ the deck. If one instance is compromised, the blast radius is read-only projecte
 verdicts. It cannot mint grants, because it has no write path, and it cannot affect another
 enclave. That is strictly smaller than a compromise of central identity today.
 
-**The letter of specification section 10.1 is preserved.** That section says all access decisions
-are made against the ACL returned by the identity service, and that there is no local policy
-evaluation in individual services. Consumers still evaluate nothing locally. Decisions are still
-made by *the identity service*, which is now a distributed service. The upstream amendment to
-`nscaledev/uni-specifications` is narrow: recognize that identity can serve decisions from
-enclave-local instances that evaluate centrally-authored replicated state, with bounded and
-observable staleness. Authoring stays single and central. **"Single policy authority" replaces the
-implicit "single instance", not the enforcement-point rule.** The original Deployment B, with a
-sidecar in every service, would have broken the letter of that section. This design does not.
+**Specification section 10.1 needs an amendment, and this design does not satisfy its letter
+without one.** The section has three clauses, and an earlier version of this document argued
+around the third:
+
+> Single enforcement point — all access decisions are made against the ACL returned by the
+> identity service. There is no local policy evaluation in individual services. Duplicating or
+> caching access logic outside the ACL endpoint is a defect.
+
+The first two clauses hold here. Consumers evaluate nothing locally, and decisions are still made
+by *the identity service*, which becomes a distributed service. The third clause is the one this
+design engages: replicating the source state and generating the policy store inside every enclave
+duplicates access logic outside a single ACL endpoint, by that clause's plain reading. Claiming
+the letter is preserved while section 10 requires an amendment cannot both be true, so this
+document no longer claims it.
+
+The amendment is still narrow: recognize that identity may serve decisions from enclave-local
+instances that evaluate centrally-authored replicated state, with bounded and observable
+staleness, and that the third clause forbids access logic authored or diverging outside identity
+rather than identity's own policy compiled in more than one place. Authoring stays single and
+central. **"Single policy authority" replaces the implicit "single instance", and the
+enforcement-point rule is unchanged.** The original Deployment B, with a sidecar in every service,
+would have broken the first two clauses as well. This design breaks none of them, and needs the
+third reworded.
 
 ## 6. Rollout is per service, per enclave, and reversible
 
@@ -239,21 +293,66 @@ external dependency.**
 
 ## 11. Out of scope
 
-- The replication mechanism itself. The platform program owns it.
-- Fan-out to per-service sidecars. It stays possible: the enclave authorization unit can later run
-  as a sidecar for each pod, still speaking `/check`, and consumers would not change.
-- The aggregation-plane rollup of decision logs.
-- Multi-cluster CI.
-- The enclave token-exchange and signing component, which belongs to the authentication
-  workstream in the deck.
-- Cerbos Hub.
+Three different things sit in this list, and reading one as another has already cost a round of
+rework. **Owned elsewhere** means the platform expects the thing and another workstream builds
+it, so this design must leave room for it. **Deferred** means it is wanted later. **Rejected**
+means the platform has decided against it.
+
+**Owned elsewhere.**
+
+- **The replication mechanism.** The platform program owns it. This design consumes its output
+  and asserts nothing about how the state arrives.
+- **The enclave token-exchange and signing component.** Read this as ownership elsewhere, not
+  prohibition. The vision deck's target has each enclave signing the service-account access
+  tokens it issues with its own local key, and running the second service-account exchange
+  locally with no central call. The load-bearing property the deck claims for that shape is that
+  the long-lived credential never touches an enclave. So an enclave will hold signing keys and
+  will serve an exchange. This design builds neither, and nothing here may preclude either.
+
+  Two limits on that, because the deck is not claiming a fully closed domain. An enclave still
+  verifies a TGT minted centrally, against key material the deck calls "warm, online,
+  fleet-wide", and whose failure mode is still an open sign-off. Human Auth0 tokens stay broad
+  and are verified everywhere. The sources name an owner only for the human path, the human-path
+  team. The owner of the service-account exchange work is not named in them.
+- **A rollup of decision logs across enclaves.** Decision logs stay enclave-local here
+  (section 7). No source assigns the rollup an owner: the deck's aggregation plane is a
+  transitional, read-only, assembled-on-demand cross-region view and explicitly never a write
+  path, so it is not one.
+
+**Deferred.**
+
+- **Fan-out to per-service sidecars.** The enclave authorization unit can later run as a sidecar
+  for each pod, still speaking `/check`, with no consumer change.
+- **Multi-cluster CI.** Revisit with the test infrastructure of the platform program.
+
+**Rejected by this design.** Neither source mentions Cerbos or policy bundles, so these are this
+document's own choices, recorded in section 1, decision 3.
+
+- **Cerbos Hub.** A paid external dependency on the decision path.
+- **Centrally built signed policy bundles**, except as the fallback of last resort in section 2.
+  Local generation avoids the compatibility problem between policy shape and client version.
 
 ## Open questions
 
 - **The numeric staleness target.** The freshness alert threshold, and any formal objective,
   belong to the platform program. This design only makes staleness measurable.
-- **How an endpoint is selected.** Helm values for each enclave today, and platform discovery when
-  it exists. The naming and configuration shape are decided at implementation time.
-- **Whether to co-locate with the enclave token-exchange component.** Section 2 suggests the
-  authorization profile and the enclave identity component that signs and exchanges tokens land as
-  one deployment eventually. Decide when that workstream is real.
+- **How an endpoint is selected, and how many endpoints a consumer needs.** Helm values for each
+  enclave today. The deck's end state is discovery replicated to every enclave and served over
+  anycast BGP, returning a service-to-endpoint map that clients use to call the owning service
+  directly, with no trusted terminating middlebox in the loop. So the configuration shape chosen
+  now must not preclude a discovery lookup later. A consumer also needs its authorization
+  endpoint separately from its identity host, because one host serves far more than
+  authorization: the RFC 8693 token exchange on every bearer request, the quota allocation calls
+  on every resource create, resize and delete, and the project reference calls on a reconcile.
+  Only the authorization subset belongs in an enclave. That second endpoint does NOT collapse
+  when the enclave gains local signing. It collapses only if quota and references are served
+  locally too, which the deck foresees for quota through locally consumed leases and does not
+  settle here.
+
+- **Whether to co-locate with the enclave token-exchange component.** Still open, and the
+  sources do not settle it. The deck decides that both functions exist in every enclave: the
+  local signing key, and the second service-account exchange served locally. It says nothing
+  about the authorization service and the signing component being ONE deployment unit, which is
+  what this question asks. So the direction is clear and the packaging is not. Decide when that
+  workstream is real, and until then keep the authorization profile shaped so co-location stays
+  possible.
