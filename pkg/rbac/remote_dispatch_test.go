@@ -18,12 +18,16 @@ package rbac_test
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
 
@@ -47,12 +51,14 @@ import (
 // verdict, so a test can prove which side — remote or legacy — served a
 // decision.
 type fakeRemoteEngine struct {
-	err   error
-	calls int
+	err       error
+	calls     int
+	resources []rbac.Resource
 }
 
-func (f *fakeRemoteEngine) AllowCoarse(_ context.Context, _ rbac.Resource, _ openapi.AclOperation) error {
+func (f *fakeRemoteEngine) AllowCoarse(_ context.Context, resource rbac.Resource, _ openapi.AclOperation) error {
 	f.calls++
+	f.resources = append(f.resources, resource)
 
 	return f.err
 }
@@ -122,6 +128,51 @@ func TestDispatchRemoteEnforceIsAuthoritative(t *testing.T) {
 
 		require.Equal(t, 2, fake.calls, "both scope forks must reach the remote engine")
 	})
+
+	t.Run("AllowProjectScopeCreate serves a policy deny over a granting ACL", func(t *testing.T) {
+		t.Parallel()
+
+		fake := &fakeRemoteEngine{err: rbac.CoarseForbidden(rbac.Resource{Kind: "candy"}, openapi.Create, rbac.ErrPolicyDenied)}
+		ctx := rbac.NewRemoteEngineContext(rbac.NewContext(t.Context(), globalACL("candy", openapi.Create)), fake, rbac.RemoteEnforce)
+
+		err := rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID)
+		require.True(t, coreerrors.IsForbidden(err), "the remote deny must not be overridden by the granting legacy ACL")
+		require.ErrorIs(t, err, rbac.ErrPolicyDenied)
+		require.Equal(t, 1, fake.calls)
+	})
+
+	t.Run("AllowProjectScopeCreate fails closed when the remote engine is unavailable", func(t *testing.T) {
+		t.Parallel()
+
+		fake := &fakeRemoteEngine{err: rbac.CoarseForbidden(rbac.Resource{Kind: "candy"}, openapi.Create, rbac.ErrDecisionUnavailable)}
+		ctx := rbac.NewRemoteEngineContext(rbac.NewContext(t.Context(), globalACL("candy", openapi.Create)), fake, rbac.RemoteEnforce)
+
+		err := rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID)
+		require.True(t, coreerrors.IsForbidden(err), "an outage must not fall back to the granting legacy ACL")
+		require.ErrorIs(t, err, rbac.ErrDecisionUnavailable)
+		require.Equal(t, 1, fake.calls)
+	})
+
+	t.Run("AllowProjectScopeCreate validates the project after a remote allow", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		client := openapiMock.NewMockClientWithResponsesInterface(ctrl)
+		client.EXPECT().
+			GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
+			Return(&openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{
+				HTTPResponse: &http.Response{StatusCode: http.StatusNotFound},
+			}, nil)
+
+		fake := &fakeRemoteEngine{}
+		ctx := rbac.NewRemoteEngineContext(rbac.NewContext(t.Context(), globalACL("candy", openapi.Create)), fake, rbac.RemoteEnforce)
+
+		err := rbac.AllowProjectScopeCreate(ctx, client, "candy", openapi.Create, organizationID, projectID)
+		require.True(t, coreerrors.IsHTTPNotFound(err), "a remote allow must not bypass live project validation")
+		require.Equal(t, 1, fake.calls)
+		require.Equal(t, []rbac.Resource{{Kind: "candy", OrganizationID: organizationID, ProjectID: projectID}}, fake.resources,
+			"the authoritative check must include the caller-supplied tenancy before live validation")
+	})
 }
 
 func TestDispatchRemoteOffIsUnchanged(t *testing.T) {
@@ -146,5 +197,15 @@ func TestDispatchRemoteOffIsUnchanged(t *testing.T) {
 
 		require.NoError(t, rbac.AllowGlobalScope(ctx, "candy", openapi.Read), "RemoteOff must serve the legacy verdict even with a remote engine seeded")
 		require.Zero(t, fake.calls, "RemoteOff must never consult the remote engine")
+	})
+
+	t.Run("AllowProjectScopeCreate retains its legacy shortcuts when explicitly off", func(t *testing.T) {
+		t.Parallel()
+
+		fake := &fakeRemoteEngine{err: rbac.CoarseForbidden(rbac.Resource{Kind: "candy"}, openapi.Create, rbac.ErrPolicyDenied)}
+		ctx := rbac.NewRemoteEngineContext(rbac.NewContext(t.Context(), globalACL("candy", openapi.Create)), fake, rbac.RemoteOff)
+
+		require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID))
+		require.Zero(t, fake.calls, "RemoteOff must retain the legacy global-scope shortcut without consulting the remote engine")
 	})
 }

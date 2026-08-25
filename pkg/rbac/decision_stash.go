@@ -44,9 +44,8 @@ import (
 // AllowOrganizationScope and AllowProjectScope (and therefore their …ID/
 // …Reader delegates — see pkg/rbac/README.md's "three argument flavours"),
 // so one append there covers all three families without duplicating the
-// call at every wrapper. AllowProjectScopeCreate is hooked separately since
-// it deliberately never calls dispatchCoarse (its live project-existence
-// orchestration is entangled with legacy ACL structure — see its own NOTE).
+// call at every wrapper. AllowProjectScopeCreate is hooked separately so it
+// records authorization before the distinct live project-validation phase.
 // AllowRole is NOT hooked: it is a role-GRANTABILITY meta-check over a
 // role's whole scope set (many endpoint/operation pairs, no single
 // referenced resource), structurally unlike the four scope-check families,

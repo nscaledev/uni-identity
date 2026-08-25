@@ -317,12 +317,18 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 	return AllowProjectScopeCreateID(ctx, client, endpoint, operation, organizationID, projectID)
 }
 
+// ErrNoIdentityClient is returned when a project-scope create reaches the live
+// project-existence check without an identity client to make it with.  It is a
+// consumer wiring fault: the authoritative paths always validate, so an engine
+// can no longer be seeded without also supplying the client.
+var ErrNoIdentityClient = goerrors.New("no identity client configured")
+
 // AllowProjectScopeCreate is like AllowProjectScope but intended for v2 create operations
 // where the project ID is supplied in the request body rather than the URL path.  When
 // access is granted via an organization-scoped ACL the project ID is untrusted user input,
 // so this function additionally verifies the project exists via the identity API before
-// returning nil.  Global-scope callers (platform administrators) are exempt from this
-// check and their supplied project ID is trusted directly.
+// returning nil. When an authoritative engine serves the decision, the project is always
+// verified after the allow because the engine verdict does not expose which scope granted it.
 //
 // Deprecated: prefer the typed AllowProjectScopeCreateID (for path-parameter IDs) or
 // AllowProjectScopeCreateReader (for a resource implementing ids.ProjectScopeReader). This
@@ -330,49 +336,98 @@ func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWit
 // typed ID types and will be removed once those callers have migrated; the typed variants
 // delegate here after converting to strings.
 //
-// NOTE: this function deliberately does NOT dispatch to the Cerbos engine —
-// nested scope checks included.  Its orchestration (project-scope grant
-// implies verified existence; organization-scope grant demands a live
-// project-existence verification) is entangled with legacy ACL structure,
-// and its Cerbos equivalent is a deferred follow-up (see
-// pkg/authz/cerbos/README.md).
-//
-// Front-door audit capture: this function deliberately never calls
-// dispatchCoarse (see the NOTE above), so it needs its own
-// decision-accumulator append, mirroring dispatchCoarse's thin-wrapper pattern
-// (a plain local variable, not a named return + defer, which the repo's
-// nonamedreturns lint rule forbids).
+// Front-door audit capture records the authorization verdict before the
+// separate live project validation. A validation failure changes the request
+// result, not the policy decision that allowed validation to proceed.
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	err := allowProjectScopeCreateImpl(ctx, client, endpoint, operation, organizationID, projectID)
+	resource := Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}
+	validateProject, err := authorizeProjectScopeCreate(ctx, endpoint, operation, organizationID, projectID)
 
-	appendDecision(ctx, Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}, operation, err)
+	appendDecision(ctx, resource, operation, err)
 
-	return err
+	if err != nil || !validateProject {
+		return err
+	}
+
+	return verifyProjectExists(ctx, client, organizationID, projectID)
 }
 
-// allowProjectScopeCreateImpl is AllowProjectScopeCreate's actual logic,
-// unchanged by the front-door audit capture.
-func allowProjectScopeCreateImpl(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+// authorizeProjectScopeCreate returns whether a successful authorization needs
+// live project validation, and the authorization verdict itself.  The dispatch
+// is dispatchCoarseImpl's, kind for kind: remote enforce is authoritative and
+// never evaluates legacy, remote shadow serves legacy and compares the remote
+// verdict against it, RemoteOff falls through to the local mode, and the local
+// mode either serves Cerbos authoritatively or serves the legacy walk with the
+// shadow comparison run alongside it.
+//
+// Creates are shadow-compared like any other coarse check on purpose: this is
+// the one path whose validation semantics change at the flip (see the
+// validateProject note below), so it is the last path that should reach enforce
+// without divergence telemetry behind it.
+func authorizeProjectScopeCreate(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) (bool, error) {
+	resource := Resource{Kind: endpoint, OrganizationID: organizationID, ProjectID: projectID}
+
+	if engine, mode := remoteEngineFromContext(ctx); engine != nil {
+		//nolint:exhaustive // RemoteOff deliberately has no case: it falls through to the local dispatch below.
+		switch mode {
+		case RemoteEnforce:
+			return true, engine.AllowCoarse(ctx, resource, operation) // authoritative, fail-closed
+		case RemoteShadow:
+			validateProject, legacyErr := authorizeProjectScopeCreateLegacy(ctx, endpoint, operation, organizationID, projectID)
+
+			return validateProject, remoteShadowed(ctx, engine, resource, operation, legacyErr)
+		}
+	}
+
+	if engine := engineForDispatch(ctx, endpoint); engine != nil {
+		// An engine verdict does not report which scope granted it, so a
+		// caller-supplied project is never taken on trust here.
+		return true, engine.allowCoarse(ctx, resource, operation)
+	}
+
+	validateProject, legacyErr := authorizeProjectScopeCreateLegacy(ctx, endpoint, operation, organizationID, projectID)
+
+	return validateProject, shadowed(ctx, resource, operation, legacyErr)
+}
+
+// authorizeProjectScopeCreateLegacy is the legacy ACL walk for a create, and
+// the only path that can still skip the live project check: an explicit project
+// ACL entry proves the project exists, and a global-scope caller is trusted
+// outright.  It reports whether the caller's verdict needs that check.
+func authorizeProjectScopeCreateLegacy(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) (bool, error) {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
 	if isAllowedByProjectACL(ctx, endpoint, operation, organizationID, projectID) {
-		return nil
+		return false, nil
 	}
 
 	// Check whether a global or organization-scoped ACL grants access.
 	if err := allowOrganizationScopeLegacy(ctx, endpoint, operation, organizationID); err != nil {
-		return err
+		return false, err
 	}
 
 	// Global-scope callers are platform administrators with unconditional trust.
 	// Skip the identity API call: the compute service account may not hold
 	// identity:projects/Read, and global admins are already fully trusted.
 	if allowGlobalScopeLegacy(ctx, endpoint, operation) == nil {
-		return nil
+		return false, nil
 	}
 
 	// Access is granted via organization-scoped ACL, but the project ID is untrusted —
 	// verify it exists via the identity API.
+	return true, nil
+}
+
+// verifyProjectExists validates a body-supplied organization/project pair
+// against identity's live project API.  A create takes its project ID from the
+// request body rather than the URL path, so authorization alone cannot prove the
+// project exists or belongs to this organization; without this a caller with an
+// organization-wide create grant could label a resource with any project ID at
+// all.  The CHECK is not new: main added it in 082860f9, inline at the tail of
+// allowProjectScopeCreateImpl.  This function is the extraction, so the
+// authorization verdict can be recorded before validation runs and so the
+// authoritative paths can reach it without the legacy walk.
+func verifyProjectExists(ctx context.Context, client openapi.ClientWithResponsesInterface, organizationID, projectID string) error {
 	orgID, err := ids.ParseOrganizationID(organizationID)
 	if err != nil {
 		return errors.OAuth2InvalidRequest("invalid organization ID").WithError(err)
@@ -381,6 +436,17 @@ func allowProjectScopeCreateImpl(ctx context.Context, client openapi.ClientWithR
 	projID, err := ids.ParseProjectID(projectID)
 	if err != nil {
 		return errors.OAuth2InvalidRequest("invalid project ID").WithError(err)
+	}
+
+	// A consumer that wired an authoritative engine but no identity client is
+	// misconfigured, not unauthorized.  Returning OAuth2AccessDenied here would
+	// answer 401 (core's errors.OAuth2AccessDenied is StatusUnauthorized), which
+	// tells every client to refresh its token and retry a request that can only
+	// keep failing.  A bare error reaches core's HandleError as a 500 instead,
+	// which is what a wiring fault should look like.  Fail closed either way:
+	// the create does not proceed.
+	if client == nil {
+		return fmt.Errorf("%w: project-scope create needs an identity client to verify the project", ErrNoIdentityClient)
 	}
 
 	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, orgID, projID)
