@@ -318,11 +318,10 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 //   - linking a group to an existing project requires project-scope identity:projects
 //     update for that specific project.
 //
-// Read-only and revocation callers reach AllowRole too — the roles list uses it to compute
-// the grantable flag behind identity:roles read, and group update uses it in
-// validateRoleRemovals to decide whether a role may be dropped. Those confer nothing, so
-// the reasoning above does not depend on enumerating them; a new caller only has to be
-// weighed against it if it stores authority.
+// Read-only callers reach AllowRole too — the roles list uses it to compute the grantable
+// flag behind identity:roles read. That confers nothing, so the reasoning above does not
+// depend on enumerating it; a new caller only has to be weighed against it if it stores
+// authority.
 //
 // If a role ever grants identity:groups, identity:users or identity:serviceaccounts write
 // at project scope, or project-group linking is relaxed to organization scope, this "any
