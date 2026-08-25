@@ -46,8 +46,8 @@ func tokenDigest(token string) string {
 // run of length-prefixed "<len>:<value>" segments and a terminal, unprefixed
 // scope segment, so the digest is always the last length-prefixed segment.
 //
-// It parses the direct shape only, which has three length-prefixed segments (sub,
-// srcIss, digest). The exact-key assertions elsewhere in this file pin the
+// It parses the direct shape only, which has five length-prefixed segments (sub,
+// srcIss, account type, organization set, digest). The exact-key assertions elsewhere in this file pin the
 // impersonated shape's digest position, and support for a shape nothing here
 // builds would be untested code in a helper whose job is to model the real
 // format faithfully.
@@ -58,7 +58,7 @@ func digestSegment(t *testing.T, key string) string {
 	require.True(t, ok, "key %q missing mode tag", key)
 	require.Equal(t, "direct", mode, "digestSegment only parses direct-shape keys, got %q", key)
 
-	const segmentCount = 3
+	const segmentCount = 5
 
 	var digest string
 
@@ -113,8 +113,8 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(t.Context(), directInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|%d:%s|_global", len(d), d), global)
-		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|%d:%s|org-1", len(d), d), scoped)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|0:|0:|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("direct|6:user-1|0:|0:|0:|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
 	})
 
@@ -128,7 +128,7 @@ func TestACLCacheKey(t *testing.T) {
 		key, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|%d:%s|org-1", len(d), d), key)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|0:|0:|%d:%s|org-1", len(d), d), key)
 	})
 
 	t.Run("ImpersonatedDiffersFromDirect", func(t *testing.T) {
@@ -145,8 +145,8 @@ func TestACLCacheKey(t *testing.T) {
 		impersonated, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|%d:%s|org-1", len(d), d), direct)
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), impersonated)
+		require.Equal(t, fmt.Sprintf("direct|15:compute-service|0:|0:|0:|%d:%s|org-1", len(d), d), direct)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), impersonated)
 		require.NotEqual(t, direct, impersonated)
 	})
 
@@ -172,8 +172,8 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotEqual(t, computeKey, regionKey)
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), computeKey)
-		require.Equal(t, fmt.Sprintf("impersonated|14:region-service|0:|6:user-1|%d:%s|org-1", len(d), d), regionKey)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), computeKey)
+		require.Equal(t, fmt.Sprintf("impersonated|14:region-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), regionKey)
 	})
 
 	t.Run("ImpersonatedIncludesOrganizationScope", func(t *testing.T) {
@@ -190,10 +190,126 @@ func TestACLCacheKey(t *testing.T) {
 		scoped, err := aclCacheKey(ctx, serviceInfo, "org-1")
 		require.NoError(t, err)
 
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|_global", len(d), d), global)
-		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|%d:%s|org-1", len(d), d), scoped)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|_global", len(d), d), global)
+		require.Equal(t, fmt.Sprintf("impersonated|15:compute-service|0:|6:user-1|0:|0:|%d:%s|org-1", len(d), d), scoped)
 		require.NotEqual(t, global, scoped)
 	})
+
+	t.Run("ImpersonatedTypeDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// The impersonated ACL is resolved from the actor's principal TYPE
+		// (getSystemAccountACL -> processImpersonatedPrincipalACL switches on
+		// p.Type: User subjects vs Service-account IDs), so it changes the ACL
+		// and MUST change the key. A User actor and a Service actor sharing an
+		// actor string must never collide on one cached ACL.
+		userCtx := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User}))
+		serviceCtx := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.Service}))
+
+		userKey, err := aclCacheKey(userCtx, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		serviceKey, err := aclCacheKey(serviceCtx, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, userKey, serviceKey)
+	})
+
+	t.Run("ImpersonatedOrgSetDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// The impersonated ACL is resolved from the actor's organization set
+		// (getSystemAccountACL reads p.OrganizationIDs to scope membership), so
+		// it changes the ACL and MUST change the key; order does not (it is
+		// sorted), so a semantically identical set always yields one key.
+		orgsAB := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-a", "org-b"}}))
+		orgsA := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-a"}}))
+		orgsBA := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationIDs: []string{"org-b", "org-a"}}))
+
+		keyAB, err := aclCacheKey(orgsAB, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		keyA, err := aclCacheKey(orgsA, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		keyBA, err := aclCacheKey(orgsBA, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyAB, keyA, "a different org set must be a different key")
+		require.Equal(t, keyAB, keyBA, "org-set order must not change the key (sorted)")
+	})
+
+	t.Run("DirectAccountTypeAndOrgSetDistinguishTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		// A direct principal's ACL is resolved from its account type and org set
+		// too, not just its subject, so both key the entry: two callers sharing
+		// a subject but asserting different claims must not collide.
+		base := &authorization.Info{Userinfo: &identityapi.Userinfo{
+			Sub:                       "user-1",
+			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{Acctype: identityapi.User, OrgIds: []string{"org-a"}},
+		}}
+		otherType := &authorization.Info{Userinfo: &identityapi.Userinfo{
+			Sub:                       "user-1",
+			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{Acctype: identityapi.Service, OrgIds: []string{"org-a"}},
+		}}
+		otherOrgs := &authorization.Info{Userinfo: &identityapi.Userinfo{
+			Sub:                       "user-1",
+			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{Acctype: identityapi.User, OrgIds: []string{"org-b"}},
+		}}
+
+		baseKey, err := aclCacheKey(t.Context(), base, "org-1")
+		require.NoError(t, err)
+
+		typeKey, err := aclCacheKey(t.Context(), otherType, "org-1")
+		require.NoError(t, err)
+
+		orgKey, err := aclCacheKey(t.Context(), otherOrgs, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, baseKey, typeKey, "account type must key the direct entry")
+		require.NotEqual(t, baseKey, orgKey, "org set must key the direct entry")
+	})
+
+	t.Run("ImpersonatedSingularOrganizationIsKeyed", func(t *testing.T) {
+		t.Parallel()
+
+		// A caller that sets only the singular OrganizationID (no OrganizationIDs)
+		// resolves the impersonated ACL from that org via the defensive fallback
+		// (principal.ResolvedOrganizationIDs), so the key must reflect it: two
+		// such principals differing only in the singular org must not collide.
+		orgA := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationID: "org-a"}))
+		orgB := principal.NewImpersonateContext(principal.NewContext(t.Context(), &principal.Principal{Actor: "user-1", Type: identityapi.User, OrganizationID: "org-b"}))
+
+		keyA, err := aclCacheKey(orgA, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		keyB, err := aclCacheKey(orgB, serviceInfo, "org-1")
+		require.NoError(t, err)
+
+		require.NotEqual(t, keyA, keyB, "the singular OrganizationID fallback must key the entry")
+		require.Contains(t, keyA, "org-a")
+	})
+
+	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {
+		t.Parallel()
+
+		// Defensive unit test for the helper itself. The HTTP middleware rejects
+		// this state at the boundary before aclCacheKey is reached.
+		ctx := principal.NewContext(t.Context(), &principal.Principal{})
+		ctx = principal.NewImpersonateContext(ctx)
+
+		_, err := aclCacheKey(ctx, serviceInfo, "org-1")
+
+		require.Error(t, err)
+	})
+}
+
+// TestACLCacheKeyInjectivity covers the key-injectivity and digest-encoding
+// properties: issuer qualification, the length prefixes that stop a crafted
+// subject forging another identity's key, and the token-digest segment.
+func TestACLCacheKeyInjectivity(t *testing.T) {
+	t.Parallel()
 
 	t.Run("DirectIncludesSrcIss", func(t *testing.T) {
 		t.Parallel()
@@ -207,7 +323,7 @@ func TestACLCacheKey(t *testing.T) {
 		keyB, err := aclCacheKey(t.Context(), issB, "")
 		require.NoError(t, err)
 
-		// Same email from two issuers must never share an ACL (ID-367 finding 6).
+		// Same email from two issuers must never share an ACL.
 		require.NotEqual(t, keyA, keyB)
 	})
 
@@ -289,18 +405,5 @@ func TestACLCacheKey(t *testing.T) {
 		require.NoError(t, err)
 
 		require.NotEqual(t, keyA, keyB)
-	})
-
-	t.Run("SyntheticImpersonationWithoutActorErrors", func(t *testing.T) {
-		t.Parallel()
-
-		// Defensive unit test for the helper itself. The HTTP middleware rejects
-		// this state at the boundary before aclCacheKey is reached.
-		ctx := principal.NewContext(t.Context(), &principal.Principal{})
-		ctx = principal.NewImpersonateContext(ctx)
-
-		_, err := aclCacheKey(ctx, serviceInfo, "org-1")
-
-		require.Error(t, err)
 	})
 }

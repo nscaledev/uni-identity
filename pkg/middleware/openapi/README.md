@@ -57,7 +57,11 @@ that keeps those two models separate while presenting handlers with one normaliz
 - ACL cache keys must distinguish direct calls from impersonated calls so cached results do not
   overgrant. Keys are also qualified by the authenticated issuer (`src_iss`), and every
   user-influenced segment is length-prefixed so a subject containing the join delimiter cannot be
-  crafted to collide with another identity's key.
+  crafted to collide with another identity's key. The impersonated key additionally carries the
+  impersonated actor's principal type and sorted organization set — the inputs the impersonated ACL
+  is resolved from — so two distinct impersonated principals that share an actor string cannot
+  collide (parity with the hardened coarse-decision cache in `pkg/rbac`). The direct key
+  carries those same two dimensions from its auth claims.
 - ACL cache keys also carry a digest of the presented token. The ACL is a function of the presented
   token plus cluster state, not only of `(sub, srcIss)`. Two live tokens for the same subject can
   resolve to different ACLs, so they must never share a cache entry.
@@ -73,7 +77,7 @@ that keeps those two models separate while presenting handlers with one normaliz
     same constant digest. That is harmless: system-account ACLs do not depend on token content.
   - `--acl-cache-size` keeps its default of `1<<16` entries. Live tokens × scopes now bounds the
     population, rather than subjects × scopes, but with the default 1-minute TTL and a few hundred
-    bytes per entry (key ≈ sub + srcIss + digest + scope, value = ACL), 65,536 entries is still
+    bytes per entry (key ≈ sub + srcIss + account type + org set + digest + scope, value = ACL), 65,536 entries is still
     single-digit megabytes. Eviction pressure appears only above roughly 1,000 distinct token+scope
     pairs per second, sustained.
   - Nobody measured the resulting hit-rate shift before deployment. The default rests on the sizing
@@ -94,6 +98,30 @@ The package has two important integration modes:
 
 The shared `openapi` middleware layer defines the common request pipeline and the cache/propagation
 rules across both modes.
+
+### The Decision-Engine Crossing (authorization migration)
+
+The middleware is the single production point that seeds the Cerbos-capable decision engine into
+handler contexts for `pkg/rbac`'s dual-path `Allow*` dispatch. `DecisionEngineProvider` is an
+**optional** interface asserted against the configured `Authorizer` at request handling time —
+deliberately not part of the `Authorizer` interface, so the generated mock and any external
+implementer keep compiling and their requests structurally take the legacy path. **Only the `local`
+authorizer implements it** (identity's own `RBAC`, whose in-process PDP client backs
+`rbac.Check`/`CheckMany`). The `remote` authorizer deliberately does **not** — a remote
+`DecisionEngineProvider` was a **designed follow-up**, not delivered by the `/authorization/check`
+endpoint, and has since been delivered as a sibling interface rather than by widening this one. What
+that endpoint delivered is the `remote`
+authorizer's decision **call** (`Authorizer.CheckMany` over `POST /authorization/check`,
+`remote/decision.go`): a downstream service obtains a decision from identity. Routing a downstream
+`Allow*` through that call would need a remote transport **above** `rbac.decide()` (a downstream
+RBAC cannot read identity's authorization resources — the Group/Role/Project/Organization CRDs
+binding resolution walks — so `ResolveBindings` would fail-closed-deny everything); the
+`DecisionEngine()` seam sits **below** binding resolution and cannot express that, so it stays a
+separate task (see the migration plan's follow-up entries). Seeding happens next to the ACL context
+on the context handlers actually receive, and is unconditional on engine mode — whether the engine
+actually serves decisions is the dispatch predicate's job (see [`pkg/rbac`](../../rbac/README.md)).
+Until the strangle-by-kind cutover and legacy-path retirement, the per-request ACL resolution above
+still runs even when the engine serves, so cerbos mode carries both resolution costs.
 
 ### Remote Token Exchange
 
@@ -178,20 +206,47 @@ That trust exists because the nginx ingress layer detects and rejects user attem
 certificate-related headers used by the internal service chain. This is a core assumption of the
 request model and should be treated as part of the security boundary, not merely deployment trivia.
 
+### Trust The Channel, And The Deferred Signed-Propagation Option
+
+Principal propagation is **trust-the-channel by design**. The primary `X-Principal` is unsigned
+base64url(JSON) (`principal.Injector`), and its trustworthiness rests on two facts working together:
+
+- the caller is a verified **mTLS** peer — its client-certificate CN is the acting service identity;
+- the **ingress strips** `X-Principal`, `X-Impersonate`, `Ssl-Client-Cert`/`Ssl-Client-Verify` and
+  the relayed `Unikorn-Client-Certificate` from external requests, so an end user cannot inject them.
+
+Consequently `extractPrincipal` reads these headers only on the mTLS path
+(`extractOrGeneratePrincipal` gates on the client-certificate header); a bearer or no-certificate
+caller has its principal **derived from the validated token**, never from the header, and a forged
+`X-Impersonate` on such a hop is ignored. That boundary is a hard invariant of the request model.
+
+`extractPrincipal` also has a **signature-verified** path (`client.VerifyAndDecode`), used today for
+principals signed by `principal.ControllerInjector` (uni-core's `EncodeAndSign`). Making
+signature-verified propagation the **default** for all service-to-service calls — so trust does not
+rest on ingress configuration alone — is a **recorded future option (deferred)**. It is deferred,
+not adopted: the signing primitives live in **uni-core** (flipping the default is a cross-repo,
+flag-day change) and per-request public-key verification carries a real performance cost. The owner
+decision is to keep trust-the-channel for now.
+
 ## Caveats
 
-- This package contains real trust-boundary logic, not just glue code.
-- Some transitional behaviour still exists around principal extraction and historical propagation
-  formats; these paths should be reviewed as deletion candidates rather than normalized into the
-  long-term design.
+- This package contains real trust-boundary logic rather than glue code.
+- The `extractPrincipal` signature-verification fallback (`VerifyAndDecode`) is **retained**: it
+  serves principals signed by `principal.ControllerInjector`. Whether signed propagation becomes the
+  default (retiring the unsigned `X-Principal`) is a deferred **signed-propagation** decision — see
+  [Trust The Channel, And The Deferred Signed-Propagation Option](#trust-the-channel-and-the-deferred-signed-propagation-option)
+  above — not a blanket deletion candidate.
 - Remote bearer-token validation depends on an identity round-trip per cache miss; cache hits avoid
   it. Phase 2 deliberately does not introduce downstream JWKS verification — the trust model for
   passports remains channel-scoped to identity rather than signature-scoped per service.
 
 ## TODO
 
-- Remove the legacy principal extraction/verification fallback once all callers use the current
-  propagation model.
+- **Signed principal propagation (deferred):** decide whether to make signature-verified principal
+  propagation the default for all service-to-service calls (retiring the unsigned `X-Principal`),
+  weighed against the cross-repo/flag-day cost (the `EncodeAndSign`/`VerifyAndDecode` primitives
+  live in uni-core) and the per-request public-key verification cost. Kept as trust-the-channel for
+  now; the signed `VerifyAndDecode` fallback stays in place for `ControllerInjector` principals.
 
 ## Related Documentation
 

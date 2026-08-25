@@ -17,7 +17,7 @@ Its main responsibilities are:
 - prevent confused-deputy behaviour when a service acts as an impersonated principal
 - constrain administrative delegation so callers cannot grant authority they do not themselves hold
 
-This package is not just a convenience layer for handler checks. It is part of the security model.
+This package is part of the security model, not a convenience layer for handler checks.
 
 ## Security Model
 
@@ -96,9 +96,15 @@ deployment time.
   pinned by the contract test in `platform_reader_contract_test.go`. Audit
   record, revocation story, and runbook: [docs/platform-reader.md](../../docs/platform-reader.md).
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
-  accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
-  only the global permissions the corresponding service actually exercises;
-  over-permissioning here is a security defect.
+  accounts mapped from an mTLS certificate common name (see the Actor Model). By default each
+  holds only the global permissions the corresponding service actually exercises. **Exception —
+  the remote-authorization seam**: a
+  consumer whose own API routes through identity's central PDP must have its service-account
+  role provisioned as a **superset of what its API authorizes**, because that role is the cap in
+  the `intersection(user, service)` a direct-user check resolves against — under-provisioning
+  would deny legitimate users. `region-service` accordingly now grants the full `region:*` set,
+  and `compute-service` grants the `compute:*` superset of what `administrator`/`user` hold
+  (`compute:regions`/`flavors`/`images` read, `compute:instances`/`clusters` full CRUD).
 
 ### User-facing roles
 
@@ -154,6 +160,17 @@ is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from t
 chart values for every ordered role pair, asserting each allowed edge and rejecting every
 non-edge.
 
+`TestBuiltinRoleGrantability` proves the Go lattice is internally consistent, but `AllowRole` also
+has to agree with Cerbos, which does the actual enforcement — the grant-guard trusts
+`Role.Spec.Scopes` while Cerbos serves the generated policy. That cross-check is the grantability
+cross-parity test `TestGrantabilityCrossParity` (integration, `make test-cerbos-decisions`): for
+every role — the built-in nine plus the out-of-repo open-vocabulary shapes — it holds a principal
+bound to exactly that role and asserts, in both directions, that the generated Cerbos policy grants
+it exactly the scopes `AllowRole` trusts it to (with the downward flow). An over-grant would be an
+escalation slipping past the grant-guard; an under-grant a role that under-functions. The test is
+what lets `AllowRole` stay thin-Go: it guarantees its model and Cerbos enforcement cannot diverge
+for any role.
+
 ## Actor Model
 
 The package distinguishes three important actor classes:
@@ -177,11 +194,14 @@ cannot exercise permissions that either side lacks.
 
 Global privileges are expressed through a single mechanism: a **global role binding** maps an
 `(issuer, subject | "*")` pair to a set of role IDs. Every kind of global principal — platform
-administrators and platform-reader (ID-399's issuer-wide read grant) today, and any future
+administrators and platform-reader (the issuer-wide read grant) today, and any future
 issuer-wide grant — is expressed as data through this one mechanism; no per-class fast-path or
 role name is hardcoded in Go. `resolveGlobalRoleBindings` is the only path by which global
 privileges are granted, evaluated at the top of `processUserAccountACL` before membership
-resolution.
+resolution. The Cerbos decision path consumes the same resolution, through
+`matchedGlobalBindings` in `cerbos_bindings.go`, so one configuration serves both engines. The
+one gap is the wildcard subject: the legacy path clamps it to read, which a Cerbos binding
+cannot express, so the Cerbos path fails closed on a matched wildcard rather than over-grant.
 
 Bindings are configured with the repeated flag
 `--global-role-binding=<issuer>::<subject>::<roleID>[,<roleID>...]`, rendered by the chart from
@@ -453,6 +473,308 @@ These warnings are not the security control. The security control is the issuer-
 `(srcIss, subject)` match that `resolveGlobalRoleBindings` performs, and the `(srcIss, group)` match
 that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
+## The Cerbos Decision Path (migration)
+
+Alongside the legacy ACL pipeline, this package carries the Cerbos decision path from the
+authorization migration (see
+[docs/authorization/cerbos-authorization-design.md](../../docs/authorization/cerbos-authorization-design.md)
+and [pkg/authz/cerbos](../authz/cerbos/README.md)). The `Allow*` facade is **dual-path**: behind the
+unchanged signatures each scope check either walks the local ACL (the legacy path, retained verbatim
+for the shadow comparison and to serve kinds not yet cut over by the strangle-by-kind switch —
+removed only at legacy-path retirement) or asks the PDP a coarse question (`Resource{Kind}` for
+global, `+OrganizationID` for organization — the project attribute deliberately absent — and both
+IDs for project scope, resource ID always the coarse `*`).
+
+- **Dispatch is a structural fail-safe, not a configuration one.** The Cerbos path serves only when
+  a decision engine was seeded into the request context (`NewEngineContext`, done by the openapi
+  middleware when its authorizer implements `DecisionEngineProvider`) AND that engine's mode for the
+  endpoint (`Options.AuthorizationEngine`, the identity server's `--authorization-engine` flag,
+  default `legacy`) is `cerbos` — either globally, or for that endpoint alone via the
+  strangle-by-kind cutover switch. Contexts without an engine — every downstream service (they never
+  construct an `RBAC`), `NewSuperContext`, and every ACL-only test context — always take the legacy
+  path by construction. That absence-default is the migration's compatibility contract.
+- **Shadow mode (`--authorization-engine=shadow`, `shadow.go`)** evaluates BOTH paths synchronously
+  for every dispatched scope check and **serves the legacy verdict unconditionally**: nothing the
+  shadow evaluation does — a policy deny, a PDP outage, a timeout, even a panic — can alter the
+  served verdict (the comparison is recover-wrapped; a shadow failure is a log line, never a request
+  failure). Disagreement is logged in two DISTINCT classes, and the split is load-bearing for the
+  cutover gate:
+  - `cerbos shadow divergence` — the PDP produced a **verdict** and it differs from
+    legacy's. Comparison is on allow/deny alone, never on error message strings
+    (cerbos-path denials carry a generic message by design). Fields: subject, actor type,
+    endpoint, operation, organization/project IDs, both verdicts, the Cerbos sentinel
+    class, and the policy-store hash correlate (`policy_hash`).
+  - `cerbos shadow evaluation failure` — **no verdict** was obtained (`ErrDecisionUnavailable`,
+    `ErrResolutionFailed`, or a recovered panic). This is infra signal, never policy-parity signal:
+    **the cutover gate reads "zero divergence" as zero VERDICT divergences, with evaluation failures
+    triaged separately**, so a PDP restart during the shadow phase cannot masquerade as policy
+    divergence.
+
+  The **policy correlate** is the **policy-store hash** (`policy_hash`): the fingerprint the hasher
+  reports (`pkg/authz/cerbos.PolicyStoreHasher`, read-through of the controller-owned policies
+  ConfigMap), so a divergence pins the exact store revision it was observed against. It is claimed
+  only when a verdict was obtained, and is empty — never invented — when no hasher is configured or
+  the hash is not yet available (the same fail-safe contract the coarse cache keys on). This
+  replaces the earlier empty PDP echo: the PDP only echoes the *requested* policy version/scope,
+  which identity's version-less coarse checks leave unset, so that echo carried no signal.
+
+  Exclusions: `AllowProjectScopeCreate`/`AllowRole` are never shadowed (see below). **Impersonated
+  requests are compared too**: the legacy intersection verdict against the AND-ed dual-check verdict
+  — both single booleans, so the comparator needed no structural change (an impersonated shadow
+  evaluation costs two PDP calls). Costs: shadow is an opt-in validation phase, not steady state —
+  every dispatched check pays bindings resolution plus a PDP round trip **on top of** the legacy
+  walk, and during a PDP outage each check additionally waits up to `--cerbos-check-timeout` before
+  failing the shadow evaluation (the served verdict is unaffected either way).
+- **Deny-shape parity.** Cerbos-path denials surface as the same `HTTPForbidden` form the legacy
+  walk produces — call sites branch on `err == nil` and the error mapper on the HTTP status — with
+  the fail-closed sentinel (`ErrPolicyDenied`, `ErrDecisionUnavailable`, `ErrResolutionFailed`)
+  still visible via `errors.Is` for the shadow comparator and the decision observability. A PDP
+  outage is therefore a deny that callers cannot tell from a policy deny — deliberately — while
+  operators can, via the decision records' `reason` field and the decision counter's `class`
+  attribute (see [Decision observability](#decision-observability)).
+- **Impersonated requests dispatch like any other**: in cerbos mode they are served by the dual
+  check — two AND-ed single-principal evaluations, the impersonated principal and the acting
+  service, over the identical resource and action — replacing the legacy confused-deputy ACL
+  intersection. The equivalence rests on system-account ACLs being Global-only: the legacy
+  intersection then distributes over the (monotone) ACL walk into
+  `principal-verdict AND service-verdict`, with the service side inheriting global→org→project
+  flow-down structurally (a global binding activates on any resource — asserted by the parity
+  matrix, not assumed). Detection is the exact legacy predicate (a principal in context, the
+  impersonation marker, and a non-empty actor); an invalid impersonated principal TYPE — System,
+  unknown or empty — fails closed with `ErrImpersonationNotSupported`, mirroring the legacy
+  `ErrInvalidPrincipalType` hard error rather than falling back to the legacy path.
+- **`AllowProjectScopeCreate` and `AllowRole` stay legacy-only, nested checks included**: Create's
+  live project-existence orchestration moves to Cerbos as a deferred follow-up, and `AllowRole`'s
+  grantability walk stays thin-Go by design. The grantability cross-parity test proved that safe:
+  `TestGrantabilityCrossParity` (integration) shows the generated Cerbos policy grants every role —
+  the built-in nine and the out-of-repo open-vocabulary shapes — exactly its declared scopes, so the
+  thin-Go grant-guard and Cerbos enforcement provably agree and `AllowRole` need not dispatch to the
+  PDP.
+- **Costs, accepted until later tasks**: the middleware still resolves the legacy ACL for every
+  request even in cerbos mode (the double-resolution goes away with the cutover and legacy-path
+  retirement), and per-item filter loops over `Allow*` become N single-check PDP calls (the
+  localhost sidecar answers sub-millisecond; the coarse-decision cache — below — now memoizes
+  repeated identical checks).
+
+- `ResolveBindings(ctx, info)` converts the authenticated subject into the `(role, scope)`
+  binding tuples the Cerbos request builder renders. Every branch deliberately mirrors a
+  specific legacy ACL-accumulation path — including the odd ones: the silent skip of
+  unprovisioned organizations for users (but a hard error for service accounts), the
+  service-account org-mismatch fallthrough ported as-is, the hard error for a group
+  referencing a missing role next to the silent skip of a project referencing a missing
+  group. Bindings resolve across **all** of the subject's organizations (the legacy `Allow*`
+  functions read the plural `acl.Organizations` built across all orgs), and the resolver
+  never reads `Role.Spec.Scopes` — the generated policies decide what each binding grants.
+  Decision parity with the legacy pipeline is the M1 cutover contract; behavioural fixes
+  (e.g. the fallthrough's information-leak TODO) are deliberately deferred to post-cutover.
+  Global role bindings are honoured here too: a matched subject or group binding **replaces**
+  membership resolution entirely, exactly as `accumulateMatchedBindings` does, and platform
+  administrators reach it through the same `effectiveGlobalRoleBindings` translation `New`
+  applies for the legacy path rather than through a check of their own (so the comparison is
+  case-sensitive on both paths). **Wildcard subject bindings fail closed** with
+  `ErrWildcardBindingUnsupported`: the legacy read clamp
+  (`accumulateGlobalReadPermissions`) has no equivalent here, because a binding activates a
+  role's whole global bucket, so emitting one would grant write scopes the legacy path
+  withholds. Full wildcard parity needs a read-only bucket in the policy generator.
+- `Check(ctx, resource, action)` / `CheckMany(ctx, checks)` are the decision API: resolve bindings,
+  build ONE batched `CheckResources` request, map per-resource `IsAllowed`. **Fail-closed**: every
+  failure is a deny, with a distinct static error per failure class — `ErrPolicyDenied` (explicit
+  policy deny), `ErrDecisionUnavailable` (no PDP client injected via `WithCerbos`, transport
+  failure, malformed response), `ErrResolutionFailed` (missing authorization info, resolver or
+  request-construction failure). Every served evaluation is audited and counted at the `CheckMany`
+  choke point (see [Decision observability](#decision-observability)).
+- **Impersonated requests are the dual check** (`decideImpersonated` in `check.go`): the
+  impersonated side resolves from an `Info` synthesized from the propagated principal — mirroring
+  the legacy claims rebuild exactly, defensive singular-organization fallback included — and the
+  service side from the real context info. BOTH sides always evaluate (no short-circuit): two
+  sequential PDP calls, each under the client's per-call timeout, each recording its own latency
+  histogram sample; the per-entry verdict is their AND. A resolver or transport failure on either
+  side maps to the ordinary fail-closed classes. `ErrImpersonationNotSupported` is **retained with a
+  narrowed meaning**: only the type gate — an impersonated principal type that cannot be
+  impersonated (System, unknown, empty) — refuses pre-PDP; it is deliberately not `ResolveBindings`'
+  default-to-User arm, which would answer for the wrong principal class. **Verdict-level parity with
+  the legacy intersection is the contract; two mechanism asymmetries are documented, not
+  replicated** (both encoded in the parity matrix like the `UserProjectWrongOrg` precedent): an
+  impersonated user scoped to a non-member organization legacy-errors (`ErrNotInOrganization` from
+  the request-scoped resolution) where the dual check policy-denies via the request-scope-free
+  resolver, and a System-type impersonation legacy-errors (`ErrInvalidPrincipalType`) where the dual
+  check refuses with `ErrImpersonationNotSupported` — the same deny verdicts, different error
+  shapes. **Coarse-cache-key obligation (delivered)**: the coarse-decision cache (below) keys an
+  impersonated entry on the `(impersonated-sub, actor)` pair, the impersonation flag (the
+  `direct|`/`impersonated|` discriminator), and the actor's type and org set — every
+  verdict-determining input of the dual check — per the design's caching clause, so an impersonated
+  verdict can never be served to a direct call, nor to a different impersonated principal. The dual
+  check's concrete deliverable for that clause is carrying the pair in every impersonated decision
+  record (see below).
+
+### Decision observability
+
+Every PDP-SERVED Cerbos-path decision is audited and counted at the `CheckMany` choke point
+(`decision_log.go`): `Check` wraps `CheckMany`, and cerbos-mode `allowCoarse` wraps `Check`, so
+every dispatched Cerbos-path decision funnels through one audited point. Hooking the choke point rather than decorating
+the PDP client is deliberate: the pre-PDP fail-closed denials (no client configured, resolution
+failures, refused impersonated principal types) are decisions and must be observed. **One path does
+not reach here: a coarse-cache HIT short-circuits before `CheckMany`, so it emits no audit record
+and no `decisions_total` increment (it is counted on the separate coarse-cache hit/miss counter
+instead — see [the cache](#the-coarse-decision-cache)).** An impersonated dual-check decision is
+still ONE record and ONE counter increment per entry — never one per side — with the AND-ed outcome.
+Two owner-flagged deviations from the migration plan's file table: **`decision_log` lives in
+`pkg/rbac`, not `pkg/authz/cerbos`** (the plan row predates the decision layer being placed here —
+the choke point and every record input live in this package, and the PDP client knows nothing about
+subjects and stays log-free), and **the policy-store hash correlate (`policy_hash`) is emitted
+through the same seam the shadow comparator uses** (sourced from `PolicyStoreHasher`, empty when no
+hasher is configured, e.g. downstream or tests).
+
+**The decision log.** One record per `(resource, action)` entry of the batch — the flat, greppable
+shape; a batch-wide failure denies every entry, so every entry gets a record with the shared reason
+class. The message constant is `authorization decision` (load-bearing: dashboards grep it, unit
+tests duplicate it so a rename breaks them). Records emit through the request-scoped logr logger
+(`log.FromContext`) into the shared zap JSON stream (`SetupLogging`); the core OTel middleware seeds
+that logger with the request's traceID/spanID, so records are trace-correlated automatically — that
+is the design's "correlation id", with no explicit field. Levels mirror the core logging
+middleware's convention (4xx unconditional, `V(1)` otherwise): **denies at Info unconditionally,
+allows at `V(1)`** — this satisfies the design's "every decision" with allows visible at raised
+verbosity. Fields (closed set, credential-free — only `Sub` and `Acctype` are read from the
+authorization info, NEVER tokens/passports/claims): `subject`, `actor_type`, `endpoint`,
+`resource_id` (empty for coarse checks), `operation`, `organization_id`, `project_id`, `decision`
+(`allow|deny`), `reason` (`policy|unavailable|resolution|impersonation`, derived from the sentinel
+taxonomy via `errors.Is` — `policy` covers both verdicts, including a dual-check deny from either
+side; `impersonation` is **narrowed** to the type-gate refusal only; the rest are the fail-closed
+classes), `policy_hash` (the policy-store hash correlate pinning the store revision, only claimed
+when a verdict was obtained and empty when no hasher is configured), and `latency` (the whole
+decision: resolution + PDP + mapping). Impersonated decisions carry exactly two more fields —
+`impersonated_subject` and `impersonated_type`, read from the propagated principal — the design's
+`(impersonated-sub, actor)` pair, while `subject` stays the acting service (the legacy cache-key
+convention).
+
+**Metrics.**
+
+| Instrument | Type | Attributes / boundaries |
+| --- | --- | --- |
+| `unikorn_identity_authz_decisions_total` | `Int64Counter` | `decision=allow\|deny`, `class=policy\|unavailable\|resolution\|impersonation` — the vocabulary is CLOSED (renames are breaking; `impersonation` survives with its narrowed type-gate-refusal meaning); subject/endpoint attributes would be an open-vocabulary cardinality explosion |
+| `unikorn_identity_authz_pdp_latency` | `Float64Histogram` (the repo's first) | unit `s`; explicit sub-second buckets `0.0005 … 2` sized for localhost gRPC, top buckets making `--cerbos-check-timeout` expiries visible |
+
+The counter increments at the same per-entry classification point as the log — once per
+decision, never once per dual-check side. The histogram is recorded tightly around the PDP
+`CheckResources` round trip only (no resolution, no mapping), success and failure alike —
+an impersonated decision contributes two samples, one per side. Instruments export **only when the server runs with
+`--otlp-endpoint`** (metrics are pushed over OTLP; no `/metrics` endpoint exists) — without
+it the recordings are silently dropped.
+
+**Shadow evaluations are excluded.** They ride the same `CheckMany` funnel via a marked shallow
+engine copy (`shadowCompare`), and the marker suppresses their decision records and counter
+increments: shadow's signal is the shadow comparator's own divergence/failure records, which the
+cutover gate consumes. Only the PDP latency histogram is shared — transport health is
+path-independent.
+
+**Shadow sink fix (delivered with the decision observability).** The shadow records (and the
+deprecated-`userIDs` group warning) previously emitted through bare `slog` — Go's default TEXT
+handler on stderr, outside the zap JSON stream and without trace correlation. Both now emit through
+`log.FromContext` into the same sink as the decision records (logr has no warn level; shadow records
+emit at Info so they stay unconditionally visible). Message constants and field sets are unchanged.
+
+`make test-cerbos-decisions` (Docker-dependent, so not part of `test-unit`) runs the decision-parity
+integration test: from one fixture dataset it computes every verdict through both the legacy
+pipeline (`GetACL` + `Allow*`) and the Cerbos path (generated policies served by the pinned image),
+and requires verdict equality across a matrix of all four actor classes, all three scope levels, and
+the negative cases. A divergence there is an authorization bug in the migration, never something to
+special-case. The same run exercises the shadow comparator end to end: against the parity store the
+matrix must log zero divergences, and against a deliberately-divergent store (one extra generated
+allow the legacy fixture lacks) exactly that one divergence must be detected — with the legacy
+verdict still served on the divergent cell. The matrix also carries open-vocabulary cells
+(placeholder `example:*`/`sample:*` open-vocabulary roles) — the Go-side proof that
+parity is not an artifact of this repo's built-in `identity:*` vocabulary — and impersonated cells:
+a registered system account impersonating the fixture user and service account, the byte-untouched
+legacy `intersectACL` oracle against the dual check, covering allowed-by-both (including the
+project-scope cell witnessing the service side's global→project flow-down), denied-by-service-only
+(the narrowing proof), denied-by-principal-only, the wrong-org mechanism asymmetries, and
+System-impersonation error parity.
+
+### The kind-CI divergence gate
+
+Kind CI runs the identity server in shadow mode (`hack/ci/test-values.yaml` sets
+`identity.authorizationEngine: shadow`), so every fixture and API-suite request doubles as a
+live legacy-vs-Cerbos comparison. After the API suite, `hack/ci/divergence-gate` reads the
+server logs and **fails on any `cerbos shadow divergence` line**, while `cerbos shadow
+evaluation failure` lines are tolerated but printed (infrastructure signal, per the split
+above — the gate greps the two exact message constants separately, and asserts the server
+container never restarted, since a restart truncates the logs and would make a pass vacuous).
+
+What zero divergence there proves — and does not:
+
+- **Proves:** legacy/Cerbos verdict parity for the identity-served kinds the suite exercises, under
+  non-impersonated traffic. The comparator covers impersonated requests, but the kind fixtures and
+  API suite send no `X-Impersonate` traffic, so the gate's EVIDENCE remains non-impersonated until
+  the fixtures exercise impersonation (a recorded follow-up); impersonated parity is proven by the
+  docker matrix's impersonated cells.
+- **Does not prove:** open-vocabulary parity (no `example:*`/`sample:*` traffic flows through
+  identity's own endpoints) — that is the docker matrix's job above, plus the generator's
+  compile suite. The CI values file does inject the transcribed open-vocabulary roles, so the
+  kind stack proves those shapes survive generation, the compile gate and publication.
+
+Two supporting CI units guard the gate's integrity (both documented in
+[hack/ci](../../hack/ci/README.md)):
+
+- `hack/ci/wait-policies` runs between install and fixtures: until the policy controller's
+  first publish reaches the PDP, Cerbos denies everything and every shadowed request would log
+  a false divergence, poisoning the gate. Cerbos 0.53.0 only logs its policy count at startup
+  (`"Found N executable policies"`) — a live reload after the kubelet back-fills the ConfigMap
+  volume is silent at info level — so if the sidecar started against the empty store the unit
+  restarts the deployment to make the load observable.
+- `hack/ci/decision-flip` runs strictly AFTER the gate: it applies a Role CR granting the user
+  persona `identity:roles` read, rebinds the fixture group via kubectl (deliberately bypassing
+  the grantability API), and asserts the endpoint flips 403→200 and that shadow divergence
+  ceases. The two engines flip at different times (legacy on ~1m ACL-cache expiry, Cerbos on
+  ~1m ConfigMap propagation), so a transient divergence window is expected and correct there —
+  which is exactly why it must never run before the gate.
+
+### The coarse-decision cache
+
+Cerbos-mode `Allow*` dispatch memoizes coarse verdicts so repeated identical checks (the per-item
+filter loops over `Allow*`) do not re-hit the PDP. The cache lives at ONE choke point —
+`allowCoarse` in `engine.go`, reached only through `engineForDispatch` (cerbos mode) — so the shadow
+path (`shadowCompare`) and the remote decision endpoint (the `CheckMany` handler) never touch it:
+shadow divergence coverage and remote decisions are uncached by construction.
+
+- **Key dimensions** (`decisionCacheKey`, the analog of the middleware's `aclCacheKey`): the calling
+  subject, the `direct|`/`impersonated|` discriminator, the coarse scope
+  (`kind|organizationID|projectID`, the no-flow-up shape preserved — org/project empty when absent),
+  the action, and the **policy-store hash**. An impersonated key additionally carries the
+  impersonated actor, its principal **type**, and its **sorted organization set** — the
+  verdict-determining inputs the dual check resolves the actor's bindings from (`impersonatedInfo` →
+  `ResolveBindings`) — so two distinct impersonated principals that merely share an actor string
+  cannot collide on one cached verdict. (This is stricter than today's `aclCacheKey`, which omits
+  type/orgs; aligning the ACL cache is a tracked follow-up.) The resource ID is deliberately absent
+  (coarse-only). The impersonation predicate is the SAME `impersonationFromContext` the decision
+  path uses, so the key can never disagree with how `decide` treats the request (a marker without an
+  actor is direct on both sides).
+- **Policy-hash invalidation is the correctness core.** The hash comes from the controller-owned
+  policies ConfigMap (see [`pkg/authz/cerbos`](../authz/cerbos/README.md#the-policy-store-hasher)).
+  A republish changes the store's content-addressed key set, so the hash changes, so every entry
+  keyed on the previous store becomes unreachable — a revoking republish can NEVER be masked by a
+  stale cached allow. Residual staleness (while the PDP itself reloads the new store, or in the
+  same-hash edge case) is bounded by `--decision-cache-timeout`.
+- **Only DEFINITE verdicts are cached** — an allow (`err == nil`) or a policy deny
+  (`ErrPolicyDenied`). Transient failures (`ErrDecisionUnavailable`, `ErrResolutionFailed`)
+  are NEVER cached: a PDP outage must not poison a later retry. A cached deny is
+  reconstructed to the exact `ErrPolicyDenied` HTTPForbidden shape a fresh deny carries, so
+  a hit is indistinguishable from a miss to callers.
+- **Fail-safe / inert by default.** The cache is only active when a policy-store hasher is
+  configured (`WithPolicyStoreHash`, wired only in the identity server). Without one — every
+  downstream construction and every test — `decisionCacheKey` reports bypass and every
+  decision consults the PDP. An unavailable hash (no successful ConfigMap read yet) or an
+  unreadable subject also bypasses. The impersonation type gate runs BEFORE any cache lookup,
+  so a cached allow (keyed on the actor, not the principal type) can never be served to a
+  principal type that cannot be impersonated.
+- **Cache hits skip the decision log and `decisions_total`** (which document PDP-served decisions —
+  a hit is not a new PDP decision) but are counted in a dedicated
+  `unikorn_identity_authz_coarse_cache_total{outcome=hit|miss}` counter, so the cache's
+  effectiveness (hit ratio) stays observable without inflating the PDP-served stream. Misses funnel
+  through `CheckMany` and are logged and counted there exactly as before, and additionally recorded
+  as `outcome=miss` on the coarse-cache counter. The verbose audit log stays miss-only by design
+  (the authoritative decision is logged on the miss that populated the entry). Flags:
+  `--decision-cache-size` (default `1<<16`) and `--decision-cache-timeout` (default `1m`).
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
@@ -561,5 +883,7 @@ unit tests themselves need no Lean — they read the committed JSON.
   signals consumed here
 - [`pkg/apis/unikorn/v1alpha1`](../apis/unikorn/v1alpha1/README.md), which defines the stored role,
   group, organization, project, user, and service-account resources this package resolves
+- [`pkg/authz/cerbos`](../authz/cerbos/README.md), which provides the PDP client, policy
+  generator and request builder behind the Cerbos decision path
 - [`formal/`](../../formal/README.md), the machine-checked Lean model of this package's enforcement
   core and the source of the conformance vectors in `testdata/`

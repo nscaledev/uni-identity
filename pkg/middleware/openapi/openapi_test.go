@@ -223,7 +223,7 @@ func addAuthorizationHeader(t *testing.T, r *http.Request) {
 
 // authInfoFixture creates a fixture to be returned from the Authorizer interface
 // on successful authentication.
-func authInfoFixture(accountType identityapi.AuthClaimsAcctype) *authorization.Info {
+func authInfoFixture(actor string, accountType identityapi.AuthClaimsAcctype) *authorization.Info {
 	authz := &identityapi.AuthClaims{
 		Acctype: accountType,
 	}
@@ -234,7 +234,7 @@ func authInfoFixture(accountType identityapi.AuthClaimsAcctype) *authorization.I
 
 	return &authorization.Info{
 		Userinfo: &identityapi.Userinfo{
-			Sub:                       userActor,
+			Sub:                       actor,
 			HttpsunikornCloudOrgauthz: authz,
 		},
 	}
@@ -243,9 +243,10 @@ func authInfoFixture(accountType identityapi.AuthClaimsAcctype) *authorization.I
 // handler is a HTTP handler that records expected things that should exist in
 // hte request context and allows inspection of them.
 type handler struct {
-	authinfo  *authorization.Info
-	acl       *identityapi.Acl
-	principal *principal.Principal
+	authinfo    *authorization.Info
+	acl         *identityapi.Acl
+	principal   *principal.Principal
+	impersonate bool
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -259,6 +260,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: no error checking... not that it's relevant.
 	h.acl = rbac.FromContext(r.Context())
+
+	// Capture the impersonation signal before the local shadow below; a forged
+	// X-Impersonate must never activate it on an untrusted hop.
+	h.impersonate = principal.ImpersonateFromContext(r.Context())
 
 	principal, err := principal.FromContext(r.Context())
 	if err != nil {
@@ -398,7 +403,7 @@ func testUserToServiceAuthenticationSuccess(t *testing.T, principalType identity
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(principalType), nil)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, principalType), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
@@ -781,7 +786,7 @@ func TestRequestValidationErrorDoesNotEchoTheRequest(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, identityapi.User), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
@@ -842,7 +847,7 @@ func TestRequestValidationErrorMalformedBody(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, identityapi.User), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
@@ -878,7 +883,7 @@ func TestRequestValidationErrorMissingParameter(t *testing.T) {
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, identityapi.User), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}

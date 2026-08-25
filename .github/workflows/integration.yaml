@@ -69,6 +69,21 @@ jobs:
       id: api-tests
       run: make test-api-ci
 
+    # The gate reads the shadow comparator's log signal accumulated by the
+    # fixtures and the API suite above: zero "cerbos shadow divergence" lines
+    # or fail.  It must run BEFORE the decision-flip step below, which
+    # deliberately opens a divergence window.
+    - name: Enforce zero shadow divergence
+      run: make integration-divergence-gate
+
+    # AFTER the gate — ordering is load-bearing.  The flip applies a Role CR
+    # and rebinds the user's group: legacy flips via live CR reads once the
+    # ~1m ACL cache expires, Cerbos flips once the republished ConfigMap
+    # propagates (~1m kubelet sync), so shadow logs divergence DURING the
+    # window by design.  The step asserts the divergence ceases.
+    - name: Run decision-flip end-to-end
+      run: make integration-decision-flip
+
     - name: Analyze API test failures with Claude
       if: always() && steps.api-tests.outcome == 'failure'
       env:

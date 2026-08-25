@@ -177,12 +177,13 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // would over-grant, while reusing an impersonated entry for a direct or
 // attributed call would under-grant.
 //
-// The impersonated cache key therefore includes both:
+// The impersonated cache key therefore includes:
 // - the authenticated calling service subject.
 // - the impersonated actor.
+// - the impersonated actor's principal type and sorted organization set.
 //
 // All key shapes also include info.SrcIss, because subjects are only unique
-// within an issuer (ID-367 finding 6). Every segment preceding scope is
+// within an issuer. Every segment preceding scope is
 // length-prefixed, since subjects such as Auth0's "auth0|<id>" contain the "|"
 // delimiter and could otherwise be crafted to collide with another identity's
 // key. scope needs no prefix: it is terminal, so the key stays injective.
@@ -198,6 +199,18 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // system-account path leaves info.Token empty, so every system-account request
 // gets the same constant digest. That is harmless: system-account ACLs do not
 // depend on token content.
+//
+// The token digest does NOT subsume the principal type and organization set,
+// so both stay in the key. The impersonated ACL is resolved from the
+// X-Principal header, not from the token (getSystemAccountACL reads
+// p.OrganizationIDs and p.Type; processImpersonatedPrincipalACL switches on
+// p.Type), and that path is exactly the one whose token digest is constant.
+// Two distinct impersonated principals that merely share an actor string
+// therefore cannot collide on one cache entry. The direct path keys the same
+// two dimensions from its auth claims: strictly finer than the digest alone,
+// so it can only under-share. Organization sets are sorted, so a semantically
+// identical set always yields one key. This mirrors the hardened
+// coarse-decision key (pkg/rbac decisionCacheKey).
 //
 // The digest/scope boundary needs no adversarial collision argument, unlike sub
 // and srcIss. sha256.Sum256 output, base64.RawStdEncoding-encoded, is always
@@ -221,23 +234,56 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
+		// The org set is the SAME principal.ResolvedOrganizationIDs
+		// getSystemAccountACL resolves the impersonated ACL from, so the
+		// singular-OrganizationID fallback is keyed too — not just
+		// OrganizationIDs — and two distinct actors sharing a subject string
+		// cannot collide. Sorted for a stable key.
+		orgs := p.ResolvedOrganizationIDs()
+		slices.Sort(orgs)
+
 		sum := sha256.Sum256([]byte(info.Token))
 		tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
+		joinedOrgs := strings.Join(orgs, ",")
 
-		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%d:%s|%s",
+		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%s",
 			len(info.Userinfo.Sub), info.Userinfo.Sub,
 			len(info.SrcIss), info.SrcIss,
 			len(p.Actor), p.Actor,
+			len(p.Type), string(p.Type),
+			len(joinedOrgs), joinedOrgs,
 			len(tokenDigest), tokenDigest,
 			scope), nil
 	}
 
+	// A direct principal's ACL is resolved from its subject, account type AND
+	// organization set (the userinfo auth claims); keying on the subject alone
+	// would let one principal be served an ACL resolved for a different
+	// principal that shares a subject string but asserts a different account
+	// type or organization set — the platform's cache-scope-isolation invariant
+	// forbids a key coarser than the full authorization scope. The claims block
+	// is absent on a principal that carries none (empty type/set).
+	var (
+		directType string
+		directOrgs []string
+	)
+
+	if authz := info.Userinfo.HttpsunikornCloudOrgauthz; authz != nil {
+		directType = string(authz.Acctype)
+		directOrgs = slices.Clone(authz.OrgIds)
+	}
+
+	slices.Sort(directOrgs)
+
 	sum := sha256.Sum256([]byte(info.Token))
 	tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
+	joinedDirectOrgs := strings.Join(directOrgs, ",")
 
-	return fmt.Sprintf("direct|%d:%s|%d:%s|%d:%s|%s",
+	return fmt.Sprintf("direct|%d:%s|%d:%s|%d:%s|%d:%s|%d:%s|%s",
 		len(info.Userinfo.Sub), info.Userinfo.Sub,
 		len(info.SrcIss), info.SrcIss,
+		len(directType), directType,
+		len(joinedDirectOrgs), joinedDirectOrgs,
 		len(tokenDigest), tokenDigest,
 		scope), nil
 }
@@ -545,9 +591,25 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 
 	data, err := base64.RawURLEncoding.DecodeString(header)
 	if err != nil {
-		// TODO: fallback, delete me... I am VERY slow.
-		// Use the certificate of the service that actually called us.
-		// The one in the context is used to propagate token binding information.
+		// SIGNED-PRINCIPAL FALLBACK.  The primary path (below) is the unsigned
+		// base64url(JSON) X-Principal set by principal.Injector: trust rests on
+		// the channel — mTLS plus ingress header-stripping ("trust the channel";
+		// see this package's README).  A header that is not base64url-decodable
+		// is instead a SIGNED principal set by principal.ControllerInjector
+		// (uni-core's EncodeAndSign, a JWS), which this branch verifies against
+		// the CALLING service's certificate.  Verify against the certificate of
+		// the service that actually called us (from the header), not the one in
+		// the context — the context copy propagates token-binding information.
+		//
+		// DEFERRED (trust-the-channel kept by owner decision): making
+		// signed propagation the DEFAULT for all service-to-service calls — not
+		// only the ControllerInjector case handled here — is recorded future
+		// hardening, not done here.  EncodeAndSign/VerifyAndDecode live in
+		// uni-core, so flipping the default is cross-repo/flag-day, and
+		// per-request public-key verification is VERY slow.  The original TODO
+		// here read "fallback, delete me... I am VERY slow", flagging exactly
+		// that cost; keep it in mind before making signed propagation the
+		// default.  This fallback's BEHAVIOUR is unchanged.
 		certRaw, err := util.GetClientCertificateHeader(r.Header)
 		if err != nil {
 			return nil, err
@@ -628,6 +690,23 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	return r, responseValidationInput, nil
 }
 
+// seedDecisionEngines seeds the decision engine the configured Authorizer
+// optionally supplies into ctx, for the Allow* facade's dual-path
+// (DecisionEngineProvider) dispatch fork to consult.  This is the single
+// production seeding point — deliberately called next to the ACL, on the
+// context the handlers actually receive (the derived context getACL hands to
+// GetACL is discarded).  Contexts without an engine always take the legacy
+// path.
+func (v *Validator) seedDecisionEngines(ctx context.Context) context.Context {
+	if provider, ok := v.authorizer.(DecisionEngineProvider); ok {
+		if engine := provider.DecisionEngine(); engine != nil {
+			ctx = rbac.NewEngineContext(ctx, engine)
+		}
+	}
+
+	return ctx
+}
+
 // Handle builds up any expected contextual information for the handlers and dispatches
 // it.  Once complete this will also validate the OpenAPI response.
 func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.Request, responseValidationInput *openapi3filter.ResponseValidationInput, params map[string]string, next http.Handler) error {
@@ -643,6 +722,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 		// for the pursposes of auditing and RBAC.
 		ctx = authorization.NewContext(ctx, authInfo.info)
 		ctx = rbac.NewContext(ctx, authInfo.acl)
+		ctx = v.seedDecisionEngines(ctx)
 
 		// Trusted clients using mTLS must provide principal information in the headers.
 		// Other clients (UI/CLI) generate principal information from token introspection

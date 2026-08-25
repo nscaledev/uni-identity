@@ -17,9 +17,10 @@ limitations under the License.
 // Package cerbos provides a thin gRPC client for the Cerbos PDP that runs as
 // a sidecar of the identity server (see charts/identity).  It owns connection
 // construction, per-call deadlines and the fail-closed error contract, and
-// nothing else: request construction (principals, resources, binding strings),
-// decision mapping, batching, and the decision audit logging and metrics all
-// live outside this package — the client itself stays log-free.
+// nothing else: request construction (principals, resources, binding strings)
+// is the request builder's job (request.go), and decision mapping, batching,
+// and the decision audit logging and metrics all live in pkg/rbac
+// (Check/CheckMany and decision_log.go) — the client itself stays log-free.
 package cerbos
 
 import (

@@ -24,11 +24,14 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/core/pkg/util/cache"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
@@ -42,6 +45,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const (
+	// defaultDecisionCacheSize is the coarse-decision cache capacity used when
+	// the option is unset (e.g. downstream RBAC constructions and tests that
+	// build Options directly).  It must be > 0: the underlying LRU panics on a
+	// non-positive size.
+	defaultDecisionCacheSize = 1 << 16
+
+	// defaultDecisionCacheTimeout is the coarse-decision cache TTL used when
+	// the option is unset.  It also backstops policy-hash staleness: a stale
+	// verdict cannot outlive it (see engine.go allowCoarse and the hasher).
+	defaultDecisionCacheTimeout = time.Minute
+)
+
 var (
 	ErrResourceReference         = goerrors.New("resource reference error")
 	ErrNoAuthz                   = goerrors.New("no authorization data in userinfo")
@@ -52,6 +68,13 @@ var (
 	ErrUntrustedBindingIssuer    = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
 	ErrGroupBindingNoGroupsClaim = goerrors.New("global group role binding issuer has no groupsClaim configured; the binding can never match")
 	ErrMalformedGroupsClaim      = goerrors.New("groupsClaim is not a namespaced URI (no \"://\"); validator construction will reject it and every token from this issuer will fail")
+
+	// ErrWildcardBindingUnsupported fails the Cerbos decision path closed for a
+	// matched wildcard subject binding.  The legacy path clamps such a binding
+	// to read (accumulateGlobalReadPermissions), but a cerbos.RoleBinding
+	// activates a role's whole global bucket, so the clamp cannot be expressed
+	// and emitting one would over-grant.
+	ErrWildcardBindingUnsupported = goerrors.New("wildcard subject binding matched: the read clamp is not expressible as a Cerbos role binding")
 )
 
 // PlatformAdministratorSubject binds an admin subject to the issuer that must
@@ -113,14 +136,34 @@ type Options struct {
 	PlatformAdministratorRoleIDs  []string
 	PlatformAdministratorSubjects []PlatformAdministratorSubject
 	SystemAccountRoleIDs          map[string]string
-	GlobalRoleBindings            GlobalRoleBindingsValue
-	GlobalGroupRoleBindings       GlobalGroupRoleBindingsValue
+
+	// AuthorizationEngine selects which engine serves the Allow* facade's
+	// decisions (see engine.go).  Defaults to legacy; only the identity
+	// server registers the flag, so it never exists downstream — and even
+	// there dispatch additionally requires an engine-seeded context.
+	AuthorizationEngine EngineMode
+
+	// DecisionCacheSize is the capacity of the coarse-decision cache
+	// (cerbos-mode allowCoarse; see engine.go).
+	DecisionCacheSize int
+
+	// DecisionCacheTimeout is how long a coarse decision is retained before
+	// it must be re-derived from the PDP.  It also backstops policy-hash
+	// staleness (see the hasher in pkg/authz/cerbos).
+	DecisionCacheTimeout    time.Duration
+	GlobalRoleBindings      GlobalRoleBindingsValue
+	GlobalGroupRoleBindings GlobalGroupRoleBindingsValue
 }
 
 func (o *Options) AddFlags(f *pflag.FlagSet) {
+	o.AuthorizationEngine = EngineLegacy
+
 	f.StringSliceVar(&o.PlatformAdministratorRoleIDs, "platform-administrator-role-ids", nil, "Platform administrator role ID.")
 	f.Var((*PlatformAdministratorSubjectsValue)(&o.PlatformAdministratorSubjects), "platform-administrator-subjects", "Platform administrators as issuer::subject (bare value = UNI issuer).")
 	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
+	f.Var(&o.AuthorizationEngine, "authorization-engine", "Authorization engine serving Allow* enforcement decisions (legacy, shadow or cerbos).")
+	f.IntVar(&o.DecisionCacheSize, "decision-cache-size", defaultDecisionCacheSize, "Size of the coarse Cerbos decision cache.")
+	f.DurationVar(&o.DecisionCacheTimeout, "decision-cache-timeout", defaultDecisionCacheTimeout, "Duration to cache coarse Cerbos decisions for.")
 	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
 	f.Var(&o.GlobalGroupRoleBindings, "global-group-role-binding", "Global group role binding as issuer::group::role[,role...]; grants the roles' full global scopes to any subject whose token from issuer carries the group in the issuer's groupsClaim.")
 }
@@ -232,15 +275,80 @@ func validateGroupBindingAdvisory(issuer string, trustedNonUNIIssuers []string, 
 
 // RBAC contains all the scoping rules for services across the platform.
 type RBAC struct {
-	client        client.Client
-	namespace     string
-	options       *Options
+	client    client.Client
+	namespace string
+	options   *Options
+
+	// bindings and groupBindings are the effective global role bindings resolved
+	// once in New (see bindings.go): subject-keyed and IdP-group-keyed grants.
 	bindings      []GlobalRoleBinding
 	groupBindings []GroupRoleBinding
+
+	// cutoverKinds is the O(1) form of Options.CerbosAuthoritativeKinds, built
+	// once in New: the per-kind strangle cutover set that modeForKind reads.
+	// A kind here is Cerbos-authoritative regardless of the global mode; nil —
+	// the default, and every downstream/test construction that never sets the
+	// option — means no kind is cut over, so modeForKind == mode() for all
+	// kinds and dispatch is byte-identical to the pre-cutover global behaviour.
+	cutoverKinds map[string]bool
+
+	// pdp is the Cerbos policy decision point used by Check/CheckMany
+	// (injected via WithCerbos; see check.go).  It is legal for it to be
+	// nil — decisions then fail closed with ErrDecisionUnavailable.
+	pdp PolicyDecisionPoint
+
+	// decisions counts PDP-served Cerbos-path decisions, cacheDecisions counts
+	// coarse-decision cache hits/misses (cache observability), and pdpLatency
+	// times the CheckResources round trip (see decision_log.go and check.go).
+	// All are no-op unless metrics are exported (--otlp-endpoint).
+	decisions      metric.Int64Counter
+	cacheDecisions metric.Int64Counter
+	pdpLatency     metric.Float64Histogram
+
+	// shadowEvaluation marks the shallow engine copy shadowCompare rides
+	// through Check/CheckMany: such evaluations must emit no decision
+	// records and no decision-counter increments (shadow.go owns that
+	// path's taxonomy).  Never set on a served engine.
+	shadowEvaluation bool
+
+	// decisionCache memoizes coarse cerbos-mode verdicts (allow and policy
+	// deny, never failures) keyed by (subject, impersonation+actor, scope,
+	// action, policy hash); see engine.go allowCoarse/decisionCacheKey.  It
+	// is only consulted when a policyHasher is configured — without one every
+	// decision bypasses it, so downstream and legacy paths are unaffected.
+	decisionCache    *cache.LRUExpireCache[string, bool]
+	decisionCacheTTL time.Duration
+
+	// policyHasher supplies the current policy-store hash, the cache-key
+	// dimension that busts every entry on a policy republish (injected via
+	// WithPolicyStoreHash).  Nil ⇒ the cache is inert (the safe default for
+	// every construction that does not opt in).
+	policyHasher PolicyStoreHasher
 }
 
 // New creates a new RBAC client.
 func New(client client.Client, namespace string, options *Options) *RBAC {
+	decisions, cacheDecisions, pdpLatency := newDecisionInstruments()
+
+	// Fall back to the defaults when the option is unset: Options is built
+	// directly (without AddFlags) by several consumers and every test, and the
+	// underlying LRU panics on a non-positive size.
+	cacheSize := defaultDecisionCacheSize
+	cacheTTL := defaultDecisionCacheTimeout
+
+	if options != nil {
+		if options.DecisionCacheSize > 0 {
+			cacheSize = options.DecisionCacheSize
+		}
+
+		if options.DecisionCacheTimeout > 0 {
+			cacheTTL = options.DecisionCacheTimeout
+		}
+	}
+
+	decisionCache := cache.NewLRUExpireCache[string, bool](cacheSize)
+	decisionCache.ZeroCopy()
+
 	bindings := effectiveGlobalRoleBindings(options)
 
 	logger := log.Log.WithName("rbac")
@@ -254,11 +362,16 @@ func New(client client.Client, namespace string, options *Options) *RBAC {
 	}
 
 	return &RBAC{
-		client:        client,
-		namespace:     namespace,
-		options:       options,
-		bindings:      bindings,
-		groupBindings: options.GlobalGroupRoleBindings,
+		client:           client,
+		namespace:        namespace,
+		options:          options,
+		bindings:         bindings,
+		groupBindings:    options.GlobalGroupRoleBindings,
+		decisions:        decisions,
+		cacheDecisions:   cacheDecisions,
+		pdpLatency:       pdpLatency,
+		decisionCache:    decisionCache,
+		decisionCacheTTL: cacheTTL,
 	}
 }
 
@@ -1077,14 +1190,11 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 
 	// OrganizationIDs is populated by the identity middleware (generatePrincipal)
 	// from the userinfo claims and propagated through the X-Principal header by
-	// all current callers. The singular OrganizationID fallback is a defensive
-	// safety net: if a caller only sets OrganizationID (e.g. a future service
-	// that hasn't adopted the full principal propagation), the user still gets
-	// permissions for at least the scoped organization rather than an empty ACL.
-	organizationIDs := p.OrganizationIDs
-	if len(organizationIDs) == 0 && p.OrganizationID != "" {
-		organizationIDs = []string{p.OrganizationID}
-	}
+	// all current callers; the singular OrganizationID fallback is a defensive
+	// safety net for a caller that only sets OrganizationID. Both the fallback
+	// and its cache-key mirrors resolve through principal.ResolvedOrganizationIDs
+	// so they can never disagree (see that method).
+	organizationIDs := p.ResolvedOrganizationIDs()
 
 	principalACLClaims := &openapi.AuthClaims{
 		Acctype: p.Type,

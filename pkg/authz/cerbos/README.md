@@ -16,8 +16,11 @@ It contains:
 - [controller](#the-policy-controller) — the reconciling policy controller
   publishing generated policies to the sidecar's policy store ConfigMap.
 
-The decision layers built on top of this tree live in
-[pkg/rbac](../../rbac/README.md).
+The layers built on top of this tree live in [pkg/rbac](../../rbac/README.md):
+the bindings resolver (`ResolveBindings`) that turns group memberships into
+the [request builder](#the-request-builder)'s `RoleBinding` values, and the
+decision API (`Check`/`CheckMany`) that sends requests through the client and
+maps responses to allow/deny.
 
 ## The Client
 
@@ -43,13 +46,14 @@ liveness — pod readiness gates on the sidecar's own health probe instead.
 **Fail-closed contract**: every failure to obtain a decision — connection
 refused, deadline expiry, server error — returns an error wrapping the static
 `ErrUnavailable` sentinel, never a response.  The client never fabricates an
-allow or deny; the decision API that consumes this client maps the sentinel to
-a deny-shaped unavailability error.  On the response side the SDK's `IsAllowed` returns
+allow or deny; the decision API (`rbac.Check`/`CheckMany`, see
+[pkg/rbac](../../rbac/README.md)) maps the sentinel to its deny-shaped
+`ErrDecisionUnavailable`.  On the response side the SDK's `IsAllowed` returns
 false for missing actions, missing resources and errored results, so an allow
 is only reachable through an explicit `EFFECT_ALLOW`.  The decision
 observability — audit records and metrics for every served outcome, timeouts
-included — lives at the decision choke point in
-[pkg/rbac](../../rbac/README.md), NOT here: a client decorator would miss the pre-PDP fail-closed denials, and
+included — lives at the `CheckMany` choke point in pkg/rbac (`decision_log.go`),
+NOT here: a client decorator would miss the pre-PDP fail-closed denials, and
 the client deliberately stays log-free.
 
 The integration test (`make test-cerbos-client`, Docker-dependent like `make
@@ -290,3 +294,117 @@ labels, not ownerReferences).  Consequences:
   non-Linux hosts the Linux binary cannot exec, so the same gate code drives
   the pinned image via `docker run` instead; CI always tests the direct-exec
   path production uses.
+- The end-to-end "apply a Role, watch a decision flip" assertion is delivered
+  by `hack/ci/decision-flip`: in kind CI it applies a Role CR, rebinds
+  the fixture user's group, and asserts a live decision flips 403→200 on both
+  engines — Cerbos observing the flip through this controller's republish and
+  the ConfigMap propagation — and that shadow divergence ceases once both
+  have converged (see [hack/ci](../../../hack/ci/README.md) and the kind-gate
+  section in [pkg/rbac](../../rbac/README.md)).
+
+## The Policy-Store Hasher
+
+`PolicyStoreHasher` (`policyhash.go`) is a read-through provider of the current
+policy-store fingerprint, consumed by [pkg/rbac](../../rbac/README.md#the-coarse-decision-cache)'s
+coarse-decision cache as the cache-key dimension that busts every entry on a
+policy republish.
+
+- **Content-addressed off the key set.** The fingerprint is
+  `sha256(join(sorted(ConfigMap.Data keys), "\n"))`, hex-encoded — the VALUES
+  are ignored. This works precisely because the [hash-suffixed key
+  scheme](#the-hash-suffixed-key-scheme-load-bearing) already content-addresses
+  every key (`<base>-<sha256[:8]>.yaml`): any policy content change changes at
+  least one key, so the key set alone changes iff the store content changes. An
+  empty store hashes to a fixed, stable, non-empty token.
+- **Why read the ConfigMap, not the PDP.** Identity cannot get this from Cerbos:
+  the PDP response only echoes the *requested* policy version, which identity's
+  coarse checks leave unset (the coarse-check seam in
+  `shadow.go`/`decision_log.go`). So the hasher read-throughs the
+  controller-owned ConfigMap directly, re-`Get`ting it at most once per refresh
+  interval (identity passes `--decision-cache-timeout`) and memoizing in
+  between. `Current` is concurrency-safe and never blocks (it is called on every
+  cerbos-mode decision): a due call elects one background read — detached from
+  the electing request's lifetime and bounded by its own timeout, so a client
+  disconnect cannot burn the interval's only attempt and a hung API server
+  cannot stall decisions — and every caller returns the memoized state
+  immediately.
+- **Uncached client, narrow RBAC.** It MUST use a direct (uncached) client — the
+  identity server passes its `directclient`. A cache-backed client would spin up
+  a cluster-wide ConfigMap informer, exactly the anti-pattern the [policy
+  controller](#the-policy-controller) avoids for the same reason; the chart grants
+  the server only a dedicated `get` on `configmaps` (not list/watch) for this read.
+- **Fail-safe availability contract.** `Current` reports unavailable
+  (`ok=false`) until the FIRST successful read — including the brief cold-start
+  window while that read completes in the background — so the coarse-decision
+  cache stays bypassed rather than keyed on a bogus hash. After a first success
+  it retains the last-good hash across a later failed refresh (a transient
+  ConfigMap read blip must not fail-closed-deny every decision), logging the
+  failure at most once per transition to avoid per-decision spam.
+- **Reload-lag / TTL relationship.** The controller publishes, then the kubelet
+  syncs the volume (~1 minute) and Cerbos reloads (2s), so the hasher — reading
+  the ConfigMap directly — sees a new hash BEFORE the PDP has the new policy.
+  That is deliberate and safe: the hash flip makes stale-store entries
+  unreachable immediately (no stale-allow past a revoking republish), while the
+  brief window where the PDP still serves the old store, and any same-hash edge
+  case, are bounded by the decision cache TTL (`--decision-cache-timeout`).
+
+## The Request Builder
+
+`request.go` is the pure half of request construction: resolved bindings +
+resource + actions → the SDK types `CheckResources` sends.  It is
+deliberately ONLY that — the Kubernetes-reading resolver that turns group
+memberships into `RoleBinding` values is `rbac.ResolveBindings`, and the
+decision API that maps responses (and `ErrUnavailable`) to allow/deny is
+`rbac.Check`/`rbac.CheckMany` (both documented in
+[pkg/rbac](../../rbac/README.md)); the impersonation dual-check serves impersonated
+requests as two AND-ed single-principal evaluations — the impersonated principal
+and the acting service, one `CheckResources` call each — with
+`ErrImpersonationNotSupported` narrowed to refusing invalid impersonated
+principal TYPES, so **the shadow comparator compares impersonated requests too**
+(see the shadow-mode notes in [pkg/rbac](../../rbac/README.md) — in particular the
+divergence-vs-evaluation-failure split the cutover gate reads, and the policy
+correlate — the policy-store hash wired into the decision records); and the
+`AllowProjectScopeCreate` orchestration follows as a deferred Cerbos equivalent.
+The builder is actor-class-agnostic: it renders whatever bindings it is given,
+and the actor-class shapes (user, platform admin, service account, system
+account) are pinned as table tests which the resolver's own tests mirror.
+
+`BuildPrincipal(subjectID, bindings)` renders the [binding-string
+contract](#the-binding-string-contract-cross-component-invariant) into the
+principal's `bindings` attribute — **list form**, which the committed policy
+fixtures pin (a map keyed by binding for O(1) CEL lookup is a possible M2
+performance change, but it is a wire-shape change: the fixtures and every
+generated CEL condition must move together).  Bindings are deduplicated and
+sorted, so semantically identical inputs yield byte-identical requests
+(caching and logging determinism).  The static parent role `principal` is
+MANDATORY: every generated derived role declares `parentRoles: [principal]`,
+so a request without it denies everything.
+
+`BuildResource(kind, id, organizationID, projectID)` encodes scope by
+attribute **absence**, never by empty values:
+
+| Check level | `organization` attr | `project` attr |
+|---|---|---|
+| global | absent | absent |
+| org | present | **absent** |
+| project | present | present |
+
+**Warning**: the `project` attribute on an org-level check must be ABSENT,
+not empty — a present-and-matching value would let project bindings activate
+(flow-up).  The no-flow-up invariant depends on this absence.  A project
+check activates global + matching-org + matching-project bindings in one
+request: the Go three-level cascade collapses into a single Cerbos check.
+
+An empty resource id becomes `CoarseResourceID` (`"*"`): the engine proto
+requires a non-empty id (`min_len 1`), and the constant is pinned because it
+is part of the future coarse-decision-cache key.  `BuildBatch` fails loudly
+where the SDK's `ResourceBatch.Add` silently no-ops (nil resources, empty
+action lists) — a silently empty batch would be an authorization request that
+checks nothing.  Actions are `openapi.AclOperation` values passed through
+verbatim, deduplicated and sorted.
+
+The fixtures-parity tests (`request_parity_test.go`) parse the committed
+policy-suite fixtures under `generate/testdata/store/tests/testdata/` and
+prove the builder reproduces every fixture principal and resource
+byte-for-byte — including attribute-key absence — so the builder and the
+CI-validated policy suite cannot drift apart silently.
