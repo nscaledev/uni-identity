@@ -339,6 +339,16 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return err
 	}
 
+	// Retargeting the Fleet tenant link is platform administrator business.  An
+	// organization administrator holds update on their own organization, so left
+	// open this lets them point it at another customer's tenant, which resolves
+	// cleanly and renders that customer's hardware -- the misdirection the link
+	// exists to rule out.  Carrying the stored value forward also stops a caller
+	// that builds a write body from scratch silently clearing it.
+	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Update); err != nil {
+		required.Spec.FleetTenantID = current.Spec.FleetTenantID
+	}
+
 	if err := conversion.UpdateObjectMetadata(required, current, common.IdentityMetadataMutator); err != nil {
 		return fmt.Errorf("%w: failed to merge metadata", err)
 	}

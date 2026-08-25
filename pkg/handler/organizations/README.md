@@ -58,6 +58,25 @@ deployments. This package therefore still translates that configuration into and
 organization resource, even though membership and tenancy-root responsibilities are more central
 to its present-day role.
 
+### Authoritative Link To The Fleet Manager Tenant
+
+`fleetTenantId` on the organization spec is the system-of-record mapping from an organization to
+the Fleet Manager tenant it owns. Consumers resolve an organization to its tenant here rather than
+trusting `Tenant.annotations["uni_org_id"]` on Fleet's side, which is not unique across tenants,
+barely validated, writable as a whole dictionary, and carries no audit trail.
+
+A unique constraint on that annotation would not have been enough. Uniqueness makes the claim
+unambiguous, not correct: a tenant carrying the wrong organization's id is still the only tenant
+carrying it, so it resolves cleanly, passes every check we write, and renders the wrong customer's
+hardware.
+
+That is also why the field is a trust boundary rather than ordinary organization configuration.
+Creating an organization already requires global authority, but the shipped `administrator` role
+holds `identity:organizations` update at organization scope, so the update path carries the stored
+value forward unless the caller holds that same update globally. An organization administrator can
+therefore neither retarget their organization at another customer's tenant nor clear the link by
+submitting a write body built from scratch.
+
 ## Invariants
 
 - organization visibility is derived from authenticated identity context, not from unauthenticated
@@ -69,6 +88,10 @@ to its present-day role.
   [`pkg/apis/unikorn/v1alpha1`](../../apis/unikorn/v1alpha1/README.md)
 - domain/provider mapping, when used, is configuration on the organization resource rather than a
   separate lookup model in the handler layer
+- `fleetTenantId` is writable only by a caller holding global `identity:organizations` update;
+  organization-scoped update carries the stored value forward rather than honouring the request
+- a stored `fleetTenantId` that does not parse as a UUID reads as absent, so a resource hand-edited
+  around the CRD's `uuid` format resolves to nothing rather than to a guess
 
 ## Caveats
 

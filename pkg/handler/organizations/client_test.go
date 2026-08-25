@@ -28,6 +28,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -65,4 +66,71 @@ func TestFleetTenantIDRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, read.Spec.FleetTenantId)
 	require.Equal(t, tenantID, *read.Spec.FleetTenantId)
+}
+
+// TestFleetTenantIDIsPlatformAdministratorOnly covers the write side of the link.  The
+// shipped administrator role holds identity:organizations update at organization scope,
+// so were the field writable there an organization administrator could point themselves
+// at another customer's tenant: it would resolve cleanly, pass every check we write, and
+// render that customer's hardware.  That is the misdirection the link exists to rule out,
+// so only a global-scope holder may retarget it.
+func TestFleetTenantIDIsPlatformAdministratorOnly(t *testing.T) {
+	t.Parallel()
+
+	const namespace = "base"
+
+	tenantID := uuid.MustParse("0198f3a1-4c2e-7a11-9f3b-6d1e2c4a8b90")
+	otherTenantID := uuid.MustParse("0198f3a1-4c2e-7a11-9f3b-6d1e2c4a8b91")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	cli := fake.NewClientBuilder().WithScheme(scheme).Build()
+	ctx := fixtures.HandlerContextFixture(t.Context(), 0)
+	client := organizations.New(cli, namespace)
+
+	write := func(tenant *uuid.UUID) *openapi.OrganizationWrite {
+		return &openapi.OrganizationWrite{
+			Metadata: coreopenapi.ResourceWriteMetadata{Name: "acme"},
+			Spec: openapi.OrganizationSpec{
+				OrganizationType: openapi.Adhoc,
+				FleetTenantId:    tenant,
+			},
+		}
+	}
+
+	created, err := client.Create(ctx, write(&tenantID))
+	require.NoError(t, err)
+
+	organizationID := ids.MustParseOrganizationID(created.Metadata.Id)
+
+	endpoints := openapi.AclEndpoints{{
+		Name:       "identity:organizations",
+		Operations: openapi.AclOperations{openapi.Read, openapi.Update},
+	}}
+	scoped := openapi.AclOrganizationList{{Id: organizationID.String(), Endpoints: &endpoints}}
+
+	organizationAdmin := rbac.NewContext(ctx, &openapi.Acl{Organizations: &scoped})
+	platformAdmin := rbac.NewContext(ctx, &openapi.Acl{Global: &endpoints})
+
+	fleetTenantID := func() *uuid.UUID {
+		t.Helper()
+
+		read, err := client.Get(ctx, organizationID)
+		require.NoError(t, err)
+
+		return read.Spec.FleetTenantId
+	}
+
+	require.NoError(t, client.Update(organizationAdmin, organizationID, write(&otherTenantID)))
+	require.Equal(t, tenantID, *fleetTenantID(), "organization administrator retargeted the tenant link")
+
+	require.NoError(t, client.Update(organizationAdmin, organizationID, write(nil)))
+	require.Equal(t, tenantID, *fleetTenantID(), "a write body without the field cleared the tenant link")
+
+	require.NoError(t, client.Update(platformAdmin, organizationID, write(&otherTenantID)))
+	require.Equal(t, otherTenantID, *fleetTenantID(), "platform administrator could not retarget the tenant link")
+
+	require.NoError(t, client.Update(platformAdmin, organizationID, write(nil)))
+	require.Nil(t, fleetTenantID(), "platform administrator could not clear the tenant link")
 }
