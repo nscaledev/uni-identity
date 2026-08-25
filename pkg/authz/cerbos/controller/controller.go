@@ -62,8 +62,11 @@ const (
 	managedByValue = "unikorn-policy-controller"
 
 	// hashLength is the number of hex characters of the content SHA-256
-	// suffixed onto every published key.
-	hashLength = 8
+	// suffixed onto every published key.  32 hex characters retain 128 bits.
+	hashLength = 32
+
+	// maxConfigMapKeyLength is Kubernetes' limit for a ConfigMap data key.
+	maxConfigMapKeyLength = 253
 
 	// storeSuffix is the extension shared by generated policy files; the
 	// hash slots in before it so Cerbos still sees *.yaml files.
@@ -423,7 +426,9 @@ func policyFileCount(data map[string]string) int {
 }
 
 // hashKeyedData converts generated files into ConfigMap data under
-// content-hash-suffixed keys: <base>-<sha256[:8]>.yaml.
+// content-hash-suffixed keys: <base>-<sha256[:32]>.yaml.  Long generated
+// bases are truncated so the complete key remains within Kubernetes' 253-byte
+// ConfigMap key limit.
 //
 // The suffix is load-bearing, not cosmetic.  The kubelet updates ConfigMap
 // volumes by atomically swapping a hidden ..data symlink
@@ -453,6 +458,13 @@ func hashKeyedData(files map[string][]byte) map[string]string {
 // hashKey returns the published ConfigMap key for one generated file.
 func hashKey(name string, content []byte) string {
 	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])[:hashLength]
+	suffix := "-" + hash + storeSuffix
+	base := strings.TrimSuffix(name, storeSuffix)
 
-	return strings.TrimSuffix(name, storeSuffix) + "-" + hex.EncodeToString(sum[:])[:hashLength] + storeSuffix
+	if maxBaseLength := maxConfigMapKeyLength - len(suffix); len(base) > maxBaseLength {
+		base = base[:maxBaseLength]
+	}
+
+	return base + suffix
 }

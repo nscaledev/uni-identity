@@ -3,6 +3,41 @@
 systemAccounts:
   ci-fixtures: platform-administrator
 
+identity:
+  # Run the shadow comparator in CI: serve legacy verdicts, evaluate the
+  # Cerbos PDP in parallel, and log any disagreement for the divergence gate
+  # (hack/ci/divergence-gate) to read once the API suite has run.
+  authorizationEngine: shadow
+
+# Placeholder open-vocabulary roles (example:*/sample:*) so the kind stack
+# proves open-vocabulary shapes survive the whole pipeline: values -> Role CR ->
+# policy controller (generation + compile gate) -> published ConfigMap ->
+# Cerbos.  No fixture persona is bound to them — their job here is the
+# in-cluster pipeline proof; decision parity for these shapes is asserted by
+# the docker matrix (make test-cerbos-decisions).
+additionalRoles:
+  # Placeholder role exposing open-vocabulary example:* endpoints.
+  example-operator:
+    description: Example operator
+    scopes:
+      organization:
+        example:widgets: [create, read]
+        example:gadgets: [read]
+        example:gizmos: [read]
+        example:sprockets: [read]
+  # Placeholder viewer role reshaped into this chart's additionalRoles map
+  # form: org-scope read plus project-scope read-only sample:* grants.
+  project-viewer:
+    description: Sample project read-only access
+    scopes:
+      organization:
+        sample:assets: [read]
+      project:
+        sample:records: [read]
+        sample:groups: [read]
+        sample:sets: [read]
+        sample:nodes: [read]
+
 # Bound via the legacy platformAdministrators.subjects path; map-merges with
 # the chart default so the default platformAdministrators.roles survives.
 platformAdministrators:
@@ -15,7 +50,7 @@ globalRoleBindings:
 - issuer: uni
   subject: ci-binding-admin@nscale.test
   roles: [platform-administrator]
-# Exact uni binding for the ID-399 platform-reader canary: exercises the real
+# Exact uni binding for the platform-reader canary: exercises the real
 # role's ACL end-to-end, unclamped (exact bindings bypass the wildcard clamp),
 # so a write verb sneaking into the role fails the suite instead of being
 # masked. A wildcard binding is untestable here: KinD hosts no external JWKS

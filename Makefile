@@ -193,6 +193,15 @@ test-cerbos-controller:
 	CERBOS_BINARY="$$tmp/cerbos" CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) \
 	go test -count=1 -tags=integration ./pkg/authz/cerbos/controller/
 
+# Decision-parity integration test: legacy GetACL/Allow* verdicts versus
+# Cerbos Check/CheckMany verdicts, both computed from the same fixture data,
+# with the generated policy store served by the pinned image.  Requires
+# Docker, so this is deliberately not part of test-unit; CI runs it
+# alongside the unit tests.
+.PHONY: test-cerbos-decisions
+test-cerbos-decisions:
+	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/rbac/
+
 # Regenerate the RBAC conformance vectors from the Lean formal model in ./formal.
 # Requires a Lean toolchain (elan/lake).  The unit tests deliberately do NOT --
 # they read the checked-in JSON -- and CI verifies the committed file still
@@ -486,6 +495,9 @@ integration-install:  ## Deploy identity into the current cluster with random na
 	  --release-name $(KIND_RELEASE) \
 	  --values hack/ci/test-values.yaml \
 	  > test/.env.install
+	hack/ci/wait-policies \
+	  --namespace $(KIND_NAMESPACE) \
+	  --release-name $(KIND_RELEASE)
 
 .PHONY: integration-fixtures
 integration-fixtures:  ## Create integration fixtures and write test/.env
@@ -496,5 +508,13 @@ integration-fixtures:  ## Create integration fixtures and write test/.env
 	  --ca-cert "$$IDENTITY_CA_CERT" \
 	  > test/.env
 
+.PHONY: integration-divergence-gate
+integration-divergence-gate:  ## Fail if shadow mode logged any authorization divergence (run after test-api-ci)
+	hack/ci/divergence-gate
+
+.PHONY: integration-decision-flip
+integration-decision-flip:  ## Prove a live Role CR edit flips a decision on both engines (run AFTER the divergence gate: it deliberately opens a divergence window)
+	hack/ci/decision-flip
+
 .PHONY: integration-test
-integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci  ## Full local integration run
+integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci integration-divergence-gate integration-decision-flip  ## Full local integration run

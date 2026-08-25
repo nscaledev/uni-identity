@@ -200,7 +200,7 @@ func TestHashKeyScheme(t *testing.T) {
 	changed := hashKey("resource_widget.yaml", []byte("changed"))
 	require.NotEqual(t, same, changed, "changed content must swap the key")
 
-	require.Regexp(t, `^resource_widget-[0-9a-f]{8}\.yaml$`, same, "key shape is <base>-<sha256[:8]>.yaml")
+	require.Regexp(t, `^resource_widget-[0-9a-f]{32}\.yaml$`, same, "key shape is <base>-<sha256[:32]>.yaml")
 
 	for key := range generatedStore(t) {
 		require.Empty(t, validation.IsConfigMapKey(key), "generated key %q must be a valid ConfigMap key", key)
