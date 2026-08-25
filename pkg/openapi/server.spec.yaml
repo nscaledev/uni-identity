@@ -2008,8 +2008,9 @@ components:
             and may therefore grant it to groups. Roles with grantable set to
             false are returned so clients can resolve and display them — for
             example a role a group already carries — but this caller cannot
-            grant them: a group write whose role list contains a role the
-            caller cannot grant is refused.
+            grant them: adding one to a group is refused. Roles already on a
+            group are exempt: re-sending one is accepted, and omitting one
+            removes it, whether or not the caller could grant it.
           type: boolean
     roles:
       description: A list of roles.

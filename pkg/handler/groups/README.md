@@ -46,10 +46,40 @@ concrete write-time check.
 When roles are attached to a group, this client:
 
 - verifies the role exists
-- rejects protected roles
-- rejects roles the caller is not permitted to grant in that organization
+- rejects protected roles, whether newly added or already on the group
+- rejects newly added roles the caller is not permitted to grant in that organization
+
+The grant check on addition applies only to the delta: roles already on the group before the write
+are not re-checked, so a caller can resend that group's existing role list without the write being
+refused. A role being added is always grant-checked, on both create and update; create has no prior
+state, so every role in the request counts as an addition. A refused grant names the role so the
+caller knows which one to remove or delegate.
+
+Removals are not gated. Dropping a role confers nothing on anybody, and group DELETE is an
+unguarded revocation path anyway, so a removal guard would only move authority checks onto a path
+that cannot escalate. Gating removals would also create a stuck state: a role whose permissions
+nobody holds — a decommissioned service's role, say — could then never be removed from a group
+through the API, which is the same class of stuck group this delta check exists to fix. The
+consequence is that a client which omits a role from an update revokes it; a client editing a group
+should round-trip the role list it read (`GET /roles` returns every non-protected role, including
+ungrantable ones, exactly so that clients can do this).
 
 So group writes are also authority-delegation checks.
+
+### Decommissioning A Service's Roles
+
+Retiring a service that contributed roles (third-party or internal) has an order dependency.
+
+Strip the service's roles from every group first, then delete its `Role` CRs — not the other way
+round. Deleting a `Role` CR while groups still reference it breaks ACL computation for every member
+of those groups: `pkg/rbac/rbac.go` returns a consistency error for the dangling reference, failing
+closed. The correct order avoids exactly that window.
+
+If a `Role` CR is deleted while still referenced, cleanup is still possible: any group-update
+holder whose own membership does not include the broken group can drop the dangling reference. (A
+member of the affected group cannot perform the repair through the API at all — their own ACL build
+fails closed on the dangling reference — so if an organization's only admins sit in that group,
+repair falls back to direct CR access.)
 
 ### Project Reference Cleanup
 
@@ -64,7 +94,9 @@ would drift.
 - groups are the primary organization-local attachment point between members and roles
 - `RoleIDs` are the actual delegated-authority payload of the group
 - protected roles must never be attached to a group
-- callers may only attach roles they are allowed to grant in that organization
+- callers may only add roles they are allowed to grant in that organization; roles already on the
+  group are not re-checked on subsequent writes
+- role removals and group DELETE revoke without a role check, by design
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible
 - group membership and role/service-account ID lists are normalized to first-occurrence unique values
 - projects should not retain references to groups that no longer exist
