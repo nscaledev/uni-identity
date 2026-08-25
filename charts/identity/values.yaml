@@ -33,6 +33,25 @@ server:
       cpu: '1'
       memory: 1Gi
 
+# Cerbos policy decision point (PDP) sidecar configuration.
+cerbos:
+  # Renders the PDP sidecar and the policy controller.  Off by default, so a
+  # deploy with every authorization switch off changes nothing.  Turn it on
+  # before any Cerbos authorization mode, and before a downstream service uses
+  # identity's remote decision endpoint.
+  enabled: false
+
+  # Allows override of the image.  This is a third-party image; the default
+  # (set in the deployment template) is pinned and must stay consistent with
+  # CERBOS_VERSION in the Makefile.
+  image: ~
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
 # Organization controller specifc configuration.
 organizationController:
   # Allows override of the image.
@@ -57,6 +76,18 @@ oauth2clientController:
 
 # Project controller specific configuration.
 projectController:
+  # Allows override of the image.
+  image:
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+
+# Policy controller specific configuration.  Rendered only when
+# cerbos.enabled is true.
+policyController:
   # Allows override of the image.
   image:
 

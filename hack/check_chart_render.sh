@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Render assertions for globalRoleBindings, globalGroupRoleBindings and
-# server.runtimeSchemaValidation.
+# Render assertions for globalRoleBindings, globalGroupRoleBindings,
+# server.runtimeSchemaValidation and the cerbos.enabled switch.
 # `make lint` runs this script.
 set -euo pipefail
 
@@ -210,8 +210,8 @@ fi
 # series missing service.name cannot be attributed to identity.  All four
 # workloads share that service.name, so each must also set service.instance.id
 # (from the pod name) or their unlabelled runtime series would collide.
-out=$(helm template test "$CHART" --set otlp.endpoint=collector.example:4318)
-for workload in server organization-controller oauth2client-controller project-controller; do
+out=$(helm template test "$CHART" --set otlp.endpoint=collector.example:4318 --set cerbos.enabled=true)
+for workload in server organization-controller oauth2client-controller project-controller policy-controller; do
 	flag=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].args[] | select(. == \"--otlp-endpoint=collector.example:4318\")" <<<"$out")
 	[[ "$flag" == "--otlp-endpoint=collector.example:4318" ]] || die "expected OTLP endpoint on test-${workload}"
 	service_name=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"OTEL_SERVICE_NAME\") | .value" <<<"$out")
@@ -221,5 +221,14 @@ for workload in server organization-controller oauth2client-controller project-c
 	pod_name_source=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"POD_NAME\") | .valueFrom.fieldRef.fieldPath" <<<"$out")
 	[[ "$pod_name_source" == "metadata.name" ]] || die "expected POD_NAME from the downward API on test-${workload}"
 done
+
+# A default deploy must stay dark: no Cerbos sidecar, configuration, policy
+# controller or server change renders until cerbos.enabled is set.
+out=$(helm template test "$CHART")
+! grep -qi -- "cerbos" <<<"$out" || die "a default render must not contain Cerbos objects"
+! grep -q -- "policy-controller" <<<"$out" || die "a default render must not contain the policy controller"
+out=$(helm template test "$CHART" --set cerbos.enabled=true)
+assert_one_match "$out" "^      - name: cerbos$"
+grep -q -- "name: test-policy-controller$" <<<"$out" || die "cerbos.enabled must render the policy controller"
 
 echo "chart render checks OK"
