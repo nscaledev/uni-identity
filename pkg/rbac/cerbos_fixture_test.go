@@ -56,6 +56,7 @@ const (
 	// Roles.  parityRoleMissing is deliberately never created: a group
 	// referencing it must be a hard consistency error.
 	parityRoleGlobalAdmin   = "prole-global-admin"
+	parityRoleGlobalWrite   = "prole-global-write"
 	parityRoleOrgAdmin      = "prole-org-admin"
 	parityRoleMixed         = "prole-mixed"
 	parityRoleProjectDev    = "prole-project-dev"
@@ -152,7 +153,10 @@ type parityFixture struct {
 
 // parityRoles returns the fixture role catalogue.  parityRoleMixed carries a
 // global scope block on purpose: granted via a group it must never surface as
-// a global grant (groups yield no global bindings).
+// a global grant (groups yield no global bindings).  Between them the roles
+// cover all three global-block shapes the wildcard read clamp projects:
+// read-only (parityRoleMixed), mixed (parityRoleGlobalAdmin) and no read at all
+// (parityRoleGlobalWrite).
 func parityRoles() []unikornv1.Role {
 	scope := func(name string, operations ...unikornv1.Operation) unikornv1.RoleScope {
 		return unikornv1.RoleScope{Name: name, Operations: operations}
@@ -168,6 +172,12 @@ func parityRoles() []unikornv1.Role {
 	return []unikornv1.Role{
 		role(parityRoleGlobalAdmin, unikornv1.RoleScopes{
 			Global: []unikornv1.RoleScope{scope("identity:organizations", unikornv1.Read, unikornv1.Update)},
+		}),
+		// A global block with NO read operation: the wildcard read clamp
+		// projects it to nothing, so a wildcard binding on this role must grant
+		// nothing at all rather than fall back to the full bucket.
+		role(parityRoleGlobalWrite, unikornv1.RoleScopes{
+			Global: []unikornv1.RoleScope{scope("identity:quotas", unikornv1.Update)},
 		}),
 		role(parityRoleOrgAdmin, unikornv1.RoleScopes{
 			Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create, unikornv1.Read, unikornv1.Update)},

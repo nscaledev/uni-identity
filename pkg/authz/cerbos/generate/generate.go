@@ -68,19 +68,22 @@ const (
 	effectAllow = "EFFECT_ALLOW"
 )
 
-// bucket identifies one of the three RoleScopes buckets.  The literals are
-// part of the naming contract: derived roles are named role_<roleID>_<bucket>
-// and binding strings embed the same token.
+// bucket identifies one emitted scope bucket.  Three buckets map directly to a
+// RoleScopes field; global-read is a PROJECTION of the global field, not a
+// field of its own.  The literals are part of the naming contract: derived
+// roles are named role_<roleID>_<bucket> and binding strings embed the same
+// token.
 type bucket string
 
 const (
-	bucketGlobal  bucket = "global"
-	bucketOrg     bucket = "org"
-	bucketProject bucket = "project"
+	bucketGlobal     bucket = "global"
+	bucketGlobalRead bucket = "global-read"
+	bucketOrg        bucket = "org"
+	bucketProject    bucket = "project"
 )
 
 // bucketScopes pairs a bucket with its scope list for iteration in emission
-// order (global, org, project).
+// order (global, global-read, org, project).
 type bucketScopes struct {
 	bucket bucket
 	scopes []unikornv1.RoleScope
@@ -90,9 +93,33 @@ type bucketScopes struct {
 func bucketsOf(role *unikornv1.Role) []bucketScopes {
 	return []bucketScopes{
 		{bucketGlobal, role.Spec.Scopes.Global},
+		{bucketGlobalRead, readOnlyScopes(role.Spec.Scopes.Global)},
 		{bucketOrg, role.Spec.Scopes.Organization},
 		{bucketProject, role.Spec.Scopes.Project},
 	}
+}
+
+// readOnlyScopes projects a global scope list onto read alone, which is what a
+// wildcard subject binding grants: the legacy ACL path keeps read on every
+// global scope that has it and drops every scope that does not (pkg/rbac
+// accumulateGlobalReadPermissions).  A role with no readable global scope
+// therefore projects to nothing, and Generate emits no bucket for it, so a
+// wildcard binding on such a role activates nothing.
+func readOnlyScopes(scopes []unikornv1.RoleScope) []unikornv1.RoleScope {
+	projected := make([]unikornv1.RoleScope, 0, len(scopes))
+
+	for _, scope := range scopes {
+		if !slices.Contains(scope.Operations, unikornv1.Read) {
+			continue
+		}
+
+		projected = append(projected, unikornv1.RoleScope{
+			Name:       scope.Name,
+			Operations: []unikornv1.Operation{unikornv1.Read},
+		})
+	}
+
+	return projected
 }
 
 // derivedRoleName returns the derived-role definition name for a role and
@@ -104,10 +131,11 @@ func derivedRoleName(roleID string, b bucket) string {
 
 // bindingExpr returns the CEL binding-match condition activating a derived
 // role.  The binding-string formats embedded here — <roleID>#global,
-// <roleID>#org#<organizationID>, <roleID>#project#<organizationID>#<projectID>
-// — are a byte-exact cross-component contract shared with the request builder
-// (see the package README).  Flow-down lives entirely in these conditions: a
-// global binding matches any resource, an org binding needs a matching
+// <roleID>#global-read, <roleID>#org#<organizationID>,
+// <roleID>#project#<organizationID>#<projectID> — are a byte-exact
+// cross-component contract shared with the request builder (see the package
+// README).  Flow-down lives entirely in these conditions: a global binding
+// (clamped or not) matches any resource, an org binding needs a matching
 // organization attribute, and a project binding needs both organization and
 // project attributes, so a resource without a project attribute can never
 // activate a project-bound role (no flow-up).
@@ -115,6 +143,8 @@ func bindingExpr(roleID string, b bucket) (string, error) {
 	switch b {
 	case bucketGlobal:
 		return `"` + roleID + `#global" in P.attr.bindings`, nil
+	case bucketGlobalRead:
+		return `"` + roleID + `#global-read" in P.attr.bindings`, nil
 	case bucketOrg:
 		return `("` + roleID + `#org#" + R.attr.organization) in P.attr.bindings`, nil
 	case bucketProject:

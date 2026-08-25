@@ -25,6 +25,32 @@ tests:
         resource: projects_noattrs
         actions: {create: EFFECT_ALLOW, read: EFFECT_ALLOW, update: EFFECT_ALLOW, delete: EFFECT_ALLOW}
 
+  - name: read clamp - a clamped global binding allows read at every level and withholds every write
+    input:
+      principals: [platform_admin_clamped]
+      resources: [cluster_proj1, projects_org, projects_noattrs]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: platform_admin_clamped
+        resource: cluster_proj1
+        actions: {create: EFFECT_DENY, read: EFFECT_ALLOW, update: EFFECT_DENY, delete: EFFECT_DENY}
+      - principal: platform_admin_clamped
+        resource: projects_org
+        actions: {create: EFFECT_DENY, read: EFFECT_ALLOW, update: EFFECT_DENY, delete: EFFECT_DENY}
+      - principal: platform_admin_clamped
+        resource: projects_noattrs
+        actions: {create: EFFECT_DENY, read: EFFECT_ALLOW, update: EFFECT_DENY, delete: EFFECT_DENY}
+
+  - name: read clamp - a global scope with no read operation is dropped, never kept as writes
+    input:
+      principals: [region_service_clamped]
+      resources: [projrefs_platform]
+      actions: [create, read, delete]
+    expected:
+      - principal: region_service_clamped
+        resource: projrefs_platform
+        actions: {create: EFFECT_DENY, read: EFFECT_DENY, delete: EFFECT_DENY}
+
   - name: flow-down - an org-bound administrator binding allows a project-level resource in the same org
     input:
       principals: [admin_acme]

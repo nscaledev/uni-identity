@@ -200,8 +200,9 @@ role name is hardcoded in Go. `resolveGlobalRoleBindings` is the only path by wh
 privileges are granted, evaluated at the top of `processUserAccountACL` before membership
 resolution. The Cerbos decision path consumes the same resolution, through
 `matchedGlobalBindings` in `cerbos_bindings.go`, so one configuration serves both engines. The
-one gap is the wildcard subject: the legacy path clamps it to read, which a Cerbos binding
-cannot express, so the Cerbos path fails closed on a matched wildcard rather than over-grant.
+wildcard subject resolves on both: the legacy path clamps it to read, and the Cerbos path emits a
+read-clamped binding that activates the role's `global-read` bucket, which the generator projects
+from the same global block.
 
 Bindings are configured with the repeated flag
 `--global-role-binding=<issuer>::<subject>::<roleID>[,<roleID>...]`, rendered by the chart from
@@ -571,11 +572,12 @@ IDs for project scope, resource ID always the coarse `*`).
   membership resolution entirely, exactly as `accumulateMatchedBindings` does, and platform
   administrators reach it through the same `effectiveGlobalRoleBindings` translation `New`
   applies for the legacy path rather than through a check of their own (so the comparison is
-  case-sensitive on both paths). **Wildcard subject bindings fail closed** with
-  `ErrWildcardBindingUnsupported`: the legacy read clamp
-  (`accumulateGlobalReadPermissions`) has no equivalent here, because a binding activates a
-  role's whole global bucket, so emitting one would grant write scopes the legacy path
-  withholds. Full wildcard parity needs a read-only bucket in the policy generator.
+  case-sensitive on both paths). **A wildcard subject binding is read-clamped**, not refused: it
+  emits `cerbos.RoleBinding{GlobalRead: true}`, which activates the role's `global-read` bucket —
+  the generator's read projection of the same global block the legacy clamp
+  (`accumulateGlobalReadPermissions`) reads. The clamp therefore holds for every role shape, and a
+  role that gains a write scope after the chart's render guard has run keeps its writes withheld.
+  A missing role stays a hard consistency error, as on the legacy path.
 - `Check(ctx, resource, action)` / `CheckMany(ctx, checks)` are the decision API: resolve bindings,
   build ONE batched `CheckResources` request, map per-resource `IsAllowed`. **Fail-closed**: every
   failure is a deny, with a distinct static error per failure class — `ErrPolicyDenied` (explicit
@@ -1003,9 +1005,11 @@ authoritative `ResourceKind`, not a URL guess — not only to populate the `deci
   `(srcIss, group)` (`resolveGroupRoleBindings`). `Options.Validate` is startup-only and advisory,
   and replaces neither. Bare legacy admin entries match only the UNI sentinel, plus the legacy
   auth0-exchange flag issuer through the startup mirror in `pkg/server`, never a CRD-declared issuer.
-- A wildcard-subject binding is always clamped to `read` at authorization time. The clamp bounds
-  verbs, not response sensitivity, so any role it references needs a read-surface audit first. A
-  group binding carries no equivalent clamp — see [Group bindings](#group-bindings).
+- A wildcard-subject binding is always clamped to `read` at authorization time, on both engines: the
+  legacy path through `accumulateGlobalReadPermissions`, the Cerbos path through the role's
+  `global-read` bucket. The clamp bounds verbs, not response sensitivity, so any role it references
+  needs a read-surface audit first. A group binding carries no equivalent clamp — see
+  [Group bindings](#group-bindings).
 - The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
   global operation. This does not make the runtime clamp redundant: roles can gain write scopes
   after the render. For group bindings the chart rejects only roles that write the credential and

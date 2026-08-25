@@ -11,7 +11,13 @@ resourcePolicy:
       derivedRoles: [role_00000000-0000-0000-0000-000000000001_global]
       effect: EFFECT_ALLOW
     - actions: [read]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000001_global-read]
+      effect: EFFECT_ALLOW
+    - actions: [read]
       derivedRoles: [role_00000000-0000-0000-0000-000000000002_global]
+      effect: EFFECT_ALLOW
+    - actions: [read]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000002_global-read]
       effect: EFFECT_ALLOW
     - actions: [create, delete, read, update]
       derivedRoles: [role_00000000-0000-0000-0000-000000000003_org]
@@ -29,8 +35,17 @@ resourcePolicy:
       derivedRoles: [role_00000000-0000-0000-0000-000000000007_global]
       effect: EFFECT_ALLOW
     - actions: [read]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000007_global-read]
+      effect: EFFECT_ALLOW
+    - actions: [read]
       derivedRoles: [role_00000000-0000-0000-0000-000000000008_global]
       effect: EFFECT_ALLOW
     - actions: [read]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000008_global-read]
+      effect: EFFECT_ALLOW
+    - actions: [read]
       derivedRoles: [role_00000000-0000-0000-0000-000000000009_global]
+      effect: EFFECT_ALLOW
+    - actions: [read]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000009_global-read]
       effect: EFFECT_ALLOW

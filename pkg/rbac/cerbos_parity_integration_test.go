@@ -1008,39 +1008,153 @@ func TestCerbosDecisionParityGlobalRoleBindings(t *testing.T) {
 		}
 	})
 
-	// Wildcard subject bindings are the ONE documented divergence, so they are
-	// asserted directly rather than through agree(): legacy clamps them to READ
-	// (accumulateGlobalReadPermissions), which no Cerbos binding can express,
-	// because a binding activates the role's whole global bucket.  The resolver
-	// therefore fails closed rather than granting the write scopes legacy
-	// withholds.  Closing this needs a read-only bucket in the policy generator.
-	t.Run("WildcardSubjectBindingFailsClosed", func(t *testing.T) {
+	// A wildcard subject binding is READ-CLAMPED on both paths: legacy through
+	// accumulateGlobalReadPermissions, Cerbos through the role's read-only
+	// global bucket.  The clamp is a projection of the role's global block, not
+	// a property of the role, so all three block shapes are covered here — a
+	// role that gains a write scope after deploy is exactly the case the render
+	// guard cannot see and the clamp exists for.
+	wildcardInfo := func() *authorization.Info {
+		info := aliceInfo()
+		info.SrcIss = parityExternalIssuer
+
+		return info
+	}
+
+	wildcardRBAC := func(roleIDs ...string) *rbac.RBAC {
+		return bindingRBAC(func(o *rbac.Options) {
+			o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{{
+				Issuer:   parityExternalIssuer,
+				Subject:  rbac.WildcardSubject,
+				RoleIDs:  roleIDs,
+				Wildcard: true,
+			}}
+		})
+	}
+
+	for _, shape := range []struct {
+		name   string
+		roleID string
+		cases  []parityCase
+	}{
+		{
+			// parityRoleMixed's global block is read-only, so the clamp is a
+			// no-op on it: this is the platform-reader shape, the only one the
+			// chart's render guard lets a wildcard binding name.
+			name:   "WildcardReadOnlyGlobalBlock",
+			roleID: parityRoleMixed,
+			cases: []parityCase{
+				{name: "ClampedReadGranted", endpoint: "identity:oauth2providers", operation: openapi.Read, expectAllow: true},
+				{name: "OrgBlockStaysUnreachable", organizationID: parityOrgA, endpoint: "identity:allocations", operation: openapi.Read},
+			},
+		},
+		{
+			// parityRoleGlobalAdmin grants identity:organizations read AND
+			// update globally: the clamp must keep the read and drop the write.
+			name:   "WildcardMixedGlobalBlock",
+			roleID: parityRoleGlobalAdmin,
+			cases: []parityCase{
+				{name: "ReadGranted", endpoint: "identity:organizations", operation: openapi.Read, expectAllow: true},
+				{name: "WriteWithheld", endpoint: "identity:organizations", operation: openapi.Update},
+			},
+		},
+		{
+			// parityRoleGlobalWrite's global block has no read at all, so the
+			// projection is empty and the role's read-only bucket is never
+			// emitted: the binding must activate nothing.
+			name:   "WildcardGlobalBlockWithoutRead",
+			roleID: parityRoleGlobalWrite,
+			cases: []parityCase{
+				{name: "WriteWithheld", endpoint: "identity:quotas", operation: openapi.Update},
+				{name: "NothingGranted", endpoint: "identity:quotas", operation: openapi.Read},
+			},
+		},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := wildcardRBAC(shape.roleID)
+
+			for _, tc := range shape.cases {
+				tc.info = wildcardInfo()
+
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					agree(t, r, tc)
+				})
+			}
+		})
+	}
+
+	// Shadow mode must be QUIET for a wildcard-bound principal.  The divergence
+	// gate treats every evaluation failure as a hard failure, on purpose (a dead
+	// PDP produces only those), so the refusal this bucket replaced made the
+	// gate structurally red in any environment that configured a wildcard
+	// binding — and the gate is the evidence for the shadow-to-enforce flip.
+	t.Run("WildcardSubjectBindingIsQuietInShadowMode", func(t *testing.T) {
 		t.Parallel()
 
-		r := bindingRBAC(func(o *rbac.Options) {
-			o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{{
+		capture := &logCapture{}
+
+		shadow := rbac.New(fx.client, parityNamespace, &rbac.Options{
+			AuthorizationEngine: rbac.EngineShadow,
+			GlobalRoleBindings: rbac.GlobalRoleBindingsValue{{
 				Issuer:   parityExternalIssuer,
 				Subject:  rbac.WildcardSubject,
 				RoleIDs:  []string{parityRoleGlobalAdmin},
 				Wildcard: true,
-			}}
+			}},
+		}).WithCerbos(client)
+
+		ctx := authorization.NewContext(capture.into(t.Context()), wildcardInfo())
+
+		acl, err := shadow.GetACL(ctx, "")
+		require.NoError(t, err)
+
+		ctx = rbac.NewEngineContext(rbac.NewContext(ctx, acl), shadow)
+
+		// Shadow serves the legacy verdict either way: the clamp allows read on
+		// the bound role's global scope and withholds update.
+		require.NoError(t, rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read))
+		require.Error(t, rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Update))
+
+		require.Empty(t, capture.messages(shadowFailureMessage), "an evaluation failure keeps the divergence gate red")
+		require.Empty(t, capture.messages(shadowDivergenceMessage), "the two engines must agree on a clamped binding")
+	})
+
+	// A matched wildcard must not poison the principal's other bindings.  The
+	// refusal it replaced discarded every binding the principal held, so one
+	// Role edit could have left the whole wildcard-matched population with no
+	// authorization at all.
+	t.Run("WildcardBesideExactBinding", func(t *testing.T) {
+		t.Parallel()
+
+		r := bindingRBAC(func(o *rbac.Options) {
+			o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{
+				{
+					Issuer:  parityExternalIssuer,
+					Subject: parityAliceSubject,
+					RoleIDs: []string{parityRoleGlobalAdmin},
+				},
+				{
+					Issuer:   parityExternalIssuer,
+					Subject:  rbac.WildcardSubject,
+					RoleIDs:  []string{parityRoleGlobalWrite},
+					Wildcard: true,
+				},
+			}
 		})
 
-		info := aliceInfo()
-		info.SrcIss = parityExternalIssuer
+		for _, tc := range []parityCase{
+			{name: "ExactBindingKeepsItsWrite", endpoint: "identity:organizations", operation: openapi.Update, expectAllow: true},
+			{name: "WildcardGrantsNothing", endpoint: "identity:quotas", operation: openapi.Update},
+		} {
+			tc.info = wildcardInfo()
 
-		// Legacy: the clamp allows the role's read scope and withholds update.
-		require.True(t, legacyVerdict(t, r, parityCase{info: info, endpoint: "identity:organizations", operation: openapi.Read, expectAllow: true}))
-		require.False(t, legacyVerdict(t, r, parityCase{info: info, endpoint: "identity:organizations", operation: openapi.Update}))
-
-		// Cerbos: denied for BOTH operations, and for the right reason — a
-		// resolution refusal naming the wildcard, never a policy verdict.
-		ctx := authorization.NewContext(t.Context(), info)
-
-		for _, operation := range []openapi.AclOperation{openapi.Read, openapi.Update} {
-			err := r.Check(ctx, rbac.Resource{Kind: "identity:organizations"}, operation)
-			require.ErrorIs(t, err, rbac.ErrResolutionFailed)
-			require.ErrorIs(t, err, rbac.ErrWildcardBindingUnsupported)
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				agree(t, r, tc)
+			})
 		}
 	})
 }

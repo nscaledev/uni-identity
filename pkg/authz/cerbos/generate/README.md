@@ -13,8 +13,11 @@ authN/authZ over today's role model.
 Two document shapes:
 
 - **One shared derived-roles document** (`uni_roles`): one definition per (Role, non-empty scope
-  bucket), named `role_<roleID>_<bucket>` with bucket ∈ `global | org | project`. The `role_` prefix
-  guards against role IDs starting with a digit (Cerbos rejects those in identifiers).
+  bucket), named `role_<roleID>_<bucket>` with bucket ∈ `global | global-read | org | project`. Three
+  buckets map to a `RoleScopes` field; `global-read` is the read projection of the global field — every
+  global scope that grants `read`, with `read` as its only operation — and carries the read clamp
+  `pkg/rbac` applies to a wildcard subject binding. The `role_` prefix guards against role IDs
+  starting with a digit (Cerbos rejects those in identifiers).
 - **One resource policy per endpoint name**: `resource` is the endpoint name **verbatim** (endpoint
   names are opaque open-vocabulary tokens — the generator never parses or allowlists them, only
   rejects names the pinned Cerbos version would refuse to load). Each policy has one `EFFECT_ALLOW`
@@ -30,6 +33,7 @@ strings:
 | Grant bucket | Binding string |
 |---|---|
 | global | `<roleID>#global` |
+| global, read-clamped | `<roleID>#global-read` |
 | organization | `<roleID>#org#<organizationID>` |
 | project | `<roleID>#project#<organizationID>#<projectID>` |
 
@@ -43,7 +47,8 @@ literals without escaping.
 Flow-down lives entirely in the derived-role CEL conditions (matching the one-directional semantics of
 `pkg/rbac`):
 
-- a **global** binding activates on any resource;
+- a **global** binding activates on any resource, and a **global-read** binding does the same on the
+  read projection of the same block;
 - an **org** binding activates when the resource's `organization` attribute matches the binding;
 - a **project** binding activates only when BOTH `organization` and `project` attributes match — an
   org-level resource (no `project` attribute) can never activate it, so nothing flows upward.
@@ -75,6 +80,9 @@ byte-for-byte.
   Makefile) will load — an unloadable kind is rejected, never emitted.
 - An **unknown scope bucket is a hard error** — fail-closed: it narrows to deny, never widens to a
   global grant.
+- A role whose global block grants no `read` gets **no `global-read` bucket**. A wildcard binding on
+  such a role activates nothing, which is what the legacy clamp computes: an empty scope set, never a
+  fallback to the full global bucket.
 - Duplicate output file names are a hard error.
 - `Spec.Protected` is deliberately ignored: it governs a role's *grantability and visibility* (Go
   handler logic), not access decisions, so it has no representation in policy output.
@@ -85,8 +93,8 @@ byte-for-byte.
   (regenerate with `go test ./pkg/authz/cerbos/generate/... -update`).
 - `testdata/store/` is itself a valid Cerbos store: `make validate-policies` compiles it with the
   pinned Cerbos image and runs the hand-written behavioural suite under `testdata/store/tests/`, which
-  encodes flow-down, no flow-up, tenant isolation, exact-operation matching, additive union, and
-  open-vocabulary endpoints.
+  encodes flow-down, no flow-up, tenant isolation, exact-operation matching, additive union,
+  open-vocabulary endpoints, and the read clamp.
 
 ## Fixtures and provenance
 

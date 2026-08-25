@@ -394,16 +394,16 @@ func TestResolveBindingsGlobalRoleBindingSubjectIsCaseSensitive(t *testing.T) {
 	}, bindings)
 }
 
-func TestResolveBindingsWildcardBindingFailsClosed(t *testing.T) {
+func TestResolveBindingsWildcardBindingIsReadClamped(t *testing.T) {
 	t.Parallel()
 
 	fx := newParityFixture(t)
 
 	// Legacy clamps a WILDCARD subject binding to read
-	// (accumulateGlobalReadPermissions), but a cerbos.RoleBinding activates the
-	// role's whole global bucket, so the clamp cannot be expressed. Emitting
-	// one would OVER-GRANT write scopes the legacy path withholds, so the
-	// resolver must fail closed instead of guessing.
+	// (accumulateGlobalReadPermissions). The clamped binding activates the
+	// role's read-only global bucket, so the write scopes of
+	// parityRoleGlobalAdmin (identity:organizations read+update) stay
+	// withheld, exactly as the legacy path withholds them.
 	r := fx.withOptions(func(o *rbac.Options) {
 		o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{{
 			Issuer:   parityExternalIssuer,
@@ -416,8 +416,112 @@ func TestResolveBindingsWildcardBindingFailsClosed(t *testing.T) {
 	info := parityUserInfo(parityAliceSubject, parityOrgA)
 	info.SrcIss = parityExternalIssuer
 
+	bindings, err := r.ResolveBindings(t.Context(), info)
+	require.NoError(t, err)
+	require.Equal(t, []cerbos.RoleBinding{{RoleID: parityRoleGlobalAdmin, GlobalRead: true}}, bindings)
+}
+
+func TestResolveBindingsWildcardBindingMissingRoleIsAConsistencyError(t *testing.T) {
+	t.Parallel()
+
+	fx := newParityFixture(t)
+
+	// The clamp still validates the role catalogue: accumulateGlobalReadPermissions
+	// errors on a role with no Role CR, so a silent skip here would under-grant
+	// and mask the configuration mistake.
+	r := fx.withOptions(func(o *rbac.Options) {
+		o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{{
+			Issuer:   parityExternalIssuer,
+			Subject:  rbac.WildcardSubject,
+			RoleIDs:  []string{parityRoleMissing},
+			Wildcard: true,
+		}}
+	})
+
+	info := parityUserInfo(parityAliceSubject, parityOrgA)
+	info.SrcIss = parityExternalIssuer
+
 	_, err := r.ResolveBindings(t.Context(), info)
-	require.ErrorIs(t, err, rbac.ErrWildcardBindingUnsupported)
+	require.ErrorIs(t, err, errors.ErrConsistency)
+}
+
+func TestResolveBindingsDuplicateBindingsCompactToOnePerForm(t *testing.T) {
+	t.Parallel()
+
+	fx := newParityFixture(t)
+
+	// Three matched bindings name ONE role in two forms: two wildcard entries
+	// clamp it, an exact entry does not. normalizeBindings must return one
+	// binding per form. slices.Compact merges neighbours only, so the
+	// comparator has to order the clamp flag as well: without that tiebreaker
+	// the three bindings compare equal, their order comes from the input rather
+	// than the data, and a duplicate survives into the rendered request.
+	r := fx.withOptions(func(o *rbac.Options) {
+		o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{
+			{
+				Issuer:   parityExternalIssuer,
+				Subject:  rbac.WildcardSubject,
+				RoleIDs:  []string{parityRoleGlobalAdmin},
+				Wildcard: true,
+			},
+			{
+				Issuer:   parityExternalIssuer,
+				Subject:  rbac.WildcardSubject,
+				RoleIDs:  []string{parityRoleGlobalAdmin},
+				Wildcard: true,
+			},
+			{
+				Issuer:  parityExternalIssuer,
+				Subject: parityAliceSubject,
+				RoleIDs: []string{parityRoleGlobalAdmin},
+			},
+		}
+	})
+
+	info := parityUserInfo(parityAliceSubject, parityOrgA)
+	info.SrcIss = parityExternalIssuer
+
+	bindings, err := r.ResolveBindings(t.Context(), info)
+	require.NoError(t, err)
+	require.Equal(t, []cerbos.RoleBinding{
+		{RoleID: parityRoleGlobalAdmin},
+		{RoleID: parityRoleGlobalAdmin, GlobalRead: true},
+	}, bindings)
+}
+
+func TestResolveBindingsWildcardAndGroupBindingOnOneRoleKeepBothForms(t *testing.T) {
+	t.Parallel()
+
+	fx := newParityFixture(t)
+
+	// The same role reached by a wildcard subject binding and by a group
+	// binding grants two DIFFERENT things: the clamped read bucket and the full
+	// global bucket. Both must survive normalization, in a stable order, so the
+	// group path keeps the writes it is deliberately not clamped out of.
+	r := fx.withOptions(func(o *rbac.Options) {
+		o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{{
+			Issuer:   parityExternalIssuer,
+			Subject:  rbac.WildcardSubject,
+			RoleIDs:  []string{parityRoleGlobalAdmin},
+			Wildcard: true,
+		}}
+		o.GlobalGroupRoleBindings = rbac.GlobalGroupRoleBindingsValue{{
+			Issuer:  parityExternalIssuer,
+			Group:   parityExternalGroup,
+			RoleIDs: []string{parityRoleGlobalAdmin},
+		}}
+	})
+
+	info := parityUserInfo(parityAliceSubject, parityOrgA)
+	info.SrcIss = parityExternalIssuer
+	info.Groups = []string{parityExternalGroup}
+
+	bindings, err := r.ResolveBindings(t.Context(), info)
+	require.NoError(t, err)
+	require.Equal(t, []cerbos.RoleBinding{
+		{RoleID: parityRoleGlobalAdmin},
+		{RoleID: parityRoleGlobalAdmin, GlobalRead: true},
+	}, bindings)
 }
 
 func TestResolveBindingsSubjectAndGroupBindingsUnion(t *testing.T) {
@@ -570,14 +674,15 @@ func TestResolveBindingsWildcardBindingLeavesOtherIssuersUnaffected(t *testing.T
 	}, bindings)
 }
 
-func TestResolveBindingsWildcardAlongsideExactStillFailsClosed(t *testing.T) {
+func TestResolveBindingsWildcardAlongsideExactKeepsBoth(t *testing.T) {
 	t.Parallel()
 
 	fx := newParityFixture(t)
 
-	// A matched wildcard poisons the whole resolution: returning just the exact
-	// binding's grants would silently drop the read-clamped authority legacy
-	// adds, so the refusal must win regardless of what else matched.
+	// accumulateMatchedBindings loops every matched binding, so a wildcard and
+	// an exact binding on one principal both contribute: the wildcard its
+	// clamped read bucket, the exact binding its full global bucket. Dropping
+	// either would diverge from the legacy union.
 	r := fx.withOptions(func(o *rbac.Options) {
 		o.GlobalRoleBindings = rbac.GlobalRoleBindingsValue{
 			{
@@ -597,8 +702,12 @@ func TestResolveBindingsWildcardAlongsideExactStillFailsClosed(t *testing.T) {
 	info := parityUserInfo(parityAliceSubject, parityOrgA)
 	info.SrcIss = parityExternalIssuer
 
-	_, err := r.ResolveBindings(t.Context(), info)
-	require.ErrorIs(t, err, rbac.ErrWildcardBindingUnsupported)
+	bindings, err := r.ResolveBindings(t.Context(), info)
+	require.NoError(t, err)
+	require.Equal(t, []cerbos.RoleBinding{
+		{RoleID: parityRoleGlobalAdmin, GlobalRead: true},
+		{RoleID: parityRoleMixed},
+	}, bindings)
 }
 
 func TestResolveBindingsServiceAccountIgnoresGlobalRoleBindings(t *testing.T) {

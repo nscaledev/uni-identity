@@ -88,6 +88,8 @@ func parseFixtureBinding(t *testing.T, binding string) cerbos.RoleBinding {
 	switch {
 	case len(parts) == 2 && parts[1] == "global":
 		return cerbos.RoleBinding{RoleID: parts[0]}
+	case len(parts) == 2 && parts[1] == "global-read":
+		return cerbos.RoleBinding{RoleID: parts[0], GlobalRead: true}
 	case len(parts) == 3 && parts[1] == "org":
 		return cerbos.RoleBinding{RoleID: parts[0], OrganizationID: parts[2]}
 	case len(parts) == 4 && parts[1] == "project":
@@ -115,6 +117,7 @@ func TestPrincipalFixtureParity(t *testing.T) {
 	require.Contains(t, fixture.Principals, "platform_admin", "global-binding fixture missing")
 	require.Contains(t, fixture.Principals, "reader_proj1", "project-binding fixture missing")
 	require.Contains(t, fixture.Principals, "auditor_updater_acme", "multi-binding fixture missing")
+	require.Contains(t, fixture.Principals, "platform_admin_clamped", "read-clamped binding fixture missing")
 
 	for name, principalFixture := range fixture.Principals {
 		t.Run(name, func(t *testing.T) {

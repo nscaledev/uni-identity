@@ -10,3 +10,6 @@ resourcePolicy:
     - actions: [read]
       derivedRoles: [role_00000000-0000-0000-0000-000000000007_global]
       effect: EFFECT_ALLOW
+    - actions: [read]
+      derivedRoles: [role_00000000-0000-0000-0000-000000000007_global-read]
+      effect: EFFECT_ALLOW

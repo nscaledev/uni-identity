@@ -98,7 +98,9 @@ publish:
 
 - **One shared derived-roles document** (`uni_roles`): one definition per
   (Role CR, non-empty scope bucket), named `role_<roleID>_<bucket>` with
-  bucket ∈ `global|org|project`.  The `role_` prefix guards against role IDs
+  bucket ∈ `global|global-read|org|project`.  Three buckets map to a
+  `RoleScopes` field; `global-read` is the read projection of the global field,
+  not a field of its own.  The `role_` prefix guards against role IDs
   starting with a digit, which Cerbos rejects in identifiers.
 - **One resource policy per endpoint name**: `resource` is the endpoint name
   **verbatim** (endpoint names are opaque open-vocabulary tokens — the
@@ -125,6 +127,7 @@ membership at request time) MUST produce these exact strings:
 | Grant bucket | Binding string |
 |---|---|
 | global | `<roleID>#global` |
+| global, read-clamped | `<roleID>#global-read` |
 | organization | `<roleID>#org#<organizationID>` |
 | project | `<roleID>#project#<organizationID>#<projectID>` |
 
@@ -134,12 +137,14 @@ Kubernetes resource names, neither of which can contain `#`; the generator
 enforces the Kubernetes-name charset on role IDs so they embed into binding
 strings and CEL literals without escaping.
 
-There is no read-clamped global bucket.  A global binding grants everything in
-the role's global scope block, so a grant that must be narrowed to read-only
-cannot be expressed as a binding: it needs a narrower role, or a fourth bucket
-here.  This is why `pkg/rbac` fails closed on a matched wildcard subject
-binding, which the legacy ACL path clamps to read — see
-[pkg/rbac](../../rbac/README.md#global-role-bindings).
+The `global-read` bucket carries the read clamp.  It holds every global scope
+that grants `read`, with `read` as its only operation, so a binding on it grants
+exactly what the legacy ACL path's `accumulateGlobalReadPermissions` computes.
+`pkg/rbac` emits this form for a matched wildcard subject binding and the full
+`global` form for an exact or group binding — see
+[pkg/rbac](../../rbac/README.md#global-role-bindings).  A role whose global block
+grants no `read` projects to an empty bucket, which is emitted for no role, so
+the binding activates nothing.
 
 Flow-down is expressed entirely in these conditions (matching the
 one-directional semantics of `pkg/rbac`):
