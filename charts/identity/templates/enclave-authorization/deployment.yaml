@@ -1,19 +1,30 @@
-{{- if .Values.identity.enabled }}
+{{- if .Values.enclaveAuthorization.enabled }}
+{{- $ns := .Values.enclaveAuthorization.namespace | default .Release.Namespace }}
+# The enclave authorization profile: the same image as the full identity
+# server, run with --api-profile set to "authorization" so only the
+# read-only authorization surface is mounted (see pkg/server/server.go,
+# mountAPI).
+# It resolves bindings through pkg/rbac from the SAME configuration as
+# charts/identity/templates/identity/deployment.yaml, sourced from the same
+# values keys, so it can never disagree with the centre about a binding for
+# identical replicated state. It carries no OAuth2, JOSE or issuer flags: it
+# issues no tokens and holds no signing key.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}-server
+  name: {{ .Release.Name }}-enclave-authorization
+  namespace: {{ $ns }}
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.enclaveAuthorization.replicas }}
   selector:
     matchLabels:
-      app: {{ .Release.Name }}-server
+      app: {{ .Release.Name }}-enclave-authorization
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}-server
+        app: {{ .Release.Name }}-enclave-authorization
       annotations:
         # Cerbos reads config.yaml only at startup, so config changes must
         # roll the pods.  The policy store ConfigMap (owned and published at
@@ -23,23 +34,13 @@ spec:
         checksum/cerbos-config: {{ include (print $.Template.BasePath "/identity/cerbos-config.yaml") . | sha256sum }}
     spec:
       containers:
-      - name: {{ .Release.Name }}-server
+      - name: {{ .Release.Name }}-enclave-authorization
         image: {{ include "unikorn.image" . }}
         args:
-        {{- include "unikorn.core.flags" . | nindent 8 }}
+        - --namespace={{ $ns }}
         {{- include "unikorn.cors.flags" . | nindent 8 }}
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
-        - --host=https://{{ include "unikorn.identity.host" . }}
-        - --jose-tls-secret={{ .Release.Name }}-jose-tls
-        - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
-        {{- with .Values.identity.auth0Exchange }}
-        {{- if .issuer }}
-        - --auth0-exchange-issuer={{ .issuer }}
-        {{- end }}
-        {{- if .audience }}
-        - --auth0-exchange-audience={{ .audience }}
-        {{- end }}
-        {{- end }}
+        - --api-profile=authorization
         {{- with .Values.identity.authorizationEngine }}
         - --authorization-engine={{ . }}
         {{- end }}
@@ -229,16 +230,12 @@ spec:
           {{- end }}
         - {{ printf "--global-group-role-binding=%s::%s::%s" $b.issuer $group (join "," $roles) | quote }}
         {{- end }}
-        {{- range $i, $arg := .Values.server.extraFlags }}
-        - {{ $arg }}
-        {{- end }}
         ports:
         - name: http
           containerPort: 6080
         # In-cluster credentials for the Kubernetes client
         # (rest.InClusterConfig).  automountServiceAccountToken is disabled
-        # pod-wide (see below) to keep this SA's token — which can list/watch
-        # cluster Secrets and mutate identity CRDs — out of the third-party
+        # pod-wide (see below) to keep this SA's token out of the third-party
         # cerbos sidecar, so the first-party server mounts it explicitly at the
         # standard path the client library reads.
         volumeMounts:
@@ -249,11 +246,9 @@ spec:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
           readOnlyRootFilesystem: true
-      # Cerbos PDP sidecar: authorization decisions migrate from the in-process
-      # evaluator to policies evaluated by this central PDP.  Always on; shadow
-      # and cutover gating happens in the Go layer, not here.  This is a
-      # third-party image so the first-party image helpers don't apply; the
-      # default tag must stay consistent with CERBOS_VERSION in the Makefile.
+      # Cerbos PDP sidecar: same setup as identity/deployment.yaml. This
+      # profile always runs one, since the authorization surface has no
+      # legacy fallback for an enclave.
       - name: cerbos
         image: {{ .Values.cerbos.image | default "ghcr.io/cerbos/cerbos:0.53.0" }}
         args:
@@ -267,8 +262,6 @@ spec:
         # Cerbos binds loopback only (see cerbos-config.yaml), so the kubelet
         # cannot reach it over HTTP: probe by exec'ing the in-image healthcheck
         # binary, which reads the mounted config and checks the gRPC listener.
-        # The integration test in pkg/authz/cerbos execs this exact command
-        # against the test container to keep it honest.
         readinessProbe:
           exec:
             command:
@@ -326,6 +319,9 @@ spec:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.namespace
+      # The same ConfigMaps the centre's Cerbos sidecar mounts
+      # (identity/deployment.yaml, identity/cerbos-config.yaml): config is
+      # identical, and the policy store is the same replicated projection.
       - name: cerbos-config
         configMap:
           name: {{ .Release.Name }}-cerbos-config
@@ -342,7 +338,7 @@ spec:
         emptyDir: {}
       - name: cerbos-cache
         emptyDir: {}
-      serviceAccountName: {{ .Release.Name }}-server
+      serviceAccountName: {{ .Release.Name }}-enclave-authorization
       # Kubernetes otherwise auto-projects this SA's token into every container
       # in the pod, including the third-party cerbos sidecar.  Disable that and
       # hand the token to the first-party server container only, via the

@@ -1,3 +1,10 @@
+{{- if .Values.identity.enabled }}
+{{- /*
+Central identity is the only authoring and management authority for roles
+(docs/authorization/distributed-pdp-design.md section 3). An enclave receives
+them by replication and reads them locally, so an enclave-only release must
+not author a competing copy.
+*/}}
 {{- $base := default (dict) .Values.roles }}
 {{- $additional := default (dict) .Values.additionalRoles }}
 {{- range $name, $_ := $additional }}
@@ -48,4 +55,5 @@ spec:
       {{- end }}
     {{- end }}
   {{- end }}
+{{- end }}
 {{- end }}

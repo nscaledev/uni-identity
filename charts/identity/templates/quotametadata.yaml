@@ -1,3 +1,8 @@
+{{- if .Values.identity.enabled }}
+{{- /*
+Quota metadata is central authoring state, like the roles beside it: an
+enclave-only release must not author it.
+*/}}
 {{- range $name, $metadata := .Values.quotas }}
 ---
 apiVersion: identity.unikorn-cloud.org/v1alpha1
@@ -8,4 +13,5 @@ metadata:
     {{- include "unikorn.labels" $ | nindent 4 }}
 spec:
   {{- toYaml $metadata | nindent 2 }}
+{{- end }}
 {{- end }}

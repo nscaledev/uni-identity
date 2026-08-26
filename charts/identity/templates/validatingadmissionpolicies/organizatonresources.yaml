@@ -1,3 +1,8 @@
+{{- if .Values.identity.enabled }}
+{{- /*
+Cluster-scoped with a fixed name: only the central release may own it, or a
+second release in the same cluster fails to install on Helm ownership.
+*/}}
 # These resources are scoped to an organizations, we need an organization
 # label to quickly allow us to look up other resources scoped to that
 # organization ID.
@@ -33,3 +38,4 @@ spec:
   policyName: organization-resources.identity.unikorn-cloud.org
   validationActions:
   - Deny
+{{- end }}

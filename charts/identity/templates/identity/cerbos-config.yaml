@@ -1,3 +1,12 @@
+{{- if or .Values.identity.enabled .Values.enclaveAuthorization.enabled }}
+{{- /*
+Shared by identity/deployment.yaml AND enclave-authorization/deployment.yaml
+(both mount this same ConfigMap), so this template is gated on either profile
+being enabled, not identity.enabled alone: an enclave-only release
+(identity.enabled: false) still needs it. A Go-template comment, not a YAML
+one, trimmed on both sides, so it does not change the rendered bytes
+deployment.yaml hashes into checksum/cerbos-config.
+*/ -}}
 # Configuration for the Cerbos PDP sidecar (see deployment.yaml), mounted
 # read-only at /config.  The admin API is deliberately NOT enabled: M1 of the
 # authorization migration forbids it, and the disk driver does not support it
@@ -26,3 +35,4 @@ data:
         watchForChanges: true
     telemetry:
       disabled: true
+{{- end }}

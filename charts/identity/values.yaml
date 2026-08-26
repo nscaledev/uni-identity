@@ -83,9 +83,64 @@ policyController:
       cpu: 100m
       memory: 100Mi
 
+# controllers.enabled gates the organization, project and oauth2client
+# controllers (organization-controller/, project-controller/,
+# oauth2client-controller/): each writes the identity CRDs it manages, which
+# would race an enclave's replicator over the same projected objects. Default
+# true keeps today's behaviour. Set false together with identity.enabled
+# above for an enclave-only release. This does NOT cover the policy
+# controller (policy-controller/): an enclave release still needs it, to
+# publish its own local Cerbos policy store.
+controllers:
+  enabled: true
+
+# The enclave authorization profile serves identity's read-only
+# authorization surface from enclave-local replicated state. It runs the
+# same image as identity with --api-profile=authorization, so it serves the
+# decision endpoint and both ACL routes and no write route at all.
+# Its ClusterRole is read-only: that, not the route set, is what makes a
+# write impossible.
+#
+# UPGRADE ORDER. This profile's readiness gates on the publication marker the
+# policy controller writes into the policy ConfigMap (.store-version). A
+# release that predates the marker leaves a ConfigMap without one, so enclave
+# pods stay out of the Service until the new policy controller republishes.
+# That happens on its first reconcile, because adding the marker changes the
+# desired ConfigMap data, but the window is real: roll the controller out
+# before, or with, the serving pods.
+#
+# NOT YET USABLE. Both ACL routes authenticate a centrally minted bearer, and
+# this profile still takes the issuer's verification path: it decrypts the
+# passport locally against a SigningKey it does not have and must never be
+# given. Verifying as a resource server instead (a cached introspection call
+# to the centre today, local JWKS verification once the JWE-to-JWS migration
+# lands) is separate, approved-but-unwritten work. Until it lands, only the
+# mTLS check route serves and every ACL fetch answers 401, so enable this in
+# a test cluster only.
+enclaveAuthorization:
+  enabled: false
+  replicas: 2
+  # The DNS host the enclave's ACL and check routes are served on: its
+  # Ingress, its TLS certificate and its external-dns record, and nothing
+  # else. The token issuer this profile validates against is identity.host
+  # below, because the passports it receives are minted centrally.
+  host: enclave.acme.org
+
 # Sets the DNS hosts, X.509 certificate subject alternative names and
 # oauth2 issuer etc.
 identity:
+  # enabled gates the write-capable identity server (templates/identity/*):
+  # the Deployment, its Service, Ingress, ClusterRole and the certificates it
+  # alone uses. Default true keeps today's behaviour. Set false, together
+  # with controllers.enabled above, for an enclave-only release, so that
+  # release renders no write surface at all — see enclaveAuthorization above
+  # for the profile that release should run instead.
+  enabled: true
+  # The central identity host. It is the oauth2 issuer identity as well as a
+  # DNS name, so an enclave-only release (identity.enabled: false) must still
+  # set it to the CENTRAL release's host: the enclave validates every incoming
+  # passport's issuer and audience against this value, and the centre is what
+  # minted them. Leaving it at the example value 401s every ACL fetch.
   host: identity.acme.org
   # Auth0 access tokens from this issuer/audience may be exchanged for UNI
   # passports. Leave unset to disable Auth0 token exchange.

@@ -1,3 +1,4 @@
+{{- if .Values.identity.enabled }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -18,3 +19,4 @@ spec:
   # Twice the duration to caterfor overlap, then convert to hours (2 * 24).
   duration: {{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 48) }}
   renewBefore: {{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
+{{- end }}

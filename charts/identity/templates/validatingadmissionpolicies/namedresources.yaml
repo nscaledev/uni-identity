@@ -1,3 +1,8 @@
+{{- if .Values.identity.enabled }}
+{{- /*
+Cluster-scoped with a fixed name: only the central release may own it, or a
+second release in the same cluster fails to install on Helm ownership.
+*/}}
 # These user-facing resources have mutable names and thus have to exist
 # as labels.
 apiVersion: admissionregistration.k8s.io/v1
@@ -34,3 +39,4 @@ spec:
   policyName: named-resources.identity.unikorn-cloud.org
   validationActions:
   - Deny
+{{- end }}

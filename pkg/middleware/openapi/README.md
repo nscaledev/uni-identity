@@ -55,15 +55,18 @@ flag (`pkg/server.APIProfile`):
   locally: `GET /api/v1/acl`, `GET /api/v1/organizations/{organizationID}/acl`, and
   `POST /api/v1/authorization/check`.
 
-Route omission is the guard that exists today: for the `authorization` profile, every write
-route is absent from the mux, so a request to one gets a 404, not a refused write. The design calls
-for a second layer, a read-only ClusterRole, so that a write route reachable by mistake (a bug, a
-future regression) would still be refused at the Kubernetes API rather than only at the mux. That
-ClusterRole is not built yet: as of this writing, nothing under `charts/` references `api-profile`,
-and the existing `charts/identity/templates/identity/clusterrole.yaml` grants `create`, `update`,
-`patch` and `delete` for every profile, so a write route reachable by mistake today would not be
-stopped there. The enclave chart, which adds the narrower ClusterRole, is a later piece of work.
-See `pkg/server/server.go` (`mountAPI`) for the routing decision and `pkg/openapi/enclave` for the
+Route omission is the first guard: for the `authorization` profile, every write route is absent
+from the mux, so a request to one gets a 404, not a refused write. The second layer is a read-only
+ClusterRole, so that a write route reachable by mistake (a bug, a future regression) would still be
+refused at the Kubernetes API rather than only at the mux. That ClusterRole is built:
+`charts/identity/templates/enclave-authorization/clusterrole.yaml`, rendered only when
+`enclaveAuthorization.enabled` is set, grants `get`, `list` and `watch` only, on the resources the
+authorization surface reads. It binds to its own ServiceAccount
+(`charts/identity/templates/enclave-authorization/serviceaccount.yaml`), used only by the
+`enclave-authorization` Deployment. The pre-existing `charts/identity/templates/identity/clusterrole.yaml`
+is unchanged and still grants `create`, `update`, `patch` and `delete`: that ClusterRole binds to the
+`full`-profile Deployment's own ServiceAccount, so it does not weaken the `authorization` profile's
+guard. See `pkg/server/server.go` (`mountAPI`) for the routing decision and `pkg/openapi/enclave` for the
 generated subset router.
 
 ## Trust Boundary Rules

@@ -1,3 +1,4 @@
+{{- if .Values.controllers.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,3 +28,4 @@ spec:
       serviceAccountName: {{ .Release.Name }}-organization-controller
       securityContext:
         runAsNonRoot: true
+{{- end }}
