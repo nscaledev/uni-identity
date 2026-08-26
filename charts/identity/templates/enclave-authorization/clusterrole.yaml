@@ -1,0 +1,34 @@
+{{- if .Values.enclaveAuthorization.enabled }}
+# The authorization profile reads replicated identity state and never writes
+# it. Every verb here is a read verb, deliberately: route omission in the
+# binary makes write handlers unreachable, and this is what makes them
+# powerless if they are ever reached.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-enclave-authorization
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - organizations
+  - projects
+  - groups
+  - roles
+  - serviceaccounts
+  - users
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}

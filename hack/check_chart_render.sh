@@ -183,4 +183,25 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
 
+# Render assertions for the enclave authorization profile
+# (templates/enclave-authorization). The ClusterRole is the write guard, so
+# its verb list is pinned directly: route omission in the binary makes write
+# handlers unreachable, and this is what makes them powerless if reached.
+out=$(helm template test "$CHART" --set enclaveAuthorization.enabled=true)
+[[ $(grep -cE -- "^\s*-\s*--api-profile=authorization\s*\$" <<<"$out") -eq 1 ]] || \
+	die "expected exactly one --api-profile=authorization arg in the enclave authorization render"
+
+enclave_clusterrole=$(awk '/^kind: ClusterRole$/{cr=1} cr && /^  name:.*-enclave-authorization$/{p=1} p{print} /^---$/{if(p){exit}; cr=0}' <<<"$out")
+[[ -n "$enclave_clusterrole" ]] || die "could not find the *-enclave-authorization ClusterRole in the render"
+for verb in create update patch delete deletecollection; do
+	if grep -qE "^\s*-\s*${verb}\s*\$" <<<"$enclave_clusterrole"; then
+		die "enclave authorization ClusterRole must not grant verb: $verb"
+	fi
+done
+
+default_out=$(helm template test "$CHART")
+if grep -q "enclave-authorization" <<<"$default_out"; then
+	die "default values must not render any enclave-authorization resource"
+fi
+
 echo "chart render checks OK"

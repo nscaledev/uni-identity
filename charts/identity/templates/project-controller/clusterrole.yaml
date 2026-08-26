@@ -1,3 +1,4 @@
+{{- if .Values.controllers.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -44,3 +45,4 @@ rules:
   - watch
   - delete
   - update
+{{- end }}

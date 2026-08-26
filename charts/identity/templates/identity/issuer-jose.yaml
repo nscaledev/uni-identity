@@ -1,3 +1,4 @@
+{{- if .Values.identity.enabled }}
 # This issuer is responsible for creating certificates to be used by
 # JWS and JWE.  The certificates themselves can be shared among all
 # pods in the delopyment to provide scale out.
@@ -9,3 +10,4 @@ metadata:
     {{- include "unikorn.labels" . | nindent 4 }}
 spec:
   selfSigned: {}
+{{- end }}

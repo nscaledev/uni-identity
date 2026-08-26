@@ -1,0 +1,42 @@
+{{- if .Values.enclaveAuthorization.enabled }}
+# Without this Ingress the enclave has no mTLS front door: nginx is what
+# sets Ssl-Client-Cert and Ssl-Client-Verify (see
+# unikorn.ingress.mtls.annotations below), and pkg/middleware/openapi reads
+# those headers to grant authorization.Info.SystemAccount, which
+# pkg/handler.PostApiV1AuthorizationCheck requires. Without them every check
+# call gets a 401, so this mirrors identity/ingress.yaml's mTLS annotations
+# rather than inventing a different front door for the same headers.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-enclave-authorization
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+  annotations:
+    {{- include "unikorn.ingress.clusterIssuer.annotations" . | nindent 4 }}
+    {{- include "unikorn.ingress.mtls.annotations" . | nindent 4 }}
+    # Handles large token sizes.
+    nginx.ingress.kubernetes.io/proxy-buffer-size: 16k
+    {{- if (include "unikorn.ingress.externalDNS" .) }}
+    external-dns.alpha.kubernetes.io/hostname: {{ .Values.enclaveAuthorization.host }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.class }}
+  ingressClassName: {{ .Values.ingress.class }}
+  {{- end }}
+  tls:
+  - hosts:
+    - {{ .Values.enclaveAuthorization.host }}
+    secretName: {{ .Release.Name }}-enclave-authorization-ingress-tls
+  rules:
+  - host: {{ .Values.enclaveAuthorization.host }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ .Release.Name }}-enclave-authorization
+            port:
+              name: http
+{{- end }}
