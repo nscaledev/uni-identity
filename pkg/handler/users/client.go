@@ -77,7 +77,22 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
-// removeFromGroup removes the UserID and subject records if they are present.
+// subjectByID matches a stored subject on ID alone, the way pkg/rbac resolves
+// membership.  A record written before subject issuers existed carries an empty
+// one, so an issuer-qualified match would miss it — appending a duplicate on a
+// write, and on a remove deleting only the record this deployment wrote while
+// the legacy one survives and keeps conferring the group's roles.  The write
+// path asks the same question the gate does (see GroupSpec.HasMemberByID).
+func subjectByID(id string) func(unikornv1.GroupSubject) bool {
+	return func(s unikornv1.GroupSubject) bool {
+		return s.ID == id
+	}
+}
+
+// removeFromGroup removes the UserID and every subject record naming the same
+// principal, matched by ID.  Matching issuer-qualified here would leave a legacy
+// empty-issuer record behind, so the caller would still be an RBAC member of the
+// group after a remove that reported success — a silent non-revocation.
 func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
 
@@ -89,7 +104,7 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 		needsPatching = true
 	}
 
-	subjects := slices.DeleteFunc(updated.Spec.Subjects, subject.Matches)
+	subjects := slices.DeleteFunc(updated.Spec.Subjects, subjectByID(subject.ID))
 	if len(subjects) != len(updated.Spec.Subjects) {
 		updated.Spec.Subjects = subjects
 		needsPatching = true
@@ -103,9 +118,9 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 // missing half of a membership the group already has confers nothing — RBAC
 // already resolves the user into the group through the half that is present —
 // so this runs whether or not the grant guard saw an addition.  Subjects are
-// matched on identity, not on the whole record: the same principal written by
-// a different handler carries a different Email and must not be appended
-// again.
+// matched by ID alone, the way pkg/rbac resolves membership: the same principal
+// written by a different handler, or stored as a legacy record before issuers
+// existed, carries a different Email or issuer and must not be appended again.
 func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
 
@@ -114,7 +129,7 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 		needsPatching = true
 	}
 
-	if !updated.Spec.HasSubject(subject) {
+	if !slices.ContainsFunc(updated.Spec.Subjects, subjectByID(subject.ID)) {
 		updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
 		needsPatching = true
 	}
@@ -328,8 +343,11 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 		out.Status.LastActive = &lastActive.Time
 	}
 
+	// Report membership the way RBAC resolves it: HasMemberByID sees a subject
+	// stored by ID as well as the deprecated UserIDs list, so a subject-only
+	// membership is not invisible over the API.
 	for _, group := range groups.Items {
-		if slices.Contains(group.Spec.UserIDs, in.Name) {
+		if group.Spec.HasMemberByID(in.Name, user.Spec.Subject) {
 			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
 		}
 	}

@@ -70,6 +70,14 @@ issuer-qualified comparison would read a no-op re-send of such a membership as a
 refuse it — the frozen-group failure this gate exists to avoid. If RBAC matching ever becomes
 issuer-qualified, the gate must move with it.
 
+The comparisons that write and read membership match the same way, and for the same reason.
+`addToGroup` treats any subject with that ID as already present, so filling in a legacy membership
+does not append a second, issuer-qualified record. `removeFromGroup` deletes every record with that
+ID, so leaving a group removes a legacy empty-issuer member rather than stripping only the record
+this deployment wrote — which would report success while leaving the principal an RBAC member. The
+reported `groupIDs` are built from the same ID comparison, so a subject-only membership is not
+invisible over the API.
+
 Removing a user from a group takes authority away rather than handing it out, so the remove branch
 is unguarded. Deletion is exempt for the same reason — it reconciles against an empty group list,
 so it only ever removes, and a user must remain deletable even when they sit in a group nobody can

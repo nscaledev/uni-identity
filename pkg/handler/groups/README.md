@@ -87,10 +87,10 @@ re-send derives a subject at this deployment's issuer, but it names the same pri
 not read as a grant, or such a group has no legal update at all.
 
 The issuer takes no part in that gate, on any path — it is the ID-only question above, wherever the
-write arrives. Issuer-qualified comparison is reserved for *storing* subject records: this client
-deduplicates the request's subjects, and the users path appends a server-derived subject, both
-keeping a record at a new issuer as a distinct stored fact. That is a storage decision, separate
-from whether the group already confers its roles. See the matching notes in
+write arrives. The one place it still matters is *storing* the request's subjects here: this client
+deduplicates them issuer-qualified, so a record the caller explicitly sent at a new issuer is kept
+as a distinct stored fact. Every comparison that asks whether a principal is already a member — this
+gate, and the users and service-account write paths — matches by ID. See the matching notes in
 [`pkg/handler/users`](../users/README.md).
 
 A group with no roles confers nothing, so membership in it is not a grant and nothing blocks the

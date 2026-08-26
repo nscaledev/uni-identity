@@ -1004,10 +1004,14 @@ func TestClient_GroupMembershipRepresentations(t *testing.T) {
 		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
 		require.NoError(t, err)
 
-		// The write completes the canonical representation alongside the
-		// legacy record rather than being refused.
+		// The write fills in the missing UserIDs half.  The subject is matched
+		// by ID, so the legacy empty-issuer record is recognised and not
+		// duplicated with an issuer-qualified copy.
 		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
 		assert.Equal(t, []string{orgUserAliceID}, alphaGroup.Spec.UserIDs)
+		require.Len(t, alphaGroup.Spec.Subjects, 1, "the legacy record must not be duplicated")
+		assert.Equal(t, userAliceSubject, alphaGroup.Spec.Subjects[0].ID)
+		assert.Empty(t, alphaGroup.Spec.Subjects[0].Issuer, "the legacy record stays as-is")
 	})
 
 	t.Run("still refuses a genuine addition to a group holding only legacy records", func(t *testing.T) {
@@ -1047,6 +1051,83 @@ func TestClient_GroupMembershipRepresentations(t *testing.T) {
 
 		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
 		assert.Empty(t, alphaGroup.Spec.UserIDs, "a refused addition must not be applied")
+	})
+
+	t.Run("removes a legacy empty-issuer member rather than reporting a silent non-revocation", func(t *testing.T) {
+		t.Parallel()
+
+		// Alice belongs to the group only as a legacy empty-issuer subject.
+		// Leaving the group through PUT /users must actually remove her: an
+		// issuer-qualified delete strips nothing, leaving her an RBAC member
+		// while the call reports success — a revocation that does not revoke.
+		stored := unikornv1.GroupSubject{
+			ID:    userAliceSubject,
+			Email: userAliceSubject,
+		}
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(groupAlphaID, nil, []unikornv1.GroupSubject{stored}),
+		}, interceptor.Funcs{})
+
+		ctx := aclContext(t, openapi.AclEndpoints{
+			{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+		})
+
+		// The request names no groups, so Alice leaves group-alpha.  Removal
+		// confers nothing, so the ungrantable role does not gate it.
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{},
+			},
+		}
+
+		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
+		require.NoError(t, err)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs)
+		assert.Empty(t, alphaGroup.Spec.Subjects, "the legacy record must be removed, not left behind")
+	})
+
+	t.Run("reports a subject-only membership over the API", func(t *testing.T) {
+		t.Parallel()
+
+		// Alice is a member of the group through a subject record only, with no
+		// entry in the deprecated UserIDs list.  convert must report the group
+		// the way RBAC resolves membership, or List hides a membership that is
+		// real.
+		stored := unikornv1.GroupSubject{
+			ID:     userAliceSubject,
+			Email:  userAliceSubject,
+			Issuer: testIssuerURL,
+		}
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newOrganizationUser(orgUserAliceID, userAliceID),
+			radarRole(),
+			newRadarGroup(groupAlphaID, nil, []unikornv1.GroupSubject{stored}),
+		}, interceptor.Funcs{})
+
+		users, err := fixture.usersClient.List(newContext(t), ids.MustParseOrganizationID(testOrgID))
+		require.NoError(t, err)
+
+		var alice *openapi.UserRead
+
+		for i := range users {
+			if users[i].Metadata.Id == orgUserAliceID {
+				alice = &users[i]
+			}
+		}
+
+		require.NotNil(t, alice, "alice must be listed")
+		assert.Contains(t, alice.Spec.GroupIDs, groupAlphaID,
+			"a subject-only membership must be visible over the API")
 	})
 }
 
