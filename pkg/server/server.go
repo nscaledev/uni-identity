@@ -418,14 +418,6 @@ func mountAPI(profile APIProfile, handlerInterface openapi.ServerInterface, rout
 	return openapi.HandlerWithOptions(handlerInterface, options)
 }
 
-// MountAPIForTest mounts the profile's routes over a nil handler so a test
-// can inspect the served route set.  Exported for tests only: the route set
-// is a security boundary, and the alternative is an integration probe that
-// cannot distinguish an absent route from a refused one.
-func MountAPIForTest(profile *APIProfile, router chi.Router) {
-	mountAPI(*profile, nil, router, nil, nil)
-}
-
 // expandBareAdminSubjects mirrors bare (UNI-sentinel) admin entries onto the
 // legacy Auth0 issuer, reproducing the issuer-unaware matching that existed
 // before entries were issuer-qualified. The mirror is a concrete
