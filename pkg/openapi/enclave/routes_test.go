@@ -19,6 +19,7 @@ package enclave_test
 
 import (
 	"net/http"
+	"os"
 	"sort"
 	"testing"
 
@@ -27,6 +28,8 @@ import (
 
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/openapi/enclave"
+
+	"sigs.k8s.io/yaml"
 )
 
 // enclaveTag is the spec tag that selects the authorization profile's
@@ -104,6 +107,38 @@ func TestSubsetServesExactlyTheTaggedOperations(t *testing.T) {
 	require.Equal(t, expected, mountedRoutes(t))
 }
 
+// enclaveRoutes is the literal route list the design commits to serving:
+// the decision endpoint and both ACL reads.  It exists alongside
+// taggedRoutes because the two checks catch different failures.
+// Moving the tag off an operation is NOT the failure this list catches: the
+// generated ServerInterface would then require a method for whatever
+// operation the tag landed on instead, the stub below would stop matching
+// it, and the package would fail to BUILD before either test ran. What this
+// literal list catches is a path renamed under an unchanged method and an
+// unmoved tag — e.g. "GET /api/v1/acl" becomes "GET /api/v1/acls" with the
+// tag and the operationId (so the Go method name) both left alone.
+// taggedRoutes would silently track that rename, because it re-derives its
+// expectation from the same tag the router filters on, so
+// TestSubsetServesExactlyTheTaggedOperations would still pass. This literal
+// list would not track it, so TestSubsetServesTheDesignedRoutes would catch
+// it. Neither check alone is sufficient.
+//
+//nolint:gochecknoglobals // fixed test fixture, not mutable state.
+var enclaveRoutes = []string{
+	"GET /api/v1/acl",
+	"GET /api/v1/organizations/{organizationID}/acl",
+	"POST /api/v1/authorization/check",
+}
+
+// TestSubsetServesTheDesignedRoutes pins the mounted route set against the
+// literal enclaveRoutes list instead of the tag. See the enclaveRoutes
+// comment for why this check exists alongside the spec-derived one.
+func TestSubsetServesTheDesignedRoutes(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, enclaveRoutes, mountedRoutes(t))
+}
+
 // TestSubsetServesNoWriteSurface pins the property a reviewer cares about in
 // one assertion that does not depend on the tag set being right: no route the
 // profile serves may use a write method.
@@ -115,4 +150,90 @@ func TestSubsetServesNoWriteSurface(t *testing.T) {
 		require.NotContains(t, route, http.MethodPatch)
 		require.NotContains(t, route, http.MethodDelete)
 	}
+}
+
+// specOperation and specPathItem decode only the fields this test needs from
+// server.spec.yaml on disk: which HTTP methods exist per path, and each
+// operation's tags. sigs.k8s.io/yaml converts YAML to JSON and decodes with
+// encoding/json, so unrecognised path-item keys ("description",
+// "parameters", "summary") are ignored rather than erroring.
+type specOperation struct {
+	Tags []string `json:"tags"`
+}
+
+type specPathItem struct {
+	Get     *specOperation `json:"get"`
+	Put     *specOperation `json:"put"`
+	Post    *specOperation `json:"post"`
+	Delete  *specOperation `json:"delete"`
+	Options *specOperation `json:"options"`
+	Head    *specOperation `json:"head"`
+	Patch   *specOperation `json:"patch"`
+	Trace   *specOperation `json:"trace"`
+}
+
+type specDocument struct {
+	Paths map[string]specPathItem `json:"paths"`
+}
+
+// taggedRoutesFromDisk re-derives taggedRoutes' expectation, but from
+// server.spec.yaml read straight off disk rather than from the embedded,
+// generated openapi.GetSwagger(). See TestSpecFileTagsMatchMountedRoutes for
+// why that distinction matters.
+func taggedRoutesFromDisk(t *testing.T) []string {
+	t.Helper()
+
+	raw, err := os.ReadFile("../server.spec.yaml")
+	require.NoError(t, err)
+
+	var doc specDocument
+
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+
+	var routes []string
+
+	for path, item := range doc.Paths {
+		methods := map[string]*specOperation{
+			http.MethodGet:     item.Get,
+			http.MethodPut:     item.Put,
+			http.MethodPost:    item.Post,
+			http.MethodDelete:  item.Delete,
+			http.MethodOptions: item.Options,
+			http.MethodHead:    item.Head,
+			http.MethodPatch:   item.Patch,
+			http.MethodTrace:   item.Trace,
+		}
+
+		for method, op := range methods {
+			if op == nil {
+				continue
+			}
+
+			for _, tag := range op.Tags {
+				if tag == enclaveTag {
+					routes = append(routes, method+" "+path)
+				}
+			}
+		}
+	}
+
+	sort.Strings(routes)
+
+	return routes
+}
+
+// TestSpecFileTagsMatchMountedRoutes is the staleness guard
+// TestSubsetServesExactlyTheTaggedOperations cannot be. That test compares
+// the generated router against the EMBEDDED spec (openapi.GetSwagger()), and
+// `make generate` produces both the router and the embedded spec from
+// server.spec.yaml in the same step. If that step ever stops running, the
+// router and the embedded spec go stale TOGETHER: they stay mutually
+// consistent with each other, and every existing test in this file keeps
+// passing. This test parses server.spec.yaml directly off disk instead, so a
+// regeneration gap between the spec file and either generated artifact
+// fails it.
+func TestSpecFileTagsMatchMountedRoutes(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, taggedRoutesFromDisk(t), mountedRoutes(t))
 }
