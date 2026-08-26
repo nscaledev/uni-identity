@@ -171,7 +171,8 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 
 	// Setup authn/authz
 	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
-	if err := issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{}); err != nil {
+
+	if err := s.runIssuer(issuer); err != nil {
 		return nil, err
 	}
 
@@ -378,6 +379,24 @@ func (s *Server) mountReadiness(handler http.Handler) http.Handler {
 	root.Mount("/", handler)
 
 	return root
+}
+
+// runIssuer starts the JOSE signing-key issuer's certificate management loop,
+// unless the profile is APIProfileAuthorization.  That profile issues no
+// tokens, so it never needs the loop; Run also starts leader election on a
+// coordination.k8s.io Lease, which the authorization profile's ClusterRole
+// does not grant on purpose (it is read-only on replicated identity state)
+// -- starting it there would fail soft and log a permanent stream of
+// forbidden errors.  The issuer is still constructed by the caller either
+// way: handler.New takes it, even though the authorization profile's own
+// handlers never call into it.  Separated from GetServer, like mountAPI
+// below, so the profile branch is unit-testable without a cluster.
+func (s *Server) runIssuer(issuer *jose.JWTIssuer) error {
+	if s.APIProfile == APIProfileAuthorization {
+		return nil
+	}
+
+	return issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{})
 }
 
 // mountAPI builds the HTTP handler for the configured profile.  It is

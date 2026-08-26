@@ -24,6 +24,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/server"
 )
 
@@ -129,4 +130,33 @@ func TestAuthorizationProfileOmitsWriteRoutes(t *testing.T) {
 		require.NotContains(t, route, http.MethodDelete)
 		require.NotContains(t, route, http.MethodPost+" /api/v1/organizations")
 	}
+}
+
+// TestAuthorizationProfileSkipsIssuerRun pins the fix for the enclave
+// deployment's ClusterRole granting no coordination.k8s.io permission: the
+// authorization profile issues no tokens, so it must never start the JOSE
+// issuer's leader-election loop, which needs that permission. A nil client
+// and zero-value Options are safe here because runIssuer must return before
+// either is touched -- Run only reaches them after starting leader election,
+// which this profile must never do.
+func TestAuthorizationProfileSkipsIssuerRun(t *testing.T) {
+	t.Parallel()
+
+	issuer := jose.NewJWTIssuer(nil, "", &jose.Options{})
+
+	require.NoError(t, server.RunIssuerForTest(server.APIProfile("authorization"), issuer))
+}
+
+// TestFullProfileRunsIssuer pins the other half: every other profile must be
+// unchanged by that fix and still start the issuer. Outside a cluster, Run
+// fails immediately in rest.InClusterConfig, before touching the (nil)
+// client or starting leader election -- an error here proves the full
+// profile actually attempts to start the issuer, in contrast to the
+// authorization profile above, which must not error because it never tries.
+func TestFullProfileRunsIssuer(t *testing.T) {
+	t.Parallel()
+
+	issuer := jose.NewJWTIssuer(nil, "", &jose.Options{})
+
+	require.Error(t, server.RunIssuerForTest(server.APIProfile("full"), issuer))
 }

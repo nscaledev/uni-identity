@@ -60,8 +60,13 @@ from the mux, so a request to one gets a 404, not a refused write. The second la
 ClusterRole, so that a write route reachable by mistake (a bug, a future regression) would still be
 refused at the Kubernetes API rather than only at the mux. That ClusterRole is built:
 `charts/identity/templates/enclave-authorization/clusterrole.yaml`, rendered only when
-`enclaveAuthorization.enabled` is set, grants `get`, `list` and `watch` only, on the resources the
-authorization surface reads. It binds to its own ServiceAccount
+`enclaveAuthorization.enabled` is set, grants `get`, `list` and `watch` only, on exactly the
+`identity.unikorn-cloud.org` resources binding resolution reads: `organizations`, `projects`,
+`groups`, `roles`, `users`, and `organizationusers` (the last needed only for a `Group` still on
+the deprecated `Spec.UserIDs` field; see `pkg/rbac.resolveOrganizationUserName`). It grants neither
+`serviceaccounts` (service-account membership resolves by ID against `Group.Spec.ServiceAccountIDs`;
+no ServiceAccount CR is read) nor `namespaces` (nothing on this surface reads one). It binds to its
+own ServiceAccount
 (`charts/identity/templates/enclave-authorization/serviceaccount.yaml`), used only by the
 `enclave-authorization` Deployment. The pre-existing `charts/identity/templates/identity/clusterrole.yaml`
 is unchanged and still grants `create`, `update`, `patch` and `delete`: that ClusterRole binds to the

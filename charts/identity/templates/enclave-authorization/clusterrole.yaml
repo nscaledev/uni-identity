@@ -17,18 +17,38 @@ rules:
   - projects
   - groups
   - roles
-  - serviceaccounts
   - users
+  # Read only to resolve the deprecated Group.Spec.UserIDs migration path
+  # (pkg/rbac.resolveOrganizationUserName), which the same binding
+  # resolution the check and ACL routes use can still reach for a Group not
+  # yet migrated to Spec.Subjects.
+  - organizationusers
   verbs:
   - get
   - list
   - watch
+# pkg/server.computeTrustedNonUNIIssuers lists OAuth2Providers at boot
+# through core's cache-backed client, which starts an informer. Without
+# this grant the initial LIST is Forbidden, the informer's HasSynced never
+# becomes true, and GetServer's wait (context.TODO(), whose Done() is nil)
+# polls forever: the enclave never finishes booting and the port never
+# listens. Read only: list and watch, matching what an informer needs.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - oauth2providers
+  verbs:
+  - list
+  - watch
+# The policy-store hasher (coarse-decision cache invalidation) does a
+# direct Get on the controller-owned policies ConfigMap.  Grant only get on
+# configmaps here, as a dedicated rule: this enclave's own hasher, wired by
+# pkg/server.GetServer whenever --cerbos-policies-configmap is set, the same
+# as identity/clusterrole.yaml's equivalent rule for the centre's hasher.
 - apiGroups:
   - ""
   resources:
-  - namespaces
+  - configmaps
   verbs:
   - get
-  - list
-  - watch
 {{- end }}

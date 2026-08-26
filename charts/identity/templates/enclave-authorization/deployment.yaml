@@ -1,5 +1,4 @@
 {{- if .Values.enclaveAuthorization.enabled }}
-{{- $ns := .Values.enclaveAuthorization.namespace | default .Release.Namespace }}
 # The enclave authorization profile: the same image as the full identity
 # server, run with --api-profile set to "authorization" so only the
 # read-only authorization surface is mounted (see pkg/server/server.go,
@@ -7,13 +6,18 @@
 # It resolves bindings through pkg/rbac from the SAME configuration as
 # charts/identity/templates/identity/deployment.yaml, sourced from the same
 # values keys, so it can never disagree with the centre about a binding for
-# identical replicated state. It carries no OAuth2, JOSE or issuer flags: it
-# issues no tokens and holds no signing key.
+# identical replicated state. It issues no tokens and holds no signing key,
+# but --host is still required: pkg/oauth2's getInternalIssuer/getAudience
+# need it to validate incoming tokens, and it is otherwise empty.
+#
+# The enclave is its own Helm release, installed into the projection
+# namespace (see enclaveAuthorization in values.yaml), so every resource
+# here uses .Release.Namespace directly rather than a configurable override.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}-enclave-authorization
-  namespace: {{ $ns }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 spec:
@@ -37,10 +41,28 @@ spec:
       - name: {{ .Release.Name }}-enclave-authorization
         image: {{ include "unikorn.image" . }}
         args:
-        - --namespace={{ $ns }}
+        - --namespace={{ .Release.Namespace }}
         {{- include "unikorn.cors.flags" . | nindent 8 }}
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        # --host is the token ISSUER identity, not the address this pod serves
+        # on: pkg/oauth2 validates every incoming passport's issuer and audience
+        # against it (getInternalIssuer/getAudience -> VerifyInfo), and the
+        # token exchange that mints those passports stays central (see
+        # pkg/middleware/openapi/remote.WithAuthorizationHost). This profile
+        # validates as a resource server, so the expected issuer is the CENTRE,
+        # exactly as identity/deployment.yaml renders it; enclaveAuthorization.host
+        # is only the DNS name of this profile's own front door. Rendering the
+        # enclave host here rejects every passport, because the issuer and
+        # audience claims name the centre.
+        #
+        # This value is necessary but not sufficient: the profile still decrypts
+        # the passport locally against a SigningKey it does not hold. See the
+        # enclaveAuthorization block in values.yaml.
+        - --host=https://{{ include "unikorn.identity.host" . }}
         - --api-profile=authorization
+        # Serves /readyz off this directory, which the readinessProbe below
+        # reads; the same path the policy volume is mounted at.
+        - --readiness-policy-directory=/policies
         {{- with .Values.identity.authorizationEngine }}
         - --authorization-engine={{ . }}
         {{- end }}
@@ -84,152 +106,8 @@ spec:
           {{- $systemAccounts = append $systemAccounts (printf "%s=%s" $k (include "resource.id" $v)) }}
         {{- end }}
         - --system-account-roles-ids={{ join "," $systemAccounts }}
-        {{- range $i, $b := .Values.globalRoleBindings }}
-          {{- if not (trim (default "" $b.issuer)) }}
-            {{- fail (printf "globalRoleBindings[%d]: issuer is required" $i) }}
-          {{- end }}
-          {{- if regexMatch "\\s" $b.issuer }}
-            {{- fail (printf "globalRoleBindings[%d]: issuer must not contain whitespace" $i) }}
-          {{- end }}
-          {{- /*
-          Right-anchored parsing means a "::" in either field silently shifts
-          the boundary, undetectably once the flag is built. Reject it here,
-          while the intended split is still known.
-          */}}
-          {{- if contains "::" $b.issuer }}
-            {{- fail (printf "globalRoleBindings[%d]: issuer must not contain \"::\"" $i) }}
-          {{- end }}
-          {{- if and (hasKey $b "subject") (hasKey $b "subjects") }}
-            {{- fail (printf "globalRoleBindings[%d]: subject and subjects are mutually exclusive" $i) }}
-          {{- end }}
-          {{- $subjects := list }}
-          {{- if hasKey $b "subject" }}
-            {{- $subjects = list $b.subject }}
-          {{- else }}
-            {{- $subjects = default (list) $b.subjects }}
-          {{- end }}
-          {{- if not $subjects }}
-            {{- fail (printf "globalRoleBindings[%d]: exactly one of subject or non-empty subjects required" $i) }}
-          {{- end }}
-          {{- /*
-          Trim before validating and emitting, so a padded " * " cannot slip
-          past the wildcard guards and then match as a wildcard server-side.
-          */}}
-          {{- $trimmedSubjects := list }}
-          {{- range $si, $subject := $subjects }}
-            {{- $trimmed := trim (default "" $subject) }}
-            {{- if not $trimmed }}
-              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: empty or whitespace-only subject" $i $si) }}
-            {{- end }}
-            {{- if contains "::" $trimmed }}
-              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: subject must not contain \"::\"" $i $si) }}
-            {{- end }}
-            {{- if and (ne $trimmed "*") (regexMatch "[A-Z]" $trimmed) }}
-              {{- fail (printf "globalRoleBindings[%d].subjects[%d]: subject must be its canonical lower-case form" $i $si) }}
-            {{- end }}
-            {{- if and (eq $b.issuer "uni") (eq $trimmed "*") }}
-              {{- fail (printf "globalRoleBindings[%d]: wildcard subject not allowed on the UNI sentinel issuer" $i) }}
-            {{- end }}
-            {{- $trimmedSubjects = append $trimmedSubjects $trimmed }}
-          {{- end }}
-          {{- if not $b.roles }}
-            {{- fail (printf "globalRoleBindings[%d]: roles must be non-empty" $i) }}
-          {{- end }}
-          {{- $allRoles := merge (dict) (default (dict) $.Values.roles) (default (dict) $.Values.additionalRoles) }}
-          {{- $roles := list }}
-          {{- range $b.roles }}
-            {{- if not (hasKey $allRoles .) }}
-              {{- fail (printf "globalRoleBindings[%d]: unknown role %q" $i .) }}
-            {{- end }}
-            {{- $roles = append $roles (include "resource.id" .) }}
-          {{- end }}
-          {{- /*
-          Render-time guard: a wildcard binding's roles must declare no
-          non-read global operation. Complementary to the runtime clamp in
-          accumulateGlobalReadPermissions (pkg/rbac/bindings.go); full
-          rationale in pkg/rbac/README.md#global-role-bindings.
-          */}}
-          {{- if has "*" $trimmedSubjects }}
-            {{- range $b.roles }}
-              {{- $roleName := . }}
-              {{- $role := index $allRoles $roleName }}
-              {{- $roleScopes := default (dict) $role.scopes }}
-              {{- $globalScopes := default (dict) $roleScopes.global }}
-              {{- range $scopeName, $ops := $globalScopes }}
-                {{- range $ops }}
-                  {{- if ne . "read" }}
-                    {{- fail (printf "globalRoleBindings[%d]: wildcard binding role %q grants non-read global operation %q on scope %q" $i $roleName . $scopeName) }}
-                  {{- end }}
-                {{- end }}
-              {{- end }}
-            {{- end }}
-          {{- end }}
-          {{- range $subject := $trimmedSubjects }}
-        - {{ printf "--global-role-binding=%s::%s::%s" $b.issuer $subject (join "," $roles) | quote }}
-          {{- end }}
-        {{- end }}
-        {{- range $i, $b := .Values.globalGroupRoleBindings }}
-          {{- if not (trim (default "" $b.issuer)) }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: issuer is required" $i) }}
-          {{- end }}
-          {{- if regexMatch "\\s" $b.issuer }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: issuer must not contain whitespace" $i) }}
-          {{- end }}
-          {{- if contains "::" $b.issuer }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: issuer must not contain \"::\"" $i) }}
-          {{- end }}
-          {{- if eq $b.issuer "uni" }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: the uni sentinel issuer cannot carry groups" $i) }}
-          {{- end }}
-          {{- $group := trim (default "" $b.group) }}
-          {{- if not $group }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: group is required" $i) }}
-          {{- end }}
-          {{- if eq $group "*" }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: wildcard group not allowed; use a wildcard subject binding" $i) }}
-          {{- end }}
-          {{- if contains "::" $group }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: group must not contain \"::\"" $i) }}
-          {{- end }}
-          {{- if regexMatch "[\t\n\r]" $group }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: group must not contain control whitespace" $i) }}
-          {{- end }}
-          {{- if not $b.roles }}
-            {{- fail (printf "globalGroupRoleBindings[%d]: roles must be non-empty" $i) }}
-          {{- end }}
-          {{- $allRoles := merge (dict) (default (dict) $.Values.roles) (default (dict) $.Values.additionalRoles) }}
-          {{- $roles := list }}
-          {{- range $b.roles }}
-            {{- if not (hasKey $allRoles .) }}
-              {{- fail (printf "globalGroupRoleBindings[%d]: unknown role %q" $i .) }}
-            {{- end }}
-            {{- $roles = append $roles (include "resource.id" .) }}
-          {{- end }}
-          {{- /*
-          Render-time guard: a group binding must not carry write on the
-          credential and trust scopes. A write there mints credentials or
-          edits issuer trust. That converts a settings grant into an
-          identity grant. Other write scopes stay allowed, unlike the
-          wildcard guard above. No runtime read clamp applies.
-          */}}
-          {{- $credentialScopes := list "identity:users" "identity:groups" "identity:roles" "identity:serviceaccounts" "identity:oauth2providers" }}
-          {{- range $b.roles }}
-            {{- $roleName := . }}
-            {{- $role := index $allRoles $roleName }}
-            {{- $roleScopes := default (dict) $role.scopes }}
-            {{- $globalScopes := default (dict) $roleScopes.global }}
-            {{- range $scopeName, $ops := $globalScopes }}
-              {{- if has $scopeName $credentialScopes }}
-                {{- range $ops }}
-                  {{- if ne . "read" }}
-                    {{- fail (printf "globalGroupRoleBindings[%d]: role %q grants non-read operation %q on credential scope %q" $i $roleName . $scopeName) }}
-                  {{- end }}
-                {{- end }}
-              {{- end }}
-            {{- end }}
-          {{- end }}
-        - {{ printf "--global-group-role-binding=%s::%s::%s" $b.issuer $group (join "," $roles) | quote }}
-        {{- end }}
+        {{- include "unikorn.globalRoleBindingArgs" . }}
+        {{- include "unikorn.globalGroupRoleBindingArgs" . }}
         ports:
         - name: http
           containerPort: 6080
@@ -242,8 +120,37 @@ spec:
         - name: kube-api-access
           mountPath: /var/run/secrets/kubernetes.io/serviceaccount
           readOnly: true
+        # The same projection the Cerbos sidecar mounts, so the first-party
+        # server can read the publication marker the controller writes (see
+        # the readinessProbe below).
+        - name: cerbos-policies
+          mountPath: /policies
+          readOnly: true
         resources:
           {{- .Values.server.resources | toYaml | nindent 10 }}
+        # /readyz gates on the policy controller's publication marker, not on
+        # the presence of policy files. Cerbos is healthy with an empty policy
+        # directory and would deny every request while Kubernetes sent it
+        # traffic, so a pod must not join the Service before the controller has
+        # published once.
+        #
+        # A readiness probe, deliberately, and only because the marker exists.
+        # A withdrawal publishes no policy document, so a file-counting gate
+        # would hold every REPLACEMENT pod out of service for as long as the
+        # withdrawal lasted: one malformed Role would then cost capacity on the
+        # next eviction, drain or rollout. The marker distinguishes "withdrawn
+        # on purpose", which is ready and serves deny-all, from "never
+        # published", which is not. And a missing publication should hold a pod
+        # out of the Service rather than restart its container, which a
+        # startupProbe would do every five minutes without making the ConfigMap
+        # arrive any sooner.
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          periodSeconds: 5
+          timeoutSeconds: 1
+          failureThreshold: 3
         securityContext:
           readOnlyRootFilesystem: true
       # Cerbos PDP sidecar: same setup as identity/deployment.yaml. This
@@ -329,11 +236,14 @@ spec:
         configMap:
           name: {{ .Release.Name }}-cerbos-policies
           # The policy controller owns, creates and publishes this ConfigMap
-          # at runtime; the chart does not template it.  optional lets the
-          # pod start before the first publish — Cerbos serves
-          # deny-by-default from the empty directory, and the kubelet
-          # back-fills the volume once the ConfigMap appears.
-          optional: true
+          # at runtime; the chart does not template it.  It is deliberately
+          # NOT optional: an optional volume lets a pod start with no
+          # projection at all, and an enclave with no policy store denies
+          # every request. Requiring it makes the kubelet hold the pod in
+          # ContainerCreating until the controller has published once, which
+          # is a legible wait instead of a serving pod that denies
+          # everything. The readinessProbe above covers the remaining case, a
+          # ConfigMap that exists but carries no publication marker.
       - name: cerbos-tmp
         emptyDir: {}
       - name: cerbos-cache

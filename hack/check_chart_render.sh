@@ -188,20 +188,122 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":[
 # its verb list is pinned directly: route omission in the binary makes write
 # handlers unreachable, and this is what makes them powerless if reached.
 out=$(helm template test "$CHART" --set enclaveAuthorization.enabled=true)
-[[ $(grep -cE -- "^\s*-\s*--api-profile=authorization\s*\$" <<<"$out") -eq 1 ]] || \
-	die "expected exactly one --api-profile=authorization arg in the enclave authorization render"
+
+# manifest_by_source <source-suffix> isolates ONE rendered manifest by its
+# `# Source:` comment, reading from stdin. Grepping the whole render for a
+# flag proves only that the flag rendered SOMEWHERE — it would still pass if
+# the flag were moved to a different (e.g. always-rendered) Deployment. This
+# scopes the assertion to the one manifest that must carry it.
+manifest_by_source() {
+	awk -v want="$1" '
+		/^# Source: / && index($0, want) { p=1 }
+		p { print }
+		p && /^---$/ { exit }
+	'
+}
+
+enclave_deployment=$(manifest_by_source 'enclave-authorization/deployment.yaml' <<<"$out")
+[[ -n "$enclave_deployment" ]] || die "could not find the enclave-authorization Deployment manifest in the render"
+[[ $(grep -cE -- "^\s*-\s*--api-profile=authorization\s*\$" <<<"$enclave_deployment") -eq 1 ]] || \
+	die "expected exactly one --api-profile=authorization arg in the enclave-authorization Deployment's own manifest"
+
+# --host is the token ISSUER this profile validates against, not the address it
+# serves on. It validates as a resource server, so the issuer is the centre:
+# rendering enclaveAuthorization.host here rejects every centrally minted
+# passport on issuer and audience. Pin the value, not just its presence.
+enclave_host_arg=$(grep -oE -- "--host=[^[:space:]]+" <<<"$enclave_deployment" | head -1)
+[[ "$enclave_host_arg" == "--host=https://identity.acme.org" ]] || \
+	die "enclave-authorization --host must be the central identity host (identity.host), got: ${enclave_host_arg:-none}"
+
+# The policy projection gates Service membership, so no pod takes traffic
+# before the controller has published: a required (non-optional) volume plus a
+# /readyz READINESS probe on the first-party container. Readiness and not
+# startup is load-bearing, because the publication marker makes a withdrawal
+# ready: a replacement pod during a withdrawal then joins the Service instead
+# of restarting forever. Pin the kind, not just the presence.
+grep -qE "^\s*readinessProbe:\s*\$" <<<"$enclave_deployment" || \
+	die "enclave-authorization Deployment must gate readiness on the policy projection"
+if grep -qE "^\s*startupProbe:\s*\$" <<<"$enclave_deployment"; then
+	die "the policy projection must gate readiness, not startup: a startup gate restarts a pod that starts during a withdrawal"
+fi
+if grep -qE "^\s*optional:\s*true\s*\$" <<<"$enclave_deployment"; then
+	die "the enclave-authorization policy volume must not be optional: an empty projection denies every request"
+fi
 
 enclave_clusterrole=$(awk '/^kind: ClusterRole$/{cr=1} cr && /^  name:.*-enclave-authorization$/{p=1} p{print} /^---$/{if(p){exit}; cr=0}' <<<"$out")
 [[ -n "$enclave_clusterrole" ]] || die "could not find the *-enclave-authorization ClusterRole in the render"
-for verb in create update patch delete deletecollection; do
-	if grep -qE "^\s*-\s*${verb}\s*\$" <<<"$enclave_clusterrole"; then
-		die "enclave authorization ClusterRole must not grant verb: $verb"
-	fi
-done
+
+# verbs_of extracts every "- <verb>" list item that follows a "verbs:" key,
+# reading a manifest from stdin. A deny-list of write verbs (the previous
+# form of this check) passes for any verb it did not name, including a
+# wildcard "- '*'" that grants everything. Asserting a SUBSET of the
+# read-only verbs instead closes that gap: nothing this ClusterRole grants
+# can be outside {get, list, watch}, however it is spelled.
+verbs_of() {
+	awk '
+		/^[[:space:]]*verbs:[[:space:]]*$/ { invb = 1; next }
+		invb && /^[[:space:]]*-[[:space:]]*[^[:space:]]+[[:space:]]*$/ {
+			line = $0
+			sub(/^[[:space:]]*-[[:space:]]*/, "", line)
+			sub(/[[:space:]]*$/, "", line)
+			print line
+			next
+		}
+		{ invb = 0 }
+	'
+}
+
+found_verb=""
+while IFS= read -r verb; do
+	found_verb=1
+
+	case "$verb" in
+	get | list | watch) ;;
+	*) die "enclave authorization ClusterRole verb \"$verb\" is outside the read-only subset {get, list, watch}" ;;
+	esac
+done < <(verbs_of <<<"$enclave_clusterrole")
+[[ -n "$found_verb" ]] || die "could not find any verb in the enclave authorization ClusterRole"
 
 default_out=$(helm template test "$CHART")
 if grep -q "enclave-authorization" <<<"$default_out"; then
 	die "default values must not render any enclave-authorization resource"
 fi
+
+# C1: an enclave-only release (identity.enabled: false, controllers.enabled:
+# false, alongside enclaveAuthorization.enabled: true) must render no
+# write-capable identity server and none of the three write-capable
+# controllers that would otherwise race an enclave's replicator over the
+# same projected objects.
+#
+# The same release must also author no central state and own no cluster-scoped
+# object. roles.yaml and quotametadata.yaml are central authoring authority
+# (docs/authorization/distributed-pdp-design.md section 3) and reach an enclave
+# by replication; the admission policies are cluster-scoped with fixed names, so
+# a second release carrying them cannot install beside the central one. Neither
+# class holds an RBAC verb, so the verb sweep below cannot catch them.
+gated_out=$(helm template test "$CHART" --set enclaveAuthorization.enabled=true --set identity.enabled=false --set controllers.enabled=false)
+
+for source in templates/identity/deployment.yaml templates/organization-controller/ templates/project-controller/ templates/oauth2client-controller/ templates/roles.yaml templates/quotametadata.yaml templates/validatingadmissionpolicies/; do
+	if grep -qF -- "# Source: unikorn-identity/${source}" <<<"$gated_out"; then
+		die "identity.enabled=false and controllers.enabled=false must render no manifest from $source"
+	fi
+done
+
+# The remaining write verb anywhere outside policy-controller/ would mean a
+# write-capable ClusterRole/Role slipped past the two gates above.
+# policy-controller/ is excluded on purpose: an enclave-only release still
+# runs its own policy controller, which needs a narrowly scoped Role to
+# publish its own ConfigMap (controllers.enabled does not cover it — see
+# values.yaml).
+non_policy_controller_out=$(awk '
+	/^# Source: / { p = (index($0, "templates/policy-controller/") == 0) }
+	p { print }
+' <<<"$gated_out")
+
+for verb in create update patch delete deletecollection; do
+	if grep -qE "^\s*-\s*${verb}\s*\$" <<<"$non_policy_controller_out"; then
+		die "identity.enabled=false and controllers.enabled=false render must grant no verb outside policy-controller/: $verb"
+	fi
+done
 
 echo "chart render checks OK"
