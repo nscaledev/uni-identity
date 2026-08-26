@@ -33,11 +33,6 @@ type Options struct {
 	// should be modified to avoid clashes with other services e.g prometheus.
 	ListenAddress string
 
-	// APIProfile selects which HTTP surface to mount.  The full API by
-	// default; the enclave authorization profile serves only the read-only
-	// authorization surface.
-	APIProfile APIProfile
-
 	// ReadTimeout defines how long before we give up on the client,
 	// this should be fairly short.
 	ReadTimeout time.Duration
@@ -61,8 +56,6 @@ type Options struct {
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringVar(&o.Namespace, "namespace", "", "The namespace the service is running in.")
 	f.StringVar(&o.ListenAddress, "server-listen-address", ":6080", "API listener address.")
-	o.APIProfile = APIProfileFull
-	f.Var(&o.APIProfile, "api-profile", "HTTP surface to serve: full (the whole API) or authorization (the read-only authorization surface only, for an enclave).")
 	f.DurationVar(&o.ReadTimeout, "server-read-timeout", time.Second, "How long to wait for the client to send the request body.")
 	f.DurationVar(&o.ReadHeaderTimeout, "server-read-header-timeout", time.Second, "How long to wait for the client to send headers.")
 	f.DurationVar(&o.WriteTimeout, "server-write-timeout", 10*time.Second, "How long to wait for the API to respond to the client.")
