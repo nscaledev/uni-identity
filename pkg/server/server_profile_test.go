@@ -102,6 +102,22 @@ func TestZeroValueProfileServesTheWholeAPI(t *testing.T) {
 	require.Greater(t, len(walk(t, router)), 40, "a zero-valued profile must mount the whole API")
 }
 
+// TestUnvalidatedProfileServesTheWholeAPI pins the fail-safe for a value
+// that never went through Set's whitelist. APIProfile("bogus") is built
+// directly, bypassing the pflag.Value validation that rejects it at parse
+// time, to show the guard itself (not just the parser) treats anything
+// other than APIProfileAuthorization as full.
+func TestUnvalidatedProfileServesTheWholeAPI(t *testing.T) {
+	t.Parallel()
+
+	profile := server.APIProfile("bogus")
+
+	router := chi.NewRouter()
+	server.MountAPIForTest(&profile, router)
+
+	require.Greater(t, len(walk(t, router)), 40, "an unvalidated non-authorization profile must mount the whole API")
+}
+
 // TestAuthorizationProfileOmitsWriteRoutes states the security property in
 // the form a reviewer checks: no write method is reachable at all.
 func TestAuthorizationProfileOmitsWriteRoutes(t *testing.T) {
