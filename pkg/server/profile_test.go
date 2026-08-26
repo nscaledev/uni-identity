@@ -29,16 +29,18 @@ import (
 // serves the whole API, because every deployment that predates the profile
 // depends on that.  The safety of the narrow profile comes from the chart
 // always setting the flag and from the read-only ClusterRole, not from a
-// defensive default here.
+// defensive default here.  A fresh, ContinueOnError flag set is used rather
+// than pflag.CommandLine, which is process-global and ExitOnError: a bad
+// value there would kill the test binary.
 func TestAPIProfileDefaultIsFull(t *testing.T) {
 	t.Parallel()
 
-	options := &server.Options{}
+	s := &server.Server{}
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
-	options.AddFlags(flags)
+	s.AddFlags(flags)
 
 	require.NoError(t, flags.Parse(nil))
-	require.Equal(t, server.APIProfileFull, options.APIProfile)
+	require.Equal(t, server.APIProfileFull, s.APIProfile)
 }
 
 // TestAPIProfileAccepts pins the two legal values.
@@ -49,12 +51,12 @@ func TestAPIProfileAccepts(t *testing.T) {
 		t.Run(value, func(t *testing.T) {
 			t.Parallel()
 
-			options := &server.Options{}
+			s := &server.Server{}
 			flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
-			options.AddFlags(flags)
+			s.AddFlags(flags)
 
 			require.NoError(t, flags.Parse([]string{"--api-profile=" + value}))
-			require.Equal(t, server.APIProfile(value), options.APIProfile)
+			require.Equal(t, server.APIProfile(value), s.APIProfile)
 		})
 	}
 }
@@ -64,9 +66,9 @@ func TestAPIProfileAccepts(t *testing.T) {
 func TestAPIProfileRejectsUnknown(t *testing.T) {
 	t.Parallel()
 
-	options := &server.Options{}
+	s := &server.Server{}
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
-	options.AddFlags(flags)
+	s.AddFlags(flags)
 
 	err := flags.Parse([]string{"--api-profile=authz"})
 	require.ErrorIs(t, err, server.ErrInvalidAPIProfile)
