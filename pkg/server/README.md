@@ -105,6 +105,27 @@ At a high level, `GetServer()` does the following:
 This makes the trust pipeline an application-level invariant rather than a handler-by-handler
 convention.
 
+For the enclave authorization profile, the runtime also exposes `/readyz`
+outside the OpenAPI/middleware surface, read by the chart from a
+**readinessProbe**. Cerbos is healthy with an empty policy directory and would
+answer deny for everything, so a pod must not join the Service before the
+policy controller has published once.
+
+The endpoint gates on the controller's publication marker, `.store-version`
+(see [`pkg/authz/cerbos`](../authz/cerbos/README.md)), not on the presence of
+policy files, and that distinction is the point. A withdrawal publishes no
+policy document, so a file-counting gate could not tell a store the controller
+deliberately withdrew from one that was never published, and would hold every
+pod that STARTS during a withdrawal out of the Service for as long as it
+lasted: one malformed Role would then cost capacity on the next eviction,
+drain or rollout. Both marker states answer ready, because deny-all is a
+published state a pod serves correctly; an absent, unreadable or unrecognised
+marker answers 503.
+
+Validation is deliberately thin and the read is bounded. Readiness is
+fleet-wide, so every field checked is a field a publisher bug could use to
+take every replica out of service at once.
+
 ## Invariants
 
 - `pkg/server` owns runtime composition, not business-domain behaviour
@@ -114,6 +135,8 @@ convention.
 - `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
+- enclave readiness requires an observed policy publication, not merely policy
+  files; Cerbos process health alone is insufficient
 
 ## Caveats
 

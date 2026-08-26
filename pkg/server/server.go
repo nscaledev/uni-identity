@@ -20,7 +20,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
@@ -41,6 +47,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/openapi/enclave"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
@@ -48,12 +55,37 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+const (
+	// storeVersionSchema is the only marker schema this build understands.  A
+	// future publisher that changes the shape bumps it, and an older pod then
+	// refuses rather than guessing.
+	storeVersionSchema = 1
+
+	// maxStoreVersionBytes bounds the marker read.
+	maxStoreVersionBytes = 4 << 10
+
+	// storeStateValid and storeStateWithdrawn mirror the two states the
+	// policy controller publishes (pkg/authz/cerbos/controller).
+	storeStateValid     = "valid"
+	storeStateWithdrawn = "withdrawn"
+)
+
+// ErrStoreVersion is returned when the publication marker is present but not
+// something this build is willing to act on.
+var ErrStoreVersion = errors.New("invalid policy store version marker")
+
 type Server struct {
 	// CoreOptions are all common across everything e.g. namespace.
 	CoreOptions options.CoreOptions
 
 	// ServerOptions are server specific options e.g. listener address etc.
 	ServerOptions options.ServerOptions
+
+	// APIProfile selects which HTTP surface GetServer mounts: the full API,
+	// or (for an enclave) only the read-only authorization surface. It is a
+	// field on Server rather than on ServerOptions because ServerOptions is
+	// core's shared type, and adding a field there is out of scope here.
+	APIProfile APIProfile
 
 	// HandlerOptions sets options for the HTTP handler.
 	HandlerOptions handler.Options
@@ -79,11 +111,18 @@ type Server struct {
 	// Cerbos is the client for the Cerbos PDP sidecar; consumers arrive
 	// with the authorization decision layer.
 	Cerbos *cerbos.Client
+
+	// ReadinessPolicyDirectory is the mounted policy projection an enclave
+	// must observe before it may receive authorization traffic. The enclave
+	// readiness endpoint fails closed when this is empty.
+	ReadinessPolicyDirectory string
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CoreOptions.AddFlags(flags)
 	s.ServerOptions.AddFlags(flags)
+	s.APIProfile = APIProfileFull
+	flags.Var(&s.APIProfile, "api-profile", "HTTP surface to serve: full (the whole API) or authorization (the read-only authorization surface only, for an enclave).")
 	s.HandlerOptions.AddFlags(flags)
 	s.JoseOptions.AddFlags(flags)
 	s.OAuth2Options.AddFlags(flags)
@@ -91,6 +130,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.RBACOptions.AddFlags(flags)
 	s.CerbosOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
+	flags.StringVar(&s.ReadinessPolicyDirectory, "readiness-policy-directory", "", "Directory that must contain a projected policy file before the readiness endpoint succeeds.")
 }
 
 func (s *Server) SetupLogging() {
@@ -214,13 +254,9 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
-	chiServerOptions := openapi.ChiServerOptions{
-		BaseRouter:       router,
-		ErrorHandlerFunc: handler.HandleError,
-		Middlewares: []openapi.MiddlewareFunc{
-			audit.Middleware,
-			validator.Middleware,
-		},
+	middlewares := []func(http.Handler) http.Handler{
+		audit.Middleware,
+		validator.Middleware,
 	}
 
 	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
@@ -228,15 +264,166 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		return nil, err
 	}
 
+	log.FromContext(context.TODO()).Info("serving API surface", "profile", s.APIProfile)
+
+	serverHandler := s.mountReadiness(mountAPI(s.APIProfile, handlerInterface, router, handler.HandleError, middlewares))
+
 	server := &http.Server{
 		Addr:              s.ServerOptions.ListenAddress,
 		ReadTimeout:       s.ServerOptions.ReadTimeout,
 		ReadHeaderTimeout: s.ServerOptions.ReadHeaderTimeout,
 		WriteTimeout:      s.ServerOptions.WriteTimeout,
-		Handler:           openapi.HandlerWithOptions(handlerInterface, chiServerOptions),
+		Handler:           serverHandler,
 	}
 
 	return server, nil
+}
+
+// storeVersionFile is the publication marker the policy controller writes into
+// every policy store (pkg/authz/cerbos/controller).  It is the only thing that
+// distinguishes a store the controller deliberately withdrew, which is a valid
+// deny-all state, from one that was never published.  Both project as a
+// directory with no policy document in it.
+const storeVersionFile = ".store-version"
+
+// storeVersionMarker is the publication state the controller recorded.
+type storeVersionMarker struct {
+	Schema uint64 `json:"schema"`
+	State  string `json:"state"`
+}
+
+// policyProjectionReadiness reports whether this pod has observed a policy
+// publication.  Cerbos is healthy with an empty policy directory and would
+// answer deny for everything, so a pod must not join the Service before the
+// controller has published once.
+//
+// It gates on the marker rather than on the presence of policy files, and that
+// distinction is the whole point: a withdrawal publishes no policy document,
+// so a file-counting gate would hold every replacement pod out of service for
+// as long as the withdrawal lasted, turning one malformed Role into lost
+// capacity on the next eviction or rollout.  Both marker states answer ready:
+// "valid" because the store is serving, "withdrawn" because deny-all is a
+// deliberate, published state that this pod is serving correctly.
+//
+// The marker is opened fresh on every probe so the path resolves through the
+// kubelet's current ..data snapshot; a retained descriptor would pin a
+// superseded projection.
+func policyProjectionReadiness(directory string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if directory == "" {
+			http.Error(w, "policy projection is not configured", http.StatusServiceUnavailable)
+
+			return
+		}
+
+		if err := publishedStoreVersion(filepath.Join(directory, storeVersionFile)); err != nil {
+			http.Error(w, "policy publication not observed", http.StatusServiceUnavailable)
+
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+// publishedStoreVersion reads and validates the marker.  The read is bounded:
+// this runs on a kubelet probe against a file a controller writes, so it must
+// not be able to consume the pod's memory if that file is ever wrong.
+//
+// Validation stays deliberately thin.  Readiness is fleet-wide, so every
+// field checked here is a field a publisher bug could use to take every
+// replica out of service at once.
+func publishedStoreVersion(path string) error {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, maxStoreVersionBytes))
+	if err != nil {
+		return err
+	}
+
+	marker := &storeVersionMarker{}
+	if err := json.Unmarshal(data, marker); err != nil {
+		return err
+	}
+
+	if marker.Schema != storeVersionSchema {
+		return fmt.Errorf("%w: schema %d", ErrStoreVersion, marker.Schema)
+	}
+
+	if marker.State != storeStateValid && marker.State != storeStateWithdrawn {
+		return fmt.Errorf("%w: state %q", ErrStoreVersion, marker.State)
+	}
+
+	return nil
+}
+
+// mountReadiness fronts the API handler with /readyz for the authorization
+// profile, which is the only profile that gates on a policy projection.  Every
+// other profile is returned unchanged.
+//
+// Separated from GetServer, like mountAPI below, so the profile branch is
+// unit-testable without a cluster.
+func (s *Server) mountReadiness(handler http.Handler) http.Handler {
+	if s.APIProfile != APIProfileAuthorization {
+		return handler
+	}
+
+	root := chi.NewRouter()
+	root.Get("/readyz", policyProjectionReadiness(s.ReadinessPolicyDirectory))
+	root.Mount("/", handler)
+
+	return root
+}
+
+// mountAPI builds the HTTP handler for the configured profile.  It is
+// separated from GetServer so the served route set is unit-testable without
+// a cluster: the profile decision is a security boundary and must be pinned
+// by a test that inspects the mux, not by an integration probe.
+//
+// Anything other than APIProfileAuthorization mounts the full API. Options
+// is constructed directly by tests and possibly by other consumers, without
+// AddFlags, so profile can hold the zero value "". The full API is the safe
+// default: it is what every profile-unaware deployment already runs, so a
+// zero value must resolve there rather than to an error or an empty mux.
+// This mirrors RBAC.mode() in pkg/rbac/engine.go, which treats any
+// unrecognised engine value as legacy.
+func mountAPI(profile APIProfile, handlerInterface openapi.ServerInterface, router chi.Router, errorHandler func(http.ResponseWriter, *http.Request, error), middlewares []func(http.Handler) http.Handler) http.Handler {
+	if profile == APIProfileAuthorization {
+		options := enclave.ChiServerOptions{
+			BaseRouter:       router,
+			ErrorHandlerFunc: errorHandler,
+		}
+
+		for _, middleware := range middlewares {
+			options.Middlewares = append(options.Middlewares, enclave.MiddlewareFunc(middleware))
+		}
+
+		return enclave.HandlerWithOptions(handlerInterface, options)
+	}
+
+	options := openapi.ChiServerOptions{
+		BaseRouter:       router,
+		ErrorHandlerFunc: errorHandler,
+	}
+
+	for _, middleware := range middlewares {
+		options.Middlewares = append(options.Middlewares, openapi.MiddlewareFunc(middleware))
+	}
+
+	return openapi.HandlerWithOptions(handlerInterface, options)
+}
+
+// MountAPIForTest mounts the profile's routes over a nil handler so a test
+// can inspect the served route set.  Exported for tests only: the route set
+// is a security boundary, and the alternative is an integration probe that
+// cannot distinguish an absent route from a refused one.
+func MountAPIForTest(profile *APIProfile, router chi.Router) {
+	mountAPI(*profile, nil, router, nil, nil)
 }
 
 // expandBareAdminSubjects mirrors bare (UNI-sentinel) admin entries onto the

@@ -45,6 +45,23 @@ The package operates around two distinct trust paths.
 This distinction is central to how UNI services compose. `pkg/middleware/openapi` is the package
 that keeps those two models separate while presenting handlers with one normalized interface.
 
+## API Profiles
+
+`pkg/server` mounts one of two HTTP surfaces over this middleware, selected by the `--api-profile`
+flag (`pkg/server.APIProfile`):
+
+- `full` (the default) mounts every operation in the OpenAPI spec.
+- `authorization` mounts only three routes, for a regional enclave that must answer authorization
+  locally: `GET /api/v1/acl`, `GET /api/v1/organizations/{organizationID}/acl`, and
+  `POST /api/v1/authorization/check`.
+
+Route omission is the primary guard for the `authorization` profile: every write route is absent
+from the mux, so a request to one gets a 404, not a refused write. It is not the only guard. The
+handler is still built over a write-capable Kubernetes client, so the deployment's read-only
+ClusterRole is what makes a write impossible even if a write route were ever reachable. See
+`pkg/server/server.go` (`mountAPI`) for the routing decision and `pkg/openapi/enclave` for the
+generated subset router.
+
 ## Trust Boundary Rules
 
 - There are exactly two conceptual request-authentication paths: bearer-token user calls and mTLS
