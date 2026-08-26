@@ -19,7 +19,11 @@ limitations under the License.
 // external server_test package while it stays out of the production binary.
 package server
 
-import "github.com/go-chi/chi/v5"
+import (
+	"github.com/go-chi/chi/v5"
+
+	"github.com/unikorn-cloud/identity/pkg/jose"
+)
 
 // MountAPIForTest mounts the profile's routes over a nil handler so a test
 // can inspect the served route set.  Exported for tests only: the route set
@@ -31,4 +35,16 @@ import "github.com/go-chi/chi/v5"
 // unlogged by the audit middleware.
 func MountAPIForTest(profile *APIProfile, router chi.Router) {
 	mountAPI(*profile, nil, router, nil, nil)
+}
+
+// RunIssuerForTest exercises the profile branch in (*Server).runIssuer
+// without needing a live cluster. Exported for tests only, for the same
+// reason as MountAPIForTest above: whether the issuer's leader-election
+// loop starts is a security-relevant property of the profile (the
+// authorization profile's ClusterRole grants no coordination.k8s.io
+// permission for it), so it is pinned by a test against the branch itself.
+func RunIssuerForTest(profile APIProfile, issuer *jose.JWTIssuer) error {
+	s := &Server{APIProfile: profile}
+
+	return s.runIssuer(issuer)
 }
