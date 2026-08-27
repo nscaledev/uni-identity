@@ -103,11 +103,10 @@ func OrganizationNamespaces(ctx context.Context, cli client.Client, orgID string
 	return "", "", fmt.Errorf("%w: %s", ErrOrganizationNotFound, orgID)
 }
 
-// AddGroupMember writes a user onto a Group custom resource directly.  The
-// groups API refuses to add a member to a group carrying a role the caller
-// cannot grant, because joining the group would confer that role, so a spec
-// that needs to start from "the member is already there" has to seed it out of
-// band.
+// AddGroupMember writes a user onto a Group custom resource directly.  The API
+// refuses to add a member to a group carrying a role the caller cannot grant,
+// because joining the group would confer that role, so a spec that needs to
+// start from "the member is already there" has to seed it out of band.
 func AddGroupMember(ctx context.Context, cli client.Client, namespace, groupID, userID string) error {
 	group := &unikornv1.Group{}
 
