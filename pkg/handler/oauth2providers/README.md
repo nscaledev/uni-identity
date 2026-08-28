@@ -40,6 +40,10 @@ login.
   longer-term production direction is greater reliance on third-party identity
   providers directly rather than identity acting as the primary long-term IdP
   surface itself
+- organizations read their providers but do not configure them: writes need
+  global `identity:oauth2providers`, held only by `platform-administrator`. The
+  self-service federation this endpoint was shaped for is not a live use case,
+  and granting it back would let an organization lock its own users out of login
 - the code still contains a note about secret visibility and client-secret write
   requirements, which suggests the secret-handling model is intentionally
   cautious but not yet fully tightened
