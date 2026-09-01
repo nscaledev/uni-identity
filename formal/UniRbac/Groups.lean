@@ -195,4 +195,67 @@ def GroupSpec.hasMemberByID (g : GroupSpec) (orgUserID subjectID : String) : Pro
   (orgUserID ≠ "" ∧ orgUserID ∈ g.userIDs)
   ∨ (subjectID ≠ "" ∧ ∃ s ∈ g.subjects, s.id = subjectID)
 
+/-
+  ## The gate's shortcut is sound
+
+  All three write paths short-circuit on `hasMemberByID`: if it holds, the write
+  is not an addition and the grant check is skipped entirely. Whether that skip
+  is safe is *exactly* this statement — whenever the gate declines to check, the
+  group already conferred its roles on that principal, so the write hands over
+  nothing new.
+
+  There is no side condition. In particular the empty-string guards, which the
+  two definitions treat differently, do not need one.
+
+  ### Why this direction, and not the converse
+
+  Soundness is what safety needs, and the reason is the *shape* of the two
+  failure modes:
+
+    * if the gate said "already a member" when RBAC disagreed, a write would skip
+      the grant check and confer authority for free. That is an escalation, and
+      it is what this theorem rules out.
+    * if the gate said "not a member" when RBAC agreed it was, the write is
+      merely checked when it need not have been, and a caller sees a refusal it
+      did not deserve. Annoying, not dangerous.
+
+  The converse therefore does not have to hold — and it does not; see below.
+
+  ### Proof walkthrough
+
+  `→` is implication, so `intro h` assumes the gate holds and leaves us to derive
+  membership. `match h with` splits the two disjuncts of `hasMemberByID`, and the
+  patterns `⟨hne, hmem⟩` destructure each `∧` into its two halves at the same
+  time.
+
+  * First case — the caller is in `userIDs`. We must land in `confersOn`'s
+    *second* disjunct, so `Or.inr`, and it wants three facts. `refine` supplies
+    the two we already have (`hne`, `hmem`) and leaves `?_` as a hole for the
+    third: `g.userIDs ≠ []`.
+
+    That is where the redundant conjunct is paid for. `≠` unfolds to
+    "equality implies `False`", so `intro hnil` assumes `g.userIDs = []` and
+    `rw [hnil] at hmem` rewrites our membership proof into a claim that
+    `orgUser ∈ []`. No such proof can exist: `List.Mem` has exactly two
+    constructors and both require a non-empty list. `nomatch hmem` says precisely
+    that — "there is no case to consider" — and closes the goal.
+
+  * Second case — a stored subject matches. We must land in `confersOn`'s *first*
+    disjunct, and the existential we hold is already literally it, so `Or.inl hex`
+    finishes. Note what happens to the `subjectID ≠ ""` guard: it is discarded
+    (the `_` in the pattern). The gate *demands* more than RBAC does here, and a
+    stronger hypothesis implies a weaker conclusion, so the extra guard can only
+    ever narrow the gate — never widen it past RBAC.
+-/
+theorem hasMemberByID_sound (g : GroupSpec) (orgUser sub : String) :
+    g.hasMemberByID orgUser sub → g.confersOn (.user sub orgUser) := by
+  intro h
+  match h with
+  | Or.inl ⟨hne, hmem⟩ =>
+      refine Or.inr ⟨?_, hne, hmem⟩
+      intro hnil
+      rw [hnil] at hmem
+      nomatch hmem
+  | Or.inr ⟨_, hex⟩ => exact Or.inl hex
+
 end UniRbac
