@@ -19,5 +19,6 @@ import UniRbac.Grant
 import UniRbac.ProjectCaveat
 import UniRbac.Intersect
 import UniRbac.Accumulate
+import UniRbac.Groups
 import UniRbac.Exec
 import UniRbac.Vectors
