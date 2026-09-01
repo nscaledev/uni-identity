@@ -60,16 +60,26 @@ structure RoleData where
   project      : PermData
 deriving Repr
 
-/-- The two possible outcomes of an authorization check. -/
+/-- The possible outcomes of a scenario. `allow`/`deny` answer an authorization
+    check; `member`/`notMember` answer a membership question, which is not an
+    authorization decision and should not be dressed up as one. -/
 inductive Decision where
   | allow
   | deny
+  | member
+  | notMember
 deriving DecidableEq, Repr, BEq
 
-/-- The kind of check a scenario exercises. Only `allowRole` for now; the tagged
-    shape leaves room to add enforcement (`Allow*Scope`) checks later. -/
+/-- The kind of check a scenario exercises. The tag is what the Go harness
+    switches on to pick which real function to call.
+
+    `hasMemberByID` carries the stored group and the two identifiers the probe
+    presents. It needs no ACL — membership does not depend on the caller — but
+    the `Scenario` record supplies one anyway; see the note on
+    `handwrittenMembership` below. -/
 inductive Query where
   | allowRole (role : RoleData)
+  | hasMemberByID (group : GroupSpec) (orgUserID subjectID : String)
 deriving Repr
 
 /-- A single conformance scenario. `humanExpect` is set only for hand-written
@@ -124,10 +134,16 @@ def evalAllowRole (a : AclData) (r : RoleData) : Bool :=
     && permForall r.organization (fun e o => bGrantsOrg ba org e o)
     && permForall r.project (fun e o => bGrantsOrg ba org e o || existsProject a e o)
 
-/-- The model's decision for a whole scenario. -/
+/-- The model's decision for a whole scenario.
+
+    The membership branch calls `bHasMemberByID` directly, which — unlike
+    `evalAllowRole` — *is* certified equal to its `Prop` counterpart by
+    `bHasMemberByID_iff`. So a membership vector's expected outcome is backed by
+    a proof all the way down, not by an unproved transcription. -/
 def evalDecision (s : Scenario) : Decision :=
   match s.query with
   | .allowRole r => if evalAllowRole s.acl r then .allow else .deny
+  | .hasMemberByID g ou sub => if bHasMemberByID g ou sub then .member else .notMember
 
 /-! ## Hand-written base cases
 
@@ -198,6 +214,100 @@ def handwritten : List Scenario :=
       humanExpect := some .allow }
   ]
 
+/-! ## Hand-written membership cases
+
+These pin `GroupSpec.HasMemberByID` — the predicate all three write paths use to
+decide whether a write adds a member or merely re-states one. Every case carries
+a human-asserted outcome, so the generator refuses to emit if the model's answer
+ever moves.
+
+Membership does not depend on the caller, so these scenarios have no meaningful
+ACL. They carry an empty one rather than making `Scenario.acl` optional: that
+would change the JSON shape of every existing vector for no gain, and the Go
+harness simply does not read the field for this query kind. -/
+
+/-- A stored subject record. -/
+def subj (id issuer email : String) : Subject := ⟨id, issuer, email⟩
+
+/-- A group carrying only membership entries — no roles, which is all these cases
+    need. -/
+def mkGroup (userIDs : List String) (subjects : List Subject) : GroupSpec :=
+  { userIDs := userIDs, subjects := subjects, serviceAccountIDs := [], roleIDs := [] }
+
+/-- The issuer this deployment would write, and one that differs. -/
+def thisIssuer : String := "https://identity.example.com"
+def otherIssuer : String := "https://other.example.com"
+
+def handwrittenMembership : List Scenario :=
+  [ -- The ordinary case: a record written by this deployment.
+    { name := "stored subject with matching ID is a member"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] [subj "s1" thisIssuer "a@example.com"]) "" "s1"
+      humanExpect := some .member }
+    -- The ID-368 regression case.  A record written before subject issuers were
+    -- captured carries an empty issuer and still confers the group's roles, so
+    -- re-stating that membership must not read as an addition.  An
+    -- issuer-qualified predicate answers notMember here and over-refuses.
+  , { name := "legacy empty-issuer subject is a member"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] [subj "s1" "" ""]) "" "s1"
+      humanExpect := some .member }
+    -- The same point from the other side: a record at a *different* issuer also
+    -- matches, because the issuer takes no part at all.
+  , { name := "subject at another issuer is still a member"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] [subj "s1" otherIssuer "a@example.com"]) "" "s1"
+      humanExpect := some .member }
+    -- Email is display data and differs between writers; it must not matter.
+  , { name := "stored email does not affect matching"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] [subj "s1" thisIssuer "stale@example.com"]) "" "s1"
+      humanExpect := some .member }
+    -- A different principal is not a member.
+  , { name := "different subject ID is not a member"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] [subj "s2" thisIssuer "b@example.com"]) "" "s1"
+      humanExpect := some .notMember }
+    -- The deprecated representation confers membership on its own.
+  , { name := "organization user ID alone is a member"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup ["ou1"] []) "ou1" "s1"
+      humanExpect := some .member }
+    -- Either representation suffices, so completing the missing half grants
+    -- nothing.
+  , { name := "subject match suffices with an empty userIDs list"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] [subj "s1" thisIssuer ""]) "ou1" "s1"
+      humanExpect := some .member }
+    -- The empty-string sentinel, both arms.  A junk empty entry must not stand
+    -- in for a principal that has no record yet.  This is the case
+    -- hasMemberByID_not_complete is built on: RBAC's own subject matching has no
+    -- such guard and would answer member here.
+  , { name := "empty subject ID matches no stored record"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] [subj "" "" ""]) "" ""
+      humanExpect := some .notMember }
+  , { name := "empty organization user ID matches no stored entry"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [""] []) "" ""
+      humanExpect := some .notMember }
+    -- Nothing stored at all.
+  , { name := "empty group has no members"
+      source := "handwritten"
+      acl := mkAcl [] [] []
+      query := .hasMemberByID (mkGroup [] []) "ou1" "s1"
+      humanExpect := some .notMember }
+  ]
+
 /-! ## Generated scenarios
 
 An exhaustive small matrix the model decides on its own (no human assertion). We
@@ -258,13 +368,16 @@ def generated : List Scenario :=
       query := .allowRole (genRole rs ro)
       humanExpect := none }
 
+/-- Every scenario carrying a human assertion, whichever kind it exercises. -/
+def handwrittenAll : List Scenario := handwritten ++ handwrittenMembership
+
 /-- Hand-written cases first (stable, readable), then the generated matrix. -/
-def allScenarios : List Scenario := handwritten ++ generated
+def allScenarios : List Scenario := handwrittenAll ++ generated
 
 /-- Hand-written scenarios where the model disagrees with the human assertion.
     Empty is the healthy state; Main fails loudly otherwise. -/
 def handwrittenMismatches : List String :=
-  handwritten.filterMap fun s =>
+  handwrittenAll.filterMap fun s =>
     match s.humanExpect with
     | some h => if evalDecision s == h then none else some s.name
     | none   => none
@@ -296,10 +409,36 @@ def roleJson (r : RoleData) : String :=
     ++ ", \"organization\": " ++ permJson r.organization
     ++ ", \"project\": " ++ permJson r.project ++ "}"
 
+def subjectsJson (ss : List Subject) : String :=
+  "[" ++ String.intercalate ", " (ss.map fun s =>
+    "{\"id\": " ++ jStr s.id ++ ", \"issuer\": " ++ jStr s.issuer
+      ++ ", \"email\": " ++ jStr s.email ++ "}") ++ "]"
+
+def stringsJson (xs : List String) : String :=
+  "[" ++ String.intercalate ", " (xs.map jStr) ++ "]"
+
+def groupJson (g : GroupSpec) : String :=
+  "{\"userIDs\": " ++ stringsJson g.userIDs
+    ++ ", \"subjects\": " ++ subjectsJson g.subjects
+    ++ ", \"serviceAccountIDs\": " ++ stringsJson g.serviceAccountIDs
+    ++ ", \"roleIDs\": " ++ stringsJson g.roleIDs ++ "}"
+
+/-- Each constructor emits its own `kind` tag plus its own payload fields. The Go
+    harness declares the payloads as pointers, so a field absent for one kind
+    stays nil rather than reading as an empty value. -/
 def queryJson : Query → String
   | .allowRole r => "{\"kind\": \"allowRole\", \"role\": " ++ roleJson r ++ "}"
+  | .hasMemberByID g ou sub =>
+      "{\"kind\": \"hasMemberByID\", \"group\": " ++ groupJson g
+        ++ ", \"orgUserID\": " ++ jStr ou
+        ++ ", \"subjectID\": " ++ jStr sub ++ "}"
 
-def decJson (d : Decision) : String := jStr (match d with | .allow => "allow" | .deny => "deny")
+def decJson (d : Decision) : String :=
+  jStr (match d with
+        | .allow => "allow"
+        | .deny => "deny"
+        | .member => "member"
+        | .notMember => "notMember")
 
 def optDecJson : Option Decision → String
   | none => "null"

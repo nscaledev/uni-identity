@@ -83,6 +83,7 @@ structure GroupSpec where
   subjects          : List Subject
   serviceAccountIDs : List String
   roleIDs           : List String
+deriving Repr
 
 /-
   A principal, as the membership question sees it.
