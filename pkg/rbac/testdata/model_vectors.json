@@ -73,6 +73,96 @@
       "humanExpect": "allow"
     },
     {
+      "name": "stored subject with matching ID is a member",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [{"id": "s1", "issuer": "https://identity.example.com", "email": "a@example.com"}], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "", "subjectID": "s1"},
+      "expected": "member",
+      "humanExpect": "member"
+    },
+    {
+      "name": "legacy empty-issuer subject is a member",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [{"id": "s1", "issuer": "", "email": ""}], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "", "subjectID": "s1"},
+      "expected": "member",
+      "humanExpect": "member"
+    },
+    {
+      "name": "subject at another issuer is still a member",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [{"id": "s1", "issuer": "https://other.example.com", "email": "a@example.com"}], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "", "subjectID": "s1"},
+      "expected": "member",
+      "humanExpect": "member"
+    },
+    {
+      "name": "stored email does not affect matching",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [{"id": "s1", "issuer": "https://identity.example.com", "email": "stale@example.com"}], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "", "subjectID": "s1"},
+      "expected": "member",
+      "humanExpect": "member"
+    },
+    {
+      "name": "different subject ID is not a member",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [{"id": "s2", "issuer": "https://identity.example.com", "email": "b@example.com"}], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "", "subjectID": "s1"},
+      "expected": "notMember",
+      "humanExpect": "notMember"
+    },
+    {
+      "name": "organization user ID alone is a member",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": ["ou1"], "subjects": [], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "ou1", "subjectID": "s1"},
+      "expected": "member",
+      "humanExpect": "member"
+    },
+    {
+      "name": "subject match suffices with an empty userIDs list",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [{"id": "s1", "issuer": "https://identity.example.com", "email": ""}], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "ou1", "subjectID": "s1"},
+      "expected": "member",
+      "humanExpect": "member"
+    },
+    {
+      "name": "empty subject ID matches no stored record",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [{"id": "", "issuer": "", "email": ""}], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "", "subjectID": ""},
+      "expected": "notMember",
+      "humanExpect": "notMember"
+    },
+    {
+      "name": "empty organization user ID matches no stored entry",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [""], "subjects": [], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "", "subjectID": ""},
+      "expected": "notMember",
+      "humanExpect": "notMember"
+    },
+    {
+      "name": "empty group has no members",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "hasMemberByID", "group": {"userIDs": [], "subjects": [], "serviceAccountIDs": [], "roleIDs": []}, "orgUserID": "ou1", "subjectID": "s1"},
+      "expected": "notMember",
+      "humanExpect": "notMember"
+    },
+    {
       "name": "gen req=global/read grant=none",
       "source": "generated",
       "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",

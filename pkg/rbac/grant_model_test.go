@@ -69,9 +69,28 @@ type vectorRole struct {
 	Project      []vectorEndpoint `json:"project"`
 }
 
+type vectorSubject struct {
+	ID     string `json:"id"`
+	Issuer string `json:"issuer"`
+	Email  string `json:"email"`
+}
+
+type vectorGroup struct {
+	UserIDs           []string        `json:"userIDs"`
+	Subjects          []vectorSubject `json:"subjects"`
+	ServiceAccountIDs []string        `json:"serviceAccountIDs"`
+	RoleIDs           []string        `json:"roleIDs"`
+}
+
+// vectorQuery carries the payload for whichever check Kind names.  Every payload
+// is a pointer so a field belonging to another kind stays nil rather than
+// reading as an empty value that the harness might silently accept.
 type vectorQuery struct {
-	Kind string      `json:"kind"`
-	Role *vectorRole `json:"role"`
+	Kind      string       `json:"kind"`
+	Role      *vectorRole  `json:"role"`
+	Group     *vectorGroup `json:"group"`
+	OrgUserID *string      `json:"orgUserID"`
+	SubjectID *string      `json:"subjectID"`
 }
 
 type vectorScenario struct {
@@ -195,6 +214,28 @@ func buildACL(organizationID string, acl vectorACL) *openapi.Acl {
 	return out
 }
 
+// buildGroupSpec reconstructs a unikornv1.GroupSpec from a membership scenario.
+// Roles are carried through even though HasMemberByID does not read them, so the
+// vector describes the whole stored record the model reasoned about.
+func buildGroupSpec(group *vectorGroup) unikornv1.GroupSpec {
+	subjects := make([]unikornv1.GroupSubject, 0, len(group.Subjects))
+
+	for _, subject := range group.Subjects {
+		subjects = append(subjects, unikornv1.GroupSubject{
+			ID:     subject.ID,
+			Issuer: subject.Issuer,
+			Email:  subject.Email,
+		})
+	}
+
+	return unikornv1.GroupSpec{
+		UserIDs:           group.UserIDs,
+		Subjects:          subjects,
+		ServiceAccountIDs: group.ServiceAccountIDs,
+		RoleIDs:           group.RoleIDs,
+	}
+}
+
 // buildRole reconstructs a *unikornv1.Role from a scenario, mirroring modelRole.
 func buildRole(role *vectorRole) *unikornv1.Role {
 	return &unikornv1.Role{
@@ -226,6 +267,18 @@ func decide(t *testing.T, scenario vectorScenario) string {
 		}
 
 		return "allow"
+	case "hasMemberByID":
+		require.NotNil(t, scenario.Query.Group, "hasMemberByID scenario missing group")
+		require.NotNil(t, scenario.Query.OrgUserID, "hasMemberByID scenario missing orgUserID")
+		require.NotNil(t, scenario.Query.SubjectID, "hasMemberByID scenario missing subjectID")
+
+		spec := buildGroupSpec(scenario.Query.Group)
+
+		if spec.HasMemberByID(*scenario.Query.OrgUserID, *scenario.Query.SubjectID) {
+			return "member"
+		}
+
+		return "notMember"
 	default:
 		t.Fatalf("unknown query kind %q", scenario.Query.Kind)
 
@@ -260,7 +313,8 @@ func TestModelConformance(t *testing.T) {
 		t.Run(scenario.Name, func(t *testing.T) {
 			t.Parallel()
 
-			require.Contains(t, []string{"allow", "deny"}, scenario.Expected, "bad expected decision")
+			require.Contains(t, []string{"allow", "deny", "member", "notMember"}, scenario.Expected,
+				"bad expected decision")
 
 			// For hand-written cases, the model must still agree with the outcome a
 			// human asserted. If this fails, the model changed meaning and the vectors
