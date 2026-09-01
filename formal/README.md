@@ -65,8 +65,10 @@ hypotheses and prove the *conditional* project-scope soundness theorem.
 The headline theorems in the `Prop` model are **axiom-free**: `#print axioms
 <name>` reports no dependency, not even `Classical.choice`, so the proofs are
 fully constructive. The executable-layer correspondence lemmas (`Exec.lean`'s
-`..._iff`) additionally use `propext` — one of Lean's three standard, universally
-accepted axioms — pulled in by `simp`'s iff rewriting.
+`..._iff`) additionally use `propext`, pulled in by `simp`'s iff rewriting, and
+the ones over lists (`bHasMemberByID_iff`) also use `Quot.sound`, pulled in by
+core's `List.any_eq_true`. Both are among Lean's three standard, universally
+accepted axioms; `Classical.choice`, the third, is used nowhere.
 
 ## Conformance vectors — keeping the Go code in step
 

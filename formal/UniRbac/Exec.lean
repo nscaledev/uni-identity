@@ -13,6 +13,7 @@
 -/
 
 import UniRbac.Enforce
+import UniRbac.Groups
 
 namespace UniRbac
 
@@ -74,5 +75,49 @@ theorem bGrantsProj_iff (a : BAcl) (org proj e o) :
     bGrantsProj a org proj e o = true ↔ grantsProj a.toAcl org proj e o := by
   simp [bGrantsProj, grantsProj, bGrantsOrg, grantsOrg, bGrantsGlobal, grantsGlobal,
     BAcl.toAcl, BPerm.toPerm, Bool.or_eq_true]
+
+/-!
+  ## The runnable form of the membership gate
+
+  Note what is *not* needed here. `Perm` required a `BPerm` twin because it is a
+  function into `Prop` — there is nothing to compute with. A `GroupSpec` is plain
+  data (lists of strings), so it needs no twin at all; it can be printed and
+  compared as it stands. Only the *predicate over it* needs one.
+-/
+
+/-
+  `bHasMemberByID` mirrors `hasMemberByID` from Groups.lean, translating each
+  connective into its computable counterpart: `∨` becomes `||`, `∧` becomes `&&`,
+  `≠` becomes `!=`, and the bounded existential `∃ s ∈ l, ...` becomes
+  `l.any (fun s => ...)`.
+
+  `List.any` is used for both arms rather than `List.contains` on the string one.
+  The two are equivalent, but the core lemma bridging `contains` and `∈` has been
+  renamed more than once across Lean versions, whereas `List.any_eq_true` has
+  been stable. Since the whole value of this layer is that its correspondence
+  proof goes through, that is worth the slight asymmetry with the Go, which uses
+  `slices.Contains`.
+-/
+def bHasMemberByID (g : GroupSpec) (orgUserID subjectID : String) : Bool :=
+  (orgUserID != "" && g.userIDs.any (fun u => u == orgUserID))
+  || (subjectID != "" && g.subjects.any (fun s => s.id == subjectID))
+
+/-
+  The correspondence, in the same shape as the three above: the runnable answer is
+  `true` exactly when the specification predicate holds.
+
+  The `simp` set is again "every definition on both sides, plus the bridging
+  lemmas". The new entries beyond the `Bool.or_eq_true` pattern already used are:
+  `List.any_eq_true` (lining `l.any p` up with `∃ x ∈ l, p x`), `bne_iff_ne`
+  (`a != b` with `a ≠ b`), and `beq_iff_eq` (`a == b` with `a = b`).
+
+  With this proved, a vector emitted from `bHasMemberByID` carries the authority
+  of `hasMemberByID_sound`: the decision procedure that produced it is certified
+  equal to the predicate the theorem is about.
+-/
+theorem bHasMemberByID_iff (g : GroupSpec) (orgUserID subjectID : String) :
+    bHasMemberByID g orgUserID subjectID = true ↔ g.hasMemberByID orgUserID subjectID := by
+  simp [bHasMemberByID, GroupSpec.hasMemberByID, List.any_eq_true, Bool.or_eq_true,
+    Bool.and_eq_true, bne_iff_ne, beq_iff_eq]
 
 end UniRbac
