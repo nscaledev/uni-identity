@@ -258,4 +258,67 @@ theorem hasMemberByID_sound (g : GroupSpec) (orgUser sub : String) :
       nomatch hmem
   | Or.inr ⟨_, hex⟩ => exact Or.inl hex
 
+/-
+  ## ...and it is not complete
+
+  The converse of `hasMemberByID_sound` fails. We show it the way
+  `ProjectCaveat.lean` shows its result: build one concrete world, prove the two
+  halves separately, then package them into the existential. `private def` keeps
+  the witness out of the model's public surface — it is scaffolding.
+
+  The world is a group holding a single junk subject record whose ID is the empty
+  string, and the principal we probe with presents the empty string too.
+-/
+private def junkSubjectGroup : GroupSpec where
+  userIDs           := []
+  subjects          := [⟨"", "", ""⟩]
+  serviceAccountIDs := []
+  roleIDs           := []
+
+/-
+  RBAC says this principal IS a member. Its subject arm compares `s.ID == subject`
+  with no guard whatsoever, and `"" = ""`.
+
+  The proof is a term, not a tactic block. `Or.inl` picks the first disjunct;
+  `∃ s ∈ l, p s` is sugar for `∃ s, s ∈ l ∧ p s`, so the anonymous constructor
+  wants three things: the element, a proof it is in the list, and a proof of the
+  property. `List.Mem.head []` is the constructor for "the element at the head of
+  a list is in it", and `rfl` proves `"" = ""`.
+-/
+private theorem junkGroup_confers : junkSubjectGroup.confersOn (.user "" "") :=
+  Or.inl ⟨⟨"", "", ""⟩, List.Mem.head [], rfl⟩
+
+/-
+  The gate says it is NOT a member. Both of its disjuncts open with a `≠ ""`
+  guard, and our probe is `""` on both identifiers, so both are unreachable.
+
+  `absurd rfl hne` is the idiom: `hne` is a proof that `"" ≠ ""`, `rfl` proves
+  `"" = ""`, and `absurd` turns a fact together with its negation into a proof of
+  anything.
+-/
+private theorem junkGroup_gate_refuses : ¬ junkSubjectGroup.hasMemberByID "" "" := by
+  intro h
+  match h with
+  | Or.inl ⟨hne, _⟩ => exact absurd rfl hne
+  | Or.inr ⟨hne, _⟩ => exact absurd rfl hne
+
+/-
+  So the two definitions genuinely differ.
+
+  Read it in the safe direction: the gate is *stricter* than RBAC, refusing to
+  let a junk empty entry stand in for a principal that has no record yet — which
+  is exactly what `group_helpers.go:45-47` says it is for. The cost is a write
+  refused where the roles were already conferred; the benefit is that an unwritten
+  principal cannot inherit an accidental membership. By `hasMemberByID_sound` the
+  difference can only ever lie in this direction.
+
+  It follows that "make the gate agree with RBAC exactly" would be the wrong
+  repair. If these ever need to converge, the empty-ID guard belongs on RBAC's
+  side, not off the gate's.
+-/
+theorem hasMemberByID_not_complete :
+    ∃ (g : GroupSpec) (orgUser sub : String),
+      g.confersOn (.user sub orgUser) ∧ ¬ g.hasMemberByID orgUser sub :=
+  ⟨junkSubjectGroup, "", "", junkGroup_confers, junkGroup_gate_refuses⟩
+
 end UniRbac
