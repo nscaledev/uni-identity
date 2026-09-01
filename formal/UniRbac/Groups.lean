@@ -109,4 +109,90 @@ inductive Principal where
   | user (subjectID orgUserID : String)
   | serviceAccount (id : String)
 
+/-
+  ## Membership, as RBAC computes it
+
+  This is the ground truth: the definition of "this group confers its roles on
+  this principal" that the whole authorization system actually runs on. It
+  mirrors `groupSubjectFilter` (`pkg/rbac/rbac.go:271`) and
+  `groupServiceAccountFilter` (`:304`).
+
+  ### Two pieces of Lean notation
+
+  `x ∈ l` is list membership. `∃ s ∈ g.subjects, s.id = sub` is *bounded*
+  existential quantification — sugar for "there is some `s` such that `s` is in
+  `g.subjects` and `s.id = sub`", i.e. a plain `∃` paired with a membership
+  hypothesis. That pairing is exactly how the proofs consume it: given such a
+  proof you get both the element and the evidence it came from the list.
+
+  ### ⚠ The Go functions are INVERTED
+
+  `groupSubjectFilter` returns a *deletion* predicate: `getGroups` calls
+  `slices.DeleteFunc` with it, so returning `false` means "keep this group",
+  which means the principal IS a member. Reading the Go and transcribing its
+  `true`/`false` at face value gets this exactly backwards. The definition below
+  is stated positively — `confersOn` is true when the principal is a member — so
+  every `return false` in the Go corresponds to a satisfied disjunct here.
+
+  ### The two arms, and one deliberate redundancy
+
+  For a user, membership holds if either:
+
+    * some stored subject has a matching ID. **The issuer is not consulted** —
+      see the comment at `rbac.go:274-279`. Note there is no guard against an
+      empty ID on this arm: a stored record with `id = ""` really does match a
+      principal presenting `""`. That is the fact the incompleteness result below
+      turns on.
+    * or the deprecated `userIDs` fallback applies. Three conjuncts, mirroring
+      the Go's nesting: the list is non-empty (`len(group.Spec.UserIDs) > 0`),
+      the subject resolved to an organization-user name, and that name is in the
+      list.
+
+  `orgUser ≠ ""` is how we model "`resolveOrganizationUserName` returned no
+  error". The Go skips the whole branch when resolution fails, so a failed
+  resolution must not match even if the stored list happens to contain a junk
+  empty entry — hence the conjunct.
+
+  `g.userIDs ≠ []` is *logically redundant*: `orgUser ∈ g.userIDs` already
+  implies the list is non-empty. It is kept because the Go has it as a separate
+  branch condition, and because that redundancy is precisely what makes the
+  soundness proof below go through without a side condition. Deleting it would
+  not change the meaning; it would only hide why the theorem works.
+
+  Service accounts are matched by plain ID membership, with no empty-ID guard —
+  faithful to `groupServiceAccountFilter`, and a fact that matters later.
+-/
+def GroupSpec.confersOn (g : GroupSpec) : Principal → Prop
+  | .user sub orgUser =>
+      (∃ s ∈ g.subjects, s.id = sub)
+      ∨ (g.userIDs ≠ [] ∧ orgUser ≠ "" ∧ orgUser ∈ g.userIDs)
+  | .serviceAccount id => id ∈ g.serviceAccountIDs
+
+/-
+  ## Membership, as the write gates compute it
+
+  `GroupSpec.HasMemberByID` (`pkg/apis/unikorn/v1alpha1/group_helpers.go:48`).
+  This is the *other* answer to the same question — the one the group-update
+  guards use to decide whether a write is adding a member or merely re-stating
+  one. All three write paths call it.
+
+  It is deliberately not the same expression as `confersOn`:
+
+    * it takes the organization-user ID as an *argument*, because the handler has
+      already resolved it, rather than re-deriving it;
+    * both arms guard against the empty string. The doc comment at
+      `group_helpers.go:45-47` gives the reason: membership lists are not
+      validated against real records, so a junk empty entry must not stand in for
+      a principal that has no record yet;
+    * it does not test `userIDs ≠ []`, having no need of the Go's branch
+      structure.
+
+  Whether these two definitions agree is the question the next two theorems
+  answer. They do not agree exactly — and the direction in which they differ is
+  what determines whether that is a security problem or an inconvenience.
+-/
+def GroupSpec.hasMemberByID (g : GroupSpec) (orgUserID subjectID : String) : Prop :=
+  (orgUserID ≠ "" ∧ orgUserID ∈ g.userIDs)
+  ∨ (subjectID ≠ "" ∧ ∃ s ∈ g.subjects, s.id = subjectID)
+
 end UniRbac
