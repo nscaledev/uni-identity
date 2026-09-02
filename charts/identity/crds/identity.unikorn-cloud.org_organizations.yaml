@@ -176,6 +176,12 @@ spec:
                 description: Namespace defines the namespace an organization's child
                   resources reside in.
                 type: string
+              processedGeneration:
+                description: |-
+                  ProcessedGeneration is the last spec generation the controller finished
+                  with.  Zero means never processed.
+                format: int64
+                type: integer
             type: object
         required:
         - spec

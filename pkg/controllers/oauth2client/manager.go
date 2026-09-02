@@ -35,7 +35,11 @@ import (
 )
 
 // Factory provides methods that can build a type specific controller.
-type Factory struct{}
+type Factory struct {
+	// reconciler is remembered from Reconciler() so RegisterWatches() can hand it
+	// to the generation predicate, which reads a field the reconciler writes.
+	reconciler *coremanager.Reconciler
+}
 
 var _ coremanager.ControllerFactory = &Factory{}
 
@@ -50,13 +54,26 @@ func (*Factory) Options() coremanager.ControllerOptions {
 }
 
 // Reconciler returns a new reconciler instance.
-func (*Factory) Reconciler(options *options.Options, controllerOptions coremanager.ControllerOptions, manager manager.Manager) reconcile.Reconciler {
-	return coremanager.NewReconciler(options, controllerOptions, manager, oauth2client.New)
+func (f *Factory) Reconciler(options *options.Options, controllerOptions coremanager.ControllerOptions, manager manager.Manager) reconcile.Reconciler {
+	f.reconciler = coremanager.NewReconciler(options, controllerOptions, manager, oauth2client.New)
+
+	return f.reconciler
 }
 
 // RegisterWatches adds any watches that would trigger a reconcile.
-func (*Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
-	if err := controller.Watch(source.Kind(manager.GetCache(), &unikornv1.OAuth2Client{}, &handler.TypedEnqueueRequestForObject[*unikornv1.OAuth2Client]{}, &predicate.TypedGenerationChangedPredicate[*unikornv1.OAuth2Client]{})); err != nil {
+func (f *Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
+	// A client's secret is generated once and is done, and this is its only
+	// watch, so a restart has nothing to catch up on.  GenerationUnprocessed
+	// therefore drops the start up create event for any client already reconciled
+	// at its current generation, rather than re-provisioning the whole fleet.  It
+	// must be composed with And: TypedGenerationChangedPredicate passes every
+	// create, so an Or would let everything through and filter nothing.
+	predicates := predicate.And(
+		&predicate.TypedGenerationChangedPredicate[*unikornv1.OAuth2Client]{},
+		coremanager.GenerationUnprocessed[*unikornv1.OAuth2Client](f.reconciler),
+	)
+
+	if err := controller.Watch(source.Kind(manager.GetCache(), &unikornv1.OAuth2Client{}, &handler.TypedEnqueueRequestForObject[*unikornv1.OAuth2Client]{}, predicates)); err != nil {
 		return err
 	}
 

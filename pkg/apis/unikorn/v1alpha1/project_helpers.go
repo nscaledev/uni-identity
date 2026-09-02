@@ -40,6 +40,16 @@ func (c *Project) Paused() bool {
 	return c.Spec.Pause
 }
 
+// ProcessedGeneration implements the GenerationProcessor interface.
+func (c *Project) ProcessedGeneration() int64 {
+	return c.Status.ProcessedGeneration
+}
+
+// SetProcessedGeneration implements the GenerationProcessor interface.
+func (c *Project) SetProcessedGeneration(generation int64) {
+	c.Status.ProcessedGeneration = generation
+}
+
 // StatusConditionRead scans the status conditions for an existing condition whose type
 // matches.
 func (c *Project) StatusConditionRead(t unikornv1core.ConditionType) (*metav1.Condition, error) {

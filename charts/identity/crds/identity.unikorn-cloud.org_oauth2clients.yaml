@@ -146,6 +146,12 @@ spec:
                   - type
                   type: object
                 type: array
+              processedGeneration:
+                description: |-
+                  ProcessedGeneration is the last spec generation the controller finished
+                  with.  Zero means never processed.
+                format: int64
+                type: integer
               secret:
                 description: Secret is the generated client secret.
                 type: string

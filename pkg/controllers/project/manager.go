@@ -36,7 +36,11 @@ import (
 )
 
 // Factory provides methods that can build a type specific controller.
-type Factory struct{}
+type Factory struct {
+	// reconciler is remembered from Reconciler() so RegisterWatches() can hand it
+	// to the generation predicate, which reads a field the reconciler writes.
+	reconciler *coremanager.Reconciler
+}
 
 var _ coremanager.ControllerFactory = &Factory{}
 
@@ -51,13 +55,26 @@ func (*Factory) Options() coremanager.ControllerOptions {
 }
 
 // Reconciler returns a new reconciler instance.
-func (*Factory) Reconciler(options *options.Options, controllerOptions coremanager.ControllerOptions, manager manager.Manager) reconcile.Reconciler {
-	return coremanager.NewReconciler(options, controllerOptions, manager, project.New)
+func (f *Factory) Reconciler(options *options.Options, controllerOptions coremanager.ControllerOptions, manager manager.Manager) reconcile.Reconciler {
+	f.reconciler = coremanager.NewReconciler(options, controllerOptions, manager, project.New)
+
+	return f.reconciler
 }
 
 // RegisterWatches adds any watches that would trigger a reconcile.
-func (*Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
-	if err := controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Project{}, &handler.TypedEnqueueRequestForObject[*unikornv1.Project]{}, &predicate.TypedGenerationChangedPredicate[*unikornv1.Project]{})); err != nil {
+func (f *Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
+	// A project provisions once and is done, and this is its only watch, so a
+	// restart has nothing to catch up on.  GenerationUnprocessed therefore drops
+	// the start up create event for any project already reconciled at its current
+	// generation, rather than re-provisioning the whole fleet.  It must be
+	// composed with And: TypedGenerationChangedPredicate passes every create, so
+	// an Or would let everything through and filter nothing.
+	predicates := predicate.And(
+		&predicate.TypedGenerationChangedPredicate[*unikornv1.Project]{},
+		coremanager.GenerationUnprocessed[*unikornv1.Project](f.reconciler),
+	)
+
+	if err := controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Project{}, &handler.TypedEnqueueRequestForObject[*unikornv1.Project]{}, predicates)); err != nil {
 		return err
 	}
 

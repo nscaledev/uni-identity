@@ -144,6 +144,12 @@ spec:
               namespace:
                 description: Namespace defines the namespace a project resides in.
                 type: string
+              processedGeneration:
+                description: |-
+                  ProcessedGeneration is the last spec generation the controller finished
+                  with.  Zero means never processed.
+                format: int64
+                type: integer
             type: object
         required:
         - spec

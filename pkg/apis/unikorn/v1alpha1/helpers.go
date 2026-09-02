@@ -37,6 +37,16 @@ func (c *OAuth2Client) Paused() bool {
 	return false
 }
 
+// ProcessedGeneration implements the GenerationProcessor interface.
+func (c *OAuth2Client) ProcessedGeneration() int64 {
+	return c.Status.ProcessedGeneration
+}
+
+// SetProcessedGeneration implements the GenerationProcessor interface.
+func (c *OAuth2Client) SetProcessedGeneration(generation int64) {
+	c.Status.ProcessedGeneration = generation
+}
+
 // StatusConditionRead scans the status conditions for an existing condition whose type
 // matches.
 func (c *OAuth2Client) StatusConditionRead(t unikornv1core.ConditionType) (*metav1.Condition, error) {

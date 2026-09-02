@@ -65,4 +65,8 @@ type ProjectStatus struct {
 
 	// Current service state of a project.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ProcessedGeneration is the last spec generation the controller finished
+	// with.  Zero means never processed.
+	ProcessedGeneration int64 `json:"processedGeneration,omitempty"`
 }

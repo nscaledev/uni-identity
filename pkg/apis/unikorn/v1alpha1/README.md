@@ -77,6 +77,11 @@ changes from scoped `v1` routing to a flatter `v2` routing model.
   membership that may refer to identities outside the local user database.
 - An `OAuth2Provider`'s issuer URL must be unique across all bearer-trusted providers in the
   operator namespace. Duplicate issuers produce undefined dispatch behavior.
+- `Organization`, `Project` and `OAuth2Client` implement `core`'s `GenerationProcessor`, so
+  `status.processedGeneration` records the last `metadata.generation` their controller
+  finished with. Zero means never processed. Only the reconciler writes it; nothing else may.
+  See [pkg/controllers](../../../controllers/README.md) for what reads it and why the other
+  types do not opt in.
 
 ## `bearerTrust` and multi-issuer bearer trust
 
