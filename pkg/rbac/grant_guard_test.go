@@ -359,7 +359,7 @@ func TestBuiltinVolumePermissions(t *testing.T) {
 	}
 }
 
-func TestBuiltinSystemServicesDoNotReceiveVolumePermissions(t *testing.T) {
+func TestBuiltinSystemServiceVolumePermissions(t *testing.T) {
 	t.Parallel()
 
 	roles := loadChartRoles(t)
@@ -372,23 +372,36 @@ func TestBuiltinSystemServicesDoNotReceiveVolumePermissions(t *testing.T) {
 		openapi.Delete,
 	}
 
-	for _, roleName := range []string{"region-service", "kubernetes-service", "compute-service", "storage-service"} {
-		role, ok := roles[roleName]
-		require.Truef(t, ok, "built-in role %q is missing", roleName)
+	for _, test := range []struct {
+		role             string
+		volumeOperations []openapi.AclOperation
+	}{
+		{role: "region-service"},
+		{role: "kubernetes-service"},
+		{role: "compute-service", volumeOperations: []openapi.AclOperation{openapi.Read}},
+		{role: "storage-service"},
+	} {
+		role, ok := roles[test.role]
+		require.Truef(t, ok, "built-in role %q is missing", test.role)
 
 		ctx := rbac.NewContext(t.Context(), aclForHolder(role))
 
 		for _, operation := range operations {
-			t.Run(roleName+" VolumeClass "+string(operation), func(t *testing.T) {
+			t.Run(test.role+" VolumeClass "+string(operation), func(t *testing.T) {
 				t.Parallel()
 
 				require.Error(t, rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, operation, organization))
 			})
 
-			t.Run(roleName+" Volume "+string(operation), func(t *testing.T) {
+			t.Run(test.role+" Volume "+string(operation), func(t *testing.T) {
 				t.Parallel()
 
-				require.Error(t, rbac.AllowProjectScopeID(ctx, volumeEndpoint, operation, organization, project))
+				err := rbac.AllowProjectScopeID(ctx, volumeEndpoint, operation, organization, project)
+				if slices.Contains(test.volumeOperations, operation) {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
 			})
 		}
 	}
