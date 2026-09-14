@@ -125,6 +125,9 @@ Region block-storage scopes preserve that split:
 - `region:volumes:v2` is a project-owned lifecycle scope. `user` has project CRUD and
   `reader` has project read, while `administrator` and `auditor` carry the corresponding
   organization-wide CRUD and read permissions. `platform-administrator` holds global CRUD.
+- `compute-service` holds global read-only access to `region:volumes:v2`. Compute needs this
+  ceiling when it validates an Instance's project-scoped Volume references while impersonating
+  the caller; it does not receive create, update, or delete access.
 
 Identity is the rollout dependency for these Region APIs. Deploy the identity role catalogue
 containing both scopes before enabling users to rely on VolumeClass listing or Volume lifecycle
