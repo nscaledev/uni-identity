@@ -22,7 +22,9 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -114,6 +116,13 @@ type Authorizer struct {
 	// request by seedDecisionEngines — need not re-register OTel instruments
 	// each time. It holds no per-request state.
 	remoteEngine *RemoteEngine
+
+	// authorizationHost, when set, points the ACL fetch and the decision
+	// call at a host other than the identity host (see WithAuthorizationHost
+	// and authorizationEndpoint). Empty means both use the identity host,
+	// which is every deployment that predates the enclave authorization
+	// profile.
+	authorizationHost string
 }
 
 var _ openapi.Authorizer = &Authorizer{}
@@ -166,6 +175,65 @@ func WithRemoteEngineMode(m rbac.RemoteMode) Option {
 	}
 }
 
+// WithAuthorizationHost points the ACL fetch and the decision call at a host
+// other than the identity host. An enclave authorization profile serves only
+// those two, so authentication (the token exchange), quota and lifecycle
+// calls must keep using the identity host regardless. Unset means both use
+// the identity host, which is every deployment that predates the enclave
+// profile.
+func WithAuthorizationHost(host string) Option {
+	return func(a *Authorizer) {
+		a.authorizationHost = host
+	}
+}
+
+// validateAuthorizationHost refuses an alternate authorization host that cannot
+// carry a credential safely. GetACL forwards the caller's passport to this host
+// as a bearer, and the decision call trusts the verdict that comes back, so a
+// plain http:// host both discloses the passport and lets anything on the path
+// forge an allow. Loopback keeps http, the same concession
+// pkg/authz/cerbos.validateEndpoint makes for its sidecar, so tests and local
+// runs need no TLS.
+//
+// The identity host is deliberately not validated here: it arrives from core's
+// shared --<service>-host flag, is the pre-existing trust root for every one of
+// these calls, and validating only one of the two would be a false comfort.
+// This option is the one this package introduces, so it is the one it can gate.
+func validateAuthorizationHost(host string) error {
+	if host == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(host)
+	if err != nil {
+		return fmt.Errorf("%w: %q is not a URL: %w", ErrAuthorizationHost, host, err)
+	}
+
+	if parsed.Scheme == "https" {
+		return nil
+	}
+
+	if parsed.Scheme == "http" {
+		if hostname := parsed.Hostname(); hostname == "localhost" {
+			return nil
+		} else if ip := net.ParseIP(hostname); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%w: %q must be an https URL, or http on loopback", ErrAuthorizationHost, host)
+}
+
+// authorizationEndpoint returns the host the ACL fetch and the decision call
+// use, so neither call site can forget the identity-host default.
+func (a *Authorizer) authorizationEndpoint() string {
+	if a.authorizationHost != "" {
+		return a.authorizationHost
+	}
+
+	return a.options.Host()
+}
+
 // isBreakerFailure classifies which CheckMany errors count toward opening the
 // circuit breaker: ONLY a genuine failure to obtain a verdict from a
 // struggling identity — a transport error, a 5xx, a malformed 200, or this
@@ -214,14 +282,24 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		client:        client,
 		options:       options,
 		clientOptions: clientOptions,
-		exchange:      NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
-		tokenCache:    tokenCache,
-		checkTimeout:  defaultCheckTimeout,
-		breaker:       breaker,
+		// The token exchange always uses the identity host, never
+		// authorizationHost: it is authentication, not authorization, and an
+		// enclave authorization profile does not serve it (see
+		// WithAuthorizationHost).
+		exchange:     NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
+		tokenCache:   tokenCache,
+		checkTimeout: defaultCheckTimeout,
+		breaker:      breaker,
 	}
 
 	for _, opt := range opts {
 		opt(a)
+	}
+
+	// Refuse an unsafe authorization host at construction, not on the first
+	// request that would have leaked a passport to it.
+	if err := validateAuthorizationHost(a.authorizationHost); err != nil {
+		return nil, err
 	}
 
 	// Build the CoarseEngine view once, now that options are applied; see
@@ -477,7 +555,7 @@ func (a *Authorizer) GetACL(ctx context.Context, organizationID string) (*identi
 		}))
 	}
 
-	rawClient, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
+	rawClient, err := identityapi.NewClientWithResponses(a.authorizationEndpoint(), options...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to create identity client", err)
 	}
