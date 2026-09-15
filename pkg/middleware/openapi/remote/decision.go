@@ -130,7 +130,7 @@ func (a *Authorizer) checkManyRequest(ctx context.Context, checks []CheckRequest
 		identityapi.WithRequestEditorFn(principal.Injector(a.client, a.clientOptions)),
 	}
 
-	rawClient, err := identityapi.NewClientWithResponses(a.options.Host(), options...)
+	rawClient, err := identityapi.NewClientWithResponses(a.authorizationEndpoint(), options...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: failed to create identity client", err)
 	}

@@ -43,6 +43,10 @@ var (
 	// ErrPassportInvalid indicates exchange returned an unusable passport payload.
 	ErrPassportInvalid = errors.New("passport invalid")
 
+	// ErrAuthorizationHost rejects an alternate authorization host that cannot
+	// carry credentials safely; see validateAuthorizationHost.
+	ErrAuthorizationHost = errors.New("invalid authorization host")
+
 	// ErrDecisionUnavailable is the fail-closed mapping for an authorization
 	// check that could not obtain a verdict from identity: transport failures,
 	// 5xx responses, and malformed successful responses.  The caller MUST

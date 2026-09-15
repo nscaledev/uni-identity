@@ -60,12 +60,29 @@ from the mux, so a request to one gets a 404, not a refused write. The second la
 ClusterRole, so that a write route reachable by mistake (a bug, a future regression) would still be
 refused at the Kubernetes API rather than only at the mux. That ClusterRole is built:
 `charts/identity/templates/enclave-authorization/clusterrole.yaml`, rendered only when
-`enclaveAuthorization.enabled` is set, grants `get`, `list` and `watch` only, on exactly the
-`identity.unikorn-cloud.org` resources binding resolution reads: `organizations`, `projects`,
-`groups`, `roles`, `users`, and `organizationusers` (the last needed only for a `Group` still on
-the deprecated `Spec.UserIDs` field; see `pkg/rbac.resolveOrganizationUserName`). It grants neither
-`serviceaccounts` (service-account membership resolves by ID against `Group.Spec.ServiceAccountIDs`;
-no ServiceAccount CR is read) nor `namespaces` (nothing on this surface reads one). It binds to its
+`enclaveAuthorization.enabled` is set, and every rule in it grants `get`, `list` or `watch` only,
+never a write verb. It has three rules:
+
+- `get`, `list` and `watch` on exactly the `identity.unikorn-cloud.org` resources binding
+  resolution reads: `organizations`, `projects`, `groups`, `roles`, `users`, and
+  `organizationusers` (the last needed only for a `Group` still on the deprecated
+  `Spec.UserIDs` field; see `pkg/rbac.resolveOrganizationUserName`).
+- `list` and `watch` (no `get`) on `oauth2providers`: `pkg/server.computeTrustedNonUNIIssuers`
+  lists it at boot through core's cache-backed client, which starts an informer, so this is a
+  boot-liveness grant, not a binding-resolution one — without it the initial LIST is Forbidden,
+  the informer never reports synced, and `GetServer` waits on it forever.
+- `get` only on `configmaps`, for the policy-store hasher that keys the coarse-decision cache on
+  the policy ConfigMap's hash, wired by `pkg/server.GetServer` whenever
+  `--cerbos-policies-configmap` is set.
+
+It grants no `serviceaccounts`, and that is deliberate but incomplete: `pkg/rbac` binding
+resolution never reads a ServiceAccount CR (service-account membership resolves by ID against
+`Group.Spec.ServiceAccountIDs`), but `pkg/oauth2/tokens.go`'s `verifyServiceAccount` does a
+`client.Get` on one for every service-account bearer token, and that path is reachable on this
+profile's ACL routes. The grant stays absent pending a decision on how this profile validates
+tokens (decision D14 in the enclave-authorization decision log,
+artifacts/planning/2026-08-25-enclave-authorization-decisions.md), not because the read
+never happens. It also grants no `namespaces` (nothing on this surface reads one). It binds to its
 own ServiceAccount
 (`charts/identity/templates/enclave-authorization/serviceaccount.yaml`), used only by the
 `enclave-authorization` Deployment. The pre-existing `charts/identity/templates/identity/clusterrole.yaml`
@@ -73,6 +90,38 @@ is unchanged and still grants `create`, `update`, `patch` and `delete`: that Clu
 `full`-profile Deployment's own ServiceAccount, so it does not weaken the `authorization` profile's
 guard. See `pkg/server/server.go` (`mountAPI`) for the routing decision and `pkg/openapi/enclave` for the
 generated subset router.
+
+## Routing To A Separate Authorization Host
+
+A consumer holds one identity host today, and that host serves far more than authorization: the
+RFC 8693 token exchange, quota allocations, and lifecycle references, in addition to the ACL fetch
+and the decision call. An enclave (the `authorization` API profile above) serves only the latter
+two, so a consumer cannot re-point its identity host wholesale — it needs to send exactly those two
+calls to the enclave while everything else keeps going to central identity.
+
+`remote.WithAuthorizationHost(host string)` is that split, on the `remote.Authorizer` a consumer
+constructs:
+
+- **Moves**: the ACL fetch (`Authorizer.GetACL`, `GET /api/v1/acl` and
+  `GET /api/v1/organizations/{organizationID}/acl`) and the decision call (`Authorizer.CheckMany`,
+  `POST /api/v1/authorization/check`) both go to `WithAuthorizationHost`'s host, via the internal
+  `authorizationEndpoint()` accessor both call sites use.
+- **Stays on the identity host, always**: the token exchange (`TokenExchangeURL`,
+  `POST /oauth2/v2/token`, `remote/authorizer.go`). It is authentication, not authorization, and an
+  enclave does not serve it, even though it runs through the same `Authorizer`.
+- **Stays on the identity host, on other clients entirely**: quota allocations (`pkg/client`'s
+  `Allocations`) and lifecycle/project references (`pkg/client`'s `References`). Neither is part of
+  this package's `remote.Authorizer`, so `WithAuthorizationHost` has no effect on them.
+- Unset, `authorizationEndpoint()` falls back to `options.Host()` (the identity host), so every
+  deployment that predates the enclave profile is unchanged.
+
+**One authorization dependency an enclave does not remove.** `pkg/rbac.AllowProjectScopeCreate`
+verifies an untrusted, request-supplied project ID against identity's project-read endpoint before
+granting an organization-scoped create. That call is built from its own `openapi.ClientWithResponsesInterface`
+argument (`pkg/client`), constructed against the identity host, never against
+`WithAuthorizationHost`'s host. It stays central by design — it is not part of the three-route
+authorization surface an enclave serves (see API Profiles above) — so it fails closed under a
+network partition that isolates a consumer from central identity but leaves an enclave reachable.
 
 ## Trust Boundary Rules
 
