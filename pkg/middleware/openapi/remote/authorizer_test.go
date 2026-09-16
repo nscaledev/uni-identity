@@ -53,12 +53,13 @@ import (
 )
 
 const (
-	testNamespace   = "test-namespace"
-	testSubject     = "test@example.com"
-	testOrgID       = "test-org"
-	testUserID      = "test-user-id"
-	testServiceID   = "test-service-id"
-	certificateName = "jose-tls"
+	testNamespace          = "test-namespace"
+	testSubject            = "test@example.com"
+	testOrgID              = "test-org"
+	testUserID             = "test-user-id"
+	testServiceID          = "test-service-id"
+	certificateName        = "jose-tls"
+	remoteTestCheckTimeout = 5 * time.Second
 )
 
 // TestRemoteFederatedTokenAuthentication tests authentication via remote identity service.
@@ -392,13 +393,17 @@ func createCoreClientOptions(t *testing.T) *coreclient.HTTPClientOptions {
 	return options
 }
 
-func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string) *authorizer.Authorizer {
+func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string, opts ...authorizer.Option) *authorizer.Authorizer {
 	t.Helper()
 
 	identityOptions := createIdentityOptions(t, issuer)
 	clientOptions := createCoreClientOptions(t)
 
-	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions)
+	// TLS setup can exceed the production 250ms decision deadline under the
+	// race detector. Explicit test options follow this default and still win.
+	opts = append([]authorizer.Option{authorizer.WithCheckTimeout(remoteTestCheckTimeout)}, opts...)
+
+	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions, opts...)
 	require.NoError(t, err)
 
 	return a
