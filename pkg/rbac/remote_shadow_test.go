@@ -252,3 +252,57 @@ func TestRemoteShadowPanicIsRecovered(t *testing.T) {
 	require.Contains(t, attrs["panic"], "deliberate remote shadow test panic")
 	require.NotEmpty(t, attrs["stack"])
 }
+
+// TestRemoteShadowProjectScopeCreateIsCompared pins the remote half of the
+// create shadow contract. Shadow's promise is that the legacy verdict is served
+// unconditionally while the candidate engine is evaluated beside it, and a
+// create is where that is easiest to break silently: this branch could serve the
+// remote verdict, or skip the comparison altogether, and every other create test
+// in the package would still pass. Then a soak would report zero divergence for
+// creates off a path that never ran.
+func TestRemoteShadowProjectScopeCreateIsCompared(t *testing.T) {
+	t.Parallel()
+
+	capture := &logCapture{}
+
+	// The remote engine denies what the global ACL grants: a divergence, with
+	// the legacy ALLOW still served.
+	engine := &captureCoarseEngine{err: rbac.CoarseForbidden(rbac.Resource{Kind: "candy"}, openapi.Create, rbac.ErrPolicyDenied)}
+	ctx := remoteShadowContext(t, capture, engine, globalACL("candy", openapi.Create))
+
+	require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID),
+		"the served verdict must be the legacy allow")
+	require.Equal(t, 1, engine.calls, "a create must reach the remote comparator")
+
+	records := capture.messages(remoteShadowDivergenceMessage)
+	require.Len(t, records, 1)
+
+	attrs := logAttrs(t, records[0])
+	require.Equal(t, "candy", attrs["endpoint"])
+	require.Equal(t, "create", attrs["operation"])
+	require.Equal(t, organizationID, attrs["organization_id"])
+	require.Equal(t, projectID, attrs["project_id"], "the divergence must name the body-supplied project")
+	require.Equal(t, "allow", attrs["legacy_verdict"])
+	require.Equal(t, "deny", attrs["remote_verdict"])
+
+	require.Empty(t, capture.messages(remoteShadowFailureMessage))
+}
+
+// TestRemoteShadowProjectScopeCreateSurvivesAnUnavailableEngine keeps the
+// taxonomy honest for creates too: a decision endpoint outage during a soak is
+// infrastructure signal, so it must neither change the served verdict nor
+// register as policy divergence.
+func TestRemoteShadowProjectScopeCreateSurvivesAnUnavailableEngine(t *testing.T) {
+	t.Parallel()
+
+	capture := &logCapture{}
+
+	engine := &captureCoarseEngine{err: rbac.CoarseForbidden(rbac.Resource{Kind: "candy"}, openapi.Create, rbac.ErrDecisionUnavailable)}
+	ctx := remoteShadowContext(t, capture, engine, globalACL("candy", openapi.Create))
+
+	require.NoError(t, rbac.AllowProjectScopeCreate(ctx, nil, "candy", openapi.Create, organizationID, projectID),
+		"an unavailable remote engine must not change the served verdict")
+
+	require.Len(t, capture.messages(remoteShadowFailureMessage), 1)
+	require.Empty(t, capture.messages(remoteShadowDivergenceMessage), "unavailability is infra signal, never divergence")
+}
