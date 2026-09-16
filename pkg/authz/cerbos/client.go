@@ -17,9 +17,10 @@ limitations under the License.
 // Package cerbos provides a thin gRPC client for the Cerbos PDP that runs as
 // a sidecar of the identity server (see charts/identity).  It owns connection
 // construction, per-call deadlines and the fail-closed error contract, and
-// nothing else: request construction (principals, resources, binding strings),
-// decision mapping, batching, and the decision audit logging and metrics all
-// live outside this package — the client itself stays log-free.
+// nothing else: request construction (principals, resources, binding strings)
+// is the request builder's job (request.go), and decision mapping, batching,
+// and the decision audit logging and metrics all live in pkg/rbac
+// (Check/CheckMany and decision_log.go) — the client itself stays log-free.
 package cerbos
 
 import (
@@ -27,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
@@ -83,9 +85,19 @@ func New(options *Options) (*Client, error) {
 // across the network would bypass every transport protection.  A remote PDP
 // (a separate, network-reachable deployment) would need mTLS and revisits this.
 func validateEndpoint(endpoint string) error {
-	host, _, err := net.SplitHostPort(endpoint)
+	host, portText, err := net.SplitHostPort(endpoint)
 	if err != nil {
 		return fmt.Errorf("%w: endpoint %q: %w", ErrOptions, endpoint, err)
+	}
+
+	// ParseUint at base 10 rejects a sign, an underscore, whitespace and any
+	// non-digit, so the port is a bare decimal number or this fails.  That is
+	// deliberately stricter than net: SplitHostPort does not parse the port at
+	// all, and LookupPort would resolve "+1" to 1 and "http" to 80.  In a
+	// chart value either is a typo, not an intention.
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 {
+		return fmt.Errorf("%w: endpoint %q port must be an integer between 1 and 65535", ErrOptions, endpoint)
 	}
 
 	if host == "localhost" {

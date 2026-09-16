@@ -1,0 +1,385 @@
+/*
+Copyright 2026 Nscale.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package rbac
+
+import (
+	"cmp"
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+
+	"github.com/unikorn-cloud/core/pkg/errors"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/authz/cerbos"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/openapi"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// This file is the Cerbos bindings resolver: it converts
+// the authenticated subject's identity into the (role, scope) tuples the
+// request builder (pkg/authz/cerbos/request.go) renders into the principal's
+// bindings attribute.  Every branch deliberately mirrors a specific legacy
+// ACL-accumulation path in this package — including the odd ones (silent
+// unprovisioned-org skips, the service-account org-mismatch fallthrough, the
+// error asymmetries) — because legacy/Cerbos DECISION PARITY is the M1
+// cutover contract (the shadow-mode gate compares verdicts request by
+// request).  Behavioural fixes belong after cutover, not here.
+
+// ResolveBindings resolves the authenticated subject's role bindings across
+// all of their organizations.  It mirrors the legacy ACL accumulation exactly
+// (decision parity is the M1 contract; see the shadow-mode gate):
+//
+//   - bindings are resolved across EVERY organization in the subject's
+//     claims, not just a request-scoped one, because the legacy Allow*
+//     functions consult the plural acl.Organizations list built across all
+//     organizations (handler.go:107/159/194).  A scoped-org optimization is
+//     recorded for post-cutover;
+//   - the resolver never reads Role.Spec.Scopes: the generated policies'
+//     scope buckets decide what each binding level actually grants.
+//
+// The result is deduplicated and sorted, so semantically identical inputs
+// yield identical slices.
+func (r *RBAC) ResolveBindings(ctx context.Context, info *authorization.Info) ([]cerbos.RoleBinding, error) {
+	// The legacy path dereferences Userinfo unconditionally (rbac.go GetACL);
+	// fail loudly rather than replicating a panic.
+	if info == nil || info.Userinfo == nil {
+		return nil, fmt.Errorf("%w: no userinfo present", ErrNoAuthz)
+	}
+
+	subject := info.Userinfo.Sub
+
+	// Actor-class dispatch, mirroring GetACL: the account type claim decides
+	// the resolution path, defaulting to a user account when absent.
+	authz := info.Userinfo.HttpsunikornCloudOrgauthz
+
+	accountType := openapi.User
+	if authz != nil {
+		accountType = authz.Acctype
+	}
+
+	// The user-account binding path matches global role bindings by the
+	// issuer-aware (srcIss, subject) pair and by the token's IdP groups,
+	// mirroring processUserAccountACL.
+	srcIss := srcIssOrUNISentinel(info.SrcIss)
+
+	var bindings []cerbos.RoleBinding
+
+	var err error
+
+	switch accountType {
+	case openapi.System:
+		bindings, err = r.resolveSystemAccountBindings(ctx, subject)
+	case openapi.Service:
+		bindings, err = r.resolveServiceAccountBindings(ctx, subject, authz)
+	case openapi.User:
+		bindings, err = r.resolveUserBindings(ctx, subject, srcIss, authz, info.Groups)
+	default:
+		bindings, err = r.resolveUserBindings(ctx, subject, srcIss, authz, info.Groups)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return normalizeBindings(bindings), nil
+}
+
+// normalizeBindings sorts and deduplicates the resolved bindings: the same
+// grant reached through two groups must appear once, and the deterministic
+// order keeps requests, logs and test expectations stable (the request
+// builder sorts the rendered strings again anyway).
+func normalizeBindings(bindings []cerbos.RoleBinding) []cerbos.RoleBinding {
+	slices.SortFunc(bindings, func(a, b cerbos.RoleBinding) int {
+		return cmp.Or(
+			strings.Compare(a.RoleID, b.RoleID),
+			strings.Compare(a.OrganizationID, b.OrganizationID),
+			strings.Compare(a.ProjectID, b.ProjectID),
+		)
+	})
+
+	return slices.Compact(bindings)
+}
+
+// matchedGlobalBindings converts matched global role bindings into global
+// Cerbos bindings, mirroring accumulateMatchedBindings: exact subject bindings
+// and group bindings alike grant their roles' FULL global scopes.
+//
+// A wildcard subject binding fails closed. The legacy path clamps it to read
+// (accumulateGlobalReadPermissions), but a cerbos.RoleBinding activates the
+// role's whole global bucket, so the clamp cannot be expressed here. Emitting
+// one anyway would grant write scopes the legacy path withholds, so refusing
+// is the only safe option until the generator gains a read-only bucket.
+func matchedGlobalBindings(subjectBindings []GlobalRoleBinding, groupBindings []GroupRoleBinding, roles map[string]*unikornv1.Role) ([]cerbos.RoleBinding, error) {
+	var bindings []cerbos.RoleBinding
+
+	for _, b := range subjectBindings {
+		if b.Wildcard {
+			return nil, fmt.Errorf("%w: issuer %q", ErrWildcardBindingUnsupported, b.Issuer)
+		}
+
+		matched, err := globalRoleBindings(b.RoleIDs, roles)
+		if err != nil {
+			return nil, err
+		}
+
+		bindings = append(bindings, matched...)
+	}
+
+	for _, b := range groupBindings {
+		matched, err := globalRoleBindings(b.RoleIDs, roles)
+		if err != nil {
+			return nil, err
+		}
+
+		bindings = append(bindings, matched...)
+	}
+
+	return bindings, nil
+}
+
+// globalRoleBindings emits one global binding per role ID, validating each
+// against the role catalogue exactly like the legacy global accumulation
+// (accumulateGlobalPermissions): a configured role with no Role CR is a hard
+// consistency error, never a silently missing grant.
+func globalRoleBindings(roleIDs []string, roles map[string]*unikornv1.Role) ([]cerbos.RoleBinding, error) {
+	bindings := make([]cerbos.RoleBinding, 0, len(roleIDs))
+
+	for _, roleID := range roleIDs {
+		if _, ok := roles[roleID]; !ok {
+			return nil, fmt.Errorf("%w: role %s referenced by a global role grant", errors.ErrConsistency, roleID)
+		}
+
+		bindings = append(bindings, cerbos.RoleBinding{RoleID: roleID})
+	}
+
+	return bindings, nil
+}
+
+// resolveSystemAccountBindings mirrors processSystemAccountACL: the X.509
+// common name maps to exactly one globally scoped role.  An unregistered
+// common name is an ERROR (parity), never an empty grant set — an empty
+// result would silently mask a configuration mistake.
+func (r *RBAC) resolveSystemAccountBindings(ctx context.Context, subject string) ([]cerbos.RoleBinding, error) {
+	roleID, ok := r.options.SystemAccountRoleIDs[subject]
+	if !ok {
+		return nil, fmt.Errorf("%w: system account '%s' not registered", errors.ErrConsistency, subject)
+	}
+
+	roles, err := r.getRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return globalRoleBindings([]string{roleID}, roles)
+}
+
+// resolveServiceAccountBindings mirrors processServiceAccountACL: membership
+// comes from group.Spec.ServiceAccountIDs within the single organization the
+// account is bound to.
+func (r *RBAC) resolveServiceAccountBindings(ctx context.Context, subject string, authz *openapi.AuthClaims) ([]cerbos.RoleBinding, error) {
+	// getServiceAccountContext parity: service accounts are bound to exactly
+	// one organization.
+	if authz == nil {
+		return nil, ErrNoAuthz
+	}
+
+	if len(authz.OrgIds) != 1 {
+		return nil, ErrWrongOrganizationCount
+	}
+
+	organizationID := authz.OrgIds[0]
+
+	// ORG-MISMATCH FALLTHROUGH, PORTED AS-IS: a legacy request scoped to an
+	// organization other than the service account's home organization does
+	// NOT deny — processServiceAccountACL swallows ErrNotInOrganization and
+	// falls through to the home-org unscoped resolution, leaving the
+	// home-org permissions in the plural acl.Organizations list the Allow*
+	// functions consult.  This resolver has no request-scope parameter at
+	// all — the home-org bindings below are resolved unconditionally — so a
+	// check against another organization simply matches no binding: the
+	// same verdicts, fallthrough included.  The legacy code carries an
+	// information-leak TODO about returning ErrNotInOrganization instead;
+	// that fix is deliberately deferred to post-cutover so the shadow-mode
+	// comparison stays clean.
+	//
+	// An unprovisioned home organization is a hard error here, unlike the
+	// user path's silent skip below — a legacy asymmetry replicated as-is.
+	organizationNamespace, err := r.getOrganizationNamespace(ctx, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("%w, failed to get organization namespace %q", err, organizationID)
+	}
+
+	groups, err := r.getGroups(ctx, organizationNamespace, groupServiceAccountFilter(subject))
+	if err != nil {
+		return nil, err
+	}
+
+	// Membership in no groups short-circuits to an empty grant set before
+	// the role catalogue is read (parity with the legacy early return).
+	if len(groups) == 0 {
+		return nil, nil
+	}
+
+	roles, err := r.getRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.organizationGroupBindings(ctx, organizationID, groups, roles)
+}
+
+// resolveUserBindings mirrors processUserAccountACL plus the unscoped
+// accumulation it delegates to (accumulatePermissions).
+func (r *RBAC) resolveUserBindings(ctx context.Context, subject, srcIss string, authz *openapi.AuthClaims, groups []string) ([]cerbos.RoleBinding, error) {
+	// Checked BEFORE the global-binding short-circuit, so even a bound subject
+	// fails without claims (parity).
+	if authz == nil {
+		return nil, ErrNoAuthz
+	}
+
+	roles, err := r.getRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Global role bindings EARLY RETURN: a matched subject or group binding
+	// REPLACES membership resolution entirely, so memberships never contribute
+	// even when the subject has some (parity with accumulateMatchedBindings —
+	// and privilege containment: bound authority comes from static
+	// configuration, not from mutable group state).
+	//
+	// Platform administrators arrive here too, rather than through a check of
+	// their own: New feeds PlatformAdministratorSubjects through
+	// effectiveGlobalRoleBindings, which translates each into an exact subject
+	// binding, so one path serves both. That also inherits the legacy
+	// comparison, which is case-SENSITIVE.
+	subjectBindings := r.resolveGlobalRoleBindings(srcIss, subject)
+	groupBindings := r.resolveGroupRoleBindings(srcIss, groups)
+
+	if len(subjectBindings)+len(groupBindings) > 0 {
+		return matchedGlobalBindings(subjectBindings, groupBindings, roles)
+	}
+
+	var bindings []cerbos.RoleBinding
+
+	for _, organizationID := range authz.OrgIds {
+		organization := &unikornv1.Organization{}
+
+		if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: organizationID}, organization); err != nil {
+			return nil, err
+		}
+
+		// An organization without a provisioned namespace is SILENTLY
+		// skipped (accumulatePermissions parity) — unlike the service
+		// account path, where the equivalent condition is a hard error.
+		if organization.Status.Namespace == "" {
+			continue
+		}
+
+		groups, err := r.getGroups(ctx, organization.Status.Namespace, r.groupSubjectFilter(ctx, subject))
+		if err != nil {
+			return nil, err
+		}
+
+		organizationBindings, err := r.organizationGroupBindings(ctx, organizationID, groups, roles)
+		if err != nil {
+			return nil, err
+		}
+
+		bindings = append(bindings, organizationBindings...)
+	}
+
+	return bindings, nil
+}
+
+// organizationGroupBindings emits the bindings granted by a subject's member groups in
+// one organization, mirroring the legacy accumulation:
+//
+//   - EVERY role granted by a member group yields an org-level binding — the
+//     legacy code applies role.Spec.Scopes.Organization organization-wide
+//     (accumulateOrganizationPermissions);
+//   - ADDITIONALLY a project-level binding for each project whose
+//     Spec.GroupIDs contains a member group (accumulateProjectPermissions).
+//
+// BOTH levels are emitted for a project-linked group: the generated policies'
+// scope buckets decide what each binding level actually grants, so a role
+// carrying only project scopes produces an org binding that activates nothing
+// — exactly like the legacy accumulation adding an empty endpoint list.
+//
+// Reference-consistency parity is deliberately asymmetric, like the legacy
+// code: a member group referencing a nonexistent role is a hard error, while
+// a project referencing an unknown group is silently skipped.
+//
+// Groups NEVER yield global bindings: the legacy global accumulation
+// deliberately does not accept groups, and neither does this.
+func (r *RBAC) organizationGroupBindings(ctx context.Context, organizationID string, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role) ([]cerbos.RoleBinding, error) {
+	var bindings []cerbos.RoleBinding
+
+	for groupID, group := range groups {
+		for _, roleID := range group.Spec.RoleIDs {
+			if _, ok := roles[roleID]; !ok {
+				return nil, fmt.Errorf("%w: role %s referenced by group %s does not exist", errors.ErrConsistency, roleID, groupID)
+			}
+
+			bindings = append(bindings, cerbos.RoleBinding{RoleID: roleID, OrganizationID: organizationID})
+		}
+	}
+
+	projects, err := r.getProjects(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range projects.Items {
+		projectBindings, err := projectGroupBindings(organizationID, &projects.Items[i], groups, roles)
+		if err != nil {
+			return nil, err
+		}
+
+		bindings = append(bindings, projectBindings...)
+	}
+
+	return bindings, nil
+}
+
+// projectGroupBindings emits the project-level bindings for one project (see
+// organizationGroupBindings for the parity contract).
+func projectGroupBindings(organizationID string, project *unikornv1.Project, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role) ([]cerbos.RoleBinding, error) {
+	var bindings []cerbos.RoleBinding
+
+	for _, groupID := range project.Spec.GroupIDs {
+		group, ok := groups[groupID]
+		if !ok {
+			// An unknown (or non-member) group linked to a project is
+			// silently skipped (parity with the legacy project accumulation).
+			continue
+		}
+
+		for _, roleID := range group.Spec.RoleIDs {
+			if _, ok := roles[roleID]; !ok {
+				return nil, fmt.Errorf("%w: role %s referenced by group %s does not exist", errors.ErrConsistency, roleID, groupID)
+			}
+
+			bindings = append(bindings, cerbos.RoleBinding{RoleID: roleID, OrganizationID: organizationID, ProjectID: project.Name})
+		}
+	}
+
+	return bindings, nil
+}

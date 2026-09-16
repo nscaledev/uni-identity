@@ -152,7 +152,7 @@ func getConfigMap(t *testing.T, c client.Client) *corev1.ConfigMap {
 // expectedData computes the ConfigMap data the reconciler must publish for
 // the given roles.  The content is generate.Generate's byte-exact output; the
 // keys re-encode the hash-suffix contract independently of the implementation
-// (base "-" first-8-hex-of-sha256 ".yaml") so a drift in the published key
+// (base "-" first-32-hex-of-sha256 ".yaml") so a drift in the published key
 // scheme fails here even if the implementation is self-consistent.
 func expectedData(t *testing.T, roles ...*unikornv1.Role) map[string]string {
 	t.Helper()
@@ -175,7 +175,7 @@ func expectedData(t *testing.T, roles ...*unikornv1.Role) map[string]string {
 
 	for name, content := range files {
 		sum := sha256.Sum256(content)
-		key := strings.TrimSuffix(name, ".yaml") + "-" + hex.EncodeToString(sum[:])[:8] + ".yaml"
+		key := strings.TrimSuffix(name, ".yaml") + "-" + hex.EncodeToString(sum[:])[:32] + ".yaml"
 		data[key] = string(content)
 	}
 
