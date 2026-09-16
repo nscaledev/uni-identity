@@ -373,12 +373,13 @@ func TestBuiltinSystemServiceVolumePermissions(t *testing.T) {
 	}
 
 	for _, test := range []struct {
-		role             string
-		volumeOperations []openapi.AclOperation
+		role                  string
+		volumeClassOperations []openapi.AclOperation
+		volumeOperations      []openapi.AclOperation
 	}{
 		{role: "region-service"},
 		{role: "kubernetes-service"},
-		{role: "compute-service", volumeOperations: []openapi.AclOperation{openapi.Read}},
+		{role: "compute-service", volumeClassOperations: []openapi.AclOperation{openapi.Read}, volumeOperations: []openapi.AclOperation{openapi.Read}},
 		{role: "storage-service"},
 	} {
 		role, ok := roles[test.role]
@@ -390,7 +391,12 @@ func TestBuiltinSystemServiceVolumePermissions(t *testing.T) {
 			t.Run(test.role+" VolumeClass "+string(operation), func(t *testing.T) {
 				t.Parallel()
 
-				require.Error(t, rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, operation, organization))
+				err := rbac.AllowOrganizationScopeID(ctx, volumeClassEndpoint, operation, organization)
+				if slices.Contains(test.volumeClassOperations, operation) {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
 			})
 
 			t.Run(test.role+" Volume "+string(operation), func(t *testing.T) {
