@@ -170,7 +170,7 @@ func TestClient_MembershipWrittenFromAStoredSubjectIsFolded(t *testing.T) {
 	fixture := newUserTestFixtureWithObjects(t, []client.Object{
 		newGlobalUser(userBobID, storedMixedCaseSubject),
 		newOrganizationUser(orgUserBobID, userBobID),
-		newPlainGroup(groupAlphaID),
+		newPlainGroup(),
 	}, interceptor.Funcs{})
 	ctx := newContext(t)
 
