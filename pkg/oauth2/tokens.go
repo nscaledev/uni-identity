@@ -30,6 +30,7 @@ import (
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -367,7 +368,10 @@ func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo,
 	}
 
 	// TODO: the subject should be the user ID anyway...
-	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
+	//
+	// A token minted before subject folding shipped carries the old case, and
+	// storage now holds the folded form, so fold the key before the lookup.
+	user, err := a.userdb.GetActiveUser(ctx, userdb.NormalizeSubject(claims.Subject))
 	if err != nil {
 		return err
 	}
