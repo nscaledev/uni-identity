@@ -34,6 +34,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
@@ -1116,7 +1117,13 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 		// doc comment for why this default is safe.
 		// X-Principal never carries groups, because group bindings must fail
 		// closed on delegated hops.
-		return r.processUserAccountACL(ctx, p.Actor, idconstants.UNISentinel, organizationID, authz, nil)
+		//
+		// Fold the actor.  It comes from the creator annotation, which ID-408
+		// deliberately does not rewrite because it is provenance, so it can
+		// carry a pre-migration case.  Group subjects and global role bindings
+		// are both canonical lower case, and a mismatch here fails closed:
+		// the delegated request silently loses every grant.
+		return r.processUserAccountACL(ctx, userdb.NormalizeSubject(p.Actor), idconstants.UNISentinel, organizationID, authz, nil)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
 	case openapi.System:

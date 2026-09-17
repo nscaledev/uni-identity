@@ -54,9 +54,22 @@ The package treats "active" as part of identity resolution rather than as downst
 Several methods do not just resolve objects; they enforce that the resolved user or
 organization-local membership is active before returning it.
 
+### Subject Canonicalization
+
+`NormalizeSubject` gives the canonical storage and lookup form of a subject. An email subject
+folds to lower case and loses surrounding whitespace. A subject that is not an email address
+keeps its case, because service users created with `kubectl-unikorn` can be case sensitive and
+folding one would change the identity that `--system-account-roles-ids` matches.
+
+The function is pure, so the package stays read-only. It is used on both sides of the
+boundary: writers call it before they store a subject, and claim-side callers call it before
+they look one up. `UserDatabase.GetUser` deliberately does not call it. See Caveats.
+
 ## Invariants
 
 - subject is the lookup key for global users
+- an email subject is stored and looked up in its folded form, through `NormalizeSubject`
+- a non-email subject is never folded
 - active-state checks are part of the package contract
 - organization membership is resolved through labeled `OrganizationUser` records
 - service accounts are part of the same local identity-resolution surface as users
@@ -77,6 +90,11 @@ organization-local membership is active before returning it.
   for the bearer-admission consequences and the organization-suspension gap this leaves open.
 - The package intentionally does not provide mutation or transactional semantics; it is a read-side
   adapter boundary only.
+- `GetUser` compares `spec.subject` verbatim and does not call `NormalizeSubject`. That is
+  deliberate: the lookup is first-match over an unordered list, so folding there would resolve
+  non-deterministically between two records that differ only in case. Callers fold the value they
+  pass in. The create-path dedupe in `pkg/handler/users` does fold both sides, because its job is
+  to find a case-variant record rather than to answer a lookup.
 
 ## Related Documentation
 

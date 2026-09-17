@@ -563,6 +563,11 @@ func (a *Authenticator) authorizationSilent(r *http.Request, redirector *redirec
 		return false
 	}
 
+	// A session cookie minted before subject folding shipped carries the old
+	// case.  Fold it before it is reused, or this path mints a fresh
+	// authorization code and fresh tokens that keep the old form alive.
+	normalizeIDTokenSubject(code.IDToken)
+
 	clientQuery, err := url.ParseQuery(code.ClientQuery)
 	if err != nil {
 		return false
@@ -925,6 +930,11 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fold the claim before it resolves a user or is stored in the
+	// authorization code.  Storage carries the folded form, so a verbatim
+	// mixed-case claim misses the record and answers access_denied.
+	normalizeIDTokenSubject(idToken)
+
 	user, err := a.userdb.GetUser(r.Context(), idToken.Email.Email)
 	if err != nil {
 		redirector.raise(ErrorAccessDenied, "user not found")
@@ -1128,7 +1138,9 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 
 // revokeSession revokes all tokens for a clientID.
 func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
-	user, err := a.userdb.GetActiveUser(ctx, subject)
+	// The subject can come from a token minted before folding shipped, and
+	// revocation has to find the session in order to clear it.
+	user, err := a.userdb.GetActiveUser(ctx, userdb.NormalizeSubject(subject))
 	if err != nil {
 		return err
 	}
@@ -1271,6 +1283,11 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 	if err := a.validateClientSecretRefresh(r, claims); err != nil {
 		return err
 	}
+
+	// A refresh token minted before subject folding shipped carries the old
+	// case.  claims is shared with the caller, so folding here also fixes the
+	// subject that the reissued token carries.
+	claims.Subject = userdb.NormalizeSubject(claims.Subject)
 
 	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
@@ -1436,7 +1453,10 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 
 		authz.Acctype = openapi.User
 
-		orgs, err := a.userdb.GetOrganizationIDs(ctx, claims.Subject)
+		// A legacy token carries the pre-migration case.  verifyUserSession
+		// folds its own lookup key without rewriting the claim, so fold here
+		// too or a session that verified is refused at this step.
+		orgs, err := a.userdb.GetOrganizationIDs(ctx, userdb.NormalizeSubject(claims.Subject))
 		if err != nil {
 			if goerrors.Is(err, userdb.ErrResourceReference) {
 				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)

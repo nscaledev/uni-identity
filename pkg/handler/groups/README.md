@@ -38,6 +38,17 @@ old and new clients can coexist during the migration period.
 
 This compatibility behaviour is one of the main reasons the package is more than simple CRUD.
 
+### Subject Canonicalization
+
+`generateSubjects` folds an email `ID` and `Email` before deduplication and before the user
+lookup, through [`userdb.NormalizeSubject`](../../userdb/README.md). Folding first means two
+spellings of one address in a single request collapse to one entry, and the entry that reaches
+storage matches what RBAC compares against. Subjects derived from a `userID` fold the same way.
+
+`GroupSubject.ID` is documented as an opaque account ID at the issuer, so only a bare email
+address folds; an opaque ID with no address form keeps its case. An address-shaped ID does fold,
+which is safe because every subject RBAC matches against is a folded email claim.
+
 ### Role Assignment Guard Rails
 
 Group role assignment is where the handler layer turns the deeper RBAC security model into a

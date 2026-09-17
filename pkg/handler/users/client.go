@@ -35,6 +35,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -84,8 +85,14 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 // the legacy one survives and keeps conferring the group's roles.  The write
 // path asks the same question the gate does (see GroupSpec.HasMemberByID).
 func subjectByID(id string) func(unikornv1.GroupSubject) bool {
+	// Fold both sides for the same reason this matches by ID alone: a stored
+	// record written in another case must still be recognised, or a remove
+	// reports success while the entry survives and keeps conferring the
+	// group's roles.
+	id = userdb.NormalizeSubject(id)
+
 	return func(s unikornv1.GroupSubject) bool {
-		return s.ID == id
+		return userdb.NormalizeSubject(s.ID) == id
 	}
 }
 
@@ -144,6 +151,10 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 // patched.  Groups the user is only leaving, or already belongs to, confer
 // nothing and are skipped.
 func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// Group subjects are stored folded, so compare a folded ID.  A stored
+	// subject reaches here unfolded when the User CR was written directly.
+	subjectID = userdb.NormalizeSubject(subjectID)
+
 	// Reconciliation below can only act on groups that exist, so an ID naming
 	// none of them would otherwise be dropped without the caller being told.
 	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
@@ -178,6 +189,12 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 // groupSubject builds the membership subject for a user of this deployment's
 // own issuer.
 func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
+	// A User CR written directly with kubectl-unikorn bypasses the handlers and
+	// can still hold a mixed-case subject, so fold here rather than trust the
+	// stored value.  RBAC compares this ID against a folded authenticated
+	// subject.
+	userSubject = userdb.NormalizeSubject(userSubject)
+
 	return unikornv1.GroupSubject{
 		ID:     userSubject,
 		Email:  userSubject,
@@ -347,7 +364,7 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 	// stored by ID as well as the deprecated UserIDs list, so a subject-only
 	// membership is not invisible over the API.
 	for _, group := range groups.Items {
-		if group.Spec.HasMemberByID(in.Name, user.Spec.Subject) {
+		if group.Spec.HasMemberByID(in.Name, userdb.NormalizeSubject(user.Spec.Subject)) {
 			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
 		}
 	}
@@ -394,8 +411,15 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
+	// The create-path dedupe matches case-insensitively on purpose, so that
+	// onboarding Bob@x.com beside an existing bob@x.com reuses the record
+	// instead of adding a second one.  UserDatabase.GetUser deliberately does
+	// not do this: it is first-match over an unordered list, so folding there
+	// would resolve non-deterministically while case-variant records exist.
+	subject = userdb.NormalizeSubject(subject)
+
 	index := slices.IndexFunc(users.Items, func(user unikornv1.User) bool {
-		return user.Spec.Subject == subject
+		return userdb.NormalizeSubject(user.Spec.Subject) == subject
 	})
 
 	if index < 0 {
@@ -519,6 +543,12 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
 		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
 	}
+
+	// Fold the subject once, here, so the global record, the organization
+	// membership, and every group subject entry written for this request carry
+	// the same form.  The trusted-issuer path folds the email claim before it
+	// resolves a user, so a record in any other case is invisible to it.
+	request.Spec.Subject = userdb.NormalizeSubject(request.Spec.Subject)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {

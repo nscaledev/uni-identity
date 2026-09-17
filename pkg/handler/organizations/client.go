@@ -161,7 +161,12 @@ func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, 
 	return out, nil
 }
 
-func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
+func (c *Client) getUserbyEmail(ctx context.Context, db *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
+	// Fold the caller-supplied address before both the self-check and the
+	// lookup.  Storage and authenticated subjects are folded, so a verbatim
+	// mixed-case query would fail the self-check and then miss the record.
+	email = userdb.NormalizeSubject(email)
+
 	// If you aren't looking at yourself, then you need global read permissions, you cannot
 	// go probing for other users or organizations, massive data breach!
 	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
@@ -170,7 +175,7 @@ func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase
 		}
 	}
 
-	user, err := userdb.GetActiveUser(ctx, email)
+	user, err := db.GetActiveUser(ctx, email)
 	if err != nil {
 		return nil, errors.HTTPNotFound().WithError(err)
 	}
@@ -178,14 +183,14 @@ func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase
 	return user, nil
 }
 
-func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabase, email *string) ([]string, error) {
+func (c *Client) organizationIDs(ctx context.Context, db *userdb.UserDatabase, email *string) ([]string, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: userinfo is not set", err)
 	}
 
 	if info.ServiceAccount {
-		account, err := userdb.GetServiceAccount(ctx, info.Userinfo.Sub)
+		account, err := db.GetServiceAccount(ctx, info.Userinfo.Sub)
 		if err != nil {
 			return nil, errors.HTTPForbidden("service account not found").WithError(err)
 		}
@@ -196,12 +201,14 @@ func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabas
 	var user *unikornv1.User
 
 	if email != nil {
-		user, err = c.getUserbyEmail(ctx, userdb, info, *email)
+		user, err = c.getUserbyEmail(ctx, db, info, *email)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		user, err = userdb.GetActiveUser(ctx, info.Userinfo.Sub)
+		// Same reason as getUserbyEmail: a legacy token subject reaches an
+		// exact lookup against folded storage.
+		user, err = db.GetActiveUser(ctx, userdb.NormalizeSubject(info.Userinfo.Sub))
 		if err != nil {
 			return nil, errors.HTTPNotFound().WithError(err)
 		}
