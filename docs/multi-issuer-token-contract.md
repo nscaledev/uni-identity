@@ -64,6 +64,11 @@ Providers must emit the email address in a canonical form that survives this nor
 consistently. Normalization is applied before the UNI user database lookup and before the
 email is stamped on the passport.
 
+The same fold applies to stored subjects. `userdb.NormalizeSubject` is the one definition of
+the canonical form, and writers call it before they store a `User.spec.subject`. It folds an
+email subject only. A subject that is not an email address keeps its case, so a service user
+created with `kubectl-unikorn` is unaffected.
+
 ## Membership resolution
 
 UNI is authoritative for organization membership. The external token's claimed `orgIds` (if any)
@@ -84,15 +89,22 @@ UNI distinguishes two different not-found-or-not-usable cases:
   currently writes a non-active global `User`, while a user suspended in (or removed from) every
   organization still resolves to an empty `orgIds` list with no error.
 
-  It can also only fire on a record the lookup finds, and the lookup is **case sensitive**:
-  `UserDatabase.GetUser` compares `spec.subject` verbatim, while the bearer path lower-cases the
-  email claim first (`auth0.Validator.validateEmail`) and the create API stores `spec.subject` as
-  supplied. A mixed-case record is therefore treated as *never onboarded* and admitted with empty
-  `orgIds` under `allowExternalIdentity: true`, even while suspended. Global role binding matching
-  is case-sensitive too, so a mixed-case record gains no unearned authority through that path — the
-  residual gap is narrower than a bypass: the inactive-user rejection simply cannot fire on a record
-  its case-sensitive lookup cannot find. Until storage and lookup agree on normalization, create
-  users with lower-case subjects.
+  It can also only fire on a record the lookup finds. Storage and the lookup now agree on case
+  for email subjects, so a mixed-case record is no longer admitted as *never onboarded*. Every
+  writer folds an email subject before it stores one: the create API (`users.Client.Create`) and
+  the Auth0 mirror in uni-auth0 (`dispatchNormalAuth0`). Every claim-side entry point folds
+  before it resolves a user: the bearer path (`auth0.Validator.validateEmail`) and the
+  interactive callback (`Authenticator.Callback`, which folds at ingress so the authorization
+  code and the minted `id_token` carry the same form).
+
+  Two deliberate exceptions remain. `UserDatabase.GetUser` still compares `spec.subject`
+  verbatim, because it is first-match over an unordered list and folding there would resolve
+  non-deterministically if a case-variant record reappeared. A non-email subject is never
+  folded, because service users created with `kubectl-unikorn` can be case sensitive.
+
+  One residual path is left. `kubectl-unikorn` writes the CR directly and bypasses the
+  handlers, so it can still store a mixed-case email subject. There is no admission webhook in
+  this project.
 
 ## The `https://unikorn-cloud.org/authz` claim
 
