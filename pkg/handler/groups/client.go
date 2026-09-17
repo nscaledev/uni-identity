@@ -33,6 +33,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -156,11 +157,24 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, gro
 func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
 	subjects := make([]unikornv1.GroupSubject, len(in))
 	for i, insub := range in {
-		subjects[i].ID = insub.Id
+		// Fold here, before deduplication and before subjectsToPrincipals
+		// resolves the user.  Storage holds the folded subject, so a verbatim
+		// mixed-case ID would fail to resolve at this issuer and would reach
+		// storage unmatched at an external one, where RBAC compares it against
+		// a folded authenticated subject.  Folding first also collapses two
+		// spellings of one address in a single request.
+		//
+		// GroupSubject.ID is documented as an opaque account ID at the issuer,
+		// so only a bare email address folds (see userdb.NormalizeSubject); an
+		// opaque ID without an address form keeps its case.  An opaque ID that
+		// is shaped like an address does fold, which is safe because every
+		// subject RBAC matches against is a folded email claim, so a
+		// case-sensitive one could never match either way.
+		subjects[i].ID = userdb.NormalizeSubject(insub.Id)
 		subjects[i].Issuer = insub.Issuer
 
 		if insub.Email != nil {
-			subjects[i].Email = *insub.Email
+			subjects[i].Email = userdb.NormalizeSubject(*insub.Email)
 		}
 	}
 
@@ -255,8 +269,13 @@ func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikor
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
+	// Fold both sides, the way the create-path dedupe in pkg/handler/users
+	// does: a stored subject reaches here unfolded when the User CR was
+	// written directly, and the incoming subject is already folded.
+	subject = userdb.NormalizeSubject(subject)
+
 	for i := range users.Items {
-		if users.Items[i].Spec.Subject == subject {
+		if userdb.NormalizeSubject(users.Items[i].Spec.Subject) == subject {
 			return &users.Items[i], nil
 		}
 	}
@@ -331,11 +350,17 @@ func (c *Client) userIDsToPrincipals(ctx context.Context, userIDs []string, orga
 			return nil, fmt.Errorf("%w: failed to get user record", err)
 		}
 
+		// Fold the stored subject.  A User CR written directly with
+		// kubectl-unikorn bypasses the handlers and can still hold a
+		// mixed-case subject, and RBAC compares this ID against a folded
+		// authenticated subject.
+		subject := userdb.NormalizeSubject(user.Spec.Subject)
+
 		principals = append(principals, groupPrincipal{
 			userID: orgUserID,
 			subject: unikornv1.GroupSubject{
-				ID:     user.Spec.Subject,
-				Email:  user.Spec.Subject,
+				ID:     subject,
+				Email:  subject,
 				Issuer: c.issuer.URL,
 			},
 		})

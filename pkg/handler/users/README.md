@@ -32,6 +32,20 @@ That makes this package the bridge between:
 - "this identity is a member of this organization"
 - "this identity belongs to these groups in this organization"
 
+### Subject Canonicalization
+
+An email subject is stored and compared in its folded form, through
+[`userdb.NormalizeSubject`](../../userdb/README.md). `Create` folds the request subject once, so
+the global record, the organization membership, and every group subject entry written for that
+request agree. The create-path dedupe folds both sides, so onboarding an address that differs
+only in case reuses the record instead of adding a second one. A subject that is not a bare email
+address keeps its case, because a service user created with `kubectl-unikorn` can be case
+sensitive.
+
+`kubectl-unikorn` writes the resource directly and there is no admission webhook, so a stored
+subject can still arrive unfolded. The membership and read paths therefore fold the stored value
+before they compare it rather than trusting it.
+
 ### Group Membership Reconciliation
 
 Group membership is maintained indirectly through group resources rather than being stored only on
