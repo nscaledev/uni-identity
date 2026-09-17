@@ -201,9 +201,13 @@ wildcard subject on the `uni` sentinel, and an issuer that is neither the sentin
 URL (no commas or whitespace) are all rejected at flag-parse time — the process does not boot on a
 malformed binding.
 
-**Subjects must be in their canonical lower-case form.** Matching is case-sensitive end to end: the
-authenticated subject arrives already lower-cased (Auth0's `validateEmail` normalizes the claim
-before it reaches RBAC), so a binding subject typed in any other case would simply stop matching.
+**Subjects must be in their canonical lower-case form.** Matching is case-sensitive end to end, so
+a binding subject typed in any other case would simply stop matching. Every input arrives folded
+already: the trusted-issuer claim through Auth0's `validateEmail`, the interactive claim at
+`Authenticator.Callback`, the session, refresh and revocation subjects in `pkg/oauth2`, and the
+delegated actor in `processImpersonatedPrincipalACL`. That last one matters because the actor comes
+from the `principal.unikorn-cloud.org/creator` annotation, which is provenance and is never
+rewritten, so it can still carry a pre-ID-408 case.
 The chart fails to render if a `globalRoleBindings` or `platformAdministrators.subjects` entry
 contains an upper-case ASCII letter (the literal wildcard `*` is exempt, having no letters to
 begin with), catching the mistake before deploy rather than deploying a binding that silently
