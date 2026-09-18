@@ -1,0 +1,18 @@
+# Synthetic fixture (not transcribed from a chart).  No shipped role grants
+# update without read, but the exact-operations invariant ("update does not
+# imply read") needs an update-only grant to be testable.  This role exists
+# solely so the Cerbos test suite can encode that case; it shares the
+# identity:groups endpoint with auditor/administrator so the union case
+# (auditor read + this update) is also covered on one resource policy.
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000201
+  labels:
+    unikorn-cloud.org/name: synthetic-update-only
+spec:
+  scopes:
+    organization:
+      - name: identity:groups
+        operations: [update]
