@@ -18,6 +18,7 @@ limitations under the License.
 package rbac_test
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
@@ -26,6 +27,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -34,8 +36,8 @@ import (
 )
 
 const (
-	organizationID = "foo"
-	projectID      = "bar"
+	organizationID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+	projectID      = "550e8400-e29b-41d4-a716-446655440000"
 	resourceType1  = "candy"
 	resourceType2  = "cookie"
 )
@@ -202,13 +204,74 @@ func TestUnscopedACL(t *testing.T) {
 	}
 }
 
+var errScope = errors.New("scope accessor failed")
+
+// scopeStub stands in for a CRD that reports its scope via the ids scope-reader
+// interfaces, returning fixed IDs (or an error) for the reader-variant tests.
+type scopeStub struct {
+	orgID  ids.OrganizationID
+	projID ids.ProjectID
+	err    error
+}
+
+func (s scopeStub) OrganizationID() (ids.OrganizationID, error) {
+	return s.orgID, s.err
+}
+
+func (s scopeStub) OrganizationAndProjectID() (ids.OrganizationID, ids.ProjectID, error) {
+	return s.orgID, s.projID, s.err
+}
+
+func TestScopeReaderVariants(t *testing.T) {
+	t.Parallel()
+
+	acl := aclFixture()
+	orgID := ids.MustParseOrganizationID(organizationID)
+	projID := ids.MustParseProjectID(projectID)
+
+	t.Run("AllowOrganizationScopeReader allows via organization privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowOrganizationScopeReader(rbac.NewContext(t.Context(), acl), resourceType1, openapi.Read, scopeStub{orgID: orgID})
+		require.NoError(t, err)
+	})
+
+	t.Run("AllowOrganizationScopeReader denies wrong privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowOrganizationScopeReader(rbac.NewContext(t.Context(), acl), resourceType1, openapi.Create, scopeStub{orgID: orgID})
+		require.Error(t, err)
+	})
+
+	t.Run("AllowProjectScopeReader allows via project privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowProjectScopeReader(rbac.NewContext(t.Context(), acl), resourceType2, openapi.Read, scopeStub{orgID: orgID, projID: projID})
+		require.NoError(t, err)
+	})
+
+	t.Run("AllowProjectScopeReader denies wrong privilege", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowProjectScopeReader(rbac.NewContext(t.Context(), acl), resourceType2, openapi.Create, scopeStub{orgID: orgID, projID: projID})
+		require.Error(t, err)
+	})
+
+	t.Run("accessor error propagates", func(t *testing.T) {
+		t.Parallel()
+
+		err := rbac.AllowProjectScopeReader(rbac.NewContext(t.Context(), acl), resourceType2, openapi.Read, scopeStub{err: errScope})
+		require.ErrorIs(t, err, errScope)
+	})
+}
+
 const (
-	organizationID1 = "foo"
-	projectID1_1    = "bar"
-	projectID1_2    = "baz"
-	organizationID2 = "foo2"
-	projectID2_1    = "bar2"
-	projectID2_2    = "baz2"
+	organizationID1 = "550e8400-e29b-41d4-a716-446655440001"
+	projectID1_1    = "550e8400-e29b-41d4-a716-446655440000"
+	projectID1_2    = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+	organizationID2 = "6ba7b811-9dad-11d1-80b4-00c04fd430c8"
+	projectID2_1    = "6ba7b812-9dad-11d1-80b4-00c04fd430c8"
+	projectID2_2    = "6ba7b813-9dad-11d1-80b4-00c04fd430c8"
 )
 
 func aclFilterFixturePlatformAdmin() *openapi.Acl {
@@ -1064,7 +1127,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 			ACL:  aclWithOrgScope,
 			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
 				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
 					Return(projectOKResponse, nil)
 			},
 			OrganizationID: organizationID,
@@ -1077,7 +1140,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 			ACL:  aclWithOrgScope,
 			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
 				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
 					Return(projectNotFoundResponse, nil)
 			},
 			OrganizationID: organizationID,
@@ -1091,7 +1154,7 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 			ACL:  aclWithOrgScope,
 			SetupMock: func(c *openapiMock.MockClientWithResponsesInterface) {
 				c.EXPECT().
-					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), organizationID, projectID).
+					GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
 					Return(projectUnexpectedResponse, nil)
 			},
 			OrganizationID: organizationID,

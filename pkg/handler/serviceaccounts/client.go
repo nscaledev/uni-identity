@@ -31,6 +31,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
@@ -135,7 +136,7 @@ func (c *Client) generateAccessToken(ctx context.Context, organization *organiza
 		Subject:  serviceAccountID,
 		Type:     oauth2.TokenTypeServiceAccount,
 		ServiceAccount: &oauth2.ServiceAccountClaims{
-			OrganizationID: organization.ID,
+			OrganizationID: organization.ID.String(),
 		},
 		// TODO: allow the client to override this, but keep it capped to
 		// some server controlled value.
@@ -154,13 +155,13 @@ func (c *Client) generateAccessToken(ctx context.Context, organization *organiza
 // a new access token.
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ServiceAccountWrite) (*unikornv1.ServiceAccount, error) {
 	out := &unikornv1.ServiceAccount{
-		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).WithOrganization(organization.ID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).Get(),
 		Spec: unikornv1.ServiceAccountSpec{
 			Tags: conversion.GenerateTagList(in.Metadata.Tags),
 		},
 	}
 
-	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
+	if err := common.SetIdentityMetadataOrganizationScope(ctx, &out.ObjectMeta, organization.ID); err != nil {
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
@@ -201,8 +202,51 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
+// validateGroupAdditions checks every group the service account would newly
+// join before any of them is written.  Joining a group confers its roles, so
+// each is a grant the caller has to be able to make; running the whole set up
+// front keeps a refusal from landing after an earlier group has already been
+// patched.  Groups the account is only leaving, or already belongs to, confer
+// nothing and are skipped.
+//
+// An account that does not exist yet belongs to no group: the create path
+// passes an empty ID, and every group it asked to join counts as an addition.
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// Reconciliation below can only act on groups that exist, so an ID naming
+	// none of them would otherwise be dropped without the caller being told.
+	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
+		return err
+	}
+
+	for i := range groups.Items {
+		group := &groups.Items[i]
+
+		if !slices.Contains(groupIDs, group.Name) {
+			continue
+		}
+
+		// Membership lists are not validated against real accounts, so an
+		// empty ID could match a junk entry.  Test the ID first rather than
+		// letting the sentinel skip a check.
+		if serviceAccountID != "" && slices.Contains(group.Spec.ServiceAccountIDs, serviceAccountID) {
+			continue
+		}
+
+		if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, group); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // updateGroups takes a user name and a requested list of groups and adds to
 // the groups it should be a member of and removes itself from groups it shouldn't.
+//
+// This writes.  It does no grant checking of its own: callers must run
+// validateGroupAdditions over the same group list first, before they make any
+// other write, so a refusal cannot leave an earlier part of the request
+// applied.
 func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	for i := range groups.Items {
 		current := &groups.Items[i]
@@ -234,15 +278,32 @@ func (c *Client) updateGroups(ctx context.Context, serviceAccountID string, grou
 
 			return fmt.Errorf("%w: failed to patch group", err)
 		}
+
+		// Reflect the change in the caller's in-memory list so responses can be
+		// built from it without a cached reload that may lag the write.
+		groups.Items[i] = *updated
 	}
 
 	return nil
 }
 
 // Create makes a new service account and issues an access token.
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountCreate, error) {
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountCreate, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
+		return nil, err
+	}
+
+	groups, err := c.listGroups(ctx, organization)
+	if err != nil {
+		return nil, err
+	}
+
+	// Settle the group grants before the account exists.  Creating it first
+	// and refusing afterwards would strand a service account, with a token
+	// already issued, that the caller was never told about.  The account is
+	// new, so it is in no group yet.
+	if err := c.validateGroupAdditions(ctx, organization.ID, "", request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -255,11 +316,6 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, fmt.Errorf("%w: failed to create service account", err)
 	}
 
-	groups, err := c.listGroups(ctx, organization)
-	if err != nil {
-		return nil, err
-	}
-
 	if err := c.updateGroups(ctx, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
@@ -268,7 +324,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 }
 
 // Get retrieves information about a service account.
-func (c *Client) Get(ctx context.Context, organizationID, serviceAccountID string) (*openapi.ServiceAccountRead, error) {
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string) (*openapi.ServiceAccountRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -288,7 +344,7 @@ func (c *Client) Get(ctx context.Context, organizationID, serviceAccountID strin
 }
 
 // List retrieves information about all service accounts in the organization.
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.ServiceAccounts, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.ServiceAccounts, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -310,7 +366,7 @@ func (c *Client) List(ctx context.Context, organizationID string) (openapi.Servi
 
 // Update modifies any metadata for the service account if it exists.  If a matching account
 // doesn't exist it raises an error.
-func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountRead, error) {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string, request *openapi.ServiceAccountWrite) (*openapi.ServiceAccountRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -318,6 +374,19 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 
 	current, err := c.get(ctx, organization, serviceAccountID)
 	if err != nil {
+		return nil, err
+	}
+
+	groups, err := c.listGroups(ctx, organization)
+	if err != nil {
+		return nil, err
+	}
+
+	// Settle every grant in the request before the first write.  The metadata
+	// and tag changes below land on the service account record, so a
+	// membership refusal discovered after them would have already applied part
+	// of a request the caller was told it could not make.
+	if err := c.validateGroupAdditions(ctx, organization.ID, serviceAccountID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -347,11 +416,6 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 		return nil, fmt.Errorf("%w: failed to patch group", err)
 	}
 
-	groups, err := c.listGroups(ctx, organization)
-	if err != nil {
-		return nil, err
-	}
-
 	if err := c.updateGroups(ctx, serviceAccountID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
@@ -361,7 +425,7 @@ func (c *Client) Update(ctx context.Context, organizationID, serviceAccountID st
 
 // Rotate is a special version of Update where everything about the resource is preserved
 // with the exception of the access token.
-func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID string) (*openapi.ServiceAccountCreate, error) {
+func (c *Client) Rotate(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string) (*openapi.ServiceAccountCreate, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -400,7 +464,7 @@ func (c *Client) Rotate(ctx context.Context, organizationID, serviceAccountID st
 }
 
 // Delete removes the service account and revokes the access token.
-func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, serviceAccountID string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -421,6 +485,8 @@ func (c *Client) Delete(ctx context.Context, organizationID, serviceAccountID st
 		return err
 	}
 
+	// Deletion only strips memberships, which confers nothing, so there is no
+	// grant pre-pass to run.
 	if err := c.updateGroups(ctx, serviceAccountID, nil, groups); err != nil {
 		return err
 	}

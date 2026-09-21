@@ -64,5 +64,5 @@ type ProjectStatus struct {
 	Namespace string `json:"namespace,omitempty"`
 
 	// Current service state of a project.
-	Conditions []unikornv1core.Condition `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }

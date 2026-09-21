@@ -27,7 +27,10 @@ if [[ "${IS_KIND}" == true ]]; then
       GOBIN="$(go env GOPATH)/bin"
     fi
 
-    go install sigs.k8s.io/cloud-provider-kind@latest
+    # Pinned: cloud-provider-kind v0.11.0 requires Go >= 1.26, which CI does
+    # not provide (GOTOOLCHAIN=local). v0.10.0 builds against Go 1.24. Do not
+    # float to @latest without confirming the CI Go toolchain supports it.
+    go install sigs.k8s.io/cloud-provider-kind@v0.10.0
 
     echo "==> Starting cloud-provider-kind..."
     sudo "${GOBIN}/cloud-provider-kind" > /tmp/cloud-provider-kind.log 2>&1 &

@@ -31,6 +31,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -56,10 +57,10 @@ type fixture struct {
 
 const (
 	testNamespace = "test-namespace"
-	testOrgID     = "test-org"
+	testOrgID     = "00000000-0000-4000-8000-000000000001"
 	testOrgNS     = "test-org-ns"
 
-	altOrgID = "alt-org-id"
+	altOrgID = "00000000-0000-4000-8000-000000000002"
 	altOrgNS = "alt-namespace"
 
 	userAliceSubject = "alice@example.com"
@@ -101,7 +102,29 @@ func newContext(t *testing.T) context.Context {
 		Actor: "test-principal",
 	})
 
-	return ctx
+	return rbac.NewContext(ctx, seedingACL())
+}
+
+// seedingACL grants every permission carried by the roles in this file's fixture groups,
+// at the scope the grant check needs.  The users handler treats adding someone to a group
+// as granting that group's roles, so the seeding calls below need an authority that holds
+// all of them; these tests are about the ACL the seeded state produces, not about who may
+// seed it.
+func seedingACL() *openapi.Acl {
+	global := openapi.AclEndpoints{
+		{Name: "users:manage", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
+	}
+
+	organization := openapi.AclEndpoints{
+		{Name: "org:manage", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
+		{Name: "org:read", Operations: openapi.AclOperations{openapi.Read}},
+		{Name: "project:deploy", Operations: openapi.AclOperations{openapi.Create, openapi.Update}},
+		{Name: "project:read", Operations: openapi.AclOperations{openapi.Read}},
+	}
+
+	organizations := openapi.AclOrganizationList{{Id: testOrgID, Endpoints: &organization}}
+
+	return &openapi.Acl{Global: &global, Organizations: &organizations}
 }
 
 func createUser(t *testing.T, c client.Client, id, subject string, groups []*unikornv1.Group) {
@@ -116,14 +139,12 @@ func createUser(t *testing.T, c client.Client, id, subject string, groups []*uni
 		URL:      "https://identity.unikorn-cloud.org",
 		Hostname: "identity.unikorn-cloud.org",
 	}
-	userclient := users.New(c, testNamespace, nil /* JWT issuer */, iss, &users.Options{
-		// luckily these are all to do with email verification, which we don't want to use.
-	})
+	userclient := users.New(c, testNamespace, iss)
 
 	// this is needed because deep in the bowels of request handling, it's consulted in
 	// order to set some Kubernetes object metadata.
 	ctx := newContext(t)
-	_, err := userclient.Create(ctx, testOrgID, &openapi.UserWrite{
+	_, err := userclient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
 		Metadata: &coreopenapi.ResourceWriteMetadata{
 			Name: id,
 		},

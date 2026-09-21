@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,13 @@ const (
 	serviceCertificate = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURxakNDQXBLZ0F3SUJBZ0lVRDNERm5jZDNjNG9MNEYwUVd1UkpRRlI0UGRNd0RRWUpLb1pJaHZjTkFRRUwKQlFBd1JURVRNQkVHQTFVRUF3d0tiWGt0YzJWeWRtbGpaVEVMTUFrR0ExVUVCaE1DUjBJeEVEQU9CZ05WQkFnTQpCMFZ1WjJ4aGJtUXhEekFOQmdOVkJBY01Ca3h2Ym1SdmJqQWVGdzB5TlRBM01UWXhNekF3TXpoYUZ3MHlOakEzCk1UWXhNekF3TXpoYU1FVXhFekFSQmdOVkJBTU1DbTE1TFhObGNuWnBZMlV4Q3pBSkJnTlZCQVlUQWtkQ01SQXcKRGdZRFZRUUlEQWRGYm1kc1lXNWtNUTh3RFFZRFZRUUhEQVpNYjI1a2IyNHdnZ0VpTUEwR0NTcUdTSWIzRFFFQgpBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRRFJMWUVIbW9SWC90aGIrREdkTDQ1VUkzdHRjQ09MbXkvcm90WHF0SWVyCmNHZ3N1c2lUZW5sWERVL0hRQ0hjL2hBaGY1VTYxcFdVUS9vOUFCVGhqa2NJRVIydk9FSlJKeVhNU0tLMU1tR2QKTHZ0K0ZRK0xCbTJidjd4b1M0Y2pRSm9rVW9zeHlaZjFITEhBeDR3WlRPeE9GQW5uMFgrUGZ6SUhKWU0veTdDUgpVRjd4VlVjMlpvMS9hRkI5ZXE0Yk9JdjRld25xSzgycXV4Y25jNGlOK29GNkR2MDJCYlNJVVMrc3VQOWlaWFkxCkRFOHhUaUtKYkU2ZjNTOWpZUjFMSEZndWpTSUg1TWhVemNXNkYyTUVOSGF1WllsVDV0OUJBT25LeGZNU2F0bG8KVW5HdmxLb0VPbW40Y2xXdzkyamdzZ0hrM3VUWHRqZHNydUdOb3UvbncwNS9BZ01CQUFHamdaRXdnWTR3SFFZRApWUjBPQkJZRUZEa2NUUjM4ZEZTbFVuSkZ1VlFid3B6UVRCOUtNQjhHQTFVZEl3UVlNQmFBRkRrY1RSMzhkRlNsClVuSkZ1VlFid3B6UVRCOUtNQXNHQTFVZER3UUVBd0lIZ0RBVEJnTlZIU1VFRERBS0JnZ3JCZ0VGQlFjREFqQXEKQmdOVkhSRUVJekFoaGg5emNHbG1abVU2THk5dGVTMXdiR0YwWm05eWJTOXRlUzF6WlhKMmFXTmxNQTBHQ1NxRwpTSWIzRFFFQkN3VUFBNElCQVFBVitTTmIzNktzNTIxSW9LSjlCUzRxZzcwUWxkOEthWERsZ2taV1BFRytpem9SCk5ISXo3c0tjWGdMTU5uN3dLNHdsNkQ4cE9VcFhEZitnTkhIcWpJNHRBTXIwdFY1cEtlbHBIU0RQWUZvTGd3U2gKVnJ3QzZwaW0zYzNndms4WmxGQ3AzWG1oSGdCQ1Rab2x2VFpSbXZPR0h6YzA0dHdxbDUwaVVWUjk3aU02RCtNaQpPZTlQUjBSVUNyakt3bERjTnpPNUpaVENuZHhWQysvVUJjeTVTZUwrakZWbW1Ra1N6dEJqMGtvdE5kVDNEaHUwCnkzbTVrNWFzR0hRY3I1QmcxQUd3QUFBZjNSOFJJUlFmRDJtOVFWT3BsLytPdzRpZHJsVU5kMDJiay9Xd3FjMEwKcFBqZ0JJOThjVzg2enB0c3JHdEhEUXFZeHVLa1ZLT1gwcnh3Z3QrVAotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0t"
 	// authenticatedURL is an unscoped URL that requires authentication.
 	authenticatedURL = "https://localhost/protected"
+	// validatedBodyURL is a URL whose request body is schema validated.
+	validatedBodyURL = "https://localhost/token"
+	// requiredParameterURL is a URL with a required query parameter.
+	requiredParameterURL = "https://localhost/search"
+	// secretToken is a sentinel to track credentials in the request body
+	// leaking back out again.
+	secretToken = "not-for-your-eyes"
 )
 
 //go:embed "testdata/toyschema.yaml"
@@ -215,7 +223,7 @@ func addAuthorizationHeader(t *testing.T, r *http.Request) {
 
 // authInfoFixture creates a fixture to be returned from the Authorizer interface
 // on successful authentication.
-func authInfoFixture(actor string, accountType identityapi.AuthClaimsAcctype) *authorization.Info {
+func authInfoFixture(accountType identityapi.AuthClaimsAcctype) *authorization.Info {
 	authz := &identityapi.AuthClaims{
 		Acctype: accountType,
 	}
@@ -226,7 +234,7 @@ func authInfoFixture(actor string, accountType identityapi.AuthClaimsAcctype) *a
 
 	return &authorization.Info{
 		Userinfo: &identityapi.Userinfo{
-			Sub:                       actor,
+			Sub:                       userActor,
 			HttpsunikornCloudOrgauthz: authz,
 		},
 	}
@@ -332,6 +340,14 @@ func getMux(t *testing.T, authorizer openapi.Authorizer, handler *handler) http.
 		r.Post("/upload", http.HandlerFunc(handler.ServeHTTP))
 	})
 
+	r.Group(func(r chi.Router) {
+		r.Post("/token", http.HandlerFunc(handler.ServeHTTP))
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Get("/search", http.HandlerFunc(handler.ServeHTTP))
+	})
+
 	return r
 }
 
@@ -382,7 +398,7 @@ func testUserToServiceAuthenticationSuccess(t *testing.T, principalType identity
 	defer c.Finish()
 
 	authorizer := mock.NewMockAuthorizer(c)
-	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(userActor, principalType), nil)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(principalType), nil)
 	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
 	h := &handler{}
@@ -753,4 +769,134 @@ func TestValidateBodyBypass(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+}
+
+// TestRequestValidationErrorDoesNotEchoTheRequest tests that a schema validation
+// failure tells the client which property is at fault, but hands back neither the
+// schema nor the request body, as the latter carries credentials.
+func TestRequestValidationErrorDoesNotEchoTheRequest(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	// The body is missing the required grant_type, so validation fails with the
+	// subject token in hand.
+	form := url.Values{
+		"subject_token": {secretToken},
+	}
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, validatedBodyURL, strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	addAuthorizationHeader(t, r)
+
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+
+	body := w.Body.String()
+
+	// The client is told what to fix...
+	require.Contains(t, body, "grant_type")
+
+	// ... but gets neither its own credentials nor our schema back.
+	require.NotContains(t, body, secretToken)
+	require.NotContains(t, body, "Schema:")
+}
+
+// validationErrorDescription returns the description the client was given, having
+// checked the response is a well formed error in the first place.
+func validationErrorDescription(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+
+	oauthError := &coreapi.Error{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), oauthError))
+	require.Equal(t, coreapi.InvalidRequest, oauthError.Error)
+
+	// A description that is empty, or that trails off after the subject, tells the
+	// caller nothing they can act on.
+	require.NotEmpty(t, oauthError.ErrorDescription)
+	require.False(t, strings.HasSuffix(oauthError.ErrorDescription, ": "))
+
+	return oauthError.ErrorDescription
+}
+
+// TestRequestValidationErrorMalformedBody tests that an undecodable request body
+// says so, rather than returning an empty description or the body itself.
+func TestRequestValidationErrorMalformedBody(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	body := `{"subject_token": "` + secretToken + `", `
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, validatedBodyURL, strings.NewReader(body))
+	require.NoError(t, err)
+
+	r.Header.Set("Content-Type", "application/json")
+
+	addAuthorizationHeader(t, r)
+
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+
+	description := validationErrorDescription(t, w)
+
+	require.Contains(t, description, "failed to decode request body")
+	require.NotContains(t, description, secretToken)
+}
+
+// TestRequestValidationErrorMissingParameter tests that a missing required
+// parameter names the parameter and says what is wrong with it.
+func TestRequestValidationErrorMissingParameter(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	w := httptest.NewRecorder()
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, requiredParameterURL, nil)
+	require.NoError(t, err)
+
+	addAuthorizationHeader(t, r)
+
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+
+	description := validationErrorDescription(t, w)
+
+	require.Contains(t, description, "needed")
+	require.Contains(t, description, "value is required but missing")
 }

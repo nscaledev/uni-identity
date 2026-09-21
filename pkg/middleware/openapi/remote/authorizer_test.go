@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +40,7 @@ import (
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
@@ -214,37 +214,17 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(config)
 
-		case "/oauth2/v2/userinfo":
+		case "/oauth2/v2/token":
 			called.Add(1)
 
-			// Userinfo endpoint. This part of the handler is copied from handlers/handler.go, because the
-			// "full" handler has too many dependencies that are irrelevant here.
-			header := r.Header.Get("Authorization")
-			if header == "" {
-				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header missing"))
-				return
-			}
-
-			parts := strings.Split(header, " ")
-
-			if len(parts) != 2 {
-				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization header malformed"))
-				return
-			}
-
-			if !strings.EqualFold(parts[0], "bearer") {
-				errors.HandleError(w, r, errors.OAuth2InvalidRequest("authorization scheme not allowed"))
-				return
-			}
-
-			userinfo, _, err := authenticator.GetUserinfo(r.Context(), r, parts[1])
+			result, err := authenticator.Token(w, r)
 			if err != nil {
-				w.WriteHeader(http.StatusUnauthorized)
+				oauth2errors.HandleError(w, r, err)
 				return
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(userinfo)
+			_ = json.NewEncoder(w).Encode(result)
 
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -344,10 +324,9 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 
 	// Create oauth2 authenticator
 	oauth2Options := &oauth2.Options{
-		AccessTokenDuration:      time.Hour,
-		TokenCacheSize:           10,
-		CodeCacheSize:            10,
-		AccountCreationCacheSize: 10,
+		AccessTokenDuration: time.Hour,
+		TokenCacheSize:      10,
+		CodeCacheSize:       10,
 	}
 
 	u, _ := url.Parse(mtlsServer.URL())
@@ -358,7 +337,8 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 
 	userdb := userdb.NewUserDatabase(fakeClient, testNamespace)
 
-	authenticator = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, userdb, rbacClient)
+	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, userdb, rbacClient)
+	require.NoError(t, err)
 
 	// Issue a test token
 	ctx := t.Context()

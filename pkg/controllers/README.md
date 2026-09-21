@@ -4,7 +4,7 @@
 
 This package contains the controller-factory layer for the identity service.
 It adapts concrete identity resource types into the shared controller framework
-provided by [`core/pkg/manager`](../../core/pkg/manager/README.md).
+provided by [`core/pkg/manager`](https://github.com/nscaledev/uni-core/blob/main/pkg/manager/README.md).
 
 The important point is that these packages do **not** contain the resource
 lifecycle semantics themselves. They are intentionally thin factories that:
@@ -42,7 +42,7 @@ The controllers use generation-changed predicates so normal reconcile is driven
 by desired-state changes in `spec`, rather than by incidental metadata churn.
 
 This keeps the controller role aligned with the manager/provisioner contract in
-[`core/pkg/manager`](../../core/pkg/manager/README.md): desired state is
+[`core/pkg/manager`](https://github.com/nscaledev/uni-core/blob/main/pkg/manager/README.md): desired state is
 expressed on the resource, the provisioner acts on it, and status/finalizer
 management happens within that shared lifecycle model.
 

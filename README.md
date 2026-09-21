@@ -64,7 +64,7 @@ client. This facilitates token validation, revocation, single-use refresh tokens
 single-active session/token-chain model enforced by the service.
 
 Users can exist in multiple states: `active`, `suspended` meaning they cannot login, or `pending`
-to indicate the system is awaiting email verification in older compatibility flows.
+meaning the user has been placed on administrative hold by a platform administrator.
 
 ### Organization Users
 
@@ -92,6 +92,9 @@ The `user` role cannot modify anything defined by the identity service, it's onl
 Users SHOULD have additional permissions defined for external services, e.g. provisioning and management of compute infrastructure.
 
 The `reader` is similar to the `user` but allows read only access, typically used by billing and auditing teams.
+
+For user-facing roles, Region VolumeClass discovery follows the same organization-wide read model
+as flavor discovery. Region Volume lifecycle access follows the existing workload policy.
 
 > [!NOTE]
 > If you do define external 3rd party roles, you will be responsible for removing any references to them from groups on deletion.
@@ -290,14 +293,6 @@ Deploy:
 helm upgrade --install --namespace unikorn-identity uni-identity/uni-identity -f values.yaml
 ```
 
-### Legacy Signup And Verification
-
-Identity still contains older email-verification and signup flows for compatibility with historical
-deployments.
-
-These are no longer the main operating model and are generally not central to new deployments.
-If you still need them, you will need SMTP configured and the related Helm options enabled.
-
 ### Installing the Management Plugin
 
 Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/releases) and install them in your path:
@@ -309,7 +304,6 @@ Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/rele
 
 Typically your deployment will have a small select few engineers who are able to see and do
 everything, including creating organizations.
-At present self-signup is not part of the normal operating model.
 
 In the earlier `values.yaml` manifest, the following section was defined:
 

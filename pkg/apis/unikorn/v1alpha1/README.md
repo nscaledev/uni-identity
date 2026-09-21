@@ -75,6 +75,50 @@ changes from scoped `v1` routing to a flatter `v2` routing model.
   list order.
 - `Group.UserIDs` is compatibility-only and `Group.Subjects` is the forward path for
   membership that may refer to identities outside the local user database.
+- An `OAuth2Provider`'s issuer URL must be unique across all bearer-trusted providers in the
+  operator namespace. Duplicate issuers produce undefined dispatch behavior.
+
+## `bearerTrust` and multi-issuer bearer trust
+
+`OAuth2ProviderSpec.BearerTrust` is a CRD-only field. It does not appear on the REST or OpenAPI
+surface; there is no API endpoint for managing it. It is an operator trust anchor applied
+directly to the cluster by platform operators.
+
+When `BearerTrust` is non-nil on an `OAuth2Provider` in the **identity operator namespace**,
+the identity service accepts access tokens from that provider's issuer on all bearer surfaces
+(token exchange, `/api/v1/*`, `/oauth2/v2/userinfo`). Providers in organization namespaces are
+never trusted for bearer tokens; only the operator namespace is consulted.
+
+The verbatim issuer invariant: the issuer URL stored in `OAuth2ProviderSpec.Issuer` is matched
+**verbatim** — both dispatch selection and token verification compare it to the token's `iss` by
+exact string equality (OIDC §3.1.3.7), with no normalization. Operators must set `Issuer` to the
+exact `iss` their IdP emits (for Auth0, including the trailing slash); a case- or slash-mismatched
+value simply never matches and the token is rejected as an untrusted issuer.
+
+`BearerTrustSpec` fields:
+
+- `audience` (required at runtime): the value required in the token's `aud` claim.
+- `allowExternalIdentity`: accept subjects with no UNI user record (empty `orgIds`).
+- `skipEmailVerification`: skip the `email_verified` check.
+- `requireAuthzClaim`: require the `https://unikorn-cloud.org/authz` claim.
+- `signingAlgorithms`: permitted JWS algorithms (asymmetric only; defaults to `[RS256]`).
+- `groupsClaim`: names the per-issuer token claim that carries IdP group names. The claim value is a
+  JSON array of strings, and the validator skips non-string entries. The name must be a namespaced
+  URI that contains `://`, so nobody can designate a user-settable bare profile claim (`nickname`,
+  `name`) as an authorization source. Validator construction applies the rule at the first token
+  dispatched for the issuer, not at object admission. A violation rejects every token from this
+  issuer with HTTP 401. The rbac startup advisory also reports violations at boot. Empty means the
+  issuer emits no groups, so group-based global role bindings never match tokens from it (fail
+  closed). This is the consumer-facing field for the global group role binding mechanism documented
+  in [`pkg/rbac/README.md#global-role-bindings`](../../../rbac/README.md#global-role-bindings).
+
+Bearer-trust providers live in the identity release namespace and are not API-managed. The
+oauth2providers handler regenerates `spec` with only the issuer, client credentials, and tags on
+update, so an API-level update would silently drop `bearerTrust`. This path is unreachable today
+only because that handler is scoped to organization namespaces.
+
+The full bearer-trust operator contract is in
+[`docs/multi-issuer-token-contract.md`](../../../../docs/multi-issuer-token-contract.md).
 
 ## Label Query Model
 

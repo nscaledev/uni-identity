@@ -21,8 +21,11 @@ limitations under the License.
 package suites
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -97,6 +100,7 @@ var _ = Describe("Group Management", func() {
 						found = true
 						Expect(group.Metadata.Name).To(Equal(createdGroup.Metadata.Name))
 						GinkgoWriter.Printf("Found created group in list: %s\n", groupID)
+
 						break
 					}
 				}
@@ -396,6 +400,543 @@ var _ = Describe("Group Management", func() {
 				err := client.DeleteGroup(ctx, "invalid-org-id", "00000000-0000-0000-0000-000000000000")
 
 				Expect(err).To(HaveOccurred())
+			})
+		})
+	})
+})
+
+var _ = Describe("Group Subject Compatibility", func() {
+	Context("When group subjects affect ACL permissions", func() {
+		type aclPermission struct {
+			endpoint  string
+			operation identityopenapi.AclOperation
+		}
+
+		groupCreatePermission := aclPermission{
+			endpoint:  "identity:groups",
+			operation: identityopenapi.Create,
+		}
+
+		BeforeEach(func() {
+			Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
+			Expect(adminClient).NotTo(BeNil(), "ADMIN_AUTH_TOKEN must be set by integration fixtures")
+			Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
+				"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+		})
+
+		findAdministratorRoleID := func() string {
+			roles, err := adminClient.ListRoles(ctx, config.OrgID)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, role := range roles {
+				if role.Metadata.Name == "administrator" {
+					return role.Metadata.Id
+				}
+			}
+
+			Fail("administrator role must be available for ACL effect testing")
+
+			return ""
+		}
+
+		orgACLHasPermission := func(permission aclPermission) (bool, error) {
+			acl, err := userClient.GetOrganizationACL(ctx, config.OrgID)
+			if err != nil {
+				return false, err
+			}
+
+			if acl.Organization == nil || acl.Organization.Endpoints == nil {
+				return false, nil
+			}
+
+			for _, endpoint := range *acl.Organization.Endpoints {
+				if endpoint.Name != permission.endpoint {
+					continue
+				}
+
+				for _, operation := range endpoint.Operations {
+					if operation == permission.operation {
+						return true, nil
+					}
+				}
+
+				return false, nil
+			}
+
+			return false, nil
+		}
+
+		expectPermissionCondition := func(permission aclPermission, expected bool) {
+			hasPermission, err := orgACLHasPermission(permission)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hasPermission).To(Equal(expected),
+				"ACL permission %s/%s should be %t before test setup",
+				permission.endpoint, permission.operation, expected)
+		}
+
+		waitForPermissionCondition := func(permission aclPermission, expected bool) {
+			timeout := config.TestTimeout
+			if timeout > 2*time.Minute {
+				timeout = 2 * time.Minute
+			}
+
+			Eventually(func() bool {
+				hasPermission, err := orgACLHasPermission(permission)
+				Expect(err).NotTo(HaveOccurred())
+
+				return hasPermission == expected
+			}).WithTimeout(timeout).WithPolling(2*time.Second).Should(BeTrue(),
+				"ACL permission %s/%s should become %t", permission.endpoint, permission.operation, expected)
+		}
+
+		fixtureUserSubject := func() identityopenapi.Subject {
+			userinfo, err := userClient.GetUserinfo(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
+			Expect(userinfo.HttpsunikornCloudOrgauthz.Acctype).To(Equal(identityopenapi.User),
+				"USER_AUTH_TOKEN must be a federated user token for subject ACL effect tests")
+			Expect(userinfo.Sub).To(Equal(config.UserSubjectEmail))
+
+			email := userinfo.Sub
+
+			return identityopenapi.Subject{
+				Email:  &email,
+				Id:     userinfo.Sub,
+				Issuer: config.BaseURL,
+			}
+		}
+
+		createAdminGroupForUserSubjectWithCleanup := func(permission aclPermission) (string, func()) {
+			administratorRoleID := findAdministratorRoleID()
+			subject := fixtureUserSubject()
+
+			group, err := adminClient.CreateGroup(ctx, config.OrgID,
+				api.NewGroupPayload().
+					WithRoleIDs([]string{administratorRoleID}).
+					WithSubjects([]identityopenapi.Subject{subject}).
+					Build())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(group.Metadata.Id).NotTo(BeEmpty())
+			Expect(group.Metadata.OrganizationId).To(Equal(config.OrgID))
+			Expect(group.Spec.RoleIDs).To(ConsistOf(administratorRoleID))
+			Expect(group.Spec.Subjects).NotTo(BeNil())
+			Expect(*group.Spec.Subjects).To(ConsistOf(subject))
+
+			groupID := group.Metadata.Id
+			deleted := false
+			markDeleted := func() {
+				deleted = true
+			}
+
+			DeferCleanup(func() {
+				if !deleted {
+					err := adminClient.DeleteGroup(ctx, config.OrgID, groupID)
+					if !errors.Is(err, coreclient.ErrResourceNotFound) {
+						Expect(err).NotTo(HaveOccurred())
+					}
+				}
+
+				waitForPermissionCondition(permission, false)
+			})
+
+			return groupID, markDeleted
+		}
+
+		Describe("Given a group with an administrator role and the user's subject", func() {
+			It("should add the role's organization ACL permission to the user", func() {
+				permission := groupCreatePermission
+				By("verifying the user does not already have group create permission")
+				expectPermissionCondition(permission, false)
+
+				By("creating an administrator group for the user subject")
+				groupID, _ := createAdminGroupForUserSubjectWithCleanup(permission)
+
+				By("waiting for ACL permission to be granted")
+				waitForPermissionCondition(permission, true)
+
+				GinkgoWriter.Printf("Group %s granted %s/%s to subject %s\n",
+					groupID, permission.endpoint, permission.operation, config.UserSubjectEmail)
+			})
+		})
+
+		Describe("Given a group that grants ACL permissions through the user's subject", func() {
+			It("should remove the role's organization ACL permission after the group is deleted", func() {
+				permission := groupCreatePermission
+				By("verifying the user does not already have group create permission")
+				expectPermissionCondition(permission, false)
+
+				By("creating an administrator group for the user subject")
+				groupID, markDeleted := createAdminGroupForUserSubjectWithCleanup(permission)
+
+				By("waiting for ACL permission to be granted")
+				waitForPermissionCondition(permission, true)
+
+				By("deleting the group")
+				Expect(adminClient.DeleteGroup(ctx, config.OrgID, groupID)).To(Succeed())
+				markDeleted()
+
+				By("waiting for ACL permission to be revoked")
+				waitForPermissionCondition(permission, false)
+
+				GinkgoWriter.Printf("Group %s deletion removed %s/%s from subject %s\n",
+					groupID, permission.endpoint, permission.operation, config.UserSubjectEmail)
+			})
+		})
+	})
+
+	Context("When validating groups with userIDs", func() {
+		Describe("Given all existing groups in the organization", func() {
+			It("should expose subjects for every group that has userIDs", func() {
+				Expect(config.UserGroupID).NotTo(BeEmpty(),
+					"TEST_USER_GROUP_ID must be set by integration fixtures")
+				Expect(config.UserID).NotTo(BeEmpty(), "TEST_USER_ID must be set by integration fixtures")
+				Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
+					"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+
+				groups, err := client.ListGroups(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+
+				foundGroupWithUserIDs := false
+				foundFixtureUserGroup := false
+
+				for _, group := range groups {
+					if group.Spec.UserIDs == nil || len(*group.Spec.UserIDs) == 0 {
+						continue
+					}
+
+					foundGroupWithUserIDs = true
+					Expect(group.Spec.Subjects).NotTo(BeNil(),
+						"group %s has userIDs but subjects is nil", group.Metadata.Id)
+					Expect(*group.Spec.Subjects).NotTo(BeEmpty(),
+						"group %s has userIDs but subjects is empty", group.Metadata.Id)
+					// Direct subjects can coexist with subjects resolved from userIDs, so the
+					// response may contain extra subjects but should never contain fewer.
+					Expect(len(*group.Spec.Subjects)).To(BeNumerically(">=", len(*group.Spec.UserIDs)),
+						"group %s should not have fewer subjects than userIDs", group.Metadata.Id)
+
+					if group.Metadata.Id != config.UserGroupID {
+						continue
+					}
+
+					foundFixtureUserGroup = true
+					Expect(*group.Spec.UserIDs).To(ConsistOf(config.UserID),
+						"fixture user group should contain exactly TEST_USER_ID")
+					Expect(*group.Spec.Subjects).To(HaveLen(1),
+						"fixture user group should contain exactly one subject")
+
+					subject := (*group.Spec.Subjects)[0]
+					Expect(subject.Id).To(Equal(config.UserSubjectEmail),
+						"fixture user group subject ID should match TEST_USER_SUBJECT_EMAIL")
+					Expect(subject.Email).NotTo(BeNil(),
+						"fixture user group subject email should be populated")
+					Expect(*subject.Email).To(Equal(config.UserSubjectEmail),
+						"fixture user group subject email should match TEST_USER_SUBJECT_EMAIL")
+					Expect(subject.Issuer).To(Equal(config.BaseURL),
+						"fixture user group subject issuer should match the identity issuer")
+				}
+
+				Expect(foundGroupWithUserIDs).To(BeTrue(),
+					"integration fixtures must include at least one group with userIDs")
+				Expect(foundFixtureUserGroup).To(BeTrue(),
+					"TEST_USER_GROUP_ID should identify a group with TEST_USER_ID membership")
+			})
+		})
+	})
+})
+
+var _ = Describe("Group Subjects", func() {
+	Context("When managing group subjects", func() {
+		fixtureUserID := func() string {
+			Expect(config.UserID).NotTo(BeEmpty(), "TEST_USER_ID must be set by integration fixtures")
+
+			return config.UserID
+		}
+
+		fixtureUserSubjectEmail := func() string {
+			Expect(config.UserSubjectEmail).NotTo(BeEmpty(), "TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
+
+			return config.UserSubjectEmail
+		}
+
+		internalSubject := func(subjectEmail string) identityopenapi.Subject {
+			return identityopenapi.Subject{
+				Email:  &subjectEmail,
+				Id:     subjectEmail,
+				Issuer: config.BaseURL,
+			}
+		}
+
+		fixtureUserSubject := func() identityopenapi.Subject {
+			return internalSubject(fixtureUserSubjectEmail())
+		}
+
+		expectInvalidGroupWrite := func(method, path string, payload identityopenapi.GroupWrite, expectedDescription string) {
+			body, err := json.Marshal(payload)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, respBody, err := client.DoRequest(
+				ctx,
+				method,
+				path,
+				bytes.NewReader(body),
+				http.StatusBadRequest,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			var oauthErr identityopenapi.Oauth2Error
+			Expect(json.Unmarshal(respBody, &oauthErr)).To(Succeed())
+			Expect(oauthErr.Error).To(Equal(identityopenapi.InvalidRequest))
+			Expect(oauthErr.ErrorDescription).To(ContainSubstring(expectedDescription))
+		}
+
+		Describe("Given a new group created with a valid internal subject", func() {
+			It("should create successfully with subjects populated and userIDs auto-populated", func() {
+				expectedUserID := fixtureUserID()
+				expectedSubject := fixtureUserSubject()
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{expectedSubject}).Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(groupID).NotTo(BeEmpty())
+				Expect(group.Spec.Subjects).NotTo(BeNil(),
+					"subjects field must be populated after create")
+				Expect(*group.Spec.Subjects).To(HaveLen(1))
+				Expect((*group.Spec.Subjects)[0].Id).To(Equal(expectedSubject.Id))
+				Expect((*group.Spec.Subjects)[0].Email).NotTo(BeNil(),
+					"subject email must round-trip after create")
+				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(*expectedSubject.Email))
+				Expect((*group.Spec.Subjects)[0].Issuer).To(Equal(expectedSubject.Issuer),
+					"subject issuer must round-trip after create")
+				Expect(group.Spec.UserIDs).NotTo(BeNil(),
+					"userIDs field should be present for compatibility")
+				Expect(*group.Spec.UserIDs).To(HaveLen(1),
+					"internal subjects should auto-populate exactly one userID")
+				Expect(*group.Spec.UserIDs).To(ConsistOf(expectedUserID),
+					"internal subjects should auto-populate the fixture userID")
+
+				GinkgoWriter.Printf("Created group with internal subject: %s (ID: %s)\n",
+					group.Metadata.Name, groupID)
+			})
+		})
+
+		Describe("Given a new group created with userIDs (legacy field)", func() {
+			It("should create successfully and subjects should be auto-populated", func() {
+				realUserID := fixtureUserID()
+				expectedSubject := fixtureUserSubject()
+				payload := api.NewGroupPayload().WithUserIDs([]string{realUserID}).Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(groupID).NotTo(BeEmpty())
+				Expect(group.Spec.UserIDs).NotTo(BeNil(),
+					"userIDs must be present after create with legacy field")
+				Expect(*group.Spec.UserIDs).To(ConsistOf(realUserID),
+					"response userIDs must contain exactly the requested userID")
+				// subjects should be auto-populated from the resolved userID
+				Expect(group.Spec.Subjects).NotTo(BeNil(),
+					"subjects must be auto-populated when group is created with userIDs")
+				Expect(*group.Spec.Subjects).To(HaveLen(1),
+					"response subjects must contain exactly one resolved subject")
+				Expect((*group.Spec.Subjects)[0].Id).To(Equal(expectedSubject.Id),
+					"response subject ID must match the resolved user subject")
+				Expect((*group.Spec.Subjects)[0].Email).NotTo(BeNil(),
+					"response subject email must be populated from the resolved user")
+				Expect(*(*group.Spec.Subjects)[0].Email).To(Equal(*expectedSubject.Email),
+					"response subject email must match the resolved user subject")
+				Expect((*group.Spec.Subjects)[0].Issuer).To(Equal(expectedSubject.Issuer),
+					"response subject issuer must match the identity issuer")
+
+				GinkgoWriter.Printf("Created group with userIDs (legacy): %s (ID: %s)\n",
+					group.Metadata.Name, groupID)
+			})
+		})
+
+		Describe("Given a new group created with a non-existent userID", func() {
+			It("should return invalid request", func() {
+				payload := api.NewGroupPayload().
+					WithUserIDs([]string{"00000000-0000-0000-0000-000000000000"}).
+					Build()
+
+				body, err := json.Marshal(payload)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, _, err = client.DoRequest(
+					ctx,
+					http.MethodPost,
+					api.NewEndpoints().ListGroups(config.OrgID),
+					bytes.NewReader(body),
+					http.StatusBadRequest,
+				)
+				Expect(err).NotTo(HaveOccurred(),
+					"creating a group with a non-existent userID should return 400")
+			})
+		})
+
+		Describe("Given a new group with both subjects and userIDs set", func() {
+			It("should be rejected with an error", func() {
+				ciInvalidUserEmail := fmt.Sprintf("ci-invalid-user-create-%d@nscale.test", time.Now().UnixNano())
+				email := ciInvalidUserEmail
+				testSubject := identityopenapi.Subject{Id: ciInvalidUserEmail, Email: &email, Issuer: ""}
+				userID := fixtureUserID()
+
+				payload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{testSubject}).
+					WithUserIDs([]string{userID}).
+					Build()
+
+				expectInvalidGroupWrite(
+					http.MethodPost,
+					api.NewEndpoints().ListGroups(config.OrgID),
+					payload,
+					"cannot provide both subjects and userIDs",
+				)
+
+				GinkgoWriter.Printf("Correctly rejected group with both subjects and userIDs\n")
+			})
+		})
+
+		Describe("Given an existing group with subjects", func() {
+			It("should return subject contents and empty userIDs on GET", func() {
+				testEmail := fmt.Sprintf("qa-get-%d@example.com", time.Now().UnixNano())
+				email := testEmail
+				testSubject := identityopenapi.Subject{Id: testEmail, Email: &email, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{testSubject}).Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved).NotTo(BeNil())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil(),
+					"GET response must include subjects field")
+				Expect(*retrieved.Spec.Subjects).To(HaveLen(1))
+				Expect((*retrieved.Spec.Subjects)[0].Id).To(Equal(testEmail))
+				Expect((*retrieved.Spec.Subjects)[0].Email).NotTo(BeNil(),
+					"GET response subject email must be populated")
+				Expect(*(*retrieved.Spec.Subjects)[0].Email).To(Equal(testEmail))
+				Expect((*retrieved.Spec.Subjects)[0].Issuer).To(BeEmpty(),
+					"GET response external subject issuer should remain empty")
+				Expect(retrieved.Spec.UserIDs).NotTo(BeNil(),
+					"GET response must include userIDs compatibility field")
+				Expect(*retrieved.Spec.UserIDs).To(BeEmpty(),
+					"external subjects should not auto-populate userIDs")
+
+				GinkgoWriter.Printf("GET returned subjects field for group: %s\n", groupID)
+			})
+		})
+
+		Describe("Given an existing group, adding a subject via PUT", func() {
+			It("should reflect the new subject in the GET response", func() {
+				firstEmail := fmt.Sprintf("qa-add1-%d@example.com", time.Now().UnixNano())
+				firstEmailCopy := firstEmail
+				firstSubject := identityopenapi.Subject{Id: firstEmail, Email: &firstEmailCopy, Issuer: ""}
+
+				payload := api.NewGroupPayload().WithSubjects([]identityopenapi.Subject{firstSubject}).Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				secondEmail := fmt.Sprintf("qa-add2-%d@example.com", time.Now().UnixNano())
+				secondEmailCopy := secondEmail
+				secondSubject := identityopenapi.Subject{Id: secondEmail, Email: &secondEmailCopy, Issuer: ""}
+
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject, secondSubject}).
+					Build()
+
+				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil())
+
+				var subjectIDs []string
+				for _, s := range *retrieved.Spec.Subjects {
+					subjectIDs = append(subjectIDs, s.Id)
+				}
+
+				Expect(subjectIDs).To(ConsistOf(firstEmail, secondEmail),
+					"group membership must contain exactly both subjects after PUT")
+
+				GinkgoWriter.Printf("Added subject %s to group %s\n", secondEmail, groupID)
+			})
+		})
+
+		Describe("Given an existing group with two subjects, removing one via PUT", func() {
+			It("should no longer return the removed subject in the GET response", func() {
+				firstUser, firstUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
+					WithSubject(fmt.Sprintf("qa-rem-user-1-%d@nscale.test", time.Now().UnixNano())).
+					WithState(identityopenapi.Active).
+					Build())
+				secondUser, secondUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
+					WithSubject(fmt.Sprintf("qa-rem-user-2-%d@nscale.test", time.Now().UnixNano())).
+					WithState(identityopenapi.Active).
+					Build())
+				firstSubject := internalSubject(firstUser.Spec.Subject)
+				secondSubject := internalSubject(secondUser.Spec.Subject)
+
+				payload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject, secondSubject}).
+					Build()
+				group, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				Expect(group.Spec.UserIDs).NotTo(BeNil(),
+					"userIDs field should be populated from valid internal subjects")
+				Expect(*group.Spec.UserIDs).To(ConsistOf(firstUserID, secondUserID),
+					"group should initially contain both resolved userIDs")
+
+				// Remove secondSubject by PUTting only firstSubject
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{firstSubject}).
+					Build()
+
+				err := client.UpdateGroup(ctx, config.OrgID, groupID, updatePayload)
+				Expect(err).NotTo(HaveOccurred())
+
+				retrieved, err := client.GetGroup(ctx, config.OrgID, groupID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(retrieved.Spec.Subjects).NotTo(BeNil())
+
+				var subjectIDs []string
+				for _, s := range *retrieved.Spec.Subjects {
+					subjectIDs = append(subjectIDs, s.Id)
+				}
+
+				Expect(subjectIDs).To(ConsistOf(firstSubject.Id),
+					"group membership must contain exactly the retained subject after PUT")
+				Expect(retrieved.Spec.UserIDs).NotTo(BeNil(),
+					"GET response must include userIDs compatibility field")
+				Expect(*retrieved.Spec.UserIDs).To(HaveLen(1),
+					"group membership must contain exactly one userID after PUT")
+				Expect(*retrieved.Spec.UserIDs).To(ConsistOf(firstUserID),
+					"group membership must contain exactly the retained userID after PUT")
+
+				GinkgoWriter.Printf("Removed subject %s from group %s\n", secondSubject.Id, groupID)
+			})
+		})
+
+		Describe("Given a PUT with both subjects and userIDs set", func() {
+			It("should be rejected with an error", func() {
+				payload := api.NewGroupPayload().Build()
+				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
+
+				ciInvalidUserEmail := fmt.Sprintf("ci-invalid-user-update-%d@nscale.test", time.Now().UnixNano())
+				email := ciInvalidUserEmail
+				testSubject := identityopenapi.Subject{Id: ciInvalidUserEmail, Email: &email, Issuer: ""}
+				userID := fixtureUserID()
+
+				updatePayload := api.NewGroupPayload().
+					WithSubjects([]identityopenapi.Subject{testSubject}).
+					WithUserIDs([]string{userID}).
+					Build()
+
+				expectInvalidGroupWrite(
+					http.MethodPut,
+					api.NewEndpoints().GetGroup(config.OrgID, groupID),
+					updatePayload,
+					"cannot provide both subjects and userIDs",
+				)
+
+				GinkgoWriter.Printf("Correctly rejected PUT with both subjects and userIDs\n")
 			})
 		})
 	})

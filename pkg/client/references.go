@@ -29,26 +29,48 @@ import (
 	"github.com/unikorn-cloud/core/pkg/manager"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/util"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// getOrganizationAndProjectID extracts the organization and project IDs from a resource.
-func getOrganizationAndProjectID(resource client.Object) (string, string, error) {
+// organizationAndProjectID recovers the typed organization and project IDs that own a
+// resource. If the resource implements ids.ProjectScopeReader the typed accessor is used
+// directly; otherwise it parses the standard organization and project labels.
+//
+// The label path is a backwards-compatibility ramp, not a fallback to nowhere: resources
+// that have not yet adopted the ids.ProjectScopeReader accessors (and callers in repos that
+// pre-date it) keep working unchanged, while resources that do implement it are read through
+// the typed accessor. Both paths read the same labels, so they agree by construction.
+func organizationAndProjectID(resource client.Object) (ids.OrganizationID, ids.ProjectID, error) {
+	if r, ok := resource.(ids.ProjectScopeReader); ok {
+		return r.OrganizationAndProjectID()
+	}
+
 	labels := resource.GetLabels()
 
 	organizationID, ok := labels[constants.OrganizationLabel]
 	if !ok {
-		return "", "", fmt.Errorf("%w: resource missing organization ID label", errors.ErrConsistency)
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: resource missing organization ID label", errors.ErrConsistency)
 	}
 
 	projectID, ok := labels[constants.ProjectLabel]
 	if !ok {
-		return "", "", fmt.Errorf("%w: resource missing project ID label", errors.ErrConsistency)
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: resource missing project ID label", errors.ErrConsistency)
 	}
 
-	return organizationID, projectID, nil
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: invalid organization ID on resource", err)
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return ids.OrganizationID{}, ids.ProjectID{}, fmt.Errorf("%w: invalid project ID on resource", err)
+	}
+
+	return orgID, projID, nil
 }
 
 // References allows references to be added and removed on identity
@@ -94,12 +116,12 @@ func (r *References) AddReferenceToProject(ctx context.Context, resource client.
 		return err
 	}
 
-	organizationID, projectID, err := getOrganizationAndProjectID(resource)
+	orgID, projID, err := organizationAndProjectID(resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
+	response, err := httpClient.PutApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, orgID, projID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}
@@ -127,12 +149,12 @@ func (r *References) RemoveReferenceFromProject(ctx context.Context, resource cl
 		return err
 	}
 
-	organizationID, projectID, err := getOrganizationAndProjectID(resource)
+	orgID, projID, err := organizationAndProjectID(resource)
 	if err != nil {
 		return err
 	}
 
-	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, organizationID, projectID, url.PathEscape(reference))
+	response, err := httpClient.DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDReferencesReferenceWithResponse(ctx, orgID, projID, url.PathEscape(reference))
 	if err != nil {
 		return err
 	}

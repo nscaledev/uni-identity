@@ -72,8 +72,6 @@ type OAuth2ClientSpec struct {
 	LoginURI *string `json:"loginUri,omitempty"`
 	// ErrorURI is a URI to pass control to for error dialogs.
 	ErrorURI *string `json:"errorUri,omitempty"`
-	// OnboardingURI is a URI to pass control to for the onboarding dialogs.
-	OnboardingURI *string `json:"onboardingUri,omitempty"`
 }
 
 // OAuth2ClientStatus defines the status of the client.
@@ -81,7 +79,7 @@ type OAuth2ClientStatus struct {
 	// Secret is the generated client secret.
 	Secret string `json:"secret,omitempty"`
 	// Current service state of the resource.
-	Conditions []unikornv1core.Condition `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // OAuth2ProviderList is a typed list of backend servers.
@@ -134,6 +132,49 @@ type OAuth2ProviderSpec struct {
 	AuthorizationURI *string `json:"authorizationURI,omitempty"`
 	// TokenURI is used when OIDC (discovery) is not available.
 	TokenURI *string `json:"tokenURI,omitempty"`
+	// BearerTrust, when present, opts this provider in as a trusted source of
+	// bearer access tokens (token exchange, /api/v1/* and /oauth2/v2/userinfo).
+	// A nil value means not trusted for bearer tokens; presence is the opt-in.
+	// Federation configuration alone never confers bearer trust.
+	BearerTrust *BearerTrustSpec `json:"bearerTrust,omitempty"`
+}
+
+// BearerTrustSpec configures acceptance of this provider's access tokens on
+// uni-identity's bearer surfaces. Validation of cross-field rules (e.g.
+// audience required, asymmetric-only algorithms) is performed at runtime when
+// the trust list is built, not via CRD markers — this repo uses no CEL.
+type BearerTrustSpec struct {
+	// Audience is required in the token's aud claim (by membership). It guards
+	// against replay of tokens minted for unrelated audiences.
+	Audience string `json:"audience"`
+	// AllowExternalIdentity accepts a subject with no UNI user record (with an
+	// empty orgIds set) instead of rejecting it. Defaults false.
+	AllowExternalIdentity bool `json:"allowExternalIdentity,omitempty"`
+	// SkipEmailVerification opts out of the email_verified check. Defaults
+	// false (verify). Inverted polarity matches the repo's optional-bool idiom
+	// (zero value = safe default), avoiding a *bool.
+	SkipEmailVerification bool `json:"skipEmailVerification,omitempty"`
+	// RequireAuthzClaim requires the https://unikorn-cloud.org/authz claim to
+	// be present and well-shaped. Defaults false (tolerate a missing claim).
+	// Claimed orgIds are discarded regardless.
+	RequireAuthzClaim bool `json:"requireAuthzClaim,omitempty"`
+	// SigningAlgorithms lists permitted JWS algorithms; empty defaults to
+	// [RS256]. Only asymmetric algorithms are allowed; none/HMAC are rejected
+	// at trust-list build time.
+	SigningAlgorithms []string `json:"signingAlgorithms,omitempty"`
+	// GroupsClaim names the access-token claim that carries the IdP group
+	// names for this issuer, e.g. "https://unikorn-cloud.org/groups". The
+	// claim value must be a JSON array of strings, and the validator skips
+	// non-string entries. Empty means this issuer emits no groups, so
+	// group-based global role bindings never match tokens from it (fail
+	// closed). The name must be a namespaced URI that contains "://", so
+	// nobody can designate a user-settable bare profile claim (nickname,
+	// name) as an authorization source. Validator construction applies the
+	// rule at the first token dispatched for the issuer, not at object
+	// admission. A violation therefore rejects every token from this issuer
+	// with HTTP 401. The rbac startup advisory also reports violations at
+	// boot.
+	GroupsClaim string `json:"groupsClaim,omitempty"`
 }
 
 // OAuth2ProviderStatus defines the status of the server.
@@ -153,7 +194,7 @@ type RoleList struct {
 // permssions should be create from the boolean union for any roles that apply
 // to a user.  Roles can optionally be scoped to an organization to allow
 // deep customization of roles and permissions within that organization, for
-// example the system management organization may have an onboarding role that
+// example the system management organization may have a provisioning role that
 // allows basic account creation before handing off to the user.
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -280,7 +321,7 @@ const (
 	// UserStateActive means the user can authenticate.
 	UserStateActive UserState = "active"
 	// UserStatePending means the user is registered with the system
-	// but needs to complete some onboarding action e.g. security checks.
+	// but has been placed on administrative hold, e.g. pending security review.
 	UserStatePending UserState = "pending"
 	// UserStateSuspended means the user is not allowed to authenticate.
 	// But is still alive to maintain foreign key mappings e.g. groups.
@@ -296,23 +337,10 @@ type UserSpec struct {
 	Subject string `json:"subject"`
 	// State controls what the user is allowed to do.
 	State UserState `json:"state"`
-	// Signup is set when the user is being verified.
-	Signup *UserSignup `json:"signup,omitempty"`
 	// Sessions record active user sessions.
 	// +listType=map
 	// +listMapKey=clientID
 	Sessions []UserSession `json:"sessions,omitempty"`
-}
-
-type UserSignup struct {
-	// Token is used to store a time limited one use sign-up token
-	// in order to transition from the pending to active state.  It typically
-	// involves an email to notify the user they have been added.
-	Token string `json:"token"`
-	// ClientID remembers the oauth2 client that added the user in the first
-	// place so that we can link to per-client email templates and error
-	// handling dialogs.
-	ClientID string `json:"clientID"`
 }
 
 type UserSession struct {

@@ -33,6 +33,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/allocations"
 	"github.com/unikorn-cloud/identity/pkg/handler/common/fixtures"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	corev1 "k8s.io/api/core/v1"
@@ -46,9 +47,9 @@ import (
 
 const (
 	testNamespace = "test-namespace"
-	testOrgID     = "test-org"
+	testOrgID     = "00000000-0000-4000-8000-000000000001"
 	testOrgNS     = "test-org-ns"
-	testProjectID = "test-project"
+	testProjectID = "00000000-0000-4000-8000-000000000002"
 	testProjectNS = "test-project-ns"
 
 	allocationResourceKind = "instance" // arbitrary
@@ -309,7 +310,7 @@ func TestConcurrentAllocations_SerializedByMutex(t *testing.T) {
 			1,           // 1 CPU
 			oneGigabyte, // 1GB
 		)
-		_, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, request)
+		_, err := f.syncClient().Create(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), request)
 
 		return err
 	})
@@ -353,7 +354,7 @@ func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
 		oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, initialRequest)
+	result, err := f.syncClient().Create(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), initialRequest)
 
 	require.NoError(t, err)
 
@@ -368,7 +369,7 @@ func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
 			2+idx, // Increasing CPU request
 			oneGigabyte,
 		)
-		_, err := f.syncClient().Update(newContext(t), testOrgID, testProjectID, allocationID, updateRequest)
+		_, err := f.syncClient().Update(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), allocationID, updateRequest)
 
 		return err
 	})
@@ -405,7 +406,7 @@ func TestAllocationWithinQuota_Succeeds(t *testing.T) {
 		5*oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, request)
+	result, err := f.syncClient().Create(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), request)
 	require.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "test-allocation", result.Metadata.Name)
@@ -429,7 +430,7 @@ func TestAllocationExceedingQuota_Fails(t *testing.T) {
 		15*oneGigabyte,
 	)
 
-	result, err := f.syncClient().Create(newContext(t), testOrgID, testProjectID, request)
+	result, err := f.syncClient().Create(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), request)
 	require.Error(t, err, "Should fail when exceeding quota")
 	require.True(t, errors.IsForbidden(err))
 	assert.Nil(t, result)

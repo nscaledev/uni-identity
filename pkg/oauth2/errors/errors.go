@@ -57,6 +57,16 @@ func (e *Error) Error() string {
 	return e.description
 }
 
+// StatusCode returns the HTTP status associated with this OAuth2 error.
+func (e *Error) StatusCode() int {
+	return e.status
+}
+
+// Code returns the OAuth2 machine-readable error code.
+func (e *Error) Code() openapi.Oauth2ErrorError {
+	return e.code
+}
+
 // Write returns the error code and description to the client.
 func (e *Error) Write(w http.ResponseWriter, r *http.Request) {
 	// Log out any detail from the error that shouldn't be
@@ -135,13 +145,20 @@ func OAuth2AccessDenied(description string) *Error {
 // OAuth2InvalidScope tells the client it doesn't have the necessary scope
 // to access the resource.
 func OAuth2InvalidScope(description string) *Error {
-	return newError(http.StatusUnauthorized, openapi.InvalidScope, description)
+	return newError(http.StatusBadRequest, openapi.InvalidScope, description)
 }
 
 // oAuth2ServerError tells the client we are at fault, this should never be seen
 // in production.  If so then our testing needs to improve.
 func oAuth2ServerError(description string) *Error {
 	return newError(http.StatusInternalServerError, openapi.ServerError, description)
+}
+
+// OAuth2ServiceUnavailable tells the client the service is temporarily unavailable
+// (e.g., cache or dependency is still warming up). This is a transient condition
+// and the client should retry.
+func OAuth2ServiceUnavailable(description string) *Error {
+	return newError(http.StatusServiceUnavailable, openapi.ServerError, description)
 }
 
 // toError is a handy unwrapper to get a HTTP error from a generic one.

@@ -60,6 +60,13 @@ Optional variables for richer coverage:
 - `USER_AUTH_TOKEN`
 - `TEST_USER_SA_ID`
 - `IDENTITY_CA_CERT`
+- `PLATFORM_ADMIN_AUTH_TOKEN` — user token bound via legacy `platformAdministrators.subjects`
+- `BINDING_ADMIN_AUTH_TOKEN` — user token bound via `globalRoleBindings`
+- `PLATFORM_READER_AUTH_TOKEN` — token for a subject bound to the protected `platform-reader` role
+  via an exact `uni` global role binding; the platform-reader suite skips without it.
+- `TEST_PLATFORM_READER_ROLE_ID` — Role CRD ID of `platform-reader`, resolved by the fixtures from
+  the cluster (protected roles are invisible via the API); the non-grantability test skips without
+  it.
 
 Notes:
 
@@ -67,6 +74,10 @@ Notes:
 - `ADMIN_AUTH_TOKEN` is also accepted and is used by the KinD fixture flow.
 - When `IDENTITY_CA_CERT` is set, the Make targets export `SSL_CERT_FILE` so Go HTTP clients trust
   the test CA issued by the KinD environment.
+- Specs that install custom resources with no write API — roles, and groups carrying them — need
+  cluster access via `KUBECONFIG`. They discover the identity and organization namespaces from
+  `TEST_ORG_ID`, and skip when no kubeconfig is configured (an HTTP-API-only run); a present but
+  broken `KUBECONFIG` fails fast.
 
 ## Local KinD Flow
 

@@ -20,6 +20,7 @@ package openapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	goerrors "errors"
@@ -27,8 +28,10 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/spf13/pflag"
@@ -177,6 +180,31 @@ func hasHTTPAuthorization(r *http.Request) bool {
 // The impersonated cache key therefore includes both:
 // - the authenticated calling service subject.
 // - the impersonated actor.
+//
+// All key shapes also include info.SrcIss, because subjects are only unique
+// within an issuer (ID-367 finding 6). Every segment preceding scope is
+// length-prefixed, since subjects such as Auth0's "auth0|<id>" contain the "|"
+// delimiter and could otherwise be crafted to collide with another identity's
+// key. scope needs no prefix: it is terminal, so the key stays injective.
+//
+// The key also carries a digest of the presented token, immediately before the
+// terminal scope segment. The ACL is a function of the presented token plus
+// cluster state, not only of (sub, srcIss), so two live tokens for the same
+// subject can resolve to different ACLs and must never share a cache entry.
+// Keying by token is strictly finer than keying by subject, so it can only
+// under-share an entry, never over-share one. The key carries a digest rather
+// than the raw token, because cache keys live in a large LRU in every
+// downstream service and must not themselves be credential material. The mTLS
+// system-account path leaves info.Token empty, so every system-account request
+// gets the same constant digest. That is harmless: system-account ACLs do not
+// depend on token content.
+//
+// The digest/scope boundary needs no adversarial collision argument, unlike sub
+// and srcIss. sha256.Sum256 output, base64.RawStdEncoding-encoded, is always
+// exactly 43 bytes drawn from an alphabet that never contains "|", so no scope
+// value can borrow space from the digest segment or be mistaken for it. The
+// boundary is safe by construction, not merely by the length-prefix convention
+// that protects the variable-length sub and srcIss segments.
 func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID string) (string, error) {
 	scope := organizationID
 	if scope == "" {
@@ -193,10 +221,25 @@ func aclCacheKey(ctx context.Context, info *authorization.Info, organizationID s
 			return "", fmt.Errorf("%w: impersonated principal actor missing", ErrHeader)
 		}
 
-		return "impersonated|" + info.Userinfo.Sub + "|" + p.Actor + "|" + scope, nil
+		sum := sha256.Sum256([]byte(info.Token))
+		tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
+
+		return fmt.Sprintf("impersonated|%d:%s|%d:%s|%d:%s|%d:%s|%s",
+			len(info.Userinfo.Sub), info.Userinfo.Sub,
+			len(info.SrcIss), info.SrcIss,
+			len(p.Actor), p.Actor,
+			len(tokenDigest), tokenDigest,
+			scope), nil
 	}
 
-	return "direct|" + info.Userinfo.Sub + "|" + scope, nil
+	sum := sha256.Sum256([]byte(info.Token))
+	tokenDigest := base64.RawStdEncoding.EncodeToString(sum[:])
+
+	return fmt.Sprintf("direct|%d:%s|%d:%s|%d:%s|%s",
+		len(info.Userinfo.Sub), info.Userinfo.Sub,
+		len(info.SrcIss), info.SrcIss,
+		len(tokenDigest), tokenDigest,
+		scope), nil
 }
 
 // validateAuthentication is invoked on an oauth2 endpoint.  It is responsible for extracting
@@ -234,6 +277,11 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 
 		info := &authorization.Info{
 			SystemAccount: true,
+			// SrcIss is intentionally empty for the mTLS system-account path.
+			// System accounts are authorized via the acctype==system branch in rbac.GetACL
+			// and dispatched to getSystemAccountACL, never reaching the user platform-admin
+			// fast-path that consumes SrcIss. The empty value is fail-closed: cannot match
+			// an external admin entry.
 			Userinfo: &identityapi.Userinfo{
 				Sub: certificate.Subject.CommonName,
 				HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
@@ -268,6 +316,116 @@ func (v *Validator) getACL(ctx context.Context, info *authorization.Info, organi
 	return acl, nil
 }
 
+// clientValidationError renders a request validation failure as an error description
+// that is safe to hand to the client.  The library's own rendering is not: a schema
+// error appends the whole schema and the value that failed validation, and a parse
+// error prints the value it couldn't parse, so returning err.Error() echoes the
+// request — bearer tokens included — straight back out again.  OWASP API8:2023 and
+// CWE-209 say a description carries only what the caller needs to correct the
+// request, so that is all we build here.
+func clientValidationError(err error) string {
+	if description := validationErrorDescription(err); description != "" {
+		return description
+	}
+
+	return "the request is not valid"
+}
+
+// validationErrorDescription renders what can be safely said about a validation
+// failure, or an empty string when nothing can be, so callers can fall back to
+// something less specific.
+func validationErrorDescription(err error) string {
+	var requestError *openapi3filter.RequestError
+
+	if goerrors.As(err, &requestError) {
+		subject := "the request body"
+
+		if requestError.Parameter != nil {
+			subject = fmt.Sprintf("parameter %q in %s", requestError.Parameter.Name, requestError.Parameter.In)
+		}
+
+		detail := validationErrorDescription(requestError.Err)
+		if detail == "" {
+			detail = staticReason(requestError.Reason)
+		}
+
+		if detail == "" {
+			return subject + " is not valid"
+		}
+
+		return subject + " is not valid: " + detail
+	}
+
+	var schemaError *openapi3.SchemaError
+
+	if goerrors.As(err, &schemaError) {
+		return schemaErrorDescription(schemaError)
+	}
+
+	var parseError *openapi3filter.ParseError
+
+	if goerrors.As(err, &parseError) {
+		return parseErrorDescription(parseError)
+	}
+
+	return ""
+}
+
+// schemaErrorDescription says what is wrong with a value without disclosing the
+// value itself.
+func schemaErrorDescription(err *openapi3.SchemaError) string {
+	// NOTE: err.Error() appends the schema and the value, and err.Origin may quote
+	// the value, so neither can be used.  err.Reason is written from static text at
+	// every site bar two: "format", which quotes the library's own pattern for the
+	// format rather than the format itself, and the 3.1 JSON schema validator,
+	// which is unreachable while our specification declares 3.0.x.
+	reason := err.Reason
+
+	if err.SchemaField == "format" && err.Schema != nil {
+		reason = fmt.Sprintf("does not match format %q", err.Schema.Format)
+	}
+
+	if reason == "" {
+		reason = fmt.Sprintf("does not satisfy %q", err.SchemaField)
+	}
+
+	if path := err.JSONPointer(); len(path) > 0 {
+		return fmt.Sprintf("%q %s", "/"+strings.Join(path, "/"), reason)
+	}
+
+	return reason
+}
+
+// parseErrorDescription finds the innermost reason a value could not be parsed.
+// The outer error of a nested parse failure carries no reason of its own, and
+// neither its value nor its cause can be used, as both quote the input.
+func parseErrorDescription(err *openapi3filter.ParseError) string {
+	for {
+		if err.Reason != "" {
+			return err.Reason
+		}
+
+		var cause *openapi3filter.ParseError
+
+		if !goerrors.As(err.Cause, &cause) {
+			return ""
+		}
+
+		err = cause
+	}
+}
+
+// staticReason returns a library reason string that is safe to pass on.  The
+// schema mismatch variant embeds a schema pointer, which may be an external URL
+// and tells the caller nothing actionable, so it is dropped.
+func staticReason(reason string) string {
+	if strings.Contains(reason, "#/") || strings.Contains(reason, "://") {
+		return ""
+	}
+
+	return reason
+}
+
 func (v *Validator) validateRequest(r *http.Request, route *routers.Route, params map[string]string) (*openapi3filter.ResponseValidationInput, error) {
 	// This authorization callback is fired if the API endpoint is marked as
 	// requiring it.
@@ -277,8 +435,8 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 			return err
 		}
 
-		// This call performs an OIDC userinfo call to authenticate the token
-		// with identity and to extract auditing information.
+		// This call authenticates the request and resolves the identity data
+		// used for audit, principal generation and RBAC lookup.
 		info, err := v.validateAuthentication(ctx, input)
 		if err != nil {
 			authInfo.err = err
@@ -331,7 +489,7 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 	}
 
 	if err := openapi3filter.ValidateRequest(r.Context(), requestValidationInput); err != nil {
-		return nil, errors.OAuth2InvalidRequest(err.Error())
+		return nil, errors.OAuth2InvalidRequest(clientValidationError(err))
 	}
 
 	// Only restore it if we took it away. The validation filter will read r.Body into
@@ -452,7 +610,7 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	// If mTLS is in use, then the access token *may* be bound to the X.509 private key,
 	// but only in the case where a service is using a client credentials grant.
 	// As all services act on behalf of clients, we only want the client certificate to
-	// be propagated to the identity service during authentication (userinfo call) and
+	// be propagated to the identity service during authentication/token exchange and
 	// authorization (ACL call), otherwise you risk it being injected where it's not
 	// wanted.
 	authorizationCtx, err := authorization.ExtractClientCert(ctx, r.Header)

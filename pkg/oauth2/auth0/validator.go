@@ -1,0 +1,401 @@
+/*
+Copyright 2026 Nscale.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package auth0
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+	"go.opentelemetry.io/otel"
+
+	"github.com/unikorn-cloud/identity/pkg/constants"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+// DefaultJWKSMinRefreshInterval is the default minimum interval between
+// requests to the upstream JWKS endpoint. It bounds the worst-case JWKS
+// fetch rate to one request per interval per process, which is well under
+// Auth0's documented per-tenant JWKS rate limit while still allowing
+// legitimate key rotations to be picked up promptly.
+const DefaultJWKSMinRefreshInterval = 60 * time.Second
+
+// jwksFetchTimeout bounds a single upstream JWKS fetch. go-oidc runs the
+// fetch in a goroutine detached from the per-request context and frees its
+// deduplication slot only when the fetch returns, so a fetch without a
+// deadline that hangs would wedge the key set permanently.
+const jwksFetchTimeout = 10 * time.Second
+
+const (
+	// AuthzClaimName is the UNI authorization context claim emitted by the
+	// Auth0 post-login Action.
+	AuthzClaimName = "https://unikorn-cloud.org/authz"
+
+	accountTypeUser = "user"
+)
+
+var (
+	ErrDisabled          = errors.New("auth0 exchange validation is disabled")
+	ErrInvalidConfig     = errors.New("invalid auth0 exchange config")
+	ErrInvalidToken      = errors.New("invalid auth0 token")
+	ErrEmailUnverified   = errors.New("auth0 email is not verified")
+	ErrMissingEmail      = errors.New("auth0 email is missing")
+	ErrInvalidAuthzClaim = errors.New("invalid auth0 authz claim")
+)
+
+// Options configures Auth0 access-token validation for passport exchange.
+type Options struct {
+	Issuer                  string
+	Audience                string
+	TokenVerificationLeeway time.Duration
+
+	// SupportedSigningAlgorithms is the list of asymmetric signing algorithms
+	// accepted when verifying the token signature. When empty, defaults to
+	// ["RS256"]. Every entry must be an asymmetric algorithm; symmetric
+	// algorithms (e.g. HS256) and "none" are rejected at construction time.
+	SupportedSigningAlgorithms []string
+
+	// SkipEmailVerification disables the email_verified check. When false
+	// (the default) tokens with an unverified or missing email_verified claim
+	// are rejected. Set to true only for providers that do not emit the claim.
+	SkipEmailVerification bool
+
+	// RequireAuthzClaim gates the UNI authorization-context checks. When
+	// false (the default) the https://unikorn-cloud.org/authz claim is
+	// tolerated as missing or zero-valued and acctype defaults to "user".
+	// When true the claim must be present with acctype=="user" and at least
+	// one orgId.
+	RequireAuthzClaim bool
+
+	// GroupsClaim names the access-token claim that carries IdP group names.
+	// Empty disables group extraction. A non-empty value must be a namespaced
+	// URI that contains "://". Construction rejects a bare user-settable
+	// profile claim. See BearerTrustSpec.GroupsClaim.
+	GroupsClaim string
+
+	// JWKSMinRefreshInterval is the minimum interval between requests to
+	// the upstream JWKS endpoint. go-oidc refetches the JWKS whenever no
+	// cached key verifies a token's signature, so without a bound, forged
+	// or unknown-kid tokens would drive one fetch per token and exhaust
+	// the tenant rate limit. Tokens demanding a refetch inside the
+	// interval are rejected without contacting Auth0. When zero,
+	// DefaultJWKSMinRefreshInterval is used.
+	JWKSMinRefreshInterval time.Duration
+}
+
+// Enabled reports whether Auth0 exchange validation has enough configuration
+// to run.
+func (o Options) Enabled() bool {
+	return o.Issuer != "" || o.Audience != ""
+}
+
+type authzClaims struct {
+	Acctype string   `json:"acctype"`
+	OrgIDs  []string `json:"orgIds"`
+}
+
+type tokenClaims struct {
+	jwt.Claims
+
+	// Auth0 only emits the standard email claims on the ID token, and a
+	// PostLogin action cannot set bare (non-namespaced) claims on the access
+	// token, so the enrich-token-claims action surfaces them under the
+	// unikorn-cloud.org namespace where this access-token validator reads them.
+	//nolint:tagliatelle
+	Email string `json:"https://unikorn-cloud.org/email"`
+	//nolint:tagliatelle
+	EmailVerified *bool `json:"https://unikorn-cloud.org/email_verified"`
+	//nolint:tagliatelle
+	Authz authzClaims `json:"https://unikorn-cloud.org/authz"`
+}
+
+// User is the validated identity extracted from an Auth0 access token.
+//
+// UNI membership is authoritative for organization scope, so the claimed
+// orgIds from the Auth0 token are intentionally not surfaced here — they are
+// only validated as a non-empty signal that the post-login Action ran.
+type User struct {
+	Email  string
+	Expiry time.Time
+
+	// Groups holds the verbatim string entries of the configured groups claim.
+	// It is nil when the claim is absent or malformed, or when extraction is
+	// disabled. Entries stay byte-exact: no case folding, no trimming.
+	Groups []string
+}
+
+// Validator validates Auth0 JWT access tokens using the tenant JWKS.
+type Validator struct {
+	options Options
+	now     func() time.Time
+
+	mu       sync.Mutex
+	verifier *gooidc.IDTokenVerifier
+}
+
+// isAsymmetricAlg reports whether alg is one of the accepted asymmetric
+// signing algorithms. Symmetric algorithms (e.g. HS256) and the "none"
+// pseudo-algorithm are not permitted for external-token validation.
+func isAsymmetricAlg(alg string) bool {
+	switch jose.SignatureAlgorithm(alg) {
+	case jose.RS256, jose.RS384, jose.RS512,
+		jose.ES256, jose.ES384, jose.ES512,
+		jose.PS256, jose.PS384, jose.PS512:
+		return true
+	case jose.EdDSA, jose.HS256, jose.HS384, jose.HS512:
+		return false
+	}
+
+	return false
+}
+
+// NewValidator returns a validator using the Auth0 tenant JWKS endpoint.
+// It returns ErrDisabled when no Auth0 exchange configuration is supplied.
+func NewValidator(options Options) (*Validator, error) {
+	if !options.Enabled() {
+		return nil, ErrDisabled
+	}
+
+	if options.Issuer == "" || options.Audience == "" {
+		return nil, fmt.Errorf("%w: issuer and audience must both be specified", ErrInvalidConfig)
+	}
+
+	if len(options.SupportedSigningAlgorithms) == 0 {
+		options.SupportedSigningAlgorithms = []string{"RS256"}
+	}
+
+	for _, alg := range options.SupportedSigningAlgorithms {
+		if !isAsymmetricAlg(alg) {
+			return nil, fmt.Errorf("%w: signing algorithm %q is not asymmetric", ErrInvalidConfig, alg)
+		}
+	}
+
+	if options.GroupsClaim != "" && !strings.Contains(options.GroupsClaim, "://") {
+		return nil, fmt.Errorf("%w: groups claim %q must be a namespaced URI", ErrInvalidConfig, options.GroupsClaim)
+	}
+
+	if options.JWKSMinRefreshInterval <= 0 {
+		options.JWKSMinRefreshInterval = DefaultJWKSMinRefreshInterval
+	}
+
+	return &Validator{
+		options: options,
+		now:     time.Now,
+	}, nil
+}
+
+// validateEmail checks the email claim is present and, unless
+// SkipEmailVerification is set, that the address is verified.
+func (v *Validator) validateEmail(claims *tokenClaims) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(claims.Email))
+	if email == "" {
+		return "", ErrMissingEmail
+	}
+
+	if !v.options.SkipEmailVerification {
+		if claims.EmailVerified == nil || !*claims.EmailVerified {
+			return "", ErrEmailUnverified
+		}
+	}
+
+	return email, nil
+}
+
+// validateAuthzClaim checks the UNI authorization context claim when
+// RequireAuthzClaim is enabled.
+func (v *Validator) validateAuthzClaim(claims *tokenClaims) error {
+	if !v.options.RequireAuthzClaim {
+		return nil
+	}
+
+	if claims.Authz.Acctype != accountTypeUser {
+		return fmt.Errorf("%w: acctype must be %q", ErrInvalidAuthzClaim, accountTypeUser)
+	}
+
+	if len(claims.Authz.OrgIDs) == 0 {
+		return fmt.Errorf("%w: orgIds must not be empty", ErrInvalidAuthzClaim)
+	}
+
+	return nil
+}
+
+// extractGroups reads the configured groups claim tolerantly. A missing claim or
+// a non-array value yields nil. It skips non-string entries in an otherwise
+// valid array and keeps the string ones. It never fails the token, because a
+// malformed groups claim must not break authentication for the whole issuer (see
+// pkg/oauth2/README.md).
+func (v *Validator) extractGroups(ctx context.Context, idToken *gooidc.IDToken) []string {
+	if v.options.GroupsClaim == "" {
+		return nil
+	}
+
+	logger := log.FromContext(ctx)
+
+	var raw map[string]json.RawMessage
+	if err := idToken.Claims(&raw); err != nil {
+		logger.Info("groups claim skipped: unparseable claim set", "claim", v.options.GroupsClaim, "error", err)
+
+		return nil
+	}
+
+	payload, ok := raw[v.options.GroupsClaim]
+	if !ok {
+		// Absent-claim logging uses V(1), not Info. An absent claim is expected
+		// for tokens minted before the IdP Action was configured, so per-token
+		// Info logging would be noise, but the degradation must stay
+		// observable.
+		logger.V(1).Info("groups claim absent", "claim", v.options.GroupsClaim)
+
+		return nil
+	}
+
+	var entries []json.RawMessage
+	if err := json.Unmarshal(payload, &entries); err != nil {
+		logger.Info("groups claim skipped: not a JSON array", "claim", v.options.GroupsClaim)
+
+		return nil
+	}
+
+	groups := make([]string, 0, len(entries))
+
+	var skipped int
+
+	for _, entry := range entries {
+		var group string
+		if err := json.Unmarshal(entry, &group); err != nil {
+			skipped++
+
+			continue
+		}
+
+		groups = append(groups, group)
+	}
+
+	if skipped > 0 {
+		// One line per validation, not one per element. A trusted issuer that
+		// emits a large malformed array must not produce a log line per entry.
+		logger.Info("groups claim entries skipped: not a string", "claim", v.options.GroupsClaim, "skipped", skipped)
+	}
+
+	if len(groups) == 0 {
+		// This differs from claim-absent and deserves a real Info line: the IdP
+		// stamped the claim, but it yielded nothing usable. That is the
+		// signature of an over-aggressive IdP-side group filter, which would
+		// otherwise stay silent, because the unmatched-groups log never fires
+		// on an empty set.
+		logger.Info("groups claim present but yielded no usable entries", "claim", v.options.GroupsClaim)
+
+		return nil
+	}
+
+	return groups
+}
+
+// Validate verifies the token signature, issuer, audience, temporal claims,
+// verified email, and UNI authorization context emitted by Auth0.
+func (v *Validator) Validate(ctx context.Context, token string) (*User, error) {
+	if v == nil {
+		return nil, ErrDisabled
+	}
+
+	// getVerifier intentionally does not receive ctx: the keyset it builds is
+	// long-lived and must use a background context for JWKS refreshes. The
+	// per-request ctx is still applied to the Verify call below.
+	//nolint:contextcheck
+	idToken, err := v.getVerifier().Verify(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidToken, err)
+	}
+
+	claims := &tokenClaims{}
+	if err := idToken.Claims(claims); err != nil {
+		return nil, fmt.Errorf("%w: failed to parse claims: %w", ErrInvalidToken, err)
+	}
+
+	expected := jwt.Expected{
+		Issuer: v.options.Issuer,
+		AnyAudience: jwt.Audience{
+			v.options.Audience,
+		},
+		Time: v.now(),
+	}
+
+	if err := claims.ValidateWithLeeway(expected, v.options.TokenVerificationLeeway); err != nil {
+		return nil, fmt.Errorf("%w: failed to validate claims: %w", ErrInvalidToken, err)
+	}
+
+	email, err := v.validateEmail(claims)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := v.validateAuthzClaim(claims); err != nil {
+		return nil, err
+	}
+
+	groups := v.extractGroups(ctx, idToken)
+
+	return &User{
+		Email:  email,
+		Expiry: claims.Expiry.Time(),
+		Groups: groups,
+	}, nil
+}
+
+func (v *Validator) getVerifier() *gooidc.IDTokenVerifier {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if v.verifier != nil {
+		return v.verifier
+	}
+
+	// The keyset outlives any single request and must refresh its JWKS cache
+	// when Auth0 rotates signing keys, so it gets a background context. The
+	// ctx passed to Verify only bounds how long a caller waits on an
+	// in-flight fetch; the fetch itself is bounded by the client timeout.
+	// TrimRight so a trailing-slash issuer (Auth0 emits `iss` with one) doesn't
+	// produce a "…//.well-known/jwks.json" URL.
+	jwksURL := strings.TrimRight(v.options.Issuer, "/") + "/.well-known/jwks.json"
+
+	// Throttle JWKS fetches at the HTTP layer so invalid tokens cannot
+	// drive one upstream request per token. See throttledTransport for
+	// the rationale. The keyset picks this client up from its context.
+	client := &http.Client{
+		Timeout:   jwksFetchTimeout,
+		Transport: newThrottledTransport(http.DefaultTransport, v.options.JWKSMinRefreshInterval, v.now, otel.Meter(constants.Application)),
+	}
+
+	keySet := gooidc.NewRemoteKeySet(gooidc.ClientContext(context.Background(), client), jwksURL)
+
+	v.verifier = gooidc.NewVerifier(v.options.Issuer, keySet, &gooidc.Config{
+		ClientID:             v.options.Audience,
+		SupportedSigningAlgs: v.options.SupportedSigningAlgorithms,
+		SkipExpiryCheck:      true,
+	})
+
+	return v.verifier
+}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	externalRef0 "github.com/unikorn-cloud/core/pkg/openapi"
+	identityids "github.com/unikorn-cloud/identity/pkg/ids"
 )
 
 const (
@@ -96,6 +97,12 @@ const (
 const (
 	Global       ProviderScope = "global"
 	Organization ProviderScope = "organization"
+)
+
+// Defines values for QuotaReadFormat.
+const (
+	Binary  QuotaReadFormat = "binary"
+	Decimal QuotaReadFormat = "decimal"
 )
 
 // Defines values for ResponseMode.
@@ -194,6 +201,9 @@ type AclProject struct {
 
 // AclProjectList A list of projects the subject is a member of.
 type AclProjectList = []AclProject
+
+// AllocationId A resource allocation ID.
+type AllocationId = identityids.AllocationID
 
 // AllocationRead An allocation of resources.
 type AllocationRead struct {
@@ -295,6 +305,9 @@ type GrantType string
 // GroupIDs A list of group IDs.
 type GroupIDs = []string
 
+// GroupId A group ID.
+type GroupId = identityids.GroupID
+
 // GroupRead A group when read.
 type GroupRead struct {
 	// Metadata Metadata required by organization scoped resource reads.
@@ -364,6 +377,9 @@ type Oauth2Error struct {
 // Oauth2ErrorError A terse error string expanding on the HTTP error code. Errors are based on the OAuth 2.02 specification, but are expanded with proprietary status codes for APIs other than those specified by OAuth 2.02.
 type Oauth2ErrorError string
 
+// Oauth2ProviderId An OAuth2 provider ID.
+type Oauth2ProviderId = identityids.OAuth2ProviderID
+
 // Oauth2ProviderRead An OAuth 2.0 provider when read.
 type Oauth2ProviderRead struct {
 	// Metadata Metadata required by organization scoped resource reads.
@@ -402,27 +418,6 @@ type Oauth2ProviderWrite struct {
 
 // Oauth2Providers A list of OAuth 2.0 providers.
 type Oauth2Providers = []Oauth2ProviderRead
-
-// OnboardRequestOptions Onboard request options.
-type OnboardRequestOptions struct {
-	// GroupDescription A verbose initial group description.
-	GroupDescription *string `json:"group_description"`
-
-	// GroupName An initial group name,
-	GroupName string `json:"group_name"`
-
-	// OrganizationDescription A verbose organization description.
-	OrganizationDescription *string `json:"organization_description"`
-
-	// OrganizationName The organization name.
-	OrganizationName string `json:"organization_name"`
-
-	// Roles A list of roles to grant the user.
-	Roles *[]string `json:"roles"`
-
-	// State Server provided state.
-	State string `json:"state"`
-}
 
 // OpenidConfiguration OpenID configuration.
 type OpenidConfiguration struct {
@@ -474,6 +469,9 @@ type OpenidConfiguration struct {
 	// UserinfoEndpoint The OIDC endpoint used to get information about an access token's user.
 	UserinfoEndpoint string `json:"userinfo_endpoint"`
 }
+
+// OrganizationId An organization ID.
+type OrganizationId = identityids.OrganizationID
 
 // OrganizationRead An organization when read.
 type OrganizationRead struct {
@@ -529,6 +527,9 @@ type OrganizationWrite struct {
 // Organizations A list of organizations.
 type Organizations = []OrganizationRead
 
+// ProjectId A project ID.
+type ProjectId = identityids.ProjectID
+
 // ProjectRead A project when read.
 type ProjectRead struct {
 	// Metadata Metadata required by organization scoped resource reads.
@@ -574,6 +575,9 @@ type QuotaRead struct {
 	// DisplayName The name that should be displayed to end users.
 	DisplayName string `json:"displayName"`
 
+	// Format A hint for clients on how to format quota values.
+	Format QuotaReadFormat `json:"format"`
+
 	// Free The amount of that resource that is free.
 	Free int `json:"free"`
 
@@ -589,6 +593,9 @@ type QuotaRead struct {
 	// Used The amount of that resource that is used.
 	Used int `json:"used"`
 }
+
+// QuotaReadFormat A hint for clients on how to format quota values.
+type QuotaReadFormat string
 
 // QuotaReadList A list of quotas.
 type QuotaReadList = []QuotaRead
@@ -640,6 +647,15 @@ type ResponseType string
 
 // RoleRead A role.
 type RoleRead struct {
+	// Grantable Whether the calling principal holds every permission in this role
+	// and may therefore grant it to groups. Roles with grantable set to
+	// false are returned so clients can resolve and display them — for
+	// example a role a group already carries — but this caller cannot
+	// grant them: adding one to a group is refused. Roles already on a
+	// group are exempt: re-sending one is accepted, and omitting one
+	// removes it, whether or not the caller could grant it.
+	Grantable bool `json:"grantable"`
+
 	// Metadata Metadata required by all resource reads.
 	Metadata externalRef0.ResourceReadMetadata `json:"metadata"`
 }
@@ -661,6 +677,9 @@ type ServiceAccountCreate struct {
 	// Status A service account status.
 	Status ServiceAccountStatus `json:"status"`
 }
+
+// ServiceAccountId A service account ID.
+type ServiceAccountId = identityids.ServiceAccountID
 
 // ServiceAccountRead A service account.
 type ServiceAccountRead struct {
@@ -810,6 +829,9 @@ type TokenRequestOptions struct {
 	XProjectId *string `json:"x_project_id"`
 }
 
+// UserId A user ID.
+type UserId = identityids.UserID
+
 // UserRead A user read object.
 type UserRead struct {
 	// Metadata Metadata required by organization scoped resource reads.
@@ -919,32 +941,32 @@ type UserinfoRequestOptions struct {
 // Users A list of users.
 type Users = []UserRead
 
-// AllocationIDParameter defines model for allocationIDParameter.
-type AllocationIDParameter = string
+// AllocationIDParameter A resource allocation ID.
+type AllocationIDParameter = AllocationId
 
-// GroupidParameter defines model for groupidParameter.
-type GroupidParameter = string
+// GroupidParameter A group ID.
+type GroupidParameter = GroupId
 
-// Oauth2ProvderIDParameter defines model for oauth2ProvderIDParameter.
-type Oauth2ProvderIDParameter = string
+// Oauth2ProvderIDParameter An OAuth2 provider ID.
+type Oauth2ProvderIDParameter = Oauth2ProviderId
 
-// OrganizationIDParameter defines model for organizationIDParameter.
-type OrganizationIDParameter = string
+// OrganizationIDParameter An organization ID.
+type OrganizationIDParameter = OrganizationId
 
-// ProjectIDParameter defines model for projectIDParameter.
-type ProjectIDParameter = string
+// ProjectIDParameter A project ID.
+type ProjectIDParameter = ProjectId
 
 // ReferenceParameter defines model for referenceParameter.
 type ReferenceParameter = string
 
-// ServiceAccountIDParameter defines model for serviceAccountIDParameter.
-type ServiceAccountIDParameter = string
+// ServiceAccountIDParameter A service account ID.
+type ServiceAccountIDParameter = ServiceAccountId
 
 // UserEmailParameter defines model for userEmailParameter.
 type UserEmailParameter = string
 
-// UserIDParameter defines model for userIDParameter.
-type UserIDParameter = string
+// UserIDParameter A user ID.
+type UserIDParameter = UserId
 
 // AclResponse A list of access control scopes and permissions.
 type AclResponse = Acl
@@ -1111,9 +1133,6 @@ type PostOauth2V2AuthorizationFormdataRequestBody = AuthorizationRequestOptions
 
 // PostOauth2V2LoginFormdataRequestBody defines body for PostOauth2V2Login for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2LoginFormdataRequestBody = LoginRequestOptions
-
-// PostOauth2V2OnboardFormdataRequestBody defines body for PostOauth2V2Onboard for application/x-www-form-urlencoded ContentType.
-type PostOauth2V2OnboardFormdataRequestBody = OnboardRequestOptions
 
 // PostOauth2V2TokenFormdataRequestBody defines body for PostOauth2V2Token for application/x-www-form-urlencoded ContentType.
 type PostOauth2V2TokenFormdataRequestBody = TokenRequestOptions

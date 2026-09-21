@@ -25,7 +25,6 @@ import (
 
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/serviceaccounts"
-	"github.com/unikorn-cloud/identity/pkg/handler/users"
 )
 
 // Options defines configurable handler options.
@@ -39,9 +38,6 @@ type Options struct {
 
 	// ServiceAccounts define any service account tunables.
 	ServiceAccounts serviceaccounts.Options
-
-	// Users define any user tunables.
-	Users users.Options
 }
 
 // AddFlags adds the options flags to the given flag set.
@@ -51,5 +47,4 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.CacheMaxAge, "cache-max-age", 24*time.Hour, "How long to cache long-lived queries in the browser.")
 
 	o.ServiceAccounts.AddFlags(f)
-	o.Users.AddFlags(f)
 }

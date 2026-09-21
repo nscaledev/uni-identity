@@ -18,23 +18,12 @@ limitations under the License.
 package users
 
 import (
-	"bytes"
 	"context"
 	goerrors "errors"
 	"fmt"
-	"net"
-	"net/http"
 	"net/mail"
-	"net/url"
 	"slices"
-	"strconv"
 	"strings"
-	"text/template"
-	"time"
-
-	"github.com/go-jose/go-jose/v4/jwt"
-	"github.com/spf13/pflag"
-	gomail "gopkg.in/gomail.v2"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
@@ -44,47 +33,19 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
-	"github.com/unikorn-cloud/identity/pkg/html"
-	"github.com/unikorn-cloud/identity/pkg/jose"
-	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
-	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
-	ErrConfiguration = goerrors.New("configuration error")
-
 	ErrReference = goerrors.New("resource reference error")
 )
-
-type Options struct {
-	// emailVerification defines whether to send an email notification.
-	emailVerification bool
-	// emailVerificationTokenDuration defines how long the email token lives for.
-	emailVerificationTokenDuration time.Duration
-	// emailVerificationTemplateConfigMap allows the administrator to define the
-	// welcome email template and subject string.
-	emailVerificationTemplateConfigMap string
-	// smtpServer is the host:port of the SMTP server.
-	smtpServer string
-	// smtpCredentialsSecret is the username/password secret
-	// to connect to SMTP as.
-	smtpCredentialsSecret string
-}
-
-func (o *Options) AddFlags(f *pflag.FlagSet) {
-	f.BoolVar(&o.emailVerification, "user-email-verification", false, "Whether to enable user creation email notifications and verification.")
-	f.DurationVar(&o.emailVerificationTokenDuration, "user-email-verification-token-duration", 24*time.Hour, "How long the user has to sign up before the token is revoked.")
-	f.StringVar(&o.emailVerificationTemplateConfigMap, "user-email-verification-template-configmap", "", "ConfigMap containing subject and template for email account verification.")
-	f.StringVar(&o.smtpServer, "smtp-server", "", "SMTP server host:port.")
-	f.StringVar(&o.smtpCredentialsSecret, "smtp-credentials-secret", "unikorn-smtp-credentials", "Secret containing username and password keys for SMTP verification.")
-}
 
 // Client is responsible for user management.
 type Client struct {
@@ -94,20 +55,14 @@ type Client struct {
 	client client.Client
 	// namespace is the namespace the identity service is running in.
 	namespace string
-	// jwtIssuer for creating signup tokens.
-	jwtIssuer *jose.JWTIssuer
-	// options are any options to be passed to the handler.
-	options *Options
 }
 
 // New creates a new user client.
-func New(client client.Client, namespace string, jwtIssuer *jose.JWTIssuer, issuer common.IssuerValue, options *Options) *Client {
+func New(client client.Client, namespace string, issuer common.IssuerValue) *Client {
 	return &Client{
 		issuer:    issuer,
 		client:    client,
 		namespace: namespace,
-		jwtIssuer: jwtIssuer,
-		options:   options,
 	}
 }
 
@@ -122,7 +77,22 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 	return result, nil
 }
 
-// removeFromGroup removes the UserID and subject records if they are present.
+// subjectByID matches a stored subject on ID alone, the way pkg/rbac resolves
+// membership.  A record written before subject issuers existed carries an empty
+// one, so an issuer-qualified match would miss it — appending a duplicate on a
+// write, and on a remove deleting only the record this deployment wrote while
+// the legacy one survives and keeps conferring the group's roles.  The write
+// path asks the same question the gate does (see GroupSpec.HasMemberByID).
+func subjectByID(id string) func(unikornv1.GroupSubject) bool {
+	return func(s unikornv1.GroupSubject) bool {
+		return s.ID == id
+	}
+}
+
+// removeFromGroup removes the UserID and every subject record naming the same
+// principal, matched by ID.  Matching issuer-qualified here would leave a legacy
+// empty-issuer record behind, so the caller would still be an RBAC member of the
+// group after a remove that reported success — a silent non-revocation.
 func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
 
@@ -134,9 +104,7 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 		needsPatching = true
 	}
 
-	subjects := slices.DeleteFunc(updated.Spec.Subjects, func(sub unikornv1.GroupSubject) bool {
-		return sub.ID == subject.ID && sub.Issuer == subject.Issuer
-	})
+	subjects := slices.DeleteFunc(updated.Spec.Subjects, subjectByID(subject.ID))
 	if len(subjects) != len(updated.Spec.Subjects) {
 		updated.Spec.Subjects = subjects
 		needsPatching = true
@@ -145,16 +113,23 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 	return needsPatching
 }
 
-// addToGroup adds the Subject and userID if not present.
+// addToGroup writes the user into whichever membership representations do not
+// already hold it, and reports whether anything changed.  Completing the
+// missing half of a membership the group already has confers nothing — RBAC
+// already resolves the user into the group through the half that is present —
+// so this runs whether or not the grant guard saw an addition.  Subjects are
+// matched by ID alone, the way pkg/rbac resolves membership: the same principal
+// written by a different handler, or stored as a legacy record before issuers
+// existed, carries a different Email or issuer and must not be appended again.
 func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
-	// Add to a group where it should be a member but isn't.
-	if !slices.Contains(updated.Spec.UserIDs, orgUserID) {
+
+	if orgUserID != "" && !slices.Contains(updated.Spec.UserIDs, orgUserID) {
 		updated.Spec.UserIDs = append(updated.Spec.UserIDs, orgUserID)
 		needsPatching = true
 	}
 
-	if !slices.Contains(updated.Spec.Subjects, subject) {
+	if !slices.ContainsFunc(updated.Spec.Subjects, subjectByID(subject.ID)) {
 		updated.Spec.Subjects = append(updated.Spec.Subjects, subject)
 		needsPatching = true
 	}
@@ -162,20 +137,67 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 	return needsPatching
 }
 
-// updateGroups takes a user name and a requested list of groups and adds to
-// the groups it should be a member of and removes itself from groups it shouldn't.
-func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
-	// find the subject, so we can add/remove that as well
-	var user unikornv1.User
-	if err := c.client.Get(ctx, client.ObjectKey{Name: globalUserID, Namespace: c.namespace}, &user); err != nil {
+// validateGroupAdditions checks every group the user would newly join before
+// any of them is written.  Joining a group confers its roles, so each is a
+// grant the caller has to be able to make; running the whole set up front
+// keeps a refusal from landing after an earlier group has already been
+// patched.  Groups the user is only leaving, or already belongs to, confer
+// nothing and are skipped.
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// Reconciliation below can only act on groups that exist, so an ID naming
+	// none of them would otherwise be dropped without the caller being told.
+	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
 		return err
 	}
 
-	subject := unikornv1.GroupSubject{
-		ID:     user.Spec.Subject,
-		Email:  user.Spec.Subject,
+	for i := range groups.Items {
+		group := &groups.Items[i]
+
+		if !slices.Contains(groupIDs, group.Name) {
+			continue
+		}
+
+		// Presence in either membership representation already confers the
+		// group's roles, so writing the other half grants nothing.  Subjects
+		// are matched by ID alone, mirroring how RBAC resolves membership: a
+		// record written before subject issuers existed carries an empty one
+		// yet still confers the roles, so re-stating that membership must not
+		// read as an addition and be refused.
+		if group.Spec.HasMemberByID(orgUserID, subjectID) {
+			continue
+		}
+
+		if err := common.AllowGroupMembershipAddition(ctx, c.client, c.namespace, organizationID, group); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// groupSubject builds the membership subject for a user of this deployment's
+// own issuer.
+func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
+	return unikornv1.GroupSubject{
+		ID:     userSubject,
+		Email:  userSubject,
 		Issuer: c.issuer.URL,
 	}
+}
+
+// updateGroups takes a user's subject and a requested list of groups and adds to
+// the groups it should be a member of and removes itself from groups it shouldn't.
+//
+// This writes.  It does no grant checking of its own: callers must run
+// validateGroupAdditions over the same group list first, before they make any
+// other write, so a refusal cannot leave an earlier part of the request
+// applied.
+func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+	// The subject is supplied by the caller rather than re-read here: on the
+	// create path the global user was just written to the API server, and a
+	// read back through the cached client can miss it while the informer catches
+	// up, spuriously failing the request. Callers already hold the user.
+	subject := c.groupSubject(userSubject)
 
 	for i := range groups.Items {
 		current := &groups.Items[i]
@@ -197,6 +219,10 @@ func (c *Client) updateGroups(ctx context.Context, globalUserID, orgUserID strin
 
 				return fmt.Errorf("%w: failed to patch group", err)
 			}
+
+			// Reflect the change in the caller's in-memory list so responses can be
+			// built from it without a cached reload that may lag the write.
+			groups.Items[i] = *updated
 		}
 	}
 
@@ -260,13 +286,13 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	out := &unikornv1.OrganizationUser{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithOrganization(organization.ID).WithLabel(constants.UserLabel, userID).Get(),
+		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithLabel(constants.UserLabel, userID).Get(),
 		Spec: unikornv1.OrganizationUserSpec{
 			State: generateUserState(in.Spec.State),
 		},
 	}
 
-	if err := common.SetIdentityMetadata(ctx, &out.ObjectMeta); err != nil {
+	if err := common.SetIdentityMetadataOrganizationScope(ctx, &out.ObjectMeta, organization.ID); err != nil {
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
@@ -317,8 +343,11 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 		out.Status.LastActive = &lastActive.Time
 	}
 
+	// Report membership the way RBAC resolves it: HasMemberByID sees a subject
+	// stored by ID as well as the deprecated UserIDs list, so a subject-only
+	// membership is not invisible over the API.
 	for _, group := range groups.Items {
-		if slices.Contains(group.Spec.UserIDs, in.Name) {
+		if group.Spec.HasMemberByID(in.Name, user.Spec.Subject) {
 			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
 		}
 	}
@@ -346,270 +375,6 @@ func convertList(in *unikornv1.OrganizationUserList, users *unikornv1.UserList, 
 	})
 
 	return out, nil
-}
-
-const (
-	defaultEmailVerificationSubject = "Welcome to Unikorn Cloud!"
-)
-
-type emailConfiguration struct {
-	subject string
-	body    string
-}
-
-// getEmailVerification returns either the user defined subject and body,
-// which allows branding and marketing, or a default fallback.
-func (c *Client) getEmailVerification(ctx context.Context, verifyLink string) (*emailConfiguration, error) {
-	if c.options.emailVerificationTemplateConfigMap == "" {
-		defaultEmailVerificationBody, err := html.WelcomeEmail(verifyLink)
-		if err != nil {
-			return nil, err
-		}
-
-		out := &emailConfiguration{
-			subject: defaultEmailVerificationSubject,
-			body:    string(defaultEmailVerificationBody),
-		}
-
-		return out, nil
-	}
-
-	configMap := &corev1.ConfigMap{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: c.options.emailVerificationTemplateConfigMap}, configMap); err != nil {
-		return nil, err
-	}
-
-	subject, ok := configMap.Data["subject"]
-	if !ok {
-		return nil, fmt.Errorf("%w: user verification email configmap missing subject", ErrConfiguration)
-	}
-
-	templateData, ok := configMap.Data["template"]
-	if !ok {
-		return nil, fmt.Errorf("%w: user verification email configmap missing template", ErrConfiguration)
-	}
-
-	t, err := template.New("welcome").Parse(templateData)
-	if err != nil {
-		return nil, err
-	}
-
-	data := map[string]any{
-		"verifyLink": verifyLink,
-	}
-
-	body := &bytes.Buffer{}
-
-	if err := t.Execute(body, data); err != nil {
-		return nil, err
-	}
-
-	out := &emailConfiguration{
-		subject: subject,
-		body:    body.String(),
-	}
-
-	return out, nil
-}
-
-type smtpConfiguration struct {
-	host     string
-	port     int
-	username string
-	password string
-}
-
-// getSMTPConfiguration verifies and loads SMTP configuration.
-func (c *Client) getSMTPConfiguration(ctx context.Context) (*smtpConfiguration, error) {
-	host, portStr, err := net.SplitHostPort(c.options.smtpServer)
-	if err != nil {
-		return nil, err
-	}
-
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return nil, err
-	}
-
-	secret := &corev1.Secret{}
-
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: c.options.smtpCredentialsSecret}, secret); err != nil {
-		return nil, err
-	}
-
-	username, ok := secret.Data["username"]
-	if !ok {
-		return nil, fmt.Errorf("%w: smtp secret missing username", ErrConfiguration)
-	}
-
-	password, ok := secret.Data["password"]
-	if !ok {
-		return nil, fmt.Errorf("%w: smtp secret missing password", ErrConfiguration)
-	}
-
-	out := &smtpConfiguration{
-		host:     host,
-		port:     port,
-		username: string(username),
-		password: string(password),
-	}
-
-	return out, nil
-}
-
-// notifyGlobalUserCreation sends an email to the user asking them to click a link in order to
-// verify themselves.
-func (c *Client) notifyGlobalUserCreation(ctx context.Context, user *unikornv1.User) error {
-	info, err := authorization.FromContext(ctx)
-	if err != nil {
-		return err
-	}
-
-	verifyLink := fmt.Sprintf("%s/api/v1/signup?token=%s&clientID=%s", c.issuer.URL, user.Spec.Signup.Token, info.ClientID)
-
-	email, err := c.getEmailVerification(ctx, verifyLink)
-	if err != nil {
-		return err
-	}
-
-	smtp, err := c.getSMTPConfiguration(ctx)
-	if err != nil {
-		return err
-	}
-
-	m := gomail.NewMessage()
-	m.SetHeader("From", smtp.username)
-	m.SetAddressHeader("To", user.Spec.Subject, "New User")
-	m.SetHeader("Subject", email.subject)
-	m.SetBody("text/html", email.body)
-
-	if err := gomail.NewDialer(smtp.host, smtp.port, smtp.username, smtp.password).DialAndSend(m); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-type SignupClaims struct {
-	jwt.Claims `json:",inline"`
-
-	UserID string `json:"unikorn:uid"`
-}
-
-// issueSignupToken creates a time limited, single use token that's valid for email account
-// verification.
-func (c *Client) issueSignupToken(ctx context.Context, user *unikornv1.User) (string, error) {
-	claims := &SignupClaims{
-		Claims: jwt.Claims{
-			Issuer:  c.issuer.URL,
-			Subject: user.Spec.Subject,
-			Audience: []string{
-				user.Spec.Subject,
-			},
-			Expiry:   jwt.NewNumericDate(time.Now().Add(c.options.emailVerificationTokenDuration)),
-			IssuedAt: jwt.NewNumericDate(time.Now()),
-		},
-		UserID: user.Name,
-	}
-
-	token, err := c.jwtIssuer.EncodeJWEToken(ctx, claims, jose.TokenTypeUserSignupToken)
-	if err != nil {
-		return "", err
-	}
-
-	return token, nil
-}
-
-func handleErrorFallback(w http.ResponseWriter, r *http.Request, short, message string) {
-	log := log.FromContext(r.Context())
-
-	body, err := html.Error(short, message)
-	if err != nil {
-		log.Info("user: failed to render error page")
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	w.WriteHeader(http.StatusInternalServerError)
-
-	if _, err := w.Write(body); err != nil {
-		log.Info("user: failed to write HTML response")
-		return
-	}
-}
-
-// handleError routes the error to the correct page for the registered client.
-func (c *Client) handleError(w http.ResponseWriter, r *http.Request, cli *unikornv1.OAuth2Client, short, message string) {
-	log := log.FromContext(r.Context())
-
-	if cli.Spec.ErrorURI == nil {
-		handleErrorFallback(w, r, short, message)
-		return
-	}
-
-	query := url.Values{}
-	query.Set("error", short)
-	query.Set("message", message)
-
-	url, err := url.Parse(*cli.Spec.ErrorURI)
-	if err != nil {
-		log.Error(err, "failed to parse error URI", "clientID", cli.Name)
-		handleErrorFallback(w, r, short, message)
-
-		return
-	}
-
-	url.RawQuery = query.Encode()
-
-	http.Redirect(w, r, url.String(), http.StatusFound)
-}
-
-// Signup is called when a user clicks on the email verification link, it verifies the token is
-// valid, and transitions the user into an active state.
-func (c *Client) Signup(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-
-	tokenRaw := query.Get("token")
-	clientID := query.Get("clientID")
-
-	cli := &unikornv1.OAuth2Client{}
-
-	if err := c.client.Get(r.Context(), client.ObjectKey{Namespace: c.namespace, Name: clientID}, cli); err != nil {
-		handleErrorFallback(w, r, "user signup failure", "unable to lookup oauth2 client")
-
-		return
-	}
-
-	claims := &SignupClaims{}
-
-	if err := c.jwtIssuer.DecodeJWEToken(r.Context(), tokenRaw, claims, jose.TokenTypeUserSignupToken); err != nil {
-		// TODO: has it expired?  Issue a new one!
-		c.handleError(w, r, cli, "user signup failure", "error decoding token")
-		return
-	}
-
-	user := &unikornv1.User{}
-
-	if err := c.client.Get(r.Context(), client.ObjectKey{Namespace: c.namespace, Name: claims.UserID}, user); err != nil {
-		c.handleError(w, r, cli, "user signup failure", "error looking up user")
-		return
-	}
-
-	user.Spec.State = unikornv1.UserStateActive
-	user.Spec.Signup = nil
-
-	if err := c.client.Update(r.Context(), user); err != nil {
-		c.handleError(w, r, cli, "user signup failure", "error activating user")
-		return
-	}
-
-	if cli.Spec.HomeURI == nil {
-		c.handleError(w, r, cli, "user signup error", "user active but client redirect not set")
-		return
-	}
-
-	http.Redirect(w, r, *cli.Spec.HomeURI, http.StatusFound)
 }
 
 func (c *Client) getGlobalUserByID(ctx context.Context, id string) (*unikornv1.User, error) {
@@ -641,8 +406,6 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 }
 
 func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.UserWrite) (*unikornv1.User, error) {
-	log := log.FromContext(ctx)
-
 	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
 	if err == nil {
 		return user, nil
@@ -657,56 +420,47 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 		return nil, err
 	}
 
-	if c.options.emailVerification {
-		token, err := c.issueSignupToken(ctx, resource)
-		if err != nil {
-			return nil, fmt.Errorf("%w: failed to create user sigup token", err)
-		}
-
-		// Force new signups into a pending state.
-		resource.Spec.State = unikornv1.UserStatePending
-
-		resource.Spec.Signup = &unikornv1.UserSignup{
-			Token: token,
-		}
-	}
-
 	if err := c.client.Create(ctx, resource); err != nil {
 		return nil, fmt.Errorf("%w: failed to create user", err)
-	}
-
-	if c.options.emailVerification {
-		if err := c.notifyGlobalUserCreation(ctx, resource); err != nil {
-			// TODO: perhaps consider deleting the user immediately.
-			log.Error(err, "failed to send user creation notification")
-		}
 	}
 
 	return resource, nil
 }
 
-// Create makes a new user.  This creates a new user in an organization, but they
-// reference a unique user resource, so we need to get or create the underlying record
-// first, then add to the organization.
-func (c *Client) Create(ctx context.Context, organizationID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
-	// Any accounts that aren't email based must use kubectl-unikorn to create them,
-	// e.g. users for unikorn services.
-	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
-		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
+func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organization *organizations.Meta, globalUserID string) (*unikornv1.OrganizationUser, error) {
+	selector := labels.SelectorFromSet(labels.Set{
+		constants.OrganizationLabel: organization.ID.String(),
+		constants.UserLabel:         globalUserID,
+	})
+
+	result := &unikornv1.OrganizationUserList{}
+	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace, LabelSelector: selector}); err != nil {
+		return nil, fmt.Errorf("%w: failed to list organization users", err)
 	}
 
-	user, err := c.getOrCreateGlobalUser(ctx, request)
-	if err != nil {
-		return nil, err
+	switch len(result.Items) {
+	case 0:
+		return nil, ErrReference
+	case 1:
+		return &result.Items[0], nil
+	default:
+		return nil, fmt.Errorf("%w: multiple organization users reference global user", coreerrors.ErrConsistency)
+	}
+}
+
+func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, globalUserID string) (*unikornv1.OrganizationUser, error) {
+	resource, err := c.getOrganizationUserByGlobalUserID(ctx, organization, globalUserID)
+	if err == nil {
+		// Create is idempotent: an existing membership is returned as-is. Call Update
+		// to intentionally change organization-local state.
+		return resource, nil
 	}
 
-	// Create the organization user.
-	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
-	if err != nil {
-		return nil, err
+	if !goerrors.Is(err, ErrReference) {
+		return nil, fmt.Errorf("%w: failed to create organization user", err)
 	}
 
-	resource, err := generateOrganizationUser(ctx, organization, request, user.Name)
+	resource, err = generateOrganizationUser(ctx, organization, request, globalUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -715,12 +469,86 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 		return nil, fmt.Errorf("%w: failed to create organization user", err)
 	}
 
+	return resource, nil
+}
+
+// validateCreateGroupAdditions checks the groups a create request asks to join
+// before any record is written.  Create is idempotent, so the subject may
+// already have a user record and some of these memberships; those confer
+// nothing new and are skipped, exactly as on the update path.  A subject with
+// no records yet belongs to no group, so every requested group is an addition.
+func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, groups *unikornv1.GroupList) error {
+	// Nothing is being granted, so skip the lookups below: they cannot change
+	// the answer, and on this path they would only add ways to fail.
+	if len(request.Spec.GroupIDs) == 0 {
+		return nil
+	}
+
+	// Resolve what already exists without creating it.  Either record may be
+	// absent on a first-time create, which just means there is no prior
+	// membership to exempt.
+	var orgUserID string
+
+	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
+
+	switch {
+	case err == nil:
+		orgUser, err := c.getOrganizationUserByGlobalUserID(ctx, organization, user.Name)
+
+		switch {
+		case err == nil:
+			orgUserID = orgUser.Name
+		case goerrors.Is(err, ErrReference):
+		default:
+			return err
+		}
+	case goerrors.Is(err, ErrReference):
+	default:
+		return err
+	}
+
+	return c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, orgUserID, request.Spec.GroupIDs, groups)
+}
+
+// Create makes a new user.  This creates a new user in an organization, but they
+// reference a unique user resource, so we need to get or create the underlying record
+// first, then add to the organization.
+func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.UserWrite) (*openapi.UserRead, error) {
+	// Any accounts that aren't email based must use kubectl-unikorn to create them,
+	// e.g. users for unikorn services.
+	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
+		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
+	}
+
+	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+
 	groups, err := c.listGroups(ctx, organization)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Name, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	// Settle the group grants before any record exists.  Writing the user
+	// first and refusing afterwards would leave a global user and an
+	// organization membership behind for an account the caller was told it
+	// could not create.
+	if err := c.validateCreateGroupAdditions(ctx, organization, request, groups); err != nil {
+		return nil, err
+	}
+
+	user, err := c.getOrCreateGlobalUser(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	resource, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -728,7 +556,7 @@ func (c *Client) Create(ctx context.Context, organizationID string, request *ope
 }
 
 // List retrieves information about all users in the organization.
-func (c *Client) List(ctx context.Context, organizationID string) (openapi.Users, error) {
+func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (openapi.Users, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -768,7 +596,7 @@ func (c *Client) patchOrganizationUser(ctx context.Context, updated, current *un
 
 // Update modifies any metadata for the user if it exists.  If a matching account
 // doesn't exist it raises an error.
-func (c *Client) Update(ctx context.Context, organizationID, userID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, userID string, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
@@ -781,6 +609,19 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 
 	user, err := c.getGlobalUserByID(ctx, current.Labels[constants.UserLabel])
 	if err != nil {
+		return nil, err
+	}
+
+	groups, err := c.listGroups(ctx, organization)
+	if err != nil {
+		return nil, err
+	}
+
+	// Settle every grant in the request before the first write.  The state,
+	// tags and label changes below land on the organization user record, so a
+	// membership refusal discovered after them would have already applied
+	// part of a request the caller was told it could not make.
+	if err := c.validateGroupAdditions(ctx, organization.ID, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -802,25 +643,18 @@ func (c *Client) Update(ctx context.Context, organizationID, userID string, requ
 		return nil, err
 	}
 
-	groups, err := c.listGroups(ctx, organization)
-	if err != nil {
+	if err := c.updateGroups(ctx, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Name, userID, request.Spec.GroupIDs, groups); err != nil {
-		return nil, err
-	}
-
-	// Reload post update...
-	if groups, err = c.listGroups(ctx, organization); err != nil {
-		return nil, err
-	}
-
+	// updateGroups applies its membership changes to the in-memory group list, so
+	// the response reflects the update just made without a cached reload that could
+	// still be lagging the writes.
 	return convert(updated, user, groups), nil
 }
 
 // Delete removes the user and revokes the access token.
-func (c *Client) Delete(ctx context.Context, organizationID, userID string) error {
+func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, userID string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
@@ -840,7 +674,14 @@ func (c *Client) Delete(ctx context.Context, organizationID, userID string) erro
 		return err
 	}
 
-	if err := c.updateGroups(ctx, resource.Labels[constants.UserLabel], userID, nil, groups); err != nil {
+	user, err := c.getGlobalUserByID(ctx, resource.Labels[constants.UserLabel])
+	if err != nil {
+		return err
+	}
+
+	// Deletion only strips memberships, which confers nothing, so there is no
+	// grant pre-pass to run.
+	if err := c.updateGroups(ctx, user.Spec.Subject, userID, nil, groups); err != nil {
 		return err
 	}
 

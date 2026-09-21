@@ -156,6 +156,66 @@ var _ = Describe("User Management", func() {
 					"Group should reflect the user added via user creation")
 			})
 
+			It("should reuse the organization user when creating the same subject twice", func() {
+				_, firstGroupID := api.CreateGroupWithCleanup(client, ctx, config,
+					api.NewGroupPayload().Build())
+				_, secondGroupID := api.CreateGroupWithCleanup(client, ctx, config,
+					api.NewGroupPayload().Build())
+
+				firstPayload := api.NewUserPayload().
+					WithState(identityopenapi.Suspended).
+					WithGroupIDs([]string{firstGroupID}).
+					Build()
+
+				first, firstUserID := api.CreateUserWithCleanup(client, ctx, config, firstPayload)
+
+				secondPayload := api.NewUserPayload().
+					WithSubject(firstPayload.Spec.Subject).
+					WithState(identityopenapi.Active).
+					WithGroupIDs([]string{secondGroupID}).
+					Build()
+
+				second, secondUserID := api.CreateUserWithCleanup(client, ctx, config, secondPayload)
+
+				Expect(secondUserID).To(Equal(firstUserID))
+				Expect(second.Metadata.Id).To(Equal(first.Metadata.Id))
+				Expect(second.Metadata.OrganizationId).To(Equal(config.OrgID))
+				Expect(second.Spec.Subject).To(Equal(firstPayload.Spec.Subject))
+				Expect(second.Spec.State).To(Equal(identityopenapi.Suspended),
+					"Repeated create should not replace existing organization user state")
+
+				users, err := client.ListUsers(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+
+				var found *identityopenapi.UserRead
+				for i := range users {
+					if users[i].Metadata.Id == firstUserID {
+						found = &users[i]
+
+						break
+					}
+				}
+
+				Expect(found).NotTo(BeNil(), "Reused user should be in list")
+				Expect(found.Spec.Subject).To(Equal(firstPayload.Spec.Subject))
+				Expect(found.Spec.State).To(Equal(identityopenapi.Suspended))
+				Expect(found.Spec.GroupIDs).To(ContainElement(secondGroupID),
+					"Repeated create should reconcile group membership from the latest request")
+				Expect(found.Spec.GroupIDs).NotTo(ContainElement(firstGroupID),
+					"Repeated create should remove groups omitted from the latest request")
+
+				firstGroup, err := client.GetGroup(ctx, config.OrgID, firstGroupID)
+				Expect(err).NotTo(HaveOccurred())
+				if firstGroup.Spec.UserIDs != nil {
+					Expect(*firstGroup.Spec.UserIDs).NotTo(ContainElement(firstUserID))
+				}
+
+				secondGroup, err := client.GetGroup(ctx, config.OrgID, secondGroupID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(secondGroup.Spec.UserIDs).NotTo(BeNil())
+				Expect(*secondGroup.Spec.UserIDs).To(ContainElement(firstUserID))
+			})
+
 		})
 
 		Describe("Given a user created with suspended state", func() {

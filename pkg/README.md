@@ -21,6 +21,7 @@ repository.
 
 - [apis/unikorn/v1alpha1](./apis/unikorn/v1alpha1/README.md)
 - [constants](./constants/README.md)
+- [ids](./ids/README.md)
 - [principal](./principal/README.md)
 - [userdb](./userdb/README.md)
 
@@ -38,6 +39,8 @@ identity storage layout.
 These packages define how identity issues and validates tokens, how it resolves
 effective authority, and how internal callers construct outbound requests that
 match the same service-to-service trust model enforced on inbound requests.
+Issuer trust decisions match the token `iss` verbatim (exact string compare, per
+OIDC §3.1.3.7) — there is no issuer normalization.
 
 ### Middleware, Handlers, And Server Composition
 
@@ -48,8 +51,9 @@ match the same service-to-service trust model enforced on inbound requests.
 
 These packages show how the request pipeline is assembled, how the API layer
 applies read/modify/write and secure error-handling conventions, how the API
-wire contract is defined and consumed, and how the service composes the generic
-`core` server stack with identity-specific trust logic.
+wire contract is defined and consumed, how authenticated service version
+discovery is exposed through `GET /api/version`, and how the service composes
+the generic `core` server stack with identity-specific trust logic.
 
 ### Controllers And Provisioners
 
@@ -100,6 +104,7 @@ This is most visible in:
 
 - [handler](./handler/README.md)
 - [handler/users](./handler/users/README.md)
+- [handler/serviceaccounts](./handler/serviceaccounts/README.md)
 - [handler/groups](./handler/groups/README.md)
 - [handler/quotas](./handler/quotas/README.md)
 - [handler/allocations](./handler/allocations/README.md)

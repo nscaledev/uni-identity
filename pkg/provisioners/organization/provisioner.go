@@ -91,7 +91,7 @@ func (p *Provisioner) Provision(ctx context.Context) error {
 
 	// TODO: we may want to consider rolling up the conditions of subordinates,
 	// but then again it may be overkill and cause undue stress!
-	p.organization.StatusConditionWrite(unikornv1core.ConditionHealthy, corev1.ConditionTrue, unikornv1core.ConditionReasonHealthy, "Healthy")
+	p.organization.SetHealthCondition(corev1.ConditionTrue, unikornv1core.ConditionReasonHealthy, "Healthy")
 
 	return nil
 }

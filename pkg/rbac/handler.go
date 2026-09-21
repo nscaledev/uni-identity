@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"k8s.io/apimachinery/pkg/labels"
@@ -64,8 +65,34 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 	return operationAllowedByEndpoints(*acl.Global, endpoint, operation)
 }
 
+// AllowOrganizationScopeID is the typed variant of AllowOrganizationScope. Use this
+// when the caller holds an ids.OrganizationID; the string overload is retained for
+// callers in other repos that already deal in plain strings.
+func AllowOrganizationScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
+	return AllowOrganizationScope(ctx, endpoint, operation, organizationID.String())
+}
+
+// AllowOrganizationScopeReader is the variant of AllowOrganizationScope for callers that
+// hold a resource implementing ids.OrganizationScopeReader (e.g. a region CRD). It recovers
+// the organization ID from the resource. API handlers holding a path-parameter ID should use
+// AllowOrganizationScopeID instead.
+func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operation openapi.AclOperation, scope ids.OrganizationScopeReader) error {
+	organizationID, err := scope.OrganizationID()
+	if err != nil {
+		return err
+	}
+
+	return AllowOrganizationScopeID(ctx, endpoint, operation, organizationID)
+}
+
 // AllowOrganizationScope tries to allow the requested operation at the global scope, then
 // the organization scope.
+//
+// Deprecated: prefer the typed AllowOrganizationScopeID (for path-parameter IDs) or
+// AllowOrganizationScopeReader (for a resource implementing ids.OrganizationScopeReader).
+// This string overload is retained for backwards compatibility with callers that still
+// deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
+// and will be removed once those callers have migrated.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
 	if AllowGlobalScope(ctx, endpoint, operation) == nil {
 		return nil
@@ -92,8 +119,32 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — organization is not in this principal's accessible set", operation, endpoint))
 }
 
+// AllowProjectScopeID is the typed variant of AllowProjectScope.
+func AllowProjectScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	return AllowProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String())
+}
+
+// AllowProjectScopeReader is the variant of AllowProjectScope for callers that hold a resource
+// implementing ids.ProjectScopeReader (e.g. a region CRD). It recovers the organization and
+// project IDs from the resource. API handlers holding path-parameter IDs should use
+// AllowProjectScopeID instead.
+func AllowProjectScopeReader(ctx context.Context, endpoint string, operation openapi.AclOperation, scope ids.ProjectScopeReader) error {
+	organizationID, projectID, err := scope.OrganizationAndProjectID()
+	if err != nil {
+		return err
+	}
+
+	return AllowProjectScopeID(ctx, endpoint, operation, organizationID, projectID)
+}
+
 // AllowProjectScope tries to allow the requested operation at the global scope, then
 // the organization scope, and finally at the project scope.
+//
+// Deprecated: prefer the typed AllowProjectScopeID (for path-parameter IDs) or
+// AllowProjectScopeReader (for a resource implementing ids.ProjectScopeReader). This
+// string overload is retained for backwards compatibility with callers that still deal
+// in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
+// will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
 		return nil
@@ -161,12 +212,35 @@ func isAllowedByProjectACL(ctx context.Context, endpoint string, operation opena
 	return false
 }
 
+// AllowProjectScopeCreateID is the typed variant of AllowProjectScopeCreate.
+func AllowProjectScopeCreateID(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	return AllowProjectScopeCreate(ctx, client, endpoint, operation, organizationID.String(), projectID.String())
+}
+
+// AllowProjectScopeCreateReader is the variant of AllowProjectScopeCreate for callers that hold
+// a resource implementing ids.ProjectScopeReader. It recovers the organization and project IDs
+// from the resource.
+func AllowProjectScopeCreateReader(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, scope ids.ProjectScopeReader) error {
+	organizationID, projectID, err := scope.OrganizationAndProjectID()
+	if err != nil {
+		return err
+	}
+
+	return AllowProjectScopeCreateID(ctx, client, endpoint, operation, organizationID, projectID)
+}
+
 // AllowProjectScopeCreate is like AllowProjectScope but intended for v2 create operations
 // where the project ID is supplied in the request body rather than the URL path.  When
 // access is granted via an organization-scoped ACL the project ID is untrusted user input,
 // so this function additionally verifies the project exists via the identity API before
 // returning nil.  Global-scope callers (platform administrators) are exempt from this
 // check and their supplied project ID is trusted directly.
+//
+// Deprecated: prefer the typed AllowProjectScopeCreateID (for path-parameter IDs) or
+// AllowProjectScopeCreateReader (for a resource implementing ids.ProjectScopeReader). This
+// string overload is retained for backwards compatibility with callers that pre-date the
+// typed ID types and will be removed once those callers have migrated; the typed variants
+// delegate here after converting to strings.
 func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.
@@ -188,7 +262,17 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 
 	// Access is granted via organization-scoped ACL, but the project ID is untrusted —
 	// verify it exists via the identity API.
-	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, organizationID, projectID)
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return errors.OAuth2InvalidRequest("invalid organization ID").WithError(err)
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return errors.OAuth2InvalidRequest("invalid project ID").WithError(err)
+	}
+
+	resp, err := client.GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, orgID, projID)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to verify project exists").WithError(err)
 	}
@@ -204,10 +288,90 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 	return nil
 }
 
+// allowGrantProjectScope decides whether the caller may grant a role's project-scoped
+// permission. Unlike a normal access check there is no specific target project — a role
+// grant is organization-scoped — so the permission is satisfied if the caller holds it
+// at global or organization scope, or at project scope in *any* project they can access
+// within the organization.
+//
+// This is deliberately laxer than promoting the permission to an organization-scope
+// check: granting a project-scoped role hands out a subset of what the caller already
+// holds at the same scope (downscoping, e.g. a project `user` granting a project
+// `reader`), which is least-privilege delegation, not privilege escalation. Requiring
+// the caller to hold every project permission organization-wide would wrongly reject
+// those legitimate grants.
+//
+// Trust assumption: accepting a permission held in *any* one of the caller's projects is
+// only safe because a granted role cannot take effect in a project the caller does not
+// already administer. Every route that turns an AllowRole result into stored authority is
+// entered behind an organization-scope check that project-scoped authority cannot satisfy,
+// and linking the resulting authority to a project needs authority over that project
+// specifically. The authority-conferring routes are:
+//
+//   - group create and update reach AllowRole through validateRoleIDs, and update also
+//     through validateMemberAdditions when it adds a member, behind organization-scope
+//     identity:groups write;
+//   - user create/update reaches it through AllowGroupMembershipAddition when the write
+//     puts the user in a group, behind organization-scope identity:users write;
+//   - service account create/update reaches it the same way, behind organization-scope
+//     identity:serviceaccounts write; and
+//   - linking a group to an existing project requires project-scope identity:projects
+//     update for that specific project.
+//
+// Read-only callers reach AllowRole too — the roles list uses it to compute the grantable
+// flag behind identity:roles read. That confers nothing, so the reasoning above does not
+// depend on enumerating it; a new caller only has to be weighed against it if it stores
+// authority.
+//
+// If a role ever grants identity:groups, identity:users or identity:serviceaccounts write
+// at project scope, or project-group linking is relaxed to organization scope, this "any
+// project" acceptance would become a cross-project escalation and must be tightened to a
+// specific target project.
+func allowGrantProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
+	if AllowOrganizationScopeID(ctx, endpoint, operation, organizationID) == nil {
+		return nil
+	}
+
+	acl := FromContext(ctx)
+
+	if acl.Organizations != nil {
+		for _, organization := range *acl.Organizations {
+			if organization.Id != organizationID.String() {
+				continue
+			}
+
+			if organization.Projects == nil {
+				break
+			}
+
+			for _, project := range *organization.Projects {
+				if operationAllowedByEndpoints(project.Endpoints, endpoint, operation) == nil {
+					return nil
+				}
+			}
+		}
+	}
+
+	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' — the caller holds it at neither organization nor any project scope, so cannot grant it", operation, endpoint))
+}
+
 // AllowRole determines whether your ACL contains the same or higher privileges than
 // the role, which is then used to determine role visibility and limit privilege
 // escalation.
-func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string) error {
+//
+// Each scope block of the target role is checked against the caller's authority at the
+// matching scope, with the usual downward flow (global satisfies organization and
+// project, organization satisfies project):
+//
+//   - global endpoints must be held at global scope;
+//   - organization endpoints must be held at global or organization scope;
+//   - project endpoints must be held at global or organization scope, or at project
+//     scope in any project the caller can access (see allowGrantProjectScope).
+//
+// The project case is why granting is subset-preserving rather than escalation-prone: a
+// caller may only ever grant a role whose permissions they already hold at the grant's
+// scope or broader.
+func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
 			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
@@ -218,7 +382,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string)
 
 	for _, endpoint := range role.Spec.Scopes.Organization {
 		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
 			}
 		}
@@ -226,7 +390,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID string)
 
 	for _, endpoint := range role.Spec.Scopes.Project {
 		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+			if err := allowGrantProjectScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
 			}
 		}

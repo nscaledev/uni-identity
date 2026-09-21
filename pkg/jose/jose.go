@@ -501,19 +501,10 @@ const (
 	//nolint:gosec
 	TokenTypeLoginDialogState TokenType = "unikorn-cloud.org/logindialogstate+jwt"
 
-	// TokenTypeOnboardState is used to authorize an onboarding action.
-	//nolint:gosec
-	TokenTypeOnboardState TokenType = "unikorn-cloud.org/onboardingstate+jwt"
-
 	// TokenTypeRefreshToken is defined to prevent reuse in other contexts.
 	// This is only valid for a refresh token.
 	//nolint:gosec
 	TokenTypeRefreshToken TokenType = "unikorn-cloud.org/rt+jwt"
-
-	// TokenTypeUserSignupToken is defined to prevent reuse in other contexts.
-	// This is only valid for user signup emails.
-	//nolint:gosec
-	TokenTypeUserSignupToken TokenType = "unikorn-cloud.org/userSignup+jwt"
 )
 
 // getSymmetricKey derives a symmetric encryption key (for AES) from whatever

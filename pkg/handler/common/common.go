@@ -26,6 +26,7 @@ import (
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
@@ -79,8 +80,8 @@ func projectSelector(organizationID, projectID string) (labels.Selector, error) 
 }
 
 // ProjectNamespace is shared by higher order services.
-func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, projectID string) (*corev1.Namespace, error) {
-	selector, err := projectSelector(organizationID, projectID)
+func ProjectNamespace(ctx context.Context, cli client.Client, organizationID ids.OrganizationID, projectID ids.ProjectID) (*corev1.Namespace, error) {
+	selector, err := projectSelector(organizationID.String(), projectID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +103,12 @@ func ProjectNamespace(ctx context.Context, cli client.Client, organizationID, pr
 	return &resources.Items[0], nil
 }
 
-func (c *Client) ProjectNamespace(ctx context.Context, organizationID, projectID string) (*corev1.Namespace, error) {
+func (c *Client) ProjectNamespace(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) (*corev1.Namespace, error) {
 	return ProjectNamespace(ctx, c.client, organizationID, projectID)
 }
 
-func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv1.Quota, bool, error) {
-	selector, err := organizationSelector(organizationID)
+func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Quota, bool, error) {
+	selector, err := organizationSelector(organizationID.String())
 	if err != nil {
 		return nil, false, err
 	}
@@ -173,8 +174,8 @@ func (c *Client) GetQuota(ctx context.Context, organizationID string) (*unikornv
 	return quota, virtual, nil
 }
 
-func (c *Client) GetAllocations(ctx context.Context, organizationID string) (*unikornv1.AllocationList, error) {
-	selector, err := organizationSelector(organizationID)
+func (c *Client) GetAllocations(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.AllocationList, error) {
+	selector, err := organizationSelector(organizationID.String())
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +198,7 @@ func (c *Client) GetAllocations(ctx context.Context, organizationID string) (*un
 // argument, i.e. when updating the quotas, this will override the read from the organization.
 // If you pass in an allocation, i.e. when creating or updating an allocation, this will be
 // unioned with the organization's allocations, overriding an existing one if it exists.
-func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID string, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
+func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID ids.OrganizationID, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
 	// Handle the default quota.
 	if quota == nil {
 		temp, _, err := c.GetQuota(ctx, organizationID)
@@ -263,7 +264,46 @@ func checkQuotaConsistency(quota *unikornv1.Quota, allocations *unikornv1.Alloca
 	return nil
 }
 
+// SetIdentityMetadataOrganizationScope stamps the organization placement label from a typed
+// ID and then sets the identity attribution metadata (see SetIdentityMetadata).
+//
+// Prefer this over conversion.NewObjectMetadata(...).WithOrganization(organizationID.String()):
+// core's builder is necessarily string-based (core cannot import pkg/ids without a circular
+// dependency), so calling it forces a .String() at the call site. This keeps the typed ID to
+// the lowest layer and stamps placement plus attribution scope in a single call.
+func SetIdentityMetadataOrganizationScope(ctx context.Context, meta *metav1.ObjectMeta, organizationID ids.OrganizationID) error {
+	if meta.Labels == nil {
+		meta.Labels = map[string]string{}
+	}
+
+	meta.Labels[constants.OrganizationLabel] = organizationID.String()
+
+	return SetIdentityMetadata(ctx, meta)
+}
+
+// SetIdentityMetadataProjectScope stamps the organization and project placement labels from
+// typed IDs and then sets the identity attribution metadata (see SetIdentityMetadata).
+//
+// Prefer this over conversion.NewObjectMetadata(...).WithOrganization(...).WithProject(...) for
+// the same reason as SetIdentityMetadataOrganizationScope: it keeps the typed IDs to the lowest
+// layer rather than forcing .String() at the call site.
+func SetIdentityMetadataProjectScope(ctx context.Context, meta *metav1.ObjectMeta, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	if meta.Labels == nil {
+		meta.Labels = map[string]string{}
+	}
+
+	meta.Labels[constants.OrganizationLabel] = organizationID.String()
+	meta.Labels[constants.ProjectLabel] = projectID.String()
+
+	return SetIdentityMetadata(ctx, meta)
+}
+
 // SetIdentityMetadata sets identity specific metadata on a resource during generation.
+//
+// This sets attribution only (creator and principal scope). For resources that also carry
+// placement labels prefer SetIdentityMetadataOrganizationScope or
+// SetIdentityMetadataProjectScope, which set the placement organization/project from typed IDs
+// in the same call.
 func SetIdentityMetadata(ctx context.Context, meta *metav1.ObjectMeta) error {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {

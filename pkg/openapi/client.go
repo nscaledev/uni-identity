@@ -246,8 +246,8 @@ type ClientInterface interface {
 
 	PutApiV1OrganizationsOrganizationIDUsersUserID(ctx context.Context, organizationID OrganizationIDParameter, userID UserIDParameter, body PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetApiV1Signup request
-	GetApiV1Signup(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// GetApiVersion request
+	GetApiVersion(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetOauth2V2Authorization request
 	GetOauth2V2Authorization(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -264,11 +264,6 @@ type ClientInterface interface {
 	PostOauth2V2LoginWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	PostOauth2V2LoginWithFormdataBody(ctx context.Context, body PostOauth2V2LoginFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// PostOauth2V2OnboardWithBody request with any body
-	PostOauth2V2OnboardWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	PostOauth2V2OnboardWithFormdataBody(ctx context.Context, body PostOauth2V2OnboardFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PostOauth2V2TokenWithBody request with any body
 	PostOauth2V2TokenWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -971,8 +966,8 @@ func (c *Client) PutApiV1OrganizationsOrganizationIDUsersUserID(ctx context.Cont
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetApiV1Signup(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetApiV1SignupRequest(c.Server)
+func (c *Client) GetApiVersion(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetApiVersionRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,30 +1040,6 @@ func (c *Client) PostOauth2V2LoginWithBody(ctx context.Context, contentType stri
 
 func (c *Client) PostOauth2V2LoginWithFormdataBody(ctx context.Context, body PostOauth2V2LoginFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostOauth2V2LoginRequestWithFormdataBody(c.Server, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) PostOauth2V2OnboardWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostOauth2V2OnboardRequestWithBody(c.Server, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) PostOauth2V2OnboardWithFormdataBody(ctx context.Context, body PostOauth2V2OnboardFormdataRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewPostOauth2V2OnboardRequestWithFormdataBody(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2922,8 +2893,8 @@ func NewPutApiV1OrganizationsOrganizationIDUsersUserIDRequestWithBody(server str
 	return req, nil
 }
 
-// NewGetApiV1SignupRequest generates requests for GetApiV1Signup
-func NewGetApiV1SignupRequest(server string) (*http.Request, error) {
+// NewGetApiVersionRequest generates requests for GetApiVersion
+func NewGetApiVersionRequest(server string) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -2931,7 +2902,7 @@ func NewGetApiV1SignupRequest(server string) (*http.Request, error) {
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/api/v1/signup")
+	operationPath := fmt.Sprintf("/api/version")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -3064,46 +3035,6 @@ func NewPostOauth2V2LoginRequestWithBody(server string, contentType string, body
 	}
 
 	operationPath := fmt.Sprintf("/oauth2/v2/login")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
-
-	return req, nil
-}
-
-// NewPostOauth2V2OnboardRequestWithFormdataBody calls the generic PostOauth2V2Onboard builder with application/x-www-form-urlencoded body
-func NewPostOauth2V2OnboardRequestWithFormdataBody(server string, body PostOauth2V2OnboardFormdataRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	bodyStr, err := runtime.MarshalForm(body, nil)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = strings.NewReader(bodyStr.Encode())
-	return NewPostOauth2V2OnboardRequestWithBody(server, "application/x-www-form-urlencoded", bodyReader)
-}
-
-// NewPostOauth2V2OnboardRequestWithBody generates requests for PostOauth2V2Onboard with any type of body
-func NewPostOauth2V2OnboardRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/oauth2/v2/onboard")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -3456,8 +3387,8 @@ type ClientWithResponsesInterface interface {
 
 	PutApiV1OrganizationsOrganizationIDUsersUserIDWithResponse(ctx context.Context, organizationID OrganizationIDParameter, userID UserIDParameter, body PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody, reqEditors ...RequestEditorFn) (*PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error)
 
-	// GetApiV1SignupWithResponse request
-	GetApiV1SignupWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1SignupResponse, error)
+	// GetApiVersionWithResponse request
+	GetApiVersionWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiVersionResponse, error)
 
 	// GetOauth2V2AuthorizationWithResponse request
 	GetOauth2V2AuthorizationWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetOauth2V2AuthorizationResponse, error)
@@ -3474,11 +3405,6 @@ type ClientWithResponsesInterface interface {
 	PostOauth2V2LoginWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOauth2V2LoginResponse, error)
 
 	PostOauth2V2LoginWithFormdataBodyWithResponse(ctx context.Context, body PostOauth2V2LoginFormdataRequestBody, reqEditors ...RequestEditorFn) (*PostOauth2V2LoginResponse, error)
-
-	// PostOauth2V2OnboardWithBodyWithResponse request with any body
-	PostOauth2V2OnboardWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOauth2V2OnboardResponse, error)
-
-	PostOauth2V2OnboardWithFormdataBodyWithResponse(ctx context.Context, body PostOauth2V2OnboardFormdataRequestBody, reqEditors ...RequestEditorFn) (*PostOauth2V2OnboardResponse, error)
 
 	// PostOauth2V2TokenWithBodyWithResponse request with any body
 	PostOauth2V2TokenWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOauth2V2TokenResponse, error)
@@ -4575,13 +4501,16 @@ func (r PutApiV1OrganizationsOrganizationIDUsersUserIDResponse) StatusCode() int
 	return 0
 }
 
-type GetApiV1SignupResponse struct {
+type GetApiVersionResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	JSON200      *externalRef0.ServiceVersionResponse
+	JSON401      *externalRef0.UnauthorizedResponse
+	JSON500      *externalRef0.InternalServerErrorResponse
 }
 
 // Status returns HTTPResponse.Status
-func (r GetApiV1SignupResponse) Status() string {
+func (r GetApiVersionResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -4589,7 +4518,7 @@ func (r GetApiV1SignupResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetApiV1SignupResponse) StatusCode() int {
+func (r GetApiVersionResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -4676,27 +4605,6 @@ func (r PostOauth2V2LoginResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r PostOauth2V2LoginResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type PostOauth2V2OnboardResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-}
-
-// Status returns HTTPResponse.Status
-func (r PostOauth2V2OnboardResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r PostOauth2V2OnboardResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -5294,13 +5202,13 @@ func (c *ClientWithResponses) PutApiV1OrganizationsOrganizationIDUsersUserIDWith
 	return ParsePutApiV1OrganizationsOrganizationIDUsersUserIDResponse(rsp)
 }
 
-// GetApiV1SignupWithResponse request returning *GetApiV1SignupResponse
-func (c *ClientWithResponses) GetApiV1SignupWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiV1SignupResponse, error) {
-	rsp, err := c.GetApiV1Signup(ctx, reqEditors...)
+// GetApiVersionWithResponse request returning *GetApiVersionResponse
+func (c *ClientWithResponses) GetApiVersionWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiVersionResponse, error) {
+	rsp, err := c.GetApiVersion(ctx, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetApiV1SignupResponse(rsp)
+	return ParseGetApiVersionResponse(rsp)
 }
 
 // GetOauth2V2AuthorizationWithResponse request returning *GetOauth2V2AuthorizationResponse
@@ -5353,23 +5261,6 @@ func (c *ClientWithResponses) PostOauth2V2LoginWithFormdataBodyWithResponse(ctx 
 		return nil, err
 	}
 	return ParsePostOauth2V2LoginResponse(rsp)
-}
-
-// PostOauth2V2OnboardWithBodyWithResponse request with arbitrary body returning *PostOauth2V2OnboardResponse
-func (c *ClientWithResponses) PostOauth2V2OnboardWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOauth2V2OnboardResponse, error) {
-	rsp, err := c.PostOauth2V2OnboardWithBody(ctx, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParsePostOauth2V2OnboardResponse(rsp)
-}
-
-func (c *ClientWithResponses) PostOauth2V2OnboardWithFormdataBodyWithResponse(ctx context.Context, body PostOauth2V2OnboardFormdataRequestBody, reqEditors ...RequestEditorFn) (*PostOauth2V2OnboardResponse, error) {
-	rsp, err := c.PostOauth2V2OnboardWithFormdataBody(ctx, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParsePostOauth2V2OnboardResponse(rsp)
 }
 
 // PostOauth2V2TokenWithBodyWithResponse request with arbitrary body returning *PostOauth2V2TokenResponse
@@ -7594,17 +7485,41 @@ func ParsePutApiV1OrganizationsOrganizationIDUsersUserIDResponse(rsp *http.Respo
 	return response, nil
 }
 
-// ParseGetApiV1SignupResponse parses an HTTP response from a GetApiV1SignupWithResponse call
-func ParseGetApiV1SignupResponse(rsp *http.Response) (*GetApiV1SignupResponse, error) {
+// ParseGetApiVersionResponse parses an HTTP response from a GetApiVersionWithResponse call
+func ParseGetApiVersionResponse(rsp *http.Response) (*GetApiVersionResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetApiV1SignupResponse{
+	response := &GetApiVersionResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest externalRef0.ServiceVersionResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest externalRef0.UnauthorizedResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest externalRef0.InternalServerErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
 	}
 
 	return response, nil
@@ -7684,22 +7599,6 @@ func ParsePostOauth2V2LoginResponse(rsp *http.Response) (*PostOauth2V2LoginRespo
 	}
 
 	response := &PostOauth2V2LoginResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	return response, nil
-}
-
-// ParsePostOauth2V2OnboardResponse parses an HTTP response from a PostOauth2V2OnboardWithResponse call
-func ParsePostOauth2V2OnboardResponse(rsp *http.Response) (*PostOauth2V2OnboardResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &PostOauth2V2OnboardResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}

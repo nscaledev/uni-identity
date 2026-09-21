@@ -33,6 +33,10 @@ import (
 var (
 	// ErrResourceReference is raised when a resource cannot be looked up.
 	ErrResourceReference = fmt.Errorf("resource reference error")
+
+	// ErrUserInactive identifies an inactive global user and wraps
+	// ErrResourceReference for compatibility.
+	ErrUserInactive = fmt.Errorf("%w: user is not active", ErrResourceReference)
 )
 
 type UserDatabase struct {
@@ -73,7 +77,7 @@ func (d *UserDatabase) GetActiveUser(ctx context.Context, subject string) (*unik
 	}
 
 	if user.Spec.State != unikornv1.UserStateActive {
-		return nil, fmt.Errorf("%w: user is not active", ErrResourceReference)
+		return nil, ErrUserInactive
 	}
 
 	return user, nil

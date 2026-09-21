@@ -304,13 +304,13 @@ var _ = Describe("Project Discovery", func() {
 			})
 		})
 
-		Describe("Given invalid project ID", func() {
+		Describe("Given a valid UUID that does not exist as a project", func() {
 			It("should return not found error", func() {
-				_, err := client.GetProject(ctx, config.OrgID, "invalid-project-id")
+				_, err := client.GetProject(ctx, config.OrgID, "00000000-0000-4000-8000-000000000000")
 
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrResourceNotFound)).To(BeTrue())
-				GinkgoWriter.Printf("Expected error for invalid project ID: %v\n", err)
+				GinkgoWriter.Printf("Expected not-found error for non-existent project UUID: %v\n", err)
 			})
 		})
 	})

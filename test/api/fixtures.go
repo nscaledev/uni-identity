@@ -123,6 +123,12 @@ func (b *GroupPayloadBuilder) WithUserIDs(userIDs []string) *GroupPayloadBuilder
 	return b
 }
 
+// WithSubjects sets the subjects for the group.
+func (b *GroupPayloadBuilder) WithSubjects(subjects []identityopenapi.Subject) *GroupPayloadBuilder {
+	b.group.Spec.Subjects = &subjects
+	return b
+}
+
 // Build returns the typed group struct directly.
 func (b *GroupPayloadBuilder) Build() identityopenapi.GroupWrite {
 	return b.group
@@ -457,6 +463,12 @@ func (b *Oauth2ProviderPayloadBuilder) WithName(name string) *Oauth2ProviderPayl
 // WithClientID sets the client ID.
 func (b *Oauth2ProviderPayloadBuilder) WithClientID(clientID string) *Oauth2ProviderPayloadBuilder {
 	b.provider.Spec.ClientID = clientID
+	return b
+}
+
+// WithIssuer sets the OIDC issuer URL.
+func (b *Oauth2ProviderPayloadBuilder) WithIssuer(issuer string) *Oauth2ProviderPayloadBuilder {
+	b.provider.Spec.Issuer = issuer
 	return b
 }
 

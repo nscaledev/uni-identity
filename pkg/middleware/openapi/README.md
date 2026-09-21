@@ -28,9 +28,12 @@ The package operates around two distinct trust paths.
 ### User To Service
 
 - the caller presents a bearer token
-- token validation establishes the actor identity
-- RBAC is resolved as that user or service account
-- principal information is generated from validated `userinfo` claims
+- token validation establishes the actor identity by exchanging the source
+  token for a UNI passport at identity's RFC 8693 token endpoint
+- RBAC is resolved as that user or service account, against the identity ACL
+  endpoint, exactly as before
+- principal information is derived from the passport claims and projected
+  onto the existing `userinfo` shape so handler code is unchanged
 
 ### Service To Service
 
@@ -52,7 +55,31 @@ that keeps those two models separate while presenting handlers with one normaliz
   of authorization.
 - Service identity and delegated principal identity are separate concepts.
 - ACL cache keys must distinguish direct calls from impersonated calls so cached results do not
-  overgrant.
+  overgrant. Keys are also qualified by the authenticated issuer (`src_iss`), and every
+  user-influenced segment is length-prefixed so a subject containing the join delimiter cannot be
+  crafted to collide with another identity's key.
+- ACL cache keys also carry a digest of the presented token. The ACL is a function of the presented
+  token plus cluster state, not only of `(sub, srcIss)`. Two live tokens for the same subject can
+  resolve to different ACLs, so they must never share a cache entry.
+  - Example: a global group role binding
+    ([`pkg/rbac/README.md#global-role-bindings`](../../rbac/README.md#global-role-bindings)) grants
+    global authority from the groups asserted in the specific token presented, so a subject's next
+    token can carry different groups and resolve to a different ACL.
+  - Keying by token is strictly finer than keying by subject, so it can only under-share an entry,
+    never over-share one.
+  - The key carries a digest rather than the raw token, because cache keys live in a large LRU in
+    every downstream service and must not themselves be credential material.
+  - The mTLS system-account path leaves the token empty, so every system-account request gets the
+    same constant digest. That is harmless: system-account ACLs do not depend on token content.
+  - `--acl-cache-size` keeps its default of `1<<16` entries. Live tokens × scopes now bounds the
+    population, rather than subjects × scopes, but with the default 1-minute TTL and a few hundred
+    bytes per entry (key ≈ sub + srcIss + digest + scope, value = ACL), 65,536 entries is still
+    single-digit megabytes. Eviction pressure appears only above roughly 1,000 distinct token+scope
+    pairs per second, sustained.
+  - Nobody measured the resulting hit-rate shift before deployment. The default rests on the sizing
+    arithmetic above, and the hit rate is a post-deploy monitoring item.
+  - A client that mints a fresh token per request misses the cache every time. That is a client-side
+    anti-pattern to fix at the client, not a reason to grow the cache.
 - OpenAPI validation, authentication, principal propagation, and ACL resolution are colocated so
   handlers receive already-normalized request context.
 
@@ -62,11 +89,84 @@ The package has two important integration modes:
 
 - `local`, used by the identity service itself, where token validation and ACL resolution are handled
   directly against local `oauth2` and `rbac`
-- `remote`, used by other services, where bearer tokens are validated through identity and ACLs are
-  fetched back from identity over the service client path
+- `remote`, used by other services, where bearer tokens are exchanged at identity for a UNI passport
+  and ACLs are fetched back from identity over the service client path
 
 The shared `openapi` middleware layer defines the common request pipeline and the cache/propagation
 rules across both modes.
+
+### Remote Token Exchange
+
+The `remote` authorizer's bearer-token path is exchange-backed. On a cache miss it performs RFC 8693
+token exchange against identity's `/oauth2/v2/token` endpoint, decodes the returned passport claims
+(without local signature verification — trust is established by the channel, not by JWKS), and
+populates the existing `authorization.Info` and `userinfo` structures. The cached value is the
+passport claims payload, and the per-entry TTL is derived from the passport's `exp` claim minus a
+10 s clock-skew fudge. Identity caps the passport expiry to the source token's expiry before
+minting it, so middleware does not need to parse the source token locally.
+
+The exchange path fails closed. Token-endpoint responses project to the API edge as follows:
+
+- 401 (subject token rejected, `ErrTokenExchangeUnauthorized`) → `access-denied` (401)
+- 400 with RFC 6749 §5.2 `error=invalid_scope` (subject token valid, scope not granted,
+  `ErrTokenExchangeForbidden`) → `forbidden` (403)
+- 5xx and transport/timeout failures (`ErrTokenExchangeUnavailable`) → `access-denied` (401),
+  via the catch-all. The middleware deliberately does not surface 502/503/504 to the caller: a
+  transient identity outage must not let a request through, and exposing the upstream status
+  would invite retries that defeat the fail-closed contract.
+- Any other non-2xx outcome — including 400 with a different `error` code, malformed bodies, and
+  unclassified 4xx — also falls through to `access-denied` (401). Same rationale: refuse
+  ambiguous responses rather than guessing at intent.
+- Malformed or temporally invalid passport after a successful exchange → 500
+
+Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There
+is no fallback to the legacy userinfo path. Passports are consumed in-process and are never
+forwarded on outbound calls — internal service-to-service communication continues to use mTLS plus
+`X-Principal` exactly as before.
+
+## Validation Error Disclosure
+
+Request and response schema validation are both performed here, and the two get very different
+treatment on the way out.
+
+**Request** validation failures are returned to the caller, so they go through
+`clientValidationError`, which builds a description from the location of the fault and a reason.
+`err.Error()` must never be used here. kin-openapi appends the whole schema and the value that
+failed validation to a schema error, and prints the unparsable value in a parse error, so returning
+it echoes the request body — bearer tokens included — back to the caller (OWASP API8:2023,
+CWE-209). The specific fields that may and may not be used are recorded in the comments on
+`schemaErrorDescription` and `parseErrorDescription`; the short version is that only the statically
+written `Reason` fields are safe, and `Error()`, `Origin`, `Value` and `Cause` are not.
+
+Two things this deliberately does not promise:
+
+- Reasons may name a property the caller sent, and may quote `enum` or `const` values from the
+  schema. Both are published API contract and both are needed to correct the request, so both are
+  allowed. What is excluded is the caller's own data and anything naming the implementation — which
+  is why the `format` reason is rewritten rather than passed on, as the library's version quotes its
+  own internal regex rather than the format name.
+- The library detail is not logged. Core's `errors.Error.Write` logs the description we build, so
+  the fault is still recorded, but the raw error is not attached, as it would relocate the caller's
+  credentials into the log store.
+
+This is not solely a `kin-openapi` 0.144.0 problem. On 0.132.0 the same code path already returned
+the full body for JSON requests; what 0.144.0 changed is form-encoded bodies, where absent
+properties stopped being decoded as nil, so a missing required property now fails the object-level
+`required` check whose error value is the entire decoded body. The token endpoint is form encoded,
+which is how it surfaced.
+
+**Response** validation failures never reach the client as a body, so they keep the library's full
+rendering. The schema and the offending value are the whole point: that output is what tells you
+which part of a handler response does not match the specification.
+
+### Known Issue: Response Validation On Token Endpoints
+
+`runtimeSchemaValidationPanic` defaults to on, and the panic text includes the response body. On
+`/oauth2/v2/token` that body contains a freshly minted access token, so a response schema mismatch
+writes a live credential into the pod log, and the panic aborts the connection rather than
+returning a clean 500. Nothing installs a recovery middleware. Response validation is a
+development aid, so this is not urgent, but the token endpoints want either redaction or the panic
+disabled before anyone leans on it in production.
 
 ## Ingress And Header Invariants
 
@@ -84,16 +184,14 @@ request model and should be treated as part of the security boundary, not merely
 - Some transitional behaviour still exists around principal extraction and historical propagation
   formats; these paths should be reviewed as deletion candidates rather than normalized into the
   long-term design.
-- Remote bearer-token validation still depends on identity round-trips plus caching today.
-- The planned passport-token model is expected to shift more validation toward local JWKS-backed JWS
-  verification in downstream services.
+- Remote bearer-token validation depends on an identity round-trip per cache miss; cache hits avoid
+  it. Phase 2 deliberately does not introduce downstream JWKS verification — the trust model for
+  passports remains channel-scoped to identity rather than signature-scoped per service.
 
 ## TODO
 
 - Remove the legacy principal extraction/verification fallback once all callers use the current
   propagation model.
-- Revisit remote bearer-token validation when passport tokens are available so downstream services can
-  validate locally against JWKS rather than always depending on identity round-trips.
 
 ## Related Documentation
 
