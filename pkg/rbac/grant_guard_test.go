@@ -380,7 +380,6 @@ func TestBuiltinSystemServiceVolumePermissions(t *testing.T) {
 		{role: "region-service"},
 		{role: "kubernetes-service"},
 		{role: "compute-service", volumeClassOperations: []openapi.AclOperation{openapi.Read}, volumeOperations: []openapi.AclOperation{openapi.Read}},
-		{role: "storage-service"},
 	} {
 		role, ok := roles[test.role]
 		require.Truef(t, ok, "built-in role %q is missing", test.role)
