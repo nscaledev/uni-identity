@@ -255,13 +255,16 @@ func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikor
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
-	for i := range users.Items {
-		if users.Items[i].Spec.Subject == subject {
-			return &users.Items[i], nil
-		}
+	index, ambiguous := unikornv1.MatchSubject(users.Items, subject)
+	if ambiguous {
+		return nil, fmt.Errorf("%w: subject %s matches more than one user", coreerrors.ErrConsistency, subject)
 	}
 
-	return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s does not exist", subject))
+	if index < 0 {
+		return nil, errors.OAuth2InvalidRequest(fmt.Sprintf("user with subject %s does not exist", subject))
+	}
+
+	return &users.Items[index], nil
 }
 
 // findOrgUserByUserID finds an OrganizationUser in an org by the user ID label.

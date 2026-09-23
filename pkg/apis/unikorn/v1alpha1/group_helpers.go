@@ -41,17 +41,23 @@ func (s *GroupSubject) IdentityKey() string {
 // confers the roles, so a write that re-states it confers nothing and must not
 // read as an addition and be refused.  The deprecated UserIDs list takes no
 // part, because RBAC does not read it.  If RBAC matching changes, this must
-// move with it.
+// move with it.  For the same reason both sides compare in canonical form (see
+// NormalizeSubject), because groupSubjectFilter in pkg/rbac does.
 //
 // An empty subject ID matches nothing: membership lists are not validated
 // against real records, so a junk empty entry must not stand in for a
 // principal that has no record yet.
 func (s *GroupSpec) HasMemberByID(subjectID string) bool {
-	if subjectID == "" {
+	// Compare canonical forms on both sides. A stored entry and the subject it is
+	// checked against can each be in either case until the data migration
+	// completes, and a membership that already confers the roles must not read as
+	// an addition and be refused.
+	canonical := NormalizeSubject(subjectID)
+	if canonical == "" {
 		return false
 	}
 
 	return slices.ContainsFunc(s.Subjects, func(subject GroupSubject) bool {
-		return subject.ID == subjectID
+		return NormalizeSubject(subject.ID) == canonical
 	})
 }

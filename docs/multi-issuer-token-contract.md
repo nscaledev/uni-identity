@@ -84,15 +84,16 @@ UNI distinguishes two different not-found-or-not-usable cases:
   currently writes a non-active global `User`, while a user suspended in (or removed from) every
   organization still resolves to an empty `orgIds` list with no error.
 
-  It can also only fire on a record the lookup finds, and the lookup is **case sensitive**:
-  `UserDatabase.GetUser` compares `spec.subject` verbatim, while the bearer path lower-cases the
-  email claim first (`auth0.Validator.validateEmail`) and the create API stores `spec.subject` as
-  supplied. A mixed-case record is therefore treated as *never onboarded* and admitted with empty
-  `orgIds` under `allowExternalIdentity: true`, even while suspended. Global role binding matching
-  is case-sensitive too, so a mixed-case record gains no unearned authority through that path — the
-  residual gap is narrower than a bypass: the inactive-user rejection simply cannot fire on a record
-  its case-sensitive lookup cannot find. Until storage and lookup agree on normalization, create
-  users with lower-case subjects.
+  It can also only fire on a record the lookup finds. `UserDatabase.GetUser` accepts a stored
+  `spec.subject` in either case. An exact match wins. If no record matches exactly, the one record
+  with the same canonical form matches. As a result, the lookup finds a suspended record whether
+  its stored subject is folded or not, and the bearer path rejects the request.
+
+  If the folded claim matches no record exactly but folds onto two or more, the lookup refuses to
+  pick one and returns `ErrAmbiguousSubject`. The address is onboarded, so the bearer path rejects
+  it with `access_denied`, **regardless of `allowExternalIdentity`**. Otherwise a suspended record
+  among the variants gets in. The message is the same as for a missing or inactive user, so the
+  response does not show that the address has two records.
 
 ## The `https://unikorn-cloud.org/authz` claim
 

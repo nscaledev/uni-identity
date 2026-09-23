@@ -193,7 +193,8 @@ Each bearer-trusted provider has a `BearerTrustSpec` that governs claim validati
   claim must be present with `acctype == "user"` and at least one `orgId`. Used as a defense-in-depth
   signal that the UNI post-login Action ran. The claimed `orgIds` are discarded regardless.
 - **`allowExternalIdentity`** (default `false`): when `true`, subjects with no UNI user record are
-  accepted with an empty `orgIds` slice instead of being rejected.
+  accepted with an empty `orgIds` slice instead of being rejected. It does not apply to a subject
+  that folds onto two or more records, because that address is onboarded.
 - **`signingAlgorithms`** (default `[RS256]`): permitted JWS algorithms. Only asymmetric algorithms
   are accepted; symmetric algorithms (e.g. `HS256`) and `none` are rejected at trust-list build time.
 - **`groupsClaim`** (default empty): names the access-token claim that carries this issuer's IdP
