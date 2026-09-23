@@ -59,7 +59,10 @@ no group-based global role binding can ever match its tokens.
 
 ## Email normalization
 
-Extracted email addresses are lowercased and whitespace-trimmed before any UNI lookup.
+Extracted email addresses fold to the canonical subject form (`NormalizeSubject`) before any UNI
+lookup. The fold trims surrounding whitespace and lower-cases the ASCII letters of a bare
+address. Other letters keep their case, because Unicode case mapping joins distinct addresses:
+`strings.ToLower` maps KELVIN SIGN to `k`, so a lookalike claim takes another user's record.
 Providers must emit the email address in a canonical form that survives this normalization
 consistently. Normalization is applied before the UNI user database lookup and before the
 email is stamped on the passport.

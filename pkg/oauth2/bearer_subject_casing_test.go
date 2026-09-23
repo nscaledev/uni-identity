@@ -238,3 +238,52 @@ func TestBearerRefusesASubjectThatFoldsOntoTwoRecords(t *testing.T) {
 		assert.Contains(t, err.Error(), "user identity not found or inactive")
 	})
 }
+
+// TestBearerLookalikeClaimDoesNotResolveAnotherUser pins the end-to-end effect
+// of the claim fold.  The claim uses KELVIN SIGN in place of K, so it names a
+// different mailbox from the stored kim@example.com.  With a Unicode fold, the
+// claim became kim's address, and the passport carried kim's subject and
+// organizations.  The control arm uses a plain upper-case K, which is the same
+// mailbox and must still resolve kim.
+func TestBearerLookalikeClaimDoesNotResolveAnotherUser(t *testing.T) {
+	t.Parallel()
+
+	const stored = "kim@example.com"
+
+	for _, tt := range []struct {
+		name    string
+		claim   string
+		resolve bool
+	}{
+		{name: "control: a case variant resolves the user", claim: "Kim@Example.com", resolve: true},
+		{name: "a lookalike does not", claim: "\u212aim@Example.com", resolve: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issuer := newAuth0TestIssuer(t)
+			env := casingEnv(t, issuer, casingObjects(stored, unikornv1.UserStateActive)...)
+
+			token := issuer.token(t, casingAudience, tt.claim, time.Now().Add(45*time.Second))
+
+			// allowExternalIdentity admits a subject with no record, so the
+			// lookalike gets a passport either way.  Only its content shows
+			// whether it took kim's identity.
+			result, err := env.authenticator.TokenExchange(nil, exchangeRequest(t, token, nil))
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			claims := parsePassport(t, env, result.AccessToken)
+
+			if tt.resolve {
+				assert.Contains(t, claims.OrgIDs, casingOrgID, "a case variant of the address must resolve its record")
+
+				return
+			}
+
+			assert.NotContains(t, claims.OrgIDs, casingOrgID, "a lookalike must not receive another user's organizations")
+			assert.NotEqual(t, stored, claims.Email, "a lookalike must not carry another user's subject")
+			assert.NotEqual(t, stored, claims.Subject, "a lookalike must not carry another user's subject")
+		})
+	}
+}
