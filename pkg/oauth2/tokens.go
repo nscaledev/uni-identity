@@ -32,6 +32,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/jose"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -154,42 +155,59 @@ func (a *Authenticator) expiry(now time.Time, info *IssueInfo) time.Time {
 // updateSession updates the user record to indicate the current access token and single-use refresh
 // token bound to a specific client.  This ensures only a single session can be active per-client
 // at a time, tokens are automatically revoked when reissued etc.
-func (a *Authenticator) updateSession(ctx context.Context, user *unikornv1.User, info *IssueInfo, tokens *Tokens, authorizationCodeID *string) (time.Time, error) {
-	session, err := user.Session(info.Federated.ClientID)
-	if err != nil {
-		user.Spec.Sessions = append(user.Spec.Sessions, unikornv1.UserSession{
-			ClientID: info.Federated.ClientID,
-		})
+func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, tokens *Tokens, authorizationCodeID *string) (time.Time, error) {
+	var lastAuthentication *metav1.Time
 
-		session = &user.Spec.Sessions[len(user.Spec.Sessions)-1]
-	} else {
-		a.InvalidateToken(ctx, session.AccessToken)
-	}
-
-	session.AccessToken = tokens.AccessToken
-
-	if tokens.RefreshToken != nil {
-		session.RefreshToken = *tokens.RefreshToken
-	}
-
-	if info.Interactive {
-		session.LastAuthentication = &metav1.Time{
-			Time: time.Now(),
+	// Another writer, for example a concurrent login or the subject migration, can
+	// change the record between the read and the write.  The read is in the retry,
+	// so after a conflict the retry applies the session to the latest version and
+	// keeps the other change.  The read comes from the informer cache, which can
+	// still hold the old version just after a conflict, so the delay grows.
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		user, err := a.getUser(ctx, info.Federated.UserID)
+		if err != nil {
+			return err
 		}
-	}
 
-	if authorizationCodeID != nil {
-		session.AuthorizationCodeID = *authorizationCodeID
-	}
+		session, err := user.Session(info.Federated.ClientID)
+		if err != nil {
+			user.Spec.Sessions = append(user.Spec.Sessions, unikornv1.UserSession{
+				ClientID: info.Federated.ClientID,
+			})
 
-	if err := a.client.Update(ctx, user); err != nil {
+			session = &user.Spec.Sessions[len(user.Spec.Sessions)-1]
+		} else {
+			a.InvalidateToken(ctx, session.AccessToken)
+		}
+
+		session.AccessToken = tokens.AccessToken
+
+		if tokens.RefreshToken != nil {
+			session.RefreshToken = *tokens.RefreshToken
+		}
+
+		if info.Interactive {
+			session.LastAuthentication = &metav1.Time{
+				Time: time.Now(),
+			}
+		}
+
+		if authorizationCodeID != nil {
+			session.AuthorizationCodeID = *authorizationCodeID
+		}
+
+		lastAuthentication = session.LastAuthentication
+
+		return a.client.Update(ctx, user)
+	})
+	if err != nil {
 		return time.Time{}, err
 	}
 
 	lastAuthenticationTime := time.Now()
 
-	if session.LastAuthentication != nil {
-		lastAuthenticationTime = session.LastAuthentication.Time
+	if lastAuthentication != nil {
+		lastAuthenticationTime = lastAuthentication.Time
 	}
 
 	return lastAuthenticationTime, nil
@@ -235,11 +253,6 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 	}
 
 	if info.Federated != nil {
-		user, err := a.getUser(ctx, info.Federated.UserID)
-		if err != nil {
-			return nil, err
-		}
-
 		rtClaims := &RefreshTokenClaims{
 			Claims: jwt.Claims{
 				ID:      uuid.New().String(),
@@ -262,7 +275,7 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 
 		tokens.RefreshToken = &rt
 
-		authTime, err := a.updateSession(ctx, user, info, tokens, info.AuthorizationCodeID)
+		authTime, err := a.updateSession(ctx, info, tokens, info.AuthorizationCodeID)
 		if err != nil {
 			return nil, err
 		}
