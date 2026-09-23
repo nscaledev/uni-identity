@@ -77,6 +77,32 @@ changes from scoped `v1` routing to a flatter `v2` routing model.
   membership that may refer to identities outside the local user database.
 - An `OAuth2Provider`'s issuer URL must be unique across all bearer-trusted providers in the
   operator namespace. Duplicate issuers produce undefined dispatch behavior.
+- A subject lookup accepts an email subject in either stored case, and an ambiguous fold resolves
+  to no record.
+
+## Subject Matching
+
+`NormalizeSubject` gives the canonical form of a subject. Every subject loses surrounding
+whitespace. If `net/mail` parses the subject as a bare address, its ASCII letters also fold to lower
+case. Other letters keep their case, because Unicode case mapping joins distinct addresses:
+`strings.ToLower` maps KELVIN SIGN (U+212A) to `k`. A subject that `net/mail` does not parse as a
+bare address keeps its case, because a service user created with `kubectl-unikorn` can be case
+sensitive.
+
+No writer changes the form of a subject that it stores, so a stored `User.spec.subject` or
+`GroupSubject.ID` can be in either form. Every lookup of a stored subject, and every comparison
+against one, accepts both forms:
+
+- `MatchSubject` resolves a subject against a list of users. An exact match wins. If no record
+  matches exactly, the one record with the same canonical form matches.
+- If no record matches exactly and two or more have the same canonical form, `MatchSubject`
+  reports the subject as ambiguous. The caller refuses the lookup and does not pick a record.
+- An empty subject matches no record.
+- `GroupSpec.HasMemberByID` compares both sides in canonical form, as the group subject match in
+  [`pkg/rbac`](../../../rbac/README.md) does.
+
+These helpers live here, not in `pkg/userdb`, because `HasMemberByID` needs the canonical form and
+`pkg/userdb` imports this package.
 
 ## `bearerTrust` and multi-issuer bearer trust
 

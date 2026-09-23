@@ -31,6 +31,9 @@ Otherwise it derives visibility from identity membership:
 - an optional email filter can be used to ask "which organizations is this user in?", with
   additional permission checks when the caller is not querying their own identity
 
+The own-identity test ignores case. A caller that asks for its own address in another case gets its
+own record. It never gets a record that differs from its own only in case.
+
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.
 

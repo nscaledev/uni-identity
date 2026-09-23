@@ -40,7 +40,9 @@ func (s *GroupSubject) IdentityKey() string {
 // grant gate has to match the same way — a membership stored as a legacy
 // record already confers the roles, so a write that re-states it confers
 // nothing and must not read as an addition and be refused.  If RBAC matching
-// ever becomes issuer-qualified, this must move with it.
+// ever becomes issuer-qualified, this must move with it.  For the same reason
+// both sides compare in canonical form (see NormalizeSubject), because
+// groupSubjectFilter in pkg/rbac does.
 //
 // An empty organization user ID, and an empty subject ID, match nothing:
 // membership lists are not validated against real records, so a junk empty
@@ -50,11 +52,16 @@ func (s *GroupSpec) HasMemberByID(organizationUserID, subjectID string) bool {
 		return true
 	}
 
-	if subjectID == "" {
+	// Compare canonical forms on both sides. A stored entry and the subject it is
+	// checked against can each be in either case until the data migration
+	// completes, and a membership that already confers the roles must not read as
+	// an addition and be refused.
+	canonical := NormalizeSubject(subjectID)
+	if canonical == "" {
 		return false
 	}
 
 	return slices.ContainsFunc(s.Subjects, func(subject GroupSubject) bool {
-		return subject.ID == subjectID
+		return NormalizeSubject(subject.ID) == canonical
 	})
 }

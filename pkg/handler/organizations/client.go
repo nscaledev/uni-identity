@@ -164,13 +164,26 @@ func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, 
 func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
 	// If you aren't looking at yourself, then you need global read permissions, you cannot
 	// go probing for other users or organizations, massive data breach!
-	if info.Userinfo == nil || info.Userinfo.Email == nil || *info.Userinfo.Email != email {
+	//
+	// Compare canonical forms: the caller's own address and the one it asks for
+	// can differ only in case, and that is still the caller looking at itself.
+	self := info.Userinfo != nil && info.Userinfo.Email != nil && unikornv1.NormalizeSubject(*info.Userinfo.Email) == unikornv1.NormalizeSubject(email)
+
+	if !self {
 		if err := rbac.AllowGlobalScope(ctx, "identity:users", openapi.Read); err != nil {
 			return nil, errors.HTTPForbidden("user not permitted to read users globally").WithError(err)
 		}
 	}
 
-	user, err := userdb.GetActiveUser(ctx, email)
+	// A caller looking at itself resolves its own address.  The lookup prefers
+	// an exact match, so the address it asked for can name a record that
+	// differs from its own only in case, and the check above did not guard it.
+	lookup := email
+	if self {
+		lookup = *info.Userinfo.Email
+	}
+
+	user, err := userdb.GetActiveUser(ctx, lookup)
 	if err != nil {
 		return nil, errors.HTTPNotFound().WithError(err)
 	}

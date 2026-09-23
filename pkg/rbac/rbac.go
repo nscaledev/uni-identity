@@ -269,6 +269,8 @@ type groupSubjectFilterGetter func(id string) func(unikornv1.Group) bool
 // still has the deprecated UserIDs field populated, it resolves the subject to
 // an OrganizationUser resource name and checks UserIDs.
 func (r *RBAC) groupSubjectFilter(ctx context.Context, subject string) func(unikornv1.Group) bool {
+	canonical := unikornv1.NormalizeSubject(subject)
+
 	return func(group unikornv1.Group) bool {
 		if slices.ContainsFunc(group.Spec.Subjects, func(s unikornv1.GroupSubject) bool {
 			// The issuer is deliberately ignored: records written before
@@ -276,8 +278,11 @@ func (r *RBAC) groupSubjectFilter(ctx context.Context, subject string) func(unik
 			// groups handlers now write the deployment's issuer URL, and both
 			// forms must keep resolving.  The membership grant gates match the
 			// same way (see GroupSpec.HasMemberByID); if this ever becomes
-			// issuer-qualified, they must move with it.
-			return s.ID == subject
+			// issuer-qualified, they must move with it.  Both sides compare in
+			// canonical form, because a stored entry and the authenticated
+			// subject can each be in either case while stored subjects are
+			// migrated.
+			return unikornv1.NormalizeSubject(s.ID) == canonical
 		}) {
 			return false
 		}
@@ -383,9 +388,10 @@ func (r *RBAC) resolveOrganizationUserName(ctx context.Context, namespace, subje
 		return "", err
 	}
 
-	idx := slices.IndexFunc(users.Items, func(u unikornv1.User) bool {
-		return u.Spec.Subject == subject
-	})
+	idx, ambiguous := unikornv1.MatchSubject(users.Items, subject)
+	if ambiguous {
+		return "", fmt.Errorf("%w: subject %q matches more than one user", ErrResourceReference, subject)
+	}
 
 	if idx < 0 {
 		return "", fmt.Errorf("%w: user not found for subject %q", ErrResourceReference, subject)

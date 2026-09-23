@@ -54,14 +54,27 @@ The package treats "active" as part of identity resolution rather than as downst
 Several methods do not just resolve objects; they enforce that the resolved user or
 organization-local membership is active before returning it.
 
+### Subject Resolution
+
+`GetUser` resolves a subject through
+[`MatchSubject`](../apis/unikorn/v1alpha1/README.md#subject-matching). An exact match wins. If no
+record matches exactly, the one record with the same canonical form matches. As a result, a login
+works whether the stored subject is folded or not. `GetActiveUser` and `GetOrganizationIDs` go
+through `GetUser`, so they resolve the same way.
+
+The lookup lists users in no fixed order. If the subject matches no record exactly but folds onto
+two or more, a pick depends on that order. It can give a different user from one call to the next.
+`GetUser` returns `ErrAmbiguousSubject` in that case and does not pick.
+
 ## Invariants
 
 - subject is the lookup key for global users
+- an email subject resolves in either stored case, and an ambiguous fold resolves to no user
 - active-state checks are part of the package contract
 - organization membership is resolved through labeled `OrganizationUser` records
 - service accounts are part of the same local identity-resolution surface as users
 - unresolved, inactive, or multiply-resolved identities are normalized into
-  `ErrResourceReference`, with one exception noted under Caveats
+  `ErrResourceReference`, with the wrapped errors noted under Caveats
 
 ## Caveats
 
@@ -75,6 +88,10 @@ organization-local membership is active before returning it.
   error. See
   [`docs/multi-issuer-token-contract.md#membership-resolution`](../../docs/multi-issuer-token-contract.md#membership-resolution)
   for the bearer-admission consequences and the organization-suspension gap this leaves open.
+- `GetUser` returns `ErrAmbiguousSubject` for an ambiguous fold. It wraps `ErrResourceReference` in
+  the same way, so a caller that does not test for it treats the subject as a record it cannot
+  resolve. The bearer path tests for it and refuses the subject, even under
+  `allowExternalIdentity: true`, because the address is onboarded.
 - The package intentionally does not provide mutation or transactional semantics; it is a read-side
   adapter boundary only.
 

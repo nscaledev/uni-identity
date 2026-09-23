@@ -38,6 +38,14 @@ old and new clients can coexist during the migration period.
 
 This compatibility behaviour is one of the main reasons the package is more than simple CRUD.
 
+### Subject Matching
+
+A group write stores a subject entry as the request supplies it. To fill in the `UserIDs`
+counterpart, `findUserBySubject` resolves the subject through
+[`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching), so a user stored in
+another case still resolves. If the subject folds onto two or more users and matches none exactly,
+the write fails with a consistency error.
+
 ### Role Assignment Guard Rails
 
 Group role assignment is where the handler layer turns the deeper RBAC security model into a
@@ -169,7 +177,8 @@ would drift.
 - adding a member to a group is a grant of that group's roles, wherever the membership is written, so
   it is allowed only where the caller could grant every role the group carries
 - the gate treats a principal as already a member by subject `id` alone (`HasMemberByID`), mirroring
-  how `pkg/rbac` resolves membership; the recorded `issuer` and the display-only `email` take no part
+  how `pkg/rbac` resolves membership; the recorded `issuer` and the display-only `email` take no part,
+  and the `id` compares in canonical form
 - removing a member from a group, and deleting a member principal, confer nothing and are not gated
 - role removals and group DELETE revoke without a role check, by design
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible
