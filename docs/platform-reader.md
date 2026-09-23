@@ -137,14 +137,12 @@ Concretely:
 - **Worst-case revocation latency is not immediate.** It is bounded by the remaining lifetime of
   the external IdP's access token, plus the passport lifetime, plus the ACL cache TTL. Offboarding
   a subject at the IdP does not revoke a token already issued; it only prevents new tokens.
-- **Best-effort break-glass:** if the subject does have an inactive global `User` record, the
-  bearer path rejects it (`ErrUserInactive`) regardless of `allowExternalIdentity`. This is
-  unreliable as a control today because the underlying lookup
-  (`UserDatabase.GetUser`) is case-sensitive while the bearer path lower-cases the email claim
-  first — a mixed-case record is treated as never-onboarded rather than inactive. See
+- **Break-glass:** if the subject has an inactive global `User` record, the bearer path rejects it
+  (`ErrUserInactive`) regardless of `allowExternalIdentity`. The lookup (`UserDatabase.GetUser`)
+  accepts a stored subject in either case, so this also holds for a mixed-case record. A subject
+  that folds onto two records is rejected too. See
   [docs/multi-issuer-token-contract.md#membership-resolution](multi-issuer-token-contract.md#membership-resolution)
-  for the tracked gap. Until that gap is fixed, this path is documented as best-effort, not a
-  relied-upon control.
+  for the details.
 
 ## Runbook
 

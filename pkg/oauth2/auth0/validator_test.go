@@ -436,6 +436,41 @@ func TestValidateSkipEmailVerification(t *testing.T) {
 	assert.Equal(t, "user@example.com", user.Email)
 }
 
+// TestValidateFoldsOnlyASCIILettersOfTheEmail pins the claim fold to the
+// canonical subject form.  The folded claim is the lookup key and the passport
+// subject.  strings.ToLower maps KELVIN SIGN (U+212A) to k, so a Unicode fold
+// turns a lookalike address into another user's address and takes that user's
+// record and authority.
+func TestValidateFoldsOnlyASCIILettersOfTheEmail(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+
+	validator := newTestValidator(t, auth0.Options{
+		Issuer:   issuer.issuer(),
+		Audience: validatorTestAudience,
+	})
+
+	for _, tt := range []struct {
+		name  string
+		email string
+		want  string
+	}{
+		{name: "ASCII letters fold", email: " JW@Example.com ", want: "jw@example.com"},
+		{name: "a lookalike keeps its form", email: "\u212aim@Example.com", want: "\u212aim@example.com"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			user, err := validator.Validate(t.Context(), issuer.token(t, func(claims *testTokenClaims) {
+				claims.Email = tt.email
+			}))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, user.Email)
+		})
+	}
+}
+
 func TestValidateRequireAuthzClaimOffToleratesMissing(t *testing.T) {
 	t.Parallel()
 

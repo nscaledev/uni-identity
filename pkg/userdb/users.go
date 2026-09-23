@@ -37,6 +37,13 @@ var (
 	// ErrUserInactive identifies an inactive global user and wraps
 	// ErrResourceReference for compatibility.
 	ErrUserInactive = fmt.Errorf("%w: user is not active", ErrResourceReference)
+
+	// ErrAmbiguousSubject identifies a subject that matches no user exactly but
+	// folds onto two or more.  It wraps ErrResourceReference, so a caller that
+	// does not test for it treats the subject as a record it cannot resolve.
+	// The bearer path tests for it: an ambiguous subject is onboarded, so it
+	// must not pass as an external identity.
+	ErrAmbiguousSubject = fmt.Errorf("%w: subject matches more than one user", ErrResourceReference)
 )
 
 type UserDatabase struct {
@@ -58,9 +65,14 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, err
 	}
 
-	index := slices.IndexFunc(result.Items, func(user unikornv1.User) bool {
-		return user.Spec.Subject == subject
-	})
+	// Every user resolution goes through here: GetActiveUser, and through it
+	// GetOrganizationIDs.  Accepting either stored form lets the data migrate
+	// with no login or authorization affected.  An exact match still wins, so a
+	// lookup that matched before resolves to the same record.
+	index, ambiguous := unikornv1.MatchSubject(result.Items, subject)
+	if ambiguous {
+		return nil, fmt.Errorf("%w: subject %q", ErrAmbiguousSubject, subject)
+	}
 
 	if index < 0 {
 		return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)

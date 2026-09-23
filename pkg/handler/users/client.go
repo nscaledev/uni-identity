@@ -84,8 +84,13 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 // the legacy one survives and keeps conferring the group's roles.  The write
 // path asks the same question the gate does (see GroupSpec.HasMemberByID).
 func subjectByID(id string) func(unikornv1.GroupSubject) bool {
+	// Compare canonical forms for the same reason that this matches by ID
+	// alone.  An entry can be in either case.  If a remove misses it, the remove
+	// reports success and the entry keeps conferring the group's roles.
+	canonical := unikornv1.NormalizeSubject(id)
+
 	return func(s unikornv1.GroupSubject) bool {
-		return s.ID == id
+		return unikornv1.NormalizeSubject(s.ID) == canonical
 	}
 }
 
@@ -394,9 +399,14 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
-	index := slices.IndexFunc(users.Items, func(user unikornv1.User) bool {
-		return user.Spec.Subject == subject
-	})
+	// A subject that differs only in case names the same principal, so match
+	// it.  If the match is exact, onboarding Bob@x.com beside bob@x.com adds a
+	// second global record.  Refuse a subject that folds onto two records,
+	// because a new record for it makes a third.
+	index, ambiguous := unikornv1.MatchSubject(users.Items, subject)
+	if ambiguous {
+		return nil, fmt.Errorf("%w: subject %q matches more than one user", coreerrors.ErrConsistency, subject)
+	}
 
 	if index < 0 {
 		return nil, ErrReference

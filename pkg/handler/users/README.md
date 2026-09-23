@@ -46,6 +46,18 @@ and adds or removes both:
 So this package is not just a membership record manager. It is also one side of the compatibility
 bridge between old and new group-membership representations.
 
+### Subject Matching
+
+`Create` finds an existing global `User` through
+[`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching). As a result, an address
+that differs from a stored record only in case reuses that record and does not add a second one. If
+no record matches, the new record stores the subject as the request supplies it. If the subject
+folds onto two or more records and matches none exactly, `Create` fails with a consistency error
+before it writes a record.
+
+Group subject entries compare in canonical form on both sides. As a result, a membership read and
+a removal find an entry that is stored in another case.
+
 ### Membership Additions Are Grants
 
 Putting a user into a group hands them every role that group carries, so it is a grant and is
@@ -154,6 +166,8 @@ clients.
   rollback or a single-object write.
 - Revisit list resilience so an orphaned `OrganizationUser` -> `User` reference does not
   necessarily fail the entire organization user listing.
+- Fold email subjects on write after the data migration folds every stored subject (ID-408). Every
+  reader accepts both forms first, so the migration does not affect a login.
 
 ## Related Documentation
 
