@@ -65,6 +65,9 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
 - Reissuing tokens for a client session invalidates the prior active token for that session.
 - This session model is intended to reduce replay risk and detect token reuse rather than allowing
   multiple independently active refresh-token chains for the same client.
+- A session write retries on a conflict with another write to the same user record. Each attempt
+  reads the record again, so the other write stays, and the refresh-token reuse check runs again on
+  the latest version.
 - Token verification is intentionally cached because full validation is expensive.
 - Token classes for federated users, service accounts, and services are intentionally distinct.
 - Admission is intentionally coupled to local system validity: users who are inactive or not

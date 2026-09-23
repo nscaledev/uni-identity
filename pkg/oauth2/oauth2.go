@@ -55,6 +55,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"k8s.io/apimachinery/pkg/util/cache"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1128,31 +1129,34 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 
 // revokeSession revokes all tokens for a clientID.
 func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
-	user, err := a.userdb.GetActiveUser(ctx, subject)
-	if err != nil {
-		return err
-	}
-
 	lookupSession := func(session unikornv1.UserSession) bool {
 		return session.ClientID == clientID && session.AuthorizationCodeID == codeID
 	}
 
-	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
-	if index < 0 {
+	// The read is in the retry for the same reason as in updateSession.
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		user, err := a.userdb.GetActiveUser(ctx, subject)
+		if err != nil {
+			return err
+		}
+
+		index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
+		if index < 0 {
+			return nil
+		}
+
+		// Things can still go wrong between here and issuing the new token, so invalidate
+		// the session now rather than relying on the reissue doing it for us.
+		a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
+
+		user.Spec.Sessions = append(user.Spec.Sessions[:index], user.Spec.Sessions[index+1:]...)
+
+		if err := a.client.Update(ctx, user); err != nil {
+			return err
+		}
+
 		return nil
-	}
-
-	// Things can still go wrong between here and issuing the new token, so invalidate
-	// the session now rather than relying on the reissue doing it for us.
-	a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
-
-	user.Spec.Sessions = append(user.Spec.Sessions[:index], user.Spec.Sessions[index+1:]...)
-
-	if err := a.client.Update(ctx, user); err != nil {
-		return err
-	}
-
-	return nil
+	})
 }
 
 // TokenAuthorizationCode issues a token based on whether the provided code is correct and
@@ -1272,35 +1276,42 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 		return err
 	}
 
-	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
-	if err != nil {
-		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
-	}
-
 	lookupSession := func(session unikornv1.UserSession) bool {
 		return session.ClientID == claims.Federated.ClientID
 	}
 
-	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
-	if index < 0 {
-		return errors.OAuth2InvalidGrant("no active session for user found")
-	}
+	// The read is in the retry for the same reason as in updateSession.  The reuse
+	// check is in the retry too.  If the conflict came from another request that
+	// used this refresh token, the check on the latest version refuses it.  A write
+	// succeeds only on the latest version, so the check before a successful write
+	// always sees the latest version.
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
+		if err != nil {
+			return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
+		}
 
-	if user.Spec.Sessions[index].RefreshToken != refreshToken {
-		return errors.OAuth2InvalidGrant("refresh token reuse")
-	}
+		index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
+		if index < 0 {
+			return errors.OAuth2InvalidGrant("no active session for user found")
+		}
 
-	// Things can still go wrong between here and issuing the new token, so invalidate
-	// the session now rather than relying on the reissue doing it for us.
-	a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
+		if user.Spec.Sessions[index].RefreshToken != refreshToken {
+			return errors.OAuth2InvalidGrant("refresh token reuse")
+		}
 
-	user.Spec.Sessions[index].RefreshToken = ""
+		// Things can still go wrong between here and issuing the new token, so invalidate
+		// the session now rather than relying on the reissue doing it for us.
+		a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
 
-	if err := a.client.Update(ctx, user); err != nil {
-		return err
-	}
+		user.Spec.Sessions[index].RefreshToken = ""
 
-	return nil
+		if err := a.client.Update(ctx, user); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 // TokenRefreshToken issues a token if the provided refresh token is valid.
