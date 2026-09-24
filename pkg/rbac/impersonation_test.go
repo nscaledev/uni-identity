@@ -85,6 +85,7 @@ func impersonate(t *testing.T, f fixture, userSubject string) *openapi.Acl {
 	acl, err := getACLForSystemAccount(t, f.rbac, impersonationServiceCN, &principal.Principal{
 		Type:            openapi.User,
 		Actor:           userSubject,
+		Issuer:          constants.UNISentinel,
 		OrganizationIDs: []string{testOrgID},
 	}, true)
 	require.NoError(t, err)
@@ -236,9 +237,8 @@ func TestImpersonation_ServiceHasNoPermissions_EmptyACLReturned(t *testing.T) {
 // TestImpersonation_UniExactBindingIntersectsWithServiceACL pins the full
 // impersonation path for the ID-398 spec requirement that a uni-exact global
 // role binding stays intersected with the calling service's ACL. The
-// impersonated actor's subject matches a binding on the UNI sentinel
-// (processImpersonatedPrincipalACL always resolves impersonated user
-// principals at that issuer), so processUserAccountACL grants the binding's
+// impersonated actor carries the UNI sentinel and matches a binding at that
+// issuer, so processUserAccountACL grants the binding's
 // global scopes and skips membership resolution entirely (replace
 // semantics) — but the confused-deputy intersection in getSystemAccountACL
 // still strips whatever the impersonating service itself is not permitted
@@ -301,7 +301,7 @@ func TestImpersonation_UniExactBindingIntersectsWithServiceACL(t *testing.T) {
 // token claim and an impersonated principal never carries the actor's original
 // token, so a group-derived grant here would attribute someone else's IdP
 // membership to the impersonating service. processImpersonatedPrincipalACL
-// resolves impersonated user principals against the UNI sentinel issuer with nil
+// resolves this impersonated user against its propagated UNI issuer with nil
 // groups.
 //
 // The binding below is constructed directly on the sentinel issuer, bypassing

@@ -46,6 +46,8 @@ or quota purposes, but may have no direct visibility of that resource.
 ## Invariants
 
 - `Principal` is the canonical delegated identity payload.
+- `Principal.Issuer` carries the issuer that authenticated `Actor`; actor identity is the
+  issuer-qualified pair, not the actor string alone.
 - `X-Principal` carries propagated principal identity across HTTP calls.
 - `X-Impersonate` is not just attribution metadata; it changes how downstream RBAC should resolve
   effective authority.
@@ -109,6 +111,18 @@ per-repo helper.
 - Impersonation is semantically sharp. Misusing it risks broadening authority instead of merely
   preserving attribution.
 - Older resources may lack the newer principal metadata, so transition-era gaps are possible.
+- `FromResource()` cannot currently restore `Principal.Issuer` because core defines no canonical
+  issuer metadata field. `ControllerInjector()` is attribution-only and does not set
+  `X-Impersonate`, so downstream authorization still uses the controller's mTLS identity. Durable
+  controller issuer propagation is a follow-up requiring coordinated core metadata and platform
+  specification changes; this package must not invent a service-local key.
+- Older `X-Principal` headers may omit `issuer`. The field uses `omitempty`, decodes as empty, and
+  remains accepted, but an empty issuer must not match a UNI-local global role binding.
+- **Roll the producers out first.** A service that still emits a header without `issuer` loses the
+  global role bindings of the user it impersonates, because identity refuses to read an absent
+  issuer as the UNI sentinel. The order is: upgrade every service that emits `X-Principal`, then
+  the identity release that consumes it. Deploying identity first denies platform administrators
+  through the services that have not upgraded yet.
 - The package reuses API-facing identity vocabulary from `pkg/openapi`, so it is intentionally
   coupled to the broader authn/authz model rather than being a fully isolated abstraction.
 
