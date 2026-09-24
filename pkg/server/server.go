@@ -130,7 +130,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.RBACOptions.AddFlags(flags)
 	s.CerbosOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
-	flags.StringVar(&s.ReadinessPolicyDirectory, "readiness-policy-directory", "", "Directory that must contain a projected policy file before the readiness endpoint succeeds.")
+	flags.StringVar(&s.ReadinessPolicyDirectory, "readiness-policy-directory", "", "Directory of the projected policy store. The readiness endpoint of the authorization profile succeeds only when this directory contains a .store-version marker with a known schema and state.")
 }
 
 func (s *Server) SetupLogging() {
