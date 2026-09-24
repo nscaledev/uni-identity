@@ -867,6 +867,46 @@ func (c *APIClient) DeleteUser(ctx context.Context, orgID, userID string) error 
 	return nil
 }
 
+// DeleteGlobalUser deletes a global user record.
+func (c *APIClient) DeleteGlobalUser(ctx context.Context, globalUserID string) error {
+	path := c.endpoints.DeleteGlobalUser(globalUserID)
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	resp, _, err := c.DoRequest(ctx, http.MethodDelete, path, nil, http.StatusOK)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return fmt.Errorf("global user %s: %w", globalUserID, coreclient.ErrResourceNotFound)
+		}
+
+		return fmt.Errorf("deleting global user: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteGlobalUserWithResponse deletes a global user record and returns the
+// generated response struct. DeleteGlobalUser collapses everything but
+// success into an error, so use this where a test needs the rejection itself:
+// the status code and the typed error body.
+func (c *APIClient) DeleteGlobalUserWithResponse(ctx context.Context, globalUserID string) (*identityopenapi.DeleteApiV1UsersGlobalUserIDResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := ids.ParseGlobalUserID(globalUserID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing global user ID %q: %w", globalUserID, err)
+	}
+
+	response, err := client.DeleteApiV1UsersGlobalUserIDWithResponse(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("deleting global user: %w", err)
+	}
+
+	return response, nil
+}
+
 // ListGlobalOauth2Providers lists platform-level OAuth2 providers (not scoped to an organization).
 func (c *APIClient) ListGlobalOauth2Providers(ctx context.Context) (identityopenapi.Oauth2Providers, error) {
 	path := c.endpoints.ListGlobalOauth2Providers()

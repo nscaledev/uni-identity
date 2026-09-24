@@ -68,6 +68,20 @@ func (v UserID) String() string                { return uuid.UUID(v).String() }
 func (v UserID) MarshalText() ([]byte, error)  { return uuid.UUID(v).MarshalText() }
 func (v *UserID) UnmarshalText(b []byte) error { return unmarshalUUID((*uuid.UUID)(v), b) }
 
+// GlobalUserID is a UUID-backed identifier for the global user record, the
+// account a person holds across every organization. It is a distinct named
+// type so the compiler prevents accidental interchange with UserID, which
+// identifies one organization membership of that account.
+// UnmarshalText delegates to uuid.UUID, so the oapi-codegen runtime rejects
+// non-UUID path parameter values before any handler is reached.
+//
+//nolint:recvcheck // UnmarshalText must be a pointer receiver; String/MarshalText are value receivers for fmt.Stringer compatibility.
+type GlobalUserID uuid.UUID
+
+func (v GlobalUserID) String() string                { return uuid.UUID(v).String() }
+func (v GlobalUserID) MarshalText() ([]byte, error)  { return uuid.UUID(v).MarshalText() }
+func (v *GlobalUserID) UnmarshalText(b []byte) error { return unmarshalUUID((*uuid.UUID)(v), b) }
+
 // GroupID is a UUID-backed identifier for groups. It is a distinct
 // named type so the compiler prevents accidental interchange with any other ID type.
 // UnmarshalText delegates to uuid.UUID, so the oapi-codegen runtime rejects
@@ -161,6 +175,17 @@ func ParseUserID(s string) (UserID, error) {
 	return UserID(id), nil
 }
 
+// ParseGlobalUserID parses s as a UUID into a GlobalUserID, returning
+// an error if s is not a valid UUID.
+func ParseGlobalUserID(s string) (GlobalUserID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return GlobalUserID{}, err
+	}
+
+	return GlobalUserID(id), nil
+}
+
 // ParseGroupID parses s as a UUID into a GroupID, returning
 // an error if s is not a valid UUID.
 func ParseGroupID(s string) (GroupID, error) {
@@ -213,6 +238,11 @@ func MustParseServiceAccountID(s string) ServiceAccountID { return ServiceAccoun
 // Panics if s is not a valid UUID; use only where s is guaranteed valid
 // (e.g. previously validated API path parameters).
 func MustParseUserID(s string) UserID { return UserID(uuid.MustParse(s)) }
+
+// MustParseGlobalUserID parses s as a UUID into a GlobalUserID.
+// Panics if s is not a valid UUID; use only where s is guaranteed valid
+// (e.g. previously validated API path parameters).
+func MustParseGlobalUserID(s string) GlobalUserID { return GlobalUserID(uuid.MustParse(s)) }
 
 // MustParseGroupID parses s as a UUID into a GroupID.
 // Panics if s is not a valid UUID; use only where s is guaranteed valid

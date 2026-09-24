@@ -53,16 +53,24 @@ type Client struct {
 	issuer common.IssuerValue
 	// client is the Kubernetes client.
 	client client.Client
+	// accountReader must be an uncached reader. Create finds the account
+	// for a subject, and the account's membership, through it. Through the
+	// cache, Create can reuse an account that GlobalClient.Delete removed,
+	// or miss a membership that a retried call wrote a moment ago.
+	accountReader client.Reader
 	// namespace is the namespace the identity service is running in.
 	namespace string
 }
 
 // New creates a new user client.
-func New(client client.Client, namespace string, issuer common.IssuerValue) *Client {
+// New creates a client for organization users. Pass the uncached Kubernetes
+// client as accountReader.
+func New(client client.Client, accountReader client.Reader, namespace string, issuer common.IssuerValue) *Client {
 	return &Client{
-		issuer:    issuer,
-		client:    client,
-		namespace: namespace,
+		issuer:        issuer,
+		client:        client,
+		accountReader: accountReader,
+		namespace:     namespace,
 	}
 }
 
@@ -320,6 +328,11 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 			State:    convertUserState(in.Spec.State),
 			GroupIDs: make(openapi.GroupIDs, 0, len(groups.Items)),
 		},
+		Status: openapi.UserStatus{
+			// The account, as distinct from Metadata.Id, which is this
+			// organization's membership of it.
+			GlobalUserId: user.Name,
+		},
 	}
 
 	var lastActive *metav1.Time
@@ -387,10 +400,18 @@ func (c *Client) getGlobalUserByID(ctx context.Context, id string) (*unikornv1.U
 	return user, nil
 }
 
+// getGlobalUser finds the account for subject through the uncached reader.
+// The spec.subject selectable field makes the API server return only that
+// account, not every account on the platform.
 func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	users := &unikornv1.UserList{}
 
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	options := []client.ListOption{
+		client.InNamespace(c.namespace),
+		client.MatchingFields{"spec.subject": subject},
+	}
+
+	if err := c.accountReader.List(ctx, users, options...); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
@@ -405,14 +426,25 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 	return &users.Items[index], nil
 }
 
-func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.UserWrite) (*unikornv1.User, error) {
-	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
-	if err == nil {
-		return user, nil
-	}
+// findGlobalUser returns the account for subject, or nil when there is none.
+func (c *Client) findGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+	user, err := c.getGlobalUser(ctx, subject)
 
-	if !goerrors.Is(err, ErrReference) {
-		return nil, fmt.Errorf("%w: failed to create global user", err)
+	switch {
+	case err == nil:
+		return user, nil
+	case goerrors.Is(err, ErrReference):
+		return nil, nil //nolint:nilnil // no account is a valid answer
+	default:
+		return nil, fmt.Errorf("%w: failed to find global user", err)
+	}
+}
+
+// getOrCreateGlobalUser returns existing, the account that Create found for
+// the subject, or creates the account when existing is nil.
+func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.UserWrite, existing *unikornv1.User) (*unikornv1.User, error) {
+	if existing != nil {
+		return existing, nil
 	}
 
 	resource, err := c.generateGlobalUser(ctx, request)
@@ -433,8 +465,11 @@ func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organiza
 		constants.UserLabel:         globalUserID,
 	})
 
+	// The uncached reader: a membership that a retried Create wrote a moment
+	// ago can be missing from the cache, and a second one would then be
+	// written.
 	result := &unikornv1.OrganizationUserList{}
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace, LabelSelector: selector}); err != nil {
+	if err := c.accountReader.List(ctx, result, &client.ListOptions{Namespace: organization.Namespace, LabelSelector: selector}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list organization users", err)
 	}
 
@@ -477,22 +512,19 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 // already have a user record and some of these memberships; those confer
 // nothing new and are skipped, exactly as on the update path.  A subject with
 // no records yet belongs to no group, so every requested group is an addition.
-func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, groups *unikornv1.GroupList) error {
-	// Nothing is being granted, so skip the lookups below: they cannot change
-	// the answer, and on this path they would only add ways to fail.
+func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, user *unikornv1.User, groups *unikornv1.GroupList) error {
+	// Nothing is being granted, so skip the lookup below: it cannot change
+	// the answer, and on this path it would only add a way to fail.
 	if len(request.Spec.GroupIDs) == 0 {
 		return nil
 	}
 
 	// Resolve what already exists without creating it.  Either record may be
 	// absent on a first-time create, which just means there is no prior
-	// membership to exempt.
+	// membership to exempt.  user is the account that Create found, or nil.
 	var orgUserID string
 
-	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
-
-	switch {
-	case err == nil:
+	if user != nil {
 		orgUser, err := c.getOrganizationUserByGlobalUserID(ctx, organization, user.Name)
 
 		switch {
@@ -502,9 +534,6 @@ func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization 
 		default:
 			return err
 		}
-	case goerrors.Is(err, ErrReference):
-	default:
-		return err
 	}
 
 	return c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, orgUserID, request.Spec.GroupIDs, groups)
@@ -530,15 +559,22 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
+	// Find the account once, and use the same answer for the grant check and
+	// for the write.
+	existing, err := c.findGlobalUser(ctx, request.Spec.Subject)
+	if err != nil {
+		return nil, err
+	}
+
 	// Settle the group grants before any record exists.  Writing the user
 	// first and refusing afterwards would leave a global user and an
 	// organization membership behind for an account the caller was told it
 	// could not create.
-	if err := c.validateCreateGroupAdditions(ctx, organization, request, groups); err != nil {
+	if err := c.validateCreateGroupAdditions(ctx, organization, request, existing, groups); err != nil {
 		return nil, err
 	}
 
-	user, err := c.getOrCreateGlobalUser(ctx, request)
+	user, err := c.getOrCreateGlobalUser(ctx, request, existing)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +689,9 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	return convert(updated, user, groups), nil
 }
 
-// Delete removes the user and revokes the access token.
+// Delete removes a user's membership of one organization and strips the group
+// entries that membership conferred. The global account survives, along with
+// the sessions it carries. GlobalClient.Delete removes the account.
 func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, userID string) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {

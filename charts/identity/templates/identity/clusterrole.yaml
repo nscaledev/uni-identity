@@ -39,6 +39,15 @@ rules:
   - patch
   - create
   - delete
+# The account delete reads the record through the uncached client, which is a
+# real API server call and needs the get verb.  The cached client does not,
+# because it serves reads from an informer backed by list and watch.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - users
+  verbs:
+  - get
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:

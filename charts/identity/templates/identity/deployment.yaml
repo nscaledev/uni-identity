@@ -186,7 +186,7 @@ spec:
           identity grant. Other write scopes stay allowed, unlike the
           wildcard guard above. No runtime read clamp applies.
           */}}
-          {{- $credentialScopes := list "identity:users" "identity:groups" "identity:roles" "identity:serviceaccounts" "identity:oauth2providers" }}
+          {{- $credentialScopes := list "identity:users" "identity:users/global" "identity:groups" "identity:roles" "identity:serviceaccounts" "identity:oauth2providers" }}
           {{- range $b.roles }}
             {{- $roleName := . }}
             {{- $role := index $allRoles $roleName }}

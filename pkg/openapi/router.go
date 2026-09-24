@@ -140,6 +140,9 @@ type ServerInterface interface {
 	// Update user
 	// (PUT /api/v1/organizations/{organizationID}/users/{userID})
 	PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter)
+	// Delete global user
+	// (DELETE /api/v1/users/{globalUserID})
+	DeleteApiV1UsersGlobalUserID(w http.ResponseWriter, r *http.Request, globalUserID GlobalUserIDParameter)
 	// Get the deployed service version
 	// (GET /api/version)
 	GetApiVersion(w http.ResponseWriter, r *http.Request)
@@ -404,6 +407,12 @@ func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.
 // Update user
 // (PUT /api/v1/organizations/{organizationID}/users/{userID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Delete global user
+// (DELETE /api/v1/users/{globalUserID})
+func (_ Unimplemented) DeleteApiV1UsersGlobalUserID(w http.ResponseWriter, r *http.Request, globalUserID GlobalUserIDParameter) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1915,6 +1924,37 @@ func (siw *ServerInterfaceWrapper) PutApiV1OrganizationsOrganizationIDUsersUserI
 	handler.ServeHTTP(w, r)
 }
 
+// DeleteApiV1UsersGlobalUserID operation middleware
+func (siw *ServerInterfaceWrapper) DeleteApiV1UsersGlobalUserID(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "globalUserID" -------------
+	var globalUserID GlobalUserIDParameter
+
+	err = runtime.BindStyledParameterWithOptions("simple", "globalUserID", chi.URLParam(r, "globalUserID"), &globalUserID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "globalUserID", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, Oauth2AuthenticationScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteApiV1UsersGlobalUserID(w, r, globalUserID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetApiVersion operation middleware
 func (siw *ServerInterfaceWrapper) GetApiVersion(w http.ResponseWriter, r *http.Request) {
 
@@ -2285,6 +2325,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/api/v1/organizations/{organizationID}/users/{userID}", wrapper.PutApiV1OrganizationsOrganizationIDUsersUserID)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/v1/users/{globalUserID}", wrapper.DeleteApiV1UsersGlobalUserID)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/version", wrapper.GetApiVersion)

@@ -40,3 +40,12 @@ func ResolveGlobalRoleBindingsForTest(bindings []GlobalRoleBinding, srcIss, subj
 
 	return r.resolveGlobalRoleBindings(srcIss, subject)
 }
+
+// HasGlobalSubjectBindingForTest exports RBAC.HasGlobalSubjectBinding over a
+// literal binding list, for external tests in bindings_test.go
+// (package rbac_test).
+func HasGlobalSubjectBindingForTest(bindings []GlobalRoleBinding, subject string) bool {
+	r := &RBAC{bindings: bindings}
+
+	return r.HasGlobalSubjectBinding(subject)
+}
