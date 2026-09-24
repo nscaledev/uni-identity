@@ -36,8 +36,8 @@ package rbac_test
 
 import (
 	"context"
+	"crypto/rand"
 	goerrors "errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -788,7 +788,9 @@ func startParityCerbos(t *testing.T, policiesDir string) string {
 
 	configDir := filepath.Clean(filepath.Join(cwd, "..", "authz", "cerbos", "testdata", "config"))
 
-	name := fmt.Sprintf("cerbos-parity-test-%d", time.Now().UnixNano())
+	// The parity tests run in parallel, so the clock can give two containers
+	// the same name. A random suffix keeps each name unique.
+	name := "cerbos-parity-test-" + rand.Text()
 
 	// Registered before docker run so a partially created container never
 	// leaks; removal is idempotent.
