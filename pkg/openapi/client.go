@@ -246,6 +246,9 @@ type ClientInterface interface {
 
 	PutApiV1OrganizationsOrganizationIDUsersUserID(ctx context.Context, organizationID OrganizationIDParameter, userID UserIDParameter, body PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// DeleteApiV1UsersGlobalUserID request
+	DeleteApiV1UsersGlobalUserID(ctx context.Context, globalUserID GlobalUserIDParameter, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetApiVersion request
 	GetApiVersion(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -956,6 +959,18 @@ func (c *Client) PutApiV1OrganizationsOrganizationIDUsersUserIDWithBody(ctx cont
 
 func (c *Client) PutApiV1OrganizationsOrganizationIDUsersUserID(ctx context.Context, organizationID OrganizationIDParameter, userID UserIDParameter, body PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutApiV1OrganizationsOrganizationIDUsersUserIDRequest(c.Server, organizationID, userID, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteApiV1UsersGlobalUserID(ctx context.Context, globalUserID GlobalUserIDParameter, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteApiV1UsersGlobalUserIDRequest(c.Server, globalUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -2893,6 +2908,40 @@ func NewPutApiV1OrganizationsOrganizationIDUsersUserIDRequestWithBody(server str
 	return req, nil
 }
 
+// NewDeleteApiV1UsersGlobalUserIDRequest generates requests for DeleteApiV1UsersGlobalUserID
+func NewDeleteApiV1UsersGlobalUserIDRequest(server string, globalUserID GlobalUserIDParameter) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "globalUserID", runtime.ParamLocationPath, globalUserID)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/users/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetApiVersionRequest generates requests for GetApiVersion
 func NewGetApiVersionRequest(server string) (*http.Request, error) {
 	var err error
@@ -3386,6 +3435,9 @@ type ClientWithResponsesInterface interface {
 	PutApiV1OrganizationsOrganizationIDUsersUserIDWithBodyWithResponse(ctx context.Context, organizationID OrganizationIDParameter, userID UserIDParameter, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error)
 
 	PutApiV1OrganizationsOrganizationIDUsersUserIDWithResponse(ctx context.Context, organizationID OrganizationIDParameter, userID UserIDParameter, body PutApiV1OrganizationsOrganizationIDUsersUserIDJSONRequestBody, reqEditors ...RequestEditorFn) (*PutApiV1OrganizationsOrganizationIDUsersUserIDResponse, error)
+
+	// DeleteApiV1UsersGlobalUserIDWithResponse request
+	DeleteApiV1UsersGlobalUserIDWithResponse(ctx context.Context, globalUserID GlobalUserIDParameter, reqEditors ...RequestEditorFn) (*DeleteApiV1UsersGlobalUserIDResponse, error)
 
 	// GetApiVersionWithResponse request
 	GetApiVersionWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetApiVersionResponse, error)
@@ -4501,6 +4553,33 @@ func (r PutApiV1OrganizationsOrganizationIDUsersUserIDResponse) StatusCode() int
 	return 0
 }
 
+type DeleteApiV1UsersGlobalUserIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON401      *externalRef0.UnauthorizedResponse
+	JSON403      *externalRef0.ForbiddenResponse
+	JSON404      *externalRef0.NotFoundResponse
+	JSON409      *externalRef0.ConflictResponse
+	JSON422      *externalRef0.UnprocessableContentResponse
+	JSON500      *externalRef0.InternalServerErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteApiV1UsersGlobalUserIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteApiV1UsersGlobalUserIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetApiVersionResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -5200,6 +5279,15 @@ func (c *ClientWithResponses) PutApiV1OrganizationsOrganizationIDUsersUserIDWith
 		return nil, err
 	}
 	return ParsePutApiV1OrganizationsOrganizationIDUsersUserIDResponse(rsp)
+}
+
+// DeleteApiV1UsersGlobalUserIDWithResponse request returning *DeleteApiV1UsersGlobalUserIDResponse
+func (c *ClientWithResponses) DeleteApiV1UsersGlobalUserIDWithResponse(ctx context.Context, globalUserID GlobalUserIDParameter, reqEditors ...RequestEditorFn) (*DeleteApiV1UsersGlobalUserIDResponse, error) {
+	rsp, err := c.DeleteApiV1UsersGlobalUserID(ctx, globalUserID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteApiV1UsersGlobalUserIDResponse(rsp)
 }
 
 // GetApiVersionWithResponse request returning *GetApiVersionResponse
@@ -7472,6 +7560,67 @@ func ParsePutApiV1OrganizationsOrganizationIDUsersUserIDResponse(rsp *http.Respo
 			return nil, err
 		}
 		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest externalRef0.InternalServerErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteApiV1UsersGlobalUserIDResponse parses an HTTP response from a DeleteApiV1UsersGlobalUserIDWithResponse call
+func ParseDeleteApiV1UsersGlobalUserIDResponse(rsp *http.Response) (*DeleteApiV1UsersGlobalUserIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteApiV1UsersGlobalUserIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest externalRef0.UnauthorizedResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest externalRef0.ForbiddenResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest externalRef0.NotFoundResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest externalRef0.ConflictResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest externalRef0.UnprocessableContentResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse

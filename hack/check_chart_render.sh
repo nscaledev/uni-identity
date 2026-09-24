@@ -183,4 +183,14 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
 
+# The account delete scope is a credential scope too. A group binding must not
+# carry it, or an IdP group grant could delete accounts, which nothing
+# restores.
+account_deleter='{"account-deleter":{"description":"Account deleter","protected":true,"scopes":{"global":{"identity:users/global":["delete"]}}}}'
+if out=$(helm template test "$CHART" --set-json "additionalRoles=$account_deleter" \
+	--set-json 'globalGroupRoleBindings=[{"issuer":"https://staff.example.com/","group":"SRE","roles":["account-deleter"]}]' 2>&1 >/dev/null); then
+	die "expected render failure for a group binding with identity:users/global, but render succeeded"
+fi
+grep -qF -- "on credential scope \"identity:users/global\"" <<<"$out" || die "render failed, but not on the credential-scope guard: $out"
+
 echo "chart render checks OK"

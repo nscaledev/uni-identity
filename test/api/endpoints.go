@@ -119,6 +119,12 @@ func (e *Endpoints) GetUser(orgID, userID string) string {
 		url.PathEscape(orgID), url.PathEscape(userID))
 }
 
+// DeleteGlobalUser returns the endpoint for deleting a global user record.
+// The identifier is the account, from status.globalUserId, not a membership.
+func (e *Endpoints) DeleteGlobalUser(globalUserID string) string {
+	return fmt.Sprintf("/api/v1/users/%s", url.PathEscape(globalUserID))
+}
+
 // GetQuotas returns the endpoint for getting quotas for an organization.
 func (e *Endpoints) GetQuotas(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s/quotas",

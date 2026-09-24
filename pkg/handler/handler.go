@@ -872,7 +872,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDServiceaccountsServiceAcco
 }
 
 func (h *Handler) usersClient() *users.Client {
-	return users.New(h.client, h.namespace, h.options.Issuer)
+	return users.New(h.client, h.directclient, h.namespace, h.options.Issuer)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDUsers(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
@@ -921,6 +921,30 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.Respo
 	}
 
 	if err := h.usersClient().Delete(r.Context(), organizationID, userID.String()); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	h.setUncacheable(w)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) globalUsersClient() *users.GlobalClient {
+	// The uncached reader: a membership missed by a stale cache deletes an
+	// account that still has one.
+	return users.NewGlobal(h.directclient, h.namespace, h.rbac, h.oauth2)
+}
+
+func (h *Handler) DeleteApiV1UsersGlobalUserID(w http.ResponseWriter, r *http.Request, globalUserID openapi.GlobalUserIDParameter) {
+	// A scope of its own, not identity:users: global identity:users delete
+	// also removes members from any organization, and an account delete
+	// cannot be undone, so neither grant implies the other.
+	if err := rbac.AllowGlobalScope(r.Context(), "identity:users/global", openapi.Delete); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	if err := h.globalUsersClient().Delete(r.Context(), globalUserID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}

@@ -127,6 +127,17 @@ func seedingACL() *openapi.Acl {
 	return &openapi.Acl{Global: &global, Organizations: &organizations}
 }
 
+// userSubjectIndex stands in for the spec.subject selectable field on the
+// User CRD. users.Client.Create finds an account by that field.
+func userSubjectIndex(o client.Object) []string {
+	user, ok := o.(*unikornv1.User)
+	if !ok {
+		return nil
+	}
+
+	return []string{user.Spec.Subject}
+}
+
 func createUser(t *testing.T, c client.Client, id, subject string, groups []*unikornv1.Group) {
 	t.Helper()
 
@@ -139,7 +150,7 @@ func createUser(t *testing.T, c client.Client, id, subject string, groups []*uni
 		URL:      "https://identity.unikorn-cloud.org",
 		Hostname: "identity.unikorn-cloud.org",
 	}
-	userclient := users.New(c, testNamespace, iss)
+	userclient := users.New(c, c, testNamespace, iss)
 
 	// this is needed because deep in the bowels of request handling, it's consulted in
 	// order to set some Kubernetes object metadata.
@@ -204,7 +215,7 @@ func setupTestEnvironment(t *testing.T) (fixture, client.Client) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&unikornv1.User{}, "spec.subject", userSubjectIndex).Build()
 
 	createObjects := func(objs ...client.Object) {
 		t.Helper()
@@ -600,7 +611,7 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&unikornv1.User{}, "spec.subject", userSubjectIndex).Build()
 
 	createObjects := func(objs ...client.Object) {
 		t.Helper()

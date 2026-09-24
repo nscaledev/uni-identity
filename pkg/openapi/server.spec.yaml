@@ -276,6 +276,70 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+  /api/v1/users/{globalUserID}:
+    description: |-
+      Allows management of global user records.  A global user record is the
+      account a person holds across every organization.  Organization
+      membership of that account is managed under
+      /api/v1/organizations/{organizationID}/users.
+    parameters:
+    - $ref: '#/components/parameters/globalUserIDParameter'
+    delete:
+      x-hidden: true
+      description: |-
+        Delete a global user record and remove its session records.
+
+        The caller needs identity:users/global delete permission at global
+        scope.  This scope is separate from identity:users.  Impersonation
+        intersects the service's ACL with the end user's ACL, so an
+        impersonated call fails unless the end user holds that permission.
+        A service that calls on a user's behalf, such as org-service during
+        signup rollback, must use its own identity, not X-Impersonate: true.
+
+        The call checks two refusals, in this order.  It refuses with 422
+        when the account's subject holds a configured global role binding,
+        because that authority needs no membership and a delete would lock
+        the subject out.  A retry never changes this outcome.  It then
+        refuses with 409 while any organization lists the account as a
+        member.  Remove the memberships, then call again.
+
+        If another change reaches the account record during the delete, the
+        call reads the record again and tries again.  So a 409 means only
+        that memberships remain.  If the record changes on every attempt,
+        the call answers 500.  Retry with backoff.
+
+        A 404 with the description "the account does not exist" means that
+        the account is gone, and a retrying caller can treat it as success.
+        A 404 with another description does not mean that.  Pass the account
+        ID from status.globalUserId.  A membership ID also gives 404.
+
+        Session records are removed at once.  Identity refuses the account's
+        tokens as soon as its own resource cache observes the delete.
+        Services that cache tokens can accept them for a short time more.
+
+        This deletes an account.  It does not erase a person: the subject
+        remains in the creator and modifier annotations of resources in other
+        services.
+      summary: Delete global user
+      tags:
+      - Users
+      security:
+      - oauth2Authentication: []
+      responses:
+        '200':
+          description: Global user record and its session records removed.
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
+        '409':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/conflictResponse'
+        '422':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unprocessableContentResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
   /api/v1/organizations/{organizationID}:
     description: |-
       Allows management of organizations.  An organization may use ad hoc
@@ -1163,10 +1227,22 @@ components:
     userIDParameter:
       name: userID
       in: path
-      description: A user ID.
+      description: |-
+        The identifier of a user's membership of one organization, not of the
+        underlying account.  See globalUserID for the account.
       required: true
       schema:
         $ref: '#/components/schemas/userId'
+    globalUserIDParameter:
+      name: globalUserID
+      in: path
+      description: |-
+        The identifier of a global user record, the account shared by this
+        person's memberships in every organization.  See userID for a
+        membership of it.
+      required: true
+      schema:
+        $ref: '#/components/schemas/globalUserId'
     projectIDParameter:
       name: projectID
       in: path
@@ -1238,6 +1314,16 @@ components:
       type: string
       format: uuid
       x-go-type: identityids.UserID
+      x-go-type-import:
+        name: identityids
+        path: github.com/unikorn-cloud/identity/pkg/ids
+    globalUserId:
+      description: |-
+        The identifier of a global user record, the account a person holds
+        across every organization.
+      type: string
+      format: uuid
+      x-go-type: identityids.GlobalUserID
       x-go-type-import:
         name: identityids
         path: github.com/unikorn-cloud/identity/pkg/ids
@@ -2209,6 +2295,8 @@ components:
     userStatus:
       description: Additional user metadata.
       type: object
+      required:
+      - globalUserId
       properties:
         lastActive:
           description: |-
@@ -2216,6 +2304,13 @@ components:
             be completely accurate depending on performance constraints.
           type: string
           format: date-time
+        globalUserId:
+          description: |-
+            The identifier of the underlying account, shared by this person's
+            memberships in every organization.  This is distinct from
+            metadata.id, which identifies this organization's membership of
+            it.  The value is a UUID.
+          type: string
     userRead:
       description: A user read object.
       type: object
@@ -2994,6 +3089,7 @@ components:
               - 0aaba80d-67ef-4799-b6d9-59f37e2ce2ad
             status:
               lastAcive: 2025-01-12T10:49:13Z
+              globalUserId: 7fa9c1d2-3b44-4e88-9b31-6d6a6a8c2b10
     userResponse:
       description: A user.
       content:
@@ -3015,6 +3111,7 @@ components:
               - 0aaba80d-67ef-4799-b6d9-59f37e2ce2ad
             status:
               lastAcive: 2025-01-12T10:49:13Z
+              globalUserId: 7fa9c1d2-3b44-4e88-9b31-6d6a6a8c2b10
     quotasResponse:
       description: Queries the quotas for an organizational unit.
       content:

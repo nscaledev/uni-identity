@@ -201,6 +201,26 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1Organizations
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteApiV1OrganizationsOrganizationIDWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).DeleteApiV1OrganizationsOrganizationIDWithResponse), varargs...)
 }
 
+// DeleteApiV1UsersGlobalUserIDWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) DeleteApiV1UsersGlobalUserIDWithResponse(arg0 context.Context, arg1 ids.GlobalUserID, arg2 ...openapi.RequestEditorFn) (*openapi.DeleteApiV1UsersGlobalUserIDResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1}
+	for _, a := range arg2 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DeleteApiV1UsersGlobalUserIDWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.DeleteApiV1UsersGlobalUserIDResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteApiV1UsersGlobalUserIDWithResponse indicates an expected call of DeleteApiV1UsersGlobalUserIDWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) DeleteApiV1UsersGlobalUserIDWithResponse(arg0, arg1 any, arg2 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1}, arg2...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteApiV1UsersGlobalUserIDWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).DeleteApiV1UsersGlobalUserIDWithResponse), varargs...)
+}
+
 // GetApiV1AclWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) GetApiV1AclWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetApiV1AclResponse, error) {
 	m.ctrl.T.Helper()
