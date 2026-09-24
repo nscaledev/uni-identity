@@ -1,7 +1,6 @@
 # `pkg/middleware/audit`
 
-This package emits request-level audit records for state-changing API operations and for reads a
- spec has explicitly marked sensitive.
+This package emits request-level audit records for state-changing API operations.
 
 ## Intent
 
@@ -19,12 +18,12 @@ That selectivity is deliberate for two reasons:
 
 Its main responsibilities are:
 
-- log write-like API activity, and reads an OpenAPI spec marks with `x-unikorn-audit: sensitive`
+- log authenticated, scoped, state-mutating API activity
 - attach actor, component, scope, resource, operation, result, and authorization-decision
   information
 - rely on the normalized authorization context built earlier in the middleware stack
 
-## Decisions and the sensitive-read marker
+## Decisions and resource identification
 
 Two gaps in the original selective design were closed together, since both are about completing
  what an audit record can prove rather than changing which requests are logged for their own sake:
@@ -37,10 +36,10 @@ Two gaps in the original selective design were closed together, since both are a
   Once the handler returns, the middleware reads the accumulator back
   (`rbac.DecisionsFromContext`) and attaches it to the record as the `decisions` field — converted
   to this package's own `Decision` DTO, matching `Resource`/`Operation`/etc. in `types.go`, so the
-  record's on-wire shape stays decoupled from `pkg/rbac`'s internal type. Seeding is unconditional
-  (every request gets an accumulator) because whether a request will end up logged is only known
-  after the handler runs; a request that turns out to be skipped simply discards its accumulator
-  with the rest of its context. See [`pkg/rbac`](../../rbac/README.md#the-decision-stash) for the
+  record's on-wire shape stays decoupled from `pkg/rbac`'s internal type. A read or preflight method returns before
+  seeding, because the method alone decides that those are never logged. Every other request is
+  seeded unconditionally, since whether it ends up logged is only known after the handler runs, and
+  one that turns out to be skipped simply discards its accumulator with the rest of its context. See [`pkg/rbac`](../../rbac/README.md#the-decision-stash) for the
   accumulator itself and why its outcome vocabulary is not a verbatim reuse of the PDP decision
   log's classifier.
 - **Resource identification no longer guesses from the URL.** The original design
@@ -61,20 +60,13 @@ Two gaps in the original selective design were closed together, since both are a
   to the path if the body carries none. A body-less action like rotate (`x-no-body`, no
   `requestBody`) is therefore never mistaken for a create regardless of what its response body
   contains — only the presence of a request body on a collection route decides that branch, never
-  response-body shape. This also means a **sensitive** read is not implicitly covered by the blanket
-  GET skip: a GET whose OpenAPI operation carries the `x-unikorn-audit: sensitive` extension —
-  console URLs, credentials/kubeconfig, SSH keys are the motivating examples — is logged exactly like
-  a mutation instead of being skipped; every other GET is skipped exactly as before. The marker is
-  declarative and central: each consumer annotates its own sensitive operations in its own OpenAPI
-  spec, and this middleware only has to look for the one extension key
-  (`route.Route.Operation.Extensions["x-unikorn-audit"]`, read via the route resolver already in
-  context). The same last-path-parameter derivation resolves the id for a marked sensitive read,
-  since these are typically sub-resource GETs (e.g. `.../{id}/kubeconfig`).
+  response-body shape.
 
 ## Invariants
 
 - Audit logging depends on trusted authorization context already being present.
-- The package is focused on mutating operations and spec-marked sensitive reads, not routine reads.
+- `GET`, `HEAD`, and `OPTIONS` requests are never audit logged.
+- The package is focused on mutating operations, not reads or preflight requests.
 - Resource identification is authoritative, not heuristic: the type comes from the authorization
   decision the handler already made (`rbac.DecisionsFromContext`), and the id from the request
   itself — the response body's canonical metadata for a create, the last path parameter for every
@@ -100,9 +92,6 @@ Two gaps in the original selective design were closed together, since both are a
   built now (YAGNI), since no such route exists today.
 - If upstream middleware fails to populate authorization or route context correctly, audit quality
   degrades silently.
-- The `x-unikorn-audit: sensitive` mechanism is delivered here, but no operation in this repo's own
-  spec is annotated with it yet; per-service annotation (e.g. compute's console/SSH-key reads,
-  kubernetes' kubeconfig read) is a follow-up for those repos, not delivered by this package.
 
 ## Related Documentation
 

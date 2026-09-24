@@ -104,7 +104,9 @@ deployment time.
   the `intersection(user, service)` a direct-user check resolves against — under-provisioning
   would deny legitimate users. `region-service` accordingly now grants the full `region:*` set,
   and `compute-service` grants the `compute:*` superset of what `administrator`/`user` hold
-  (`compute:regions`/`flavors`/`images` read, `compute:instances`/`clusters` full CRUD).
+  (`compute:regions`/`flavors`/`images` read, `compute:instances`/`clusters` full CRUD). The
+  `TestRegionServiceDirectUserSuperset` contract derives every Region permission exposed by a
+  direct-user built-in role from the chart and requires `region-service` to contain it globally.
 
 ### User-facing roles
 
@@ -490,7 +492,7 @@ IDs for project scope, resource ID always the coarse `*`).
   middleware when its authorizer implements `DecisionEngineProvider`) AND that engine's mode for the
   endpoint (`Options.AuthorizationEngine`, the identity server's `--authorization-engine` flag,
   default `legacy`) is `cerbos` — either globally, or for that endpoint alone via the
-  strangle-by-kind cutover switch. Contexts without an engine — every downstream service (they never
+  strangle-by-kind cutover below. Contexts without an engine — every downstream service (they never
   construct an `RBAC`), `NewSuperContext`, and every ACL-only test context — always take the legacy
   path by construction. That absence-default is the migration's compatibility contract.
 - **Shadow mode (`--authorization-engine=shadow`, `shadow.go`)** evaluates BOTH paths synchronously
@@ -518,7 +520,8 @@ IDs for project scope, resource ID always the coarse `*`).
   replaces the earlier empty PDP echo: the PDP only echoes the *requested* policy version/scope,
   which identity's version-less coarse checks leave unset, so that echo carried no signal.
 
-  Exclusions: `AllowProjectScopeCreate`/`AllowRole` are never shadowed (see below). **Impersonated
+  Exclusions: `AllowRole` is never shadowed (see below). `AllowProjectScopeCreate` is, as of the
+  per-kind cutover, with the limit described under its own heading. **Impersonated
   requests are compared too**: the legacy intersection verdict against the AND-ed dual-check verdict
   — both single booleans, so the comparator needed no structural change (an impersonated shadow
   evaluation costs two PDP calls). Costs: shadow is an opt-in validation phase, not steady state —
@@ -544,9 +547,33 @@ IDs for project scope, resource ID always the coarse `*`).
   impersonation marker, and a non-empty actor); an invalid impersonated principal TYPE — System,
   unknown or empty — fails closed with `ErrImpersonationNotSupported`, mirroring the legacy
   `ErrInvalidPrincipalType` hard error rather than falling back to the legacy path.
-- **`AllowProjectScopeCreate` and `AllowRole` stay legacy-only, nested checks included**: Create's
-  live project-existence orchestration moves to Cerbos as a deferred follow-up, and `AllowRole`'s
-  grantability walk stays thin-Go by design. The grantability cross-parity test proved that safe:
+- **`AllowProjectScopeCreate` uses an authoritative engine when one is selected, while `AllowRole`
+  stays legacy-only.** Create sends the same coarse project resource as `AllowProjectScope`, then,
+  only after an allow, verifies the body-supplied organization/project pair through identity's live
+  project API. A remote deny or outage and a local Cerbos deny or outage return immediately with no
+  legacy fallback. Remote `off`, local legacy, and contexts without an engine retain the legacy ACL
+  behavior and its existing project-validation shortcuts.
+  Both shadow modes serve that same legacy verdict and run the candidate engine alongside it, exactly
+  like an ordinary coarse check (`TestShadowProjectScopeCreateIsCompared`,
+  `TestRemoteShadowProjectScopeCreateIsCompared`), so a create that the two engines decide
+  differently is visible before the flip.
+  **The divergence signal does not cover the validation change**, and that is the sharp edge of this
+  path. A shadow create takes its `validateProject` decision from the legacy walk, so shadow never
+  performs the project-existence GET, and the comparators compare allow against deny and nothing
+  else. Soaking to zero divergence therefore says nothing about what the flip changes here.
+  What the flip changes: an engine verdict does not report the granting scope, so every authoritative
+  create validates the body-supplied project live, where legacy skipped that call in two cases. A
+  global-scope caller was trusted outright, and a caller allowed by an explicit project ACL needed no
+  check because ACL presence already proved existence. After the flip both pay the call, so any
+  caller whose service account cannot read `identity:projects` starts failing creates that worked
+  before. The chart's built-in `user` and `reader` roles hold that permission at project scope, but
+  roles are open-vocabulary, so an out-of-repo role granting a create without it is affected too.
+  Creates also gain a hard per-request dependency on identity's project API, uncached and unretried,
+  which a partition or a blip now turns into a failed create.
+  The decision accumulator records
+  that authorization result before validation, so a later invalid ID, missing project, or identity API
+  failure does not rewrite an allow as a policy denial. `AllowRole`'s grantability walk stays thin-Go
+  by design. The grantability cross-parity test proved that safe:
   `TestGrantabilityCrossParity` (integration) shows the generated Cerbos policy grants every role —
   the built-in nine and the out-of-repo open-vocabulary shapes — exactly its declared scopes, so the
   thin-Go grant-guard and Cerbos enforcement provably agree and `AllowRole` need not dispatch to the
@@ -845,6 +872,47 @@ Two supporting CI units guard the gate's integrity (both documented in
   ~1m ConfigMap propagation), so a transient divergence window is expected and correct there —
   which is exactly why it must never run before the gate.
 
+### The strangle-by-kind cutover
+
+`--authorization-engine` is a single GLOBAL switch: it makes one engine serve every `Allow*`
+decision. The cutover adds a **per-kind override** on top so Cerbos can be made authoritative one
+endpoint at a time, without flipping the whole service. `--cerbos-authoritative-kinds`
+(`Options.CerbosAuthoritativeKinds`, the chart's `identity.cerbosAuthoritativeKinds`) is the
+**cutover set**: the endpoint kinds (e.g. `identity:groups`) for which Cerbos is authoritative
+*regardless of the global baseline*.
+
+- **`modeForKind` is the switch** (`engine.go`). It specialises `mode()` per kind: a kind in
+  the cutover set resolves to `cerbos` even when the global mode is `legacy` or `shadow`; every
+  other kind follows the global mode. Both dispatch (`engineForDispatch`) and the shadow gate
+  (`engineForShadow`) consult `modeForKind(endpoint)` rather than `mode()`, so the engine
+  decision is taken per endpoint. Matching is **exact-string** on the endpoint — one endpoint
+  is strangled at a time (no wildcards in M1). A value that does not exactly match an endpoint
+  is a silent no-op leaving the kind on the baseline (fail-open in the safe direction — legacy
+  still enforces — but with no per-request signal); entries are whitespace-trimmed, and the
+  effective set is logged once at startup (`cerbos authoritative (cutover) kinds configured`) so
+  an operator can confirm the flip matches intent.
+- **A cut-over kind is Cerbos-authoritative.** It takes the existing cerbos branch
+  (`allowCoarse` → `Check`), so the PDP verdict is the SERVED verdict. There is **no legacy
+  fallback** and it is **not shadow-compared** (its `modeForKind` is cerbos, so `engineForShadow`
+  returns nil for it — a cut-over kind is authoritative-served, never both). Crucially it is
+  **fail-closed**: the kind hard-depends on the PDP, so a Cerbos outage is a deny for that kind
+  (`ErrDecisionUnavailable`), never a quiet fall back to the legacy ACL walk. That fail-closed
+  hard-dependency is the load-bearing safety property of an authoritative cutover.
+- **Empty by default = zero behaviour change.** With no kind cut over, `modeForKind == mode()` for
+  every kind, so dispatch is byte-identical to the pre-cutover global behaviour. Downstream services
+  and every ACL-only test never set the option, so they are unaffected by construction (the same
+  absence-default the whole migration rests on).
+- **Config-only rollback.** Removing a kind from the set reverts it to the global mode — no code
+  change. This is the escape hatch if a cut-over kind misbehaves in production.
+- **Mechanism now, flip deferred.** This is the cutover MECHANISM only. WHICH kinds are cut over,
+  and WHEN, is an operations config change, gated on the shadow soak (the divergence gate above)
+  showing zero verdict divergence for that kind — not decided in this code, which ships with an
+  empty default.
+- **Legacy code stays until retirement.** The cutover does not remove the legacy ACL walk (nor
+  `AllowRole`): it is retained to serve
+  every not-yet-cut-over kind and the shadow comparison. Removing it is the later legacy-path
+  retirement.
+
 ### The coarse-decision cache
 
 Cerbos-mode `Allow*` dispatch memoizes coarse verdicts so repeated identical checks (the per-item
@@ -899,7 +967,7 @@ shadow divergence coverage and remote decisions are uncached by construction.
 ## The decision stash
 
 `decision_stash.go` is a request-scoped accumulator of `Allow*` outcomes, seeded by
-[`pkg/middleware/audit`](../middleware/audit/README.md#decisions-and-the-sensitive-read-marker)
+[`pkg/middleware/audit`](../middleware/audit/README.md#decisions-and-resource-identification)
 before it calls the handler chain and read back once the handler returns, so the audit record can
 carry the resources a request actually referenced and the authorization verdict on each — closing
 the front-door-audit gap where the record previously carried neither. It is engine-independent: it
@@ -917,11 +985,9 @@ authoritative `ResourceKind`, not a URL guess — not only to populate the `deci
   than decorating every call site: `dispatchCoarse` is the single dispatch point behind
   `AllowGlobalScope`, `AllowOrganizationScope` and `AllowProjectScope` — and therefore their `…ID`/
   `…Reader` delegates too — so one append there covers all three scope-check families without
-  duplicating the call at every wrapper. `AllowProjectScopeCreate` is hooked separately since it
-  deliberately never calls `dispatchCoarse` (its live project-existence orchestration is entangled
-  with legacy ACL structure — see its own `NOTE`). Both are thin wrappers around an `…Impl` function
-  carrying the original, unchanged logic verbatim: a plain local variable captures the result, not a
-  named return plus `defer` (the repository's `nonamedreturns` lint rule forbids the latter).
+  duplicating the call at every wrapper. `AllowProjectScopeCreate` is hooked separately so it records
+  the selected authorization verdict before any live project validation. Validation errors remain the
+  function's return value but do not alter the accumulated policy decision.
   **`AllowRole` is deliberately not hooked**: it is a role-*grantability* meta-check over a whole
   role's scope set (many endpoint/operation pairs, evaluated via the legacy walk directly — see its
   own docs above), not a single check against one referenced resource, so it does not fit this

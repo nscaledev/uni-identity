@@ -43,9 +43,8 @@ import (
 // accumulator seed-then-read, resource derivation from the authorization
 // decision's authoritative ResourceKind plus the request's last path
 // parameter (with the create-vs-action POST distinction that replaces the
-// old URL-guessing heuristic), and the x-unikorn-audit sensitive-read marker
-// — while proving the pre-existing skips (routine reads, no auth info) are
-// untouched.
+// old URL-guessing heuristic), while proving read/preflight methods and
+// requests with no auth info are skipped.
 
 const (
 	testOrganizationID = "11111111-1111-1111-1111-111111111111"
@@ -409,86 +408,47 @@ func TestMiddlewareLiteralTerminatedPathResourceID(t *testing.T) {
 	require.Equal(t, testOrganizationID, resource.ID, "a PUT is never a create, so the response body (however shaped) must not be consulted")
 }
 
-// TestMiddlewareEmitsForMarkedSensitiveRead proves the x-unikorn-audit
-// sensitive-read marker: a GET whose operation carries the extension is no
-// longer blanket-skipped, and is logged like a mutation, with its resource
-// type still the authoritative decision kind (not the URL segment
-// "clusters") and its id the last path parameter.
-func TestMiddlewareEmitsForMarkedSensitiveRead(t *testing.T) {
+// TestMiddlewareNeverAuditsReadOrPreflightMethods pins the normative audit
+// contract, including that route extensions cannot opt a GET back in.
+func TestMiddlewareNeverAuditsReadOrPreflightMethods(t *testing.T) {
 	t.Parallel()
 
-	route := &routers.Route{
-		Path:   "/api/v1/organizations/{organizationID}/projects/{projectID}/clusters/{clusterID}/kubeconfig",
-		Method: http.MethodGet,
-		Operation: &openapi3.Operation{
-			Extensions: map[string]any{"x-unikorn-audit": "sensitive"},
-		},
+	for _, test := range []struct {
+		name      string
+		method    string
+		extension map[string]any
+	}{
+		{name: "GET even when marked sensitive", method: http.MethodGet, extension: map[string]any{"x-unikorn-audit": "sensitive"}},
+		{name: "HEAD", method: http.MethodHead},
+		{name: "OPTIONS", method: http.MethodOptions},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			route := &routers.Route{
+				Path:      "/api/v1/organizations/{organizationID}/projects/{projectID}/clusters/{clusterID}",
+				Method:    test.method,
+				Operation: &openapi3.Operation{Extensions: test.extension},
+			}
+			capture := &logCapture{}
+			r := newRequest(t, test.method, route, clusterParams(), capture)
+			orgID := organizationUUID(t)
+
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.NoError(t, rbac.AllowOrganizationScopeID(r.Context(), "compute:clusters", openapi.Read, orgID))
+				w.WriteHeader(http.StatusOK)
+			})
+
+			audit.New("test", "v1").Middleware(next).ServeHTTP(httptest.NewRecorder(), r)
+
+			require.Empty(t, capture.auditRecords(), "%s must never be audit logged", test.method)
+		})
 	}
-
-	capture := &logCapture{}
-	r := newRequest(t, http.MethodGet, route, clusterParams(), capture)
-	orgID := organizationUUID(t)
-
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.NoError(t, rbac.AllowOrganizationScopeID(r.Context(), "compute:clusters", openapi.Read, orgID))
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"kubeconfig":"redacted"}`))
-	})
-
-	audit.New("test", "v1").Middleware(next).ServeHTTP(httptest.NewRecorder(), r)
-
-	records := capture.auditRecords()
-	require.Len(t, records, 1, "a marked sensitive read must now be logged, not skipped")
-
-	fields := attrs(t, records[0])
-
-	resource, ok := fields["resource"].(*audit.Resource)
-	require.True(t, ok)
-	require.Equal(t, "compute:clusters", resource.Type)
-	require.Equal(t, testClusterID, resource.ID)
-
-	decisions, ok := fields["decisions"].([]audit.Decision)
-	require.True(t, ok)
-	require.Equal(t, []audit.Decision{
-		{ResourceKind: "compute:clusters", Action: "read", Decision: "allow", Reason: "policy"},
-	}, decisions)
-}
-
-// TestMiddlewareSkipsRoutineRead proves the existing selectivity is
-// untouched: a GET whose operation carries no x-unikorn-audit extension is
-// still skipped exactly as before.
-func TestMiddlewareSkipsRoutineRead(t *testing.T) {
-	t.Parallel()
-
-	route := &routers.Route{
-		Path:      "/api/v1/organizations/{organizationID}/projects/{projectID}/clusters/{clusterID}",
-		Method:    http.MethodGet,
-		Operation: &openapi3.Operation{},
-	}
-
-	capture := &logCapture{}
-	r := newRequest(t, http.MethodGet, route, clusterParams(), capture)
-	orgID := organizationUUID(t)
-
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.NoError(t, rbac.AllowOrganizationScopeID(r.Context(), "compute:clusters", openapi.Read, orgID))
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"metadata":{"id":"` + testClusterID + `"}}`))
-	})
-
-	audit.New("test", "v1").Middleware(next).ServeHTTP(httptest.NewRecorder(), r)
-
-	require.Empty(t, capture.auditRecords(), "an unmarked routine read must still be skipped")
 }
 
 // TestMiddlewareSkipsWithNoAuthInfo is a regression check on the existing
-// "no accountability" skip: a request with no authorization.Info in context
-// is still silently skipped, for a mutation and for a marked sensitive read
-// alike. This is the one genuine skip the reordering in handle() (route
-// resolution moved ahead of the GET check, to consult isSensitiveRead) could
-// plausibly have disturbed.
+// "no accountability" skip: a mutation with no authorization.Info in context
+// is still silently skipped.
 func TestMiddlewareSkipsWithNoAuthInfo(t *testing.T) {
 	t.Parallel()
 
@@ -503,49 +463,21 @@ func TestMiddlewareSkipsWithNoAuthInfo(t *testing.T) {
 		return httptest.NewRequest(method, "/test", nil).WithContext(ctx)
 	}
 
-	t.Run("a mutation with no auth info is skipped", func(t *testing.T) {
-		t.Parallel()
+	route := &routers.Route{
+		Path:      "/api/v1/organizations/{organizationID}/projects/{projectID}/clusters/{clusterID}",
+		Method:    http.MethodPut,
+		Operation: &openapi3.Operation{},
+	}
 
-		route := &routers.Route{
-			Path:      "/api/v1/organizations/{organizationID}/projects/{projectID}/clusters/{clusterID}",
-			Method:    http.MethodPut,
-			Operation: &openapi3.Operation{},
-		}
+	capture := &logCapture{}
+	r := newRequestWithoutAuthInfo(t, http.MethodPut, route, clusterParams(), capture)
 
-		capture := &logCapture{}
-		r := newRequestWithoutAuthInfo(t, http.MethodPut, route, clusterParams(), capture)
-
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"metadata":{"id":"` + testClusterID + `"}}`))
-		})
-
-		audit.New("test", "v1").Middleware(next).ServeHTTP(httptest.NewRecorder(), r)
-
-		require.Empty(t, capture.auditRecords(), "a mutation with no auth info must still be skipped")
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"metadata":{"id":"` + testClusterID + `"}}`))
 	})
 
-	t.Run("a marked sensitive read with no auth info is skipped", func(t *testing.T) {
-		t.Parallel()
+	audit.New("test", "v1").Middleware(next).ServeHTTP(httptest.NewRecorder(), r)
 
-		route := &routers.Route{
-			Path:   "/api/v1/organizations/{organizationID}/projects/{projectID}/clusters/{clusterID}/kubeconfig",
-			Method: http.MethodGet,
-			Operation: &openapi3.Operation{
-				Extensions: map[string]any{"x-unikorn-audit": "sensitive"},
-			},
-		}
-
-		capture := &logCapture{}
-		r := newRequestWithoutAuthInfo(t, http.MethodGet, route, clusterParams(), capture)
-
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"kubeconfig":"redacted"}`))
-		})
-
-		audit.New("test", "v1").Middleware(next).ServeHTTP(httptest.NewRecorder(), r)
-
-		require.Empty(t, capture.auditRecords(), "a marked sensitive read with no auth info must still be skipped")
-	})
+	require.Empty(t, capture.auditRecords(), "a mutation with no auth info must still be skipped")
 }

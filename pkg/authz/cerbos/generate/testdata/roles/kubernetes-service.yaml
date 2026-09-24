@@ -32,3 +32,15 @@ spec:
         operations: [read]
       - name: region:networks
         operations: [create, read, delete]
+      - name: kubernetes:regions
+        operations: [read]
+      - name: kubernetes:flavors
+        operations: [read]
+      - name: kubernetes:images
+        operations: [read]
+      - name: kubernetes:clustermanagers
+        operations: [create, read, update, delete]
+      - name: kubernetes:clusters
+        operations: [create, read, update, delete]
+      - name: kubernetes:virtualclusters
+        operations: [create, read, update, delete]
