@@ -94,8 +94,9 @@ and the account delete are two separate calls, not one atomic step. A membership
 gap between them points at an account that no longer exists. After that, listing that
 organization's users fails with 500, because `convertList` finds no account for the membership.
 The organization-scoped delete cannot remove that membership either, because it also looks up the
-account first. The writer that can hit this gap is a concurrent `Create` for the same subject,
-such as a signup retry. The package accepts the gap because it lasts milliseconds.
+account first. Two writers can hit this gap: a concurrent `Create` for the same subject, such as
+a signup retry, and the uni-auth0 member sync, which also creates memberships. The package accepts
+the gap because it lasts milliseconds. ID-532 and ID-533 track the fixes.
 
 `Client.Create` finds the account for a subject, and the account's membership, through the uncached
 client, `accountReader`, for the same reason. The cache can still hold an account after
