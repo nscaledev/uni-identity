@@ -389,9 +389,8 @@ func (r *Reconciler) compileCheck(ctx context.Context, data map[string]string) e
 // storeVersion renders the publication marker.  A consumer cannot otherwise
 // tell a deliberately withdrawn store from one that was never published: both
 // project as an empty directory.  The marker is what makes "the controller
-// published this state on purpose" observable.  No code reads it yet: it is
-// the input for a readiness gate that must serve a withdrawn store but not an
-// unpublished one.
+// published this state on purpose" observable, which is what the enclave's
+// readiness endpoint gates on (see pkg/server).
 //
 // It is deliberately minimal — a pure function of the publish decision — so
 // the desired ConfigMap data never depends on the observed data and

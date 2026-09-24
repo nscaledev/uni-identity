@@ -225,9 +225,9 @@ security invariant is "no PDP-visible policy", not "no ConfigMap key".
 
 The marker exists because a consumer cannot otherwise tell a deliberately
 withdrawn store from one that was never published: both project into the pod
-as an empty directory.  A readiness gate must admit the first and refuse the
-second.  No code in this repository reads the marker yet: it is the input for
-that gate, which the enclave authorization profile needs.  Without it,
+as an empty directory.  That distinction is load-bearing for the enclave
+authorization profile, whose readiness endpoint must admit the first and
+refuse the second — see [`pkg/server`](../../server/README.md).  Without it,
 gating on "are there policy files" makes a pod that starts during a withdrawal
 unready forever, so an eviction or a rollout in that window silently removes
 capacity.

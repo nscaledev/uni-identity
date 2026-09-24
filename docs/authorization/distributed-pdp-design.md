@@ -105,8 +105,8 @@ deck the global planes stay structurally distinct from enclaves, and cross-regio
 always routes through the centre.
 
 Because generation is local, the policy shape in an enclave always matches the request-building
-code in that same enclave. Both ship in one binary, so there is no cross-version bundle
-compatibility to manage. The residual is transient
+code in that same enclave. Both ship in one binary, guarded by the existing store-version check,
+so there is no cross-version bundle compatibility to manage. The residual is transient
 policy-behaviour skew between enclaves during a rollout. That is inherent to any distributed
 rollout, and section 7 makes it observable through the store version and hash.
 
