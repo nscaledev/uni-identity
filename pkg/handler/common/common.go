@@ -141,7 +141,7 @@ func Normalise(quota *unikornv1.Quota, metadata []unikornv1.QuotaMetadata) ([]un
 		}
 
 		if quantity == nil {
-			return nil, fmt.Errorf("%w: quota kind %s has no quantity", coreerrors.ErrConsistency, kind)
+			return nil, fmt.Errorf("%w: quota entry has no quantity", coreerrors.ErrConsistency)
 		}
 
 		copied := quantity.DeepCopy()

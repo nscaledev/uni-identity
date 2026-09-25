@@ -41,7 +41,7 @@ func sumAllocations(allocations []*unikornv1.Allocation) (map[string]usage, erro
 			resource := &allocation.Spec.Allocations[i]
 
 			if resource.Committed == nil || resource.Reserved == nil {
-				return nil, fmt.Errorf("%w: allocation %s kind %s has no quantity", coreerrors.ErrConsistency, allocation.Name, resource.Kind)
+				return nil, fmt.Errorf("%w: allocation entry has no quantity", coreerrors.ErrConsistency)
 			}
 
 			total := totals[resource.Kind]
@@ -76,11 +76,11 @@ func Convert(quotas []unikornv1.ResourceQuota, metadata []unikornv1.QuotaMetadat
 		meta := &metadata[index]
 
 		if quota.Quantity == nil {
-			return nil, fmt.Errorf("%w: quota kind %s has no quantity", coreerrors.ErrConsistency, quota.Kind)
+			return nil, fmt.Errorf("%w: quota entry has no quantity", coreerrors.ErrConsistency)
 		}
 
 		if meta.Spec.Default == nil {
-			return nil, fmt.Errorf("%w: quota metadata %s has no default", coreerrors.ErrConsistency, quota.Kind)
+			return nil, fmt.Errorf("%w: quota metadata has no default", coreerrors.ErrConsistency)
 		}
 
 		used := totals[quota.Kind].committed + totals[quota.Kind].reserved
