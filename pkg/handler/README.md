@@ -147,6 +147,12 @@ Examples include:
 So a recurring responsibility of the handler layer is manual cross-resource consistency
 maintenance.
 
+`quotas` and `allocations` read quota state through `common`. `common.Normalise` folds a stored
+Quota against the QuotaMetadata kinds and returns a fresh list. It never changes its inputs.
+`GetQuota` returns the normalised quota. `StoredQuota` returns the quota as stored, for a write
+that replaces it. `GetQuota` and `CheckQuotaConsistency` take the QuotaMetadata list as an
+argument. See [`pkg/handler/quotas`](quotas/README.md).
+
 ## Shared Caveat: Atomicity
 
 This layer is built on Kubernetes objects, not an ACID database.
