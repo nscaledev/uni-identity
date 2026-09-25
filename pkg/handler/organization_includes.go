@@ -248,9 +248,9 @@ func (h *Handler) includeOrganizationExtras(ctx context.Context, items []openapi
 	flags := parseIncludeFlags(include)
 
 	// Every ID comes from our own page and is a generated UUID.  A row that
-	// still fails to parse keeps its base fields and gets no extras, and it
-	// stays out of the selector: one invalid value fails the whole list.
-	parsed := make(map[string]ids.OrganizationID, len(items))
+	// still fails to parse keeps its base fields and gets no extras.  The
+	// selector leaves it out, because one invalid value fails the whole list.
+	parsed := make([]*ids.OrganizationID, len(items))
 	pageIDs := make([]string, 0, len(items))
 
 	for i := range items {
@@ -259,7 +259,7 @@ func (h *Handler) includeOrganizationExtras(ctx context.Context, items []openapi
 			continue
 		}
 
-		parsed[items[i].Metadata.Id] = organizationID
+		parsed[i] = &organizationID
 
 		pageIDs = append(pageIDs, items[i].Metadata.Id)
 	}
@@ -274,12 +274,11 @@ func (h *Handler) includeOrganizationExtras(ctx context.Context, items []openapi
 	}
 
 	for i := range items {
-		organizationID, ok := parsed[items[i].Metadata.Id]
-		if !ok {
+		if parsed[i] == nil {
 			continue
 		}
 
-		if err := applyExtras(ctx, &items[i], organizationID, extras, flags); err != nil {
+		if err := applyExtras(ctx, &items[i], *parsed[i], extras, flags); err != nil {
 			return err
 		}
 	}
