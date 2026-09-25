@@ -430,7 +430,7 @@ KIND_SUFFIX    := $(KIND_SUFFIX)
 KIND_NAMESPACE ?= unikorn-identity-$(KIND_SUFFIX)
 KIND_RELEASE   ?= identity-$(KIND_SUFFIX)
 
-# Optional second values file for integration-install, applied after test-values.yaml.
+# Optional second values file. integration-install applies it after test-values.yaml.
 INTEGRATION_EXTRA_VALUES ?=
 
 .PHONY: kind-cluster
