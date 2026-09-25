@@ -40,6 +40,11 @@ func (e *Endpoints) ListOrganizations() string {
 	return "/api/v1/organizations"
 }
 
+// ListOrganizationsV2 returns the endpoint for the paginated organization list.
+func (e *Endpoints) ListOrganizationsV2() string {
+	return "/api/v2/organizations"
+}
+
 // GetOrganization returns the endpoint for getting a specific organization.
 func (e *Endpoints) GetOrganization(orgID string) string {
 	return fmt.Sprintf("/api/v1/organizations/%s",

@@ -59,7 +59,7 @@ func sortsAfter(name, id, prevName, prevID string) bool {
 // seen in walk order and the number of pages it requested.  It also returns
 // whether the walk finished (the last page had no NextCursor) before it
 // reached maxPages.
-func walkOrganizationPages(ctx context.Context, client *api.APIClient, params *identityopenapi.GetApiV2OrganizationsParams, maxPages int) (items []identityopenapi.OrganizationRead, pages int, finished bool) {
+func walkOrganizationPages(ctx context.Context, client *api.APIClient, params *identityopenapi.GetApiV2OrganizationsParams, maxPages int) (items []identityopenapi.OrganizationListItem, pages int, finished bool) {
 	GinkgoHelper()
 
 	limit := params.Limit
@@ -351,6 +351,119 @@ var _ = Describe("Organization Discovery", func() {
 					Expect(resp.JSON200.Items).To(BeEmpty())
 				})
 			})
+
+			Describe("Given include with an ID lookup", func() {
+				It("should attach extras to an id lookup as well", func() {
+					lookup := identityopenapi.OrganizationListIDParameter{ids.MustParseOrganizationID(config.OrgID)}
+					include := &identityopenapi.OrganizationListIncludeParameter{string(identityopenapi.GetApiV2OrganizationsParamsIncludeQuotas), string(identityopenapi.GetApiV2OrganizationsParamsIncludeProjectsCount)}
+
+					resp, err := platformAdminClient().ListOrganizationsV2(ctx, &identityopenapi.GetApiV2OrganizationsParams{Id: &lookup, Include: include})
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+					Expect(resp.JSON200.Items).To(HaveLen(1))
+					Expect(resp.JSON200.Items[0].Metadata.Id).To(Equal(config.OrgID))
+					Expect(resp.JSON200.Items[0].Quotas).NotTo(BeNil())
+					Expect(resp.JSON200.Items[0].ProjectsCount).NotTo(BeNil())
+				})
+			})
+		})
+
+		Describe("Given every include value", func() {
+			include := &identityopenapi.OrganizationListIncludeParameter{string(identityopenapi.GetApiV2OrganizationsParamsIncludeQuotas), string(identityopenapi.GetApiV2OrganizationsParamsIncludeProjects), string(identityopenapi.GetApiV2OrganizationsParamsIncludeProjectsCount)}
+
+			rowFor := func(resp *identityopenapi.GetApiV2OrganizationsResponse, id string) *identityopenapi.OrganizationListItem {
+				for i := range resp.JSON200.Items {
+					if resp.JSON200.Items[i].Metadata.Id == id {
+						return &resp.JSON200.Items[i]
+					}
+				}
+
+				return nil
+			}
+
+			It("should return every extra for a global reader", func() {
+				resp, err := platformAdminClient().ListOrganizationsV2(ctx, &identityopenapi.GetApiV2OrganizationsParams{Name: &testOrgName, Include: include})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+
+				row := rowFor(resp, config.OrgID)
+				Expect(row).NotTo(BeNil())
+				Expect(row.Quotas).NotTo(BeNil())
+				Expect(*row.Quotas).NotTo(BeEmpty())
+				Expect(row.Projects).NotTo(BeNil())
+				Expect(*row.Projects).To(ContainElement(HaveField("Metadata.Id", config.ProjectID)))
+				Expect(row.ProjectsCount).To(HaveValue(Equal(len(*row.Projects))))
+			})
+
+			It("should match the v1 quota and project reads field for field", func() {
+				// Other specs create and delete projects.  Read both sides inside one
+				// Eventually, so an asynchronous deletion between the reads cannot
+				// cause a flake.
+				Eventually(func(g Gomega) {
+					resp, err := client.ListOrganizationsV2(ctx, &identityopenapi.GetApiV2OrganizationsParams{Include: include})
+
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+
+					row := rowFor(resp, config.OrgID)
+					g.Expect(row).NotTo(BeNil())
+
+					quotas, err := client.GetQuotas(ctx, config.OrgID)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(row.Quotas).To(HaveValue(Equal(quotas.Quotas)))
+
+					projects, err := client.ListProjects(ctx, config.OrgID)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(row.Projects).To(HaveValue(Equal(projects)))
+					g.Expect(row.ProjectsCount).To(HaveValue(Equal(len(projects))))
+				}).Should(Succeed())
+			})
+
+			It("should return no extras when include is absent", func() {
+				resp, err := client.ListOrganizationsV2(ctx, &identityopenapi.GetApiV2OrganizationsParams{Name: &testOrgName})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+				Expect(resp.JSON200.Items).To(ContainElement(HaveField("Metadata.Id", config.OrgID)))
+
+				for _, row := range resp.JSON200.Items {
+					Expect(row.Quotas).To(BeNil())
+					Expect(row.Projects).To(BeNil())
+					Expect(row.ProjectsCount).To(BeNil())
+				}
+			})
+
+			Describe("Given the fixture user", func() {
+				BeforeEach(func() {
+					if userClient == nil {
+						Skip("USER_AUTH_TOKEN is required for include testing")
+					}
+				})
+
+				It("should show only the projects its groups reach", func() {
+					resp, err := userClient.ListOrganizationsV2(ctx, &identityopenapi.GetApiV2OrganizationsParams{Include: include})
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+
+					row := rowFor(resp, config.OrgID)
+					Expect(row).NotTo(BeNil())
+					Expect(row.Quotas).NotTo(BeNil(), "the user role grants organization-scope quota read")
+					Expect(row.Projects).NotTo(BeNil())
+					Expect(*row.Projects).To(ContainElement(HaveField("Metadata.Id", config.ProjectID)))
+
+					// In parallel runs, other suites may add temporary projects to the
+					// user's group.  Every visible project must still be one that the
+					// user reaches.
+					for _, project := range *row.Projects {
+						Expect(project.Spec.GroupIDs).To(ContainElement(config.UserGroupID))
+					}
+
+					Expect(row.ProjectsCount).To(HaveValue(Equal(len(*row.Projects))))
+				})
+			})
 		})
 
 		Describe("Given invalid parameters", func() {
@@ -360,6 +473,25 @@ var _ = Describe("Organization Discovery", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode()).To(Equal(http.StatusBadRequest))
 				Expect(string(resp.Body)).To(ContainSubstring("invalid_request"))
+			})
+
+			It("should reject an unknown include value", func() {
+				resp, err := client.ListOrganizationsV2(ctx, &identityopenapi.GetApiV2OrganizationsParams{Include: &identityopenapi.OrganizationListIncludeParameter{"nonsense"}})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode()).To(Equal(http.StatusBadRequest))
+				Expect(string(resp.Body)).To(ContainSubstring("invalid_request"))
+			})
+
+			It("should reject a comma-separated include list", func() {
+				path := client.GetEndpoints().ListOrganizationsV2() + "?include=quotas,projects"
+
+				resp, respBody, err := client.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+
+				Expect(err).To(HaveOccurred())
+				Expect(errors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				Expect(string(respBody)).To(ContainSubstring("invalid_request"))
 			})
 
 			It("should reject a malformed cursor", func() {

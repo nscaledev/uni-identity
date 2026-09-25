@@ -24,6 +24,10 @@ Projects live inside the namespace currently associated with their parent organi
 This package therefore depends on the organization handler client for namespace resolution and then
 acts as the normal child-resource client beneath that tenancy root.
 
+Projects carry the organization ID as a label. The `v2` organization list
+selects an organization's projects by that label. The `v1` list reads the
+organization's namespace.
+
 ### Group Reference Validation
 
 Projects may reference groups through `spec.groupIDs`.

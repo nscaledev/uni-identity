@@ -1978,6 +1978,14 @@ func (siw *ServerInterfaceWrapper) GetApiV2Organizations(w http.ResponseWriter, 
 		return
 	}
 
+	// ------------- Optional query parameter "include" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "include", r.URL.Query(), &params.Include)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "include", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetApiV2Organizations(w, r, params)
 	}))

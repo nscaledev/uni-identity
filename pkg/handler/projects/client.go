@@ -54,7 +54,9 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func convert(in *unikornv1.Project) *openapi.ProjectRead {
+// Convert renders a project.  The GroupIDs slice aliases the input.  Do not
+// change it.
+func Convert(in *unikornv1.Project) *openapi.ProjectRead {
 	out := &openapi.ProjectRead{
 		Metadata: conversion.OrganizationScopedResourceReadMetadata(in, in.Spec.Tags),
 		Spec: openapi.ProjectSpec{
@@ -73,7 +75,7 @@ func convertList(in *unikornv1.ProjectList) openapi.Projects {
 	out := make(openapi.Projects, len(in.Items))
 
 	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
+		out[i] = *Convert(&in.Items[i])
 	}
 
 	return out
@@ -123,7 +125,7 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, pro
 		return nil, err
 	}
 
-	return convert(result), nil
+	return Convert(result), nil
 }
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ProjectWrite) (*unikornv1.Project, error) {
@@ -170,7 +172,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, fmt.Errorf("%w: failed to create project", err)
 	}
 
-	return convert(resource), nil
+	return Convert(resource), nil
 }
 
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID string, request *openapi.ProjectWrite) error {

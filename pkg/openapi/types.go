@@ -142,6 +142,13 @@ const (
 	Suspended UserState = "suspended"
 )
 
+// Defines values for GetApiV2OrganizationsParamsInclude.
+const (
+	GetApiV2OrganizationsParamsIncludeProjects      GetApiV2OrganizationsParamsInclude = "projects"
+	GetApiV2OrganizationsParamsIncludeProjectsCount GetApiV2OrganizationsParamsInclude = "projectsCount"
+	GetApiV2OrganizationsParamsIncludeQuotas        GetApiV2OrganizationsParamsInclude = "quotas"
+)
+
 // Acl A list of access control scopes and permissions.
 type Acl struct {
 	// Global A list of access control scopes.
@@ -473,10 +480,35 @@ type OpenidConfiguration struct {
 // OrganizationId An organization ID.
 type OrganizationId = identityids.OrganizationID
 
+// OrganizationListItem defines model for organizationListItem.
+type OrganizationListItem struct {
+	// Metadata Metadata required by all resource reads.
+	Metadata externalRef0.ResourceReadMetadata `json:"metadata"`
+
+	// Projects The organization's projects visible to the caller, in the same
+	// form as GET /api/v1/organizations/{id}/projects.  Present when
+	// requested and the caller can see projects in this organization.
+	// A caller with only project-scope read, whose projects no longer
+	// exist, sees no project, so the response omits this field.
+	Projects *Projects `json:"projects,omitempty"`
+
+	// ProjectsCount Number of the organization's projects visible to the caller.
+	// Present under the same rule as projects.
+	ProjectsCount *int `json:"projectsCount,omitempty"`
+
+	// Quotas The organization's quotas, as GET /api/v1/organizations/{id}/quotas
+	// returns them.  Present when requested and the caller has
+	// organization-scope read on identity:quotas.
+	Quotas *QuotaReadList `json:"quotas,omitempty"`
+
+	// Spec An organization.
+	Spec OrganizationSpec `json:"spec"`
+}
+
 // OrganizationPage One page of organizations.
 type OrganizationPage struct {
 	// Items A list of organizations.
-	Items Organizations `json:"items"`
+	Items []OrganizationListItem `json:"items"`
 
 	// Pagination Pagination state for one list page.
 	Pagination PaginationMetadata `json:"pagination"`
@@ -977,6 +1009,9 @@ type OrganizationListCursorParameter = string
 // OrganizationListIDParameter defines model for organizationListIDParameter.
 type OrganizationListIDParameter = []OrganizationId
 
+// OrganizationListIncludeParameter defines model for organizationListIncludeParameter.
+type OrganizationListIncludeParameter = []string
+
 // OrganizationListLimitParameter defines model for organizationListLimitParameter.
 type OrganizationListLimitParameter = int
 
@@ -1138,12 +1173,23 @@ type GetApiV2OrganizationsParams struct {
 	// The response contains each listed organization that the caller can
 	// see, in one page and in display-name order, as in the list.  The
 	// response omits IDs that the caller cannot see.  Do not use this
-	// parameter with any other parameter.
+	// parameter with any other parameter except include.
 	Id *OrganizationListIDParameter `form:"id,omitempty" json:"id,omitempty"`
 
 	// Email A user's email address.
 	Email *UserEmailParameter `form:"email,omitempty" json:"email,omitempty"`
+
+	// Include Extra data to return for each organization.  Repeat the parameter
+	// for each value (?include=quotas&include=projectsCount), as for id.
+	// The server returns 400 for a comma-separated list.  The server
+	// returns each value only where the caller can read it.  An
+	// organization that the caller cannot inspect keeps its base fields
+	// and omits the extra.
+	Include *OrganizationListIncludeParameter `form:"include,omitempty" json:"include,omitempty"`
 }
+
+// GetApiV2OrganizationsParamsInclude defines parameters for GetApiV2Organizations.
+type GetApiV2OrganizationsParamsInclude string
 
 // PostApiV1OrganizationsJSONRequestBody defines body for PostApiV1Organizations for application/json ContentType.
 type PostApiV1OrganizationsJSONRequestBody = OrganizationWrite

@@ -94,6 +94,35 @@ Handlers are responsible for the explicit boundary between:
 This is why most clients have `convert(...)`, `convertList(...)`, and `generate(...)` helpers. The
 external API model and the persisted storage model are related, but they are not the same thing.
 
+### Page Extras Live In The Composition Root
+
+`GET /api/v2/organizations?include=…` fills quotas, projects and a visible
+project count per row. The handler package owns that step in
+`organization_includes.go`. For each page, the step:
+
+1. Lists Quota, Allocation and Project resources once, without deep copies,
+   with a label `in` selector over the page's organization IDs.
+2. Groups the objects by organization.
+3. Applies the presence rule with the ACL already in context.
+
+Quotas need organization-scope `identity:quotas` read. Projects and the
+count need organization-scope `identity:projects` read, or at least one
+project that the caller can see through project-scope read. Otherwise the
+response omits the field. A caller with only project-scope read, whose
+projects in the organization no longer exist, sees no project, so the
+response omits the field. A data fault (two Quota objects, a nil quantity)
+fails the page with `500`.
+
+The step lives here because `quotas` and `projects` import `organizations`,
+so nothing may flow the other way. The pure pieces sit in the resource
+packages: `common.Normalise`, `quotas.Convert`, `projects.Convert`. The
+reads sit on `common.Client`: `ListForOrganizations` (no-deep-copy list by
+organization label) and `QuotaMetadata`.
+
+The informer cache shares three things with this step: the objects that the
+no-deep-copy lists return, the quantities inside them, and the `GroupIDs`
+slice that a project conversion aliases. Do not change them.
+
 ### Shared Metadata Discipline
 
 Handlers use the shared conversion and identity metadata helpers from `core` and local

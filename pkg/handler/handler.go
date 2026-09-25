@@ -47,6 +47,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
+	"k8s.io/utils/ptr"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -449,6 +451,11 @@ func (h *Handler) GetApiV2Organizations(w http.ResponseWriter, r *http.Request, 
 
 	result, err := organizations.New(h.client, h.namespace).ListPage(r.Context(), h.userdb, walk)
 	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	if err := h.includeOrganizationExtras(r.Context(), result.Items, ptr.Deref(params.Include, nil)); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
