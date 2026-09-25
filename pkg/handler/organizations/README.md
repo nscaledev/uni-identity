@@ -39,6 +39,7 @@ Organization reads on both branches skip deep copies. The global branch lists Or
 cached `Get` and the same option. The `OrganizationUser` list that resolves memberships still
 makes deep copies. `convert` copies every value it takes from those objects, including the
 pointer fields and the deletion time, so the returned list shares no memory with the cache.
+The handler package, not this package, fills the extras that `include` requests.
 
 ### Namespace Handoff To The Rest Of `v1`
 
@@ -87,6 +88,8 @@ to its present-day role.
   to the package's main tenancy-root and membership-resolution role.
 - Inside this package, organizations from either branch come from the cache without a copy.
   Treat them as read-only, and make a deep copy before any change.
+- With the include extras, a project-scope member whose projects are all deleted gets no
+  `projectsCount`. The row reads as not permitted, not as zero.
 
 ## TODO
 

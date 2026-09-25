@@ -67,6 +67,10 @@ off this resource" contract.
   importance of that routing pattern.
 - Group linkage here is intentionally existence-based validation only. The deeper authority meaning
   of those groups belongs to `pkg/rbac` and `pkg/handler/groups`.
+- The organization list counts `projectsCount` by the organization label, in all namespaces.
+  The per-organization list reads the namespace of the organization. Before the organization has
+  a namespace, that read uses an empty namespace, which means all namespaces. The two counts also
+  differ for an object whose label and namespace do not agree.
 
 ## TODO
 
