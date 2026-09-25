@@ -146,7 +146,9 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
 	}
 
-	current, virtual, err := common.GetQuota(ctx, organizationID, metadata)
+	// PUT replaces the stored list, so it reads the quota as stored.  A fault
+	// in the stored list does not block the write that repairs it.
+	current, virtual, err := common.StoredQuota(ctx, organizationID)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
 	}

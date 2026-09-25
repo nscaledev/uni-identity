@@ -32,8 +32,10 @@ Two pure functions render quota reads. `common.Normalise` folds the stored
 quota against the QuotaMetadata kinds. It adds defaults for missing kinds,
 drops retired kinds and copies every quantity. `Convert` sums committed and
 reserved usage per kind from allocations and sorts by kind. `GET` normalises.
-`PUT` renders the request's own list. The client reads QuotaMetadata once per
-request from the identity namespace, where the chart installs it.
+`PUT` reads the stored quota without normalising it, so it can replace a
+stored list that holds a fault. `PUT` renders the request's own list. The
+client reads QuotaMetadata once per request from the identity namespace,
+where the chart installs it.
 
 Without that metadata, the numeric values are not meaningfully usable.
 

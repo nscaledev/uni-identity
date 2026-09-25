@@ -149,10 +149,10 @@ func Normalise(quota *unikornv1.Quota, metadata []unikornv1.QuotaMetadata) ([]un
 	return out, nil
 }
 
-// GetQuota returns the organization's quota with its kinds normalised
-// against metadata.  The returned object keeps the stored ObjectMeta, so
-// callers can patch it.  The bool reports a virtual quota (none stored).
-func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID, metadata []unikornv1.QuotaMetadata) (*unikornv1.Quota, bool, error) {
+// StoredQuota returns the organization's quota as stored, without
+// normalisation.  The bool reports a virtual quota.  In that case nothing is
+// stored and the returned object is empty.
+func (c *Client) StoredQuota(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Quota, bool, error) {
 	selector, err := organizationSelector(organizationID.String())
 	if err != nil {
 		return nil, false, err
@@ -168,11 +168,20 @@ func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID
 		return nil, false, fmt.Errorf("%w: expected to find 1 organization quota", coreerrors.ErrConsistency)
 	}
 
-	quota := &unikornv1.Quota{}
-	virtual := len(resources.Items) == 0
+	if len(resources.Items) == 0 {
+		return &unikornv1.Quota{}, true, nil
+	}
 
-	if !virtual {
-		quota = &resources.Items[0]
+	return &resources.Items[0], false, nil
+}
+
+// GetQuota returns the organization's quota with its kinds normalised
+// against metadata.  The returned object keeps the stored ObjectMeta, so
+// callers can patch it.  The bool reports a virtual quota (none stored).
+func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID, metadata []unikornv1.QuotaMetadata) (*unikornv1.Quota, bool, error) {
+	quota, virtual, err := c.StoredQuota(ctx, organizationID)
+	if err != nil {
+		return nil, false, err
 	}
 
 	quotas, err := Normalise(quota, metadata)

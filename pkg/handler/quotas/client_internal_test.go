@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common/fixtures"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -86,4 +88,47 @@ func TestUpdateRendersRequestListAndGetNormalises(t *testing.T) {
 	require.Equal(t, 1, readAfterPatch.Quotas[0].Quantity)
 	require.Equal(t, "gpus", readAfterPatch.Quotas[1].Kind)
 	require.Equal(t, 6, readAfterPatch.Quotas[1].Quantity)
+}
+
+func TestUpdateReplacesStoredQuotaWithFault(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+
+	// A stored entry without a quantity is a data fault.  GET reports it.
+	stored := &unikornv1.Quota{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "org-a",
+			Name:      "b2222222-2222-4222-8222-222222222222",
+			Labels:    map[string]string{constants.OrganizationLabel: organizationID.String()},
+		},
+		Spec: unikornv1.QuotaSpec{Quotas: []unikornv1.ResourceQuota{{Kind: "gpus"}}},
+	}
+
+	gpus := meta("gpus")
+	gpus.Namespace = "identity"
+
+	c := New(fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, stored, &gpus).Build(), "identity")
+	ctx := fixtures.HandlerContextFixture(t.Context(), 0)
+
+	_, err := c.Get(ctx, organizationID)
+	require.ErrorIs(t, err, coreerrors.ErrConsistency)
+
+	// PUT replaces the faulty list.
+	written, err := c.Update(ctx, organizationID, &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 4}}})
+	require.NoError(t, err)
+	require.Equal(t, 4, written.Quotas[0].Quantity)
+
+	read, err := c.Get(ctx, organizationID)
+	require.NoError(t, err)
+	require.Len(t, read.Quotas, 1)
+	require.Equal(t, 4, read.Quotas[0].Quantity)
 }
