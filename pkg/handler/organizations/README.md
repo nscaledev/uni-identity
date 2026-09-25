@@ -37,8 +37,8 @@ visibility.
 Organization reads on both branches skip deep copies. The global branch lists Organizations with
 `UnsafeDisableDeepCopy`. The membership branch reads one organization per membership with a
 cached `Get` and the same option. The `OrganizationUser` list that resolves memberships still
-makes deep copies. The converted list points into those objects (`Spec.Domain`, `ProviderID`,
-`GoogleCustomerID`). Callers only marshal it and must not change it.
+makes deep copies. `convert` copies every value it takes from those objects, including the
+pointer fields and the deletion time, so the returned list shares no memory with the cache.
 
 ### Namespace Handoff To The Rest Of `v1`
 
@@ -85,8 +85,8 @@ to its present-day role.
   API shape.
 - Domain/provider-directed login behaviour remains supported, but it is a secondary path relative
   to the package's main tenancy-root and membership-resolution role.
-- Organizations from either branch come from the cache without a copy. Treat them as read-only,
-  and make a deep copy before any change.
+- Inside this package, organizations from either branch come from the cache without a copy.
+  Treat them as read-only, and make a deep copy before any change.
 
 ## TODO
 
