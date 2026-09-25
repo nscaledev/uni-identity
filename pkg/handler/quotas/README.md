@@ -57,6 +57,8 @@ reporting and dashboard problem.
 - quota reads are derived from stored quota values, quota metadata, and current allocation totals
 - quota updates must not reduce capacity below already committed plus reserved usage
 - `QuotaMetadata` is mandatory contextual data, not optional display garnish
+- a quota write that names a kind with no `QuotaMetadata` entry returns 400 before it stores
+  anything
 
 ## Caveats
 
