@@ -34,6 +34,12 @@ formatting hints, used, free, committed, and reserved totals.
 
 Without that metadata, the numeric values are not meaningfully usable.
 
+`Convert` in `convert.go` is the single rendering path. The per-organization GET renders the
+normalised quota list through it. The PUT response renders the written quota list through the
+same call. `Convert` reads quantities only with `Value()`.
+The `include=quotas` extra of the organization list renders the same bytes as the
+per-organization GET.
+
 ### Built-In Volume Capacity
 
 The Identity Helm chart registers `volume` as the quota kind for the total requested block storage
@@ -57,6 +63,9 @@ reporting and dashboard problem.
 - quota reads are derived from stored quota values, quota metadata, and current allocation totals
 - quota updates must not reduce capacity below already committed plus reserved usage
 - `QuotaMetadata` is mandatory contextual data, not optional display garnish
+- `quotas.Convert` returns a consistency error, not a crash, for a quota kind with no matching
+  `QuotaMetadata` entry or a nil quantity. `common.Normalise` drops a kind with no metadata as
+  retired, and returns a consistency error for a nil quantity.
 - a quota write that names a kind with no `QuotaMetadata` entry returns 400 before it stores
   anything
 
@@ -68,13 +77,13 @@ reporting and dashboard problem.
   allocation records.
 - This is one half of a small accounting subsystem built on Kubernetes objects rather than an ACID
   backing store.
+- `GetQuota` lists `QuotaMetadata` in all namespaces, and the render paths list it from the
+  identity namespace. The two agree because the chart installs `QuotaMetadata` only there.
 
 ## TODO
 
 - Add first-class project-level quota partitioning so organizations can reserve capacity internally
   without splitting into multiple organizations.
-- Fail cleanly when `QuotaMetadata` and stored quota entries drift, rather than assuming the
-  metadata catalogue is complete.
 
 ## Related Documentation
 

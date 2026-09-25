@@ -142,6 +142,12 @@ const (
 	Suspended UserState = "suspended"
 )
 
+// Defines values for GetApiV1OrganizationsParamsInclude.
+const (
+	ProjectsCount GetApiV1OrganizationsParamsInclude = "projectsCount"
+	Quotas        GetApiV1OrganizationsParamsInclude = "quotas"
+)
+
 // Acl A list of access control scopes and permissions.
 type Acl struct {
 	// Global A list of access control scopes.
@@ -477,6 +483,22 @@ type OrganizationId = identityids.OrganizationID
 type OrganizationRead struct {
 	// Metadata Metadata required by all resource reads.
 	Metadata externalRef0.ResourceReadMetadata `json:"metadata"`
+
+	// ProjectsCount The number of projects in the organization that the caller can
+	// see. Present only on the organization list, when include names
+	// projectsCount and the caller can see projects in this organization.
+	ProjectsCount *int `json:"projectsCount,omitempty"`
+
+	// Quotas The quotas of the organization, as GET
+	// /api/v1/organizations/{id}/quotas returns them. Present only on the
+	// organization list, when include names quotas and the caller has
+	// organization-scope read on identity:quotas.
+	Quotas *QuotaReadList `json:"quotas,omitempty"`
+
+	// QuotasError Present instead of quotas when include names quotas, the caller can
+	// read the quotas, and the quota data of the organization does not
+	// render. The value is a short generic reason.
+	QuotasError *string `json:"quotasError,omitempty"`
 
 	// Spec An organization.
 	Spec OrganizationSpec `json:"spec"`
@@ -953,6 +975,9 @@ type Oauth2ProvderIDParameter = Oauth2ProviderId
 // OrganizationIDParameter An organization ID.
 type OrganizationIDParameter = OrganizationId
 
+// OrganizationListIncludeParameter defines model for organizationListIncludeParameter.
+type OrganizationListIncludeParameter = []string
+
 // ProjectIDParameter A project ID.
 type ProjectIDParameter = ProjectId
 
@@ -1081,7 +1106,17 @@ type UserCreateRequest = UserWrite
 type GetApiV1OrganizationsParams struct {
 	// Email A user's email address.
 	Email *UserEmailParameter `form:"email,omitempty" json:"email,omitempty"`
+
+	// Include Extra data to return for each organization. Repeat the parameter for
+	// each value (?include=quotas&include=projectsCount). A comma-separated
+	// list returns 400. Each value appears only where the caller can read
+	// it. An organization that the caller cannot inspect keeps its base
+	// fields and omits the extra.
+	Include *OrganizationListIncludeParameter `form:"include,omitempty" json:"include,omitempty"`
 }
+
+// GetApiV1OrganizationsParamsInclude defines parameters for GetApiV1Organizations.
+type GetApiV1OrganizationsParamsInclude string
 
 // PostApiV1OrganizationsJSONRequestBody defines body for PostApiV1Organizations for application/json ContentType.
 type PostApiV1OrganizationsJSONRequestBody = OrganizationWrite

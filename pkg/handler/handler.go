@@ -47,6 +47,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
+	"k8s.io/utils/ptr"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -422,6 +424,11 @@ func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	if err := h.includeOrganizationExtras(r.Context(), result, ptr.Deref(params.Include, nil)); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
 	h.setUncacheable(w)
 	util.WriteJSONResponse(w, r, http.StatusOK, result)
 }
@@ -594,6 +601,18 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDGroupsGroupid(w http.Respon
 	w.WriteHeader(http.StatusOK)
 }
 
+// projectVisible reports whether the caller can read the project with the
+// given ID in the organization. An ID that does not parse is not visible.
+// The project list and the organization list count both use this rule.
+func projectVisible(ctx context.Context, organizationID ids.OrganizationID, id string) bool {
+	projectID, err := ids.ParseProjectID(id)
+	if err != nil {
+		return false
+	}
+
+	return rbac.AllowProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID) == nil
+}
+
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
 	result, err := projects.New(h.client, h.namespace).List(r.Context(), organizationID)
 	if err != nil {
@@ -603,16 +622,9 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWri
 
 	ctx := r.Context()
 
-	// Apply RBAC after listing as a filter.  resource.Metadata.Id is sourced from the
-	// API response body (a plain string), so parse it to a typed ID here; a malformed
-	// value from our own response should never happen and is filtered from the result.
+	// Apply RBAC after listing as a filter.
 	result = slices.DeleteFunc(result, func(resource openapi.ProjectRead) bool {
-		projectID, err := ids.ParseProjectID(resource.Metadata.Id)
-		if err != nil {
-			return true
-		}
-
-		return rbac.AllowProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID) != nil
+		return !projectVisible(ctx, organizationID, resource.Metadata.Id)
 	})
 
 	h.setUncacheable(w)
