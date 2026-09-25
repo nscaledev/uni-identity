@@ -36,6 +36,10 @@ This remains a supported capability, but it is no longer the main production cen
 The broader system direction is toward direct integration with third-party identity providers while
 retaining identity's internal authorization and delegated-identity model.
 
+The organization list accepts `include=quotas` and `include=projectsCount`. One response then
+returns the quotas and the visible project count of each organization. Each extra appears on a
+row only where the caller can read that data.
+
 ### OAuth2 Providers
 
 Identity includes built-in provider presets for common backends such as:

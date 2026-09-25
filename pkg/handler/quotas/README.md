@@ -37,6 +37,8 @@ Without that metadata, the numeric values are not meaningfully usable.
 `Convert` in `convert.go` is the single rendering path. The per-organization GET renders the
 normalised quota list through it. The PUT response renders the written quota list through the
 same call. `Convert` reads quantities only with `Value()`.
+The `include=quotas` extra of the organization list renders the same bytes as the
+per-organization GET.
 
 ### Built-In Volume Capacity
 
