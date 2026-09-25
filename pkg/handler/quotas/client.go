@@ -212,7 +212,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	current, virtual, err := common.GetQuota(ctx, organizationID)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
+		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
 
 	required, err := generate(ctx, organization, request)
@@ -222,7 +222,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	if virtual {
 		if err := c.client.Create(ctx, required); err != nil {
-			return nil, errors.OAuth2InvalidRequest("unnable to create quota").WithError(err)
+			return nil, errors.OAuth2InvalidRequest("unable to create quota").WithError(err)
 		}
 
 		return c.convert(ctx, required, organizationID)
