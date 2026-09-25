@@ -96,9 +96,9 @@ returns at most `--v1-organization-list-limit` organizations. The value 0 (the d
 unlimited. The cap truncates silently: the response gives the client no signal that organizations
 are missing. Set the cap only when every consumer can accept a partial list.
 
-`ListPage` returns an `OrganizationPage` whose items are `OrganizationListItem`
-values with base fields only. The handler package fills the `include`
-extras afterwards. See [`pkg/handler`](../README.md).
+`ListPage` returns an `OrganizationPage` whose items are `OrganizationListItem` values with base
+fields only. The handler package fills the `include` extras afterwards. See
+[`pkg/handler`](../README.md).
 
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.

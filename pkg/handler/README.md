@@ -102,7 +102,7 @@ project count per row. The handler package owns that step in
 
 1. Lists Quota, Allocation and Project resources once, without deep copies,
    with a label `in` selector over the page's organization IDs.
-2. Buckets the objects by organization.
+2. Groups the objects by organization.
 3. Applies the presence rule with the ACL already in context.
 
 Quotas need organization-scope `identity:quotas` read. Projects and the
@@ -115,8 +115,7 @@ The step lives here because `quotas` and `projects` import `organizations`,
 so nothing may flow the other way. The pure pieces sit in the resource
 packages: `common.Normalise`, `quotas.Convert`, `projects.Convert`. The
 reads sit on `common.Client`: `ListForOrganizations` (no-deep-copy list by
-organization label) and `QuotaMetadata`. `GetQuota` and
-`CheckQuotaConsistency` take the QuotaMetadata list as an argument.
+organization label) and `QuotaMetadata`.
 
 The informer cache shares three things with this step: the objects that the
 no-deep-copy lists return, the quantities inside them, and the `GroupIDs`
