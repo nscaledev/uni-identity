@@ -59,7 +59,7 @@ func sortsAfter(name, id, prevName, prevID string) bool {
 // seen in walk order and the number of pages it requested.  It also returns
 // whether the walk finished (the last page had no NextCursor) before it
 // reached maxPages.
-func walkOrganizationPages(ctx context.Context, client *api.APIClient, params *identityopenapi.GetApiV2OrganizationsParams, maxPages int) (items []identityopenapi.OrganizationRead, pages int, finished bool) {
+func walkOrganizationPages(ctx context.Context, client *api.APIClient, params *identityopenapi.GetApiV2OrganizationsParams, maxPages int) (items []identityopenapi.OrganizationListItem, pages int, finished bool) {
 	GinkgoHelper()
 
 	limit := params.Limit

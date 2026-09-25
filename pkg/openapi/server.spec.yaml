@@ -252,6 +252,12 @@ paths:
 
         The id parameter selects organizations by ID, with the same
         visibility rules, in one page.
+
+        The include parameter adds quotas, projects or a visible project
+        count to each organization that the caller can inspect.  Rows that
+        the caller cannot inspect omit the extra.  The parameter combines
+        with every other parameter, including an id lookup.  A data fault
+        in a requested extra fails the page with 500.
       summary: List organizations (paginated)
       tags:
       - Organizations
@@ -263,6 +269,7 @@ paths:
       - $ref: '#/components/parameters/organizationListNameParameter'
       - $ref: '#/components/parameters/organizationListIDParameter'
       - $ref: '#/components/parameters/userEmailParameter'
+      - $ref: '#/components/parameters/organizationListIncludeParameter'
       responses:
         '200':
           $ref: '#/components/responses/organizationPageResponse'
@@ -1298,7 +1305,7 @@ components:
         The response contains each listed organization that the caller can
         see, in one page and in display-name order, as in the list.  The
         response omits IDs that the caller cannot see.  Do not use this
-        parameter with any other parameter.
+        parameter with any other parameter except include.
       style: form
       explode: true
       schema:
@@ -1306,6 +1313,26 @@ components:
         maxItems: 100
         items:
           $ref: '#/components/schemas/organizationId'
+    organizationListIncludeParameter:
+      name: include
+      in: query
+      description: |-
+        Extra data to return for each organization.  Repeat the parameter
+        for each value (?include=quotas&include=projectsCount), as for id.
+        The server returns 400 for a comma-separated list.  The server
+        returns each value only where the caller can read it.  An
+        organization that the caller cannot inspect keeps its base fields
+        and omits the extra.
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+          enum:
+          - quotas
+          - projects
+          - projectsCount
     referenceParameter:
       name: reference
       in: path
@@ -2028,6 +2055,33 @@ components:
           description: |-
             Cursor for the next page.  Present only when another page exists.
           type: string
+    organizationListItem:
+      description: |-
+        An organization as returned by the paginated list, with optional
+        extras selected by the include parameter.
+      allOf:
+      - $ref: '#/components/schemas/organizationRead'
+      - type: object
+        properties:
+          quotas:
+            description: |-
+              The organization's quotas, as GET /api/v1/organizations/{id}/quotas
+              returns them.  Present when requested and the caller has
+              organization-scope read on identity:quotas.
+            allOf:
+            - $ref: '#/components/schemas/quotaReadList'
+          projects:
+            description: |-
+              The organization's projects visible to the caller, in the same
+              form as GET /api/v1/organizations/{id}/projects.  Present when
+              requested and the caller can see projects in this organization.
+            allOf:
+            - $ref: '#/components/schemas/projects'
+          projectsCount:
+            description: |-
+              Number of the organization's projects visible to the caller.
+              Present under the same rule as projects.
+            type: integer
     organizationPage:
       description: One page of organizations.
       type: object
@@ -2036,7 +2090,10 @@ components:
       - pagination
       properties:
         items:
-          $ref: '#/components/schemas/organizations'
+          description: A list of organizations.
+          type: array
+          items:
+            $ref: '#/components/schemas/organizationListItem'
         pagination:
           $ref: '#/components/schemas/paginationMetadata'
     aclOperation:

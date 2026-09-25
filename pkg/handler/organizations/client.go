@@ -125,12 +125,22 @@ func convertList(in []unikornv1.Organization) openapi.Organizations {
 	return out
 }
 
-// convertPage converts a page of pointers that paginate returns.
-func convertPage(in []*unikornv1.Organization) openapi.Organizations {
-	out := make(openapi.Organizations, len(in))
+// convertItem renders one organization as a v2 page item with base fields
+// only.  The handler fills the extras that the include parameter selects.
+func convertItem(in *unikornv1.Organization) openapi.OrganizationListItem {
+	read := convert(in)
+
+	return openapi.OrganizationListItem{
+		Metadata: read.Metadata,
+		Spec:     read.Spec,
+	}
+}
+
+func convertItems(in []*unikornv1.Organization) []openapi.OrganizationListItem {
+	out := make([]openapi.OrganizationListItem, len(in))
 
 	for i := range in {
-		out[i] = *convert(in[i])
+		out[i] = convertItem(in[i])
 	}
 
 	return out
@@ -339,7 +349,7 @@ func (c *Client) ListPage(ctx context.Context, userdb *userdb.UserDatabase, walk
 		}
 
 		return &openapi.OrganizationPage{
-			Items:      convertPage(items),
+			Items:      convertItems(items),
 			Pagination: openapi.PaginationMetadata{Limit: walk.Limit},
 		}, nil
 	}
@@ -359,7 +369,7 @@ func (c *Client) ListPage(ctx context.Context, userdb *userdb.UserDatabase, walk
 	page, next := paginate(items, request)
 
 	result := &openapi.OrganizationPage{
-		Items:      convertPage(page),
+		Items:      convertItems(page),
 		Pagination: openapi.PaginationMetadata{Limit: walk.Limit},
 	}
 

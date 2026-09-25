@@ -19,6 +19,7 @@ package organizations
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -584,4 +585,32 @@ func TestListCapsBothBranches(t *testing.T) {
 			store.RequireUnchanged(t)
 		})
 	}
+}
+
+func TestConvertItemMatchesRead(t *testing.T) {
+	t.Parallel()
+
+	in := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "a142f641-7fd6-4ab9-a875-344c7ebadc53",
+			Labels: map[string]string{constants.NameLabel: "acme"},
+		},
+		Spec: unikornv1.OrganizationSpec{
+			Domain:        ptr.To("acme.corp"),
+			ProviderScope: ptr.To(unikornv1.ProviderScopeGlobal),
+			ProviderID:    ptr.To("b6ec241d-e3b4-4afc-a7aa-500fcb650d8e"),
+		},
+	}
+
+	readJSON, err := json.Marshal(convert(in))
+	require.NoError(t, err)
+
+	item := convertItem(in)
+	require.Nil(t, item.Quotas)
+	require.Nil(t, item.Projects)
+	require.Nil(t, item.ProjectsCount)
+
+	itemJSON, err := json.Marshal(item)
+	require.NoError(t, err)
+	require.JSONEq(t, string(readJSON), string(itemJSON))
 }
