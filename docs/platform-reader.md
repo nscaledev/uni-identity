@@ -70,8 +70,8 @@ returns.
 | `identity:serviceaccounts` | List only; `accessToken` emitted solely by create/rotate (regression-tested) | `serviceaccounts/client.go:80-113` |
 | `identity:users` | Org user list; PII (names/emails), no credentials | `users/client.go:246-284` |
 | `identity:groups` | List/get; membership data | `groups/client.go:59-97` |
-| `identity:projects` | List/get; group IDs | `projects/client.go:57-70` |
-| `identity:quotas` | Accounting quantities | `quotas/convert.go` |
+| `identity:projects` | List/get; group IDs; `v2` organization list `include=projects` and `include=projectsCount` | `projects/client.go:57-70`; `handler/organization_includes.go` |
+| `identity:quotas` | Accounting quantities; `v2` organization list `include=quotas` | `quotas/convert.go`; `handler/organization_includes.go` |
 | `identity:allocations` | Allocation quantities | `allocations/client.go:74-105` |
 | `region:regions` | Region metadata; kubeconfig lives only under separate `region:regions/detail` scope | uni-region `handler.go:96,112` |
 | `region:flavors` / `region:images` / `region:externalnetworks` | Catalog data | uni-region `handler.go:144,128`; `handler_image.go:50` |

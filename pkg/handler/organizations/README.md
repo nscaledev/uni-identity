@@ -64,10 +64,10 @@ The package enforces the `v2` walk rules itself, in addition to request validati
   Treat a cursor like the query that produced it.
 
 `id` selects organizations by ID instead of a walk. A request takes up to 100 IDs, and `id`
-excludes every other parameter. The response holds them in one page, in display-name order. The
-response omits an ID that the caller cannot see. On the global branch, it also omits an ID that
-does not exist. Clients repeat the parameter (`?id=a&id=b`). The server rejects a
-comma-separated list with `400`.
+excludes every other parameter except `include`. The response holds them in one page, in
+display-name order. The response omits an ID that the caller cannot see. On the global branch, it
+also omits an ID that does not exist. Clients repeat the parameter (`?id=a&id=b`). The server
+rejects a comma-separated list with `400`.
 
 **Cost.** On the global branch, one request costs one shallow list plus one sort of N keys,
 `O(N log N)`, regardless of `limit`. The caller controls `limit`, so a full `v2` walk over the
@@ -95,6 +95,10 @@ page. It returns each organization once, in organization ID order, not in displa
 returns at most `--v1-organization-list-limit` organizations. The value 0 (the default) means
 unlimited. The cap truncates silently: the response gives the client no signal that organizations
 are missing. Set the cap only when every consumer can accept a partial list.
+
+`ListPage` returns an `OrganizationPage` whose items are `OrganizationListItem`
+values with base fields only. The handler package fills the `include`
+extras afterwards. See [`pkg/handler`](../README.md).
 
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.

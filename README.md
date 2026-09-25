@@ -28,7 +28,7 @@ The top level resource type is an organization.
 Organizations are named and limited by normal Kubernetes resource name semantics (i.e. a DNS label).
 Like all resources they may have a description attached to provide verbose identification.
 
-`GET /api/v2/organizations` lists organizations. It pages by cursor, filters by display name, and can return specific organizations by ID. `GET /api/v1/organizations` is deprecated. It returns at most a configured number of organizations (unlimited by default) and announces its successor in `Deprecation` and `Link` headers.
+`GET /api/v2/organizations` lists organizations. It pages by cursor, filters by display name, and can return specific organizations by ID. A repeated `include` parameter (`include=quotas`, `include=projects`, `include=projectsCount`) adds each organization's quotas, visible projects and visible project count. The caller gets only the extras that it has permission to read. `GET /api/v1/organizations` is deprecated. It returns at most a configured number of organizations (unlimited by default) and announces its successor in `Deprecation` and `Link` headers.
 
 Organizations MAY define a domain e.g. `acme.com`.
 In the built-in login flow this can be used to route a user to the correct upstream identity

@@ -60,6 +60,14 @@ List operations on the `v2` surface page with a cursor and return an envelope
 component: the applied `limit` and, when another page exists, `nextCursor`.
 It carries no total count. New `v2` lists reuse this component.
 
+Clients repeat `v2` array query parameters, one value per occurrence
+(`?include=quotas&include=projectsCount`, `?id=a&id=b`). The server rejects a
+comma-separated list with `400`. `include` is an enum array that names
+optional extras per item. The server rejects unknown values. Extras appear
+only on items that the caller can inspect. The item schema is an `allOf` of
+the resource read plus optional fields, so the base shape stays shared with
+`v1`.
+
 Keeping the schema unified matters because it allows:
 
 - one generated client/server contract
