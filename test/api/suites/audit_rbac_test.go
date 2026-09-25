@@ -62,22 +62,21 @@ var _ = Describe("Console Audit View Permissions", func() {
 				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
 					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
 
-				orgs, err := auditClient.ListOrganizations(ctx)
+				// The audit token is a service account, so the list holds only
+				// its own organization.  The request uses no filter, because a
+				// filter could hide a scope leak.
+				resp, err := auditClient.ListOrganizationsV2(ctx, nil)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(orgs).NotTo(BeEmpty())
-
-				var orgIDs []string
-				for _, org := range orgs {
-					Expect(org.Metadata.Id).NotTo(BeEmpty())
-					orgIDs = append(orgIDs, org.Metadata.Id)
-				}
-
-				Expect(orgIDs).To(ContainElement(config.OrgID))
-				Expect(orgIDs).NotTo(ContainElement(config.UnauthorisedOrgID),
+				Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+				Expect(resp.JSON200).NotTo(BeNil())
+				Expect(resp.JSON200.Pagination.NextCursor).To(BeNil(), "a service account's organizations fit one page")
+				Expect(resp.JSON200.Items).NotTo(BeEmpty())
+				Expect(resp.JSON200.Items).To(ContainElement(HaveField("Metadata.Id", config.OrgID)))
+				Expect(resp.JSON200.Items).NotTo(ContainElement(HaveField("Metadata.Id", config.UnauthorisedOrgID)),
 					"audit token must not list organizations outside its scope")
 
-				GinkgoWriter.Printf("Audit: listed %d organizations\n", len(orgs))
+				GinkgoWriter.Printf("Audit: listed %d organizations\n", len(resp.JSON200.Items))
 			})
 		})
 

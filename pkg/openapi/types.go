@@ -473,6 +473,15 @@ type OpenidConfiguration struct {
 // OrganizationId An organization ID.
 type OrganizationId = identityids.OrganizationID
 
+// OrganizationPage One page of organizations.
+type OrganizationPage struct {
+	// Items A list of organizations.
+	Items Organizations `json:"items"`
+
+	// Pagination Pagination state for one list page.
+	Pagination PaginationMetadata `json:"pagination"`
+}
+
 // OrganizationRead An organization when read.
 type OrganizationRead struct {
 	// Metadata Metadata required by all resource reads.
@@ -526,6 +535,15 @@ type OrganizationWrite struct {
 
 // Organizations A list of organizations.
 type Organizations = []OrganizationRead
+
+// PaginationMetadata Pagination state for one list page.
+type PaginationMetadata struct {
+	// Limit The page size that the server applied.
+	Limit int `json:"limit"`
+
+	// NextCursor Cursor for the next page.  Present only when another page exists.
+	NextCursor *string `json:"nextCursor,omitempty"`
+}
 
 // ProjectId A project ID.
 type ProjectId = identityids.ProjectID
@@ -953,6 +971,18 @@ type Oauth2ProvderIDParameter = Oauth2ProviderId
 // OrganizationIDParameter An organization ID.
 type OrganizationIDParameter = OrganizationId
 
+// OrganizationListCursorParameter defines model for organizationListCursorParameter.
+type OrganizationListCursorParameter = string
+
+// OrganizationListIDParameter defines model for organizationListIDParameter.
+type OrganizationListIDParameter = []OrganizationId
+
+// OrganizationListLimitParameter defines model for organizationListLimitParameter.
+type OrganizationListLimitParameter = int
+
+// OrganizationListNameParameter defines model for organizationListNameParameter.
+type OrganizationListNameParameter = string
+
 // ProjectIDParameter A project ID.
 type ProjectIDParameter = ProjectId
 
@@ -1001,6 +1031,9 @@ type Oauth2UnauthorizedResponse = Oauth2Error
 
 // OpenidConfigurationResponse OpenID configuration.
 type OpenidConfigurationResponse = OpenidConfiguration
+
+// OrganizationPageResponse One page of organizations.
+type OrganizationPageResponse = OrganizationPage
 
 // OrganizationResponse An organization when read.
 type OrganizationResponse = OrganizationRead
@@ -1079,6 +1112,35 @@ type UserCreateRequest = UserWrite
 
 // GetApiV1OrganizationsParams defines parameters for GetApiV1Organizations.
 type GetApiV1OrganizationsParams struct {
+	// Email A user's email address.
+	Email *UserEmailParameter `form:"email,omitempty" json:"email,omitempty"`
+}
+
+// GetApiV2OrganizationsParams defines parameters for GetApiV2Organizations.
+type GetApiV2OrganizationsParams struct {
+	// Limit Maximum number of organizations in one page.  When the request omits
+	// it, the server applies its configured default.
+	Limit *OrganizationListLimitParameter `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque pagination cursor taken from the previous page's
+	// pagination.nextCursor.  It carries the position and the filters of the
+	// walk.  The format may change between releases, so clients must not
+	// construct or decode it.
+	Cursor *OrganizationListCursorParameter `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Name Case-insensitive substring match on the organization display name.
+	// Display names are label values, so the filter accepts only letters,
+	// digits, '.', '_' and '-'.
+	Name *OrganizationListNameParameter `form:"name,omitempty" json:"name,omitempty"`
+
+	// Id Organization IDs to return.  Repeat the parameter for each ID
+	// (?id=a&id=b).  The server returns 400 for a comma-separated list.
+	// The response contains each listed organization that the caller can
+	// see, in one page and in display-name order, as in the list.  The
+	// response omits IDs that the caller cannot see.  Do not use this
+	// parameter with any other parameter.
+	Id *OrganizationListIDParameter `form:"id,omitempty" json:"id,omitempty"`
+
 	// Email A user's email address.
 	Email *UserEmailParameter `form:"email,omitempty" json:"email,omitempty"`
 }

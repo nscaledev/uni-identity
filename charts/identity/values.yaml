@@ -68,12 +68,15 @@ identity:
   auth0Exchange:
     issuer: ~
     audience: ~
-  # Organization list limits. 0 uses the binary default (unlimited).
+  # Organization list limits. 0 uses the binary default (v1: unlimited; v2: 50).
   organizationList:
-    # Maximum organizations returned by GET /api/v1/organizations.
+    # Maximum organizations returned by the deprecated GET /api/v1/organizations.
     # The cap truncates silently: the response gives the client no signal.
     # Set it only when every consumer can accept a partial list.
     v1Limit: 0
+    # Page size applied when GET /api/v2/organizations is called without limit
+    # (1-500).
+    v2DefaultLimit: 0
 
 # Issuer related configuration.
 issuer:

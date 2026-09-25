@@ -218,7 +218,7 @@ const (
 	// dispatchSurfaceBearer and dispatchSurfaceExchange label the entry points
 	// that share dispatchUserinfo, tagging the unroutable metric and log so a
 	// firing alert can be triaged to the affected traffic. Both direct-bearer
-	// call sites — the local authorizer (/api/v1/*) and the OIDC userinfo
+	// call sites — the local authorizer (/api/*) and the OIDC userinfo
 	// endpoint (/oauth2/v2/userinfo) — report "bearer"; token exchange reports
 	// "exchange".
 	dispatchSurfaceBearer   = "bearer"
@@ -314,7 +314,7 @@ func (a *Authenticator) handleValidatorError(ctx context.Context, r *http.Reques
 }
 
 // GetUserinfoFromBearer resolves an external or UNI bearer token presented
-// directly — to the local authorizer (/api/v1/...) or to the OIDC userinfo
+// directly — to the local authorizer (/api/...) or to the OIDC userinfo
 // endpoint (/oauth2/v2/userinfo) — without the token-exchange round-trip. It
 // shares dispatchUserinfo with the exchange path and returns the
 // src_iss alongside userinfo and claims.

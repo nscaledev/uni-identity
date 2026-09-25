@@ -49,6 +49,17 @@ Annotations such as `x-hidden` control whether an endpoint appears in
 public-facing generated documentation. They do **not** mean the endpoint is
 outside the canonical API contract.
 
+`deprecated: true` marks an operation that remains served but has a successor. It does not emit
+any header by itself: the `v1` organization list handler sends `Deprecation`, `Link`, and
+`Access-Control-Expose-Headers` explicitly. `GET /api/v1/organizations` is the first operation
+marked this way. oapi-codegen v2.4.1 generates no Go `// Deprecated:` marker from the flag, so Go
+clients get no compile-time signal and must read the response headers or the spec.
+
+List operations on the `v2` surface page with a cursor and return an envelope
+`{ items, pagination }`. `pagination` is the shared `paginationMetadata`
+component: the applied `limit` and, when another page exists, `nextCursor`.
+It carries no total count. New `v2` lists reuse this component.
+
 Keeping the schema unified matters because it allows:
 
 - one generated client/server contract

@@ -198,15 +198,23 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":[
 
 # Zero, null and absent all mean "use the binary default", so the chart
 # must omit the flag rather than render a zero or a literal "null" that
-# crashes an older pinned image.  These cases cover the chart default (0)
-# and v1Limit=null.  They do not cover an absent key.
+# crashes an older pinned image.  These cases cover the chart defaults (both
+# limits 0), v1Limit=null and v2DefaultLimit=null.  They do not cover an absent
+# key.
 out=$(render_set)
 assert_no_match "$out" "organization-list-limit"
+assert_no_match "$out" "organization-list-default-limit"
 
 out=$(render_set identity.organizationList.v1Limit=null)
 assert_no_match "$out" "organization-list-limit"
 
+out=$(render_set identity.organizationList.v2DefaultLimit=null)
+assert_no_match "$out" "organization-list-default-limit"
+
 out=$(render_set identity.organizationList.v1Limit=25)
 assert_one_match "$out" "--v1-organization-list-limit=25"
+
+out=$(render_set identity.organizationList.v2DefaultLimit=25)
+assert_one_match "$out" "--v2-organization-list-default-limit=25"
 
 echo "chart render checks OK"

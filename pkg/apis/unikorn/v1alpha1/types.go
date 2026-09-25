@@ -133,7 +133,7 @@ type OAuth2ProviderSpec struct {
 	// TokenURI is used when OIDC (discovery) is not available.
 	TokenURI *string `json:"tokenURI,omitempty"`
 	// BearerTrust, when present, opts this provider in as a trusted source of
-	// bearer access tokens (token exchange, /api/v1/* and /oauth2/v2/userinfo).
+	// bearer access tokens (token exchange, /api/* and /oauth2/v2/userinfo).
 	// A nil value means not trusted for bearer tokens; presence is the opt-in.
 	// Federation configuration alone never confers bearer trust.
 	BearerTrust *BearerTrustSpec `json:"bearerTrust,omitempty"`

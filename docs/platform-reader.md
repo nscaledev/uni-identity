@@ -64,7 +64,7 @@ returns.
 
 | Scope | Read surface (all metadata-only unless noted) | Evidence |
 | --- | --- | --- |
-| `identity:organizations` | Get + list-all-organizations branch; org metadata | `pkg/handler/handler.go:452`; `organizations/client.go:234` |
+| `identity:organizations` | Get + list-all-organizations branch (`v1` unlimited unless an operator sets a cap, `v2` paged and queryable by ID); org metadata | `pkg/handler/handler.go` `GetApiV1Organizations`/`GetApiV2Organizations`; `organizations/client.go` `visible` |
 | `identity:oauth2providers` | Org-scoped list; `clientSecret` redacted by conversion (regression-tested) | `oauth2providers/client.go:66-88` |
 | `identity:roles` | List; metadata-only, protected roles filtered | `roles/client.go:46-77` |
 | `identity:serviceaccounts` | List only; `accessToken` emitted solely by create/rotate (regression-tested) | `serviceaccounts/client.go:80-113` |

@@ -21,6 +21,8 @@ limitations under the License.
 package suites
 
 import (
+	"net/http"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -130,6 +132,17 @@ var _ = Describe("Global role bindings", func() {
 				// list, so first prove the list was actually populated for
 				// this member by requiring their own organization to be
 				// present.
+				resp, err := userClient.ListOrganizationsV2(ctx, nil)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+				Expect(resp.JSON200).NotTo(BeNil())
+				Expect(resp.JSON200.Pagination.NextCursor).To(BeNil(), "the member's organizations fit one page")
+				Expect(resp.JSON200.Items).To(ContainElement(HaveField("Metadata.Id", config.OrgID)))
+				Expect(resp.JSON200.Items).NotTo(ContainElement(HaveField("Metadata.Id", config.UnauthorisedOrgID)))
+
+				// The deprecated v1 endpoint applies the same membership
+				// resolution and keeps its own integration coverage.
 				orgs, err := userClient.ListOrganizations(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
