@@ -37,7 +37,6 @@ import (
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -116,15 +115,15 @@ func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 	return out
 }
 
-func convertList(in *unikornv1.OrganizationList) openapi.Organizations {
-	slices.SortStableFunc(in.Items, func(a, b unikornv1.Organization) int {
+func convertList(in []unikornv1.Organization) openapi.Organizations {
+	slices.SortStableFunc(in, func(a, b unikornv1.Organization) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	out := make(openapi.Organizations, len(in.Items))
+	out := make(openapi.Organizations, len(in))
 
-	for i := range in.Items {
-		out[i] = *convert(&in.Items[i])
+	for i := range in {
+		out[i] = *convert(&in[i])
 	}
 
 	return out
@@ -143,22 +142,6 @@ func (c *Client) get(ctx context.Context, organizationID ids.OrganizationID) (*u
 	}
 
 	return result, nil
-}
-
-func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, error) {
-	result := &unikornv1.OrganizationList{}
-
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, err
-	}
-
-	out := map[string]*unikornv1.Organization{}
-
-	for i := range result.Items {
-		out[result.Items[i].Name] = &result.Items[i]
-	}
-
-	return out, nil
 }
 
 func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
@@ -207,43 +190,36 @@ func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabas
 		}
 	}
 
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-
-	if err := c.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
-		return nil, err
-	}
-
-	result := make([]string, len(organizationUsers.Items))
-
-	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
-	}
-
-	return result, nil
+	return userdb.ActiveOrganizationIDs(ctx, user)
 }
 
-func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *string) (openapi.Organizations, error) {
-	// This is the only special case in the system.  When requesting organizations we
-	// will have an unscoped ACL, so can check for global access to all organizations.
-	// If we don't have that then we need to use RBAC to get a list of organizations we are
-	// members of and return only them.
-	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read); err == nil && email == nil {
-		var result unikornv1.OrganizationList
+// globalRead reports whether the caller sees every organization.  This is the
+// only special case in the system.  When requesting organizations we will
+// have an unscoped ACL, so can check for global access to all organizations.
+// If we don't have that then we need to use RBAC to get a list of
+// organizations we are members of and return only them.
+func globalRead(ctx context.Context, email *string) bool {
+	return email == nil && rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read) == nil
+}
 
-		if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: c.namespace}); err != nil {
+// visible returns the organizations the caller may see.  Both branches share
+// objects with the controller-runtime cache, so callers must treat them as
+// read-only.  Nothing in this package mutates them.  Deep copy before
+// mutating.
+func (c *Client) visible(ctx context.Context, userdb *userdb.UserDatabase, email *string) ([]unikornv1.Organization, error) {
+	if globalRead(ctx, email) {
+		result := &unikornv1.OrganizationList{}
+
+		options := &client.ListOptions{
+			Namespace:             c.namespace,
+			UnsafeDisableDeepCopy: ptr.To(true),
+		}
+
+		if err := c.client.List(ctx, result, options); err != nil {
 			return nil, err
 		}
 
-		return convertList(&result), nil
-	}
-
-	organizations, err := c.list(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to list organizations", err)
+		return result.Items, nil
 	}
 
 	organizationIDs, err := c.organizationIDs(ctx, userdb, email)
@@ -251,20 +227,32 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 		return nil, err
 	}
 
-	result := unikornv1.OrganizationList{
-		Items: make([]unikornv1.Organization, len(organizationIDs)),
-	}
+	result := make([]unikornv1.Organization, 0, len(organizationIDs))
 
-	for i := range organizationIDs {
-		organization, ok := organizations[organizationIDs[i]]
-		if !ok {
-			return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
+	for _, organizationID := range organizationIDs {
+		organization := &unikornv1.Organization{}
+
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization, client.UnsafeDisableDeepCopy); err != nil {
+			if kerrors.IsNotFound(err) {
+				return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
+			}
+
+			return nil, fmt.Errorf("%w: failed to get organization", err)
 		}
 
-		result.Items[i] = *organization
+		result = append(result, *organization)
 	}
 
-	return convertList(&result), nil
+	return result, nil
+}
+
+func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *string) (openapi.Organizations, error) {
+	items, err := c.visible(ctx, userdb, email)
+	if err != nil {
+		return nil, err
+	}
+
+	return convertList(items), nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.OrganizationRead, error) {
