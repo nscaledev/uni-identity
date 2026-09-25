@@ -20,7 +20,8 @@ server:
   # Validate response bodies against the OpenAPI schema at runtime.  This is
   # a development safeguard: it buffers and re-decodes every response and
   # allocates about 27 times the body size per request.  Set to false in
-  # production.  Development environments and CI keep the default.
+  # production.  Development environments keep the default.  CI runs the
+  # integration suite with both settings.
   runtimeSchemaValidation: true
 
   # Allows override of the image.
