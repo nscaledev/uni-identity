@@ -59,6 +59,9 @@ organization-local membership is active before returning it.
 - subject is the lookup key for global users
 - active-state checks are part of the package contract
 - organization membership is resolved through labeled `OrganizationUser` records
+- `ActiveOrganizationIDs` returns only active memberships, sorted and de-duplicated, and never
+  nil
+- `GetOrganizationIDs` resolves the active user, then returns its `ActiveOrganizationIDs` result
 - service accounts are part of the same local identity-resolution surface as users
 - unresolved, inactive, or multiply-resolved identities are normalized into
   `ErrResourceReference`, with one exception noted under Caveats
@@ -77,6 +80,10 @@ organization-local membership is active before returning it.
   for the bearer-admission consequences and the organization-suspension gap this leaves open.
 - The package intentionally does not provide mutation or transactional semantics; it is a read-side
   adapter boundary only.
+- `GetUser` lists users without deep copies and returns an owned copy of the single match. The
+  listed objects are shared with the cache, and nothing inside the package mutates them.
+- `GetServiceAccount` still lists and deep-copies every ServiceAccount per call, so
+  service-account callers of the organization list pay that cost on every request.
 
 ## Related Documentation
 
@@ -86,5 +93,8 @@ organization-local membership is active before returning it.
   during authentication and token handling
 - [`pkg/handler/users`](../handler/users/README.md), which owns mutation of the user and
   organization-user resources that this package reads
+- [`pkg/handler/organizations`](../handler/organizations/README.md), which uses
+  `ActiveOrganizationIDs` to derive organization visibility for a user, the same resolution
+  `pkg/oauth2` uses for token claims
 - [`pkg/apis/unikorn/v1alpha1`](../apis/unikorn/v1alpha1/README.md), which defines the stored
   `User`, `OrganizationUser`, and `ServiceAccount` resources resolved here
