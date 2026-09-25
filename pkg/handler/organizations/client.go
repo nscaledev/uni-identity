@@ -91,6 +91,18 @@ func convertOrganizationType(in *unikornv1.Organization) openapi.OrganizationTyp
 	return openapi.Adhoc
 }
 
+// copyString returns a new pointer to a copy of the string, so the result
+// shares no memory with in.
+func copyString(in *string) *string {
+	if in == nil {
+		return nil
+	}
+
+	return ptr.To(*in)
+}
+
+// convert copies every value it takes from in. in can come from the informer
+// cache without a copy, and the result never points into it.
 func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 	out := &openapi.OrganizationRead{
 		Metadata: conversion.ResourceReadMetadata(in, in.Spec.Tags),
@@ -99,17 +111,22 @@ func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 		},
 	}
 
+	// ResourceReadMetadata points DeletionTime at the timestamp inside in.
+	if out.Metadata.DeletionTime != nil {
+		out.Metadata.DeletionTime = ptr.To(*out.Metadata.DeletionTime)
+	}
+
 	if in.Spec.Domain != nil {
-		out.Spec.Domain = in.Spec.Domain
+		out.Spec.Domain = copyString(in.Spec.Domain)
 		out.Spec.ProviderScope = ptr.To(openapi.ProviderScope(*in.Spec.ProviderScope))
-		out.Spec.ProviderID = in.Spec.ProviderID
+		out.Spec.ProviderID = copyString(in.Spec.ProviderID)
 	}
 
 	// TODO: We should cross reference with the provider type and
 	// only emit what's allowed.
 	if in.Spec.ProviderOptions != nil {
 		if in.Spec.ProviderOptions.Google != nil {
-			out.Spec.GoogleCustomerID = in.Spec.ProviderOptions.Google.CustomerID
+			out.Spec.GoogleCustomerID = copyString(in.Spec.ProviderOptions.Google.CustomerID)
 		}
 	}
 
@@ -217,8 +234,8 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 	// members of and return only them.
 	//
 	// Both branches read the cache without deep copies. The organization
-	// objects come from the informer and are read-only. convert copies their
-	// pointer fields into the result, so callers must not change the list.
+	// objects come from the informer and are read-only. convert copies every
+	// value it takes, so the returned list shares no memory with the cache.
 	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read); err == nil && email == nil {
 		var result unikornv1.OrganizationList
 
