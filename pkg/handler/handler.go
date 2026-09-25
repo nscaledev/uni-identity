@@ -47,6 +47,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
+	"k8s.io/utils/ptr"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -418,6 +420,11 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderI
 func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, params openapi.GetApiV1OrganizationsParams) {
 	result, err := organizations.New(h.client, h.namespace).List(r.Context(), h.userdb, params.Email)
 	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	if err := h.includeOrganizationExtras(r.Context(), result, ptr.Deref(params.Include, nil)); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
