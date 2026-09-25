@@ -228,9 +228,9 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 }
 
 func (c *SyncClient) Update(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
-	common := common.New(c.client)
+	commonClient := common.New(c.client)
 
-	namespace, err := common.ProjectNamespace(ctx, organizationID, projectID)
+	namespace, err := commonClient.ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -260,12 +260,12 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	metadata, err := common.QuotaMetadata(ctx, c.namespace)
+	metadata, err := commonClient.QuotaMetadata(ctx, c.namespace)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, metadata, nil, updated); err != nil {
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, metadata, nil, updated); err != nil {
 		return nil, err
 	}
 

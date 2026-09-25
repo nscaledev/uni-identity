@@ -27,9 +27,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
-func q(s string) *resource.Quantity { v := resource.MustParse(s); return &v }
+func q(s string) *resource.Quantity { return ptr.To(resource.MustParse(s)) }
 
 func meta(kind string) unikornv1.QuotaMetadata {
 	return unikornv1.QuotaMetadata{

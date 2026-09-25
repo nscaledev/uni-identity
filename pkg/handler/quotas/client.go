@@ -118,14 +118,14 @@ func (c *Client) render(ctx context.Context, organizationID ids.OrganizationID, 
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
-	common := common.New(c.client)
+	commonClient := common.New(c.client)
 
-	metadata, err := common.QuotaMetadata(ctx, c.namespace)
+	metadata, err := commonClient.QuotaMetadata(ctx, c.namespace)
 	if err != nil {
 		return nil, err
 	}
 
-	result, _, err := common.GetQuota(ctx, organizationID, metadata)
+	result, _, err := commonClient.GetQuota(ctx, organizationID, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -134,23 +134,23 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*o
 }
 
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
-	common := common.New(c.client)
+	commonClient := common.New(c.client)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	metadata, err := common.QuotaMetadata(ctx, c.namespace)
+	metadata, err := commonClient.QuotaMetadata(ctx, c.namespace)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
+		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
 
 	// PUT replaces the stored list, so it reads the quota as stored.  A fault
 	// in the stored list does not block the write that repairs it.
-	current, virtual, err := common.StoredQuota(ctx, organizationID)
+	current, virtual, err := commonClient.StoredQuota(ctx, organizationID)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
+		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
 
 	required, err := generate(ctx, organization, request)
@@ -160,7 +160,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	if virtual {
 		if err := c.client.Create(ctx, required); err != nil {
-			return nil, errors.OAuth2InvalidRequest("unnable to create quota").WithError(err)
+			return nil, errors.OAuth2InvalidRequest("unable to create quota").WithError(err)
 		}
 
 		return c.render(ctx, organizationID, required.Spec.Quotas, metadata)
@@ -171,7 +171,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, metadata, updated, nil); err != nil {
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, metadata, updated, nil); err != nil {
 		return nil, err
 	}
 

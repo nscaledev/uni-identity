@@ -27,14 +27,13 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 )
 
 func meta(kind, def string) unikornv1.QuotaMetadata {
-	q := resource.MustParse(def)
-
 	return unikornv1.QuotaMetadata{
 		ObjectMeta: metav1.ObjectMeta{Name: kind},
-		Spec:       unikornv1.QuotaMetadataSpec{Default: &q},
+		Spec:       unikornv1.QuotaMetadataSpec{Default: ptr.To(resource.MustParse(def))},
 	}
 }
 

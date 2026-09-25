@@ -112,7 +112,7 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID ids.Organi
 func (c *Client) QuotaMetadata(ctx context.Context, namespace string) ([]unikornv1.QuotaMetadata, error) {
 	metadata := &unikornv1.QuotaMetadataList{}
 
-	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: namespace}); err != nil {
+	if err := c.client.List(ctx, metadata, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
 
@@ -123,7 +123,7 @@ func (c *Client) QuotaMetadata(ctx context.Context, namespace string) ([]unikorn
 // It takes the quantity from quota when quota has the kind, and the
 // metadata default when it does not.  It drops retired kinds.  quota may be
 // nil (virtual quota).  Normalise copies every quantity, so the result never
-// aliases its inputs, which the informer cache may share.
+// aliases its inputs.  The informer cache may share those inputs.
 func Normalise(quota *unikornv1.Quota, metadata []unikornv1.QuotaMetadata) ([]unikornv1.ResourceQuota, error) {
 	out := make([]unikornv1.ResourceQuota, 0, len(metadata))
 
