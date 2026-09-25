@@ -188,7 +188,8 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":[
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
 
 # server.runtimeSchemaValidation: the flag renders only for the boolean
-# false.  The default and null keep the binary default.
+# false.  The default and null keep the binary default.  A string fails the
+# render, so a quoted "false" cannot leave validation on.
 out=$(helm template test "$CHART")
 assert_no_match "$out" "--runtime-schema-validation"
 
@@ -197,5 +198,9 @@ assert_no_match "$out" "--runtime-schema-validation"
 
 out=$(helm template test "$CHART" --set server.runtimeSchemaValidation=false)
 assert_one_match "$out" "--runtime-schema-validation=false"
+
+if helm template test "$CHART" --set-string server.runtimeSchemaValidation=false >/dev/null 2>&1; then
+	die "expected render failure for string server.runtimeSchemaValidation"
+fi
 
 echo "chart render checks OK"
