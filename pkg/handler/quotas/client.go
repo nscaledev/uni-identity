@@ -170,7 +170,14 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
-	result, _, err := common.New(c.client).GetQuota(ctx, organizationID)
+	common := common.New(c.client)
+
+	metadata, err := common.QuotaMetadata(ctx, c.namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _, err := common.GetQuota(ctx, organizationID, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +193,12 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	current, virtual, err := common.GetQuota(ctx, organizationID)
+	metadata, err := common.QuotaMetadata(ctx, c.namespace)
+	if err != nil {
+		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
+	}
+
+	current, virtual, err := common.GetQuota(ctx, organizationID, metadata)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
 	}
@@ -209,7 +221,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
+	if err := common.CheckQuotaConsistency(ctx, organizationID, metadata, updated, nil); err != nil {
 		return nil, err
 	}
 

@@ -171,7 +171,14 @@ func (c *SyncClient) Create(ctx context.Context, organizationID ids.Organization
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
-	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
+	commonClient := common.New(c.client)
+
+	metadata, err := commonClient.QuotaMetadata(ctx, c.namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, metadata, nil, resource); err != nil {
 		return nil, err
 	}
 
@@ -253,7 +260,12 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
+	metadata, err := common.QuotaMetadata(ctx, c.namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := common.CheckQuotaConsistency(ctx, organizationID, metadata, nil, updated); err != nil {
 		return nil, err
 	}
 
