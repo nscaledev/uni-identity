@@ -194,12 +194,7 @@ func applyProjectsCount(ctx context.Context, item *openapi.OrganizationRead, org
 	visible := 0
 
 	for _, project := range extras.projects[item.Metadata.Id] {
-		projectID, err := ids.ParseProjectID(project.Name)
-		if err != nil {
-			continue
-		}
-
-		if orgRead || rbac.AllowProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID) == nil {
+		if projectVisible(ctx, organizationID, project.Name) {
 			visible++
 		}
 	}
