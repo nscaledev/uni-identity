@@ -26,6 +26,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -54,7 +55,9 @@ func NewUserDatabase(client client.Client, namespace string) *UserDatabase {
 func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
-	if err := d.client.List(ctx, result, &client.ListOptions{}); err != nil {
+	// Scan the cache without deep copies. Copy only the match, so the caller
+	// owns the result.
+	if err := d.client.List(ctx, result, &client.ListOptions{UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, err
 	}
 
@@ -66,7 +69,7 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)
 	}
 
-	return &result.Items[index], nil
+	return result.Items[index].DeepCopy(), nil
 }
 
 // GetActiveUser returns a user that match the subject and is active.
