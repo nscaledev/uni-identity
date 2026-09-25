@@ -40,8 +40,7 @@ not make its organization visible here. This matches the `orgIds` that a caller'
 because both use the same resolver. Both branches read cache objects without deep copies, and
 those objects are read-only.
 
-The list is in display-name order. The order ignores case. The exact display name, then the ID,
-break ties.
+The list is in organization ID order.
 
 `GET /api/v1/organizations` returns each organization once. It returns at most
 `--v1-organization-list-limit` organizations. The value 0 (the default) means unlimited.

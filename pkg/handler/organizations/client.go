@@ -20,6 +20,8 @@ package organizations
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
@@ -113,11 +115,11 @@ func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 	return out
 }
 
-func convertList(in []*unikornv1.Organization) openapi.Organizations {
+func convertList(in []unikornv1.Organization) openapi.Organizations {
 	out := make(openapi.Organizations, len(in))
 
 	for i := range in {
-		out[i] = *convert(in[i])
+		out[i] = *convert(&in[i])
 	}
 
 	return out
@@ -240,22 +242,25 @@ func (c *Client) visible(ctx context.Context, userdb *userdb.UserDatabase, email
 	return result, nil
 }
 
-// List serves the v1 endpoint: the first limit organizations in
-// display-name order, all of them when limit is 0 or less.  It does not rely
-// on Options.Validate to keep a non-positive limit out.
+// List serves the v1 endpoint: the first limit organizations in ID order,
+// all of them when limit is 0 or less.  It does not rely on
+// Options.Validate to keep a non-positive limit out.  The sort reorders the
+// slice, not the shared cache objects.
 func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *string, limit int) (openapi.Organizations, error) {
 	items, err := c.visible(ctx, userdb, email)
 	if err != nil {
 		return nil, err
 	}
 
-	if limit <= 0 {
-		limit = len(items)
+	slices.SortStableFunc(items, func(a, b unikornv1.Organization) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	if limit > 0 && limit < len(items) {
+		items = items[:limit]
 	}
 
-	page, _ := paginate(items, pageRequest{limit: limit})
-
-	return convertList(page), nil
+	return convertList(items), nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.OrganizationRead, error) {

@@ -75,10 +75,13 @@ func requireGetsSkipCopy(t *testing.T, store *cachetest.Store) {
 
 // namespacedOrg returns an organization in the test namespace.
 func namespacedOrg(name, id string) *unikornv1.Organization {
-	o := org(name, id)
-	o.Namespace = clientTestNamespace
-
-	return &o
+	return &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: clientTestNamespace,
+			Name:      id,
+			Labels:    map[string]string{constants.NameLabel: name},
+		},
+	}
 }
 
 // TestListActiveMembershipsOnce pins the membership-visibility contract.
@@ -232,17 +235,18 @@ func memberFixture(t *testing.T, organizationIDs ...string) (context.Context, []
 func TestListOrdersShuffledInput(t *testing.T) {
 	t.Parallel()
 
-	// ID order differs from display name order, so a missing sort fails.
+	// ID order differs from display name order, so the test fails when the
+	// sort is removed or when the display name decides the order.
 	c := newFakeClient(t,
-		namespacedOrg("gamma", "id-1"),
+		namespacedOrg("delta", "id-1"),
 		namespacedOrg("beta", "id-2"),
-		namespacedOrg("delta", "id-3"),
+		namespacedOrg("gamma", "id-3"),
 		namespacedOrg("alpha", "id-4"),
 	)
 
 	ctx := globalReadContext(t)
 	organizations := New(c, clientTestNamespace)
-	want := []string{"id-4", "id-2", "id-3", "id-1"}
+	want := []string{"id-1", "id-2", "id-3", "id-4"}
 
 	// Each List shuffles again, so repeated calls make a sorted input by
 	// chance very unlikely.
@@ -282,8 +286,8 @@ func TestListCapsBothBranches(t *testing.T) {
 
 				return globalReadContext(t), freshOrgsFixture()
 			},
-			first: "id-2",
-			all:   []string{"id-2", "id-1", "id-3"},
+			first: "id-1",
+			all:   []string{"id-1", "id-2", "id-3"},
 		},
 		{
 			name: "membership",
@@ -294,8 +298,8 @@ func TestListCapsBothBranches(t *testing.T) {
 
 				return ctx, append(freshOrgsFixture(), objects...)
 			},
-			first: "id-2",
-			all:   []string{"id-2", "id-1"},
+			first: "id-1",
+			all:   []string{"id-1", "id-2"},
 		},
 	}
 
