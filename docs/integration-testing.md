@@ -19,6 +19,11 @@ creates a fresh KinD cluster on every pull request, deploys identity, creates fi
 make test-api-ci
 ```
 
+The job runs twice, once per response-body validation mode. The first run keeps the chart
+default (validation on). The second run adds
+[`../hack/ci/test-values-runtime-schema-validation-off.yaml`](../hack/ci/test-values-runtime-schema-validation-off.yaml),
+which turns validation off as in production.
+
 This is the authoritative CI path and the preferred model for regression coverage.
 
 ### 2. Manual / Triggered Mode
