@@ -169,8 +169,9 @@ validation failure panics by default.
 
 Turn it off in production: the chart value `server.runtimeSchemaValidation: false` renders
 `--runtime-schema-validation=false`. `server.extraFlags` renders after this value, so a
-conflicting flag there wins. Development environments and the CI integration install keep the
-default. Request validation is unaffected and stays on everywhere.
+conflicting flag there wins. Development environments keep the default. CI runs the
+integration suite twice, once with each setting. Request validation is unaffected and stays
+on everywhere.
 
 The known issue below applies wherever response validation stays on.
 
