@@ -21,8 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
@@ -98,97 +96,61 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	return out, nil
 }
 
-type allocation struct {
-	committed int64
-	reserved  int64
-}
-
-func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
-	metadata := &unikornv1.QuotaMetadataList{}
-
-	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, err
-	}
-
-	// Grab the totals across all allocations.
+// render lists the organization's allocations and renders quotas with them.
+func (c *Client) render(ctx context.Context, organizationID ids.OrganizationID, quotas []unikornv1.ResourceQuota, metadata []unikornv1.QuotaMetadata) (*openapi.QuotasRead, error) {
 	allocations, err := common.New(c.client).GetAllocations(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	allocated := map[string]allocation{}
+	items := make([]*unikornv1.Allocation, len(allocations.Items))
 
 	for i := range allocations.Items {
-		allocation := &allocations.Items[i]
-
-		for j := range allocation.Spec.Allocations {
-			resource := &allocation.Spec.Allocations[j]
-
-			allocation := allocated[resource.Kind]
-			allocation.committed += resource.Committed.Value()
-			allocation.reserved += resource.Reserved.Value()
-
-			allocated[resource.Kind] = allocation
-		}
+		items[i] = &allocations.Items[i]
 	}
 
-	out := &openapi.QuotasRead{
-		Quotas: make(openapi.QuotaReadList, len(in.Spec.Quotas)),
-	}
-
-	for i := range in.Spec.Quotas {
-		quota := &in.Spec.Quotas[i]
-
-		metaIndex := slices.IndexFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool {
-			return m.Name == quota.Kind
-		})
-
-		meta := &metadata.Items[metaIndex]
-
-		used := allocated[quota.Kind].committed + allocated[quota.Kind].reserved
-		free := quota.Quantity.Value() - used
-
-		out.Quotas[i] = openapi.QuotaRead{
-			Kind:        quota.Kind,
-			Quantity:    int(quota.Quantity.Value()),
-			Used:        int(used),
-			Free:        int(free),
-			Committed:   int(allocated[quota.Kind].committed),
-			Reserved:    int(allocated[quota.Kind].reserved),
-			DisplayName: meta.Spec.DisplayName,
-			Description: meta.Spec.Description,
-			Default:     int(meta.Spec.Default.Value()),
-			Format:      openapi.QuotaReadFormat(meta.Spec.Format),
-		}
-	}
-
-	slices.SortStableFunc(out.Quotas, func(a, b openapi.QuotaRead) int {
-		return strings.Compare(a.Kind, b.Kind)
-	})
-
-	return out, nil
-}
-
-func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
-	result, _, err := common.New(c.client).GetQuota(ctx, organizationID)
+	list, err := Convert(quotas, metadata, items)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.convert(ctx, result, organizationID)
+	return &openapi.QuotasRead{Quotas: list}, nil
+}
+
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
+	commonClient := common.New(c.client)
+
+	metadata, err := commonClient.QuotaMetadata(ctx, c.namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	result, _, err := commonClient.GetQuota(ctx, organizationID, metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.render(ctx, organizationID, result.Spec.Quotas, metadata)
 }
 
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
-	common := common.New(c.client)
+	commonClient := common.New(c.client)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	current, virtual, err := common.GetQuota(ctx, organizationID)
+	metadata, err := commonClient.QuotaMetadata(ctx, c.namespace)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
+		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
+	}
+
+	// PUT replaces the stored list, so it reads the quota as stored.  A fault
+	// in the stored list does not block the write that repairs it.
+	current, virtual, err := commonClient.StoredQuota(ctx, organizationID)
+	if err != nil {
+		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
 
 	required, err := generate(ctx, organization, request)
@@ -198,10 +160,10 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	if virtual {
 		if err := c.client.Create(ctx, required); err != nil {
-			return nil, errors.OAuth2InvalidRequest("unnable to create quota").WithError(err)
+			return nil, errors.OAuth2InvalidRequest("unable to create quota").WithError(err)
 		}
 
-		return c.convert(ctx, required, organizationID)
+		return c.render(ctx, organizationID, required.Spec.Quotas, metadata)
 	}
 
 	updated := current.DeepCopy()
@@ -209,7 +171,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, metadata, updated, nil); err != nil {
 		return nil, err
 	}
 
@@ -221,5 +183,5 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, fmt.Errorf("%w: failed to patch quotas", err)
 	}
 
-	return c.convert(ctx, updated, organizationID)
+	return c.render(ctx, organizationID, updated.Spec.Quotas, metadata)
 }

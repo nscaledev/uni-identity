@@ -107,19 +107,63 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID ids.Organi
 	return ProjectNamespace(ctx, c.client, organizationID, projectID)
 }
 
-func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Quota, bool, error) {
+// QuotaMetadata lists the quota kinds the platform defines.  The chart
+// installs them in the identity namespace.
+func (c *Client) QuotaMetadata(ctx context.Context, namespace string) ([]unikornv1.QuotaMetadata, error) {
+	metadata := &unikornv1.QuotaMetadataList{}
+
+	if err := c.client.List(ctx, metadata, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+
+	return metadata.Items, nil
+}
+
+// Normalise returns a fresh quota list that holds every kind in metadata.
+// It takes the quantity from quota when quota has the kind, and the
+// metadata default when it does not.  It drops retired kinds.  quota may be
+// nil (virtual quota).  Normalise copies every quantity, so the result never
+// aliases its inputs.  The informer cache may share those inputs.
+func Normalise(quota *unikornv1.Quota, metadata []unikornv1.QuotaMetadata) ([]unikornv1.ResourceQuota, error) {
+	out := make([]unikornv1.ResourceQuota, 0, len(metadata))
+
+	for i := range metadata {
+		kind := metadata[i].Name
+		quantity := metadata[i].Spec.Default
+
+		// The last entry for a kind wins, as allocation admission reads it.
+		if quota != nil {
+			for j := range quota.Spec.Quotas {
+				if quota.Spec.Quotas[j].Kind == kind {
+					quantity = quota.Spec.Quotas[j].Quantity
+				}
+			}
+		}
+
+		if quantity == nil {
+			return nil, fmt.Errorf("%w: quota entry has no quantity", coreerrors.ErrConsistency)
+		}
+
+		copied := quantity.DeepCopy()
+
+		out = append(out, unikornv1.ResourceQuota{Kind: kind, Quantity: &copied})
+	}
+
+	return out, nil
+}
+
+// StoredQuota returns the organization's quota as stored, without
+// normalisation.  The bool reports a virtual quota.  In that case nothing is
+// stored and the returned object is empty.
+func (c *Client) StoredQuota(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Quota, bool, error) {
 	selector, err := organizationSelector(organizationID.String())
 	if err != nil {
 		return nil, false, err
 	}
 
-	options := &client.ListOptions{
-		LabelSelector: selector,
-	}
-
 	var resources unikornv1.QuotaList
 
-	if err := c.client.List(ctx, &resources, options); err != nil {
+	if err := c.client.List(ctx, &resources, &client.ListOptions{LabelSelector: selector}); err != nil {
 		return nil, false, err
 	}
 
@@ -127,49 +171,28 @@ func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID
 		return nil, false, fmt.Errorf("%w: expected to find 1 organization quota", coreerrors.ErrConsistency)
 	}
 
-	// We are going to lazily create the quota and any new quota items that come
-	// into existence.
-	var quota *unikornv1.Quota
-
-	var virtual bool
-
 	if len(resources.Items) == 0 {
-		quota = &unikornv1.Quota{}
-
-		virtual = true
-	} else {
-		quota = &resources.Items[0]
+		return &unikornv1.Quota{}, true, nil
 	}
 
-	metadata := &unikornv1.QuotaMetadataList{}
+	return &resources.Items[0], false, nil
+}
 
-	if err := c.client.List(ctx, metadata, &client.ListOptions{}); err != nil {
+// GetQuota returns the organization's quota with its kinds normalised
+// against metadata.  The returned object keeps the stored ObjectMeta, so
+// callers can patch it.  The bool reports a virtual quota (none stored).
+func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID, metadata []unikornv1.QuotaMetadata) (*unikornv1.Quota, bool, error) {
+	quota, virtual, err := c.StoredQuota(ctx, organizationID)
+	if err != nil {
 		return nil, false, err
 	}
 
-	names := make([]string, len(metadata.Items))
-
-	for i, meta := range metadata.Items {
-		names[i] = meta.Name
-
-		findQuota := func(q unikornv1.ResourceQuota) bool {
-			return q.Kind == meta.Name
-		}
-
-		if index := slices.IndexFunc(quota.Spec.Quotas, findQuota); index >= 0 {
-			continue
-		}
-
-		quota.Spec.Quotas = append(quota.Spec.Quotas, unikornv1.ResourceQuota{
-			Kind:     meta.Name,
-			Quantity: meta.Spec.Default,
-		})
+	quotas, err := Normalise(quota, metadata)
+	if err != nil {
+		return nil, false, err
 	}
 
-	// And remove anything that's been retired.
-	quota.Spec.Quotas = slices.DeleteFunc(quota.Spec.Quotas, func(q unikornv1.ResourceQuota) bool {
-		return !slices.Contains(names, q.Kind)
-	})
+	quota.Spec.Quotas = quotas
 
 	return quota, virtual, nil
 }
@@ -198,10 +221,12 @@ func (c *Client) GetAllocations(ctx context.Context, organizationID ids.Organiza
 // argument, i.e. when updating the quotas, this will override the read from the organization.
 // If you pass in an allocation, i.e. when creating or updating an allocation, this will be
 // unioned with the organization's allocations, overriding an existing one if it exists.
-func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID ids.OrganizationID, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
+// metadata is the QuotaMetadata list.  The check uses it to normalise the stored quota when
+// quota is nil.
+func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID ids.OrganizationID, metadata []unikornv1.QuotaMetadata, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
 	// Handle the default quota.
 	if quota == nil {
-		temp, _, err := c.GetQuota(ctx, organizationID)
+		temp, _, err := c.GetQuota(ctx, organizationID, metadata)
 		if err != nil {
 			return err
 		}
