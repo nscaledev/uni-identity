@@ -21,8 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
@@ -98,75 +96,25 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	return out, nil
 }
 
-type allocation struct {
-	committed int64
-	reserved  int64
-}
-
-func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
-	metadata := &unikornv1.QuotaMetadataList{}
-
-	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, err
-	}
-
-	// Grab the totals across all allocations.
+// render lists the organization's allocations and renders quotas with them.
+func (c *Client) render(ctx context.Context, organizationID ids.OrganizationID, quotas []unikornv1.ResourceQuota, metadata []unikornv1.QuotaMetadata) (*openapi.QuotasRead, error) {
 	allocations, err := common.New(c.client).GetAllocations(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	allocated := map[string]allocation{}
+	items := make([]*unikornv1.Allocation, len(allocations.Items))
 
 	for i := range allocations.Items {
-		allocation := &allocations.Items[i]
-
-		for j := range allocation.Spec.Allocations {
-			resource := &allocation.Spec.Allocations[j]
-
-			allocation := allocated[resource.Kind]
-			allocation.committed += resource.Committed.Value()
-			allocation.reserved += resource.Reserved.Value()
-
-			allocated[resource.Kind] = allocation
-		}
+		items[i] = &allocations.Items[i]
 	}
 
-	out := &openapi.QuotasRead{
-		Quotas: make(openapi.QuotaReadList, len(in.Spec.Quotas)),
+	list, err := Convert(quotas, metadata, items)
+	if err != nil {
+		return nil, err
 	}
 
-	for i := range in.Spec.Quotas {
-		quota := &in.Spec.Quotas[i]
-
-		metaIndex := slices.IndexFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool {
-			return m.Name == quota.Kind
-		})
-
-		meta := &metadata.Items[metaIndex]
-
-		used := allocated[quota.Kind].committed + allocated[quota.Kind].reserved
-		free := quota.Quantity.Value() - used
-
-		out.Quotas[i] = openapi.QuotaRead{
-			Kind:        quota.Kind,
-			Quantity:    int(quota.Quantity.Value()),
-			Used:        int(used),
-			Free:        int(free),
-			Committed:   int(allocated[quota.Kind].committed),
-			Reserved:    int(allocated[quota.Kind].reserved),
-			DisplayName: meta.Spec.DisplayName,
-			Description: meta.Spec.Description,
-			Default:     int(meta.Spec.Default.Value()),
-			Format:      openapi.QuotaReadFormat(meta.Spec.Format),
-		}
-	}
-
-	slices.SortStableFunc(out.Quotas, func(a, b openapi.QuotaRead) int {
-		return strings.Compare(a.Kind, b.Kind)
-	})
-
-	return out, nil
+	return &openapi.QuotasRead{Quotas: list}, nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
@@ -182,7 +130,7 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*o
 		return nil, err
 	}
 
-	return c.convert(ctx, result, organizationID)
+	return c.render(ctx, organizationID, result.Spec.Quotas, metadata)
 }
 
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
@@ -213,7 +161,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 			return nil, errors.OAuth2InvalidRequest("unnable to create quota").WithError(err)
 		}
 
-		return c.convert(ctx, required, organizationID)
+		return c.render(ctx, organizationID, required.Spec.Quotas, metadata)
 	}
 
 	updated := current.DeepCopy()
@@ -233,5 +181,5 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, fmt.Errorf("%w: failed to patch quotas", err)
 	}
 
-	return c.convert(ctx, updated, organizationID)
+	return c.render(ctx, organizationID, updated.Spec.Quotas, metadata)
 }
