@@ -108,6 +108,8 @@ project count per row. The handler package owns that step in
 Quotas need organization-scope `identity:quotas` read. Projects and the
 count need organization-scope `identity:projects` read, or at least one
 project that the caller can see through project-scope read. Otherwise the
+response omits the field. A caller with only project-scope read, whose
+projects in the organization no longer exist, sees no project, so the
 response omits the field. A data fault (two Quota objects, a nil quantity)
 fails the page with `500`.
 

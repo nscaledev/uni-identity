@@ -488,6 +488,8 @@ type OrganizationListItem struct {
 	// Projects The organization's projects visible to the caller, in the same
 	// form as GET /api/v1/organizations/{id}/projects.  Present when
 	// requested and the caller can see projects in this organization.
+	// A caller with only project-scope read, whose projects no longer
+	// exist, sees no project, so the response omits this field.
 	Projects *Projects `json:"projects,omitempty"`
 
 	// ProjectsCount Number of the organization's projects visible to the caller.
