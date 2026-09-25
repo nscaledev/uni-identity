@@ -430,6 +430,9 @@ KIND_SUFFIX    := $(KIND_SUFFIX)
 KIND_NAMESPACE ?= unikorn-identity-$(KIND_SUFFIX)
 KIND_RELEASE   ?= identity-$(KIND_SUFFIX)
 
+# Optional second values file. integration-install applies it after test-values.yaml.
+INTEGRATION_EXTRA_VALUES ?=
+
 .PHONY: kind-cluster
 kind-cluster:  ## Create KinD cluster (skips if KIND_CLUSTER already exists)
 	kind get clusters | grep -q '^$(KIND_CLUSTER)$$' || \
@@ -445,6 +448,7 @@ integration-install:  ## Deploy identity into the current cluster with random na
 	  --namespace $(KIND_NAMESPACE) \
 	  --release-name $(KIND_RELEASE) \
 	  --values hack/ci/test-values.yaml \
+	  $(if $(INTEGRATION_EXTRA_VALUES),--values $(INTEGRATION_EXTRA_VALUES)) \
 	  > test/.env.install
 
 .PHONY: integration-fixtures

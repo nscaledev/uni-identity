@@ -12,7 +12,18 @@ permissions:
 
 jobs:
   Integration:
+    name: Integration (${{ matrix.label }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - label: response validation on
+          slug: validation-on
+          extraValues: ''
+        - label: response validation off
+          slug: validation-off
+          extraValues: hack/ci/test-values-runtime-schema-validation-off.yaml
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -57,6 +68,7 @@ jobs:
       env:
         KIND_CLUSTER: identity-${{ github.run_id }}
         KIND_SUFFIX: ${{ steps.rand.outputs.suffix }}
+        INTEGRATION_EXTRA_VALUES: ${{ matrix.extraValues }}
       run: make integration-install
 
     - name: Create test fixtures
@@ -130,7 +142,7 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: api-test-results
+        name: api-test-results-${{ matrix.slug }}
         path: |
           junit.xml
           test-results.json
