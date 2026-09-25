@@ -22,7 +22,6 @@ import (
 	goerrors "errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
@@ -98,86 +97,6 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	return out, nil
 }
 
-type allocation struct {
-	committed int64
-	reserved  int64
-}
-
-func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
-	metadata := &unikornv1.QuotaMetadataList{}
-
-	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, err
-	}
-
-	// Grab the totals across all allocations.
-	allocations, err := common.New(c.client).GetAllocations(ctx, organizationID)
-	if err != nil {
-		return nil, err
-	}
-
-	allocated := map[string]allocation{}
-
-	for i := range allocations.Items {
-		allocation := &allocations.Items[i]
-
-		for j := range allocation.Spec.Allocations {
-			resource := &allocation.Spec.Allocations[j]
-
-			allocation := allocated[resource.Kind]
-			allocation.committed += resource.Committed.Value()
-			allocation.reserved += resource.Reserved.Value()
-
-			allocated[resource.Kind] = allocation
-		}
-	}
-
-	out := &openapi.QuotasRead{
-		Quotas: make(openapi.QuotaReadList, len(in.Spec.Quotas)),
-	}
-
-	for i := range in.Spec.Quotas {
-		quota := &in.Spec.Quotas[i]
-
-		metaIndex := slices.IndexFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool {
-			return m.Name == quota.Kind
-		})
-
-		meta := &metadata.Items[metaIndex]
-
-		used := allocated[quota.Kind].committed + allocated[quota.Kind].reserved
-		free := quota.Quantity.Value() - used
-
-		out.Quotas[i] = openapi.QuotaRead{
-			Kind:        quota.Kind,
-			Quantity:    int(quota.Quantity.Value()),
-			Used:        int(used),
-			Free:        int(free),
-			Committed:   int(allocated[quota.Kind].committed),
-			Reserved:    int(allocated[quota.Kind].reserved),
-			DisplayName: meta.Spec.DisplayName,
-			Description: meta.Spec.Description,
-			Default:     int(meta.Spec.Default.Value()),
-			Format:      openapi.QuotaReadFormat(meta.Spec.Format),
-		}
-	}
-
-	slices.SortStableFunc(out.Quotas, func(a, b openapi.QuotaRead) int {
-		return strings.Compare(a.Kind, b.Kind)
-	})
-
-	return out, nil
-}
-
-func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
-	result, _, err := common.New(c.client).GetQuota(ctx, organizationID)
-	if err != nil {
-		return nil, err
-	}
-
-	return c.convert(ctx, result, organizationID)
-}
-
 // checkKinds rejects a request that names a quota kind with no QuotaMetadata.
 // Without this check, the write stores the kind and the response fails to
 // render it.
@@ -196,6 +115,35 @@ func (c *Client) checkKinds(ctx context.Context, request *openapi.QuotasWrite) e
 	}
 
 	return nil
+}
+
+func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
+	metadata := &unikornv1.QuotaMetadataList{}
+
+	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		return nil, err
+	}
+
+	allocations, err := common.New(c.client).GetAllocations(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+
+	quotas, err := Convert(in.Spec.Quotas, metadata.Items, allocations.Items)
+	if err != nil {
+		return nil, err
+	}
+
+	return &openapi.QuotasRead{Quotas: quotas}, nil
+}
+
+func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
+	result, _, err := common.New(c.client).GetQuota(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.convert(ctx, result, organizationID)
 }
 
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
