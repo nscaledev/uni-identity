@@ -26,6 +26,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -51,10 +52,13 @@ func NewUserDatabase(client client.Client, namespace string) *UserDatabase {
 	}
 }
 
+// GetUser finds the user with the given subject.  The list shares the cache's
+// objects and is read-only.  GetUser copies only the match, so callers own the
+// returned user.
 func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
-	if err := d.client.List(ctx, result, &client.ListOptions{}); err != nil {
+	if err := d.client.List(ctx, result, &client.ListOptions{UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, err
 	}
 
@@ -66,7 +70,7 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)
 	}
 
-	return &result.Items[index], nil
+	return result.Items[index].DeepCopy(), nil
 }
 
 // GetActiveUser returns a user that match the subject and is active.
@@ -130,13 +134,19 @@ func (d *UserDatabase) GetServiceAccount(ctx context.Context, id string) (*uniko
 	return &result.Items[0], nil
 }
 
-// getOrgIDs returns the organization IDs for a user.
+// GetOrganizationIDs returns the organization IDs for a subject's active user.
 func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) ([]string, error) {
 	user, err := d.GetActiveUser(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
 
+	return d.ActiveOrganizationIDs(ctx, user)
+}
+
+// ActiveOrganizationIDs returns the organizations in which the user has an
+// active membership, sorted and without duplicates.  It never returns nil.
+func (d *UserDatabase) ActiveOrganizationIDs(ctx context.Context, user *unikornv1.User) ([]string, error) {
 	selector := labels.SelectorFromSet(map[string]string{
 		constants.UserLabel: user.Name,
 	})
@@ -156,5 +166,7 @@ func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) (
 		result = append(result, organizationUsers.Items[i].Labels[constants.OrganizationLabel])
 	}
 
-	return result, nil
+	slices.Sort(result)
+
+	return slices.Compact(result), nil
 }

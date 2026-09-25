@@ -239,6 +239,8 @@ paths:
         Returns a list of organizations that the user is a member of.  If an
         email address is provided in the query this allows a user with sufficient
         privilege to check if a given user is a member of any organizations.
+        This operation returns at most a server-configured number of
+        organizations (unlimited by default).
       summary: List organizations
       tags:
       - Organizations

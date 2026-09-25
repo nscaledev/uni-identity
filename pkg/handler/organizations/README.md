@@ -23,13 +23,29 @@ Its main responsibilities are:
 
 Organization listing is not ordinary namespace CRUD.
 
-For callers with global organization-read authority, the client returns all organizations.
-Otherwise it derives visibility from identity membership:
+For callers with global organization-read authority, the client lists every organization from
+the controller-runtime cache without deep copies (`UnsafeDisableDeepCopy`). Those objects are
+shared with the cache and are read-only. Otherwise it derives visibility from identity
+membership:
 
-- users are mapped through `OrganizationUser` records
+- users are mapped through their active `OrganizationUser` records.
+  `userdb.ActiveOrganizationIDs` removes duplicates. The client then reads each distinct
+  organization with one cached `Get` without a deep copy
 - service accounts are mapped to their bound organization
 - an optional email filter can be used to ask "which organizations is this user in?", with
   additional permission checks when the caller is not querying their own identity
+
+`ActiveOrganizationIDs` returns only active memberships. A pending or suspended membership does
+not make its organization visible here. This matches the `orgIds` that a caller's token carries,
+because both use the same resolver. Both branches read cache objects without deep copies, and
+those objects are read-only.
+
+The list is in organization ID order.
+
+`GET /api/v1/organizations` returns each organization once. It returns at most
+`--v1-organization-list-limit` organizations. The value 0 (the default) means unlimited.
+The cap truncates silently: the response gives the client no signal that organizations are
+missing. Set the cap only when every consumer can accept a partial list.
 
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.
@@ -79,6 +95,12 @@ to its present-day role.
   API shape.
 - Domain/provider-directed login behaviour remains supported, but it is a secondary path relative
   to the package's main tenancy-root and membership-resolution role.
+- Objects from both branches are shared with the cache, and the converted list shares pointers
+  into them (`Spec.Domain`, `ProviderID`, deletion time). Treat both as read-only. Deep copy
+  before mutating.
+- A dangling `OrganizationUser` fails the membership branch with HTTP 500.
+- The list ignores the `email` of a service-account caller and returns the account's own
+  organization.
 
 ## TODO
 
