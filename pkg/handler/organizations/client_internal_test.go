@@ -51,6 +51,14 @@ func newStore(tb testing.TB, objects ...client.Object) *cachetest.Store {
 	return cachetest.New(tb, scheme, objects...)
 }
 
+// newFakeClient returns a client that serves the given objects the way the
+// informer cache does.
+func newFakeClient(t *testing.T, objects ...client.Object) client.Client {
+	t.Helper()
+
+	return newStore(t, objects...).Client()
+}
+
 // requireGetsSkipCopy asserts that the store recorded at least one Get, and
 // that every one requested UnsafeDisableDeepCopy.
 func requireGetsSkipCopy(t *testing.T, store *cachetest.Store) {
@@ -67,13 +75,10 @@ func requireGetsSkipCopy(t *testing.T, store *cachetest.Store) {
 
 // namespacedOrg returns an organization in the test namespace.
 func namespacedOrg(name, id string) *unikornv1.Organization {
-	return &unikornv1.Organization{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: clientTestNamespace,
-			Name:      id,
-			Labels:    map[string]string{constants.NameLabel: name},
-		},
-	}
+	o := org(name, id)
+	o.Namespace = clientTestNamespace
+
+	return &o
 }
 
 // TestListActiveMembershipsOnce pins the membership-visibility contract.
@@ -116,7 +121,7 @@ func TestListActiveMembershipsOnce(t *testing.T) {
 	})
 	ctx = rbac.NewContext(ctx, &openapi.Acl{})
 
-	list, err := New(c, clientTestNamespace).List(ctx, userdb.NewUserDatabase(c, clientTestNamespace), &email)
+	list, err := New(c, clientTestNamespace).List(ctx, userdb.NewUserDatabase(c, clientTestNamespace), &email, 0)
 	require.NoError(t, err)
 	require.Len(t, list, 2)
 	require.Equal(t, "id-a", list[0].Metadata.Id)
@@ -149,7 +154,7 @@ func TestGlobalReadSharesCacheReadOnly(t *testing.T) {
 	ctx := globalReadContext(t)
 	organizations := New(store.Client(), clientTestNamespace)
 
-	_, err := organizations.List(ctx, nil, nil)
+	_, err := organizations.List(ctx, nil, nil, 0)
 	require.NoError(t, err)
 
 	options := store.ListOptions()
@@ -159,4 +164,166 @@ func TestGlobalReadSharesCacheReadOnly(t *testing.T) {
 	require.True(t, *options[0].UnsafeDisableDeepCopy)
 
 	store.RequireUnchanged(t)
+}
+
+func TestListZeroCapReturnsAll(t *testing.T) {
+	t.Parallel()
+
+	c := newFakeClient(t, namespacedOrg("a", "id-1"), namespacedOrg("b", "id-2"), namespacedOrg("c", "id-3"))
+
+	ctx := rbac.NewContext(t.Context(), &openapi.Acl{
+		Global: &openapi.AclEndpoints{
+			{Name: "identity:organizations", Operations: openapi.AclOperations{openapi.Read}},
+		},
+	})
+
+	organizations := New(c, clientTestNamespace)
+
+	all, err := organizations.List(ctx, nil, nil, 0)
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+
+	negative, err := organizations.List(ctx, nil, nil, -1)
+	require.NoError(t, err)
+	require.Len(t, negative, 3)
+
+	capped, err := organizations.List(ctx, nil, nil, 2)
+	require.NoError(t, err)
+	require.Len(t, capped, 2)
+	require.Equal(t, "id-1", capped[0].Metadata.Id)
+	require.Equal(t, "id-2", capped[1].Metadata.Id)
+}
+
+// memberFixture returns an active user with an active membership in each
+// organization, and a context for that user with an empty ACL.
+func memberFixture(t *testing.T, organizationIDs ...string) (context.Context, []client.Object) {
+	t.Helper()
+
+	email := "alice@example.com"
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: clientTestNamespace, Name: "user-alice"},
+		Spec:       unikornv1.UserSpec{Subject: email, State: unikornv1.UserStateActive},
+	}
+
+	objects := []client.Object{user}
+
+	for _, id := range organizationIDs {
+		objects = append(objects, &unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "org-" + id,
+				Name:      "orguser-" + id,
+				Labels: map[string]string{
+					constants.OrganizationLabel: id,
+					constants.UserLabel:         user.Name,
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+		})
+	}
+
+	ctx := authorization.NewContext(t.Context(), &authorization.Info{
+		Userinfo: &openapi.Userinfo{Sub: email, Email: ptr.To(email)},
+	})
+
+	return rbac.NewContext(ctx, &openapi.Acl{}), objects
+}
+
+func TestListOrdersShuffledInput(t *testing.T) {
+	t.Parallel()
+
+	// ID order differs from display name order, so a missing sort fails.
+	c := newFakeClient(t,
+		namespacedOrg("gamma", "id-1"),
+		namespacedOrg("beta", "id-2"),
+		namespacedOrg("delta", "id-3"),
+		namespacedOrg("alpha", "id-4"),
+	)
+
+	ctx := globalReadContext(t)
+	organizations := New(c, clientTestNamespace)
+	want := []string{"id-4", "id-2", "id-3", "id-1"}
+
+	// Each List shuffles again, so repeated calls make a sorted input by
+	// chance very unlikely.
+	for range 20 {
+		list, err := organizations.List(ctx, nil, nil, 0)
+		require.NoError(t, err)
+
+		got := make([]string, len(list))
+		for i := range list {
+			got[i] = list[i].Metadata.Id
+		}
+
+		require.Equal(t, want, got)
+	}
+}
+
+// freshOrgsFixture returns organization objects for TestListCapsBothBranches.
+// Each subtest calls it separately, since the subtests run in parallel and
+// must not share the same object pointers.
+func freshOrgsFixture() []client.Object {
+	return []client.Object{namespacedOrg("beta", "id-1"), namespacedOrg("alpha", "id-2"), namespacedOrg("gamma", "id-3")}
+}
+
+func TestListCapsBothBranches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) (context.Context, []client.Object)
+		first string
+		all   []string
+	}{
+		{
+			name: "global read",
+			setup: func(t *testing.T) (context.Context, []client.Object) {
+				t.Helper()
+
+				return globalReadContext(t), freshOrgsFixture()
+			},
+			first: "id-2",
+			all:   []string{"id-2", "id-1", "id-3"},
+		},
+		{
+			name: "membership",
+			setup: func(t *testing.T) (context.Context, []client.Object) {
+				t.Helper()
+
+				ctx, objects := memberFixture(t, "id-1", "id-2")
+
+				return ctx, append(freshOrgsFixture(), objects...)
+			},
+			first: "id-2",
+			all:   []string{"id-2", "id-1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, objects := tt.setup(t)
+			store := newStore(t, objects...)
+			organizations := New(store.Client(), clientTestNamespace)
+			udb := userdb.NewUserDatabase(store.Client(), clientTestNamespace)
+
+			capped, err := organizations.List(ctx, udb, nil, 1)
+			require.NoError(t, err)
+			require.Len(t, capped, 1)
+			require.Equal(t, tt.first, capped[0].Metadata.Id)
+
+			all, err := organizations.List(ctx, udb, nil, 0)
+			require.NoError(t, err)
+
+			got := make([]string, len(all))
+			for i := range all {
+				got[i] = all[i].Metadata.Id
+			}
+
+			require.Equal(t, tt.all, got)
+
+			store.RequireUnchanged(t)
+		})
+	}
 }

@@ -68,6 +68,10 @@ identity:
   auth0Exchange:
     issuer: ~
     audience: ~
+  # Organization list limits. 0 uses the binary default (unlimited).
+  organizationList:
+    # Maximum organizations returned by GET /api/v1/organizations.
+    v1Limit: 0
 
 # Issuer related configuration.
 issuer:

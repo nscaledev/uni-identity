@@ -21,6 +21,16 @@ CHART=charts/identity
 
 render() { helm template test "$CHART" --set-json "globalRoleBindings=$1"; }
 
+# render_set renders the chart with its arguments joined into one --set
+# argument, or with unmodified values when called with none.
+render_set() {
+	if [[ $# -eq 0 ]]; then
+		helm template test "$CHART"
+	else
+		helm template test "$CHART" --set "$(IFS=,; echo "$*")"
+	fi
+}
+
 die() { echo "FAIL: $*" >&2; exit 1; }
 
 # role_id_of <friendly-name> resolves a Role manifest name from a render on
@@ -30,6 +40,9 @@ role_id_of() { awk -v want="$1" '$1=="name:"{n=$2} $0 ~ "unikorn-cloud.org/name:
 # assert_one_match <output> <pattern> — anchors on a resolved role ID so an
 # empty/absent ID (or a duplicate/missing flag) can't pass vacuously.
 assert_one_match() { [[ $(grep -c -- "$2" <<<"$1") -eq 1 ]] || die "expected exactly one match for: $2"; }
+
+# assert_no_match <output> <pattern>
+assert_no_match() { [[ $(grep -c -- "$2" <<<"$1") -eq 0 ]] || die "expected no match for: $2"; }
 
 # must_fail requires the expected message, so another failing guard cannot
 # satisfy the check.
@@ -182,5 +195,18 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"Platform\tEngi
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["platform-administrator"]}]' "group is required"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
+
+# Zero, null and absent all mean "use the binary default", so the chart
+# must omit the flag rather than render a zero or a literal "null" that
+# crashes an older pinned image.  These cases cover the chart default (0)
+# and v1Limit=null.  They do not cover an absent key.
+out=$(render_set)
+assert_no_match "$out" "organization-list-limit"
+
+out=$(render_set identity.organizationList.v1Limit=null)
+assert_no_match "$out" "organization-list-limit"
+
+out=$(render_set identity.organizationList.v1Limit=25)
+assert_one_match "$out" "--v1-organization-list-limit=25"
 
 echo "chart render checks OK"

@@ -188,6 +188,10 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		},
 	}
 
+	if err := s.HandlerOptions.Organizations.Validate(); err != nil {
+		return nil, err
+	}
+
 	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
