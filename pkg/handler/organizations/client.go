@@ -91,6 +91,18 @@ func convertOrganizationType(in *unikornv1.Organization) openapi.OrganizationTyp
 	return openapi.Adhoc
 }
 
+// copyString returns a new pointer to a copy of the string, so the result
+// shares no memory with in.
+func copyString(in *string) *string {
+	if in == nil {
+		return nil
+	}
+
+	return ptr.To(*in)
+}
+
+// convert copies every value it takes from in. in can come from the informer
+// cache without a copy, and the result never points into it.
 func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 	out := &openapi.OrganizationRead{
 		Metadata: conversion.ResourceReadMetadata(in, in.Spec.Tags),
@@ -99,17 +111,22 @@ func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 		},
 	}
 
+	// ResourceReadMetadata points DeletionTime at the timestamp inside in.
+	if out.Metadata.DeletionTime != nil {
+		out.Metadata.DeletionTime = ptr.To(*out.Metadata.DeletionTime)
+	}
+
 	if in.Spec.Domain != nil {
-		out.Spec.Domain = in.Spec.Domain
+		out.Spec.Domain = copyString(in.Spec.Domain)
 		out.Spec.ProviderScope = ptr.To(openapi.ProviderScope(*in.Spec.ProviderScope))
-		out.Spec.ProviderID = in.Spec.ProviderID
+		out.Spec.ProviderID = copyString(in.Spec.ProviderID)
 	}
 
 	// TODO: We should cross reference with the provider type and
 	// only emit what's allowed.
 	if in.Spec.ProviderOptions != nil {
 		if in.Spec.ProviderOptions.Google != nil {
-			out.Spec.GoogleCustomerID = in.Spec.ProviderOptions.Google.CustomerID
+			out.Spec.GoogleCustomerID = copyString(in.Spec.ProviderOptions.Google.CustomerID)
 		}
 	}
 
@@ -143,22 +160,6 @@ func (c *Client) get(ctx context.Context, organizationID ids.OrganizationID) (*u
 	}
 
 	return result, nil
-}
-
-func (c *Client) list(ctx context.Context) (map[string]*unikornv1.Organization, error) {
-	result := &unikornv1.OrganizationList{}
-
-	if err := c.client.List(ctx, result, &client.ListOptions{Namespace: c.namespace}); err != nil {
-		return nil, err
-	}
-
-	out := map[string]*unikornv1.Organization{}
-
-	for i := range result.Items {
-		out[result.Items[i].Name] = &result.Items[i]
-	}
-
-	return out, nil
 }
 
 func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info, email string) (*unikornv1.User, error) {
@@ -231,19 +232,23 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 	// will have an unscoped ACL, so can check for global access to all organizations.
 	// If we don't have that then we need to use RBAC to get a list of organizations we are
 	// members of and return only them.
+	//
+	// Both branches read the cache without deep copies. The organization
+	// objects come from the informer and are read-only. convert copies every
+	// value it takes, so the returned list shares no memory with the cache.
 	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read); err == nil && email == nil {
 		var result unikornv1.OrganizationList
 
-		if err := c.client.List(ctx, &result, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		options := &client.ListOptions{
+			Namespace:             c.namespace,
+			UnsafeDisableDeepCopy: ptr.To(true),
+		}
+
+		if err := c.client.List(ctx, &result, options); err != nil {
 			return nil, err
 		}
 
 		return convertList(&result), nil
-	}
-
-	organizations, err := c.list(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("%w: failed to list organizations", err)
 	}
 
 	organizationIDs, err := c.organizationIDs(ctx, userdb, email)
@@ -252,16 +257,21 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 	}
 
 	result := unikornv1.OrganizationList{
-		Items: make([]unikornv1.Organization, len(organizationIDs)),
+		Items: make([]unikornv1.Organization, 0, len(organizationIDs)),
 	}
 
-	for i := range organizationIDs {
-		organization, ok := organizations[organizationIDs[i]]
-		if !ok {
-			return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
+	for _, organizationID := range organizationIDs {
+		organization := &unikornv1.Organization{}
+
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization, client.UnsafeDisableDeepCopy); err != nil {
+			if kerrors.IsNotFound(err) {
+				return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
+			}
+
+			return nil, fmt.Errorf("%w: failed to get organization", err)
 		}
 
-		result.Items[i] = *organization
+		result.Items = append(result.Items, *organization)
 	}
 
 	return convertList(&result), nil
