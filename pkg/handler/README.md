@@ -171,8 +171,8 @@ one. See [`users`](./users/README.md) and [`serviceaccounts`](./serviceaccounts/
 
 ## Package Map
 
-- [`organizations`](./organizations/README.md): tenancy-root visibility and current `v1`
-  namespace handoff
+- [`organizations`](./organizations/README.md): tenancy-root visibility, paged `v2` listing,
+  deprecated `v1` listing and current `v1` namespace handoff
 - [`roles`](./roles/README.md): filtered user-facing role catalogue
 - [`users`](./users/README.md): global identity plus organization membership
 - [`serviceaccounts`](./serviceaccounts/README.md): organization-local non-human identities with

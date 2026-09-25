@@ -40,12 +40,61 @@ not make its organization visible here. This matches the `orgIds` that a caller'
 because both use the same resolver. Both branches read cache objects without deep copies, and
 those objects are read-only.
 
-The list is in organization ID order.
+In `v2`, both branches feed one paging step:
 
-`GET /api/v1/organizations` returns each organization once. It returns at most
-`--v1-organization-list-limit` organizations. The value 0 (the default) means unlimited.
-The cap truncates silently: the response gives the client no signal that organizations are
-missing. Set the cap only when every consumer can accept a partial list.
+1. Build `(lower-case display name, display name, ID)` keys.
+2. Apply the `v2` `name` substring filter.
+3. Sort the keys.
+4. Seek past the cursor.
+5. Slice one page.
+6. Convert only that page.
+
+`v1` is ordered by ID. `v2` is ordered by display name: the order ignores case, and the exact
+display name, then the ID, break ties.
+
+The package enforces the `v2` walk rules itself, in addition to request validation:
+
+- `limit` is 1-500. When `limit` is absent, the package uses the configured default. When the
+  configured default is 0, the package uses 50.
+- `name` is a case-insensitive substring over the label-value charset (letters, digits, `.`,
+  `_`, `-`, at most 63 characters). It binds to the walk case-insensitively.
+- `email` binds to the walk exactly.
+- An empty `name` or `email` counts as absent.
+- The cursor is at most 4096 bytes. It carries the walk's filters verbatim, including `email`.
+  Treat a cursor like the query that produced it.
+
+`id` selects organizations by ID instead of a walk. A request takes up to 100 IDs, and `id`
+excludes every other parameter. The response holds them in one page, in display-name order. The
+response omits an ID that the caller cannot see. On the global branch, it also omits an ID that
+does not exist. Clients repeat the parameter (`?id=a&id=b`). The server rejects a
+comma-separated list with `400`.
+
+**Cost.** On the global branch, one request costs one shallow list plus one sort of N keys,
+`O(N log N)`, regardless of `limit`. The caller controls `limit`, so a full `v2` walk over the
+same N organizations costs `O(N^2/limit)`. The membership branch scans every OrganizationUser
+record in the cache to find the caller's memberships. It then reads one organization per
+membership. `userdb.GetUser` scans every user to resolve one subject.
+
+`list_benchmark_internal_test.go` measures these figures at 11,000 organizations (Apple M-series,
+go1.25.8). The figures are approximate:
+
+- The unlimited `v1` list is about 16 MB and 115k allocations per request. Before cache reads
+  stopped making deep copies, it was about 25 MB and 147k allocations.
+- One `v2` page is about 5.4 MB and 4k allocations, whatever the limit. A full walk at
+  `limit=50` allocates about 1.2 GB.
+
+A consumer that walks the full estate would justify a sorted index.
+
+`GET /api/v2/organizations` pages by an opaque cursor: base64url JSON of the last key and the
+walk's `name` and `email` filters. The server accepts a repeated identical filter. A different
+filter, or a filter present when the cursor has none, causes a `400`. Each page re-runs RBAC and
+the email privilege check, so a cursor grants nothing that its holder could not request directly.
+
+`GET /api/v1/organizations` is deprecated. It sends `Deprecation` and `Link` headers and does not
+page. It returns each organization once, in organization ID order, not in display-name order. It
+returns at most `--v1-organization-list-limit` organizations. The value 0 (the default) means
+unlimited. The cap truncates silently: the response gives the client no signal that organizations
+are missing. Set the cap only when every consumer can accept a partial list.
 
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.
@@ -95,12 +144,16 @@ to its present-day role.
   API shape.
 - Domain/provider-directed login behaviour remains supported, but it is a secondary path relative
   to the package's main tenancy-root and membership-resolution role.
-- Objects from both branches are shared with the cache, and the converted list shares pointers
+- Objects from both branches are shared with the cache, and the converted page shares pointers
   into them (`Spec.Domain`, `ProviderID`, deletion time). Treat both as read-only. Deep copy
   before mutating.
-- A dangling `OrganizationUser` fails the membership branch with HTTP 500.
-- The list ignores the `email` of a service-account caller and returns the account's own
+- A dangling `OrganizationUser` fails the membership branch with HTTP 500, on a walk and on an
+  `id` lookup. An unknown ID on the global branch is omitted.
+- Both API versions ignore the `email` of a service-account caller and return the account's own
   organization.
+- Cursor walks are keyset walks over a mutable key. A walk does not see an organization created
+  before the cursor until the next walk. An organization renamed across the cursor can appear
+  twice or not at all.
 
 ## TODO
 

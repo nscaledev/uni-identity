@@ -56,6 +56,9 @@ direction for newer services. The direction used by newer services is:
 In other words, the storage model remains largely the same while the external API model
 changes from scoped `v1` routing to a flatter `v2` routing model.
 
+`GET /api/v2/organizations` is the first endpoint on that model: flat path, query-parameter
+filtering, cursor pagination.
+
 ## Invariants
 
 - This package is the source of truth for identity's persisted Kubernetes resource shapes.

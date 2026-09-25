@@ -74,6 +74,10 @@ The current `v1` API still carries historical organization/project scoping and
 namespace handoff behaviour. The package docs call this out as current
 operational reality, not the preferred long-term shape.
 
+`GET /api/v2/organizations` is the first endpoint on the `v2` shape: a flat
+path, query-parameter filtering and cursor pagination. See
+[handler/organizations](./handler/organizations/README.md).
+
 Start with [apis/unikorn/v1alpha1](./apis/unikorn/v1alpha1/README.md) and
 [handler](./handler/README.md) if you need that distinction explained first.
 
