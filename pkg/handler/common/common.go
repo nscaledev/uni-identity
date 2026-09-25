@@ -221,6 +221,8 @@ func (c *Client) GetAllocations(ctx context.Context, organizationID ids.Organiza
 // argument, i.e. when updating the quotas, this will override the read from the organization.
 // If you pass in an allocation, i.e. when creating or updating an allocation, this will be
 // unioned with the organization's allocations, overriding an existing one if it exists.
+// metadata is the QuotaMetadata list.  The check uses it to normalise the stored quota when
+// quota is nil.
 func (c *Client) CheckQuotaConsistency(ctx context.Context, organizationID ids.OrganizationID, metadata []unikornv1.QuotaMetadata, quota *unikornv1.Quota, allocation *unikornv1.Allocation) error {
 	// Handle the default quota.
 	if quota == nil {

@@ -55,8 +55,10 @@ func sumAllocations(allocations []*unikornv1.Allocation) (map[string]usage, erro
 }
 
 // Convert renders quotas with usage summed from allocations, sorted by
-// Kind.  It skips a kind without metadata.  A nil quantity is a data fault.
-// Convert does not change its inputs.  The informer cache may share them.
+// Kind.  It skips a kind without metadata.  Three cases are data faults: a
+// nil quota quantity, a nil QuotaMetadata default, and a nil committed or
+// reserved allocation quantity.  Convert does not change its inputs.  The
+// informer cache may share them.
 func Convert(quotas []unikornv1.ResourceQuota, metadata []unikornv1.QuotaMetadata, allocations []*unikornv1.Allocation) (openapi.QuotaReadList, error) {
 	totals, err := sumAllocations(allocations)
 	if err != nil {
