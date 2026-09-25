@@ -140,6 +140,9 @@ type ServerInterface interface {
 	// Update user
 	// (PUT /api/v1/organizations/{organizationID}/users/{userID})
 	PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter)
+	// List organizations (paginated)
+	// (GET /api/v2/organizations)
+	GetApiV2Organizations(w http.ResponseWriter, r *http.Request, params GetApiV2OrganizationsParams)
 	// Get the deployed service version
 	// (GET /api/version)
 	GetApiVersion(w http.ResponseWriter, r *http.Request)
@@ -404,6 +407,12 @@ func (_ Unimplemented) DeleteApiV1OrganizationsOrganizationIDUsersUserID(w http.
 // Update user
 // (PUT /api/v1/organizations/{organizationID}/users/{userID})
 func (_ Unimplemented) PutApiV1OrganizationsOrganizationIDUsersUserID(w http.ResponseWriter, r *http.Request, organizationID OrganizationIDParameter, userID UserIDParameter) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List organizations (paginated)
+// (GET /api/v2/organizations)
+func (_ Unimplemented) GetApiV2Organizations(w http.ResponseWriter, r *http.Request, params GetApiV2OrganizationsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1915,6 +1924,71 @@ func (siw *ServerInterfaceWrapper) PutApiV1OrganizationsOrganizationIDUsersUserI
 	handler.ServeHTTP(w, r)
 }
 
+// GetApiV2Organizations operation middleware
+func (siw *ServerInterfaceWrapper) GetApiV2Organizations(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, Oauth2AuthenticationScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetApiV2OrganizationsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "name" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "name", r.URL.Query(), &params.Name)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "id" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "id", r.URL.Query(), &params.Id)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "email" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "email", r.URL.Query(), &params.Email)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "email", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetApiV2Organizations(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetApiVersion operation middleware
 func (siw *ServerInterfaceWrapper) GetApiVersion(w http.ResponseWriter, r *http.Request) {
 
@@ -2285,6 +2359,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/api/v1/organizations/{organizationID}/users/{userID}", wrapper.PutApiV1OrganizationsOrganizationIDUsersUserID)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/api/v2/organizations", wrapper.GetApiV2Organizations)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/api/version", wrapper.GetApiVersion)

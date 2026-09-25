@@ -501,6 +501,26 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV1OrganizationsWit
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV1OrganizationsWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV1OrganizationsWithResponse), varargs...)
 }
 
+// GetApiV2OrganizationsWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) GetApiV2OrganizationsWithResponse(arg0 context.Context, arg1 *openapi.GetApiV2OrganizationsParams, arg2 ...openapi.RequestEditorFn) (*openapi.GetApiV2OrganizationsResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1}
+	for _, a := range arg2 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "GetApiV2OrganizationsWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.GetApiV2OrganizationsResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetApiV2OrganizationsWithResponse indicates an expected call of GetApiV2OrganizationsWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) GetApiV2OrganizationsWithResponse(arg0, arg1 any, arg2 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1}, arg2...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetApiV2OrganizationsWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetApiV2OrganizationsWithResponse), varargs...)
+}
+
 // GetApiVersionWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) GetApiVersionWithResponse(arg0 context.Context, arg1 ...openapi.RequestEditorFn) (*openapi.GetApiVersionResponse, error) {
 	m.ctrl.T.Helper()

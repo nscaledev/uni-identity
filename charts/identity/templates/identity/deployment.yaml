@@ -25,6 +25,9 @@ spec:
         {{- with .Values.identity.organizationList.v1Limit }}
         - --v1-organization-list-limit={{ . | int }}
         {{- end }}
+        {{- with .Values.identity.organizationList.v2DefaultLimit }}
+        - --v2-organization-list-default-limit={{ . | int }}
+        {{- end }}
         - --jose-tls-secret={{ .Release.Name }}-jose-tls
         - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
         {{- with .Values.identity.auth0Exchange }}

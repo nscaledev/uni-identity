@@ -226,6 +226,56 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+  /api/v2/organizations:
+    description: |-
+      Paginated organization listing.  This is the successor of
+      /api/v1/organizations.
+    get:
+      description: |-
+        Returns one page of organizations that the caller can see.  The
+        order is by display name ignoring case, then by exact display name,
+        then by ID.  A caller with global organization read access sees every
+        organization.  Other callers see the organizations they are a member
+        of.  If the request includes an email address, a caller with global
+        user read access lists the organizations of that user instead.  For a
+        service account, the server returns its own organization and ignores
+        the email.
+
+        Paging is cursor based.  The first request defines the walk.  The
+        server binds its name and email filters into pagination.nextCursor.
+        Later requests need only the cursor and, optionally, a limit.  The
+        server accepts a name or email repeated with the same value.  The
+        server returns 400 for a name or email with a different value.  It
+        also returns 400 for a name or email when the cursor carries no
+        value for it.  An empty name or email counts as absent.  The server
+        returns 400 for a malformed cursor.
+
+        The id parameter selects organizations by ID, with the same
+        visibility rules, in one page.
+      summary: List organizations (paginated)
+      tags:
+      - Organizations
+      security:
+      - oauth2Authentication: []
+      parameters:
+      - $ref: '#/components/parameters/organizationListLimitParameter'
+      - $ref: '#/components/parameters/organizationListCursorParameter'
+      - $ref: '#/components/parameters/organizationListNameParameter'
+      - $ref: '#/components/parameters/organizationListIDParameter'
+      - $ref: '#/components/parameters/userEmailParameter'
+      responses:
+        '200':
+          $ref: '#/components/responses/organizationPageResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '404':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/notFoundResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
   /api/v1/organizations:
     description: |-
       Allows management of organizations.  An organization may use ad hoc
@@ -235,12 +285,15 @@ paths:
       implicitly selected.  Domain based authentication allows integration with
       user provided OIDC compliant identity services.
     get:
+      deprecated: true
       description: |-
-        Returns a list of organizations that the user is a member of.  If an
-        email address is provided in the query this allows a user with sufficient
+        Deprecated: use /api/v2/organizations, which pages and filters.  This
+        operation returns at most a server-configured number of organizations
+        (unlimited by default).  The order is by ID, not by display name.
+        The operation sets the Deprecation and Link response headers.  It
+        returns the organizations the user is a member of.  If an email
+        address is provided in the query this allows a user with sufficient
         privilege to check if a given user is a member of any organizations.
-        This operation returns at most a server-configured number of
-        organizations (unlimited by default).
       summary: List organizations
       tags:
       - Organizations
@@ -1203,6 +1256,56 @@ components:
       description: A user's email address.
       schema:
         type: string
+    organizationListLimitParameter:
+      name: limit
+      in: query
+      description: |-
+        Maximum number of organizations in one page.  When the request omits
+        it, the server applies its configured default.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+    organizationListCursorParameter:
+      name: cursor
+      in: query
+      description: |-
+        Opaque pagination cursor taken from the previous page's
+        pagination.nextCursor.  It carries the position and the filters of the
+        walk.  The format may change between releases, so clients must not
+        construct or decode it.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]+$'
+        maxLength: 4096
+    organizationListNameParameter:
+      name: name
+      in: query
+      description: |-
+        Case-insensitive substring match on the organization display name.
+        Display names are label values, so the filter accepts only letters,
+        digits, '.', '_' and '-'.
+      schema:
+        type: string
+        maxLength: 63
+        pattern: '^[A-Za-z0-9._-]*$'
+    organizationListIDParameter:
+      name: id
+      in: query
+      description: |-
+        Organization IDs to return.  Repeat the parameter for each ID
+        (?id=a&id=b).  The server returns 400 for a comma-separated list.
+        The response contains each listed organization that the caller can
+        see, in one page and in display-name order, as in the list.  The
+        response omits IDs that the caller cannot see.  Do not use this
+        parameter with any other parameter.
+      style: form
+      explode: true
+      schema:
+        type: array
+        maxItems: 100
+        items:
+          $ref: '#/components/schemas/organizationId'
     referenceParameter:
       name: reference
       in: path
@@ -1912,6 +2015,30 @@ components:
       type: array
       items:
         $ref: '#/components/schemas/organizationRead'
+    paginationMetadata:
+      description: Pagination state for one list page.
+      type: object
+      required:
+      - limit
+      properties:
+        limit:
+          description: The page size that the server applied.
+          type: integer
+        nextCursor:
+          description: |-
+            Cursor for the next page.  Present only when another page exists.
+          type: string
+    organizationPage:
+      description: One page of organizations.
+      type: object
+      required:
+      - items
+      - pagination
+      properties:
+        items:
+          $ref: '#/components/schemas/organizations'
+        pagination:
+          $ref: '#/components/schemas/paginationMetadata'
     aclOperation:
       description: An access control operation.
       type: string
@@ -2785,6 +2912,15 @@ components:
     organizationsResponse:
       description: |-
         A list of organizations.
+      headers:
+        Deprecation:
+          description: RFC 9745 deprecation date of this operation.
+          schema:
+            type: string
+        Link:
+          description: Link to the successor operation, rel="successor-version".
+          schema:
+            type: string
       content:
         application/json:
           schema:
@@ -2800,6 +2936,26 @@ components:
               organizationType: domain
               domain: acme.corp
               providerID: b6ec241d-e3b4-4afc-a7aa-500fcb650d8e
+    organizationPageResponse:
+      description: |-
+        One page of organizations.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/organizationPage'
+          example:
+            items:
+            - metadata:
+                id: a142f641-7fd6-4ab9-a875-344c7ebadc53
+                name: acme-corp
+                creationTime: 2024-05-31T14:11:00Z
+                provisioningStatus: provisioned
+                healthStatus: healthy
+              spec:
+                organizationType: adhoc
+            pagination:
+              limit: 1
+              nextCursor: eyJ2IjoxLCJuYW1lIjoiYWNtZS1jb3JwIiwiaWQiOiJhMTQyZjY0MS03ZmQ2LTRhYjktYTg3NS0zNDRjN2ViYWRjNTMifQ
     aclResponse:
       description: |-
         A list of access controls.

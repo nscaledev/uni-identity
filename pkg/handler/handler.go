@@ -50,6 +50,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	// organizationsV1Deprecation is the RFC 9745 Deprecation header value of
+	// GET /api/v1/organizations: 2026-09-24T00:00:00Z.
+	organizationsV1Deprecation = "@1790208000"
+
+	// organizationsV1Successor links the deprecated list to its replacement.
+	organizationsV1Successor = `</api/v2/organizations>; rel="successor-version"`
+)
+
 type Handler struct {
 	// client gives cached access to Kubernetes.
 	client client.Client
@@ -417,6 +426,28 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderI
 
 func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, params openapi.GetApiV1OrganizationsParams) {
 	result, err := organizations.New(h.client, h.namespace).List(r.Context(), h.userdb, params.Email, h.options.Organizations.V1ListLimit)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Deprecation", organizationsV1Deprecation)
+	w.Header().Set("Link", organizationsV1Successor)
+	// Deprecation and Link are not CORS-safelisted.  Expose them so that
+	// browser clients can read them.
+	w.Header().Set("Access-Control-Expose-Headers", "Deprecation, Link")
+	h.setUncacheable(w)
+	util.WriteJSONResponse(w, r, http.StatusOK, result)
+}
+
+func (h *Handler) GetApiV2Organizations(w http.ResponseWriter, r *http.Request, params openapi.GetApiV2OrganizationsParams) {
+	walk, err := h.options.Organizations.ResolveWalk(params)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	result, err := organizations.New(h.client, h.namespace).ListPage(r.Context(), h.userdb, walk)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return

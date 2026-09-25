@@ -125,6 +125,17 @@ func convertList(in []unikornv1.Organization) openapi.Organizations {
 	return out
 }
 
+// convertPage converts a page of pointers that paginate returns.
+func convertPage(in []*unikornv1.Organization) openapi.Organizations {
+	out := make(openapi.Organizations, len(in))
+
+	for i := range in {
+		out[i] = *convert(in[i])
+	}
+
+	return out
+}
+
 // get returns the implicit organization identified by the JWT claims.
 func (c *Client) get(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Organization, error) {
 	result := &unikornv1.Organization{}
@@ -198,6 +209,56 @@ func globalRead(ctx context.Context, email *string) bool {
 	return email == nil && rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read) == nil
 }
 
+// visibleByID returns the organizations in ids that the caller may see, in
+// page key order.  It omits an ID that the caller cannot see.  On the global
+// branch it also omits an ID that does not exist, so the result does not
+// reveal which case applies.  On the membership branch, a membership whose
+// organization does not exist is a consistency error, as in visible.  The
+// result shares objects with the controller-runtime cache, so callers must
+// treat it as read-only.
+func (c *Client) visibleByID(ctx context.Context, userdb *userdb.UserDatabase, ids []string) ([]*unikornv1.Organization, error) {
+	global := globalRead(ctx, nil)
+
+	if !global {
+		organizationIDs, err := c.organizationIDs(ctx, userdb, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		// organizationIDs is sorted: ActiveOrganizationIDs sorts, and a
+		// service account has one organization.
+		ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
+			_, found := slices.BinarySearch(organizationIDs, id)
+
+			return !found
+		})
+	}
+
+	items := make([]unikornv1.Organization, 0, len(ids))
+
+	for _, id := range ids {
+		organization := &unikornv1.Organization{}
+
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: id}, organization, client.UnsafeDisableDeepCopy); err != nil {
+			if kerrors.IsNotFound(err) {
+				if global {
+					continue
+				}
+
+				return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
+			}
+
+			return nil, fmt.Errorf("%w: failed to get organization", err)
+		}
+
+		items = append(items, *organization)
+	}
+
+	page, _ := paginate(items, pageRequest{limit: len(items)})
+
+	return page, nil
+}
+
 // visible returns the organizations the caller may see.  Both branches share
 // objects with the controller-runtime cache, so callers must treat them as
 // read-only.  Nothing in this package mutates them.  Deep copy before
@@ -242,8 +303,8 @@ func (c *Client) visible(ctx context.Context, userdb *userdb.UserDatabase, email
 	return result, nil
 }
 
-// List serves the v1 endpoint: the first limit organizations in ID order,
-// all of them when limit is 0 or less.  It does not rely on
+// List serves the deprecated v1 endpoint: the first limit organizations in
+// ID order, all of them when limit is 0 or less.  It does not rely on
 // Options.Validate to keep a non-positive limit out.  The sort reorders the
 // slice, not the shared cache objects.
 func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *string, limit int) (openapi.Organizations, error) {
@@ -261,6 +322,58 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 	}
 
 	return convertList(items), nil
+}
+
+// ListPage serves the v2 endpoint: one page of the walk, filtered by display
+// name, with the filters bound into the next cursor.  A walk with IDs
+// returns the visible organizations among them in one page.
+func (c *Client) ListPage(ctx context.Context, userdb *userdb.UserDatabase, walk *Walk) (*openapi.OrganizationPage, error) {
+	if walk.Limit < 1 {
+		return nil, fmt.Errorf("%w: page limit %d is not positive", ErrInvalidOptions, walk.Limit)
+	}
+
+	if walk.IDs != nil {
+		items, err := c.visibleByID(ctx, userdb, walk.IDs)
+		if err != nil {
+			return nil, err
+		}
+
+		return &openapi.OrganizationPage{
+			Items:      convertPage(items),
+			Pagination: openapi.PaginationMetadata{Limit: walk.Limit},
+		}, nil
+	}
+
+	items, err := c.visible(ctx, userdb, walk.Email)
+	if err != nil {
+		return nil, err
+	}
+
+	request := pageRequest{filter: walk.Filter, limit: walk.Limit}
+
+	if walk.After != nil {
+		key := newPageKey(walk.After.Name, walk.After.ID, 0)
+		request.after = &key
+	}
+
+	page, next := paginate(items, request)
+
+	result := &openapi.OrganizationPage{
+		Items:      convertPage(page),
+		Pagination: openapi.PaginationMetadata{Limit: walk.Limit},
+	}
+
+	if next != nil {
+		cursor := Cursor{Name: next.name, ID: next.id, Filter: walk.Filter}
+
+		if walk.Email != nil {
+			cursor.Email = *walk.Email
+		}
+
+		result.Pagination.NextCursor = ptr.To(cursor.Encode())
+	}
+
+	return result, nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.OrganizationRead, error) {
