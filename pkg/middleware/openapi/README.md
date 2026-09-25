@@ -163,9 +163,9 @@ which part of a handler response does not match the specification.
 
 Response-body validation (`--runtime-schema-validation`, default on) buffers every response
 and copies it into a string for the panic message. kin-openapi then copies the body again and
-decodes it into generic maps. Each request allocates about 27 times the body size. The mode
-exists to catch contract drift during development and in CI, where a validation failure
-panics by default.
+decodes it into generic maps. Each request allocates about 20 times the body size.
+`BenchmarkResponseValidation` measures the cost. The mode exists to catch contract drift
+during development and in CI, where a validation failure panics by default.
 
 To turn it off in production, set the chart value `server.runtimeSchemaValidation: false`.
 The chart then renders `--runtime-schema-validation=false`. The chart renders
