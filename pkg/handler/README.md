@@ -106,6 +106,13 @@ That includes:
 - creator/modifier identity metadata
 - metadata merge behaviour during updates
 
+### Quota Normalisation
+
+`common.Normalise` builds a quota list from a stored or virtual Quota and the metadata. It does
+not write to either input. `GetQuota` uses it. A repeated stored kind resolves to its last entry,
+as allocation admission reads it. `pkg/handler/common` has no README, so this section holds that
+contract.
+
 ### Bad-Path Taxonomy
 
 The handler layer should be secure by default when surfacing bad-path behaviour.
