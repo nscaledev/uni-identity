@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -214,6 +215,24 @@ func (c *Client) GetAllocations(ctx context.Context, organizationID ids.Organiza
 	}
 
 	return &resources, nil
+}
+
+// ListForOrganizations lists one kind for the given organizations without
+// deep copies, matching the organization label against ids.  The items
+// share maps and pointers with the informer cache.  Do not change them.
+// ids must not be empty.
+func (c *Client) ListForOrganizations(ctx context.Context, list client.ObjectList, ids []string) error {
+	requirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.In, ids)
+	if err != nil {
+		return err
+	}
+
+	options := &client.ListOptions{
+		LabelSelector:         labels.NewSelector().Add(*requirement),
+		UnsafeDisableDeepCopy: ptr.To(true),
+	}
+
+	return c.client.List(ctx, list, options)
 }
 
 // CheckQuotaConsistency by default loads up the organization's quota and all allocations and
