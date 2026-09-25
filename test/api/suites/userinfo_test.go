@@ -98,11 +98,14 @@ var _ = Describe("Userinfo", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())
 
-				orgs, err := client.ListOrganizations(ctx)
+				resp, err := client.ListOrganizationsV2(ctx, nil)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode()).To(Equal(http.StatusOK))
+				Expect(resp.JSON200).NotTo(BeNil())
+				Expect(resp.JSON200.Pagination.NextCursor).To(BeNil(), "the token-scoped organization set must fit one page for this comparison")
 
 				var orgIDs []string
-				for _, org := range orgs {
+				for _, org := range resp.JSON200.Items {
 					orgIDs = append(orgIDs, org.Metadata.Id)
 				}
 

@@ -163,6 +163,37 @@ func (c *APIClient) ListOrganizations(ctx context.Context) (identityopenapi.Orga
 	)
 }
 
+// ListOrganizationsV2 requests one page of organizations through the generated
+// client, so tests can assert on the status code and the typed body together.
+func (c *APIClient) ListOrganizationsV2(ctx context.Context, params *identityopenapi.GetApiV2OrganizationsParams) (*identityopenapi.GetApiV2OrganizationsResponse, error) {
+	generated, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	return generated.GetApiV2OrganizationsWithResponse(ctx, params)
+}
+
+// ListOrganizationsWithHeaders lists organizations through the deprecated v1
+// endpoint and returns the response headers with the body.
+func (c *APIClient) ListOrganizationsWithHeaders(ctx context.Context) (identityopenapi.Organizations, http.Header, error) {
+	generated, err := c.generated()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	resp, err := generated.GetApiV1OrganizationsWithResponse(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing organizations: %w", err)
+	}
+
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return nil, nil, fmt.Errorf("%w: %d", coreclient.ErrUnexpectedStatusCode, resp.StatusCode())
+	}
+
+	return *resp.JSON200, resp.HTTPResponse.Header, nil
+}
+
 // GetOrganization gets detailed information about a specific organization.
 func (c *APIClient) GetOrganization(ctx context.Context, orgID string) (*identityopenapi.OrganizationRead, error) {
 	path := c.endpoints.GetOrganization(orgID)
