@@ -44,6 +44,8 @@ The list is in organization ID order.
 
 `GET /api/v1/organizations` returns each organization once. It returns at most
 `--v1-organization-list-limit` organizations. The value 0 (the default) means unlimited.
+The cap truncates silently: the response gives the client no signal that organizations are
+missing. Set the cap only when every consumer can accept a partial list.
 
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.
