@@ -86,3 +86,16 @@ func TestNormaliseRejectsNilQuantity(t *testing.T) {
 	_, err = Normalise(nil, []unikornv1.QuotaMetadata{broken})
 	require.ErrorIs(t, err, coreerrors.ErrConsistency)
 }
+
+func TestNormaliseTakesLastDuplicateKind(t *testing.T) {
+	t.Parallel()
+
+	first := resource.MustParse("2")
+	last := resource.MustParse("5")
+	quota := &unikornv1.Quota{Spec: unikornv1.QuotaSpec{Quotas: []unikornv1.ResourceQuota{{Kind: "gpus", Quantity: &first}, {Kind: "gpus", Quantity: &last}}}}
+
+	out, err := Normalise(quota, []unikornv1.QuotaMetadata{meta("gpus", "8")})
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, int64(5), out[0].Quantity.Value())
+}

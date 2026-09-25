@@ -131,9 +131,12 @@ func Normalise(quota *unikornv1.Quota, metadata []unikornv1.QuotaMetadata) ([]un
 		kind := metadata[i].Name
 		quantity := metadata[i].Spec.Default
 
+		// The last entry for a kind wins, as allocation admission reads it.
 		if quota != nil {
-			if index := slices.IndexFunc(quota.Spec.Quotas, func(q unikornv1.ResourceQuota) bool { return q.Kind == kind }); index >= 0 {
-				quantity = quota.Spec.Quotas[index].Quantity
+			for j := range quota.Spec.Quotas {
+				if quota.Spec.Quotas[j].Kind == kind {
+					quantity = quota.Spec.Quotas[j].Quantity
+				}
 			}
 		}
 
