@@ -117,7 +117,7 @@ func organizationsMux(b *testing.B, validate bool, body []byte) http.Handler {
 // BenchmarkResponseValidation measures the cost of response-body validation
 // on the organization list.
 func BenchmarkResponseValidation(b *testing.B) {
-	for _, n := range []int{100, 1000, 10000} {
+	for _, n := range []int{1, 100, 1000, 10000} {
 		body := organizationsBody(b, n)
 
 		for _, validate := range []bool{true, false} {
