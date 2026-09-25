@@ -178,7 +178,31 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*o
 	return c.convert(ctx, result, organizationID)
 }
 
+// checkKinds rejects a request that names a quota kind with no QuotaMetadata.
+// Without this check, the write stores the kind and the response fails to
+// render it.
+func (c *Client) checkKinds(ctx context.Context, request *openapi.QuotasWrite) error {
+	metadata := &unikornv1.QuotaMetadataList{}
+
+	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		return err
+	}
+
+	for _, quota := range request.Quotas {
+		known := slices.ContainsFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool { return m.Name == quota.Kind })
+		if !known {
+			return errors.OAuth2InvalidRequest(fmt.Sprintf("unknown quota kind %s", quota.Kind))
+		}
+	}
+
+	return nil
+}
+
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
+	if err := c.checkKinds(ctx, request); err != nil {
+		return nil, err
+	}
+
 	common := common.New(c.client)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
