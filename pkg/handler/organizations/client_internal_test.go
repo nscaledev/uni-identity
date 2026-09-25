@@ -169,7 +169,7 @@ func TestGlobalReadSharesCacheReadOnly(t *testing.T) {
 	store.RequireUnchanged(t)
 }
 
-func TestListZeroCapReturnsAll(t *testing.T) {
+func TestListNonPositiveCapReturnsAll(t *testing.T) {
 	t.Parallel()
 
 	c := newFakeClient(t, namespacedOrg("a", "id-1"), namespacedOrg("b", "id-2"), namespacedOrg("c", "id-3"))
@@ -195,6 +195,57 @@ func TestListZeroCapReturnsAll(t *testing.T) {
 	require.Len(t, capped, 2)
 	require.Equal(t, "id-1", capped[0].Metadata.Id)
 	require.Equal(t, "id-2", capped[1].Metadata.Id)
+}
+
+// TestListServiceAccountIgnoresEmail pins that a service-account caller
+// gets its own organization.  The list ignores an email that names another
+// user, even when that user is a member of other organizations.
+func TestListServiceAccountIgnoresEmail(t *testing.T) {
+	t.Parallel()
+
+	email := "bob@example.com"
+
+	bob := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: clientTestNamespace, Name: "user-bob"},
+		Spec:       unikornv1.UserSpec{Subject: email, State: unikornv1.UserStateActive},
+	}
+
+	membership := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "org-id-2",
+			Name:      "orguser-bob",
+			Labels: map[string]string{
+				constants.OrganizationLabel: "id-2",
+				constants.UserLabel:         bob.Name,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+	}
+
+	account := &unikornv1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "org-id-1",
+			Name:      "sa-1",
+			Labels:    map[string]string{constants.OrganizationLabel: "id-1"},
+		},
+	}
+
+	store := newStore(t, bob, membership, account, namespacedOrg("alpha", "id-1"), namespacedOrg("beta", "id-2"))
+	c := store.Client()
+
+	ctx := authorization.NewContext(t.Context(), &authorization.Info{
+		Userinfo:       &openapi.Userinfo{Sub: account.Name},
+		ServiceAccount: true,
+	})
+	ctx = rbac.NewContext(ctx, &openapi.Acl{})
+
+	list, err := New(c, clientTestNamespace).List(ctx, userdb.NewUserDatabase(c, clientTestNamespace), &email, 0)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, "id-1", list[0].Metadata.Id)
+	require.Equal(t, "alpha", list[0].Metadata.Name)
+
+	store.RequireUnchanged(t)
 }
 
 // memberFixture returns an active user with an active membership in each
