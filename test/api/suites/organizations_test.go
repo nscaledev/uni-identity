@@ -355,7 +355,7 @@ var _ = Describe("Organization Discovery", func() {
 			Describe("Given include with an ID lookup", func() {
 				It("should attach extras to an id lookup as well", func() {
 					lookup := identityopenapi.OrganizationListIDParameter{ids.MustParseOrganizationID(config.OrgID)}
-					include := &identityopenapi.OrganizationListIncludeParameter{"quotas", "projectsCount"}
+					include := &identityopenapi.OrganizationListIncludeParameter{string(identityopenapi.GetApiV2OrganizationsParamsIncludeQuotas), string(identityopenapi.GetApiV2OrganizationsParamsIncludeProjectsCount)}
 
 					resp, err := platformAdminClient().ListOrganizationsV2(ctx, &identityopenapi.GetApiV2OrganizationsParams{Id: &lookup, Include: include})
 
@@ -370,7 +370,7 @@ var _ = Describe("Organization Discovery", func() {
 		})
 
 		Describe("Given every include value", func() {
-			include := &identityopenapi.OrganizationListIncludeParameter{"quotas", "projects", "projectsCount"}
+			include := &identityopenapi.OrganizationListIncludeParameter{string(identityopenapi.GetApiV2OrganizationsParamsIncludeQuotas), string(identityopenapi.GetApiV2OrganizationsParamsIncludeProjects), string(identityopenapi.GetApiV2OrganizationsParamsIncludeProjectsCount)}
 
 			rowFor := func(resp *identityopenapi.GetApiV2OrganizationsResponse, id string) *identityopenapi.OrganizationListItem {
 				for i := range resp.JSON200.Items {

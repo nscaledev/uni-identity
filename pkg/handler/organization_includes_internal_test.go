@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -47,13 +48,15 @@ const (
 	ns   = "identity"
 )
 
-func allIncludes() []string { return []string{"quotas", "projects", "projectsCount"} }
+const (
+	includeQuotas   = string(openapi.GetApiV2OrganizationsParamsIncludeQuotas)
+	includeProjects = string(openapi.GetApiV2OrganizationsParamsIncludeProjects)
+	includeCount    = string(openapi.GetApiV2OrganizationsParamsIncludeProjectsCount)
+)
 
-func qty(s string) *resource.Quantity {
-	v := resource.MustParse(s)
+func allIncludes() []string { return []string{includeQuotas, includeProjects, includeCount} }
 
-	return &v
-}
+func qty(s string) *resource.Quantity { return ptr.To(resource.MustParse(s)) }
 
 func orgLabels(id string) map[string]string {
 	return map[string]string{constants.OrganizationLabel: id}
@@ -190,6 +193,9 @@ func TestIncludeGlobalReaderSeesEverything(t *testing.T) {
 	require.NoError(t, h.includeOrganizationExtras(ctx, page, allIncludes()))
 	requireNoCopyLists(t, store)
 
+	require.NotNil(t, page[0].Quotas)
+	require.NotNil(t, page[1].Quotas)
+
 	// Each organization sums usage from its own allocations only: orgA has
 	// two allocations, and orgB has one against the default quota.
 	require.Equal(t, 3, (*page[0].Quotas)[0].Committed)
@@ -203,17 +209,18 @@ func TestIncludeGlobalReaderSeesEverything(t *testing.T) {
 			continue
 		}
 
-		requirements, _ := options.LabelSelector.Requirements()
+		requirements, selectable := options.LabelSelector.Requirements()
+		require.True(t, selectable)
 		require.Len(t, requirements, 1)
 		require.ElementsMatch(t, []string{orgA, orgB}, requirements[0].Values().UnsortedList())
 	}
 
-	require.NotNil(t, page[0].Quotas)
 	require.Equal(t, 4, (*page[0].Quotas)[0].Quantity)
 	require.Equal(t, 0, (*page[0].Quotas)[0].Free)
 	require.Len(t, *page[0].Projects, 2)
-	// The selector excludes the unlabelled project p4.  Only p1 and p2 remain.
-	require.ElementsMatch(t, []string{p1, p2}, []string{(*page[0].Projects)[0].Metadata.Id, (*page[0].Projects)[1].Metadata.Id})
+	// The selector excludes the unlabelled project p4.  Only p1 and p2 remain,
+	// in name order.
+	require.Equal(t, []string{p1, p2}, []string{(*page[0].Projects)[0].Metadata.Id, (*page[0].Projects)[1].Metadata.Id})
 	require.Equal(t, 2, *page[0].ProjectsCount)
 	// Organization B has no Quota object: the virtual default renders.
 	require.Equal(t, 1, (*page[1].Quotas)[0].Quantity)
@@ -252,7 +259,7 @@ func TestIncludeRequestedSubsetAndEmptyPage(t *testing.T) {
 	ctx := rbac.NewContext(t.Context(), orgScopedACL("identity:quotas", "identity:projects"))
 	page := items(orgA)
 
-	require.NoError(t, h.includeOrganizationExtras(ctx, page, []string{"projectsCount"}))
+	require.NoError(t, h.includeOrganizationExtras(ctx, page, []string{includeCount}))
 	require.Nil(t, page[0].Quotas)
 	require.Nil(t, page[0].Projects)
 	require.Equal(t, 1, *page[0].ProjectsCount)
@@ -279,13 +286,13 @@ func TestIncludeFaultsFailOnlyPermittedRequestedRows(t *testing.T) {
 	h, _ := newHandler(t, metaObj(), quotaObj("q1", orgA, "4"), quotaObj("q2", orgA, "5"))
 	permitted := rbac.NewContext(t.Context(), orgScopedACL("identity:quotas", "identity:projects"))
 
-	err := h.includeOrganizationExtras(permitted, items(orgA), []string{"quotas"})
+	err := h.includeOrganizationExtras(permitted, items(orgA), []string{includeQuotas})
 	require.ErrorIs(t, err, coreerrors.ErrConsistency)
 
-	require.NoError(t, h.includeOrganizationExtras(permitted, items(orgA), []string{"projects"}))
+	require.NoError(t, h.includeOrganizationExtras(permitted, items(orgA), []string{includeProjects}))
 
 	unpermitted := rbac.NewContext(t.Context(), orgScopedACL("identity:projects"))
-	require.NoError(t, h.includeOrganizationExtras(unpermitted, items(orgA), []string{"quotas"}))
+	require.NoError(t, h.includeOrganizationExtras(unpermitted, items(orgA), []string{includeQuotas}))
 }
 
 func TestIncludeFaultsOnNilQuantity(t *testing.T) {
@@ -297,14 +304,16 @@ func TestIncludeFaultsOnNilQuantity(t *testing.T) {
 	// A Quota with no quantity for its "gpus" kind is a data fault.
 	quotaHandler, _ := newHandler(t, metaObj(), quotaObjNilQuantity("q1", orgA))
 
-	err := quotaHandler.includeOrganizationExtras(permitted, items(orgA), []string{"quotas"})
+	err := quotaHandler.includeOrganizationExtras(permitted, items(orgA), []string{includeQuotas})
 	require.ErrorIs(t, err, coreerrors.ErrConsistency)
-	require.NoError(t, quotaHandler.includeOrganizationExtras(unpermitted, items(orgA), []string{"quotas"}))
+	require.NoError(t, quotaHandler.includeOrganizationExtras(unpermitted, items(orgA), []string{includeQuotas}))
+	require.NoError(t, quotaHandler.includeOrganizationExtras(permitted, items(orgA), []string{includeProjects}))
 
 	// An Allocation with no committed or reserved quantity is a data fault.
 	allocationHandler, _ := newHandler(t, metaObj(), allocationObjNilQuantity("alloc-a", orgA))
 
-	err = allocationHandler.includeOrganizationExtras(permitted, items(orgA), []string{"quotas"})
+	err = allocationHandler.includeOrganizationExtras(permitted, items(orgA), []string{includeQuotas})
 	require.ErrorIs(t, err, coreerrors.ErrConsistency)
-	require.NoError(t, allocationHandler.includeOrganizationExtras(unpermitted, items(orgA), []string{"quotas"}))
+	require.NoError(t, allocationHandler.includeOrganizationExtras(unpermitted, items(orgA), []string{includeQuotas}))
+	require.NoError(t, allocationHandler.includeOrganizationExtras(permitted, items(orgA), []string{includeProjects}))
 }
