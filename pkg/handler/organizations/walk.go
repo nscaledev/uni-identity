@@ -116,7 +116,7 @@ func (w *Walk) resume(encoded string) error {
 func resolveIDs(params openapi.GetApiV2OrganizationsParams) (*Walk, error) {
 	// An empty name or email counts as absent, as it does on a walk.
 	if params.Cursor != nil || params.Limit != nil || emptyAsNil(params.Name) != nil || emptyAsNil(params.Email) != nil {
-		return nil, errors.OAuth2InvalidRequest("id cannot be combined with other parameters")
+		return nil, errors.OAuth2InvalidRequest("id cannot be combined with other parameters except include")
 	}
 
 	if len(*params.Id) > maxIDs {
