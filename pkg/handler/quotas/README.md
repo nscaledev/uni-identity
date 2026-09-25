@@ -28,9 +28,12 @@ update is only allowed if the resulting values still cover current committed and
 
 Quota reads are materialized views rather than raw stored state.
 
-The package combines numeric quota values with mandatory `QuotaMetadata` so clients can interpret
-each abstract resource kind correctly and present meaningful display names, descriptions, defaults,
-formatting hints, used, free, committed, and reserved totals.
+Two pure functions render quota reads. `common.Normalise` folds the stored
+quota against the QuotaMetadata kinds. It adds defaults for missing kinds,
+drops retired kinds and copies every quantity. `Convert` sums committed and
+reserved usage per kind from allocations and sorts by kind. `GET` normalises.
+`PUT` renders the request's own list. The client reads QuotaMetadata once per
+request from the identity namespace, where the chart installs it.
 
 Without that metadata, the numeric values are not meaningfully usable.
 
@@ -66,13 +69,15 @@ reporting and dashboard problem.
   allocation records.
 - This is one half of a small accounting subsystem built on Kubernetes objects rather than an ACID
   backing store.
+- Rendering skips a kind without QuotaMetadata. A nil quota quantity or a nil
+  QuotaMetadata default is a data fault and returns an error.
 
 ## TODO
 
 - Add first-class project-level quota partitioning so organizations can reserve capacity internally
   without splitting into multiple organizations.
-- Fail cleanly when `QuotaMetadata` and stored quota entries drift, rather than assuming the
-  metadata catalogue is complete.
+- Reject a `PUT` that names a kind without `QuotaMetadata` instead of silently
+  skipping it on render.
 
 ## Related Documentation
 
