@@ -159,6 +159,21 @@ which is how it surfaced.
 rendering. The schema and the offending value are the whole point: that output is what tells you
 which part of a handler response does not match the specification.
 
+### Development Mode And Production
+
+Response-body validation (`--runtime-schema-validation`, default on) buffers every response,
+copies it into a string for the panic message, and hands it to kin-openapi, which copies it
+again and decodes it into generic maps. Allocation per request is about 27 times the body
+size. The mode exists to catch contract drift during development and in CI, where a
+validation failure panics by default.
+
+Turn it off in production: the chart value `server.runtimeSchemaValidation: false` renders
+`--runtime-schema-validation=false`. `server.extraFlags` renders after this value, so a
+conflicting flag there wins. Development environments and the CI integration install keep the
+default. Request validation is unaffected and stays on everywhere.
+
+The known issue below applies wherever response validation stays on.
+
 ### Known Issue: Response Validation On Token Endpoints
 
 `runtimeSchemaValidationPanic` defaults to on, and the panic text includes the response body. On
