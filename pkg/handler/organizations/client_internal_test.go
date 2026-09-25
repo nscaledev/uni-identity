@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -211,4 +212,35 @@ func TestListMembershipBranchDanglingMembershipIsInconsistent(t *testing.T) {
 
 	_, err := New(k8s, testNamespace).List(memberContext(t), userdb.NewUserDatabase(k8s, testNamespace), nil)
 	require.ErrorIs(t, err, coreerrors.ErrConsistency)
+}
+
+func TestConvertSharesNoMemoryWithTheCache(t *testing.T) {
+	t.Parallel()
+
+	deleted := metav1.NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	scope := unikornv1.ProviderScopeGlobal
+
+	in := org(orgA)
+	in.DeletionTimestamp = &deleted
+	in.Spec.Domain = ptr.To("example.com")
+	in.Spec.ProviderScope = &scope
+	in.Spec.ProviderID = ptr.To("idp")
+	in.Spec.ProviderOptions = &unikornv1.OrganizationProviderOptions{
+		Google: &unikornv1.OrganizationProviderGoogleSpec{CustomerID: ptr.To("customer")},
+	}
+
+	before := in.DeepCopy()
+
+	out := convert(in)
+	require.NotNil(t, out.Metadata.DeletionTime)
+	require.NotNil(t, out.Spec.Domain)
+	require.NotNil(t, out.Spec.ProviderID)
+	require.NotNil(t, out.Spec.GoogleCustomerID)
+
+	*out.Metadata.DeletionTime = time.Time{}
+	*out.Spec.Domain = "changed"
+	*out.Spec.ProviderID = "changed"
+	*out.Spec.GoogleCustomerID = "changed"
+
+	require.Equal(t, before, in, "changing the converted result must not change the source object")
 }
