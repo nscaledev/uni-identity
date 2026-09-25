@@ -161,17 +161,17 @@ which part of a handler response does not match the specification.
 
 ### Development Mode And Production
 
-Response-body validation (`--runtime-schema-validation`, default on) buffers every response,
-copies it into a string for the panic message, and hands it to kin-openapi, which copies it
-again and decodes it into generic maps. Allocation per request is about 27 times the body
-size. The mode exists to catch contract drift during development and in CI, where a
-validation failure panics by default.
+Response-body validation (`--runtime-schema-validation`, default on) buffers every response
+and copies it into a string for the panic message. kin-openapi then copies the body again and
+decodes it into generic maps. Each request allocates about 27 times the body size. The mode
+exists to catch contract drift during development and in CI, where a validation failure
+panics by default.
 
-Turn it off in production: the chart value `server.runtimeSchemaValidation: false` renders
-`--runtime-schema-validation=false`. `server.extraFlags` renders after this value, so a
-conflicting flag there wins. Development environments keep the default. CI runs the
-integration suite twice, once with each setting. Request validation is unaffected and stays
-on everywhere.
+To turn it off in production, set the chart value `server.runtimeSchemaValidation: false`.
+The chart then renders `--runtime-schema-validation=false`. The chart renders
+`server.extraFlags` after this flag, so a conflicting flag in `server.extraFlags` wins.
+Development environments keep the default. CI runs the integration suite twice, once with each
+setting. This flag does not change request validation, which stays on everywhere.
 
 The known issue below applies wherever response validation stays on.
 

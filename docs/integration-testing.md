@@ -228,7 +228,7 @@ If you do not have a cluster yet:
 | `KIND_SUFFIX` | random 8 chars | Suffix for release name and namespace. |
 | `KIND_NAMESPACE` | `unikorn-identity-$(KIND_SUFFIX)` | Kubernetes namespace for the deploy. |
 | `KIND_RELEASE` | `identity-$(KIND_SUFFIX)` | Helm release name. |
-| `INTEGRATION_EXTRA_VALUES` | empty | Extra Helm values file for `integration-install`, applied after `hack/ci/test-values.yaml`. |
+| `INTEGRATION_EXTRA_VALUES` | empty | Optional second Helm values file. `integration-install` applies it after `hack/ci/test-values.yaml`. |
 
 Example:
 

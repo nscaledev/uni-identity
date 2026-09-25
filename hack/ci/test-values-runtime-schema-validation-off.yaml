@@ -1,4 +1,4 @@
 # Helm value overrides for the integration run in production mode.
-# Passed to hack/ci/install after test-values.yaml.
+# hack/ci/install applies this file after test-values.yaml.
 server:
   runtimeSchemaValidation: false

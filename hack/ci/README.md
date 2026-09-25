@@ -48,7 +48,7 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 |------|---------|
 | `kind-config.yaml` | KinD cluster config (ingress-ready node label) |
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
-| `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run: turns response-body validation off, the production mode |
+| `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally

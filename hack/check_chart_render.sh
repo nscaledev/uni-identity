@@ -32,7 +32,7 @@ role_id_of() { awk -v want="$1" '$1=="name:"{n=$2} $0 ~ "unikorn-cloud.org/name:
 # empty/absent ID (or a duplicate/missing flag) can't pass vacuously.
 assert_one_match() { [[ $(grep -c -- "$2" <<<"$1") -eq 1 ]] || die "expected exactly one match for: $2"; }
 
-# assert_no_match <output> <pattern> — the absence counterpart.
+# assert_no_match <output> <pattern> fails if <pattern> occurs in <output>.
 assert_no_match() { [[ $(grep -c -- "$2" <<<"$1") -eq 0 ]] || die "expected no match for: $2"; }
 
 # must_fail requires the expected message, so another failing guard cannot
