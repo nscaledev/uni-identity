@@ -265,6 +265,60 @@ func (i *auth0TestIssuer) token(t *testing.T, audience, email string, expiry tim
 	return token
 }
 
+// groupClaimURI is the groups-claim URI for the tests that exercise a global
+// group role binding end to end, through a real external issuer.
+const groupClaimURI = "https://unikorn-cloud.org/groups"
+
+// tokenWithGroups mints a token like token, but also carries groups under
+// groupClaimURI, so an exchange test can drive group role binding matching through
+// the real dispatch and validator path instead of constructing
+// authorization.Info by hand.
+func (i *auth0TestIssuer) tokenWithGroups(t *testing.T, audience, email string, expiry time.Time, groups []string) string {
+	t.Helper()
+
+	verified := true
+
+	//nolint:tagliatelle
+	type auth0ClaimsWithGroups struct {
+		jwt.Claims
+
+		Email         string   `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool    `json:"https://unikorn-cloud.org/email_verified"`
+		Groups        []string `json:"https://unikorn-cloud.org/groups,omitempty"`
+	}
+
+	claims := &auth0ClaimsWithGroups{
+		Claims: jwt.Claims{
+			Issuer:    i.issuer(),
+			Subject:   "sub|" + email,
+			Audience:  jwt.Audience{audience},
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now().Add(-1 * time.Second)),
+			Expiry:    jwt.NewNumericDate(expiry),
+		},
+		Email:         email,
+		EmailVerified: &verified,
+		Groups:        groups,
+	}
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.RS256,
+			Key: gojose.JSONWebKey{
+				Key:   i.key,
+				KeyID: "test-key",
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	token, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	return token
+}
+
 func issueTestToken(t *testing.T, env *passportTestEnv, info *oauth2.IssueInfo) string {
 	t.Helper()
 
@@ -929,6 +983,84 @@ func TestExchangePlatformAdminUserWithOrganizationScopeOutsideMembership(t *test
 
 	assert.Equal(t, openapi.User, claims.Acctype)
 	assert.Equal(t, "user@example.com", claims.Subject)
+	assert.Empty(t, claims.OrgIDs)
+	assert.Equal(t, orgID, claims.OrgID)
+}
+
+// TestExchangeGroupRoleBindingGrantsOrganizationScope pins the group-binding leg
+// of ExchangePassport end to end: an external subject with no UNI organization
+// membership at all is authorized for a requested organization scope, solely
+// because its bearer token carries a group matching a configured global group role
+// binding.
+//
+// This is the load-bearing test for the "Groups:" field carried from
+// dispatchUserinfo's result into the authorization.Info passed to rbac.GetACL
+// (pkg/oauth2/passport.go). Drop that field and the binding can never match:
+// GetACL falls through to ordinary membership resolution, and this exchange fails
+// with "organization not in scope".
+func TestExchangeGroupRoleBindingGrantsOrganizationScope(t *testing.T) {
+	t.Parallel()
+
+	issuer := newAuth0TestIssuer(t)
+
+	const (
+		audience = "https://grouped.example.com"
+		email    = "staff@example.com"
+		group    = "SRE"
+	)
+
+	env := setupPassportTestEnvWithOAuth2Options(t, &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: issuer.issuer(), Group: group, RoleIDs: []string{"org-reader"}},
+		},
+	}, &oauth2.Options{
+		AccessTokenDuration:     accessTokenDuration,
+		RefreshTokenDuration:    refreshTokenDuration,
+		TokenLeewayDuration:     accessTokenDuration,
+		TokenVerificationLeeway: 0,
+		TokenCacheSize:          1024,
+		CodeCacheSize:           1024,
+	}, &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "grouped-provider",
+		},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer: issuer.issuer(),
+			BearerTrust: &unikornv1.BearerTrustSpec{
+				Audience:              audience,
+				AllowExternalIdentity: true,
+				GroupsClaim:           groupClaimURI,
+			},
+		},
+	}, &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org-reader",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	})
+
+	token := issuer.tokenWithGroups(t, audience, email, time.Now().Add(45*time.Second), []string{group})
+
+	orgID := "org-outside-membership"
+	req := exchangeRequest(t, token, &openapi.TokenRequestOptions{
+		XOrganizationId: &orgID,
+	})
+
+	result, err := env.authenticator.TokenExchange(nil, req)
+	require.NoError(t, err)
+
+	claims := parsePassport(t, env, result.AccessToken)
+
+	assert.Equal(t, openapi.User, claims.Acctype)
+	assert.Equal(t, email, claims.Subject)
 	assert.Empty(t, claims.OrgIDs)
 	assert.Equal(t, orgID, claims.OrgID)
 }
@@ -1737,20 +1869,20 @@ func TestGetUserinfoFromBearerRoutesAuth0JWS(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, _, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.NoError(t, err)
-	require.NotNil(t, userinfo)
-	require.NotNil(t, userinfo.Email)
-	require.NotNil(t, userinfo.EmailVerified)
-	require.NotNil(t, userinfo.HttpsunikornCloudOrgauthz)
+	require.NotNil(t, res.Userinfo)
+	require.NotNil(t, res.Userinfo.Email)
+	require.NotNil(t, res.Userinfo.EmailVerified)
+	require.NotNil(t, res.Userinfo.HttpsunikornCloudOrgauthz)
 
 	// Auth0 path lowercases + trims the email and uses it as the subject;
 	// UNI membership is resolved from userdb (not from the Auth0 claim).
-	assert.Equal(t, "user@example.com", userinfo.Sub)
-	assert.Equal(t, "user@example.com", *userinfo.Email)
-	assert.True(t, *userinfo.EmailVerified)
-	assert.Equal(t, openapi.User, userinfo.HttpsunikornCloudOrgauthz.Acctype)
-	assert.ElementsMatch(t, []string{"org1"}, userinfo.HttpsunikornCloudOrgauthz.OrgIds,
+	assert.Equal(t, "user@example.com", res.Userinfo.Sub)
+	assert.Equal(t, "user@example.com", *res.Userinfo.Email)
+	assert.True(t, *res.Userinfo.EmailVerified)
+	assert.Equal(t, openapi.User, res.Userinfo.HttpsunikornCloudOrgauthz.Acctype)
+	assert.ElementsMatch(t, []string{"org1"}, res.Userinfo.HttpsunikornCloudOrgauthz.OrgIds,
 		"UNI userdb is authoritative for org membership on Auth0 bearers")
 }
 
@@ -1777,15 +1909,15 @@ func TestGetUserinfoFromBearerRoutesUNIJWE(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, claims, _, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.NoError(t, err)
-	require.NotNil(t, userinfo)
-	require.NotNil(t, claims)
+	require.NotNil(t, res.Userinfo)
+	require.NotNil(t, res.Claims)
 
 	// UNI path populates claims.Type so the local authorizer's downstream
 	// switch can identify the principal kind; the Auth0 path leaves it empty.
-	assert.Equal(t, oauth2.TokenTypeFederated, claims.Type)
-	assert.Equal(t, "user@example.com", userinfo.Sub)
+	assert.Equal(t, oauth2.TokenTypeFederated, res.Claims.Type)
+	assert.Equal(t, "user@example.com", res.Userinfo.Sub)
 }
 
 // TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled verifies that when
@@ -1814,12 +1946,10 @@ func TestGetUserinfoFromBearerFallsBackWhenAuth0Disabled(t *testing.T) {
 	// peekIssuer succeeds but validatorForIssuer returns nil (unknown
 	// issuer). The dispatch rejects with "untrusted token issuer" — a JWS from
 	// an unknown issuer is rejected, not silently routed to the UNI path.
-	userinfo, claims, srcIss, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "untrusted token issuer")
-	assert.Nil(t, userinfo)
-	assert.Nil(t, claims)
-	assert.Empty(t, srcIss)
+	assert.Nil(t, res)
 }
 
 // TestGetUserinfoFromBearerRejectsUnroutableToken verifies that a bearer that
@@ -1836,10 +1966,8 @@ func TestGetUserinfoFromBearerRejectsUnroutableToken(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
 
-	userinfo, claims, srcIss, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
+	res, err := env.authenticator.GetUserinfoFromBearer(t.Context(), req, "opaque-token-with-no-jose-header")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized bearer token format")
-	assert.Nil(t, userinfo)
-	assert.Nil(t, claims)
-	assert.Empty(t, srcIss)
+	assert.Nil(t, res)
 }

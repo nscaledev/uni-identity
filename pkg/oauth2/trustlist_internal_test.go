@@ -18,6 +18,7 @@ package oauth2
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -77,6 +78,20 @@ func setupAuthenticator(t *testing.T, objects ...client.Object) *Authenticator {
 func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trustlistTestEnv {
 	t.Helper()
 
+	return setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration: accessTokenDurationTL,
+		TokenCacheSize:      64,
+		CodeCacheSize:       64,
+		ValidatorCacheSize:  64,
+	}, objects...)
+}
+
+// setupAuthenticatorWithOptions is like setupAuthenticatorWithClient, but lets the
+// caller supply the full Options, e.g. to configure the deprecated
+// Auth0ExchangeIssuer flag that produces the synthetic legacy provider.
+func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...client.Object) *trustlistTestEnv {
+	t.Helper()
+
 	cli := fake.NewClientBuilder().WithScheme(getTrustlistScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
@@ -90,12 +105,7 @@ func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trust
 	}
 
 	authenticator, err := New(
-		&Options{
-			AccessTokenDuration: accessTokenDurationTL,
-			TokenCacheSize:      64,
-			CodeCacheSize:       64,
-			ValidatorCacheSize:  64,
-		},
+		opts,
 		josetesting.Namespace,
 		issuerVal,
 		cli,
@@ -211,5 +221,189 @@ func TestValidatorForIssuerRevokedOnDelete(t *testing.T) {
 	res, err := env.authenticator.validatorForIssuer(t.Context(), "https://staff.auth0.com")
 	if res != nil || !errors.Is(err, ErrUnknownIssuer) {
 		t.Fatalf("deleted provider must not remain trusted (no TTL lag); res=%v err=%v", res, err)
+	}
+}
+
+func TestValidatorFingerprintIncludesGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	a := validatorFingerprint("https://iss/", "aud", nil, false, false, "")
+	b := validatorFingerprint("https://iss/", "aud", nil, false, false, "https://unikorn-cloud.org/groups")
+
+	if a == b {
+		t.Fatal("fingerprint must change when groupsClaim changes")
+	}
+}
+
+// TestGroupsClaimByIssuerFirstMatchWins pins that GroupsClaimByIssuer resolves
+// first-match, exactly like validatorForIssuer, rather than reporting "some
+// provider configured a claim" for an issuer two providers share. providerA
+// precedes providerB because bearerTrustProviders name-sorts the CRD subset.
+// The sort, not the client's List order, is the ordering guarantee. So
+// providerA's empty GroupsClaim must win, although providerB, later by name,
+// has one configured.
+func TestGroupsClaimByIssuerFirstMatchWins(t *testing.T) {
+	t.Parallel()
+
+	const sharedIssuer = "https://staff.auth0.com"
+
+	providerA := providerWithBearerTrust(sharedIssuer, "aud")
+	providerA.Name = "provider-a"
+	providerA.Spec.BearerTrust.GroupsClaim = ""
+
+	providerB := providerWithBearerTrust(sharedIssuer, "aud")
+	providerB.Name = "provider-b"
+	providerB.Spec.BearerTrust.GroupsClaim = "https://unikorn-cloud.org/groups"
+
+	a := setupAuthenticator(t, providerA, providerB)
+
+	claims, err := a.GroupsClaimByIssuer(t.Context())
+	if err != nil {
+		t.Fatalf("GroupsClaimByIssuer: %v", err)
+	}
+
+	got, ok := claims[sharedIssuer]
+	if !ok {
+		t.Fatalf("expected issuer %q in map, got %v", sharedIssuer, claims)
+	}
+
+	if got != "" {
+		t.Fatalf("got groupsClaim %q, want first-match empty claim from provider-a", got)
+	}
+}
+
+// TestValidatorForIssuerRejectsBareGroupsClaim pins that a non-empty groupsClaim
+// without "://" fails the provider's trust-list entry, the same way an invalid
+// audience or algorithm does today, rather than being silently normalised,
+// defaulted, or dropped between the OAuth2Provider spec and auth0.NewValidator.
+// auth0.NewValidator already rejects a bare groupsClaim on its own (see
+// TestNewValidatorRejectsBareGroupsClaim in pkg/oauth2/auth0), but nothing pinned
+// that cachedValidator propagates that construction error up through
+// validatorForIssuer instead of swallowing it for this one field.
+func TestValidatorForIssuerRejectsBareGroupsClaim(t *testing.T) {
+	t.Parallel()
+
+	provider := providerWithBearerTrust("https://staff.auth0.com", "aud")
+	provider.Spec.BearerTrust.GroupsClaim = "groups" // bare: no "://"
+
+	a := setupAuthenticator(t, provider)
+
+	res, err := a.validatorForIssuer(t.Context(), "https://staff.auth0.com")
+	if err == nil {
+		t.Fatal("expected the trust-list entry to fail for a bare groupsClaim, got no error")
+	}
+
+	if res != nil {
+		t.Fatalf("expected no validated issuer for a bare groupsClaim, got %+v", res)
+	}
+}
+
+// TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange pins the no-CRD case: the
+// map includes the synthetic legacy auth0-exchange provider, mapped to an empty
+// groupsClaim, because the flag path carries none. A CRD provider that declares
+// the same issuer shadows the synthetic instead (see
+// TestGroupsClaimByIssuerCRDShadowsLegacySynthetic). The synthetic is
+// deliberately absent from computeTrustedNonUNIIssuers, so Options.Validate
+// must find it here first.
+func TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange(t *testing.T) {
+	t.Parallel()
+
+	const legacyIssuer = "https://legacy.auth0.com/"
+
+	env := setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration:   accessTokenDurationTL,
+		TokenCacheSize:        64,
+		CodeCacheSize:         64,
+		ValidatorCacheSize:    64,
+		Auth0ExchangeIssuer:   legacyIssuer,
+		Auth0ExchangeAudience: "legacy-aud",
+	})
+
+	claims, err := env.authenticator.GroupsClaimByIssuer(t.Context())
+	if err != nil {
+		t.Fatalf("GroupsClaimByIssuer: %v", err)
+	}
+
+	got, ok := claims[legacyIssuer]
+	if !ok {
+		t.Fatalf("expected legacy auth0-exchange issuer %q in map, got %v", legacyIssuer, claims)
+	}
+
+	if got != "" {
+		t.Fatalf("got groupsClaim %q, want empty claim for the synthetic legacy provider", got)
+	}
+}
+
+// TestGroupsClaimByIssuerCRDShadowsLegacySynthetic pins that a CRD provider
+// that declares the legacy auth0-exchange issuer always wins over the
+// synthetic. CRD items always precede the synthetic, which is appended last.
+// So the operator can set the issuer's groupsClaim without a replacement of
+// the legacy flags.
+func TestGroupsClaimByIssuerCRDShadowsLegacySynthetic(t *testing.T) {
+	t.Parallel()
+
+	const (
+		legacyIssuer = "https://legacy.auth0.com/"
+		claim        = "https://unikorn-cloud.org/groups"
+	)
+
+	provider := providerWithBearerTrust(legacyIssuer, "aud")
+	provider.Spec.BearerTrust.GroupsClaim = claim
+
+	env := setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration:   accessTokenDurationTL,
+		TokenCacheSize:        64,
+		CodeCacheSize:         64,
+		ValidatorCacheSize:    64,
+		Auth0ExchangeIssuer:   legacyIssuer,
+		Auth0ExchangeAudience: "legacy-aud",
+	}, provider)
+
+	claims, err := env.authenticator.GroupsClaimByIssuer(t.Context())
+	if err != nil {
+		t.Fatalf("GroupsClaimByIssuer: %v", err)
+	}
+
+	if got := claims[legacyIssuer]; got != claim {
+		t.Fatalf("got groupsClaim %q, want %q from the CRD provider shadowing the synthetic", got, claim)
+	}
+}
+
+// TestBearerTrustProvidersSortsByName pins the ordering invariant directly:
+// the CRD subset comes back name-sorted regardless of input order, and the
+// synthetic legacy provider is always last. The input is deliberately
+// reverse-ordered. A pass with the sort deleted would require pre-sorted
+// input, and this test rules that out.
+func TestBearerTrustProvidersSortsByName(t *testing.T) {
+	t.Parallel()
+
+	const legacyIssuer = "https://legacy.auth0.com/"
+
+	providerZ := providerWithBearerTrust("https://z.auth0.com", "aud")
+	providerZ.Name = "z-provider"
+
+	providerA := providerWithBearerTrust("https://a.auth0.com", "aud")
+	providerA.Name = "a-provider"
+
+	env := setupAuthenticatorWithOptions(t, &Options{
+		AccessTokenDuration:   accessTokenDurationTL,
+		TokenCacheSize:        64,
+		CodeCacheSize:         64,
+		ValidatorCacheSize:    64,
+		Auth0ExchangeIssuer:   legacyIssuer,
+		Auth0ExchangeAudience: "legacy-aud",
+	})
+
+	candidates := env.authenticator.bearerTrustProviders([]unikornv1.OAuth2Provider{*providerZ, *providerA})
+
+	want := []string{"a-provider", "z-provider", auth0LegacyProviderName}
+
+	got := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		got = append(got, c.Name)
+	}
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("got candidate order %v, want %v", got, want)
 	}
 }

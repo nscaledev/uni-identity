@@ -93,6 +93,9 @@ Users SHOULD have additional permissions defined for external services, e.g. pro
 
 The `reader` is similar to the `user` but allows read only access, typically used by billing and auditing teams.
 
+For user-facing roles, Region VolumeClass discovery follows the same organization-wide read model
+as flavor discovery. Region Volume lifecycle access follows the existing workload policy.
+
 > [!NOTE]
 > If you do define external 3rd party roles, you will be responsible for removing any references to them from groups on deletion.
 > Failure to do so will result in dangling references, an inconsistency and an error condition.

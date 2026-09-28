@@ -102,6 +102,20 @@ value simply never matches and the token is rejected as an untrusted issuer.
 - `skipEmailVerification`: skip the `email_verified` check.
 - `requireAuthzClaim`: require the `https://unikorn-cloud.org/authz` claim.
 - `signingAlgorithms`: permitted JWS algorithms (asymmetric only; defaults to `[RS256]`).
+- `groupsClaim`: names the per-issuer token claim that carries IdP group names. The claim value is a
+  JSON array of strings, and the validator skips non-string entries. The name must be a namespaced
+  URI that contains `://`, so nobody can designate a user-settable bare profile claim (`nickname`,
+  `name`) as an authorization source. Validator construction applies the rule at the first token
+  dispatched for the issuer, not at object admission. A violation rejects every token from this
+  issuer with HTTP 401. The rbac startup advisory also reports violations at boot. Empty means the
+  issuer emits no groups, so group-based global role bindings never match tokens from it (fail
+  closed). This is the consumer-facing field for the global group role binding mechanism documented
+  in [`pkg/rbac/README.md#global-role-bindings`](../../../rbac/README.md#global-role-bindings).
+
+Bearer-trust providers live in the identity release namespace and are not API-managed. The
+oauth2providers handler regenerates `spec` with only the issuer, client credentials, and tags on
+update, so an API-level update would silently drop `bearerTrust`. This path is unreachable today
+only because that handler is scoped to organization namespaces.
 
 The full bearer-trust operator contract is in
 [`docs/multi-issuer-token-contract.md`](../../../../docs/multi-issuer-token-contract.md).

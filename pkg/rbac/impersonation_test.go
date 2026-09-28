@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -42,7 +43,20 @@ const (
 func setupImpersonationEnvironment(t *testing.T, serviceGlobalScopes []unikornv1.RoleScope) fixture {
 	t.Helper()
 
+	return setupImpersonationEnvironmentWithBindings(t, serviceGlobalScopes, rbac.Options{})
+}
+
+// setupImpersonationEnvironmentWithBindings is setupImpersonationEnvironment
+// with control over the full rbac.Options (so tests can set GlobalRoleBindings)
+// and extra Role fixtures beyond the fixed impersonation-service role.
+func setupImpersonationEnvironmentWithBindings(t *testing.T, serviceGlobalScopes []unikornv1.RoleScope, opts rbac.Options, extraRoles ...*unikornv1.Role) fixture {
+	t.Helper()
+
 	f, c := setupTestEnvironment(t)
+
+	for _, r := range extraRoles {
+		require.NoError(t, c.Create(t.Context(), r))
+	}
 
 	serviceRole := &unikornv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -57,9 +71,8 @@ func setupImpersonationEnvironment(t *testing.T, serviceGlobalScopes []unikornv1
 	}
 	require.NoError(t, c.Create(t.Context(), serviceRole))
 
-	f.rbac = rbac.New(c, testNamespace, &rbac.Options{
-		SystemAccountRoleIDs: map[string]string{impersonationServiceCN: roleImpersonationService},
-	})
+	opts.SystemAccountRoleIDs = map[string]string{impersonationServiceCN: roleImpersonationService}
+	f.rbac = rbac.New(c, testNamespace, &opts)
 
 	return f
 }
@@ -218,4 +231,122 @@ func TestImpersonation_ServiceHasNoPermissions_EmptyACLReturned(t *testing.T) {
 	assert.Nil(t, acl.Organization)
 	assert.Nil(t, acl.Organizations)
 	assert.Nil(t, acl.Projects)
+}
+
+// TestImpersonation_UniExactBindingIntersectsWithServiceACL pins the full
+// impersonation path for the ID-398 spec requirement that a uni-exact global
+// role binding stays intersected with the calling service's ACL. The
+// impersonated actor's subject matches a binding on the UNI sentinel
+// (processImpersonatedPrincipalACL always resolves impersonated user
+// principals at that issuer), so processUserAccountACL grants the binding's
+// global scopes and skips membership resolution entirely (replace
+// semantics) — but the confused-deputy intersection in getSystemAccountACL
+// still strips whatever the impersonating service itself is not permitted
+// to touch.
+func TestImpersonation_UniExactBindingIntersectsWithServiceACL(t *testing.T) {
+	t.Parallel()
+
+	const boundRoleID = "role-uni-binding"
+
+	boundRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      boundRoleID,
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+					{Name: "identity:other", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+
+	f := setupImpersonationEnvironmentWithBindings(t,
+		// Service ACL allows read on identity:organizations — a strict
+		// subset of the binding's grant, giving the intersection something
+		// to strip on both endpoints (partial-verb strip, full-endpoint drop).
+		// It also allows org:read: if replace semantics did NOT hold and Bob's
+		// own org membership were resolved, his org-scoped org:read grant
+		// would survive the intersection and land in acl.Organization,
+		// falsifying the assert.Nil below.
+		[]unikornv1.RoleScope{
+			{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Read}},
+			{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+		},
+		rbac.Options{
+			GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+				{Issuer: constants.UNISentinel, Subject: userBobSubject, RoleIDs: []string{boundRoleID}},
+			},
+		},
+		boundRole,
+	)
+
+	acl := impersonate(t, f, userBobSubject)
+
+	require.NotNil(t, acl.Global)
+	assert.Equal(t, openapi.AclEndpoints{{Name: "identity:organizations", Operations: []openapi.AclOperation{openapi.Read}}}, *acl.Global)
+
+	// Replace semantics under impersonation: membership resolution was
+	// skipped for the bound actor, so nothing outside Global should appear.
+	assert.Nil(t, acl.Organization)
+	assert.Nil(t, acl.Organizations)
+	assert.Nil(t, acl.Projects)
+}
+
+// TestImpersonatedPrincipalNeverMatchesGroupBindings pins that an impersonated
+// principal receives NO group-derived global scopes, even when its hypothetical
+// groups would match a configured binding. Group membership is an IdP-issued
+// token claim and an impersonated principal never carries the actor's original
+// token, so a group-derived grant here would attribute someone else's IdP
+// membership to the impersonating service. processImpersonatedPrincipalACL
+// resolves impersonated user principals against the UNI sentinel issuer with nil
+// groups.
+//
+// The binding below is constructed directly on the sentinel issuer, bypassing
+// GlobalGroupRoleBindingsValue.Set's flag-parse validation, which rejects the
+// sentinel for group bindings (the precedent is
+// TestImpersonation_UniExactBindingIntersectsWithServiceACL). The issuer
+// therefore already matches, leaving only the nil groups from the impersonation
+// call site between the principal and the binding. That isolates the property
+// under test: if a future change ever carried real groups through the
+// impersonation path, this test fails at that moment.
+func TestImpersonatedPrincipalNeverMatchesGroupBindings(t *testing.T) {
+	t.Parallel()
+
+	const boundRoleID = "role-group-bound"
+
+	boundRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      boundRoleID,
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+				},
+			},
+		},
+	}
+
+	// The service ACL grants the same scopes the binding would, so the
+	// confused-deputy intersection cannot hide a leak: if the binding matched at
+	// all, its scopes would survive to acl.Global below.
+	f := setupImpersonationEnvironmentWithBindings(t,
+		[]unikornv1.RoleScope{
+			{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Create, unikornv1.Read, unikornv1.Update, unikornv1.Delete}},
+		},
+		rbac.Options{
+			GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+				{Issuer: constants.UNISentinel, Group: "Platform Engineering", RoleIDs: []string{boundRoleID}},
+			},
+		},
+		boundRole,
+	)
+
+	acl := impersonate(t, f, userBobSubject)
+
+	assert.Nil(t, acl.Global, "impersonated principal acquired global scopes from a group binding")
 }

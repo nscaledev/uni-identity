@@ -122,25 +122,29 @@ var _ = Describe("Console Audit View Permissions", func() {
 		})
 
 		Describe("Given a request to list roles", func() {
-			It("audit token should succeed and return the auditor role", func() {
+			It("audit token should get the auditor role as grantable and stronger roles as not", func() {
 				roles, err := auditClient.ListRoles(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(roles).NotTo(BeEmpty())
 
-				roleNames := make(map[string]bool)
+				grantable := make(map[string]bool, len(roles))
 				for _, role := range roles {
 					Expect(role.Metadata.Id).NotTo(BeEmpty())
 					Expect(role.Metadata.Name).NotTo(BeEmpty())
 
-					roleNames[role.Metadata.Name] = true
+					grantable[role.Metadata.Name] = role.Grantable
 				}
 
-				Expect(roleNames).To(HaveKey("auditor"))
-				Expect(roleNames).NotTo(HaveKey("administrator"),
-					"audit token must not see administrator as a grantable role")
-				Expect(roleNames).NotTo(HaveKey("user"),
-					"audit token must not see user as a grantable role")
+				// Roles the caller cannot grant are listed with grantable
+				// false rather than hidden, so a client can still resolve the
+				// roles a group already carries.  The flag, not absence, is
+				// what denies the grant.
+				Expect(grantable).To(HaveKeyWithValue("auditor", true))
+				Expect(grantable).To(HaveKeyWithValue("administrator", false),
+					"audit token must not be able to grant administrator")
+				Expect(grantable).To(HaveKeyWithValue("user", false),
+					"audit token must not be able to grant user")
 
 				GinkgoWriter.Printf("Audit: listed %d roles\n", len(roles))
 			})

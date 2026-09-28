@@ -104,6 +104,7 @@ This is most visible in:
 
 - [handler](./handler/README.md)
 - [handler/users](./handler/users/README.md)
+- [handler/serviceaccounts](./handler/serviceaccounts/README.md)
 - [handler/groups](./handler/groups/README.md)
 - [handler/quotas](./handler/quotas/README.md)
 - [handler/allocations](./handler/allocations/README.md)

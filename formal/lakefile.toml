@@ -1,0 +1,14 @@
+name = "unirbac"
+defaultTargets = ["UniRbac"]
+
+# Deliberately dependency-free: no Mathlib. The model uses only Lean core so a
+# clean `lake build` needs nothing beyond the pinned toolchain. See README.md.
+
+[[lean_lib]]
+name = "UniRbac"
+
+# The conformance-vector generator. `lake exe gen-vectors` prints the JSON that
+# pkg/rbac tests consume. See Main.lean and `make regenerate-vectors`.
+[[lean_exe]]
+name = "gen-vectors"
+root = "Main"

@@ -29,6 +29,19 @@ jobs:
       uses: codecov/codecov-action@v5
       env:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  PublishOpenAPISpec:
+    needs: Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Publish OpenAPI spec
+      uses: nscaledev/openapi/.github/actions/publish-spec@3c79a8b4cd3863a152456c1c2c729b245a79a1af # main
+      with:
+        service: identity
+        spec-path: pkg/openapi/server.spec.yaml
+        version: main
+        token: ${{ secrets.OPENAPI_PUBLISH_TOKEN }}
   ContractDeployment:
     runs-on: ubuntu-latest
     steps:

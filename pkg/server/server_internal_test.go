@@ -26,9 +26,8 @@ import (
 
 // TestExpandBareAdminSubjects covers the legacy-compatibility mirroring of
 // bare (UNI-sentinel) platform-admin entries onto the deprecated
-// auth0-exchange issuer. Note the runtime match asymmetry the mirror feeds
-// into: subjects compare with EqualFold, issuers compare exactly — the mirror
-// therefore copies the flag issuer verbatim.
+// auth0-exchange issuer. The runtime match compares issuers exactly, so the
+// mirror copies the flag issuer verbatim.
 func TestExpandBareAdminSubjects(t *testing.T) {
 	t.Parallel()
 

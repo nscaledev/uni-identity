@@ -79,20 +79,21 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 	// registered for the token's issuer; a UNI JWE access token follows the
 	// existing userinfo path. A bearer that is neither — or empty — is rejected
 	// before either validator.
-	userinfo, claims, srcIss, err := a.authenticator.GetUserinfoFromBearer(r.Context(), r, token)
+	res, err := a.authenticator.GetUserinfoFromBearer(r.Context(), r, token)
 	if err != nil {
 		return nil, err
 	}
 
 	info := &authorization.Info{
 		Token:    token,
-		Userinfo: userinfo,
-		SrcIss:   srcIss,
+		Userinfo: res.Userinfo,
+		SrcIss:   res.SrcIss,
+		Groups:   res.Groups,
 	}
 
-	switch claims.Type {
+	switch res.Claims.Type {
 	case oauth2.TokenTypeFederated:
-		info.ClientID = claims.Federated.ClientID
+		info.ClientID = res.Claims.Federated.ClientID
 	case oauth2.TokenTypeServiceAccount:
 		info.ServiceAccount = true
 	// TODO: delete me, services should use mTLS alone.
@@ -114,7 +115,7 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request) (*authorization.Info, erro
 
 		thumbprint := util.GetClientCertifcateThumbprint(certificate)
 
-		if thumbprint != claims.Service.X509Thumbprint {
+		if thumbprint != res.Claims.Service.X509Thumbprint {
 			return nil, errors.AccessDenied(r, "client certificate mismatch for bound token")
 		}
 

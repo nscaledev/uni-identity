@@ -23,12 +23,62 @@ paths:
       responses:
         "200":
           $ref: '#/components/responses/okResponse'
+  /search:
+    description: Endpoint with a required query parameter
+    get:
+      security:
+        - oauth2Authentication: []
+      parameters:
+        - name: needed
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: '#/components/responses/okResponse'
+  /token:
+    description: Endpoint with a validated request body, used to check error reporting
+    post:
+      security:
+        - oauth2Authentication: []
+      requestBody:
+        $ref: '#/components/requestBodies/tokenRequest'
+      responses:
+        "200":
+          $ref: '#/components/responses/okResponse'
 components:
   securitySchemes:
     oauth2Authentication:
       description: Operation requires OAuth 2.0 bearer token authentication.
       type: oauth2
   requestBodies:
+    tokenRequest:
+      description: A request with a required property alongside a sensitive one
+      required: true
+      content:
+        application/x-www-form-urlencoded:
+          schema:
+            type: object
+            required:
+              - grant_type
+            properties:
+              grant_type:
+                type: string
+              subject_token:
+                type: string
+                nullable: true
+        application/json:
+          schema:
+            type: object
+            required:
+              - grant_type
+            properties:
+              grant_type:
+                type: string
+              subject_token:
+                type: string
+                nullable: true
     uploadRequest:
       description: A request to upload data
       content:

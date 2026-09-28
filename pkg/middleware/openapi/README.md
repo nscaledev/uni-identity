@@ -55,7 +55,31 @@ that keeps those two models separate while presenting handlers with one normaliz
   of authorization.
 - Service identity and delegated principal identity are separate concepts.
 - ACL cache keys must distinguish direct calls from impersonated calls so cached results do not
-  overgrant.
+  overgrant. Keys are also qualified by the authenticated issuer (`src_iss`), and every
+  user-influenced segment is length-prefixed so a subject containing the join delimiter cannot be
+  crafted to collide with another identity's key.
+- ACL cache keys also carry a digest of the presented token. The ACL is a function of the presented
+  token plus cluster state, not only of `(sub, srcIss)`. Two live tokens for the same subject can
+  resolve to different ACLs, so they must never share a cache entry.
+  - Example: a global group role binding
+    ([`pkg/rbac/README.md#global-role-bindings`](../../rbac/README.md#global-role-bindings)) grants
+    global authority from the groups asserted in the specific token presented, so a subject's next
+    token can carry different groups and resolve to a different ACL.
+  - Keying by token is strictly finer than keying by subject, so it can only under-share an entry,
+    never over-share one.
+  - The key carries a digest rather than the raw token, because cache keys live in a large LRU in
+    every downstream service and must not themselves be credential material.
+  - The mTLS system-account path leaves the token empty, so every system-account request gets the
+    same constant digest. That is harmless: system-account ACLs do not depend on token content.
+  - `--acl-cache-size` keeps its default of `1<<16` entries. Live tokens × scopes now bounds the
+    population, rather than subjects × scopes, but with the default 1-minute TTL and a few hundred
+    bytes per entry (key ≈ sub + srcIss + digest + scope, value = ACL), 65,536 entries is still
+    single-digit megabytes. Eviction pressure appears only above roughly 1,000 distinct token+scope
+    pairs per second, sustained.
+  - Nobody measured the resulting hit-rate shift before deployment. The default rests on the sizing
+    arithmetic above, and the hit rate is a post-deploy monitoring item.
+  - A client that mints a fresh token per request misses the cache every time. That is a client-side
+    anti-pattern to fix at the client, not a reason to grow the cache.
 - OpenAPI validation, authentication, principal propagation, and ACL resolution are colocated so
   handlers receive already-normalized request context.
 
@@ -99,6 +123,66 @@ Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` 
 is no fallback to the legacy userinfo path. Passports are consumed in-process and are never
 forwarded on outbound calls — internal service-to-service communication continues to use mTLS plus
 `X-Principal` exactly as before.
+
+## Validation Error Disclosure
+
+Request and response schema validation are both performed here, and the two get very different
+treatment on the way out.
+
+**Request** validation failures are returned to the caller, so they go through
+`clientValidationError`, which builds a description from the location of the fault and a reason.
+`err.Error()` must never be used here. kin-openapi appends the whole schema and the value that
+failed validation to a schema error, and prints the unparsable value in a parse error, so returning
+it echoes the request body — bearer tokens included — back to the caller (OWASP API8:2023,
+CWE-209). The specific fields that may and may not be used are recorded in the comments on
+`schemaErrorDescription` and `parseErrorDescription`; the short version is that only the statically
+written `Reason` fields are safe, and `Error()`, `Origin`, `Value` and `Cause` are not.
+
+Two things this deliberately does not promise:
+
+- Reasons may name a property the caller sent, and may quote `enum` or `const` values from the
+  schema. Both are published API contract and both are needed to correct the request, so both are
+  allowed. What is excluded is the caller's own data and anything naming the implementation — which
+  is why the `format` reason is rewritten rather than passed on, as the library's version quotes its
+  own internal regex rather than the format name.
+- The library detail is not logged. Core's `errors.Error.Write` logs the description we build, so
+  the fault is still recorded, but the raw error is not attached, as it would relocate the caller's
+  credentials into the log store.
+
+This is not solely a `kin-openapi` 0.144.0 problem. On 0.132.0 the same code path already returned
+the full body for JSON requests; what 0.144.0 changed is form-encoded bodies, where absent
+properties stopped being decoded as nil, so a missing required property now fails the object-level
+`required` check whose error value is the entire decoded body. The token endpoint is form encoded,
+which is how it surfaced.
+
+**Response** validation failures never reach the client as a body, so they keep the library's full
+rendering. The schema and the offending value are the whole point: that output is what tells you
+which part of a handler response does not match the specification.
+
+### Development Mode And Production
+
+Response-body validation (`--runtime-schema-validation`, default on) buffers every response
+and copies it into a string for the panic message. kin-openapi then copies the body again and
+decodes it into generic maps. Each request allocates about 20 times the body size.
+`BenchmarkResponseValidation` measures the cost. The mode exists to catch contract drift
+during development and in CI, where a validation failure panics by default.
+
+To turn it off in production, set the chart value `server.runtimeSchemaValidation: false`.
+The chart then renders `--runtime-schema-validation=false`. The chart renders
+`server.extraFlags` after this flag, so a conflicting flag in `server.extraFlags` wins.
+Development environments keep the default. CI runs the integration suite twice, once with each
+setting. This flag does not change request validation, which stays on everywhere.
+
+The known issue below applies wherever response validation stays on.
+
+### Known Issue: Response Validation On Token Endpoints
+
+`runtimeSchemaValidationPanic` defaults to on, and the panic text includes the response body. On
+`/oauth2/v2/token` that body contains a freshly minted access token, so a response schema mismatch
+writes a live credential into the pod log, and the panic aborts the connection rather than
+returning a clean 500. Nothing installs a recovery middleware. Response validation is a
+development aid, so this is not urgent, but the token endpoints want either redaction or the panic
+disabled before anyone leans on it in production.
 
 ## Ingress And Header Invariants
 

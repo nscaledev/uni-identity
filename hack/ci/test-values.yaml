@@ -2,3 +2,24 @@
 # Passed to hack/ci/install via --values.
 systemAccounts:
   ci-fixtures: platform-administrator
+
+# Bound via the legacy platformAdministrators.subjects path; map-merges with
+# the chart default so the default platformAdministrators.roles survives.
+platformAdministrators:
+  subjects:
+  - ci-legacy-admin@nscale.test
+
+# Bound via the new globalRoleBindings path, for equivalence testing against
+# the legacy platformAdministrators.subjects binding above.
+globalRoleBindings:
+- issuer: uni
+  subject: ci-binding-admin@nscale.test
+  roles: [platform-administrator]
+# Exact uni binding for the ID-399 platform-reader canary: exercises the real
+# role's ACL end-to-end, unclamped (exact bindings bypass the wildcard clamp),
+# so a write verb sneaking into the role fails the suite instead of being
+# masked. A wildcard binding is untestable here: KinD hosts no external JWKS
+# issuer and wildcards are rejected on the uni sentinel.
+- issuer: uni
+  subject: ci-platform-reader@nscale.test
+  roles: [platform-reader]

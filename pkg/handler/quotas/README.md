@@ -30,9 +30,17 @@ Quota reads are materialized views rather than raw stored state.
 
 The package combines numeric quota values with mandatory `QuotaMetadata` so clients can interpret
 each abstract resource kind correctly and present meaningful display names, descriptions, defaults,
-used, free, committed, and reserved totals.
+formatting hints, used, free, committed, and reserved totals.
 
 Without that metadata, the numeric values are not meaningfully usable.
+
+### Built-In Volume Capacity
+
+The Identity Helm chart registers `volume` as the quota kind for the total requested block storage
+capacity of an organization's Volumes. Region reports that capacity in GiB. The built-in default is
+`0`, so Volume allocation remains denied until an operator configures capacity, and the metadata
+uses binary formatting. The public quota read model exposes that formatting hint to clients. Volume
+count is not quota-controlled.
 
 ### Missing Internal Partitioning
 
@@ -49,6 +57,8 @@ reporting and dashboard problem.
 - quota reads are derived from stored quota values, quota metadata, and current allocation totals
 - quota updates must not reduce capacity below already committed plus reserved usage
 - `QuotaMetadata` is mandatory contextual data, not optional display garnish
+- a quota write that names a kind with no `QuotaMetadata` entry returns 400 before it stores
+  anything
 
 ## Caveats
 

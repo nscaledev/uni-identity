@@ -1,0 +1,454 @@
+{
+  "scenarios": [
+    {
+      "name": "organization role does not require project access",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "model:organization", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "model:organization", "operations": ["read"]}], "project": []}},
+      "expected": "allow",
+      "humanExpect": "allow"
+    },
+    {
+      "name": "project authority does not satisfy organization role",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "model:organization", "operations": ["read"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "model:organization", "operations": ["read"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": "deny"
+    },
+    {
+      "name": "project role is grantable from one accessible project",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "model:project", "operations": ["create"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "model:project", "operations": ["create"]}]}},
+      "expected": "allow",
+      "humanExpect": "allow"
+    },
+    {
+      "name": "project role is grantable from organization authority",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "model:project", "operations": ["create"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "model:project", "operations": ["create"]}]}},
+      "expected": "allow",
+      "humanExpect": "allow"
+    },
+    {
+      "name": "project role is not grantable without project or broader authority",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "model:organization", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "model:project", "operations": ["create"]}]}},
+      "expected": "deny",
+      "humanExpect": "deny"
+    },
+    {
+      "name": "mixed role needs both organization and project grantability",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "model:organization", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "model:organization", "operations": ["read"]}], "project": [{"name": "model:project", "operations": ["create"]}]}},
+      "expected": "deny",
+      "humanExpect": "deny"
+    },
+    {
+      "name": "global role is not grantable from organization authority",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "model:global", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "model:global", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": "deny"
+    },
+    {
+      "name": "global role is grantable from global authority",
+      "source": "handwritten",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "model:global", "operations": ["read"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "model:global", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "allow",
+      "humanExpect": "allow"
+    },
+    {
+      "name": "gen req=global/read grant=none",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/read grant=global/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/read grant=global/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/read grant=organization/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/read grant=organization/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/read grant=project/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["read"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/read grant=project/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["create"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/create grant=none",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/create grant=global/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/create grant=global/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "project": []}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/create grant=organization/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/create grant=organization/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/create grant=project/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["read"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=global/create grant=project/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["create"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/read grant=none",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/read grant=global/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "project": []}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/read grant=global/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/read grant=organization/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "project": []}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/read grant=organization/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/read grant=project/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["read"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/read grant=project/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["create"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/create grant=none",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/create grant=global/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/create grant=global/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "project": []}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/create grant=organization/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/create grant=organization/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "project": []}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/create grant=project/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["read"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=organization/create grant=project/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["create"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "project": []}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/read grant=none",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["read"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/read grant=global/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["read"]}]}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/read grant=global/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["read"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/read grant=organization/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["read"]}]}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/read grant=organization/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["read"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/read grant=project/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["read"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["read"]}]}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/read grant=project/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["create"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["read"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/create grant=none",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["create"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/create grant=global/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["read"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["create"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/create grant=global/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [{"name": "svc:resource", "operations": ["create"]}], "organization": [], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["create"]}]}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/create grant=organization/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["read"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["create"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/create grant=organization/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [{"name": "svc:resource", "operations": ["create"]}], "projects": []},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["create"]}]}},
+      "expected": "allow",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/create grant=project/read",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["read"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["create"]}]}},
+      "expected": "deny",
+      "humanExpect": null
+    },
+    {
+      "name": "gen req=project/create grant=project/create",
+      "source": "generated",
+      "organizationId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "acl": {"global": [], "organization": [], "projects": [{"id": "550e8400-e29b-41d4-a716-446655440000", "endpoints": [{"name": "svc:resource", "operations": ["create"]}]}]},
+      "query": {"kind": "allowRole", "role": {"global": [], "organization": [], "project": [{"name": "svc:resource", "operations": ["create"]}]}},
+      "expected": "allow",
+      "humanExpect": null
+    }
+  ]
+}

@@ -860,6 +860,14 @@ const (
 
 	// externalTestAudience is the audience used by externalUserinfo tests.
 	externalTestAudience = "https://external-idp.example.com"
+
+	// emailInactiveUser is the email of a UNI user record that exists but is
+	// not active.
+	emailInactiveUser = "inactive@example.com"
+
+	// externalTestGroupsClaim is the groups-claim URI for the dispatch tests
+	// that exercise BearerTrustSpec.GroupsClaim end to end.
+	externalTestGroupsClaim = "https://unikorn-cloud.org/groups"
 )
 
 type externalUserinfoTestIssuer struct {
@@ -942,16 +950,72 @@ func (i *externalUserinfoTestIssuer) token(t *testing.T, audience, email string,
 	return tok
 }
 
+// tokenWithGroups mints an access token like token, but also carries the
+// externalTestGroupsClaim claim, so dispatch tests can exercise the groups-claim
+// extraction path end to end through the real validator.
+func (i *externalUserinfoTestIssuer) tokenWithGroups(t *testing.T, audience, email string, expiry time.Time, groups []string) string {
+	t.Helper()
+
+	verified := true
+
+	//nolint:tagliatelle
+	type tokenClaims struct {
+		jwt.Claims
+
+		Email         string   `json:"https://unikorn-cloud.org/email"`
+		EmailVerified *bool    `json:"https://unikorn-cloud.org/email_verified"`
+		Groups        []string `json:"https://unikorn-cloud.org/groups,omitempty"`
+	}
+
+	claims := &tokenClaims{
+		Claims: jwt.Claims{
+			Issuer:    i.issuer(),
+			Subject:   "sub|" + email,
+			Audience:  jwt.Audience{audience},
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now().Add(-1 * time.Second)),
+			Expiry:    jwt.NewNumericDate(expiry),
+		},
+		Email:         email,
+		EmailVerified: &verified,
+		Groups:        groups,
+	}
+
+	signer, err := gojose.NewSigner(
+		gojose.SigningKey{
+			Algorithm: gojose.RS256,
+			Key: gojose.JSONWebKey{
+				Key:   i.key,
+				KeyID: "test-key",
+			},
+		},
+		(&gojose.SignerOptions{}).WithType("at+jwt"),
+	)
+	require.NoError(t, err)
+
+	tok, err := jwt.Signed(signer).Claims(claims).Serialize()
+	require.NoError(t, err)
+
+	return tok
+}
+
 // externalUserinfoTestConfig accumulates options for the externalUserinfo test
 // helpers below.
 type externalUserinfoTestConfig struct {
 	allowExternalIdentity bool
+	seedObjects           []client.Object
 }
 
 type externalUserinfoOpt func(*externalUserinfoTestConfig)
 
 func withAllowExternalIdentity(v bool) externalUserinfoOpt {
 	return func(c *externalUserinfoTestConfig) { c.allowExternalIdentity = v }
+}
+
+// withSeedObjects pre-populates the fake client backing the test environment,
+// e.g. with a User record to exercise lookups that must find something.
+func withSeedObjects(objs ...client.Object) externalUserinfoOpt {
+	return func(c *externalUserinfoTestConfig) { c.seedObjects = objs }
 }
 
 // buildExternalUserinfoEnv constructs a minimal Authenticator backed by a fake
@@ -970,7 +1034,7 @@ func buildExternalUserinfoEnv(t *testing.T, opts ...externalUserinfoOpt) (*Authe
 	require.NoError(t, scheme.AddToScheme(s))
 	require.NoError(t, unikornv1.AddToScheme(s))
 
-	cli := fake.NewClientBuilder().WithScheme(s).Build()
+	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(cfg.seedObjects...).Build()
 
 	udb := userdb.NewUserDatabase(cli, passportTestNamespace)
 
@@ -999,7 +1063,7 @@ func buildExternalUserinfoEnv(t *testing.T, opts ...externalUserinfoOpt) (*Authe
 }
 
 // tryExternalUserinfo invokes externalUserinfo and returns its results.
-func tryExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) (*openapi.Userinfo, *Claims, error) {
+func tryExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) (*openapi.Userinfo, *Claims, []string, error) {
 	t.Helper()
 
 	a, iss, trust, v := buildExternalUserinfoEnv(t, opts...)
@@ -1015,7 +1079,7 @@ func tryExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) (*openapi.Us
 func mustExternalUserinfo(t *testing.T, opts ...externalUserinfoOpt) *openapi.Userinfo {
 	t.Helper()
 
-	ui, _, err := tryExternalUserinfo(t, opts...)
+	ui, _, _, err := tryExternalUserinfo(t, opts...)
 	require.NoError(t, err)
 
 	return ui
@@ -1043,9 +1107,35 @@ func TestExternalUserinfoRejectsUnknownWhenNotAllowed(t *testing.T) {
 	t.Parallel()
 
 	// No UNI user record and AllowExternalIdentity=false → must be rejected.
-	if _, _, err := tryExternalUserinfo(t, withAllowExternalIdentity(false)); err == nil {
-		t.Fatal("expected reject for unknown user when AllowExternalIdentity is false")
+	userinfo, claims, groups, err := tryExternalUserinfo(t, withAllowExternalIdentity(false))
+	require.Error(t, err, "expected reject for unknown user when AllowExternalIdentity is false")
+	assert.Nil(t, userinfo)
+	assert.Nil(t, claims)
+	assert.Nil(t, groups)
+}
+
+// Inactive is a deliberate local revocation: allowExternalIdentity must not
+// resurrect the subject with an empty-membership passport.
+func TestExternalUserinfoRejectsInactiveUserDespiteAllowExternalIdentity(t *testing.T) {
+	t.Parallel()
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "inactive-user"},
+		Spec:       unikornv1.UserSpec{Subject: emailInactiveUser, State: unikornv1.UserStateSuspended},
 	}
+
+	a, iss, trust, v := buildExternalUserinfoEnv(t, withAllowExternalIdentity(true), withSeedObjects(user))
+
+	tok := iss.token(t, externalTestAudience, emailInactiveUser, time.Now().Add(30*time.Second))
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
+
+	userinfo, claims, groups, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "user identity not found or inactive")
+	assert.Nil(t, userinfo)
+	assert.Nil(t, claims)
+	assert.Nil(t, groups)
 }
 
 func TestExternalUserinfoStampsIssuer(t *testing.T) {
@@ -1059,11 +1149,58 @@ func TestExternalUserinfoStampsIssuer(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "https://test.example.com/api/v1/x", nil)
 
-	_, sourceClaims, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
+	_, sourceClaims, _, err := a.externalUserinfo(t.Context(), req, tok, iss.issuer(), trust, v)
 	require.NoError(t, err)
 	require.NotNil(t, sourceClaims)
 
 	assert.Equal(t, iss.issuer(), sourceClaims.Issuer, "sourceClaims.Issuer must be the verbatim issuer")
+}
+
+// TestDispatchUserinfoCarriesExternalGroups checks that dispatchUserinfo carries
+// the validator's extracted groups verbatim into DispatchResult.Groups when
+// BearerTrustSpec.GroupsClaim is configured, so RBAC group-role-binding matching
+// downstream can consume them.
+func TestDispatchUserinfoCarriesExternalGroups(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audience = "https://api.example.com"
+		email    = "user@example.com"
+	)
+
+	iss := newExternalUserinfoTestIssuer(t)
+
+	provider := &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: "grouped-provider"},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer: iss.issuer(),
+			BearerTrust: &unikornv1.BearerTrustSpec{
+				Audience:              audience,
+				AllowExternalIdentity: true,
+				GroupsClaim:           externalTestGroupsClaim,
+			},
+		},
+	}
+
+	a := newPassportInternalAuthenticatorWithOpts(t, &Options{
+		TokenVerificationLeeway: 0,
+		ValidatorCacheSize:      64,
+	}, provider)
+	a.userdb = userdb.NewUserDatabase(
+		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
+		passportTestNamespace,
+	)
+
+	groups := []string{"Platform Engineering"}
+	tok := iss.tokenWithGroups(t, audience, email, time.Now().Add(time.Hour), groups)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/api/v1/organizations", nil)
+
+	res, err := a.dispatchUserinfo(t.Context(), req, tok, "bearer")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	assert.Equal(t, groups, res.Groups)
 }
 
 // newPassportInternalAuthenticatorWithOpts builds a minimal Authenticator

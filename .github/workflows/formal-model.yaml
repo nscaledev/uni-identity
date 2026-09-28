@@ -1,0 +1,35 @@
+name: Formal RBAC Model
+# Builds the Lean proofs and verifies the checked-in conformance vectors still
+# match what the model generates. Runs only when the RBAC code or the model
+# changes. Normal unit tests do not depend on this job or on Lean — they read the
+# committed pkg/rbac/testdata/model_vectors.json.
+on:
+  pull_request:
+    paths:
+    - pkg/rbac/**
+    - formal/**
+    - .github/workflows/formal-model.yaml
+permissions:
+  contents: read
+jobs:
+  FormalModel:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Set up Lean and build the proofs
+      # Installs the toolchain pinned in formal/lean-toolchain and runs `lake build`.
+      # Preferred over piping elan's install script from the internet.
+      uses: leanprover/lean-action@v1
+      with:
+        lake-package-directory: formal
+        test: false
+    - name: Vectors match the model
+      run: |
+        # lean-action installs elan; add it to PATH explicitly as a safety net.
+        export PATH="$HOME/.elan/bin:$PATH"
+        make regenerate-vectors
+        if ! git diff --exit-code pkg/rbac/testdata/model_vectors.json; then
+          echo "::error::pkg/rbac/testdata/model_vectors.json is out of date. Run 'make regenerate-vectors' and commit the result."
+          exit 1
+        fi
