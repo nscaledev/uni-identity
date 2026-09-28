@@ -17,6 +17,13 @@ server:
   # An array of extra flags to append to the server configuration.
   extraFlags: ~
 
+  # Validate response bodies against the OpenAPI schema at runtime.  This is
+  # a development safeguard.  It buffers and decodes every response again,
+  # and allocates about 20 times the body size per request.  Set to false in
+  # production.  Development environments keep the default.  CI runs the
+  # integration suite with both settings.
+  runtimeSchemaValidation: true
+
   # Allows override of the image.
   image: ~
 

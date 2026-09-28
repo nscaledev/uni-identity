@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Render assertions for globalRoleBindings and globalGroupRoleBindings.
+# Render assertions for globalRoleBindings, globalGroupRoleBindings and
+# server.runtimeSchemaValidation.
 # `make lint` runs this script.
 set -euo pipefail
 
@@ -30,6 +31,9 @@ role_id_of() { awk -v want="$1" '$1=="name:"{n=$2} $0 ~ "unikorn-cloud.org/name:
 # assert_one_match <output> <pattern> — anchors on a resolved role ID so an
 # empty/absent ID (or a duplicate/missing flag) can't pass vacuously.
 assert_one_match() { [[ $(grep -c -- "$2" <<<"$1") -eq 1 ]] || die "expected exactly one match for: $2"; }
+
+# assert_no_match <output> <pattern> fails if <pattern> occurs in <output>.
+assert_no_match() { [[ $(grep -c -- "$2" <<<"$1") -eq 0 ]] || die "expected no match for: $2"; }
 
 # must_fail requires the expected message, so another failing guard cannot
 # satisfy the check.
@@ -182,5 +186,21 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"Platform\tEngi
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["platform-administrator"]}]' "group is required"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
+
+# server.runtimeSchemaValidation: the flag renders only for the boolean
+# false.  The default and null keep the binary default.  A string fails the
+# render, so a quoted "false" cannot leave validation on.
+out=$(helm template test "$CHART")
+assert_no_match "$out" "--runtime-schema-validation"
+
+out=$(helm template test "$CHART" --set server.runtimeSchemaValidation=null)
+assert_no_match "$out" "--runtime-schema-validation"
+
+out=$(helm template test "$CHART" --set server.runtimeSchemaValidation=false)
+assert_one_match "$out" "--runtime-schema-validation=false"
+
+if helm template test "$CHART" --set-string server.runtimeSchemaValidation=false >/dev/null 2>&1; then
+	die "expected render failure for string server.runtimeSchemaValidation"
+fi
 
 echo "chart render checks OK"
