@@ -239,6 +239,9 @@ paths:
         Returns a list of organizations that the user is a member of.  If an
         email address is provided in the query this allows a user with sufficient
         privilege to check if a given user is a member of any organizations.
+        The include parameter adds quotas or a visible project count to each
+        organization that the caller can inspect. Rows that the caller cannot
+        inspect omit the extra.
       summary: List organizations
       tags:
       - Organizations
@@ -246,9 +249,12 @@ paths:
       - oauth2Authentication: []
       parameters:
       - $ref: '#/components/parameters/userEmailParameter'
+      - $ref: '#/components/parameters/organizationListIncludeParameter'
       responses:
         '200':
           $ref: '#/components/responses/organizationsResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
         '401':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
         '403':
@@ -1201,6 +1207,24 @@ components:
       description: A user's email address.
       schema:
         type: string
+    organizationListIncludeParameter:
+      name: include
+      in: query
+      description: |-
+        Extra data to return for each organization. Repeat the parameter for
+        each value (?include=quotas&include=projectsCount). A comma-separated
+        list returns 400. Each value appears only where the caller can read
+        it. An organization that the caller cannot inspect keeps its base
+        fields and omits the extra.
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+          enum:
+          - quotas
+          - projectsCount
     referenceParameter:
       name: reference
       in: path
@@ -1894,6 +1918,26 @@ components:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/resourceReadMetadata'
         spec:
           $ref: '#/components/schemas/organizationSpec'
+        quotas:
+          description: |-
+            The quotas of the organization, as GET
+            /api/v1/organizations/{id}/quotas returns them. Present only on the
+            organization list, when include names quotas and the caller has
+            organization-scope read on identity:quotas.
+          allOf:
+          - $ref: '#/components/schemas/quotaReadList'
+        quotasError:
+          description: |-
+            Present instead of quotas when include names quotas, the caller can
+            read the quotas, and the quota data of the organization does not
+            render. The value is a short generic reason.
+          type: string
+        projectsCount:
+          description: |-
+            The number of projects in the organization that the caller can
+            see. Present only on the organization list, when include names
+            projectsCount and the caller can see projects in this organization.
+          type: integer
     organizationWrite:
       description: An organization when created or updated.
       type: object

@@ -64,14 +64,14 @@ returns.
 
 | Scope | Read surface (all metadata-only unless noted) | Evidence |
 | --- | --- | --- |
-| `identity:organizations` | Get + list-all-organizations branch; org metadata | `pkg/handler/handler.go:452`; `organizations/client.go:222` |
+| `identity:organizations` | Get + list-all-organizations branch; org metadata | `pkg/handler/handler.go:459`; `organizations/client.go:222` |
 | `identity:oauth2providers` | Org-scoped list; `clientSecret` redacted by conversion (regression-tested) | `oauth2providers/client.go:66-88` |
 | `identity:roles` | List; metadata-only, protected roles filtered | `roles/client.go:46-77` |
 | `identity:serviceaccounts` | List only; `accessToken` emitted solely by create/rotate (regression-tested) | `serviceaccounts/client.go:80-113` |
 | `identity:users` | Org user list; PII (names/emails), no credentials | `users/client.go:246-284` |
 | `identity:groups` | List/get; membership data | `groups/client.go:59-97` |
-| `identity:projects` | List/get; group IDs | `projects/client.go:57-70` |
-| `identity:quotas` | Accounting quantities | `quotas/client.go:106-160` |
+| `identity:projects` | List/get; group IDs; visible count on the organization list (`include=projectsCount`) | `projects/client.go:57-70`, `pkg/handler/organization_includes.go` |
+| `identity:quotas` | Accounting quantities; also on the organization list (`include=quotas`) | `quotas/client.go`, `quotas/convert.go`, `pkg/handler/organization_includes.go` |
 | `identity:allocations` | Allocation quantities | `allocations/client.go:74-105` |
 | `region:regions` | Region metadata; kubeconfig lives only under separate `region:regions/detail` scope | uni-region `handler.go:96,112` |
 | `region:flavors` / `region:images` / `region:externalnetworks` | Catalog data | uni-region `handler.go:144,128`; `handler_image.go:50` |

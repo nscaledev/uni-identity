@@ -103,6 +103,10 @@ schema reference stay in sync.
   rather than being redefined here
 - the core schema reference must be pinned to a release tag, not `main` — see
   [Core Schema Pinning](#core-schema-pinning) above
+- array query parameters use style `form` with `explode` true. Clients repeat the parameter
+  (`?include=quotas&include=projectsCount`). A comma-separated value fails the enum check and
+  returns 400. `include` is the convention for optional extras on each item of a list. Each
+  value appears only where the caller can read it.
 
 ## Semantics That Live Elsewhere
 
