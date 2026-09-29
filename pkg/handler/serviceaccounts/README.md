@@ -87,6 +87,8 @@ That makes this package both an identity-binding client and a credential-lifecyc
   the caller could grant every role the group carries; removals and account deletion are not gated
 - a requested group that does not exist in the organization is an error, not a silently dropped
   part of the write
+- create and update answer a missing group with HTTP 400, which both operations declare in the
+  OpenAPI schema
 - a refused membership addition applies none of the write's other additions, and on create issues
   no token
 - create returns freshly issued credentials
