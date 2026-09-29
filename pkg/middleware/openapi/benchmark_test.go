@@ -37,15 +37,15 @@ import (
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
-// benchmarkAuthorizer accepts every request, so the benchmark measures
+// allowAllAuthorizer accepts every request, so benchmarks and tests exercise
 // response handling only.
-type benchmarkAuthorizer struct{}
+type allowAllAuthorizer struct{}
 
-func (benchmarkAuthorizer) Authorize(*openapi3filter.AuthenticationInput) (*authorization.Info, error) {
+func (allowAllAuthorizer) Authorize(*openapi3filter.AuthenticationInput) (*authorization.Info, error) {
 	return authInfoFixture(identityapi.User), nil
 }
 
-func (benchmarkAuthorizer) GetACL(context.Context, string) (*identityapi.Acl, error) {
+func (allowAllAuthorizer) GetACL(context.Context, string) (*identityapi.Acl, error) {
 	return &identityapi.Acl{}, nil
 }
 
@@ -103,7 +103,7 @@ func organizationsMux(b *testing.B, validate bool, body []byte) http.Handler {
 
 	r := chi.NewRouter()
 	r.Use(routeresolver.New(schema).Middleware)
-	r.Use(openapi.NewValidator(options, benchmarkAuthorizer{}).Middleware)
+	r.Use(openapi.NewValidator(options, allowAllAuthorizer{}).Middleware)
 	r.Get("/api/v1/organizations", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

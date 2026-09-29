@@ -17,6 +17,7 @@ limitations under the License.
 package openapi_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,6 +30,10 @@ import (
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/handler/users"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 )
@@ -40,15 +45,36 @@ const (
 	unknownGroupID             = "00000000-0000-0000-0000-000000000000"
 )
 
-// unknownGroupHandler answers the way the membership check does when a
-// request names a group that is not in the organization.
+// unknownGroupHandler answers with the error the membership check returns
+// when a request names a group that is not in the organization.
 func unknownGroupHandler(w http.ResponseWriter, r *http.Request) {
-	errors.HandleError(w, r, errors.OAuth2InvalidRequest("group "+unknownGroupID+" does not exist in this organization"))
+	errors.HandleError(w, r, common.ValidateGroupsExist([]string{unknownGroupID}, &unikornv1.GroupList{}))
 }
 
-// membershipMux serves the real identity schema, with response validation
-// and its panic on, so any status missing from the schema panics.
-func membershipMux(t *testing.T) http.Handler {
+// invalidSubjectHandler answers with the error user create returns for a
+// subject that is not an email address.  The check runs before create
+// touches Kubernetes, so no client is needed.
+func invalidSubjectHandler(w http.ResponseWriter, r *http.Request) {
+	request := &identityapi.UserWrite{}
+
+	if err := json.NewDecoder(r.Body).Decode(request); err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	organizationID, err := ids.ParseOrganizationID(membershipOrganizationID)
+	if err != nil {
+		errors.HandleError(w, r, err)
+		return
+	}
+
+	_, err = users.New(nil, "", common.IssuerValue{}).Create(r.Context(), organizationID, request)
+	errors.HandleError(w, r, err)
+}
+
+// membershipMux serves one route of the real identity schema, with response
+// validation and its panic on, so any status missing from the schema panics.
+func membershipMux(t *testing.T, method, pattern string, handler http.HandlerFunc) http.Handler {
 	t.Helper()
 
 	options := &openapi.Options{}
@@ -63,44 +89,54 @@ func membershipMux(t *testing.T) http.Handler {
 
 	r := chi.NewRouter()
 	r.Use(routeresolver.New(schema).Middleware)
-	r.Use(openapi.NewValidator(options, benchmarkAuthorizer{}).Middleware)
-	r.Post("/api/v1/organizations/{organizationID}/users", unknownGroupHandler)
-	r.Put("/api/v1/organizations/{organizationID}/users/{userID}", unknownGroupHandler)
-	r.Post("/api/v1/organizations/{organizationID}/serviceaccounts", unknownGroupHandler)
-	r.Put("/api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID}", unknownGroupHandler)
+	r.Use(openapi.NewValidator(options, allowAllAuthorizer{}).Middleware)
+	r.Method(method, pattern, handler)
 
 	return r
 }
 
-// TestUnknownGroupReturnsBadRequest checks that every route that adds members
-// to groups declares the 400 the membership check returns for an unknown
-// group. Without it, response validation panics and the client gets a 502
-// (ID-543).
-func TestUnknownGroupReturnsBadRequest(t *testing.T) {
+// TestMembershipWritesDeclareBadRequest checks that every route that calls
+// common.ValidateGroupsExist declares the 400 it returns, as does user create
+// for an invalid subject.  Without the declaration, response validation
+// panics and the server aborts the connection, which an ingress reports as a
+// 502.
+func TestMembershipWritesDeclareBadRequest(t *testing.T) {
 	t.Parallel()
 
 	userBody := `{"spec":{"subject":"joe@acme.com","state":"active","groupIDs":["` + unknownGroupID + `"]}}`
+	invalidSubjectBody := `{"spec":{"subject":"not-an-address","state":"active","groupIDs":[]}}`
 	serviceAccountBody := `{"metadata":{"name":"my-service-account"},"spec":{"groupIDs":["` + unknownGroupID + `"]}}`
+
+	const (
+		usersPattern           = "/api/v1/organizations/{organizationID}/users"
+		userPattern            = "/api/v1/organizations/{organizationID}/users/{userID}"
+		serviceAccountsPattern = "/api/v1/organizations/{organizationID}/serviceaccounts"
+		serviceAccountPattern  = "/api/v1/organizations/{organizationID}/serviceaccounts/{serviceAccountID}"
+	)
 
 	organizationPath := "/api/v1/organizations/" + membershipOrganizationID
 
 	tests := []struct {
-		name   string
-		method string
-		path   string
-		body   string
+		name        string
+		method      string
+		pattern     string
+		path        string
+		body        string
+		handler     http.HandlerFunc
+		description string
 	}{
-		{"user create", http.MethodPost, organizationPath + "/users", userBody},
-		{"user update", http.MethodPut, organizationPath + "/users/" + membershipUserID, userBody},
-		{"service account create", http.MethodPost, organizationPath + "/serviceaccounts", serviceAccountBody},
-		{"service account update", http.MethodPut, organizationPath + "/serviceaccounts/" + membershipServiceAccountID, serviceAccountBody},
+		{"user create, unknown group", http.MethodPost, usersPattern, organizationPath + "/users", userBody, unknownGroupHandler, "does not exist in this organization"},
+		{"user create, invalid subject", http.MethodPost, usersPattern, organizationPath + "/users", invalidSubjectBody, invalidSubjectHandler, "subject address invalid"},
+		{"user update, unknown group", http.MethodPut, userPattern, organizationPath + "/users/" + membershipUserID, userBody, unknownGroupHandler, "does not exist in this organization"},
+		{"service account create, unknown group", http.MethodPost, serviceAccountsPattern, organizationPath + "/serviceaccounts", serviceAccountBody, unknownGroupHandler, "does not exist in this organization"},
+		{"service account update, unknown group", http.MethodPut, serviceAccountPattern, organizationPath + "/serviceaccounts/" + membershipServiceAccountID, serviceAccountBody, unknownGroupHandler, "does not exist in this organization"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			m := membershipMux(t)
+			m := membershipMux(t, test.method, test.pattern, test.handler)
 
 			r := httptest.NewRequestWithContext(t.Context(), test.method, test.path, strings.NewReader(test.body))
 			r.Header.Set("Content-Type", "application/json")
@@ -110,7 +146,7 @@ func TestUnknownGroupReturnsBadRequest(t *testing.T) {
 
 			require.NotPanics(t, func() { m.ServeHTTP(w, r) })
 			require.Equal(t, http.StatusBadRequest, w.Code)
-			require.Contains(t, validationErrorDescription(t, w), "does not exist in this organization")
+			require.Contains(t, validationErrorDescription(t, w), test.description)
 		})
 	}
 }
