@@ -37,7 +37,6 @@ This record is a snapshot at those SHAs, not a live guarantee — see Limitation
 | --- | --- |
 | `region:identities` | Read returns live cloud credentials: base64 `clouds.yaml` application credential and SSH private key, on both list and get (`uni-region pkg/handler/identity/client.go:61-103`). |
 | `kubernetes:clusters` | Kubeconfig download shares scope+operation with listing and returns the admin kubeconfig verbatim (`uni-kubernetes pkg/server/handler/cluster/client.go:212`). |
-| `kubernetes:virtualclusters` | Same pattern (`virtualcluster/client.go:205`). |
 | `compute:instances` | Proxies the region sshkey endpoint (private key), console sessions, and read-gated power actions. |
 | `storage:objectstorageendpoints/accesskeys` | Read returns only the access-key **ID**, never the secret half (`uni-storage accesskey.go:194-214`); exclusion is conservative judgment because the scope's entire subject is credentials, not because of a leak. Exclusion verified effective: every accesskey route gates on this exact sub-scope, not the included parent (`uni-storage accesskey.go:34,62,99` read; `:122` create; `:142` delete). |
 
@@ -54,7 +53,6 @@ deliberate re-audit before `platform-reader` gains the surface, instead of silen
 | `region:networks:v2/references` | Only PUT/DELETE, gated create/delete. |
 | `region:servers:v2` | No code checks it; v2 server endpoints check `region:servers`. |
 | `region:volumes:v2` | Volumes API not shipped at audit time (storage model only). |
-| `compute:clusters` | Zero matches in uni-compute; nothing serves it. |
 
 ### Included scopes
 
@@ -212,9 +210,8 @@ this role or its binding enforces.
 
 The audit surfaced seven follow-up items, recorded here. None block this change.
 
-- **uni-kubernetes:** split kubeconfig retrieval out of `kubernetes:clusters` and
-  `kubernetes:virtualclusters` read (for example, a `.../kubeconfig` sub-scope) so that listing
-  clusters and virtual clusters can rejoin `platform-reader`.
+- **uni-kubernetes:** split kubeconfig retrieval out of `kubernetes:clusters` read (for example,
+  a `.../kubeconfig` sub-scope) so that listing clusters can rejoin `platform-reader`.
 - **uni-region (blocking a real over-grant):** split `GET /api/v2/servers/{id}/sshkey` and
   console-session reads out of `region:servers` read, and gate the v2 power actions
   (start/stop/reboot) on update as v1 does — today they are gated only by the read check. Until
@@ -231,7 +228,7 @@ The audit surfaced seven follow-up items, recorded here. None block this change.
   under an already-included scope cannot land unaudited. The identity-side contract test cannot
   see that class of change.
 - **uni-identity (hygiene, optional):** clean up or annotate stale grants already present on
-  `platform-administrator` — `region:servers:v2`, `compute:clusters`, and the unserved
+  `platform-administrator` — `region:servers:v2` and the unserved
   `/references` scopes — which the omission table above had to classify as vacuous.
 - **uni-identity (hardening, optional):** the contract test pins the role as defined in this
   repository's `values.yaml`, but a deployment can still merge extra scopes into
