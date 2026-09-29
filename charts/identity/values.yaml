@@ -298,13 +298,11 @@ roles:
         kubernetes:flavors: [create,read,update,delete]
         kubernetes:images: [create,read,update,delete]
         kubernetes:clustermanagers: [create,read,update,delete]
-        kubernetes:clusters: [create,read,update,delete]
-        kubernetes:virtualclusters: [create,read,update,delete]
+        kubernetes:clusters: [read,update,delete]
         compute:regions: [create,read,update,delete]
         compute:flavors: [create,read,update,delete]
         compute:images: [create,read,update,delete]
         compute:instances: [create,read,update,delete]
-        compute:clusters: [create,read,update,delete]
         storage:objectstorageclasses: [create,read,update,delete]
         storage:objectstorageendpoints: [create,read,update,delete]
         storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
@@ -440,13 +438,11 @@ roles:
         kubernetes:regions: [read]
         kubernetes:flavors: [read]
         kubernetes:images: [read]
-        kubernetes:clusters: [create,read,update,delete]
-        kubernetes:virtualclusters: [create,read,update,delete]
+        kubernetes:clusters: [read,update,delete]
         compute:regions: [read]
         compute:flavors: [read]
         compute:images: [read]
         compute:instances: [create,read,update,delete]
-        compute:clusters: [create,read,update,delete]
   auditor:
     description: Organization auditor
     scopes:
@@ -477,12 +473,10 @@ roles:
         kubernetes:flavors: [read]
         kubernetes:images: [read]
         kubernetes:clusters: [read]
-        kubernetes:virtualclusters: [read]
         compute:regions: [read]
         compute:flavors: [read]
         compute:images: [read]
         compute:instances: [read]
-        compute:clusters: [read]
   # A user can view projects they are a member of and
   # provision clusters.
   user:
@@ -512,10 +506,8 @@ roles:
         storage:objectstorageendpoints: [create,read,update,delete]
         storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
         region:sshcertificateauthorities:v2: [create,read,delete]
-        kubernetes:clusters: [create,read,update,delete]
-        kubernetes:virtualclusters: [create,read,update,delete]
+        kubernetes:clusters: [read,update,delete]
         compute:instances: [create,read,update,delete]
-        compute:clusters: [create,read,update,delete]
   # A reader can view projects they are a member of and view
   # kubernetes clusters.
   reader:
@@ -546,9 +538,7 @@ roles:
         storage:objectstorageendpoints/accesskeys: [read]
         region:sshcertificateauthorities:v2: [read]
         kubernetes:clusters: [read]
-        kubernetes:virtualclusters: [read]
         compute:instances: [read]
-        compute:clusters: [read]
 
 # Optional additional roles that can be injected alongside the defaults.
 # Shape matches the roles map below. Same names will raise an error.
