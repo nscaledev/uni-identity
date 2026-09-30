@@ -38,6 +38,9 @@ old and new clients can coexist during the migration period.
 
 This compatibility behaviour is one of the main reasons the package is more than simple CRUD.
 
+To fill in the `UserIDs` half, the client finds the `User` for each subject at this deployment's
+issuer. That scan reads the cache without deep copies and returns a deep copy of the single match.
+
 ### Role Assignment Guard Rails
 
 Group role assignment is where the handler layer turns the deeper RBAC security model into a
