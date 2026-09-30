@@ -889,19 +889,19 @@ func TestClient_GroupMembershipUnknownGroup(t *testing.T) {
 }
 
 // TestClient_GroupMembershipRepresentations covers the two ways a group stores a member.
-// RBAC resolves a principal into a group through either the deprecated organization user
-// ID list or the subject list, so a member present in one already holds the group's roles
-// and writing the other half grants nothing.
+// RBAC resolves a principal into a group through the subject list only.  A member already
+// in the subject list holds the group's roles, so writing the deprecated organization user
+// ID half grants nothing.  A member only in the user ID list holds nothing, so writing the
+// subject half is a grant.
 func TestClient_GroupMembershipRepresentations(t *testing.T) {
 	t.Parallel()
 
-	t.Run("allows completing the subject half for a member already in the legacy user ID list", func(t *testing.T) {
+	t.Run("refuses completing the subject half for a member only in the legacy user ID list", func(t *testing.T) {
 		t.Parallel()
 
-		// A group written before Subjects existed lists its members in UserIDs
-		// only.  RBAC resolves membership through either list, so the user
-		// already holds the group's roles and writing the missing half confers
-		// nothing — it must not be gated on a role the caller cannot grant.
+		// RBAC does not read UserIDs, so a user listed only there holds none
+		// of the group's roles.  Writing the subject half confers them for
+		// the first time, so it is gated on a role the caller cannot grant.
 		fixture := newUserTestFixtureWithObjects(t, []client.Object{
 			newGlobalUser(userAliceID, userAliceSubject),
 			newOrganizationUser(orgUserAliceID, userAliceID),
@@ -922,12 +922,12 @@ func TestClient_GroupMembershipRepresentations(t *testing.T) {
 		}
 
 		_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserAliceID, request)
-		require.NoError(t, err)
+		require.Error(t, err)
+		require.True(t, errors.IsForbidden(err))
 
 		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
 		assert.Equal(t, []string{orgUserAliceID}, alphaGroup.Spec.UserIDs)
-		require.Len(t, alphaGroup.Spec.Subjects, 1)
-		assert.Equal(t, userAliceSubject, alphaGroup.Spec.Subjects[0].ID)
+		assert.Empty(t, alphaGroup.Spec.Subjects, "a refused write must not add the subject")
 	})
 
 	t.Run("does not duplicate a stored subject whose email differs from the derived one", func(t *testing.T) {
