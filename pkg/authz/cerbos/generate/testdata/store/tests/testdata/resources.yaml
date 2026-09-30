@@ -1,0 +1,77 @@
+# Hand-written Cerbos test fixtures for the generated store (NOT generator
+# output).  Tenant identity is resource DATA: organization/project attributes
+# feed the derived-role binding-match conditions.  A resource "at org level"
+# simply has no project attribute; a platform-level resource has neither.  No
+# resource sets a Cerbos scope: M1 policies live at the root ("") scope only.
+resources:
+  # Project-level resource in org-acme / proj-1.
+  cluster_proj1:
+    kind: kubernetes:clusters
+    id: cluster-1
+    attr:
+      organization: org-acme
+      project: proj-1
+
+  # Org-level resource (no project attribute): a project-bound derived role
+  # must never activate on it.
+  projects_org:
+    kind: identity:projects
+    id: projects-org
+    attr:
+      organization: org-acme
+
+  # Project-level views of the same kind, for project isolation.
+  projects_proj1:
+    kind: identity:projects
+    id: proj-1
+    attr:
+      organization: org-acme
+      project: proj-1
+
+  projects_proj2:
+    kind: identity:projects
+    id: proj-2
+    attr:
+      organization: org-acme
+      project: proj-2
+
+  # The SAME project ID under a DIFFERENT organization: a project binding
+  # embeds its organization, so it must never activate here even though the
+  # project attribute matches.
+  projects_proj1_other_org:
+    kind: identity:projects
+    id: proj-1
+    attr:
+      organization: org-other
+      project: proj-1
+
+  # Platform-level resource (no attributes at all): only a global binding can
+  # ever activate on it.
+  projects_noattrs:
+    kind: identity:projects
+    id: projects-platform
+
+  # Platform-level resource for the create+delete-without-read case.
+  projrefs_platform:
+    kind: identity:projects/references
+    id: ref-1
+
+  # Org-level resource of kind identity:groups (exact-operations and union).
+  groups_acme:
+    kind: identity:groups
+    id: group-1
+    attr:
+      organization: org-acme
+
+  # Open-vocabulary org-level resources.
+  widgets_acme:
+    kind: example:widgets
+    id: widget-1
+    attr:
+      organization: org-acme
+
+  assets_acme:
+    kind: sample:assets
+    id: asset-1
+    attr:
+      organization: org-acme
