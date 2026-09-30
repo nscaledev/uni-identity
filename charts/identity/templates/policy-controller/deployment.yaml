@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-policy-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-policy-controller
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-policy-controller
+    spec:
+      containers:
+      - name: {{ .Release.Name }}-policy-controller
+        image: {{ include "unikorn.policyControllerImage" . }}
+        args:
+        {{- include "unikorn.core.flags" . | nindent 8 }}
+        {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        # The controller-owned policy store; the same expression the cerbos
+        # sidecar's policy volume references (identity/deployment.yaml), so
+        # the publisher and the consumer cannot drift.
+        - --cerbos-policies-configmap={{ .Release.Name }}-cerbos-policies
+        resources:
+          {{- .Values.policyController.resources | toYaml | nindent 10 }}
+        volumeMounts:
+        # The compile gate writes each candidate policy store under /tmp
+        # before exec'ing the vendored cerbos binary; distroless with a
+        # read-only root filesystem needs a writable emptyDir for that
+        # scratch space (same pattern as the cerbos sidecar's /tmp).
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      serviceAccountName: {{ .Release.Name }}-policy-controller
+      securityContext:
+        runAsNonRoot: true

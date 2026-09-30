@@ -1,0 +1,13 @@
+# Hand-written fixture policy for the client integration test.  Deliberately
+# NOT generator (pkg/authz/cerbos/generate) output, so the client test stays
+# independent of the policy generator: role "tester" may "read" widgets;
+# every other action (the test uses "delete") falls through to Cerbos
+# deny-by-default.
+apiVersion: api.cerbos.dev/v1
+resourcePolicy:
+  resource: widget
+  version: default
+  rules:
+  - actions: ["read"]
+    effect: EFFECT_ALLOW
+    roles: ["tester"]

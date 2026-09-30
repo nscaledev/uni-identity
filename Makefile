@@ -16,7 +16,8 @@ CONTROLLERS = \
   unikorn-identity \
   unikorn-organization-controller \
   unikorn-oauth2client-controller \
-  unikorn-project-controller
+  unikorn-project-controller \
+  unikorn-policy-controller
 
 # Release will do cross compliation of all images for the 'all' target.
 # Note we aren't fucking about with docker here because that opens up a
@@ -165,6 +166,32 @@ test-unit:
 .PHONY: validate-policies
 validate-policies:
 	docker run --rm -v $(CURDIR)/pkg/authz/cerbos/generate/testdata/store:/policies:ro ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) compile /policies
+
+# Integration-test the Cerbos gRPC client against the pinned Cerbos image
+# with a hand-written allow/deny policy.  Requires Docker, so this is
+# deliberately not part of test-unit; CI runs it alongside the unit tests.
+.PHONY: test-cerbos-client
+test-cerbos-client:
+	CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) go test -count=1 -tags=integration ./pkg/authz/cerbos/
+
+# Integration-test the policy controller's compile gate and hash-key scheme
+# against the real pinned Cerbos compiler.  The binary is extracted once from
+# the pinned image via docker create/cp — the same binary the controller
+# image vendors via COPY --from.  Requires Docker, so this is deliberately
+# not part of test-unit; CI runs it alongside the unit tests.  On non-Linux
+# hosts the extracted Linux binary cannot exec, so the test instead drives
+# the pinned image via docker run (see integration_test.go); CI (Linux)
+# always exercises the direct-exec path production uses.
+.PHONY: test-cerbos-controller
+test-cerbos-controller:
+	set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	container=$$(docker create ghcr.io/cerbos/cerbos:$(CERBOS_VERSION)); \
+	docker cp "$$container:/cerbos" "$$tmp/cerbos" >/dev/null; \
+	docker rm "$$container" >/dev/null; \
+	CERBOS_BINARY="$$tmp/cerbos" CERBOS_IMAGE=ghcr.io/cerbos/cerbos:$(CERBOS_VERSION) \
+	go test -count=1 -tags=integration ./pkg/authz/cerbos/controller/
 
 # Regenerate the RBAC conformance vectors from the Lean formal model in ./formal.
 # Requires a Lean toolchain (elan/lake).  The unit tests deliberately do NOT --
