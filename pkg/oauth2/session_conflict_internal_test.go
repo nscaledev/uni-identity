@@ -73,6 +73,12 @@ func migrateSubject(user *unikornv1.User) {
 // loses a race.  Just before that write reaches the fake API server, the
 // concurrent function changes the stored record.  The fake client then refuses
 // the stale write with a conflict, as the API server does.
+//
+// The authenticator reads through a fake informer cache that never sees the
+// concurrent write.  That is the worst case of cache lag: every read from the
+// cache returns the version that lost the race.  So a retry that reads from
+// the cache again conflicts again, and only a read from the API server gives
+// the retry a version that it can write.
 func newConflictAuthenticator(t *testing.T, concurrent func(*unikornv1.User)) (*Authenticator, client.Client) {
 	t.Helper()
 
@@ -139,15 +145,28 @@ func newConflictAuthenticator(t *testing.T, concurrent func(*unikornv1.User)) (*
 
 	cli := fake.NewClientBuilder().
 		WithScheme(getPassportInternalScheme(t)).
-		WithObjects(user, oauth2Client).
+		WithObjects(user.DeepCopy(), oauth2Client.DeepCopy()).
 		WithInterceptorFuncs(funcs).
 		Build()
 
+	// The cache holds its own copy of the records.  Writes go to the API
+	// server, as they do with the cached client.
+	cached := fake.NewClientBuilder().
+		WithScheme(getPassportInternalScheme(t)).
+		WithObjects(user.DeepCopy(), oauth2Client.DeepCopy()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, _ client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				return cli.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
 	authenticator := &Authenticator{
-		client:     cli,
-		namespace:  passportTestNamespace,
-		userdb:     userdb.NewUserDatabase(cli, passportTestNamespace),
-		tokenCache: cache.NewLRUExpireCache(16),
+		client:       cached,
+		directclient: cli,
+		namespace:    passportTestNamespace,
+		userdb:       userdb.NewUserDatabase(cached, passportTestNamespace),
+		tokenCache:   cache.NewLRUExpireCache(16),
 	}
 
 	return authenticator, cli
@@ -273,4 +292,32 @@ func TestRefreshTokenReuseIsRefusedAfterAConflict(t *testing.T) {
 	user := getConflictUser(t, cli)
 	require.Len(t, user.Spec.Sessions, 1)
 	assert.Empty(t, user.Spec.Sessions[0].RefreshToken)
+}
+
+func TestRefreshIsRefusedWhenTheUserIsSuspendedDuringTheRace(t *testing.T) {
+	t.Parallel()
+
+	// An administrator suspends the user between the read from the cache and
+	// the write, so the write conflicts.  The retry reads the latest version by
+	// name, not through GetActiveUser.  If the retry does not check the state
+	// again, a suspended user gets a new token.
+	suspend := func(user *unikornv1.User) {
+		user.Spec.State = unikornv1.UserStateSuspended
+	}
+
+	authenticator, cli := newConflictAuthenticator(t, suspend)
+
+	r, claims := newConflictRefreshRequest(t)
+
+	err := authenticator.validateRefreshToken(t.Context(), r, conflictRefresh, claims)
+	require.Error(t, err, "a suspended user must not refresh")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, openapi.AccessDenied, oauthErr.Code())
+
+	user := getConflictUser(t, cli)
+	require.Len(t, user.Spec.Sessions, 1)
+	assert.Equal(t, conflictRefresh, user.Spec.Sessions[0].RefreshToken, "a refused refresh must not use up the token")
 }

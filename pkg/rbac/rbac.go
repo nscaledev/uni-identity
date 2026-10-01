@@ -267,22 +267,15 @@ type groupSubjectFilterGetter func(id string) func(unikornv1.Group) bool
 // groupSubjectFilter checks if the group contains the user.  Membership is
 // read from Subjects only.  The deprecated UserIDs field is still written next
 // to each subject by the group and user handlers, but RBAC does not read it.
+//
+// The match is GroupSpec.HasMemberByID, which the membership grant gates also
+// use, so RBAC and the gates cannot disagree.  It deliberately ignores the
+// issuer: records written before subject issuers existed carry an empty one,
+// while the users and groups handlers now write the deployment's issuer URL,
+// and both forms must keep resolving.
 func groupSubjectFilter(subject string) func(unikornv1.Group) bool {
-	canonical := unikornv1.NormalizeSubject(subject)
-
 	return func(group unikornv1.Group) bool {
-		return !slices.ContainsFunc(group.Spec.Subjects, func(s unikornv1.GroupSubject) bool {
-			// The issuer is deliberately ignored: records written before
-			// subject issuers existed carry an empty one, while the users and
-			// groups handlers now write the deployment's issuer URL, and both
-			// forms must keep resolving.  The membership grant gates match the
-			// same way (see GroupSpec.HasMemberByID); if this ever becomes
-			// issuer-qualified, they must move with it.  Both sides compare in
-			// canonical form, because a stored entry and the authenticated
-			// subject can each be in either case while stored subjects are
-			// migrated.
-			return unikornv1.NormalizeSubject(s.ID) == canonical
-		})
+		return !group.Spec.HasMemberByID(subject)
 	}
 }
 

@@ -33,16 +33,15 @@ func (s *GroupSubject) IdentityKey() string {
 }
 
 // HasMemberByID reports whether the group already confers its roles on the
-// principal, matching subjects by ID alone.  This mirrors how RBAC actually
-// resolves membership: from Subjects only, ignoring the recorded issuer (see
-// groupSubjectFilter in pkg/rbac).  Subject records written before issuers
+// principal, matching subjects by ID alone.  RBAC resolves membership with this
+// function too (see groupSubjectFilter in pkg/rbac): from Subjects only,
+// ignoring the recorded issuer.  Subject records written before issuers
 // were recorded carry an empty one and must still resolve.  A grant gate has
 // to match the same way: a membership stored as a legacy record already
 // confers the roles, so a write that re-states it confers nothing and must not
 // read as an addition and be refused.  The deprecated UserIDs list takes no
-// part, because RBAC does not read it.  If RBAC matching changes, this must
-// move with it.  For the same reason both sides compare in canonical form (see
-// NormalizeSubject), because groupSubjectFilter in pkg/rbac does.
+// part, because RBAC does not read it.  Both sides compare in canonical form
+// (see NormalizeSubject).
 //
 // An empty subject ID matches nothing: membership lists are not validated
 // against real records, so a junk empty entry must not stand in for a

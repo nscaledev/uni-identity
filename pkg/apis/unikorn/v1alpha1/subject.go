@@ -45,20 +45,23 @@ import (
 func NormalizeSubject(subject string) string {
 	trimmed := strings.TrimSpace(subject)
 
-	address, err := mail.ParseAddress(trimmed)
-	if err != nil {
-		return trimmed
-	}
-
-	// ParseAddress also accepts a mailbox with a display name or angle
-	// brackets.  Folding one of those also rewrites the display name, and still
-	// does not give the bare address that a claim carries, so only a bare
-	// address folds.
-	if address.Name != "" || address.Address != trimmed {
+	if !IsBareAddress(trimmed) {
 		return trimmed
 	}
 
 	return foldASCII(trimmed)
+}
+
+// IsBareAddress reports whether s is an email address and nothing more.
+//
+// net/mail.ParseAddress also accepts a mailbox with a display name or angle
+// brackets.  A sign-in claim carries the bare address, so it never matches
+// such a mailbox, and folding one also rewrites the display name.  As a result,
+// only a bare address folds, and the user API stores only a bare address.
+func IsBareAddress(s string) bool {
+	address, err := mail.ParseAddress(s)
+
+	return err == nil && address.Name == "" && address.Address == s
 }
 
 // foldASCII lower-cases the ASCII letters of s and leaves every other rune as

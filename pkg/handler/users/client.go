@@ -21,7 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"net/mail"
 	"slices"
 	"strings"
 
@@ -488,9 +487,10 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 // first, then add to the organization.
 func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	// Any accounts that aren't email based must use kubectl-unikorn to create them,
-	// e.g. users for unikorn services.
-	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
-		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
+	// e.g. users for unikorn services.  A display name or angle brackets are
+	// refused too: nobody can sign in to such a record, and it escapes the dedupe.
+	if !unikornv1.IsBareAddress(strings.TrimSpace(request.Spec.Subject)) {
+		return nil, errors.OAuth2InvalidRequest("subject address invalid")
 	}
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)

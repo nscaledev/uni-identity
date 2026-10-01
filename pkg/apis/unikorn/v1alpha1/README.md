@@ -99,8 +99,9 @@ against one, accepts both forms:
 - If no record matches exactly and two or more have the same canonical form, `MatchSubject`
   reports the subject as ambiguous. The caller refuses the lookup and does not pick a record.
 - An empty subject matches no record.
-- `GroupSpec.HasMemberByID` compares both sides in canonical form, as the group subject match in
-  [`pkg/rbac`](../../../rbac/README.md) does.
+- `GroupSpec.HasMemberByID` compares both sides in canonical form. The group subject match in
+  [`pkg/rbac`](../../../rbac/README.md) calls it, so RBAC and the membership grant gates match in
+  one way. An empty subject is a member of no group.
 
 These helpers live here, not in `pkg/userdb`, because `HasMemberByID` needs the canonical form and
 `pkg/userdb` imports this package.

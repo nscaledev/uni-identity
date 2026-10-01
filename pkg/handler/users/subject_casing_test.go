@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -178,4 +179,34 @@ func TestClient_CreateRefusesASubjectThatFoldsOntoTwoRecords(t *testing.T) {
 	globalUsers := &unikornv1.UserList{}
 	require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
 	assert.Len(t, globalUsers.Items, 2, "an ambiguous create must not add a record")
+}
+
+// TestClient_CreateRefusesASubjectThatIsNotABareAddress pins that the create
+// path stores only a bare address.  net/mail also accepts a display name or
+// angle brackets.  A sign-in claim carries the bare address, and no lookup
+// matches it against such a record, so nobody can sign in to it.  The record
+// also escapes the dedupe, so each new display name adds another global record
+// beside the real one.
+func TestClient_CreateRefusesASubjectThatIsNotABareAddress(t *testing.T) {
+	t.Parallel()
+
+	for _, subject := range []string{"Bob <bob@example.com>", "<bob@example.com>"} {
+		t.Run(subject, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newUserTestFixtureWithObjects(t, []client.Object{
+				newGlobalUser(userBobID, userBobSubject),
+			}, interceptor.Funcs{})
+			ctx := newContext(t)
+
+			_, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+				Spec: openapi.UserSpec{Subject: subject, State: openapi.Active},
+			})
+			require.True(t, errors.IsBadRequest(err), "got %v", err)
+
+			globalUsers := &unikornv1.UserList{}
+			require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+			assert.Len(t, globalUsers.Items, 1, "a refused create must not add a record")
+		})
+	}
 }

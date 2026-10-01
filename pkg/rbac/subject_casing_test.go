@@ -57,3 +57,35 @@ func TestGroupSubjectMatchesAnEntryStoredInAnotherCase(t *testing.T) {
 	acl := getACLForUser(t, f.rbac, "erin@example.com")
 	assert.Nil(t, acl.Organization, "a different address must receive nothing")
 }
+
+// TestAnEmptySubjectIsInNoGroup pins that RBAC resolves membership the same way
+// as the membership grant gates.  Membership lists are not validated against
+// real records, so a group can hold a junk entry with an empty ID.
+// GroupSpec.HasMemberByID says that an empty subject is a member of no group.
+// If RBAC matched the junk entry, a principal with an empty subject would hold
+// the group's roles while the grant gate reports that it is not a member.
+func TestAnEmptySubjectIsInNoGroup(t *testing.T) {
+	t.Parallel()
+
+	f, c := setupTestEnvironment(t)
+
+	require.NoError(t, c.Create(t.Context(), &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      "group-junk-entry",
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs:  []string{roleAdminID},
+			Subjects: []unikornv1.GroupSubject{{ID: ""}, {ID: " "}, {ID: "dana@example.com"}},
+		},
+	}))
+
+	for _, subject := range []string{"", " "} {
+		acl := getACLForUser(t, f.rbac, subject)
+		assert.Nil(t, acl.Organization, "subject %q must receive nothing", subject)
+	}
+
+	// The group still confers its roles on a real member.
+	acl := getACLForUser(t, f.rbac, "dana@example.com")
+	assert.NotNil(t, acl.Organization, "a member must receive the group's organization scopes")
+}

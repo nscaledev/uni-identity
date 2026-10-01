@@ -137,8 +137,10 @@ clients.
   `groupIDs`
 - a requested group that does not exist in the organization is an error, not a silently dropped
   part of the write
-- create and update answer a missing group, and create answers a subject that is not an email
-  address, with HTTP 400; both operations declare 400 in the OpenAPI schema
+- create and update answer a missing group, and create answers a subject that is not a bare email
+  address, with HTTP 400; both operations declare 400 in the OpenAPI schema. A display name or
+  angle brackets are refused, because a sign-in claim carries the bare address and never matches
+  such a record
 - adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
   could grant every role the group carries; removals and user deletion are not gated
 - a principal present in either membership representation is already a member, so completing the
@@ -147,7 +149,7 @@ clients.
   no user records either
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
-- the API-managed path only allows email-address subjects for normal user creation
+- the API-managed path only allows bare email-address subjects for normal user creation
 
 ## Caveats
 
