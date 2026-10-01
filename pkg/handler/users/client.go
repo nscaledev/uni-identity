@@ -39,6 +39,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -340,8 +341,11 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 		}
 	}
 
+	// Copy the time: the User can come from the cache without a deep copy,
+	// and the result must share no memory with it.
 	if lastActive != nil {
-		out.Status.LastActive = &lastActive.Time
+		lastActiveTime := lastActive.Time
+		out.Status.LastActive = &lastActiveTime
 	}
 
 	// Report membership the way RBAC resolves it: HasMemberByID matches the
@@ -391,7 +395,9 @@ func (c *Client) getGlobalUserByID(ctx context.Context, id string) (*unikornv1.U
 func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	users := &unikornv1.UserList{}
 
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	// Scan the cache without deep copies. Copy only the match, so the caller
+	// owns the result.
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
@@ -403,7 +409,7 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, ErrReference
 	}
 
-	return &users.Items[index], nil
+	return users.Items[index].DeepCopy(), nil
 }
 
 func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.UserWrite) (*unikornv1.User, error) {
@@ -528,7 +534,10 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 
 	users := &unikornv1.UserList{}
 
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	// Scan the cache without deep copies.  Only the members of this
+	// organization are read, and convert copies every value it takes from a
+	// User, so the result shares no memory with the cache.
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 

@@ -250,14 +250,16 @@ func principalSubjects(in []groupPrincipal) []unikornv1.GroupSubject {
 
 // findUserBySubject finds a User resource by subject field.
 func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikornv1.User, error) {
+	// Scan the cache without deep copies. Copy only the match, so the caller
+	// owns the result.
 	var users unikornv1.UserList
-	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
 	for i := range users.Items {
 		if users.Items[i].Spec.Subject == subject {
-			return &users.Items[i], nil
+			return users.Items[i].DeepCopy(), nil
 		}
 	}
 
