@@ -423,14 +423,14 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 
 // hasMemberAdditions reports whether the update puts a principal or service
 // account on the group that the group does not already confer its roles on.
-// A principal is matched on its subject ID, the way pkg/rbac resolves
-// membership, not on the whole stored record, and in either membership
-// representation: an existing member re-stated in a write, or named through
-// the representation it is not stored in, gains nothing it does not already
-// hold.
+// A principal is matched on its subject ID in the stored subject list, the way
+// pkg/rbac resolves membership, not on the whole stored record: an existing
+// member re-stated in a write, or named through UserIDs, gains nothing it does
+// not already hold.  A principal stored only in UserIDs holds nothing, so
+// writing its subject is an addition.
 func hasMemberAdditions(current *unikornv1.Group, principals []groupPrincipal, serviceAccountIDs []string) bool {
 	for _, principal := range principals {
-		if !current.Spec.HasMemberByID(principal.userID, principal.subject.ID) {
+		if !current.Spec.HasMemberByID(principal.subject.ID) {
 			return true
 		}
 	}

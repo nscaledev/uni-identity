@@ -74,7 +74,8 @@ changes from scoped `v1` routing to a flatter `v2` routing model.
 - `SigningKeySpec.PrivateKeys` is ordered newest first, so key rotation semantics depend on
   list order.
 - `Group.UserIDs` is compatibility-only and `Group.Subjects` is the forward path for
-  membership that may refer to identities outside the local user database.
+  membership that may refer to identities outside the local user database. RBAC reads only
+  `Group.Subjects`.
 - An `OAuth2Provider`'s issuer URL must be unique across all bearer-trusted providers in the
   operator namespace. Duplicate issuers produce undefined dispatch behavior.
 

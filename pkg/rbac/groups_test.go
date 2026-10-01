@@ -588,12 +588,13 @@ func TestGroupACLContent(t *testing.T) {
 	}
 }
 
-// TestUser_UnmigratedGroupUserIDs verifies that a user still gets permissions
-// from a group that only has the deprecated UserIDs field populated (no Subjects).
-// This simulates a group created before the Subjects field existed — the
-// groupSubjectFilter fallback must match the user even though UserIDs contains
-// OrganizationUser resource names, not email subjects.
-func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
+// TestUser_GroupUserIDsGrantNothing verifies that RBAC resolves group
+// membership from Subjects only.  The group and user handlers still write
+// the UserIDs list next to each subject, but RBAC does not read it: a lookup
+// through UserIDs listed every User once per group on each ACL build.  A
+// group that names the user only in UserIDs must therefore grant nothing,
+// while a group that names the same user in Subjects still grants its role.
+func TestUser_GroupUserIDsGrantNothing(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -614,31 +615,35 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 	createObjects(org)
 	require.NoError(t, c.Update(t.Context(), org))
 
-	role := &unikornv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: testNamespace,
-			Name:      roleReaderID,
-		},
-		Spec: unikornv1.RoleSpec{
-			Scopes: unikornv1.RoleScopes{
-				Organization: []unikornv1.RoleScope{
-					{
-						Name:       "org:read",
-						Operations: []unikornv1.Operation{unikornv1.Read},
+	newRole := func(id, endpoint string) *unikornv1.Role {
+		return &unikornv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: testNamespace,
+				Name:      id,
+			},
+			Spec: unikornv1.RoleSpec{
+				Scopes: unikornv1.RoleScopes{
+					Organization: []unikornv1.RoleScope{
+						{
+							Name:       endpoint,
+							Operations: []unikornv1.Operation{unikornv1.Read},
+						},
 					},
 				},
 			},
-		},
+		}
 	}
-	createObjects(role)
 
-	// Create the User and OrganizationUser resources that exist in production.
-	// The fallback must resolve alice@example.com → User → OrganizationUser name.
 	const (
 		globalUserName      = "user-alice-global"
 		orgUserResourceName = "orguser-a1b2c3d4"
+		roleSubjectsID      = "role-subjects"
 	)
 
+	createObjects(newRole(roleReaderID, "org:read"), newRole(roleSubjectsID, "org:subjects"))
+
+	// The User and OrganizationUser records are real, so a lookup from the
+	// subject to the OrganizationUser name would succeed if RBAC made one.
 	globalUser := &unikornv1.User{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
@@ -663,26 +668,30 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 		},
 	}
 
-	createObjects(globalUser, orgUser)
-
-	// Simulate an unmigrated group: only UserIDs is populated, Subjects is empty.
-	// In production, UserIDs contains OrganizationUser resource names (UUIDs),
-	// not email addresses.
-	unmigratedGroup := &unikornv1.Group{
+	userIDsOnlyGroup := &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testOrgNS,
-			Name:      "group-unmigrated",
+			Name:      "group-userids-only",
 		},
 		Spec: unikornv1.GroupSpec{
 			RoleIDs: []string{roleReaderID},
 			UserIDs: []string{orgUserResourceName},
-			// Subjects intentionally left empty — this group has not been migrated.
 		},
 	}
-	createObjects(unmigratedGroup)
 
-	// Build an ACL for userAliceSubject ("alice@example.com") who is a member
-	// of this group via the OrganizationUser resource name in UserIDs.
+	subjectsGroup := &unikornv1.Group{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testOrgNS,
+			Name:      "group-subjects",
+		},
+		Spec: unikornv1.GroupSpec{
+			RoleIDs:  []string{roleSubjectsID},
+			Subjects: []unikornv1.GroupSubject{{ID: userAliceSubject}},
+		},
+	}
+
+	createObjects(globalUser, orgUser, userIDsOnlyGroup, subjectsGroup)
+
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
 			Sub: userAliceSubject,
@@ -699,15 +708,16 @@ func TestUser_UnmigratedGroupUserIDs(t *testing.T) {
 	acl, err := rbacClient.GetACL(ctx, testOrgID)
 	require.NoError(t, err)
 	require.NotNil(t, acl)
+	require.NotNil(t, acl.Organization, "the subjects group must still grant its role")
+	require.NotNil(t, acl.Organization.Endpoints)
 
-	// The user should still get organization permissions from the unmigrated group.
-	// If the fallback is broken (comparing email against OrgUser resource names),
-	// the ACL will have no organization permissions.
-	assert.NotNil(t, acl.Organization, "user should get permissions from unmigrated group via UserIDs fallback")
-
-	if acl.Organization != nil {
-		assert.NotEmpty(t, *acl.Organization.Endpoints, "user should have org:read from unmigrated group")
+	names := make([]string, 0, len(*acl.Organization.Endpoints))
+	for _, endpoint := range *acl.Organization.Endpoints {
+		names = append(names, endpoint.Name)
 	}
+
+	assert.Contains(t, names, "org:subjects", "membership through Subjects must grant the role")
+	assert.NotContains(t, names, "org:read", "membership through UserIDs alone must grant nothing")
 }
 
 func TestUser_WrongOrganization(t *testing.T) {

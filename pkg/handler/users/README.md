@@ -57,11 +57,10 @@ used to sidestep the group write's guard.
 
 The check keys on the change, not on the request: re-sending a group the user already belongs to
 confers nothing new and passes. Membership has two representations, the deprecated `UserIDs` list
-and the subject list, and `pkg/rbac` resolves a user into a group through either one. A user
-present in one is therefore already a member, so filling in the other half confers nothing and is
-not gated. That matters for groups written before subjects existed: re-sending their membership
-derives the missing half for the first time, and reading that as a grant would leave such a group
-with no legal user write at all.
+and the subject list, but `pkg/rbac` resolves a user into a group through the subject list only. A
+user already in the subject list is a member, so filling in the `UserIDs` half confers nothing and
+is not gated. A user only in the `UserIDs` list holds nothing, so writing the subject half is a
+grant and is gated.
 
 For the same reason, the already-a-member test matches subjects by ID alone, mirroring how
 `pkg/rbac` actually resolves membership (see `GroupSpec.HasMemberByID`). Subject records written
