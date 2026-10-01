@@ -1,0 +1,17 @@
+grafana:
+  dashboards:
+    enabled: false
+    provisioningMode: sidecar
+    namespace: ""
+    folder: UNI/Identity
+    label: grafana_dashboard
+    leaderElection:
+      enabled: false
+    instanceSelector:
+      matchLabels:
+        service: central-observability
+
+lokiDatasource:
+  enabled: false
+  namespace: ""
+  url: ""

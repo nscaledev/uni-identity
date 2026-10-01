@@ -1,0 +1,10 @@
+grafana:
+  dashboards:
+    enabled: true
+    provisioningMode: operator
+    namespace: grafana
+
+lokiDatasource:
+  enabled: true
+  namespace: grafana
+  url: http://loki-gateway.loki.svc.cluster.local

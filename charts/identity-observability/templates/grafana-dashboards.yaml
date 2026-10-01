@@ -1,0 +1,39 @@
+{{- if .Values.grafana.dashboards.enabled }}
+{{- $leaderElection := default dict .Values.grafana.dashboards.leaderElection }}
+{{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+{{- $name := base $path | trimSuffix ".json" }}
+{{- if or (ne $name "leader-election") (default false $leaderElection.enabled) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "identity-observability.fullname" $ }}-dashboard-{{ $name }}
+  namespace: {{ include "identity-observability.grafanaNamespace" $ }}
+  labels:
+    {{- include "identity-observability.labels" $ | nindent 4 }}
+    {{- if eq $.Values.grafana.dashboards.provisioningMode "sidecar" }}
+    {{ $.Values.grafana.dashboards.label }}: "1"
+    {{- end }}
+  annotations:
+    grafana_folder: {{ $.Values.grafana.dashboards.folder | quote }}
+data:
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- if eq $.Values.grafana.dashboards.provisioningMode "operator" }}
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ include "identity-observability.fullname" $ }}-{{ $name }}
+  namespace: {{ include "identity-observability.grafanaNamespace" $ }}
+spec:
+  instanceSelector:
+    {{- toYaml $.Values.grafana.dashboards.instanceSelector | nindent 4 }}
+  folder: {{ $.Values.grafana.dashboards.folder | quote }}
+  configMapRef:
+    name: {{ include "identity-observability.fullname" $ }}-dashboard-{{ $name }}
+    key: {{ base $path }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
