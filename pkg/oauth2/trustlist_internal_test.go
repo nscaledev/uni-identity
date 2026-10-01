@@ -109,6 +109,7 @@ func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...clien
 		josetesting.Namespace,
 		issuerVal,
 		cli,
+		cli,
 		nil, // jwtIssuer unused by validatorForIssuer
 		udb,
 		rbacInst,

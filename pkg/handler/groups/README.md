@@ -39,8 +39,15 @@ member that is stored only in `UserIDs` holds none of the group's roles.
 
 This compatibility behaviour is one of the main reasons the package is more than simple CRUD.
 
-To fill in the `UserIDs` half, the client finds the `User` for each subject at this deployment's
-issuer. That scan reads the cache without deep copies and returns a deep copy of the single match.
+### Subject Matching
+
+A group write stores a subject entry as the request supplies it. To fill in the `UserIDs`
+counterpart, `findUserBySubject` finds the `User` for each subject at this deployment's issuer. It
+resolves the subject through
+[`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching), so a user stored in
+another case still resolves. If the subject folds onto two or more users and matches none exactly,
+the write fails with a consistency error. The scan reads the cache without deep copies and returns
+a deep copy of the single match.
 
 ### Role Assignment Guard Rails
 
@@ -172,7 +179,8 @@ would drift.
 - adding a member to a group is a grant of that group's roles, wherever the membership is written, so
   it is allowed only where the caller could grant every role the group carries
 - the gate treats a principal as already a member by subject `id` alone (`HasMemberByID`), mirroring
-  how `pkg/rbac` resolves membership; the recorded `issuer` and the display-only `email` take no part
+  how `pkg/rbac` resolves membership; the recorded `issuer` and the display-only `email` take no part,
+  and the `id` compares in canonical form
 - removing a member from a group, and deleting a member principal, confer nothing and are not gated
 - role removals and group DELETE revoke without a role check, by design
 - internal compatibility between `UserIDs` and `Subjects` should be maintained where possible

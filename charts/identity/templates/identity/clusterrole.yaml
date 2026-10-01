@@ -39,6 +39,14 @@ rules:
   - patch
   - create
   - delete
+# A session write that loses a race reads the user again through the uncached
+# client, because the cache can still hold the version that lost.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - users
+  verbs:
+  - get
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:
