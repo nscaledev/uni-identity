@@ -42,10 +42,12 @@ This compatibility behaviour is one of the main reasons the package is more than
 ### Subject Matching
 
 A group write stores a subject entry as the request supplies it. To fill in the `UserIDs`
-counterpart, `findUserBySubject` resolves the subject through
+counterpart, `findUserBySubject` finds the `User` for each subject at this deployment's issuer. It
+resolves the subject through
 [`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching), so a user stored in
 another case still resolves. If the subject folds onto two or more users and matches none exactly,
-the write fails with a consistency error.
+the write fails with a consistency error. The scan reads the cache without deep copies and returns
+a deep copy of the single match.
 
 ### Role Assignment Guard Rails
 
