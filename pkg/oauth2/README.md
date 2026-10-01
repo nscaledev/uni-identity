@@ -59,6 +59,9 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
   trusted as plain client-supplied data.
 - Redirect URI validation, PKCE validation, and client authentication are part of the security
   boundary.
+- Confidential clients are checked against the `secret` key of the client's credentials Secret
+  (see [`pkg/provisioners/oauth2client`](../provisioners/oauth2client/README.md)). The deprecated
+  `OAuth2Client` status secret is only used when that Secret does not exist yet.
 - Federated user sessions are persisted per client in the user record.
 - The package intentionally keeps a single active session/token chain per client.
 - Refresh tokens are single-use.

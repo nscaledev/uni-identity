@@ -56,6 +56,12 @@ func (c *OAuth2Client) ResourceLabels() (labels.Set, error) {
 	return nil, nil
 }
 
+// CredentialsSecretName is the Secret, in the client's namespace, that holds the
+// client ID and secret under the "id" and "secret" keys.
+func (c *OAuth2Client) CredentialsSecretName() string {
+	return c.Name + "-credentials"
+}
+
 func (u *User) Session(clientID string) (*UserSession, error) {
 	index := slices.IndexFunc(u.Spec.Sessions, func(session UserSession) bool {
 		return session.ClientID == clientID

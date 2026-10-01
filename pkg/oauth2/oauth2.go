@@ -54,6 +54,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 	"github.com/unikorn-cloud/identity/pkg/util"
 
+	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/cache"
 	"k8s.io/utils/ptr"
 
@@ -1121,11 +1123,25 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 		return errors.OAuth2AccessDenied("requested client id does not exist").WithError(err)
 	}
 
-	if client.Status.Secret == "" {
-		return errors.OAuth2AccessDenied("client secret invalid")
+	return a.checkClientSecret(r.Context(), client, clientSecret)
+}
+
+// checkClientSecret compares the presented secret with the one in the client's
+// credentials Secret, falling back to status for clients not yet migrated.
+func (a *Authenticator) checkClientSecret(ctx context.Context, oauth2client *unikornv1.OAuth2Client, clientSecret string) error {
+	expected := oauth2client.Status.Secret
+
+	secret := &corev1.Secret{}
+
+	if err := a.client.Get(ctx, client.ObjectKey{Namespace: oauth2client.Namespace, Name: oauth2client.CredentialsSecretName()}, secret); err != nil {
+		if !kerrors.IsNotFound(err) {
+			return err
+		}
+	} else {
+		expected = string(secret.Data["secret"])
 	}
 
-	if client.Status.Secret != clientSecret {
+	if expected == "" || expected != clientSecret {
 		return errors.OAuth2AccessDenied("client secret invalid")
 	}
 
@@ -1258,15 +1274,7 @@ func (a *Authenticator) validateClientSecretRefresh(r *http.Request, claims *Ref
 		return errors.OAuth2AccessDenied("failed to lookup client").WithError(err)
 	}
 
-	if client.Status.Secret == "" {
-		return errors.OAuth2AccessDenied("client secret invalid")
-	}
-
-	if client.Status.Secret != clientSecret {
-		return errors.OAuth2AccessDenied("client secret invalid")
-	}
-
-	return nil
+	return a.checkClientSecret(r.Context(), client, clientSecret)
 }
 
 // validateRefreshToken checks the refresh token ID is still valid (unused) and clears it

@@ -21,11 +21,29 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
+	"fmt"
 
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/manager"
 	"github.com/unikorn-cloud/core/pkg/provisioners"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+
+	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+)
+
+// OAuth2ClientLabel is set on the credentials Secret, so tools like PushSecret
+// can select them, its value is the OAuth2Client name.
+const OAuth2ClientLabel = "unikorn-cloud.org/oauth2client"
+
+var (
+	ErrSecretMissing = errors.New("credentials secret has no secret key")
 )
 
 // Provisioner encapsulates control plane provisioning.
@@ -50,21 +68,80 @@ func (p *Provisioner) Object() unikornv1core.ManagableResourceInterface {
 
 // Provision implements the Provision interface.
 func (p *Provisioner) Provision(ctx context.Context) error {
-	// TODO: things like Entra will expire secrets, we may want to consider
-	// this in the long term for security.
-	// TODO: We _could_ cryptographically sign this rather than it being a
-	// PSK.
-	if p.oauth2client.Status.Secret == "" {
-		secret := make([]byte, 32)
+	cli, err := coreclient.FromContext(ctx)
+	if err != nil {
+		return err
+	}
 
-		if _, err := rand.Read(secret); err != nil {
+	key := client.ObjectKey{
+		Namespace: p.oauth2client.Namespace,
+		Name:      p.oauth2client.CredentialsSecretName(),
+	}
+
+	// Uncached read, a cached one would list and watch every Secret in the cluster.
+	secret := &corev1.Secret{}
+
+	if err := manager.FromContext(ctx).GetAPIReader().Get(ctx, key, secret); err != nil {
+		if !kerrors.IsNotFound(err) {
 			return err
 		}
 
-		p.oauth2client.Status.Secret = base64.RawURLEncoding.EncodeToString(secret)
+		if secret, err = p.createSecret(ctx, cli, key); err != nil {
+			return err
+		}
 	}
 
+	value := secret.Data["secret"]
+	if len(value) == 0 {
+		return fmt.Errorf("%w: %s", ErrSecretMissing, key)
+	}
+
+	// The Secret is the source of truth, status is a copy kept so a rollback
+	// to a release that only reads status sees the same secret.
+	p.oauth2client.Status.Secret = string(value)
+
 	return nil
+}
+
+// createSecret creates the credentials Secret.  An existing status secret is
+// copied as-is so clients migrating from status keep working.
+func (p *Provisioner) createSecret(ctx context.Context, cli client.Client, key client.ObjectKey) (*corev1.Secret, error) {
+	value := p.oauth2client.Status.Secret
+
+	if value == "" {
+		random := make([]byte, 32)
+
+		if _, err := rand.Read(random); err != nil {
+			return nil, err
+		}
+
+		value = base64.RawURLEncoding.EncodeToString(random)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: key.Namespace,
+			Name:      key.Name,
+			Labels: map[string]string{
+				OAuth2ClientLabel: p.oauth2client.Name,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"id":     []byte(p.oauth2client.Name),
+			"secret": []byte(value),
+		},
+	}
+
+	if err := controllerutil.SetOwnerReference(&p.oauth2client, secret, cli.Scheme()); err != nil {
+		return nil, err
+	}
+
+	if err := cli.Create(ctx, secret); err != nil {
+		return nil, err
+	}
+
+	return secret, nil
 }
 
 // Deprovision implements the Provision interface.
