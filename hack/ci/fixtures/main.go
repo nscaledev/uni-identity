@@ -558,11 +558,13 @@ func main() {
 
 	// ── Resolve role IDs ─────────────────────────────────────────────────────
 	// platform-administrator is protected and not returned by the API.
-	// We use administrator (org-scoped, full identity CRUD) and user (project-scoped).
+	// We use administrator (org-scoped identity CRUD, minus oauth2provider writes) and
+	// user (project-scoped).
 	administratorRoleID, userRoleID, auditRoleID := resolveRoles(ctx, ac, orgID)
 
 	// ── Create Groups ─────────────────────────────────────────────────────────
-	// ci-admin-group: organization administrator — full identity CRUD at org scope.
+	// ci-admin-group: organization administrator — identity CRUD at org scope, except
+	// oauth2providers, which is read-only.
 	adminGroupID := createGroup(ctx, ac, orgID, "ci-admin-group", []string{administratorRoleID})
 
 	// ci-user-group: project user — project-scoped access only.
