@@ -89,6 +89,17 @@ jobs:
       uses: nscaledev/uni-chart-release-action@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Release additional charts
+      run: |
+        echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        for CHART in $(sed -n 's/^CHARTS = //p' Makefile); do
+          [[ "${CHART}" == "charts/${CHART_NAME}" ]] && continue
+          NAME=$(grep '^name:' "${CHART}/Chart.yaml" | awk '{print $2}')
+          helm package "${CHART}" --version "${CHART_VERSION}" --app-version "${CHART_VERSION}"
+          helm push "${NAME}-${CHART_VERSION}.tgz" "oci://ghcr.io/nscaledev/charts"
+        done
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Release
       uses: softprops/action-gh-release@v1
       with:
