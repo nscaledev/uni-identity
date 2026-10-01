@@ -18,6 +18,7 @@ package ids_test
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -102,6 +103,11 @@ func TestStringFormats(t *testing.T) {
 			fmt.Sprintf("%v", ids.MustParseUserID(validUUID)),
 		},
 		{
+			"GlobalUserID",
+			fmt.Sprintf("%s", ids.MustParseGlobalUserID(validUUID)), //nolint:staticcheck
+			fmt.Sprintf("%v", ids.MustParseGlobalUserID(validUUID)),
+		},
+		{
 			"GroupID",
 			fmt.Sprintf("%s", ids.MustParseGroupID(validUUID)), //nolint:staticcheck
 			fmt.Sprintf("%v", ids.MustParseGroupID(validUUID)),
@@ -144,6 +150,7 @@ func TestMarshalText(t *testing.T) {
 		{"ProjectID", ids.MustParseProjectID(validUUID)},
 		{"ServiceAccountID", ids.MustParseServiceAccountID(validUUID)},
 		{"UserID", ids.MustParseUserID(validUUID)},
+		{"GlobalUserID", ids.MustParseGlobalUserID(validUUID)},
 		{"GroupID", ids.MustParseGroupID(validUUID)},
 		{"OAuth2ProviderID", ids.MustParseOAuth2ProviderID(validUUID)},
 		{"AllocationID", ids.MustParseAllocationID(validUUID)},
@@ -176,6 +183,7 @@ func TestUnmarshalTextAcceptsValid(t *testing.T) {
 		{"ProjectID", new(ids.ProjectID)},
 		{"ServiceAccountID", new(ids.ServiceAccountID)},
 		{"UserID", new(ids.UserID)},
+		{"GlobalUserID", new(ids.GlobalUserID)},
 		{"GroupID", new(ids.GroupID)},
 		{"OAuth2ProviderID", new(ids.OAuth2ProviderID)},
 		{"AllocationID", new(ids.AllocationID)},
@@ -211,6 +219,7 @@ func TestUnmarshalTextRejectsInvalid(t *testing.T) {
 		{"ProjectID", new(ids.ProjectID)},
 		{"ServiceAccountID", new(ids.ServiceAccountID)},
 		{"UserID", new(ids.UserID)},
+		{"GlobalUserID", new(ids.GlobalUserID)},
 		{"GroupID", new(ids.GroupID)},
 		{"OAuth2ProviderID", new(ids.OAuth2ProviderID)},
 		{"AllocationID", new(ids.AllocationID)},
@@ -238,6 +247,7 @@ func TestMustParsePanics(t *testing.T) {
 		{"MustParseProjectID", func(s string) { ids.MustParseProjectID(s) }},
 		{"MustParseServiceAccountID", func(s string) { ids.MustParseServiceAccountID(s) }},
 		{"MustParseUserID", func(s string) { ids.MustParseUserID(s) }},
+		{"MustParseGlobalUserID", func(s string) { ids.MustParseGlobalUserID(s) }},
 		{"MustParseGroupID", func(s string) { ids.MustParseGroupID(s) }},
 		{"MustParseOAuth2ProviderID", func(s string) { ids.MustParseOAuth2ProviderID(s) }},
 		{"MustParseAllocationID", func(s string) { ids.MustParseAllocationID(s) }},
@@ -281,6 +291,10 @@ func TestParseRoundTrips(t *testing.T) {
 			v, err := ids.ParseUserID(s)
 			return v.String(), err
 		}},
+		{"ParseGlobalUserID", func(s string) (string, error) {
+			v, err := ids.ParseGlobalUserID(s)
+			return v.String(), err
+		}},
 		{"ParseGroupID", func(s string) (string, error) {
 			v, err := ids.ParseGroupID(s)
 			return v.String(), err
@@ -316,5 +330,31 @@ func TestParseRoundTrips(t *testing.T) {
 				t.Fatal("expected error for invalid UUID, got nil")
 			}
 		})
+	}
+}
+
+// TestGlobalUserIDIsDistinctFromUserID pins the reason this type exists. A
+// membership ID and an account ID are both UUIDs over the same wire format,
+// and the account endpoint deletes an account. If the two were one type,
+// code inside identity could pass a membership ID to the account delete and
+// still compile. The test fails if GlobalUserID becomes an alias of UserID.
+// It also asserts that the distinction costs nothing at the wire: both still
+// render the same text.
+func TestGlobalUserIDIsDistinctFromUserID(t *testing.T) {
+	t.Parallel()
+
+	if reflect.TypeFor[ids.GlobalUserID]() == reflect.TypeFor[ids.UserID]() {
+		t.Fatal("GlobalUserID and UserID must be different types")
+	}
+
+	account := ids.MustParseGlobalUserID(validUUID)
+	membership := ids.MustParseUserID(validUUID)
+
+	if account.String() != membership.String() {
+		t.Fatalf("GlobalUserID renders %q, UserID renders %q, want the same text", account.String(), membership.String())
+	}
+
+	if account.String() != validUUID {
+		t.Fatalf("GlobalUserID.String() = %q, want %q", account.String(), validUUID)
 	}
 }

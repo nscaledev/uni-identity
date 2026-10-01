@@ -12,13 +12,23 @@ Provides distinct named types over `uuid.UUID` for every resource category:
 | `ProjectID` | projects |
 | `ServiceAccountID` | service accounts |
 | `UserID` | users |
+| `GlobalUserID` | global user records, the account behind every membership |
 | `GroupID` | groups |
 | `OAuth2ProviderID` | OAuth2 providers |
 | `AllocationID` | resource allocations |
 
 Each type is a distinct named type — not an alias — so the compiler prevents
 a `ProjectID` from being passed where an `OrganizationID` is expected, and
-so on across all seven types.
+so on across all eight types.
+
+`UserID` and `GlobalUserID` both identify users and are not interchangeable.
+`UserID` identifies an `OrganizationUser`, one person's membership of one
+organization, and its string form is what `metadata.id` carries on the user
+API. `GlobalUserID` identifies the `User` record that membership points at,
+which is shared by that person's memberships in every organization, and its
+string form is what `status.globalUserId` carries. Both body fields are plain
+strings, so the types protect only code inside identity. A client that sends
+a membership ID to the account delete gets 404.
 
 Each type implements `encoding.TextUnmarshaler` by delegating to `uuid.UUID`,
 so the oapi-codegen parameter binder validates UUID format at path-parameter

@@ -265,6 +265,91 @@ func TestResolveGlobalRoleBindings(t *testing.T) {
 	}
 }
 
+// TestHasGlobalSubjectBinding pins the predicate that protects an account
+// from deletion. A subject named by a binding holds authority that survives
+// the loss of every membership, so deleting its record locks the subject out
+// of a system that still grants it access through that binding.
+func TestHasGlobalSubjectBinding(t *testing.T) {
+	t.Parallel()
+
+	const (
+		uniIssuer   = "uni"
+		otherIssuer = "https://staff.example.auth0.com/"
+		admin       = "admin@example.com"
+	)
+
+	bindings := []rbac.GlobalRoleBinding{
+		{Issuer: uniIssuer, Subject: admin, RoleIDs: []string{"platform-administrator"}},
+		{Issuer: otherIssuer, Subject: "  spaced@example.com  ", RoleIDs: []string{"platform-reader"}},
+		{Issuer: otherIssuer, Subject: rbac.WildcardSubject, RoleIDs: []string{"platform-reader"}, Wildcard: true},
+	}
+
+	cases := []struct {
+		name    string
+		subject string
+		want    bool
+		why     string
+	}{
+		{
+			"exact subject match",
+			admin,
+			true,
+			"a bound subject keeps its authority with no membership, so the record must survive",
+		},
+		{
+			"unbound subject",
+			"user@example.com",
+			false,
+			"an ordinary account is deletable, which is the whole point of the endpoint",
+		},
+		{
+			"binding subject is trimmed before comparison",
+			"spaced@example.com",
+			true,
+			"whitespace in a configured binding must not silently drop the protection",
+		},
+		{
+			"wildcard binding protects nobody",
+			"anyone@example.com",
+			false,
+			"a wildcard names no subject, and matching it would refuse every delete on the platform",
+		},
+		{
+			"comparison is case sensitive",
+			"Admin@example.com",
+			false,
+			"authenticated subjects arrive lower cased, so a looser match here would disagree with how authority is resolved",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := rbac.HasGlobalSubjectBindingForTest(bindings, tc.subject); got != tc.want {
+				t.Fatalf("HasGlobalSubjectBinding(%q) = %v, want %v: %s", tc.subject, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestHasGlobalSubjectBindingIgnoresIssuer pins the deliberate over-match. A
+// User record stores a subject and no issuer, so the predicate cannot tell
+// which issuer a record belongs to. It protects the subject at every issuer,
+// which refuses some deletes it could have allowed and allows none that a
+// correct check would have refused.
+func TestHasGlobalSubjectBindingIgnoresIssuer(t *testing.T) {
+	t.Parallel()
+
+	bindings := []rbac.GlobalRoleBinding{
+		{Issuer: "https://staff.example.auth0.com/", Subject: "admin@example.com", RoleIDs: []string{"platform-administrator"}},
+	}
+
+	if !rbac.HasGlobalSubjectBindingForTest(bindings, "admin@example.com") {
+		t.Fatal("the record carries no issuer, so a binding at any issuer must protect it")
+	}
+}
+
 // TestOptionsValidateGlobalRoleBindingIssuer covers the outcomes of the
 // GlobalRoleBindings loop in Options.Validate: an untrusted issuer is
 // reported (even against an empty trusted-issuer list, since this check is

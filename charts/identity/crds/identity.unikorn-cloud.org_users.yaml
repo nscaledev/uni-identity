@@ -120,6 +120,8 @@ spec:
         required:
         - spec
         type: object
+    selectableFields:
+    - jsonPath: .spec.subject
     served: true
     storage: true
     subresources:

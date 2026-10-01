@@ -68,7 +68,7 @@ func invalidSubjectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = users.New(nil, "", common.IssuerValue{}).Create(r.Context(), organizationID, request)
+	_, err = users.New(nil, nil, "", common.IssuerValue{}).Create(r.Context(), organizationID, request)
 	errors.HandleError(w, r, err)
 }
 

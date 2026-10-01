@@ -122,7 +122,18 @@ func newUserTestFixtureWithObjects(t *testing.T, objects []client.Object, interc
 
 	objects = append([]client.Object{organization}, objects...)
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(interceptors).Build()
+	// The spec.subject index stands in for the selectable field on the User
+	// CRD, which lets the API server filter accounts by subject.
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
+		WithIndex(&unikornv1.User{}, "spec.subject", func(o client.Object) []string {
+			user, ok := o.(*unikornv1.User)
+			if !ok {
+				return nil
+			}
+
+			return []string{user.Spec.Subject}
+		}).
+		WithInterceptorFuncs(interceptors).Build()
 	issuer := handlercommon.IssuerValue{
 		URL:      testIssuerURL,
 		Hostname: testIssuerHost,
@@ -130,7 +141,7 @@ func newUserTestFixtureWithObjects(t *testing.T, objects []client.Object, interc
 
 	return &userTestFixture{
 		client:      c,
-		usersClient: users.New(c, testNamespace, issuer),
+		usersClient: users.New(c, c, testNamespace, issuer),
 	}
 }
 
@@ -410,6 +421,217 @@ func TestClient_Create(t *testing.T) {
 		// the requested group membership was still applied
 		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
 		assert.Contains(t, alphaGroup.Spec.UserIDs, result.Metadata.Id)
+	})
+}
+
+// TestClient_CreateIgnoresAnAccountOnlyTheCacheHolds pins the uncached account
+// lookup in Create. GlobalClient.Delete removes the account through the API
+// server, and the cache still holds it for a short time. A signup retry right
+// after a rollback then asks for the same subject. If Create found the account
+// through the cache, it would reuse the deleted account and write a membership
+// that points at nothing. Listing that organization's users then fails for
+// every caller, and the membership cannot be removed through the API.
+func TestClient_CreateIgnoresAnAccountOnlyTheCacheHolds(t *testing.T) {
+	t.Parallel()
+
+	const deletedAccount = "user-alice-deleted"
+
+	// The cached view still holds the deleted account. The API server does
+	// not.
+	cached, direct := newCreateClients(t, []client.Object{newGlobalUser(deletedAccount, userAliceSubject)}, nil, interceptor.Funcs{})
+
+	usersClient := users.New(cached, direct, testNamespace, handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
+	})
+
+	request := &openapi.UserWrite{
+		Spec: openapi.UserSpec{
+			Subject: userAliceSubject,
+			State:   openapi.Active,
+		},
+	}
+
+	created, err := usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), request)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, deletedAccount, created.Status.GlobalUserId,
+		"a membership must not point at an account that the API server no longer holds")
+}
+
+// newCreateClients returns a cached and a direct fake client that share one
+// scheme, with the organization in both. The direct client has the
+// spec.subject field index, as the API server has the selectable field.
+func newCreateClients(t *testing.T, cachedObjects, directObjects []client.Object, directInterceptors interceptor.Funcs) (client.Client, client.Client) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      testOrgID,
+		},
+		Status: unikornv1.OrganizationStatus{
+			Namespace: testOrgNS,
+		},
+	}
+
+	cached := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(append([]client.Object{organization.DeepCopy()}, cachedObjects...)...).Build()
+
+	direct := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(append([]client.Object{organization.DeepCopy()}, directObjects...)...).
+		WithIndex(&unikornv1.User{}, "spec.subject", func(o client.Object) []string {
+			user, ok := o.(*unikornv1.User)
+			if !ok {
+				return nil
+			}
+
+			return []string{user.Spec.Subject}
+		}).
+		WithInterceptorFuncs(directInterceptors).Build()
+
+	return cached, direct
+}
+
+// TestClient_CreateReusesAMembershipOnlyTheAPIServerHolds pins the uncached
+// membership lookup in Create. A signup retry can arrive before the cache holds
+// the membership that the first call wrote. If Create found the account through
+// the API server but the membership through the cache, it would write a second
+// membership for the same account in the same organization. After that, every
+// Create for that subject in that organization fails, because the lookup finds
+// two memberships.
+func TestClient_CreateReusesAMembershipOnlyTheAPIServerHolds(t *testing.T) {
+	t.Parallel()
+
+	const (
+		account    = "user-alice-new"
+		membership = "orguser-alice-new"
+	)
+
+	cached, direct := newCreateClients(t, nil, []client.Object{
+		newGlobalUser(account, userAliceSubject),
+		newOrganizationUser(membership, account),
+	}, interceptor.Funcs{})
+
+	usersClient := users.New(cached, direct, testNamespace, handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
+	})
+
+	request := &openapi.UserWrite{
+		Spec: openapi.UserSpec{
+			Subject: userAliceSubject,
+			State:   openapi.Active,
+		},
+	}
+
+	created, err := usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), request)
+	require.NoError(t, err)
+
+	assert.Equal(t, membership, created.Metadata.Id,
+		"a retry must return the membership that already exists, not write a second one")
+}
+
+// TestClient_CreateAsksOnlyForTheSubjectsAccount pins the field selector on the
+// account lookup in Create. The lookup goes to the API server, not the cache.
+// Without the selector, each membership create would read every account on the
+// platform, with every session token, from the API server.
+func TestClient_CreateAsksOnlyForTheSubjectsAccount(t *testing.T) {
+	t.Parallel()
+
+	var selectors []string
+
+	cached, direct := newCreateClients(t, nil, nil, interceptor.Funcs{
+		List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*unikornv1.UserList); ok {
+				options := &client.ListOptions{}
+				options.ApplyOptions(opts)
+
+				selector := ""
+				if options.FieldSelector != nil {
+					selector = options.FieldSelector.String()
+				}
+
+				selectors = append(selectors, selector)
+			}
+
+			return inner.List(ctx, list, opts...)
+		},
+	})
+
+	usersClient := users.New(cached, direct, testNamespace, handlercommon.IssuerValue{
+		URL:      testIssuerURL,
+		Hostname: testIssuerHost,
+	})
+
+	request := &openapi.UserWrite{
+		Spec: openapi.UserSpec{
+			Subject: userAliceSubject,
+			State:   openapi.Active,
+		},
+	}
+
+	_, err := usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), request)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, selectors, "Create must look the account up through the API server")
+
+	for _, selector := range selectors {
+		assert.Equal(t, "spec.subject="+userAliceSubject, selector,
+			"the API server must return only the account for this subject")
+	}
+}
+
+// TestClient_CreateReturnsTheAccountID pins the only way a caller learns the
+// account identifier. org-service creates the user and captures values from
+// that response into its rollback closure, so without this field the rollback
+// cannot name the account it must delete, and no endpoint exposes one.
+func TestClient_CreateReturnsTheAccountID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns the account id distinct from the membership id", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixture(t)
+		ctx := newContext(t)
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject: userAliceSubject,
+				State:   openapi.Active,
+			},
+		}
+
+		created, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+		require.NoError(t, err)
+
+		require.NotEmpty(t, created.Status.GlobalUserId,
+			"org-service cannot delete an account it was never told the id of")
+
+		assert.NotEqual(t, created.Metadata.Id, created.Status.GlobalUserId,
+			"the membership and the account are different objects and must not share an identifier")
+
+		// The value must name the account, not any other object that happens to
+		// be a UUID. Read the record back by that name.
+		account := &unikornv1.User{}
+		require.NoError(t, fixture.client.Get(ctx,
+			client.ObjectKey{Namespace: testNamespace, Name: created.Status.GlobalUserId},
+			account))
+		assert.Equal(t, userAliceSubject, account.Spec.Subject)
+
+		// A second membership of the same subject is a second Metadata.Id over
+		// one account, which is the distinction this field exists to express.
+		// There is one organization in the fixture, so assert it through the
+		// stored record rather than a second create.
+		organizationUsers := &unikornv1.OrganizationUserList{}
+		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
+		require.Len(t, organizationUsers.Items, 1)
+		assert.Equal(t, created.Status.GlobalUserId, organizationUsers.Items[0].Labels[constants.UserLabel],
+			"status.globalUserId must be the account the membership points at")
 	})
 }
 

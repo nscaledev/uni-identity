@@ -305,6 +305,10 @@ type Claim string
 // CodeChallengeMethod Supported code challenge methods.
 type CodeChallengeMethod string
 
+// GlobalUserId The identifier of a global user record, the account a person holds
+// across every organization.
+type GlobalUserId = identityids.GlobalUserID
+
 // GrantType Supported grant type.
 type GrantType string
 
@@ -883,6 +887,12 @@ type UserState string
 
 // UserStatus Additional user metadata.
 type UserStatus struct {
+	// GlobalUserId The identifier of the underlying account, shared by this person's
+	// memberships in every organization.  This is distinct from
+	// metadata.id, which identifies this organization's membership of
+	// it.  The value is a UUID.
+	GlobalUserId string `json:"globalUserId"`
+
 	// LastActive The last time a user performed some action.  This is not guaranteed to
 	// be completely accurate depending on performance constraints.
 	LastActive *time.Time `json:"lastActive,omitempty"`
@@ -965,6 +975,10 @@ type Users = []UserRead
 
 // AllocationIDParameter A resource allocation ID.
 type AllocationIDParameter = AllocationId
+
+// GlobalUserIDParameter The identifier of a global user record, the account a person holds
+// across every organization.
+type GlobalUserIDParameter = GlobalUserId
 
 // GroupidParameter A group ID.
 type GroupidParameter = GroupId

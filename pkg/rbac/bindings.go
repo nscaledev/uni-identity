@@ -327,6 +327,36 @@ func (r *RBAC) resolveGlobalRoleBindings(srcIss, subject string) []GlobalRoleBin
 	return out
 }
 
+// HasGlobalSubjectBinding reports whether any configured global role binding
+// names subject. The bindings list already folds in
+// platformAdministrators.subjects, so one pass covers both configuration
+// surfaces.
+//
+// It compares the subject half only and ignores the issuer, because a User
+// record stores a subject and no issuer. A binding for the same subject at
+// any issuer therefore protects the record. That over-matches, which is the
+// safe direction for a destructive call.
+//
+// Wildcard bindings name no subject and never match. A wildcard match would
+// protect every account on the platform and refuse every delete.
+//
+// The comparison trims surrounding whitespace on both sides and is otherwise
+// exact, the same rule resolveGlobalRoleBindings applies, so protection and
+// authority cannot disagree about who a binding names.
+func (r *RBAC) HasGlobalSubjectBinding(subject string) bool {
+	for _, b := range r.bindings {
+		if b.Wildcard {
+			continue
+		}
+
+		if strings.TrimSpace(b.Subject) == strings.TrimSpace(subject) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // resolveGroupRoleBindings returns the group bindings that match the
 // authenticated issuer and whose Group appears byte-exact in the token's groups.
 // With flag-parsed configuration srcIss can never be the UNI sentinel in a

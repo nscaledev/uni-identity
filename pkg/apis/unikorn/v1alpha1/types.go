@@ -307,6 +307,7 @@ type UserList struct {
 // +kubebuilder:printcolumn:name="state",type="string",JSONPath=".spec.state"
 // +kubebuilder:resource:scope=Namespaced,categories=unikorn
 // +kubebuilder:subresource:status
+// +kubebuilder:selectablefield:JSONPath=.spec.subject
 type User struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

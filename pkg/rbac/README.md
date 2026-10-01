@@ -323,9 +323,10 @@ does. Both properties are deliberate, so that a fixed set of full-scope roles ca
 IdP-managed population without a parallel UNI-side membership list.
 
 One render-time guard bounds the role choice: the chart refuses a group binding on a role that
-writes `identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`, or
-`identity:oauth2providers`. A write on those scopes mints credentials or edits issuer trust. That
-converts a settings grant into an identity grant. The guard is render-time only, and roles can gain
+writes `identity:users`, `identity:users/global`, `identity:groups`, `identity:roles`,
+`identity:serviceaccounts`, or `identity:oauth2providers`. A write on those scopes mints
+credentials, edits issuer trust, or deletes accounts. That converts a settings grant into an
+identity grant. The guard is render-time only, and roles can gain
 write scopes after the render. It narrows the blast radius and does not replace the operator
 guidance below.
 
@@ -457,6 +458,20 @@ These warnings are not the security control. The security control is the issuer-
 `(srcIss, subject)` match that `resolveGlobalRoleBindings` performs, and the `(srcIss, group)` match
 that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
+**`HasGlobalSubjectBinding` reads the same bindings list for a
+different purpose.** [`pkg/handler/users`](../handler/users/README.md) `GlobalClient.Delete`
+calls it before it deletes a global `User` record, to refuse the delete when the record's subject
+holds a global role binding, whatever role that binding carries. It is a deletion-protection
+gate, not an authorization path. It grants nothing: its only two outcomes are to refuse the
+delete, or let it proceed to the membership check.
+A `User` record stores a subject and no issuer, so the predicate cannot restrict its match to one
+issuer. It is deliberately issuer-blind, matching the subject alone at any issuer, because a missed
+match here deletes an account that still holds authority. It excludes wildcard bindings for the
+opposite reason: a wildcard names no subject, so matching one would refuse every account delete on
+the platform. None of this changes the runtime authorization invariant below.
+`resolveGlobalRoleBindings` and `resolveGroupRoleBindings` remain the only binding-driven paths
+that grant global authority, and both stay issuer-qualified.
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
@@ -486,8 +501,9 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 - The chart additionally refuses to render a wildcard binding on a role declaring any non-`read`
   global operation. This does not make the runtime clamp redundant: roles can gain write scopes
   after the render. For group bindings the chart rejects only roles that write the credential and
-  trust scopes (`identity:users`, `identity:groups`, `identity:roles`, `identity:serviceaccounts`,
-  `identity:oauth2providers`). Other writes render. No runtime clamp backs that guard.
+  trust scopes (`identity:users`, `identity:users/global`, `identity:groups`, `identity:roles`,
+  `identity:serviceaccounts`, `identity:oauth2providers`). Other writes render. No runtime clamp
+  backs that guard.
 - Subject, wildcard-subject, and group bindings all resolve against the authenticating issuer, never
   a client-supplied one. UNI evaluates impersonated principals against the UNI sentinel with no
   groups, so neither an external-issuer subject binding nor any group binding applies on a delegated

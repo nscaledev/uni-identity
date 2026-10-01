@@ -95,12 +95,27 @@ func newInternalTestClient(t *testing.T, r *userListRecorder) *Client {
 		},
 	}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(r.funcs()).Build()
+	// The spec.subject index stands in for the selectable field on the User
+	// CRD. One fake serves as both the cache and the uncached reader.
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(r.funcs()).
+		WithIndex(&unikornv1.User{}, "spec.subject", func(o client.Object) []string {
+			user, ok := o.(*unikornv1.User)
+			if !ok {
+				return nil
+			}
 
-	return New(c, internalTestNamespace, common.IssuerValue{URL: "https://identity.example.com"})
+			return []string{user.Spec.Subject}
+		}).
+		Build()
+
+	return New(c, c, internalTestNamespace, common.IssuerValue{URL: "https://identity.example.com"})
 }
 
-func TestGetGlobalUserListsWithoutDeepCopy(t *testing.T) {
+// TestGetGlobalUserAsksOnlyForTheSubject pins how the account lookup avoids
+// copying every account: it asks for the subject's account only, with the
+// spec.subject field selector. It reads without the cache, because the cache
+// can still hold an account that was deleted.
+func TestGetGlobalUserAsksOnlyForTheSubject(t *testing.T) {
 	t.Parallel()
 
 	r := &userListRecorder{}
@@ -110,7 +125,7 @@ func TestGetGlobalUserListsWithoutDeepCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, internalTestUserID, user.Name)
 	require.Len(t, r.lists, 1)
-	require.True(t, ptr.Deref(r.lists[0].UnsafeDisableDeepCopy, false))
+	require.Equal(t, "spec.subject="+internalTestSubject, r.lists[0].FieldSelector.String())
 }
 
 func TestListReadsUsersWithoutDeepCopy(t *testing.T) {
