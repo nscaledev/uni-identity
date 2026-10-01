@@ -659,9 +659,15 @@ func TestUpdateGroupKeepsUngrantableRoleWhenResent(t *testing.T) {
 	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
 	f.createUserWithOrgMembership(t, userBobID, userBobSubject, orguserBobID)
 	f.createRadarRole(t)
+	// Both members are stored the way the handlers write them: in UserIDs and
+	// in Subjects.  RBAC reads Subjects, so that is what makes them members.
 	f.createGroupWithSpec(t, unikornv1.GroupSpec{
 		RoleIDs: []string{"radar-id"},
 		UserIDs: []string{orguserAliceID, orguserBobID},
+		Subjects: []unikornv1.GroupSubject{
+			{ID: userAliceSubject, Email: userAliceSubject, Issuer: testIssuerURL},
+			{ID: userBobSubject, Email: userBobSubject, Issuer: testIssuerURL},
+		},
 	})
 
 	ctx := aclContext(t, openapi.AclEndpoints{
@@ -700,12 +706,12 @@ func (f *groupTestFixture) createGroupWithSpec(t *testing.T, spec unikornv1.Grou
 	require.NoError(t, f.client.Create(newContext(t), group))
 }
 
-// TestUpdateGroupAllowsNoOpResendOnLegacyUserIDsGroup covers a group written before
-// Subjects existed: it lists its members in UserIDs only.  Re-sending that membership
-// unchanged derives the Subjects half for the first time, but the members already hold the
-// group's roles through UserIDs, so nothing is conferred and the addition gate must not
-// fire — otherwise a legacy group carrying an ungrantable role has no legal update at all.
-func TestUpdateGroupAllowsNoOpResendOnLegacyUserIDsGroup(t *testing.T) {
+// TestUpdateGroupRejectsSubjectHalfOnUserIDsOnlyGroup covers a group that names a member
+// in UserIDs only.  RBAC reads membership from Subjects only, so that member holds none of
+// the group's roles.  Re-sending the membership derives the Subjects half, which confers the
+// roles for the first time, so the addition gate must fire.  If the gate counted UserIDs as
+// membership, a caller could confer a role that they cannot grant.
+func TestUpdateGroupRejectsSubjectHalfOnUserIDsOnlyGroup(t *testing.T) {
 	t.Parallel()
 
 	f := setupGroupTestFixture(t)
@@ -725,46 +731,13 @@ func TestUpdateGroupAllowsNoOpResendOnLegacyUserIDsGroup(t *testing.T) {
 	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
 
 	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
-	require.NoError(t, err)
-
-	// The write also migrates the group onto the Subjects representation.
-	stored := f.getGroup(t)
-	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
-	require.Len(t, stored.Spec.Subjects, 1)
-	assert.Equal(t, userAliceSubject, stored.Spec.Subjects[0].ID)
-	assert.Equal(t, []string{"radar-id"}, stored.Spec.RoleIDs)
-}
-
-// TestUpdateGroupRejectsGenuineAdditionToLegacyUserIDsGroup is the other half: relaxing the
-// gate for members already present in either representation must not relax it for a member
-// that is in neither.
-func TestUpdateGroupRejectsGenuineAdditionToLegacyUserIDsGroup(t *testing.T) {
-	t.Parallel()
-
-	f := setupGroupTestFixture(t)
-	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
-	f.createUserWithOrgMembership(t, userBobID, userBobSubject, orguserBobID)
-	f.createRadarRole(t)
-	f.createGroupWithSpec(t, unikornv1.GroupSpec{
-		RoleIDs: []string{"radar-id"},
-		UserIDs: []string{orguserAliceID},
-	})
-
-	ctx := aclContext(t, openapi.AclEndpoints{
-		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Update}},
-	})
-
-	userIDs := openapi.StringList{orguserAliceID, orguserBobID}
-	request := makeGroupUpdateRequest(nil, &userIDs)
-	request.Spec.RoleIDs = openapi.StringList{"radar-id"}
-
-	err := f.groupsClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), groupTestID, request)
 	require.Error(t, err)
 	require.True(t, errors.IsForbidden(err))
 	require.Contains(t, err.Error(), "radar")
 
 	stored := f.getGroup(t)
 	assert.Equal(t, []string{orguserAliceID}, stored.Spec.UserIDs)
+	assert.Empty(t, stored.Spec.Subjects, "a refused write must not add the subject")
 }
 
 // TestUpdateGroupAllowsResendWhenStoredSubjectEmailDiffers pins the identity key: three

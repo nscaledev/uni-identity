@@ -205,11 +205,10 @@ used to sidestep the group write's guard.
 
 The check keys on the change, not on the request: re-sending a group the user already belongs to
 confers nothing new and passes. Membership has two representations, the deprecated `UserIDs` list
-and the subject list, and `pkg/rbac` resolves a user into a group through either one. A user
-present in one is therefore already a member, so filling in the other half confers nothing and is
-not gated. That matters for groups written before subjects existed: re-sending their membership
-derives the missing half for the first time, and reading that as a grant would leave such a group
-with no legal user write at all.
+and the subject list, but `pkg/rbac` resolves a user into a group through the subject list only. A
+user already in the subject list is a member, so filling in the `UserIDs` half confers nothing and
+is not gated. A user only in the `UserIDs` list holds nothing, so writing the subject half is a
+grant and is gated.
 
 For the same reason, the already-a-member test matches subjects by ID alone, mirroring how
 `pkg/rbac` actually resolves membership (see `GroupSpec.HasMemberByID`). Subject records written
@@ -263,6 +262,11 @@ The user read model is assembled from multiple sources:
 This is why list and get operations are more aggregation-oriented than most of the other handler
 clients.
 
+The `User` scans skip deep copies. `List` reads every `User` from the cache with
+`UnsafeDisableDeepCopy`, and `convert` copies every value it takes from a `User`, including the
+last-active time, so the response shares no memory with the cache. The lookup by subject on the
+create path scans the same way and returns a deep copy of the single match.
+
 ## Invariants
 
 - global identity and organization membership are distinct layers and must not be collapsed into a
@@ -274,6 +278,8 @@ clients.
   `groupIDs`
 - a requested group that does not exist in the organization is an error, not a silently dropped
   part of the write
+- create and update answer a missing group, and create answers a subject that is not an email
+  address, with HTTP 400; both operations declare 400 in the OpenAPI schema
 - adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
   could grant every role the group carries; removals and user deletion are not gated
 - a principal present in either membership representation is already a member, so completing the
@@ -292,6 +298,8 @@ clients.
   touch users, organization users, and groups in one logical operation.
 - Because group membership compatibility is maintained here as well as in the groups client,
   cross-client consistency matters more than local code shape.
+- `User` objects in `List` come from the cache without a copy. Treat them as read-only, and make
+  a deep copy before any change.
 
 ## TODO
 

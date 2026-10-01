@@ -43,7 +43,6 @@ func platformReaderExcludedScopes() map[string]string {
 	return map[string]string{
 		"region:identities":                         "read returns clouds.yaml application credential and SSH private key",
 		"kubernetes:clusters":                       "kubeconfig download shares scope+read with listing and returns admin kubeconfig",
-		"kubernetes:virtualclusters":                "kubeconfig download shares scope+read with listing and returns admin kubeconfig",
 		"compute:instances":                         "proxies region sshkey/console-session; power actions are read-gated",
 		"storage:objectstorageendpoints/accesskeys": "credential-class sub-resource; conservative exclusion, the scope's entire subject is credentials",
 	}
@@ -59,7 +58,6 @@ func platformReaderOmittedScopes() map[string]string {
 		"region:networks:v2/references": "write-only sub-resource; no read endpoint exists",
 		"region:servers:v2":             "no code checks this scope; v2 server endpoints check region:servers",
 		"region:volumes:v2":             "volumes API not shipped at audit time (2026-08-07)",
-		"compute:clusters":              "scope unserved by uni-compute",
 	}
 }
 

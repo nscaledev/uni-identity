@@ -516,8 +516,10 @@ that grant global authority, and both stay issuer-qualified.
 
 - The package is tightly coupled to the identity storage and scoping model, including groups,
   projects, organization mappings, and label-based queries.
-- Some migration-era behaviour is still present, especially compatibility with the deprecated
-  `Group.UserIDs` field alongside the newer `Subjects` model.
+- Group membership is read from `Group.Subjects` only, matched by subject ID. The group and user
+  handlers still write the deprecated `Group.UserIDs` field next to each subject, but RBAC does not
+  read it. An earlier lookup through `UserIDs` listed every `User` once for each group on each ACL
+  build.
 - The package contains a mix of ACL construction, scope filtering, and handler-facing convenience
   checks, so it is broader than a pure policy-definition layer.
 - Some pragmatic compatibility behaviour exists around scoped lookups and transition paths, so

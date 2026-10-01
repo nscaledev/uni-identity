@@ -204,6 +204,9 @@ spec:
           {{- end }}
         - {{ printf "--global-group-role-binding=%s::%s::%s" $b.issuer $group (join "," $roles) | quote }}
         {{- end }}
+        {{- if eq .Values.server.runtimeSchemaValidation false }}
+        - --runtime-schema-validation=false
+        {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}

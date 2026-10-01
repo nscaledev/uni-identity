@@ -250,14 +250,16 @@ func principalSubjects(in []groupPrincipal) []unikornv1.GroupSubject {
 
 // findUserBySubject finds a User resource by subject field.
 func (c *Client) findUserBySubject(ctx context.Context, subject string) (*unikornv1.User, error) {
+	// Scan the cache without deep copies. Copy only the match, so the caller
+	// owns the result.
 	var users unikornv1.UserList
-	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	if err := c.client.List(ctx, &users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
 	for i := range users.Items {
 		if users.Items[i].Spec.Subject == subject {
-			return &users.Items[i], nil
+			return users.Items[i].DeepCopy(), nil
 		}
 	}
 
@@ -421,14 +423,14 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 
 // hasMemberAdditions reports whether the update puts a principal or service
 // account on the group that the group does not already confer its roles on.
-// A principal is matched on its subject ID, the way pkg/rbac resolves
-// membership, not on the whole stored record, and in either membership
-// representation: an existing member re-stated in a write, or named through
-// the representation it is not stored in, gains nothing it does not already
-// hold.
+// A principal is matched on its subject ID in the stored subject list, the way
+// pkg/rbac resolves membership, not on the whole stored record: an existing
+// member re-stated in a write, or named through UserIDs, gains nothing it does
+// not already hold.  A principal stored only in UserIDs holds nothing, so
+// writing its subject is an addition.
 func hasMemberAdditions(current *unikornv1.Group, principals []groupPrincipal, serviceAccountIDs []string) bool {
 	for _, principal := range principals {
-		if !current.Spec.HasMemberByID(principal.userID, principal.subject.ID) {
+		if !current.Spec.HasMemberByID(principal.subject.ID) {
 			return true
 		}
 	}

@@ -106,19 +106,32 @@ func OrganizationNamespaces(ctx context.Context, cli client.Client, orgID string
 // AddGroupMember writes a user onto a Group custom resource directly.  The API
 // refuses to add a member to a group carrying a role the caller cannot grant,
 // because joining the group would confer that role, so a spec that needs to
-// start from "the member is already there" has to seed it out of band.
-func AddGroupMember(ctx context.Context, cli client.Client, namespace, groupID, userID string) error {
+// start from "the member is already there" has to seed it out of band.  It
+// writes both halves the handlers write: the organization user ID, and the
+// subject that RBAC reads.  The subject has no issuer, because RBAC and every
+// removal path match a subject by ID alone.
+func AddGroupMember(ctx context.Context, cli client.Client, namespace, groupID, userID, subject string) error {
 	group := &unikornv1.Group{}
 
 	if err := cli.Get(ctx, client.ObjectKey{Namespace: namespace, Name: groupID}, group); err != nil {
 		return fmt.Errorf("getting group %s: %w", groupID, err)
 	}
 
-	if slices.Contains(group.Spec.UserIDs, userID) {
-		return nil
+	var changed bool
+
+	if !slices.Contains(group.Spec.UserIDs, userID) {
+		group.Spec.UserIDs = append(group.Spec.UserIDs, userID)
+		changed = true
 	}
 
-	group.Spec.UserIDs = append(group.Spec.UserIDs, userID)
+	if !group.Spec.HasMemberByID(subject) {
+		group.Spec.Subjects = append(group.Spec.Subjects, unikornv1.GroupSubject{ID: subject, Email: subject})
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
 
 	if err := cli.Update(ctx, group); err != nil {
 		return fmt.Errorf("adding member %s to group %s: %w", userID, groupID, err)

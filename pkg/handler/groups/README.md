@@ -34,9 +34,13 @@ The package still supports both:
 - newer `Subjects`, which can refer to local or external identities
 
 When a request uses one of those representations, the client populates the other where possible so
-old and new clients can coexist during the migration period.
+old and new clients can coexist during the migration period. `pkg/rbac` reads only `Subjects`, so a
+member that is stored only in `UserIDs` holds none of the group's roles.
 
 This compatibility behaviour is one of the main reasons the package is more than simple CRUD.
+
+To fill in the `UserIDs` half, the client finds the `User` for each subject at this deployment's
+issuer. That scan reads the cache without deep copies and returns a deep copy of the single match.
 
 ### Role Assignment Guard Rails
 
@@ -78,13 +82,12 @@ Membership is compared the way `pkg/rbac` resolves it, not by the stored record.
 `groupSubjectFilter` matches a subject by `id` alone and deliberately ignores the recorded
 `issuer` — subjects written before issuers were captured carry an empty one and must still
 resolve — so the gate matches by `id` too (`HasMemberByID`). `email` is display data that different
-writers populate from different sources and takes no part either. Both membership representations
-count as already-a-member: `pkg/rbac` resolves a principal's groups through `UserIDs` and through
-`Subjects` alike, so a member listed in one representation and named through the other gains
-nothing, and the write is not an addition. That matters for a group written before `Subjects`
-existed, and for a member stored as a legacy empty-issuer subject then re-sent as a `userID`: the
-re-send derives a subject at this deployment's issuer, but it names the same principal, so it must
-not read as a grant, or such a group has no legal update at all.
+writers populate from different sources and takes no part either. Only `Subjects` counts as
+already-a-member, because `pkg/rbac` reads only `Subjects`. A member stored as a subject and re-sent
+as a `userID` gains nothing, so the write is not an addition. This includes a member stored as a
+legacy empty-issuer subject: the re-send derives a subject at this deployment's issuer, but it names
+the same principal. A member stored only in `UserIDs` holds nothing. Writing its subject confers the
+group's roles for the first time, so the gate checks it as an addition.
 
 The issuer takes no part in that gate, on any path — it is the ID-only question above, wherever the
 write arrives. The one place it still matters is *storing* the request's subjects here: this client

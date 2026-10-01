@@ -106,6 +106,35 @@ That includes:
 - creator/modifier identity metadata
 - metadata merge behaviour during updates
 
+### Quota Normalisation
+
+`common.Normalise` builds a quota list from a stored or virtual Quota and the metadata. It does
+not write to either input. `GetQuota` and the organization list both use it. A repeated stored
+kind resolves to its last entry, as allocation admission reads it. `pkg/handler/common` has no
+README, so this section holds that contract.
+
+### Organization List Extras
+
+`GET /api/v1/organizations` accepts a repeated `include` query parameter (`quotas`,
+`projectsCount`). `organization_includes.go` fills the extras after conversion. The code is in
+this package because `quotas` and `projects` import `organizations`. An import in the other
+direction would create an import cycle.
+
+The step reads the informer cache with `UnsafeDisableDeepCopy` and no selector:
+
+- Quota and Allocation, in all namespaces, when `include` names `quotas`.
+- QuotaMetadata, from the identity namespace, when `include` names `quotas`.
+- Project, in all namespaces, when `include` names `projectsCount`.
+
+The step groups the objects by the organization label. The objects come from the cache without a
+copy and are read-only. Read quantities only with `Value()`, because `String()` and `AsDec()`
+write a cache into the receiver.
+
+A field is present only when `include` names it and the ACL in the request context lets the
+caller see it. A fault in the quota data of one organization, such as two Quota objects or a nil
+quantity, sets `quotasError` on that row. The handler logs the fault with the organization ID. A
+QuotaMetadata object without a default fails the request.
+
 ### Bad-Path Taxonomy
 
 The handler layer should be secure by default when surfacing bad-path behaviour.
@@ -173,6 +202,7 @@ one. See [`users`](./users/README.md) and [`serviceaccounts`](./serviceaccounts/
 
 - [`organizations`](./organizations/README.md): tenancy-root visibility and current `v1`
   namespace handoff
+- `organization_includes.go`: `include` extras (quotas, project count) for the organization list
 - [`roles`](./roles/README.md): filtered user-facing role catalogue
 - [`users`](./users/README.md): global identity plus organization membership
 - [`serviceaccounts`](./serviceaccounts/README.md): organization-local non-human identities with

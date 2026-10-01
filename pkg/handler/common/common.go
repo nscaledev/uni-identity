@@ -107,6 +107,38 @@ func (c *Client) ProjectNamespace(ctx context.Context, organizationID ids.Organi
 	return ProjectNamespace(ctx, c.client, organizationID, projectID)
 }
 
+// Normalise returns a new quota list that holds every kind in metadata, in
+// metadata order. It takes the quantity from quota when quota has the kind.
+// Otherwise it takes the metadata default. It drops retired kinds. quota can
+// be nil, which means a virtual quota. The quantity pointers in the list
+// point into the inputs, so callers must not change them. A nil quantity is
+// a data fault and returns an error.
+func Normalise(quota *unikornv1.Quota, metadata []unikornv1.QuotaMetadata) ([]unikornv1.ResourceQuota, error) {
+	out := make([]unikornv1.ResourceQuota, 0, len(metadata))
+
+	for i := range metadata {
+		kind := metadata[i].Name
+		quantity := metadata[i].Spec.Default
+
+		if quota != nil {
+			// The last entry for a kind wins, as allocation admission reads it.
+			for j := range quota.Spec.Quotas {
+				if quota.Spec.Quotas[j].Kind == kind {
+					quantity = quota.Spec.Quotas[j].Quantity
+				}
+			}
+		}
+
+		if quantity == nil {
+			return nil, fmt.Errorf("%w: quota kind %s has no quantity", coreerrors.ErrConsistency, kind)
+		}
+
+		out = append(out, unikornv1.ResourceQuota{Kind: kind, Quantity: quantity})
+	}
+
+	return out, nil
+}
+
 func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID) (*unikornv1.Quota, bool, error) {
 	selector, err := organizationSelector(organizationID.String())
 	if err != nil {
@@ -147,29 +179,12 @@ func (c *Client) GetQuota(ctx context.Context, organizationID ids.OrganizationID
 		return nil, false, err
 	}
 
-	names := make([]string, len(metadata.Items))
-
-	for i, meta := range metadata.Items {
-		names[i] = meta.Name
-
-		findQuota := func(q unikornv1.ResourceQuota) bool {
-			return q.Kind == meta.Name
-		}
-
-		if index := slices.IndexFunc(quota.Spec.Quotas, findQuota); index >= 0 {
-			continue
-		}
-
-		quota.Spec.Quotas = append(quota.Spec.Quotas, unikornv1.ResourceQuota{
-			Kind:     meta.Name,
-			Quantity: meta.Spec.Default,
-		})
+	quotas, err := Normalise(quota, metadata.Items)
+	if err != nil {
+		return nil, false, err
 	}
 
-	// And remove anything that's been retired.
-	quota.Spec.Quotas = slices.DeleteFunc(quota.Spec.Quotas, func(q unikornv1.ResourceQuota) bool {
-		return !slices.Contains(names, q.Kind)
-	})
+	quota.Spec.Quotas = quotas
 
 	return quota, virtual, nil
 }

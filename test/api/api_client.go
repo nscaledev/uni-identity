@@ -163,6 +163,23 @@ func (c *APIClient) ListOrganizations(ctx context.Context) (identityopenapi.Orga
 	)
 }
 
+// ListOrganizationsWithResponse lists organizations with query parameters
+// such as include. It returns the typed response, so tests can assert on the
+// status code and the body together.
+func (c *APIClient) ListOrganizationsWithResponse(ctx context.Context, params *identityopenapi.GetApiV1OrganizationsParams) (*identityopenapi.GetApiV1OrganizationsResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := client.GetApiV1OrganizationsWithResponse(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("listing organizations: %w", err)
+	}
+
+	return response, nil
+}
+
 // GetOrganization gets detailed information about a specific organization.
 func (c *APIClient) GetOrganization(ctx context.Context, orgID string) (*identityopenapi.OrganizationRead, error) {
 	path := c.endpoints.GetOrganization(orgID)

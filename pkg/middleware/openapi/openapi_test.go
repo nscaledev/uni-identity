@@ -215,8 +215,8 @@ func addPrincipalHeaderWithoutActor(t *testing.T, r *http.Request) {
 }
 
 // addAuthorizationHeader adds a token to the request.
-func addAuthorizationHeader(t *testing.T, r *http.Request) {
-	t.Helper()
+func addAuthorizationHeader(tb testing.TB, r *http.Request) {
+	tb.Helper()
 
 	r.Header.Set("Authorization", "bearer foo")
 }

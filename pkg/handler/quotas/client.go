@@ -22,7 +22,6 @@ import (
 	goerrors "errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
@@ -98,9 +97,24 @@ func generate(ctx context.Context, organization *organizations.Meta, in *openapi
 	return out, nil
 }
 
-type allocation struct {
-	committed int64
-	reserved  int64
+// checkKinds rejects a request that names a quota kind with no QuotaMetadata.
+// Without this check, the write stores the kind and the response fails to
+// render it.
+func (c *Client) checkKinds(ctx context.Context, request *openapi.QuotasWrite) error {
+	metadata := &unikornv1.QuotaMetadataList{}
+
+	if err := c.client.List(ctx, metadata, &client.ListOptions{Namespace: c.namespace}); err != nil {
+		return err
+	}
+
+	for _, quota := range request.Quotas {
+		known := slices.ContainsFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool { return m.Name == quota.Kind })
+		if !known {
+			return errors.OAuth2InvalidRequest(fmt.Sprintf("unknown quota kind %s", quota.Kind))
+		}
+	}
+
+	return nil
 }
 
 func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
@@ -110,63 +124,17 @@ func (c *Client) convert(ctx context.Context, in *unikornv1.Quota, organizationI
 		return nil, err
 	}
 
-	// Grab the totals across all allocations.
 	allocations, err := common.New(c.client).GetAllocations(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	allocated := map[string]allocation{}
-
-	for i := range allocations.Items {
-		allocation := &allocations.Items[i]
-
-		for j := range allocation.Spec.Allocations {
-			resource := &allocation.Spec.Allocations[j]
-
-			allocation := allocated[resource.Kind]
-			allocation.committed += resource.Committed.Value()
-			allocation.reserved += resource.Reserved.Value()
-
-			allocated[resource.Kind] = allocation
-		}
+	quotas, err := Convert(in.Spec.Quotas, metadata.Items, allocations.Items)
+	if err != nil {
+		return nil, err
 	}
 
-	out := &openapi.QuotasRead{
-		Quotas: make(openapi.QuotaReadList, len(in.Spec.Quotas)),
-	}
-
-	for i := range in.Spec.Quotas {
-		quota := &in.Spec.Quotas[i]
-
-		metaIndex := slices.IndexFunc(metadata.Items, func(m unikornv1.QuotaMetadata) bool {
-			return m.Name == quota.Kind
-		})
-
-		meta := &metadata.Items[metaIndex]
-
-		used := allocated[quota.Kind].committed + allocated[quota.Kind].reserved
-		free := quota.Quantity.Value() - used
-
-		out.Quotas[i] = openapi.QuotaRead{
-			Kind:        quota.Kind,
-			Quantity:    int(quota.Quantity.Value()),
-			Used:        int(used),
-			Free:        int(free),
-			Committed:   int(allocated[quota.Kind].committed),
-			Reserved:    int(allocated[quota.Kind].reserved),
-			DisplayName: meta.Spec.DisplayName,
-			Description: meta.Spec.Description,
-			Default:     int(meta.Spec.Default.Value()),
-			Format:      openapi.QuotaReadFormat(meta.Spec.Format),
-		}
-	}
-
-	slices.SortStableFunc(out.Quotas, func(a, b openapi.QuotaRead) int {
-		return strings.Compare(a.Kind, b.Kind)
-	})
-
-	return out, nil
+	return &openapi.QuotasRead{Quotas: quotas}, nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*openapi.QuotasRead, error) {
@@ -179,6 +147,10 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*o
 }
 
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
+	if err := c.checkKinds(ctx, request); err != nil {
+		return nil, err
+	}
+
 	common := common.New(c.client)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
@@ -188,7 +160,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	current, virtual, err := common.GetQuota(ctx, organizationID)
 	if err != nil {
-		return nil, errors.OAuth2InvalidRequest("unnable to read quota").WithError(err)
+		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
 
 	required, err := generate(ctx, organization, request)
@@ -198,7 +170,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 	if virtual {
 		if err := c.client.Create(ctx, required); err != nil {
-			return nil, errors.OAuth2InvalidRequest("unnable to create quota").WithError(err)
+			return nil, errors.OAuth2InvalidRequest("unable to create quota").WithError(err)
 		}
 
 		return c.convert(ctx, required, organizationID)

@@ -79,7 +79,7 @@ func readUser(userID string) identityopenapi.UserRead {
 func seedGroupMember(kube kubeclient.Client, orgNamespace, groupID, userID string) {
 	GinkgoHelper()
 
-	Expect(api.AddGroupMember(ctx, kube, orgNamespace, groupID, userID)).To(Succeed())
+	Expect(api.AddGroupMember(ctx, kube, orgNamespace, groupID, userID, readUser(userID).Spec.Subject)).To(Succeed())
 
 	Eventually(func(g Gomega) {
 		group, err := client.GetGroup(ctx, config.OrgID, groupID)
@@ -101,6 +101,8 @@ func expectGroupEmptiedOfMembers(groupID, roleID string) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(groupUserIDs(group)).To(BeEmpty(),
 			"the member the admin removed must be gone")
+		g.Expect(group.Spec.Subjects == nil || len(*group.Spec.Subjects) == 0).To(BeTrue(),
+			"the member's subject, which RBAC reads, must be gone too")
 		g.Expect(group.Spec.RoleIDs).To(ContainElement(roleID),
 			"the ungrantable role must survive the round-trip")
 	}).WithTimeout(30 * time.Second).WithPolling(time.Second).Should(Succeed())

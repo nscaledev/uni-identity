@@ -39,6 +39,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -122,13 +123,13 @@ func removeFromGroup(subject unikornv1.GroupSubject, orgUserID string, updated *
 }
 
 // addToGroup writes the user into whichever membership representations do not
-// already hold it, and reports whether anything changed.  Completing the
-// missing half of a membership the group already has confers nothing — RBAC
-// already resolves the user into the group through the half that is present —
-// so this runs whether or not the grant guard saw an addition.  Subjects are
-// matched by ID alone, the way pkg/rbac resolves membership: the same principal
-// written by a different handler, or stored as a legacy record before issuers
-// existed, carries a different Email or issuer and must not be appended again.
+// already hold it, and reports whether anything changed.  Callers run the grant
+// guard first.  The guard exempts only a subject already in the group: filling
+// in the UserIDs half of that membership confers nothing, because RBAC reads
+// Subjects only.  Subjects are matched by ID alone, the way pkg/rbac resolves
+// membership: the same principal written by a different handler, or stored as
+// a legacy record before issuers existed, carries a different Email or issuer
+// and must not be appended again.
 func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *unikornv1.Group) bool {
 	var needsPatching bool
 
@@ -151,7 +152,7 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 // keeps a refusal from landing after an earlier group has already been
 // patched.  Groups the user is only leaving, or already belongs to, confer
 // nothing and are skipped.
-func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	// Reconciliation below can only act on groups that exist, so an ID naming
 	// none of them would otherwise be dropped without the caller being told.
 	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
@@ -165,13 +166,14 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 			continue
 		}
 
-		// Presence in either membership representation already confers the
-		// group's roles, so writing the other half grants nothing.  Subjects
-		// are matched by ID alone, mirroring how RBAC resolves membership: a
-		// record written before subject issuers existed carries an empty one
-		// yet still confers the roles, so re-stating that membership must not
-		// read as an addition and be refused.
-		if group.Spec.HasMemberByID(orgUserID, subjectID) {
+		// A subject already in the group confers its roles, so writing the
+		// UserIDs half grants nothing.  Subjects are matched by ID alone,
+		// mirroring how RBAC resolves membership: a record written before
+		// subject issuers existed carries an empty one yet still confers the
+		// roles, so re-stating that membership must not read as an addition
+		// and be refused.  A UserIDs entry alone confers nothing, so it does
+		// not exempt the write.
+		if group.Spec.HasMemberByID(subjectID) {
 			continue
 		}
 
@@ -352,15 +354,18 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 		}
 	}
 
+	// Copy the time: the User can come from the cache without a deep copy,
+	// and the result must share no memory with it.
 	if lastActive != nil {
-		out.Status.LastActive = &lastActive.Time
+		lastActiveTime := lastActive.Time
+		out.Status.LastActive = &lastActiveTime
 	}
 
-	// Report membership the way RBAC resolves it: HasMemberByID sees a subject
-	// stored by ID as well as the deprecated UserIDs list, so a subject-only
-	// membership is not invisible over the API.
+	// Report membership the way RBAC resolves it: HasMemberByID matches the
+	// subject list by ID.  An entry in the deprecated UserIDs list alone
+	// confers nothing, so it is not reported.
 	for _, group := range groups.Items {
-		if group.Spec.HasMemberByID(in.Name, user.Spec.Subject) {
+		if group.Spec.HasMemberByID(user.Spec.Subject) {
 			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
 		}
 	}
@@ -423,7 +428,7 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, ErrReference
 	}
 
-	return &users.Items[index], nil
+	return users.Items[index].DeepCopy(), nil
 }
 
 // findGlobalUser returns the account for subject, or nil when there is none.
@@ -507,38 +512,6 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 	return resource, nil
 }
 
-// validateCreateGroupAdditions checks the groups a create request asks to join
-// before any record is written.  Create is idempotent, so the subject may
-// already have a user record and some of these memberships; those confer
-// nothing new and are skipped, exactly as on the update path.  A subject with
-// no records yet belongs to no group, so every requested group is an addition.
-func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, user *unikornv1.User, groups *unikornv1.GroupList) error {
-	// Nothing is being granted, so skip the lookup below: it cannot change
-	// the answer, and on this path it would only add a way to fail.
-	if len(request.Spec.GroupIDs) == 0 {
-		return nil
-	}
-
-	// Resolve what already exists without creating it.  Either record may be
-	// absent on a first-time create, which just means there is no prior
-	// membership to exempt.  user is the account that Create found, or nil.
-	var orgUserID string
-
-	if user != nil {
-		orgUser, err := c.getOrganizationUserByGlobalUserID(ctx, organization, user.Name)
-
-		switch {
-		case err == nil:
-			orgUserID = orgUser.Name
-		case goerrors.Is(err, ErrReference):
-		default:
-			return err
-		}
-	}
-
-	return c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, orgUserID, request.Spec.GroupIDs, groups)
-}
-
 // Create makes a new user.  This creates a new user in an organization, but they
 // reference a unique user resource, so we need to get or create the underlying record
 // first, then add to the organization.
@@ -569,8 +542,9 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 	// Settle the group grants before any record exists.  Writing the user
 	// first and refusing afterwards would leave a global user and an
 	// organization membership behind for an account the caller was told it
-	// could not create.
-	if err := c.validateCreateGroupAdditions(ctx, organization, request, existing, groups); err != nil {
+	// could not create.  Create is idempotent, so the subject can already be
+	// in some of these groups.  Those confer nothing new and are skipped.
+	if err := c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
@@ -600,7 +574,10 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 
 	users := &unikornv1.UserList{}
 
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	// Scan the cache without deep copies.  Only the members of this
+	// organization are read, and convert copies every value it takes from a
+	// User, so the result shares no memory with the cache.
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
@@ -657,7 +634,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	// tags and label changes below land on the organization user record, so a
 	// membership refusal discovered after them would have already applied
 	// part of a request the caller was told it could not make.
-	if err := c.validateGroupAdditions(ctx, organization.ID, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.validateGroupAdditions(ctx, organization.ID, user.Spec.Subject, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 
