@@ -219,7 +219,7 @@ func TestGlobalClient_DeleteIsIdempotent(t *testing.T) {
 	assert.True(t, errors.IsHTTPNotFound(err),
 		"a retry must see not found and treat it as success, not as a server error")
 	assert.Equal(t, "the account does not exist", writeErrorDescription(t, err),
-		"only this description means the account is gone; a 404 for a route the server does not have says something else")
+		"the description tells people that the account is gone")
 }
 
 // TestGlobalClient_DeleteReportsAnAccountThatGoesDuringTheDelete pins the not

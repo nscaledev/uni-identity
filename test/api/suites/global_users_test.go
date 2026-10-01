@@ -93,8 +93,9 @@ var _ = Describe("Global users", func() {
 				Expect(response.StatusCode()).To(Equal(http.StatusConflict))
 				Expect(response.JSON409).NotTo(BeNil())
 
-				// The description is the only way to tell this refusal apart
-				// from a precondition conflict, which is also a 409.
+				// A 409 means only that memberships remain, because Delete
+				// retries a precondition conflict itself. The description
+				// gives the count for people.
 				Expect(response.JSON409.ErrorDescription).To(Equal("the account holds 1 organization membership"))
 
 				// The membership must survive the refusal, or the refusal
@@ -205,7 +206,9 @@ var _ = Describe("Global users", func() {
 				Expect(repeat.StatusCode()).To(Equal(http.StatusNotFound))
 				Expect(repeat.JSON404).NotTo(BeNil())
 				Expect(repeat.JSON404.ErrorDescription).To(Equal("the account does not exist"),
-					"only this description means the account is gone")
+					"the description tells people that the account is gone")
+				Expect(repeat.JSON404.Error).To(Equal(coreopenapi.NotFound),
+					"a caller branches on the status and this code")
 			})
 		})
 

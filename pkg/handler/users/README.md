@@ -80,12 +80,16 @@ deleting a changed record. A login that adds a session is one example. `Delete` 
 record again and tries again, up to three times, so a 409 means only that memberships remain. If
 every attempt conflicts, the call answers 500, and the caller retries with backoff.
 
-**Not found.** A 404 with the description "the account does not exist" means that the account is
-gone. A caller that retries after such a 404 can treat it as success. A 404 with another description
-does not mean that. Core answers a request for a route that the server does not have with its own
-"resource not found" text. This happens, for example, during a rollout or with a wrong base URL. A
+**Not found.** On a server with this route, a 404 `not_found` means that the account is gone, so a
+retry can treat it as success. The description, "the account does not exist", is for people.
+[§7.9 of the platform specification][spec-errors] makes `error` the machine-readable code, so a
+caller branches on the status and `error` only. A server without this route also answers 404
+`not_found`, so identity must serve the endpoint before a caller depends on it. A request with a
+wrong base URL, path or method gets the same answer, and only the caller can catch that. A
 membership ID also gives the account 404, because no account has that name, so the caller must pass
 `status.globalUserId`.
+
+[spec-errors]: https://github.com/nscaledev/uni-specifications/blob/main/SPECIFICATION.md#79-error-handling-and-propagation
 
 **Uncached reads.** `GlobalClient` reads the account and the membership list through the uncached
 client, not the cache the rest of this package reads through. A stale cache that reports no

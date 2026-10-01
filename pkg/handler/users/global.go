@@ -110,9 +110,10 @@ func conflict(format string, args ...any) *errors.Error {
 const deleteAttempts = 3
 
 // accountNotFound returns the 404 for an account that does not exist. Its
-// description is the only one that means the account is gone. core answers a
-// request for a route that this server does not have with a 404 too, but with
-// core's own text, and a caller must not read that as a completed delete.
+// description tells people that the account is gone. A caller branches on
+// the status and the error code only. An older identity answers a request
+// for this route with the same status and code. So a caller must not depend
+// on this endpoint before the server serves it.
 func accountNotFound(err error) error {
 	return errors.FromOpenAPIError(http.StatusNotFound, nil, &coreopenapi.Error{
 		Error:            coreopenapi.NotFound,

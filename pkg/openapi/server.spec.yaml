@@ -308,9 +308,14 @@ paths:
         that memberships remain.  If the record changes on every attempt,
         the call answers 500.  Retry with backoff.
 
-        A 404 with the description "the account does not exist" means that
-        the account is gone, and a retrying caller can treat it as success.
-        A 404 with another description does not mean that.  Pass the account
+        On a server with this route, a 404 means that the account does not
+        exist, and a retrying caller can treat it as success.  Branch on the
+        status and the error code, not on the description, which is for
+        people.
+
+        A server without this route also answers 404 not_found, and so does
+        a request with a wrong path or method.  Make sure that the server
+        serves this route before a caller depends on it.  Pass the account
         ID from status.globalUserId.  A membership ID also gives 404.
 
         Session records are removed at once.  Identity refuses the account's
