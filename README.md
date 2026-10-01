@@ -136,8 +136,12 @@ Optionally you can override the branding with a custom login and error URL callb
 These are available on the `OAuth2Client` data type.
 See the reference implementation [login](https://github.com/nscaledev/uni-ui/tree/main/src/routes/login) and [error](https://github.com/nscaledev/uni-ui/tree/main/src/routes/error) pages for the interface.
 
-Once created, the `oauth2client` controller will generate a client secret in the resource status
-that can be shared with the relaying party.
+Once created, the `oauth2client` controller will generate a client secret in a Secret called
+`<client ID>-credentials`, with `id` and `secret` keys, that can be shared with the relying party:
+
+```shell
+kubectl -n unikorn-identity get secret <client ID>-credentials -o jsonpath='{.data.secret}' | base64 -d
+```
 
 This built-in confidential-client flow is especially relevant for local, self-contained, or
 development-oriented deployments. Production deployments may instead rely more heavily on

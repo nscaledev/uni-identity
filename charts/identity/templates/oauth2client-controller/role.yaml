@@ -5,6 +5,14 @@ metadata:
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 rules:
+# Manage client credentials, reads are uncached so no list/watch.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - create
 # Controller prerequisites.
 - apiGroups:
   - coordination.k8s.io

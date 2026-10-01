@@ -51,7 +51,6 @@ type OAuth2ClientList struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="display name",type="string",JSONPath=".metadata.labels['unikorn-cloud\\.org/name']"
 // +kubebuilder:printcolumn:name="redirect uri",type="string",JSONPath=".spec.redirectUri"
-// +kubebuilder:printcolumn:name="secret",type="string",JSONPath=".status.secret"
 // +kubebuilder:printcolumn:name="age",type="date",JSONPath=".metadata.creationTimestamp"
 type OAuth2Client struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -76,7 +75,9 @@ type OAuth2ClientSpec struct {
 
 // OAuth2ClientStatus defines the status of the client.
 type OAuth2ClientStatus struct {
-	// Secret is the generated client secret.
+	// Secret mirrors the client secret held in the credentials Secret so
+	// older releases keep working on rollback.  Read the Secret instead,
+	// this field is due for removal.
 	Secret string `json:"secret,omitempty"`
 	// Current service state of the resource.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

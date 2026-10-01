@@ -23,9 +23,6 @@ spec:
     - jsonPath: .spec.redirectUri
       name: redirect uri
       type: string
-    - jsonPath: .status.secret
-      name: secret
-      type: string
     - jsonPath: .metadata.creationTimestamp
       name: age
       type: date
@@ -147,7 +144,10 @@ spec:
                   type: object
                 type: array
               secret:
-                description: Secret is the generated client secret.
+                description: |-
+                  Secret mirrors the client secret held in the credentials Secret so
+                  older releases keep working on rollback.  Read the Secret instead,
+                  this field is due for removal.
                 type: string
             type: object
         required:
