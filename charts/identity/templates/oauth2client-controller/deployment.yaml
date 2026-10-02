@@ -20,6 +20,7 @@ spec:
         args:
         {{- include "unikorn.core.flags" . | nindent 8 }}
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        {{- include "unikorn.identity.otelEnv" . | nindent 8 }}
         resources:
           {{- .Values.oauth2clientController.resources | toYaml | nindent 10 }}
         securityContext:

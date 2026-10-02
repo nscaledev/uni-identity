@@ -210,6 +210,7 @@ spec:
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}
+        {{- include "unikorn.identity.otelEnv" . | nindent 8 }}
         ports:
         - name: http
           containerPort: 6080
