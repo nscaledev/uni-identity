@@ -18,12 +18,17 @@ limitations under the License.
 package oauth2client
 
 import (
+	"context"
+
+	"go.opentelemetry.io/otel"
+
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	coremanager "github.com/unikorn-cloud/core/pkg/manager"
 	"github.com/unikorn-cloud/core/pkg/manager/options"
 	"github.com/unikorn-cloud/core/pkg/util"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
+	controllermetrics "github.com/unikorn-cloud/identity/pkg/controllers/metrics"
 	"github.com/unikorn-cloud/identity/pkg/provisioners/oauth2client"
 
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -47,6 +52,16 @@ func (*Factory) Metadata() util.ServiceDescriptor {
 // Options returns any options to be added to the CLI flags and passed to the reconciler.
 func (*Factory) Options() coremanager.ControllerOptions {
 	return nil
+}
+
+// Initialize registers metrics that follow the manager lifecycle.
+func (*Factory) Initialize(_ context.Context, manager manager.Manager, _ *options.Options) error {
+	reporter, err := controllermetrics.New(otel.Meter(constants.Application), constants.ServiceDescriptor())
+	if err != nil {
+		return err
+	}
+
+	return manager.Add(reporter)
 }
 
 // Reconciler returns a new reconciler instance.

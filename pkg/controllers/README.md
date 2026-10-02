@@ -13,6 +13,8 @@ lifecycle semantics themselves. They are intentionally thin factories that:
 - construct the shared reconciler with the correct provisioner
 - register watches for the concrete resource type
 - register the local API scheme needed by that controller
+- register [controller metrics](./metrics/README.md) that identify the running
+  build and report leader-ready state
 
 The actual reconcile behaviour lives in the provisioners:
 
