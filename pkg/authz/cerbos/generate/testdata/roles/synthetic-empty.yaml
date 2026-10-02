@@ -1,0 +1,11 @@
+# Synthetic fixture (not transcribed from a chart).  A Role with no scopes at
+# all grants nothing: the generator must skip it entirely, so its presence in
+# the fixture set must not change the golden output.
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000202
+  labels:
+    unikorn-cloud.org/name: synthetic-empty
+spec: {}
