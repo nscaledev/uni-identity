@@ -479,6 +479,23 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 	return resource, false, nil
 }
 
+func groupIDsForCreate(resource *unikornv1.OrganizationUser, user *unikornv1.User, groups *unikornv1.GroupList, requested openapi.GroupIDs, existing bool) openapi.GroupIDs {
+	if !existing {
+		return requested
+	}
+
+	// Create is also the invite operation. When the organization user already
+	// exists, retain its current groups; callers use Update to replace membership.
+	groupIDs := convert(resource, user, groups).Spec.GroupIDs
+	for _, groupID := range requested {
+		if !slices.Contains(groupIDs, groupID) {
+			groupIDs = append(groupIDs, groupID)
+		}
+	}
+
+	return groupIDs
+}
+
 // Create makes a new user.  This creates a new user in an organization, but they
 // reference a unique user resource, so we need to get or create the underlying record
 // first, then add to the organization.
@@ -518,17 +535,7 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	groupIDs := request.Spec.GroupIDs
-	if existing {
-		// Create is also the invite operation. When the organization user already
-		// exists, retain its current groups; callers use Update to replace membership.
-		groupIDs = convert(resource, user, groups).Spec.GroupIDs
-		for _, groupID := range request.Spec.GroupIDs {
-			if !slices.Contains(groupIDs, groupID) {
-				groupIDs = append(groupIDs, groupID)
-			}
-		}
-	}
+	groupIDs := groupIDsForCreate(resource, user, groups, request.Spec.GroupIDs, existing)
 
 	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, groupIDs, groups); err != nil {
 		return nil, err
