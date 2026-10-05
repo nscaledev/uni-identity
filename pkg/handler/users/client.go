@@ -518,7 +518,16 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	// Create is also the invite operation. When the organization user already
+	// exists, retain its current groups; callers use Update to replace membership.
+	groupIDs := convert(resource, user, groups).Spec.GroupIDs
+	for _, groupID := range request.Spec.GroupIDs {
+		if !slices.Contains(groupIDs, groupID) {
+			groupIDs = append(groupIDs, groupID)
+		}
+	}
+
+	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, groupIDs, groups); err != nil {
 		return nil, err
 	}
 

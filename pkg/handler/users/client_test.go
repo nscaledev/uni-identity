@@ -245,7 +245,7 @@ func TestClient_Create(t *testing.T) {
 		assert.Equal(t, globalUsers.Items[0].Name, organizationUsers.Items[0].Labels[constants.UserLabel])
 	})
 
-	t.Run("reconciles groups when reusing existing organization user", func(t *testing.T) {
+	t.Run("adds groups when reusing existing organization user", func(t *testing.T) {
 		t.Parallel()
 
 		fixture := newUserTestFixture(t)
@@ -299,8 +299,8 @@ func TestClient_Create(t *testing.T) {
 		}
 
 		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
-		assert.NotContains(t, alphaGroup.Spec.UserIDs, first.Metadata.Id)
-		assert.NotContains(t, alphaGroup.Spec.Subjects, subject)
+		assert.Contains(t, alphaGroup.Spec.UserIDs, first.Metadata.Id)
+		assert.Contains(t, alphaGroup.Spec.Subjects, subject)
 
 		betaGroup := getGroup(ctx, t, fixture.client, groupBetaID)
 		assert.Contains(t, betaGroup.Spec.UserIDs, first.Metadata.Id)

@@ -126,8 +126,8 @@ create path scans the same way and returns a deep copy of the single match.
 - an organization must have at most one `OrganizationUser` membership for a given global `User`
 - repeated create requests reuse the existing `OrganizationUser` without mutating its state; callers
   must use update to intentionally change organization-local state
-- organization membership changes must keep group membership consistent with the requested
-  `groupIDs`
+- a new user receives exactly the requested `groupIDs`; a repeated create retains the user's
+  existing groups and adds the requested ones. `Update` is the explicit replacement path.
 - a requested group that does not exist in the organization is an error, not a silently dropped
   part of the write
 - create and update answer a missing group, and create answers a subject that is not an email

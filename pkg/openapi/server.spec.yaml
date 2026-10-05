@@ -524,7 +524,9 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     post:
       description: |-
-        Creates a new user and associates with a set of groups.
+        Creates a new user and associates it with a set of groups. Repeating the
+        request for an existing organization member retains their current groups
+        and adds the requested groups; use update to replace membership.
       summary: Create user
       tags:
       - Users
