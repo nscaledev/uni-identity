@@ -21,8 +21,38 @@ Its main responsibilities are:
 - attach actor, component, scope, resource, operation, and result information
 - rely on the normalized authorization context built earlier in the middleware stack
 
+## Where a record comes from
+
+Everything in a record comes from the authorization decision the handler made, not from the
+request's URL.
+
+The URL was never a dependable source. v1 APIs happened to carry the organisation and project in
+the path and v2 APIs do not, so scope was already unrecoverable there. Worse, the resource was
+derived by matching a path ending in an identifier, and anything that did not match that shape was
+dropped in silence: changing an organisation's quotas produced no record at all, and rotating a
+service account credential was recorded against a resource type of `rotate`.
+
+A missing entry in an audit log is not a gap, it is evidence that something did not happen. Guessing
+from the request's shape produced both missing and wrong entries, which is why it is gone.
+
+The decision supplies the scope, the resource type, the resource identifier and the action. One
+exception remains: a create is authorised before the resource exists, so its identifier is still
+read from the response body.
+
+A request may make several decisions. Only those the handler marked as describing the request
+itself become records; the checks it had to pass first, such as proving the caller may grant each
+role they are adding to a group, are not separate events. A request acting on several resources
+produces one record each.
+
+A mutation that authorised something but never said what it was doing cannot be described. That is
+reported as an `audit gap`, because silence is the failure this exists to prevent. The gap names the
+endpoints that were checked and deliberately claims no operation: the HTTP method is the obvious
+thing to reach for and it would be a lie, since a POST to an action sub-resource reads as a
+creation, so a failed rotation would be reported as a create.
+
 ## Invariants
 
+- Nothing in a record is derived from the request path.
 - Audit logging depends on trusted authorization context already being present.
 - The package is focused on mutating operations rather than routine reads.
 - Resource identification is derived from route structure and response metadata rather than custom
