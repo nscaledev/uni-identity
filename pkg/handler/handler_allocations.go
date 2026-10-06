@@ -21,8 +21,11 @@ package handler
 import (
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/util"
+	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/handler/allocations"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -37,7 +40,7 @@ func (h *Handler) allocationsSyncClient() *allocations.SyncClient {
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {
-	if err := rbac.AllowProjectScopeID(r.Context(), "identity:allocations", openapi.Create, organizationID, projectID); err != nil {
+	if err := rbac.AllowProjectScopeOn(r.Context(), primary("identity:allocations", authz.Create, uuid.Nil), organizationID, projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -60,7 +63,7 @@ func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocatio
 }
 
 func (h *Handler) DeleteApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScopeID(r.Context(), "identity:allocations", openapi.Delete, organizationID, projectID); err != nil {
+	if err := rbac.AllowProjectScopeOn(r.Context(), primary("identity:allocations", authz.Delete, uuid.UUID(allocationID)), organizationID, projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
@@ -91,7 +94,7 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDProjectsProjectIDAllocation
 }
 
 func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectIDAllocationsAllocationID(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter, allocationID openapi.AllocationIDParameter) {
-	if err := rbac.AllowProjectScopeID(r.Context(), "identity:allocations", openapi.Update, organizationID, projectID); err != nil {
+	if err := rbac.AllowProjectScopeOn(r.Context(), primary("identity:allocations", authz.Update, uuid.UUID(allocationID)), organizationID, projectID); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}
