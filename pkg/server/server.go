@@ -73,6 +73,10 @@ type Server struct {
 
 	// OpenAPIOptions are for OpenAPI processing.
 	OpenAPIOptions openapimiddleware.Options
+
+	// AuditOptions optionally ship audit records to an external collector,
+	// in addition to the structured log, which is always emitted.
+	AuditOptions *audit.Options
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -84,6 +88,12 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
+
+	if s.AuditOptions == nil {
+		s.AuditOptions = audit.NewOptions()
+	}
+
+	s.AuditOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
@@ -184,7 +194,15 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
 	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
-	audit := audit.New(constants.Application, constants.Version)
+
+	// A configured collector that cannot be reached at startup fails the
+	// process rather than silently dropping audit records for its lifetime.
+	auditSinks, err := auditSinks(context.TODO(), client, s.AuditOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	audit := audit.New(constants.Application, constants.Version, auditSinks...)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -277,4 +295,20 @@ func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespa
 	}
 
 	return result, nil
+}
+
+// auditSinks builds the optional audit sinks.  Nothing configured means no
+// sinks, which is the default and leaves the structured log as the only audit
+// output.
+func auditSinks(ctx context.Context, client client.Client, options *audit.Options) ([]audit.Sink, error) {
+	if options == nil || !options.Enabled() {
+		return nil, nil
+	}
+
+	sink, err := audit.NewHTTPSink(ctx, client, options)
+	if err != nil {
+		return nil, err
+	}
+
+	return []audit.Sink{sink}, nil
 }

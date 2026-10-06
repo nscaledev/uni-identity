@@ -17,11 +17,14 @@ limitations under the License.
 package audit_test
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
@@ -271,4 +274,326 @@ func TestUnauthenticatedRequestsAreNotAudited(t *testing.T) {
 	handler.ServeHTTP(httptest.NewRecorder(), request)
 
 	require.Empty(t, rec.withMessage("audit"))
+}
+
+// capturingSink records what it is handed.
+type capturingSink struct {
+	mu      sync.Mutex
+	records []*audit.Record
+}
+
+func (s *capturingSink) Emit(_ context.Context, record *audit.Record) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.records = append(s.records, record)
+}
+
+func (s *capturingSink) all() []*audit.Record {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]*audit.Record{}, s.records...)
+}
+
+// panickingSink stands in for a sink that fails in the worst way available.
+type panickingSink struct{}
+
+func (panickingSink) Emit(context.Context, *audit.Record) {
+	panic("sink exploded")
+}
+
+// exerciseWithSinks is exercise with sinks attached and an optional user agent.
+func exerciseWithSinks(t *testing.T, sinks []audit.Sink, method, agent string, decisions ...authz.Decision) *recorder {
+	t.Helper()
+
+	rec := &recorder{}
+
+	request := httptest.NewRequest(method, "https://identity.example.com/anything", strings.NewReader("{}"))
+	if agent != "" {
+		request.Header.Set("User-Agent", agent)
+	}
+
+	ctx := log.IntoContext(request.Context(), logr.New(rec))
+	ctx = authorization.NewContext(ctx, &authorization.Info{
+		Userinfo: &openapi.Userinfo{Sub: "someone@example.com"},
+	})
+
+	request = request.WithContext(ctx)
+
+	handler := audit.New("identity", "v1.2.3", sinks...).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, decision := range decisions {
+			authz.Record(r.Context(), decision)
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	return rec
+}
+
+func deleteGroup() authz.Decision {
+	return primary("identity:groups", authz.Delete, uuid.MustParse(testObjectID))
+}
+
+// A configured sink receives the same record the log line was built from, so
+// what ships to a collector cannot drift from what was logged.
+func TestSinksReceiveTheSameRecordAsTheLog(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	rec := exerciseWithSinks(t, []audit.Sink{sink}, http.MethodDelete, "", deleteGroup())
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.Len(t, rec.withMessage("audit"), 1, "configuring a sink must not replace the log line")
+
+	require.Equal(t, "delete", records[0].Operation.Verb)
+	require.Equal(t, "groups", records[0].Resource.Type)
+	require.Equal(t, testObjectID, records[0].Resource.ID)
+	require.Equal(t, testOrganizationID, records[0].Scope.OrganizationID)
+}
+
+func TestSinksAreNotCalledWhenNothingIsAudited(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	exerciseWithSinks(t, []audit.Sink{sink}, http.MethodGet, "",
+		primary("identity:groups", authz.Read, uuid.MustParse(testObjectID)))
+
+	require.Empty(t, sink.all())
+}
+
+// Audit delivery MUST NOT affect the request.  A sink that panics is the
+// harshest version of that.
+func TestSinkPanicDoesNotBreakTheRequest(t *testing.T) {
+	t.Parallel()
+
+	good := &capturingSink{}
+
+	require.NotPanics(t, func() {
+		exerciseWithSinks(t, []audit.Sink{panickingSink{}, good}, http.MethodDelete, "", deleteGroup())
+	})
+
+	require.Len(t, good.all(), 1, "a failing sink must not stop the others")
+}
+
+// The client distinguishes a UI call from a CLI or direct API one.
+func TestClientUserAgentIsRecorded(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	exerciseWithSinks(t, []audit.Sink{sink}, http.MethodDelete, "unikorn-cli/1.4.0", deleteGroup())
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.Equal(t, &audit.Client{UserAgent: "unikorn-cli/1.4.0"}, records[0].Client)
+}
+
+// A client may send no User-Agent.  That must not invent an empty one, nor
+// appear as an empty object on the wire.
+func TestAbsentUserAgentLeavesTheClientUnset(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	exerciseWithSinks(t, []audit.Sink{sink}, http.MethodDelete, "", deleteGroup())
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.Nil(t, records[0].Client)
+
+	encoded, err := json.Marshal(records[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "client")
+}
+
+// A record has to say when the thing happened.  The signature carries a
+// creation time, but that moves on a retry, covers a batch rather than an
+// event, and is gone once the record is stored.
+func TestRecordCarriesItsOwnTimestamp(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	before := time.Now().UTC()
+
+	exerciseWithSinks(t, []audit.Sink{sink}, http.MethodDelete, "", deleteGroup())
+
+	after := time.Now().UTC()
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.False(t, records[0].Timestamp.Before(before))
+	require.False(t, records[0].Timestamp.After(after))
+}
+
+// The checks a request had to pass are why it was allowed, which is what an
+// auditor asks after what happened.  Granting roles while updating a group is
+// the case that matters: the record should say which.
+func TestGrantsRelayThePreconditions(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	grant := authz.Decision{
+		Target: authz.Target{
+			Endpoint:   "identity:roles",
+			Operation:  authz.Action(openapi.Update, "grant"),
+			ObjectID:   uuid.MustParse(testProjectID),
+			ObjectName: "platform-admin",
+		},
+		Allowed: true,
+	}
+
+	exerciseWithSinks(t, []audit.Sink{sink}, http.MethodPut, "",
+		primary("identity:groups", authz.Update, uuid.MustParse(testObjectID)), grant)
+
+	records := sink.all()
+	require.Len(t, records, 1, "a precondition is not its own event")
+	require.Equal(t, []audit.Grant{{
+		Endpoint:  "identity:roles",
+		Operation: "grant",
+		ID:        testProjectID,
+		Name:      "platform-admin",
+	}}, records[0].Grants, "the record must say which role, not merely that one was granted")
+}
+
+// With nothing but the operation itself there is nothing to relay, and an empty
+// list should not appear on the wire.
+func TestNoGrantsWhenThereAreNoPreconditions(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	exerciseWithSinks(t, []audit.Sink{sink}, http.MethodDelete, "", deleteGroup())
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.Nil(t, records[0].Grants)
+
+	encoded, err := json.Marshal(records[0])
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "grants")
+}
+
+// A reader should not have to resolve an identifier to know what was touched,
+// and after a deletion they cannot.
+func TestResourceNameComesFromTheResponse(t *testing.T) {
+	t.Parallel()
+
+	rec := exercise(t, http.MethodPost, "https://identity.example.com/anything", http.StatusCreated,
+		`{"metadata":{"id":"`+testObjectID+`","name":"platform-admins"}}`,
+		primary("identity:groups", authz.Create, uuid.Nil))
+
+	values := rec.withMessage("audit")[0].values
+
+	resource, ok := values["resource"].(*audit.Resource)
+	require.True(t, ok)
+	require.Equal(t, testObjectID, resource.ID)
+	require.Equal(t, "platform-admins", resource.Name)
+}
+
+// Behind a proxy the connection address is the proxy, so the forwarding header
+// wins where it is present.
+func TestSourceIPPrefersTheForwardedClient(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	rec := &recorder{}
+	request := httptest.NewRequest(http.MethodDelete, "https://identity.example.com/anything", strings.NewReader("{}"))
+	request.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
+
+	ctx := log.IntoContext(request.Context(), logr.New(rec))
+	ctx = authorization.NewContext(ctx, &authorization.Info{
+		Userinfo: &openapi.Userinfo{Sub: "someone@example.com"},
+	})
+	request = request.WithContext(ctx)
+
+	handler := audit.New("identity", "v1.2.3", sink).Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authz.Record(r.Context(), deleteGroup())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	records := sink.all()
+	require.Len(t, records, 1)
+	require.Equal(t, &audit.Source{IP: "203.0.113.7"}, records[0].Source,
+		"the first entry is the client, the rest are proxies it passed through")
+}
+
+// The log line and the posted body describe the same event, so they must carry
+// the same fields.  A field reaching one and not the other is a discrepancy
+// nobody notices until the two are compared during an investigation -- which is
+// exactly when it matters.
+//
+// This compares them directly rather than listing expected keys, so a field
+// added to the record and forgotten in the log sink fails here.
+func TestLogLineCarriesEveryRecordField(t *testing.T) {
+	t.Parallel()
+
+	sink := &capturingSink{}
+
+	grant := authz.Decision{
+		Target:  authz.Target{Endpoint: "identity:roles", Operation: authz.Action(openapi.Update, "grant")},
+		Allowed: true,
+	}
+
+	rec := exerciseWithSinks(t, []audit.Sink{sink}, http.MethodPut, "unikorn-cli/1.4.0",
+		primary("identity:groups", authz.Update, uuid.MustParse(testObjectID)), grant)
+
+	records := sink.all()
+	require.Len(t, records, 1)
+
+	encoded, err := json.Marshal(records[0])
+	require.NoError(t, err)
+
+	var body map[string]any
+
+	require.NoError(t, json.Unmarshal(encoded, &body))
+
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1)
+
+	for field := range body {
+		require.Contains(t, audits[0].values, field,
+			"field %q is delivered to a collector but missing from the log line", field)
+	}
+
+	for field := range audits[0].values {
+		require.Contains(t, body, field,
+			"field %q is logged but never delivered to a collector", field)
+	}
+}
+
+// metadata.name is required by the schema, so a resource with no meaningful
+// name of its own carries a sentinel there.  A name the caller states is the
+// real one and must win.
+func TestStatedNameOverridesTheResponse(t *testing.T) {
+	t.Parallel()
+
+	stated := authz.Decision{
+		Target: authz.Target{
+			Endpoint:   "identity:users",
+			Operation:  authz.Create,
+			Kind:       authz.Primary,
+			ObjectName: "simon.murray@nscale.com",
+		},
+		Scope:   authz.Scope{OrganizationID: ids.MustParseOrganizationID(testOrganizationID)},
+		Allowed: true,
+	}
+
+	rec := exercise(t, http.MethodPost, "https://identity.example.com/anything", http.StatusCreated,
+		`{"metadata":{"id":"`+testObjectID+`","name":"undefined"}}`, stated)
+
+	resource, ok := rec.withMessage("audit")[0].values["resource"].(*audit.Resource)
+	require.True(t, ok)
+	require.Equal(t, "simon.murray@nscale.com", resource.Name)
+	require.Equal(t, testObjectID, resource.ID, "the identifier still comes from the response")
 }
