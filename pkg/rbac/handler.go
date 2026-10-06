@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
@@ -54,8 +55,60 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 	return errors.HTTPForbidden(fmt.Sprintf("operation is not allowed by rbac: operation '%s' on endpoint '%s' is not permitted", operation, endpoint))
 }
 
+// record notes an allowed decision so that later middleware can describe the
+// request without recovering scope from its URL, which v2 APIs do not carry.
+//
+// Only allowed decisions are recorded.  Other services still use the gates as
+// predicates, and a predicate refusing is a resource being filtered out of a
+// list rather than a refused request; recording those would bury the real
+// refusals.  See the README's gates and predicates section.
+//
+// It wraps the result so that a gate records exactly where it returns, and
+// only the public gates call it: the internal cascade uses the check functions
+// so that one question does not leave three decisions behind.
+func record(ctx context.Context, endpoint string, operation openapi.AclOperation, scope authz.Scope, err error) error {
+	if err == nil {
+		authz.Record(ctx, authz.Decision{
+			Endpoint:  endpoint,
+			Operation: operation,
+			Scope:     scope,
+			Allowed:   true,
+		})
+	}
+
+	return err
+}
+
+// parseScope recovers typed identifiers for a check made through one of the
+// string gates.  Those gates predate the typed identifiers and cannot supply
+// them, so the scope is reconstructed here rather than held as text.
+//
+// An identifier that will not parse yields the zero value for that field.  A
+// check that passed matched an entry in an ACL built from storage, so the
+// identifiers are well formed in practice, and a malformed one fails the check
+// and is therefore never recorded.
+func parseScope(organizationID, projectID string) authz.Scope {
+	var scope authz.Scope
+
+	if parsed, err := ids.ParseOrganizationID(organizationID); err == nil {
+		scope.OrganizationID = parsed
+	}
+
+	if parsed, err := ids.ParseProjectID(projectID); err == nil {
+		scope.ProjectID = parsed
+	}
+
+	return scope
+}
+
 // AllowGlobalScope tries to allow the requested operation at the global scope.
 func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
+	return record(ctx, endpoint, operation, authz.Scope{}, checkGlobalScope(ctx, endpoint, operation))
+}
+
+// checkGlobalScope is AllowGlobalScope without the recording, for the internal
+// cascade and for the predicates.
+func checkGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
 	acl := FromContext(ctx)
 
 	if acl.Global == nil {
@@ -69,7 +122,9 @@ func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 // when the caller holds an ids.OrganizationID; the string overload is retained for
 // callers in other repos that already deal in plain strings.
 func AllowOrganizationScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
-	return AllowOrganizationScope(ctx, endpoint, operation, organizationID.String())
+	scope := authz.Scope{OrganizationID: organizationID}
+
+	return record(ctx, endpoint, operation, scope, checkOrganizationScope(ctx, endpoint, operation, organizationID.String()))
 }
 
 // AllowOrganizationScopeReader is the variant of AllowOrganizationScope for callers that
@@ -94,7 +149,12 @@ func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operatio
 // deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
 // and will be removed once those callers have migrated.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
-	if AllowGlobalScope(ctx, endpoint, operation) == nil {
+	return record(ctx, endpoint, operation, parseScope(organizationID, ""), checkOrganizationScope(ctx, endpoint, operation, organizationID))
+}
+
+// checkOrganizationScope is AllowOrganizationScope without the recording.
+func checkOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
+	if checkGlobalScope(ctx, endpoint, operation) == nil {
 		return nil
 	}
 
@@ -121,7 +181,9 @@ func AllowOrganizationScope(ctx context.Context, endpoint string, operation open
 
 // AllowProjectScopeID is the typed variant of AllowProjectScope.
 func AllowProjectScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
-	return AllowProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String())
+	scope := authz.Scope{OrganizationID: organizationID, ProjectID: projectID}
+
+	return record(ctx, endpoint, operation, scope, checkProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String()))
 }
 
 // AllowProjectScopeReader is the variant of AllowProjectScope for callers that hold a resource
@@ -146,7 +208,12 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 // in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
 // will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	if AllowOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
+	return record(ctx, endpoint, operation, parseScope(organizationID, projectID), checkProjectScope(ctx, endpoint, operation, organizationID, projectID))
+}
+
+// checkProjectScope is AllowProjectScope without the recording.
+func checkProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	if checkOrganizationScope(ctx, endpoint, operation, organizationID) == nil {
 		return nil
 	}
 
@@ -248,8 +315,9 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 		return nil
 	}
 
-	// Check whether a global or organization-scoped ACL grants access.
-	if err := AllowOrganizationScope(ctx, endpoint, operation, organizationID); err != nil {
+	// Check whether a global or organization-scoped ACL grants access.  The check
+	// form, so this gate records one decision rather than two.
+	if err := checkOrganizationScope(ctx, endpoint, operation, organizationID); err != nil {
 		return err
 	}
 
@@ -328,7 +396,7 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 // project" acceptance would become a cross-project escalation and must be tightened to a
 // specific target project.
 func allowGrantProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
-	if AllowOrganizationScopeID(ctx, endpoint, operation, organizationID) == nil {
+	if checkOrganizationScope(ctx, endpoint, operation, organizationID.String()) == nil {
 		return nil
 	}
 
@@ -374,7 +442,7 @@ func allowGrantProjectScope(ctx context.Context, endpoint string, operation open
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
-			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
+			if err := checkGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
 				return err
 			}
 		}
@@ -382,7 +450,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 
 	for _, endpoint := range role.Spec.Scopes.Organization {
 		for _, operation := range endpoint.Operations {
-			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
+			if err := checkOrganizationScope(ctx, endpoint.Name, convertOperation(operation), organizationID.String()); err != nil {
 				return err
 			}
 		}
