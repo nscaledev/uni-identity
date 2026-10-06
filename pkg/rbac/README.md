@@ -55,6 +55,25 @@ ACL construction and handler enforcement both follow that structure. Global perm
 organization and project checks, organization permissions can satisfy some project checks, and
 project permissions remain the narrowest scope.
 
+### Gates and predicates
+
+The same check is asked for two different purposes, and the package exposes each separately.
+
+- The `Allow*` family is a **gate**. It returns an error, and that error becomes the caller's
+  refusal. Use it when the answer decides whether the request proceeds.
+- The `Permits*` family is a **predicate**. It returns a boolean and is defined in terms of the
+  matching gate, so the two cannot drift. Use it when filtering candidates out of a list.
+
+The distinction is not stylistic. A gate refusing is a refused request: the principal asked for
+something and was told no, which is a reportable security event. A predicate refusing is a resource
+being left out of a list because it was never that principal's to see, which is access control
+working normally and happens on every list. Reporting the second as a refusal would bury real
+refusals and tell a monitoring system an attack was under way every time somebody listed a shared
+organization.
+
+Using a gate's `error` as a boolean, as `AllowX(...) == nil`, loses that distinction at exactly the
+point it matters, and is why the predicates exist.
+
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 
@@ -466,6 +485,10 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
+- Filtering a list uses the `Permits*` predicates, never an `Allow*` gate compared against `nil`.
+  A gate's refusal is a reportable event; a predicate's is routine.
+- A predicate MUST be defined in terms of its gate. If they are ever computed separately, a
+  principal can be shown a resource in a list that they are then refused, or the reverse.
 - Protected roles are not part of normal user-facing role administration.
 - Role grantability is bounded by the caller's own effective permissions.
 - ACL intersection for impersonated system-account calls is deliberate least-privilege behaviour.

@@ -59,7 +59,7 @@ func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.
 	out := make(openapi.Roles, 0, len(in.Items))
 
 	for _, resource := range in.Items {
-		grantable := rbac.AllowRole(ctx, &resource, organizationID) == nil
+		grantable := rbac.PermitsRole(ctx, &resource, organizationID)
 
 		out = append(out, convert(resource, grantable))
 	}
