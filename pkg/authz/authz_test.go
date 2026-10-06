@@ -24,7 +24,6 @@ import (
 
 	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/ids"
-	"github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
 func testScope() authz.Scope {
@@ -36,10 +35,12 @@ func testScope() authz.Scope {
 
 func testDecision(endpoint string) authz.Decision {
 	return authz.Decision{
-		Endpoint:  endpoint,
-		Operation: openapi.Update,
-		Scope:     testScope(),
-		Allowed:   true,
+		Target: authz.Target{
+			Endpoint:  endpoint,
+			Operation: authz.Update,
+		},
+		Scope:   testScope(),
+		Allowed: true,
 	}
 }
 
