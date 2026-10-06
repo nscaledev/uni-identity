@@ -47,8 +47,8 @@ The package is deliberately narrow and read-only.
 It does not own user mutation, organization membership mutation, or token lifecycle. It only
 normalizes local identity lookups for other parts of the system.
 
-`GetUser` scans the User cache without deep copies. It returns a deep copy of the single match,
-so the caller owns the result.
+`GetUser` lists Users from the API server on every call, so it sees a state change as soon as it
+is written. The caller owns the result.
 
 ### Active-State Gatekeeping
 

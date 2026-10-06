@@ -240,13 +240,17 @@ func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabas
 	return result, nil
 }
 
-func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *string) (openapi.Organizations, error) {
+// List returns the organizations visible to the caller. readCache serves the
+// global branch, which returns every organization. The membership branch reads
+// directly, so a removed membership takes effect at once, and a new
+// organization is found even before the cache has seen it.
+func (c *Client) List(ctx context.Context, readCache client.Reader, userdb *userdb.UserDatabase, email *string) (openapi.Organizations, error) {
 	// This is the only special case in the system.  When requesting organizations we
 	// will have an unscoped ACL, so can check for global access to all organizations.
 	// If we don't have that then we need to use RBAC to get a list of organizations we are
 	// members of and return only them.
 	//
-	// Both branches read the cache without deep copies. The organization
+	// The global branch reads the cache without deep copies. The organization
 	// objects come from the informer and are read-only. convert copies every
 	// value it takes, so the returned list shares no memory with the cache.
 	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read); err == nil && email == nil {
@@ -257,7 +261,7 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 			UnsafeDisableDeepCopy: ptr.To(true),
 		}
 
-		if err := c.client.List(ctx, &result, options); err != nil {
+		if err := readCache.List(ctx, &result, options); err != nil {
 			return nil, err
 		}
 
@@ -276,7 +280,7 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 	for _, organizationID := range organizationIDs {
 		organization := &unikornv1.Organization{}
 
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization, client.UnsafeDisableDeepCopy); err != nil {
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization); err != nil {
 			if kerrors.IsNotFound(err) {
 				return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
 			}

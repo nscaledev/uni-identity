@@ -152,14 +152,13 @@ func (a *Authenticator) expiry(now time.Time, info *IssueInfo) time.Time {
 	return now.Add(a.options.AccessTokenDuration)
 }
 
-// updateUser applies change to user, which comes from the informer cache, and
-// writes the result when change reports that it changed the user.
+// updateUser applies change to user and writes the result when change reports
+// that it changed the user.
 //
 // Another writer, for example a concurrent login or the subject migration, can
 // change the record between the read and the write.  The API server then refuses
-// the write with a conflict, and the cache can still hold the version that lost.
-// So updateUser reads the latest version from the API server, applies change to
-// it again and writes once more.  The other change stays.  A second conflict goes
+// the write with a conflict.  So updateUser reads the latest version, applies
+// change to it again and writes once more.  The other change stays.  A second conflict goes
 // back to the caller.  That is the one re-read and re-apply that the platform
 // specification gives for a write conflict inside a request.
 func (a *Authenticator) updateUser(ctx context.Context, user *unikornv1.User, change func(*unikornv1.User) (bool, error)) error {
@@ -174,7 +173,7 @@ func (a *Authenticator) updateUser(ctx context.Context, user *unikornv1.User, ch
 
 	latest := &unikornv1.User{}
 
-	if err := a.directclient.Get(ctx, client.ObjectKeyFromObject(user), latest); err != nil {
+	if err := a.client.Get(ctx, client.ObjectKeyFromObject(user), latest); err != nil {
 		return err
 	}
 
@@ -386,7 +385,7 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 
 	organization := &unikornv1.Organization{}
 
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
+	if err := a.organizationReader.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
 		return err
 	}
 

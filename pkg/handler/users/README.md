@@ -127,10 +127,7 @@ The user read model is assembled from multiple sources:
 This is why list and get operations are more aggregation-oriented than most of the other handler
 clients.
 
-The `User` scans skip deep copies. `List` reads every `User` from the cache with
-`UnsafeDisableDeepCopy`, and `convert` copies every value it takes from a `User`, including the
-last-active time, so the response shares no memory with the cache. The lookup by subject on the
-create path scans the same way and returns a deep copy of the single match.
+`List` and the lookup by subject on the create path read every `User` from the API server.
 
 ## Invariants
 
@@ -163,8 +160,6 @@ create path scans the same way and returns a deep copy of the single match.
   touch users, organization users, and groups in one logical operation.
 - Because group membership compatibility is maintained here as well as in the groups client,
   cross-client consistency matters more than local code shape.
-- `User` objects in `List` come from the cache without a copy. Treat them as read-only, and make
-  a deep copy before any change.
 
 ## TODO
 

@@ -5,31 +5,15 @@ metadata:
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 rules:
+# These feed the server's read cache: organizations for namespace routing and
+# the organization list, the rest for the organization list includes. Keep this
+# list in step with readCacheOptions in cmd/unikorn-identity.
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:
-  - groups
-  - oauth2clients
-  - oauth2providers
   - organizations
   - projects
   - quotas
-  - quotametadata
-  - roles
-  - serviceaccounts
-  - users
-  - organizationusers
-  verbs:
-  - list
-  - watch
-  - update
-  - patch
-  - create
-  - delete
-# These are special, hopefully temporarily...
-- apiGroups:
-  - identity.unikorn-cloud.org
-  resources:
   - allocations
   verbs:
   - get
@@ -39,32 +23,45 @@ rules:
   - patch
   - create
   - delete
-# A session write that loses a race reads the user again through the uncached
-# client, because the cache can still hold the version that lost.
+# Everything else is read directly from the API server, so needs no watch.
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:
+  - groups
+  - oauth2clients
+  - oauth2providers
+  - quotametadata
+  - roles
+  - serviceaccounts
   - users
+  - organizationusers
   verbs:
   - get
+  - list
+  - update
+  - patch
+  - create
+  - delete
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:
   - signingkeys
   verbs:
-  - list
-  - watch
+  - get
   - create
   - update
 - apiGroups:
   - ""
   resources:
   - secrets
-  - configmaps
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
   - namespaces
   verbs:
   - list
-  - watch
 - apiGroups:
   - coordination.k8s.io
   resources:

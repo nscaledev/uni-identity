@@ -47,8 +47,8 @@ carries the canonical form of the stored subject. To fill in the `UserIDs` count
 `findUserBySubject` finds the `User` for each subject at this deployment's issuer. It resolves the
 subject through [`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching), so a user
 stored in another case still resolves. If the subject folds onto two or more users and matches none
-exactly, the write fails with a consistency error. The scan reads the cache without deep copies and
-returns a deep copy of the single match.
+exactly, the write fails with a consistency error. The scan reads every `User` from the API
+server.
 
 ### Role Assignment Guard Rails
 
