@@ -323,14 +323,16 @@ type VerifyInfo struct {
 
 // Verify checks the access token parses and validates.
 func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, error) {
-	// The verification process is very expensive, so we add a cache in here to
-	// improve interactivity.  Once this is in place, then the network latency becomes
-	// the bottle neck, presumably this is the TLS handshake.  Similar code can be
-	// in the remote client-side verification middleware.
+	// Decoding and cryptographic validation are expensive, so cache the claims.
+	// Revocable identity state is always checked against Kubernetes below.
 	if value, ok := a.tokenCache.Get(info.Token); ok {
 		claims, ok := value.(*Claims)
 		if !ok {
 			return nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
+		}
+
+		if err := a.verifyRevocableState(ctx, info, claims); err != nil {
+			return nil, err
 		}
 
 		return claims, nil
@@ -356,18 +358,13 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 		return nil, fmt.Errorf("failed to validate claims: %w", err)
 	}
 
-	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
+	if err := a.verifyRevocableState(ctx, info, claims); err != nil {
 		return nil, err
 	}
 
-	// Ensure the access token is valid for the current user session...
-	if err := a.verifyUserSession(ctx, info, claims); err != nil {
-		return nil, err
-	}
-
-	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
-	// could still be valid for months...
+	// Bound the cache entry's lifetime: evict entries eventually to cap memory,
+	// and never let one outlive the token's own expiry, since the cache-hit path
+	// skips the time-based claim checks. Revocation is checked live on every hit.
 	timeout := time.Hour
 
 	if tokenExpiresIn := time.Until(claims.Expiry.Time()); tokenExpiresIn < timeout {
@@ -377,6 +374,15 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 	a.tokenCache.Add(info.Token, claims, timeout)
 
 	return claims, nil
+}
+
+// verifyRevocableState checks identity state that can change before a token expires.
+func (a *Authenticator) verifyRevocableState(ctx context.Context, info *VerifyInfo, claims *Claims) error {
+	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
+		return err
+	}
+
+	return a.verifyUserSession(ctx, info, claims)
 }
 
 func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyInfo, claims *Claims) error {

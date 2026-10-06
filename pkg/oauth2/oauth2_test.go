@@ -38,6 +38,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -218,6 +219,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 		objects        []client.Object
 		issueInfo      *oauth2.IssueInfo
 		postIssue      func(*testing.T, context.Context, client.Client, *oauth2.Tokens)
+		postVerify     func(*testing.T, context.Context, client.Client, *oauth2.Authenticator, *oauth2.Tokens)
 		expectedSub    string
 		expectedEmail  *string
 		expectedType   openapi.AuthClaimsAcctype
@@ -235,6 +237,19 @@ func TestUserinfoCustomClaims(t *testing.T) {
 						State:   unikornv1.UserStateActive,
 					},
 				},
+			},
+			postVerify: func(t *testing.T, ctx context.Context, c client.Client, authenticator *oauth2.Authenticator, tokens *oauth2.Tokens) {
+				t.Helper()
+
+				user := &unikornv1.User{}
+				require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: josetesting.Namespace, Name: "test-user"}, user))
+				require.Len(t, user.Spec.Sessions, 1)
+				user.Spec.Sessions[0].AccessToken = ""
+				require.NoError(t, c.Update(ctx, user))
+
+				req := httptest.NewRequest(http.MethodGet, "https://test.com/oauth2/v2/userinfo", nil)
+				_, _, err := authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+				require.ErrorIs(t, err, oauth2.ErrTokenVerification)
 			},
 			issueInfo: &oauth2.IssueInfo{
 				Issuer:   "https://test.com",
@@ -397,6 +412,21 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				serviceAccount.Spec.AccessToken = tokens.AccessToken
 				require.NoError(t, c.Update(ctx, serviceAccount))
 			},
+			postVerify: func(t *testing.T, ctx context.Context, c client.Client, authenticator *oauth2.Authenticator, tokens *oauth2.Tokens) {
+				t.Helper()
+
+				serviceAccount := &unikornv1.ServiceAccount{}
+				require.NoError(t, c.Get(ctx, client.ObjectKey{
+					Namespace: josetesting.Namespace + "-org",
+					Name:      "test-service-account",
+				}, serviceAccount))
+				require.NoError(t, c.Delete(ctx, serviceAccount))
+
+				req := httptest.NewRequest(http.MethodGet, "https://test.com/oauth2/v2/userinfo", nil)
+				_, _, err := authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+				require.Error(t, err)
+				assert.True(t, apierrors.IsNotFound(err))
+			},
 			expectedSub:    "test-service-account",
 			expectedType:   openapi.Service,
 			expectedOrgIDs: []string{"test-org"},
@@ -482,6 +512,10 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				assert.ElementsMatch(t, tc.expectedOrgIDs, userinfo.HttpsunikornCloudOrgauthz.OrgIds)
 			} else {
 				assert.Nil(t, userinfo.HttpsunikornCloudOrgauthz.OrgIds)
+			}
+
+			if tc.postVerify != nil {
+				tc.postVerify(t, ctx, client, authenticator, tokens)
 			}
 		})
 	}

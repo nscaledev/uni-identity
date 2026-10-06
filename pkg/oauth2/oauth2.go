@@ -91,8 +91,8 @@ type Options struct {
 	// a refresh before any errors can come from the IdP.
 	TokenLeewayDuration time.Duration
 
-	// TokenCacheSize is used to control the size of the LRU cache for token validation
-	// checks.  This bounds the memory use to prevent DoS attacks.
+	// TokenCacheSize controls the LRU cache for decoded token claims. This bounds
+	// memory use while live revocation checks still run for every request.
 	TokenCacheSize int
 
 	// CodeCacheSize is used to set the number of authorization code in flight.
@@ -152,8 +152,7 @@ type Authenticator struct {
 	// rbac is needed for ACL computation in passport exchange.
 	rbac *rbac.RBAC
 
-	// tokenCache is used to enhance interaction as the validation is a
-	// very expensive operation.
+	// tokenCache retains decoded claims after cryptographic validation.
 	tokenCache *cache.LRUExpireCache
 
 	// codeCache is used to protect against authorization code reuse.
