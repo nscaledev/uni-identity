@@ -133,6 +133,8 @@ clients.
 
 - global identity and organization membership are distinct layers and must not be collapsed into a
   single resource model
+- global users use a deterministic name derived from their immutable subject; organization users
+  use one derived from their organization and global user
 - an organization must have at most one `OrganizationUser` membership for a given global `User`
 - repeated create requests reuse the existing `OrganizationUser` without mutating its state; callers
   must use update to intentionally change organization-local state
@@ -153,6 +155,10 @@ clients.
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
 - the API-managed path only allows bare email-address subjects for normal user creation
+
+Legacy random-named records remain readable while there is exactly one matching record. Multiple
+legacy records for one subject or membership are a consistency error. New writes use deterministic
+names, so Kubernetes conflict handling makes concurrent creates converge on the same records.
 
 ## Caveats
 

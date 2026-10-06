@@ -19,6 +19,7 @@ package users_test
 import (
 	"context"
 	goerrors "errors"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -235,14 +236,32 @@ func TestClient_Create(t *testing.T) {
 		globalUsers := &unikornv1.UserList{}
 		require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
 		require.Len(t, globalUsers.Items, 1)
+		assert.Equal(t, "daa84183-d29f-5c81-bbfc-d2e55ac14fe4", globalUsers.Items[0].Name, "global users retain their deterministic storage name")
 
 		organizationUsers := &unikornv1.OrganizationUserList{}
 		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
 		require.Len(t, organizationUsers.Items, 1)
+		assert.Equal(t, "cc66bd11-4aa0-52c9-a210-2b82af091651", organizationUsers.Items[0].Name, "organization users retain their deterministic storage name")
 
 		assert.Equal(t, first.Metadata.Id, organizationUsers.Items[0].Name)
 		assert.Equal(t, testOrgID, organizationUsers.Items[0].Labels[constants.OrganizationLabel])
 		assert.Equal(t, globalUsers.Items[0].Name, organizationUsers.Items[0].Labels[constants.UserLabel])
+	})
+
+	t.Run("rejects multiple legacy users with the same subject", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newGlobalUser("user-alice-2", userAliceSubject),
+		}, interceptor.Funcs{})
+
+		_, err := fixture.usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{Subject: userAliceSubject, State: openapi.Active},
+		})
+
+		require.ErrorIs(t, err, coreerrors.ErrConsistency)
+		assert.Contains(t, err.Error(), "multiple legacy users")
 	})
 
 	t.Run("reconciles groups when reusing existing organization user", func(t *testing.T) {
@@ -408,6 +427,196 @@ func TestClient_Create(t *testing.T) {
 		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
 		assert.Contains(t, alphaGroup.Spec.UserIDs, result.Metadata.Id)
 	})
+}
+
+// TestClient_CreateLegacyOrganizationUser covers a random-named membership
+// written by an older replica beside the deterministic one.
+func TestClient_CreateLegacyOrganizationUser(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns consistency error for a legacy organization user beside a deterministic one", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixture(t)
+		ctx := newContext(t)
+
+		request := &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject: userAliceSubject,
+				State:   openapi.Active,
+			},
+		}
+
+		first, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+		require.NoError(t, err)
+
+		// An older replica writes a random-named membership for the same user.
+		created := &unikornv1.OrganizationUser{}
+		require.NoError(t, fixture.client.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: first.Metadata.Id}, created))
+		require.NoError(t, fixture.client.Create(ctx, newOrganizationUser(orgUserAliceID2, created.Labels[constants.UserLabel])))
+
+		_, err = fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+
+		require.ErrorIs(t, err, coreerrors.ErrConsistency)
+		assert.Contains(t, err.Error(), "multiple organization users reference global user")
+	})
+
+	t.Run("converges on a deterministic organization user created concurrently", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+		}, interceptor.Funcs{
+			Create: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if organizationUser, ok := obj.(*unikornv1.OrganizationUser); ok {
+					// Another replica wins the race for the same name.
+					if err := inner.Create(ctx, organizationUser.DeepCopy(), opts...); err != nil {
+						return err
+					}
+
+					return kerrors.NewAlreadyExists(unikornv1.Resource("organizationusers"), obj.GetName())
+				}
+
+				return inner.Create(ctx, obj, opts...)
+			},
+		})
+
+		result, err := fixture.usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{Subject: userAliceSubject, State: openapi.Active},
+		})
+
+		require.NoError(t, err)
+		assert.NotEqual(t, orgUserAliceID2, result.Metadata.Id)
+	})
+
+	t.Run("returns consistency error for a legacy organization user written during a create race", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+		}, interceptor.Funcs{
+			Create: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if organizationUser, ok := obj.(*unikornv1.OrganizationUser); ok {
+					// A new replica wins the deterministic name while an older
+					// replica writes a random-named record.
+					if err := inner.Create(ctx, organizationUser.DeepCopy(), opts...); err != nil {
+						return err
+					}
+
+					if err := inner.Create(ctx, newOrganizationUser(orgUserAliceID2, userAliceID), opts...); err != nil {
+						return err
+					}
+
+					return kerrors.NewAlreadyExists(unikornv1.Resource("organizationusers"), obj.GetName())
+				}
+
+				return inner.Create(ctx, obj, opts...)
+			},
+		})
+
+		_, err := fixture.usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{Subject: userAliceSubject, State: openapi.Active},
+		})
+
+		require.ErrorIs(t, err, coreerrors.ErrConsistency)
+		assert.Contains(t, err.Error(), "multiple organization users reference global user")
+	})
+}
+
+// TestClient_CreateGlobalUserRace covers a create that loses the race for the
+// deterministic global user name.
+func TestClient_CreateGlobalUserRace(t *testing.T) {
+	t.Parallel()
+
+	// raceGlobalUser makes another replica win the deterministic name, and
+	// optionally has an older replica write a random-named user too.
+	raceGlobalUser := func(legacy bool) interceptor.Funcs {
+		return interceptor.Funcs{
+			Create: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				user, ok := obj.(*unikornv1.User)
+				if !ok {
+					return inner.Create(ctx, obj, opts...)
+				}
+
+				if err := inner.Create(ctx, user.DeepCopy(), opts...); err != nil {
+					return err
+				}
+
+				if legacy {
+					if err := inner.Create(ctx, newGlobalUser("user-alice-legacy", user.Spec.Subject), opts...); err != nil {
+						return err
+					}
+				}
+
+				return kerrors.NewAlreadyExists(unikornv1.Resource("users"), obj.GetName())
+			},
+		}
+	}
+
+	t.Run("converges on a deterministic global user created concurrently", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, nil, raceGlobalUser(false))
+		ctx := newContext(t)
+
+		result, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{Subject: userAliceSubject, State: openapi.Active},
+		})
+		require.NoError(t, err)
+
+		organizationUser := &unikornv1.OrganizationUser{}
+		require.NoError(t, fixture.client.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: result.Metadata.Id}, organizationUser))
+		assert.Equal(t, "daa84183-d29f-5c81-bbfc-d2e55ac14fe4", organizationUser.Labels[constants.UserLabel])
+	})
+
+	t.Run("returns consistency error for a legacy global user written during a create race", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, nil, raceGlobalUser(true))
+
+		_, err := fixture.usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{Subject: userAliceSubject, State: openapi.Active},
+		})
+
+		require.ErrorIs(t, err, coreerrors.ErrConsistency)
+		assert.Contains(t, err.Error(), "multiple legacy users")
+	})
+}
+
+func TestClient_CreateConcurrent(t *testing.T) {
+	t.Parallel()
+
+	fixture := newUserTestFixture(t)
+	request := &openapi.UserWrite{Spec: openapi.UserSpec{Subject: userAliceSubject, State: openapi.Active}}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+
+	var wg sync.WaitGroup
+
+	for range 2 {
+		wg.Go(func() {
+			<-start
+
+			_, err := fixture.usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), request)
+			errs <- err
+		})
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	globalUsers := &unikornv1.UserList{}
+	require.NoError(t, fixture.client.List(t.Context(), globalUsers, &client.ListOptions{Namespace: testNamespace}))
+	require.Len(t, globalUsers.Items, 1)
+
+	organizationUsers := &unikornv1.OrganizationUserList{}
+	require.NoError(t, fixture.client.List(t.Context(), organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
+	require.Len(t, organizationUsers.Items, 1)
 }
 
 func TestClient_Update(t *testing.T) {
