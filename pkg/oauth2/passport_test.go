@@ -165,7 +165,7 @@ func setupPassportTestEnvWithOAuth2Options(t *testing.T, rbacOptions *rbac.Optio
 		Hostname: "test.com",
 	}
 
-	authenticator, err := oauth2.New(oauth2Options, josetesting.Namespace, issuerVal, cli, jwtIssuer, userDatabase, rbacInst)
+	authenticator, err := oauth2.New(oauth2Options, josetesting.Namespace, issuerVal, cli, cli, jwtIssuer, userDatabase, rbacInst)
 	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)

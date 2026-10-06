@@ -46,6 +46,18 @@ and adds or removes both:
 So this package is not just a membership record manager. It is also one side of the compatibility
 bridge between old and new group-membership representations.
 
+### Subject Matching
+
+`Create` finds an existing global `User` through
+[`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching). As a result, an address
+that differs from a stored record only in case reuses that record and does not add a second one. If
+no record matches, the new record stores the subject as the request supplies it. If the subject
+folds onto two or more records and matches none exactly, `Create` fails with a consistency error
+before it writes a record.
+
+Group subject entries compare in canonical form on both sides. As a result, a membership read and
+a removal find an entry that is stored in another case.
+
 ### Membership Additions Are Grants
 
 Putting a user into a group hands them every role that group carries, so it is a grant and is
@@ -130,8 +142,10 @@ create path scans the same way and returns a deep copy of the single match.
   `groupIDs`
 - a requested group that does not exist in the organization is an error, not a silently dropped
   part of the write
-- create and update answer a missing group, and create answers a subject that is not an email
-  address, with HTTP 400; both operations declare 400 in the OpenAPI schema
+- create and update answer a missing group, and create answers a subject that is not a bare email
+  address, with HTTP 400; both operations declare 400 in the OpenAPI schema. A display name or
+  angle brackets are refused, because a sign-in claim carries the bare address and never matches
+  such a record
 - adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
   could grant every role the group carries; removals and user deletion are not gated
 - a principal present in either membership representation is already a member, so completing the
@@ -140,7 +154,7 @@ create path scans the same way and returns a deep copy of the single match.
   no user records either
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
-- the API-managed path only allows email-address subjects for normal user creation
+- the API-managed path only allows bare email-address subjects for normal user creation
 
 ## Caveats
 
@@ -162,6 +176,8 @@ create path scans the same way and returns a deep copy of the single match.
   rollback or a single-object write.
 - Revisit list resilience so an orphaned `OrganizationUser` -> `User` reference does not
   necessarily fail the entire organization user listing.
+- Fold email subjects on write after the data migration folds every stored subject (ID-408). Every
+  reader accepts both forms first, so the migration does not affect a login.
 
 ## Related Documentation
 
