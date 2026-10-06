@@ -120,7 +120,7 @@ README, so this section holds that contract.
 this package because `quotas` and `projects` import `organizations`. An import in the other
 direction would create an import cycle.
 
-The step reads the informer cache with `UnsafeDisableDeepCopy` and no selector:
+The step reads without a selector:
 
 - Quota and Allocation, in all namespaces, when `include` names `quotas`.
 - QuotaMetadata, from the identity namespace, when `include` names `quotas`.

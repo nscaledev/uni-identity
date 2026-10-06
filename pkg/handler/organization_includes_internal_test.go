@@ -50,14 +50,14 @@ const (
 	ns   = "identity"
 )
 
-// listCall holds the kind and options of one recorded cache list.
+// listCall holds the kind and options of one recorded list.
 type listCall struct {
 	kind    string
 	options client.ListOptions
 }
 
-// recorder records the kind and options of each cache list that the code
-// under test makes.
+// recorder records the kind and options of each list that the code under test
+// makes.
 type recorder struct {
 	lists []listCall
 }
@@ -146,16 +146,16 @@ func newHandler(t *testing.T, r *recorder, objects ...client.Object) *Handler {
 	return &Handler{client: c, namespace: ns}
 }
 
-// requireSharedLists asserts that every list disables deep copies and has no
-// selector. Only the QuotaMetadata list reads the identity namespace. Every
-// other list reads all namespaces.
+// requireSharedLists asserts that every list has no selector. Only the
+// QuotaMetadata list reads the identity namespace. Every other list reads all
+// namespaces.
 func requireSharedLists(t *testing.T, r *recorder) {
 	t.Helper()
 
 	quotaMetadataKind := fmt.Sprintf("%T", &unikornv1.QuotaMetadataList{})
 
 	for _, call := range r.lists {
-		require.True(t, ptr.Deref(call.options.UnsafeDisableDeepCopy, false))
+		require.Nil(t, call.options.UnsafeDisableDeepCopy)
 		require.Nil(t, call.options.LabelSelector)
 
 		if call.kind == quotaMetadataKind {

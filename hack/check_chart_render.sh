@@ -222,4 +222,21 @@ for workload in server organization-controller oauth2client-controller project-c
 	[[ "$pod_name_source" == "metadata.name" ]] || die "expected POD_NAME from the downward API on test-${workload}"
 done
 
+# Direct Kubernetes reads require a get permission; list/watch only permit
+# informer synchronization and cannot authorize an API-server GET.
+has_server_get() {
+	resource="$1" yq -e '
+		select(.kind == "ClusterRole" and .metadata.name == "test-server") |
+		.rules[] |
+		select(.resources[] == strenv(resource)) |
+		select(.verbs[] == "get")
+	' <<<"$out" >/dev/null
+}
+
+for resource in \
+	groups oauth2clients oauth2providers organizations projects quotas quotametadata \
+	roles serviceaccounts users organizationusers signingkeys secrets; do
+	has_server_get "$resource" || die "expected get permission for server resource: $resource"
+done
+
 echo "chart render checks OK"

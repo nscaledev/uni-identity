@@ -134,10 +134,11 @@ type Authenticator struct {
 
 	client client.Client
 
-	// directclient gives uncached access to Kubernetes.  A user write that
-	// loses a race reads the user again through it, because the cache can
-	// still hold the version that lost.
+	// directclient is kept for the conflict retry path. The primary client is
+	// already direct; this field preserves that path's explicit dependency.
 	directclient client.Client
+
+	organizationReader client.Reader
 
 	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
 	issuer common.IssuerValue
@@ -174,7 +175,7 @@ type Authenticator struct {
 // is validated. Deprecated --auth0-exchange-{issuer,audience} flags feed a synthetic
 // auth0-legacy provider for backward compatibility; new deployments should use
 // OAuth2Provider bearerTrust blocks instead.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, directclient client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, organizationReader client.Reader, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
 	// The error only reports an invalid instrument configuration; the name,
 	// description, and unit are static and the API returns a usable no-op
 	// counter regardless, so there is nothing actionable to handle.
@@ -190,18 +191,19 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 	}
 
 	return &Authenticator{
-		options:          options,
-		namespace:        namespace,
-		client:           client,
-		directclient:     directclient,
-		issuer:           issuer,
-		jwtIssuer:        jwtIssuer,
-		userdb:           userdb,
-		rbac:             rbac,
-		tokenCache:       cache.NewLRUExpireCache(options.TokenCacheSize),
-		codeCache:        cache.NewLRUExpireCache(options.CodeCacheSize),
-		validatorCache:   newValidatorCache(validatorCacheSize),
-		unroutableTokens: unroutableTokens,
+		options:            options,
+		namespace:          namespace,
+		client:             client,
+		directclient:       client,
+		organizationReader: organizationReader,
+		issuer:             issuer,
+		jwtIssuer:          jwtIssuer,
+		userdb:             userdb,
+		rbac:               rbac,
+		tokenCache:         cache.NewLRUExpireCache(options.TokenCacheSize),
+		codeCache:          cache.NewLRUExpireCache(options.CodeCacheSize),
+		validatorCache:     newValidatorCache(validatorCacheSize),
+		unroutableTokens:   unroutableTokens,
 	}, nil
 }
 
@@ -1145,8 +1147,8 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 	return a.checkClientSecret(r.Context(), client, clientSecret)
 }
 
-// checkClientSecret compares the presented secret with the one in the client's
-// credentials Secret, falling back to status for clients not yet migrated.
+// checkClientSecret compares the presented secret with the credentials Secret,
+// falling back to status while older clients are migrated.
 func (a *Authenticator) checkClientSecret(ctx context.Context, oauth2client *unikornv1.OAuth2Client, clientSecret string) error {
 	expected := oauth2client.Status.Secret
 

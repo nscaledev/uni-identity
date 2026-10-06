@@ -74,7 +74,6 @@ func checkQuotaAndMetadata(quota *unikornv1.ResourceQuota, meta *unikornv1.Quota
 // Convert renders quotas with usage summed from allocations, sorted by Kind.
 // A kind with no metadata, or a nil quantity, is a data fault and returns an
 // error. Convert reads quantities only with Value and never writes to them.
-// Its inputs can therefore come from the informer cache without a copy.
 func Convert(quotas []unikornv1.ResourceQuota, metadata []unikornv1.QuotaMetadata, allocations []unikornv1.Allocation) (openapi.QuotaReadList, error) {
 	totals, err := sumAllocations(allocations)
 	if err != nil {

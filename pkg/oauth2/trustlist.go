@@ -48,10 +48,10 @@ const auth0LegacyProviderName = "auth0-legacy"
 const validatorCacheTTL = 5 * time.Minute
 
 var (
-	// ErrCacheNotReady is returned when the provider List fails (e.g. informer
-	// not yet synced). Callers on the JWS dispatch path surface this as HTTP 503
-	// Service Unavailable, signaling a transient warm-up condition.
-	ErrCacheNotReady = errors.New("provider list unavailable")
+	// ErrKubernetesReadUnavailable is returned when the provider List fails.
+	// Callers on the JWS dispatch path surface this as HTTP 503 Service
+	// Unavailable.
+	ErrKubernetesReadUnavailable = errors.New("provider list unavailable")
 
 	// ErrUnknownIssuer is returned when no trusted provider's issuer matches the
 	// token's iss claim. This is an expected outcome (an untrusted or unrecognized
@@ -70,8 +70,8 @@ type validatorCacheEntry struct {
 // bearerTrustProviders returns the items that have BearerTrust set, sorted by
 // name. When Auth0ExchangeIssuer is configured, it appends a synthetic
 // auth0-legacy entry, always last. The sort makes first-match resolution
-// deterministic when two providers declare the same issuer: the cache-backed
-// List order is not stable across calls, so without the sort the effective
+// deterministic when two providers declare the same issuer: List order is not
+// stable across calls, so without the sort the effective
 // winner could change on each request. The sort also makes an intermittent
 // fault permanent. When one of two same-issuer providers is broken, the
 // issuer now fails or works consistently, and it stays dead if the broken
@@ -183,7 +183,8 @@ func (a *Authenticator) cachedValidator(p *unikornv1.OAuth2Provider) (*auth0.Val
 // validatedIssuer is the resolved trust-list match for an issuer lookup. A
 // non-nil result means a match; ErrUnknownIssuer means no trusted provider
 // matches (an expected, non-fatal outcome); any other error means the lookup
-// itself failed (cache not ready, or a config error on the matching provider).
+// itself failed (a Kubernetes read failure, or a config error on the matching
+// provider).
 type validatedIssuer struct {
 	Validator    *auth0.Validator
 	Trust        *unikornv1.BearerTrustSpec
@@ -206,7 +207,7 @@ func (a *Authenticator) validatorForIssuer(ctx context.Context, rawIss string) (
 	var providers unikornv1.OAuth2ProviderList
 
 	if err := a.client.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCacheNotReady, err)
+		return nil, fmt.Errorf("%w: %w", ErrKubernetesReadUnavailable, err)
 	}
 
 	candidates := a.bearerTrustProviders(providers.Items)
@@ -245,7 +246,7 @@ func (a *Authenticator) GroupsClaimByIssuer(ctx context.Context) (map[string]str
 	var providers unikornv1.OAuth2ProviderList
 
 	if err := a.client.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCacheNotReady, err)
+		return nil, fmt.Errorf("%w: %w", ErrKubernetesReadUnavailable, err)
 	}
 
 	out := map[string]string{}

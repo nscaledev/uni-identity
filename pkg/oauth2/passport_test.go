@@ -1364,7 +1364,7 @@ func TestExchangeHandlerInvalidTokenReturnsUnauthorized(t *testing.T) {
 
 	env := setupPassportTestEnv(t)
 
-	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	h, err := handler.New(nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
 	require.NoError(t, err)
 
 	req := exchangeRequest(t, "invalid-token-value", nil)
@@ -1392,7 +1392,7 @@ func TestExchangeHandlerMissingGrantTypeDoesNotMintPassport(t *testing.T) {
 
 	env := setupPassportTestEnv(t)
 
-	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	h, err := handler.New(nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
@@ -1427,7 +1427,7 @@ func TestExchangeHandlerWrongGrantTypeDoesNotMintPassport(t *testing.T) {
 
 	env := setupPassportTestEnv(t)
 
-	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	h, err := handler.New(nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token",
@@ -1494,7 +1494,7 @@ func TestExchangeHandlerSuccess(t *testing.T) {
 		jose.TokenTypeAccessToken,
 	))
 
-	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	h, err := handler.New(nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
 	require.NoError(t, err)
 
 	req := exchangeRequest(t, token, nil)
@@ -1766,7 +1766,7 @@ func TestExchangeHandlerOutOfScopeOrganizationReturnsInvalidScope(t *testing.T) 
 		},
 	})
 
-	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	h, err := handler.New(nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
 	require.NoError(t, err)
 
 	wrongOrgID := "not-my-org"

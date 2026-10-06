@@ -386,7 +386,7 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 
 	organization := &unikornv1.Organization{}
 
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
+	if err := a.organizationReader.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
 		return err
 	}
 

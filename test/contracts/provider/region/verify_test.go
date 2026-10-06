@@ -233,7 +233,6 @@ func createHandlerInterface(k8sClient client.Client, serverURL string) openapi.S
 	// Pass nil for JWT issuer, OAuth2, and RBAC - not used due to MockACLMiddleware providing all auth context
 	handlerInterface, err := handler.New(
 		k8sClient,
-		k8sClient,
 		TestNamespace,
 		nil, // JWT issuer not used in contract tests
 		nil, // OAuth2 not used in contract tests

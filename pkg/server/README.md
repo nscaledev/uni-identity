@@ -117,6 +117,8 @@ convention.
 - middleware ordering is part of the package contract because later stages depend on context from
   earlier stages
 - `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
+- Organization namespace routing uses a synchronized cache; revocation-sensitive token state uses
+  direct Kubernetes reads
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
 - API readiness reflects ownership of the bound HTTP listener, not construction

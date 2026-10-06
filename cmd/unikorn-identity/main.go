@@ -32,7 +32,7 @@ import (
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel"
 
-	"github.com/unikorn-cloud/core/pkg/client"
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/server"
@@ -40,9 +40,25 @@ import (
 
 	"k8s.io/client-go/rest"
 
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+const (
+	kubernetesClientQPS   = 100
+	kubernetesClientBurst = 200
+)
+
+var (
+	errOrganizationCacheStopped = errors.New("organization cache stopped before synchronization")
+	errOrganizationCacheSync    = errors.New("organization cache failed to synchronize")
+)
+
+type cacheRunner interface {
+	Start(ctx context.Context) error
+	WaitForCacheSync(ctx context.Context) bool
+}
 
 // start is the entry point to server.
 func start() {
@@ -69,14 +85,14 @@ func start() {
 		return
 	}
 
-	client, directclient, err := newKubernetesClients(ctx)
+	client, organizationReader, err := newKubernetesClients(ctx)
 	if err != nil {
 		logger.Error(err, "failed to create Kubernetes clients")
 
 		return
 	}
 
-	server, err := s.GetServer(client, directclient)
+	server, err := s.GetServer(client, organizationReader)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 
@@ -129,25 +145,91 @@ func start() {
 	}
 }
 
-func newKubernetesClients(ctx context.Context) (ctrlclient.Client, ctrlclient.Client, error) {
-	kubernetesClient, err := client.New(ctx, unikornv1.AddToScheme)
-	if err != nil {
-		return nil, nil, err
-	}
-
+func newKubernetesClients(ctx context.Context) (ctrlclient.Client, ctrlclient.Reader, error) {
 	clientConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	directClient, err := ctrlclient.New(clientConfig, ctrlclient.Options{
-		Scheme: kubernetesClient.Scheme(),
+	configureKubernetesClient(clientConfig)
+
+	scheme, err := coreclient.NewScheme(unikornv1.AddToScheme)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	kubernetesClient, err := ctrlclient.New(clientConfig, ctrlclient.Options{
+		Scheme: scheme,
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return kubernetesClient, directClient, nil
+	organizationCache, err := cache.New(clientConfig, cache.Options{
+		Scheme:                      scheme,
+		ReaderFailOnMissingInformer: true,
+		ByObject: map[ctrlclient.Object]cache.ByObject{
+			&unikornv1.Organization{}: {},
+		},
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if _, err := organizationCache.GetInformer(ctx, &unikornv1.Organization{}); err != nil {
+		return nil, nil, err
+	}
+
+	if err := startAndSyncCache(ctx, organizationCache); err != nil {
+		return nil, nil, err
+	}
+
+	return kubernetesClient, organizationCache, nil
+}
+
+func startAndSyncCache(ctx context.Context, resourceCache cacheRunner) error {
+	cacheCtx, cancel := context.WithCancel(ctx)
+	cancelOnError := true
+
+	defer func() {
+		if cancelOnError {
+			cancel()
+		}
+	}()
+
+	startResult := make(chan error, 1)
+	syncResult := make(chan bool, 1)
+
+	go func() {
+		startResult <- resourceCache.Start(cacheCtx)
+	}()
+	go func() {
+		syncResult <- resourceCache.WaitForCacheSync(cacheCtx)
+	}()
+
+	select {
+	case err := <-startResult:
+		if err != nil {
+			return err
+		}
+
+		return errOrganizationCacheStopped
+	case synced := <-syncResult:
+		if synced {
+			cancelOnError = false
+
+			return nil
+		}
+
+		return errOrganizationCacheSync
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func configureKubernetesClient(config *rest.Config) {
+	config.QPS = kubernetesClientQPS
+	config.Burst = kubernetesClientBurst
 }
 
 func closeServerMetrics(metrics *servermetrics.Reporter, logger logr.Logger) {

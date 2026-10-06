@@ -367,13 +367,10 @@ func TestClient_Create(t *testing.T) {
 		assertCreateUserError(t, fixture, errCreateOrganizationUser)
 	})
 
-	t.Run("creates user when the new global user is not yet visible to cached reads", func(t *testing.T) {
+	t.Run("creates user without reloading the new global user", func(t *testing.T) {
 		t.Parallel()
 
-		// Simulate informer cache lag: the global user is written to the API server
-		// during creation, but a subsequent cached Get does not observe it yet.
-		// Creating a user must not depend on reading back a user it just created,
-		// otherwise first-time sign-ups fail intermittently with NotFound.
+		// Creating a user must not depend on reading back a user it just created.
 		fixture := newUserTestFixtureWithObjects(t, nil, interceptor.Funcs{
 			Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if _, ok := obj.(*unikornv1.User); ok {
@@ -420,10 +417,9 @@ func TestClient_Update(t *testing.T) {
 		t.Parallel()
 
 		// After patching group membership, the response must be built from the
-		// in-memory group state, not re-listed through the cached client: a cached
-		// reload can lag the writes just made and return stale GroupIDs. Enforce it
-		// by failing any second group List — the update must still succeed and
-		// report the membership it just applied.
+		// in-memory group state, not re-listed through the client. Enforce it by
+		// failing any second group List — the update must still succeed and report
+		// the membership it just applied.
 		var groupListCalls int
 
 		fixture := newUserTestFixtureWithObjects(t, []client.Object{

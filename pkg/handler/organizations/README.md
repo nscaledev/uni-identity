@@ -37,11 +37,9 @@ own record. It never gets a record that differs from its own only in case.
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.
 
-Organization reads on both branches skip deep copies. The global branch lists Organizations with
-`UnsafeDisableDeepCopy`. The membership branch reads one organization per membership with a
-cached `Get` and the same option. The `OrganizationUser` list that resolves memberships still
-makes deep copies. `convert` copies every value it takes from those objects, including the
-pointer fields and the deletion time, so the returned list shares no memory with the cache.
+Organization reads use the direct Kubernetes client. The global branch lists Organizations and
+the membership branch reads one organization per membership. `convert` copies every value it
+takes from those objects, including the pointer fields and the deletion time.
 The handler package, not this package, fills the extras that `include` requests.
 
 ### Namespace Handoff To The Rest Of `v1`

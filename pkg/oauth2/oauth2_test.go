@@ -19,6 +19,7 @@ package oauth2_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,7 +45,10 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+var errOrganizationReadUsedDirectClient = errors.New("organization read used direct client")
 
 const (
 	// JWT claims have second accuracy, so use whole seconds as our time
@@ -141,6 +145,67 @@ func TestTokens(t *testing.T) {
 
 	_, err = authenticator.Verify(ctx, verifyInfo)
 	require.Error(t, err)
+}
+
+func TestVerifyServiceAccountUsesOrganizationReader(t *testing.T) {
+	t.Parallel()
+
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: josetesting.Namespace, Name: "test-org"},
+		Status:     unikornv1.OrganizationStatus{Namespace: josetesting.Namespace + "-org"},
+	}
+	serviceAccount := &unikornv1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Namespace: organization.Status.Namespace, Name: "test-service-account"},
+	}
+	scheme := getScheme(t)
+	directClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, serviceAccount).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
+				if _, ok := object.(*unikornv1.Organization); ok {
+					return errOrganizationReadUsedDirectClient
+				}
+
+				return inner.Get(ctx, key, object, options...)
+			},
+		}).Build()
+	organizationReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization).Build()
+
+	josetesting.RotateCertificate(t, directClient)
+	issuer := jose.NewJWTIssuer(directClient, josetesting.Namespace, &jose.Options{
+		IssuerSecretName: josetesting.KeySecretName,
+		RotationPeriod:   josetesting.RefreshPeriod,
+	})
+	require.NoError(t, issuer.Run(t.Context(), &josetesting.FakeCoordinationClientGetter{}))
+	time.Sleep(2 * josetesting.RefreshPeriod)
+
+	authenticator, err := oauth2.New(&oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 1, CodeCacheSize: 1}, josetesting.Namespace, handlercommon.IssuerValue{
+		URL:      "https://test.com",
+		Hostname: "test.com",
+	}, directClient, organizationReader, issuer, userdb.NewUserDatabase(directClient, josetesting.Namespace), rbac.New(directClient, josetesting.Namespace, &rbac.Options{}))
+	require.NoError(t, err)
+
+	tokens, err := authenticator.Issue(t.Context(), &oauth2.IssueInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Subject:  serviceAccount.Name,
+		Type:     oauth2.TokenTypeServiceAccount,
+		ServiceAccount: &oauth2.ServiceAccountClaims{
+			OrganizationID: organization.Name,
+		},
+	})
+	require.NoError(t, err)
+
+	stored := &unikornv1.ServiceAccount{}
+	require.NoError(t, directClient.Get(t.Context(), client.ObjectKeyFromObject(serviceAccount), stored))
+	stored.Spec.AccessToken = tokens.AccessToken
+	require.NoError(t, directClient.Update(t.Context(), stored))
+
+	_, err = authenticator.Verify(t.Context(), &oauth2.VerifyInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Token:    tokens.AccessToken,
+	})
+	require.NoError(t, err)
 }
 
 // TestUserinfoCustomClaims tests that tokens include correct custom authorization claims.

@@ -83,7 +83,10 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
   that lost. It applies its change to the latest version and writes once more, so the other write
   stays, and the refresh-token reuse check runs again on the latest version. A second conflict fails
   the request.
-- Token verification is intentionally cached because full validation is expensive.
+- Decoded token claims are cached because cryptographic validation is expensive. The stable
+  Organization namespace used to route service-account lookups is cache-synchronized, while
+  revocable service-account and user-session state is checked directly against Kubernetes on every
+  request.
 - Token classes for federated users, service accounts, and services are intentionally distinct.
 - Admission is intentionally coupled to local system validity: users who are inactive or not
   meaningful participants in the local authorization model should not be allowed to proceed as if
@@ -178,10 +181,9 @@ The issuer is then passed to `validatorForIssuer`, which:
 5. Returns the per-provider `*auth0.Validator` (cached by provider name + spec fingerprint via an
    LRU cache) together with the `BearerTrustSpec` and provider name.
 
-When `validatorForIssuer` returns a cache-not-ready error (informer not yet synced), the dispatcher
-returns `503 Service Unavailable` — this is a transient warm-up condition, not a trust failure.
-When the provider List succeeds but no provider matches the issuer, the token is rejected with
-`401 Unauthorized`.
+When `validatorForIssuer` cannot read providers from Kubernetes, the dispatcher returns `503
+Service Unavailable`. When the provider List succeeds but no provider matches the issuer, the
+token is rejected with `401 Unauthorized`.
 
 **`externalUserinfo`** then validates the token (signature, iss, aud, temporal claims, email,
 optional authz-claim), looks up UNI organization membership by email, and builds the userinfo and

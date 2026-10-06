@@ -1273,15 +1273,15 @@ func TestDispatchUnknownIssuerRejected(t *testing.T) {
 	require.Error(t, err, "expected reject for unknown issuer")
 }
 
-func TestDispatchCacheNotReadySurfaces503(t *testing.T) {
+func TestDispatchKubernetesReadFailureSurfaces503(t *testing.T) {
 	t.Parallel()
 
-	// Create a client that fails on List (simulating cache not synced).
+	// Create a client that fails on List.
 	cli := fake.NewClientBuilder().
 		WithScheme(getPassportInternalScheme(t)).
 		WithInterceptorFuncs(interceptor.Funcs{
 			List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-				return ErrCacheNotReady
+				return ErrKubernetesReadUnavailable
 			},
 		}).
 		Build()
