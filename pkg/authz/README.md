@@ -32,6 +32,25 @@ events — the second kind are preconditions of the first, and are the evidence 
 permitted. The recorder keeps them in the order they were made and leaves interpretation to the
 consumer.
 
+## Target
+
+A `Target` says what a check was about: the resource type, the operation, the resource acted on,
+and whether this is the operation the request is or a precondition of it.
+
+`Operation` holds two facts rather than one, because they answer different questions. `Access` is
+the permission required, which is what RBAC matches against. `Action` is what actually happened,
+which is what an audit record needs. For plain CRUD they agree. They part company on an action
+sub-resource: starting an instance and creating one are both `POST`, so the HTTP method cannot tell
+them apart, and recording a start as "update" says nothing about what occurred. Keeping them
+separate also forces a deliberate answer to what permission starting an instance should require,
+rather than reusing whichever check happened to be nearest.
+
+`Kind` separates the operation a request is from the checks it had to pass first. `Subordinate` is
+the zero value deliberately: a decision whose kind was never stated must not be mistaken for the
+request's own operation, because that would silently relabel a precondition as the event. A
+mutating request that records no primary decision is a defect, and reporting that loudly is better
+than emitting a wrong record quietly.
+
 ## Invariants
 
 - Scope comes from the authorizer, never from the request path. The path is not a reliable source
@@ -53,9 +72,9 @@ consumer.
   predicate. A predicate refusing is a resource filtered out of a list, which is routine; reporting
   it as a refusal would bury real refusals and make ordinary listing look like an attack. See the
   gates and predicates section of [`pkg/rbac`](../rbac/README.md).
-- Nothing identifies which decision describes the request itself as opposed to its preconditions.
-  That distinction needs the call site to state it and is not yet modelled here.
-- A decision records the resource type, via the RBAC endpoint, but not the resource identity.
+- A decision made through one of the gates that predate the explicit form names no object and no
+  action, and counts as a precondition rather than the request's own operation. Migrating the call
+  site is what fills those in.
 
 ## Related Documentation
 

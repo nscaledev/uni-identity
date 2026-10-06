@@ -24,7 +24,6 @@ import (
 	"sync"
 
 	"github.com/unikorn-cloud/identity/pkg/ids"
-	"github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
 // Scope is the tenancy an operation was authorized within.
@@ -52,11 +51,10 @@ func (s Scope) Project() bool {
 
 // Decision is one authorization check and its outcome.
 type Decision struct {
-	// Endpoint is the RBAC endpoint checked, which names the resource type,
-	// for example "identity:groups".
-	Endpoint string
-	// Operation is the access the check required.
-	Operation openapi.AclOperation
+	// Target is what was checked: the resource type, the operation, whether
+	// this describes the request or a precondition of it, and the resource
+	// acted on.
+	Target
 	// Scope is the tenancy the check was performed against.
 	Scope Scope
 	// Allowed is the outcome.
@@ -89,6 +87,21 @@ func (r *Recorder) Record(decision Decision) {
 	defer r.mu.Unlock()
 
 	r.decisions = append(r.decisions, decision)
+}
+
+// Name sets the display name on the most recently recorded decision that
+// describes the request.  See the package level Name.
+func (r *Recorder) Name(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for i := len(r.decisions) - 1; i >= 0; i-- {
+		if r.decisions[i].Kind == Primary {
+			r.decisions[i].ObjectName = name
+
+			return
+		}
+	}
 }
 
 // Decisions returns a copy of what has been recorded, so a consumer cannot
