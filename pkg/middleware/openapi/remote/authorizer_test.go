@@ -337,7 +337,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 
 	userdb := userdb.NewUserDatabase(fakeClient, testNamespace)
 
-	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, issuer, userdb, rbacClient)
+	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, fakeClient, issuer, userdb, rbacClient)
 	require.NoError(t, err)
 
 	// Issue a test token

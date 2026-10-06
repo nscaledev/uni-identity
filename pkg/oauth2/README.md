@@ -68,6 +68,11 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
 - Reissuing tokens for a client session invalidates the prior active token for that session.
 - This session model is intended to reduce replay risk and detect token reuse rather than allowing
   multiple independently active refresh-token chains for the same client.
+- A session write that conflicts with another write to the same user record reads the record again
+  from the API server, not from the informer cache, because the cache can still hold the version
+  that lost. It applies its change to the latest version and writes once more, so the other write
+  stays, and the refresh-token reuse check runs again on the latest version. A second conflict fails
+  the request.
 - Token verification is intentionally cached because full validation is expensive.
 - Token classes for federated users, service accounts, and services are intentionally distinct.
 - Admission is intentionally coupled to local system validity: users who are inactive or not
@@ -196,7 +201,8 @@ Each bearer-trusted provider has a `BearerTrustSpec` that governs claim validati
   claim must be present with `acctype == "user"` and at least one `orgId`. Used as a defense-in-depth
   signal that the UNI post-login Action ran. The claimed `orgIds` are discarded regardless.
 - **`allowExternalIdentity`** (default `false`): when `true`, subjects with no UNI user record are
-  accepted with an empty `orgIds` slice instead of being rejected.
+  accepted with an empty `orgIds` slice instead of being rejected. It does not apply to a subject
+  that folds onto two or more records, because that address is onboarded.
 - **`signingAlgorithms`** (default `[RS256]`): permitted JWS algorithms. Only asymmetric algorithms
   are accepted; symmetric algorithms (e.g. `HS256`) and `none` are rejected at trust-list build time.
 - **`groupsClaim`** (default empty): names the access-token claim that carries this issuer's IdP

@@ -134,6 +134,11 @@ type Authenticator struct {
 
 	client client.Client
 
+	// directclient gives uncached access to Kubernetes.  A user write that
+	// loses a race reads the user again through it, because the cache can
+	// still hold the version that lost.
+	directclient client.Client
+
 	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
 	issuer common.IssuerValue
 
@@ -169,7 +174,7 @@ type Authenticator struct {
 // is validated. Deprecated --auth0-exchange-{issuer,audience} flags feed a synthetic
 // auth0-legacy provider for backward compatibility; new deployments should use
 // OAuth2Provider bearerTrust blocks instead.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, directclient client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
 	// The error only reports an invalid instrument configuration; the name,
 	// description, and unit are static and the API returns a usable no-op
 	// counter regardless, so there is nothing actionable to handle.
@@ -188,6 +193,7 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		options:          options,
 		namespace:        namespace,
 		client:           client,
+		directclient:     directclient,
 		issuer:           issuer,
 		jwtIssuer:        jwtIssuer,
 		userdb:           userdb,
@@ -1144,31 +1150,29 @@ func (a *Authenticator) checkClientSecret(ctx context.Context, oauth2client *uni
 
 // revokeSession revokes all tokens for a clientID.
 func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
+	lookupSession := func(session unikornv1.UserSession) bool {
+		return session.ClientID == clientID && session.AuthorizationCodeID == codeID
+	}
+
 	user, err := a.userdb.GetActiveUser(ctx, subject)
 	if err != nil {
 		return err
 	}
 
-	lookupSession := func(session unikornv1.UserSession) bool {
-		return session.ClientID == clientID && session.AuthorizationCodeID == codeID
-	}
+	return a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
+		index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
+		if index < 0 {
+			return false, nil
+		}
 
-	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
-	if index < 0 {
-		return nil
-	}
+		// Things can still go wrong between here and issuing the new token, so invalidate
+		// the session now rather than relying on the reissue doing it for us.
+		a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
 
-	// Things can still go wrong between here and issuing the new token, so invalidate
-	// the session now rather than relying on the reissue doing it for us.
-	a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
+		user.Spec.Sessions = append(user.Spec.Sessions[:index], user.Spec.Sessions[index+1:]...)
 
-	user.Spec.Sessions = append(user.Spec.Sessions[:index], user.Spec.Sessions[index+1:]...)
-
-	if err := a.client.Update(ctx, user); err != nil {
-		return err
-	}
-
-	return nil
+		return true, nil
+	})
 }
 
 // TokenAuthorizationCode issues a token based on whether the provided code is correct and
@@ -1280,35 +1284,44 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 		return err
 	}
 
+	lookupSession := func(session unikornv1.UserSession) bool {
+		return session.ClientID == claims.Federated.ClientID
+	}
+
 	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
 	}
 
-	lookupSession := func(session unikornv1.UserSession) bool {
-		return session.ClientID == claims.Federated.ClientID
-	}
+	// The checks are in the change, so that they run again on the latest version
+	// after a conflict.  If the conflict came from another request that used this
+	// refresh token, the reuse check on the latest version refuses it.  A write
+	// succeeds only on the latest version, so the checks before a successful write
+	// always see the latest version.
+	return a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
+		// The latest version is read by name, so check the state here as
+		// GetActiveUser does.
+		if user.Spec.State != unikornv1.UserStateActive {
+			return false, errors.OAuth2AccessDenied("failed to lookup user").WithError(userdb.ErrUserInactive)
+		}
 
-	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
-	if index < 0 {
-		return errors.OAuth2InvalidGrant("no active session for user found")
-	}
+		index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
+		if index < 0 {
+			return false, errors.OAuth2InvalidGrant("no active session for user found")
+		}
 
-	if user.Spec.Sessions[index].RefreshToken != refreshToken {
-		return errors.OAuth2InvalidGrant("refresh token reuse")
-	}
+		if user.Spec.Sessions[index].RefreshToken != refreshToken {
+			return false, errors.OAuth2InvalidGrant("refresh token reuse")
+		}
 
-	// Things can still go wrong between here and issuing the new token, so invalidate
-	// the session now rather than relying on the reissue doing it for us.
-	a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
+		// Things can still go wrong between here and issuing the new token, so invalidate
+		// the session now rather than relying on the reissue doing it for us.
+		a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
 
-	user.Spec.Sessions[index].RefreshToken = ""
+		user.Spec.Sessions[index].RefreshToken = ""
 
-	if err := a.client.Update(ctx, user); err != nil {
-		return err
-	}
-
-	return nil
+		return true, nil
+	})
 }
 
 // TokenRefreshToken issues a token if the provided refresh token is valid.

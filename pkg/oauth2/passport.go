@@ -449,8 +449,10 @@ func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, t
 	orgIDs, err := a.userdb.GetOrganizationIDs(ctx, user.Email)
 	if err != nil {
 		switch {
-		// Must precede the ErrResourceReference cases: ErrUserInactive wraps it.
-		case goerrors.Is(err, userdb.ErrUserInactive):
+		// Must precede the ErrResourceReference cases: both of these wrap it.  A
+		// subject that folds onto two records is onboarded, so the external
+		// identity allowance does not apply to it.
+		case goerrors.Is(err, userdb.ErrUserInactive), goerrors.Is(err, userdb.ErrAmbiguousSubject):
 			return nil, nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
 		case goerrors.Is(err, userdb.ErrResourceReference) && !trust.AllowExternalIdentity:
 			return nil, nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)
