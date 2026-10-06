@@ -44,30 +44,40 @@ import (
 
 // PermitsGlobalScope reports whether the operation is permitted at global scope.
 func PermitsGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) bool {
-	return AllowGlobalScope(ctx, endpoint, operation) == nil
+	return checkGlobalScope(ctx, endpoint, operation) == nil
 }
 
 // PermitsOrganizationScopeID reports whether the operation is permitted on the
 // organization.
 func PermitsOrganizationScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) bool {
-	return AllowOrganizationScopeID(ctx, endpoint, operation, organizationID) == nil
+	return checkOrganizationScope(ctx, endpoint, operation, organizationID.String()) == nil
 }
 
 // PermitsOrganizationScopeReader reports whether the operation is permitted on
 // the resource's organization.
 func PermitsOrganizationScopeReader(ctx context.Context, endpoint string, operation openapi.AclOperation, scope ids.OrganizationScopeReader) bool {
-	return AllowOrganizationScopeReader(ctx, endpoint, operation, scope) == nil
+	organizationID, err := scope.OrganizationID()
+	if err != nil {
+		return false
+	}
+
+	return checkOrganizationScope(ctx, endpoint, operation, organizationID.String()) == nil
 }
 
 // PermitsProjectScopeID reports whether the operation is permitted on the project.
 func PermitsProjectScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) bool {
-	return AllowProjectScopeID(ctx, endpoint, operation, organizationID, projectID) == nil
+	return checkProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String()) == nil
 }
 
 // PermitsProjectScopeReader reports whether the operation is permitted on the
 // resource's project.
 func PermitsProjectScopeReader(ctx context.Context, endpoint string, operation openapi.AclOperation, scope ids.ProjectScopeReader) bool {
-	return AllowProjectScopeReader(ctx, endpoint, operation, scope) == nil
+	organizationID, projectID, err := scope.OrganizationAndProjectID()
+	if err != nil {
+		return false
+	}
+
+	return checkProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String()) == nil
 }
 
 // PermitsRole reports whether the principal may grant the role.
