@@ -21,7 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"net/mail"
 	"slices"
 	"strings"
 
@@ -85,8 +84,13 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 // the legacy one survives and keeps conferring the group's roles.  The write
 // path asks the same question the gate does (see GroupSpec.HasMemberByID).
 func subjectByID(id string) func(unikornv1.GroupSubject) bool {
+	// Compare canonical forms for the same reason that this matches by ID
+	// alone.  An entry can be in either case.  If a remove misses it, the remove
+	// reports success and the entry keeps conferring the group's roles.
+	canonical := unikornv1.NormalizeSubject(id)
+
 	return func(s unikornv1.GroupSubject) bool {
-		return s.ID == id
+		return unikornv1.NormalizeSubject(s.ID) == canonical
 	}
 }
 
@@ -401,9 +405,14 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
-	index := slices.IndexFunc(users.Items, func(user unikornv1.User) bool {
-		return user.Spec.Subject == subject
-	})
+	// A subject that differs only in case names the same principal, so match
+	// it.  If the match is exact, onboarding Bob@x.com beside bob@x.com adds a
+	// second global record.  Refuse a subject that folds onto two records,
+	// because a new record for it makes a third.
+	index, ambiguous := unikornv1.MatchSubject(users.Items, subject)
+	if ambiguous {
+		return nil, fmt.Errorf("%w: subject %q matches more than one user", coreerrors.ErrConsistency, subject)
+	}
 
 	if index < 0 {
 		return nil, ErrReference
@@ -484,9 +493,10 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 // first, then add to the organization.
 func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	// Any accounts that aren't email based must use kubectl-unikorn to create them,
-	// e.g. users for unikorn services.
-	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
-		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
+	// e.g. users for unikorn services.  A display name or angle brackets are
+	// refused too: nobody can sign in to such a record, and it escapes the dedupe.
+	if !unikornv1.IsBareAddress(strings.TrimSpace(request.Spec.Subject)) {
+		return nil, errors.OAuth2InvalidRequest("subject address invalid")
 	}
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)

@@ -473,6 +473,11 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 - Writing a group membership is itself a grant of the group's roles, bounded by the writer's own
   effective permissions, on every path that writes it (`pkg/handler/groups`, `pkg/handler/users`,
   `pkg/handler/serviceaccounts`).
+- Group subject matching compares the entry `id` and the authenticated subject in canonical form.
+  `groupSubjectFilter` and the membership grant gates both call `GroupSpec.HasMemberByID`, so they
+  cannot disagree. As a result, an entry in either case confers its roles and counts as an existing
+  membership. An empty subject is a member of no group, so a junk entry with an empty `id` confers
+  nothing.
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
 - Global role binding matching is always issuer-qualified at runtime. Subject and wildcard-subject

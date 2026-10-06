@@ -31,6 +31,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -151,45 +152,91 @@ func (a *Authenticator) expiry(now time.Time, info *IssueInfo) time.Time {
 	return now.Add(a.options.AccessTokenDuration)
 }
 
+// updateUser applies change to user, which comes from the informer cache, and
+// writes the result when change reports that it changed the user.
+//
+// Another writer, for example a concurrent login or the subject migration, can
+// change the record between the read and the write.  The API server then refuses
+// the write with a conflict, and the cache can still hold the version that lost.
+// So updateUser reads the latest version from the API server, applies change to
+// it again and writes once more.  The other change stays.  A second conflict goes
+// back to the caller.  That is the one re-read and re-apply that the platform
+// specification gives for a write conflict inside a request.
+func (a *Authenticator) updateUser(ctx context.Context, user *unikornv1.User, change func(*unikornv1.User) (bool, error)) error {
+	changed, err := change(user)
+	if err != nil || !changed {
+		return err
+	}
+
+	if err := a.client.Update(ctx, user); !kerrors.IsConflict(err) {
+		return err
+	}
+
+	latest := &unikornv1.User{}
+
+	if err := a.directclient.Get(ctx, client.ObjectKeyFromObject(user), latest); err != nil {
+		return err
+	}
+
+	changed, err = change(latest)
+	if err != nil || !changed {
+		return err
+	}
+
+	return a.client.Update(ctx, latest)
+}
+
 // updateSession updates the user record to indicate the current access token and single-use refresh
 // token bound to a specific client.  This ensures only a single session can be active per-client
 // at a time, tokens are automatically revoked when reissued etc.
-func (a *Authenticator) updateSession(ctx context.Context, user *unikornv1.User, info *IssueInfo, tokens *Tokens, authorizationCodeID *string) (time.Time, error) {
-	session, err := user.Session(info.Federated.ClientID)
+func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, tokens *Tokens, authorizationCodeID *string) (time.Time, error) {
+	var lastAuthentication *metav1.Time
+
+	user, err := a.getUser(ctx, info.Federated.UserID)
 	if err != nil {
-		user.Spec.Sessions = append(user.Spec.Sessions, unikornv1.UserSession{
-			ClientID: info.Federated.ClientID,
-		})
-
-		session = &user.Spec.Sessions[len(user.Spec.Sessions)-1]
-	} else {
-		a.InvalidateToken(ctx, session.AccessToken)
+		return time.Time{}, err
 	}
 
-	session.AccessToken = tokens.AccessToken
+	err = a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
+		session, err := user.Session(info.Federated.ClientID)
+		if err != nil {
+			user.Spec.Sessions = append(user.Spec.Sessions, unikornv1.UserSession{
+				ClientID: info.Federated.ClientID,
+			})
 
-	if tokens.RefreshToken != nil {
-		session.RefreshToken = *tokens.RefreshToken
-	}
-
-	if info.Interactive {
-		session.LastAuthentication = &metav1.Time{
-			Time: time.Now(),
+			session = &user.Spec.Sessions[len(user.Spec.Sessions)-1]
+		} else {
+			a.InvalidateToken(ctx, session.AccessToken)
 		}
-	}
 
-	if authorizationCodeID != nil {
-		session.AuthorizationCodeID = *authorizationCodeID
-	}
+		session.AccessToken = tokens.AccessToken
 
-	if err := a.client.Update(ctx, user); err != nil {
+		if tokens.RefreshToken != nil {
+			session.RefreshToken = *tokens.RefreshToken
+		}
+
+		if info.Interactive {
+			session.LastAuthentication = &metav1.Time{
+				Time: time.Now(),
+			}
+		}
+
+		if authorizationCodeID != nil {
+			session.AuthorizationCodeID = *authorizationCodeID
+		}
+
+		lastAuthentication = session.LastAuthentication
+
+		return true, nil
+	})
+	if err != nil {
 		return time.Time{}, err
 	}
 
 	lastAuthenticationTime := time.Now()
 
-	if session.LastAuthentication != nil {
-		lastAuthenticationTime = session.LastAuthentication.Time
+	if lastAuthentication != nil {
+		lastAuthenticationTime = lastAuthentication.Time
 	}
 
 	return lastAuthenticationTime, nil
@@ -235,11 +282,6 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 	}
 
 	if info.Federated != nil {
-		user, err := a.getUser(ctx, info.Federated.UserID)
-		if err != nil {
-			return nil, err
-		}
-
 		rtClaims := &RefreshTokenClaims{
 			Claims: jwt.Claims{
 				ID:      uuid.New().String(),
@@ -262,7 +304,7 @@ func (a *Authenticator) Issue(ctx context.Context, info *IssueInfo) (*Tokens, er
 
 		tokens.RefreshToken = &rt
 
-		authTime, err := a.updateSession(ctx, user, info, tokens, info.AuthorizationCodeID)
+		authTime, err := a.updateSession(ctx, info, tokens, info.AuthorizationCodeID)
 		if err != nil {
 			return nil, err
 		}

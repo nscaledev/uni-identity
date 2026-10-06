@@ -31,6 +31,7 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"go.opentelemetry.io/otel"
 
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -209,8 +210,13 @@ func NewValidator(options Options) (*Validator, error) {
 
 // validateEmail checks the email claim is present and, unless
 // SkipEmailVerification is set, that the address is verified.
+//
+// The claim folds to the canonical subject form, which lower-cases only A to
+// Z.  The result is the lookup key and the passport subject.  A Unicode fold
+// maps KELVIN SIGN to k, so a lookalike claim took another user's record and
+// authority.
 func (v *Validator) validateEmail(claims *tokenClaims) (string, error) {
-	email := strings.ToLower(strings.TrimSpace(claims.Email))
+	email := unikornv1.NormalizeSubject(claims.Email)
 	if email == "" {
 		return "", ErrMissingEmail
 	}
