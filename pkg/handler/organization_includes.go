@@ -169,7 +169,7 @@ func renderQuotas(organizationID string, extras *organizationExtras) (openapi.Qu
 // that row. The row gets a generic reason in quotasError, and the log gets
 // the fault.
 func applyQuotas(ctx context.Context, item *openapi.OrganizationRead, organizationID ids.OrganizationID, extras *organizationExtras) {
-	if rbac.AllowOrganizationScopeID(ctx, "identity:quotas", openapi.Read, organizationID) != nil {
+	if !rbac.PermitsOrganizationScopeID(ctx, "identity:quotas", openapi.Read, organizationID) {
 		return
 	}
 
@@ -189,7 +189,7 @@ func applyQuotas(ctx context.Context, item *openapi.OrganizationRead, organizati
 // in the organization. This is true with organization-scope read, or when
 // project-scope read shows at least one project.
 func applyProjectsCount(ctx context.Context, item *openapi.OrganizationRead, organizationID ids.OrganizationID, extras *organizationExtras) {
-	orgRead := rbac.AllowOrganizationScopeID(ctx, "identity:projects", openapi.Read, organizationID) == nil
+	orgRead := rbac.PermitsOrganizationScopeID(ctx, "identity:projects", openapi.Read, organizationID)
 
 	visible := 0
 

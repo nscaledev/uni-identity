@@ -610,7 +610,7 @@ func projectVisible(ctx context.Context, organizationID ids.OrganizationID, id s
 		return false
 	}
 
-	return rbac.AllowProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID) == nil
+	return rbac.PermitsProjectScopeID(ctx, "identity:projects", openapi.Read, organizationID, projectID)
 }
 
 func (h *Handler) GetApiV1OrganizationsOrganizationIDProjects(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter) {
@@ -761,7 +761,7 @@ func allowServiceAccountOrSelfAccess(ctx context.Context, operation openapi.AclO
 // for a service accounts access token.
 func filterServiceAccounts(ctx context.Context, organizationID ids.OrganizationID, serviceAccounts *openapi.ServiceAccounts) error {
 	// If the actor has full access don't modify.
-	if rbac.AllowOrganizationScopeID(ctx, "identity:serviceaccounts", openapi.Read, organizationID) == nil {
+	if rbac.PermitsOrganizationScopeID(ctx, "identity:serviceaccounts", openapi.Read, organizationID) {
 		return nil
 	}
 
