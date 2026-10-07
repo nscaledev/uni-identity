@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -78,4 +79,30 @@ func TestGetUserListsWithoutCacheOptions(t *testing.T) {
 	require.Equal(t, "alice@example.com", user.Spec.Subject)
 	require.Len(t, r.lists, 1)
 	require.Nil(t, r.lists[0].UnsafeDisableDeepCopy)
+}
+
+func TestGetOrganizationIDsForUserDoesNotResolveTheUserAgain(t *testing.T) {
+	t.Parallel()
+
+	user := testUser()
+	user.Spec.State = unikornv1.UserStateActive
+	organizationUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "organization-user",
+			Labels: map[string]string{
+				constants.UserLabel:         user.Name,
+				constants.OrganizationLabel: "organization",
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+	}
+
+	r := &recorder{}
+	d := NewUserDatabase(newTestClient(t, r, user, organizationUser), testNamespace)
+
+	organizationIDs, err := d.GetOrganizationIDsForUser(t.Context(), user)
+	require.NoError(t, err)
+	require.Equal(t, []string{"organization"}, organizationIDs)
+	require.Len(t, r.lists, 1)
 }
