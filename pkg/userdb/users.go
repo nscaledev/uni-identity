@@ -145,13 +145,8 @@ func (d *UserDatabase) GetServiceAccount(ctx context.Context, id string) (*uniko
 	return &result.Items[0], nil
 }
 
-// getOrgIDs returns the organization IDs for a user.
-func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) ([]string, error) {
-	user, err := d.GetActiveUser(ctx, subject)
-	if err != nil {
-		return nil, err
-	}
-
+// GetOrganizationIDsForUser returns the active organization IDs for an active user.
+func (d *UserDatabase) GetOrganizationIDsForUser(ctx context.Context, user *unikornv1.User) ([]string, error) {
 	selector := labels.SelectorFromSet(map[string]string{
 		constants.UserLabel: user.Name,
 	})
@@ -172,4 +167,14 @@ func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) (
 	}
 
 	return result, nil
+}
+
+// GetOrganizationIDs returns the active organization IDs for a user subject.
+func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) ([]string, error) {
+	user, err := d.GetActiveUser(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.GetOrganizationIDsForUser(ctx, user)
 }
