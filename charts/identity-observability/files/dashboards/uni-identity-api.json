@@ -236,6 +236,42 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 12,
+      "title": "401 Rate by Route",
+      "description": "Failed authentication per route: missing, invalid, expired or untrusted tokens. A rise on one route points at one caller; a rise on all routes points at token issuing or the trust list.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", code=\"401\"}[5m]))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "403 Rate by Route",
+      "description": "Denied authorization per route: the caller is authenticated but lacks the permission. A rise after a role or ACL change points at that change.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", code=\"403\"}[5m]))",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }
