@@ -49,17 +49,10 @@ var (
 	ErrReference = goerrors.New("resource reference error")
 )
 
-func globalUserNamespace() uuid.UUID {
-	return uuid.MustParse("b11bc9c8-5ac7-4554-9911-99725c71e24c")
-}
-
 func organizationUserNamespace() uuid.UUID {
 	return uuid.MustParse("8e3214bc-cfd9-4b83-9390-8a6512966c12")
 }
 
-// organizationUserSeed is the deterministic-ID seed shared by an
-// OrganizationUser's generated name and organizationUserName's lookup, so the
-// two cannot drift.
 func organizationUserSeed(organizationID ids.OrganizationID, userID string) string {
 	return organizationID.String() + ":" + userID
 }
@@ -279,7 +272,7 @@ func (c *Client) generateGlobalUser(ctx context.Context, in *openapi.UserWrite) 
 	}
 
 	out := &unikornv1.User{
-		ObjectMeta: conversion.NewDeterministicObjectMetadata(metadata, c.namespace, globalUserNamespace(), in.Spec.Subject).Get(),
+		ObjectMeta: conversion.NewDeterministicObjectMetadata(metadata, c.namespace, unikornv1.GlobalUserNamespace(), in.Spec.Subject).WithLabel(unikornv1.UserSubjectIDLabel, unikornv1.GlobalUserName(in.Spec.Subject)).Get(),
 		Spec: unikornv1.UserSpec{
 			Subject: in.Spec.Subject,
 			State:   unikornv1.UserStateActive,
@@ -314,10 +307,6 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	return out, nil
-}
-
-func globalUserName(subject string) string {
-	return util.GenerateDeterministicResourceID(globalUserNamespace(), subject)
 }
 
 func organizationUserName(organizationID ids.OrganizationID, userID string) string {
@@ -446,7 +435,7 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 func (c *Client) getCanonicalGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	user := &unikornv1.User{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: globalUserName(subject)}, user); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: unikornv1.GlobalUserName(subject)}, user); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, ErrReference
 		}

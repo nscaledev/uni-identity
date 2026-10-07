@@ -237,6 +237,7 @@ func TestClient_Create(t *testing.T) {
 		require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
 		require.Len(t, globalUsers.Items, 1)
 		assert.Equal(t, "daa84183-d29f-5c81-bbfc-d2e55ac14fe4", globalUsers.Items[0].Name, "global users retain their deterministic storage name")
+		assert.Equal(t, globalUsers.Items[0].Name, globalUsers.Items[0].Labels[unikornv1.UserSubjectIDLabel])
 
 		organizationUsers := &unikornv1.OrganizationUserList{}
 		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))
@@ -566,7 +567,7 @@ func TestClient_CreateGlobalUserRace(t *testing.T) {
 
 		organizationUser := &unikornv1.OrganizationUser{}
 		require.NoError(t, fixture.client.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: result.Metadata.Id}, organizationUser))
-		assert.Equal(t, "daa84183-d29f-5c81-bbfc-d2e55ac14fe4", organizationUser.Labels[constants.UserLabel])
+		assert.Equal(t, unikornv1.GlobalUserName(userAliceSubject), organizationUser.Labels[constants.UserLabel])
 	})
 
 	t.Run("returns consistency error for a legacy global user written during a create race", func(t *testing.T) {
