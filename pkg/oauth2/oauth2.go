@@ -1437,7 +1437,7 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 	}
 
 	// Check the token is from us, for us, and in date.
-	claims, err := a.Verify(ctx, verifyInfo)
+	claims, user, err := a.verify(ctx, verifyInfo)
 	if err != nil {
 		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
@@ -1457,7 +1457,7 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 
 		authz.Acctype = openapi.User
 
-		orgs, err := a.userdb.GetOrganizationIDs(ctx, claims.Subject)
+		orgs, err := a.userdb.GetOrganizationIDsForUser(ctx, user)
 		if err != nil {
 			if goerrors.Is(err, userdb.ErrResourceReference) {
 				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)

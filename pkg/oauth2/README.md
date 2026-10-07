@@ -73,7 +73,10 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
   that lost. It applies its change to the latest version and writes once more, so the other write
   stays, and the refresh-token reuse check runs again on the latest version. A second conflict fails
   the request.
-- Token verification is intentionally cached because full validation is expensive.
+- Token verification is intentionally cached because full validation is expensive. Cached federated
+  tokens still check their persisted client session, and cached service-account tokens still check
+  the stored account token. Revocation therefore takes effect on the next request at every replica;
+  local cache eviction is only an optimisation.
 - Token classes for federated users, service accounts, and services are intentionally distinct.
 - Admission is intentionally coupled to local system validity: users who are inactive or not
   meaningful participants in the local authorization model should not be allowed to proceed as if

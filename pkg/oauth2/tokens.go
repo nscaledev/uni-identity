@@ -323,6 +323,12 @@ type VerifyInfo struct {
 
 // Verify checks the access token parses and validates.
 func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, error) {
+	claims, _, err := a.verify(ctx, info)
+
+	return claims, err
+}
+
+func (a *Authenticator) verify(ctx context.Context, info *VerifyInfo) (*Claims, *unikornv1.User, error) {
 	// The verification process is very expensive, so we add a cache in here to
 	// improve interactivity.  Once this is in place, then the network latency becomes
 	// the bottle neck, presumably this is the TLS handshake.  Similar code can be
@@ -330,17 +336,19 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 	if value, ok := a.tokenCache.Get(info.Token); ok {
 		claims, ok := value.(*Claims)
 		if !ok {
-			return nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
+			return nil, nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
 		}
 
-		return claims, nil
+		user, err := a.verifyCachedToken(ctx, info, claims)
+
+		return claims, user, err
 	}
 
 	// Parse and verify the claims with the public key.
 	claims := &Claims{}
 
 	if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
-		return nil, fmt.Errorf("failed to decrypt claims: %w", err)
+		return nil, nil, fmt.Errorf("failed to decrypt claims: %w", err)
 	}
 
 	// Verify the claims.
@@ -353,16 +361,12 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 	}
 
 	if err := claims.ValidateWithLeeway(expected, a.options.TokenVerificationLeeway); err != nil {
-		return nil, fmt.Errorf("failed to validate claims: %w", err)
+		return nil, nil, fmt.Errorf("failed to validate claims: %w", err)
 	}
 
-	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
-		return nil, err
-	}
-
-	// Ensure the access token is valid for the current user session...
-	if err := a.verifyUserSession(ctx, info, claims); err != nil {
-		return nil, err
+	user, err := a.verifyCachedToken(ctx, info, claims)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// The cache entry needs a timeout as a federated user may have had their rights
@@ -376,14 +380,39 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 
 	a.tokenCache.Add(info.Token, claims, timeout)
 
-	return claims, nil
+	return claims, user, nil
+}
+
+func (a *Authenticator) verifyCachedToken(ctx context.Context, info *VerifyInfo, claims *Claims) (*unikornv1.User, error) {
+	switch claims.Type {
+	case TokenTypeFederated:
+		// TODO: the subject should be the user ID anyway...
+		user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := verifyUserSession(info, claims, user); err != nil {
+			return nil, err
+		}
+
+		return user, nil
+	case TokenTypeServiceAccount:
+		if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
+			return nil, err
+		}
+	case TokenTypeService:
+		//nolint:nilnil // Service tokens have no persisted record to verify.
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("%w: unknown token type", ErrTokenVerification)
+	}
+
+	//nolint:nilnil // Service-account verification has no user to return.
+	return nil, nil
 }
 
 func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyInfo, claims *Claims) error {
-	if claims.Type != TokenTypeServiceAccount {
-		return nil
-	}
-
 	organization := &unikornv1.Organization{}
 
 	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
@@ -403,17 +432,7 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 	return nil
 }
 
-func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo, claims *Claims) error {
-	if claims.Type != TokenTypeFederated {
-		return nil
-	}
-
-	// TODO: the subject should be the user ID anyway...
-	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
-	if err != nil {
-		return err
-	}
-
+func verifyUserSession(info *VerifyInfo, claims *Claims, user *unikornv1.User) error {
 	lookupSession := func(session unikornv1.UserSession) bool {
 		return session.ClientID == claims.Federated.ClientID
 	}
@@ -430,8 +449,7 @@ func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo,
 	return nil
 }
 
-// InvalidateToken immediately invalidates the token so it's unusable again.
-// TODO: this only considers caching in the identity service, it's still usable.
+// InvalidateToken removes a local cache entry so the next verification avoids stale work.
 func (a *Authenticator) InvalidateToken(ctx context.Context, token string) {
 	a.tokenCache.Remove(token)
 }
