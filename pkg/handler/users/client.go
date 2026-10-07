@@ -21,7 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"net/mail"
 	"slices"
 	"strings"
 
@@ -42,6 +41,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -50,17 +50,10 @@ var (
 	ErrReference = goerrors.New("resource reference error")
 )
 
-func globalUserNamespace() uuid.UUID {
-	return uuid.MustParse("b11bc9c8-5ac7-4554-9911-99725c71e24c")
-}
-
 func organizationUserNamespace() uuid.UUID {
 	return uuid.MustParse("8e3214bc-cfd9-4b83-9390-8a6512966c12")
 }
 
-// organizationUserSeed is the deterministic-ID seed shared by an
-// OrganizationUser's generated name and organizationUserName's lookup, so the
-// two cannot drift.
 func organizationUserSeed(organizationID ids.OrganizationID, userID string) string {
 	return organizationID.String() + ":" + userID
 }
@@ -102,8 +95,10 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 // the legacy one survives and keeps conferring the group's roles.  The write
 // path asks the same question the gate does (see GroupSpec.HasMemberByID).
 func subjectByID(id string) func(unikornv1.GroupSubject) bool {
+	canonical := unikornv1.NormalizeSubject(id)
+
 	return func(s unikornv1.GroupSubject) bool {
-		return s.ID == id
+		return unikornv1.NormalizeSubject(s.ID) == canonical
 	}
 }
 
@@ -161,7 +156,7 @@ func addToGroup(subject unikornv1.GroupSubject, orgUserID string, updated *uniko
 // keeps a refusal from landing after an earlier group has already been
 // patched.  Groups the user is only leaving, or already belongs to, confer
 // nothing and are skipped.
-func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
+func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.OrganizationID, subjectID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
 	// Reconciliation below can only act on groups that exist, so an ID naming
 	// none of them would otherwise be dropped without the caller being told.
 	if err := common.ValidateGroupsExist(groupIDs, groups); err != nil {
@@ -175,13 +170,9 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 			continue
 		}
 
-		// Presence in either membership representation already confers the
-		// group's roles, so writing the other half grants nothing.  Subjects
-		// are matched by ID alone, mirroring how RBAC resolves membership: a
-		// record written before subject issuers existed carries an empty one
-		// yet still confers the roles, so re-stating that membership must not
-		// read as an addition and be refused.
-		if group.Spec.HasMemberByID(orgUserID, subjectID) {
+		// A subject already in the group confers its roles, so writing the
+		// legacy UserIDs half grants nothing. UserIDs alone do not grant roles.
+		if group.Spec.HasMemberByID(subjectID) {
 			continue
 		}
 
@@ -282,7 +273,7 @@ func (c *Client) generateGlobalUser(ctx context.Context, in *openapi.UserWrite) 
 	}
 
 	out := &unikornv1.User{
-		ObjectMeta: conversion.NewDeterministicObjectMetadata(metadata, c.namespace, globalUserNamespace(), in.Spec.Subject).Get(),
+		ObjectMeta: conversion.NewDeterministicObjectMetadata(metadata, c.namespace, unikornv1.GlobalUserNamespace(), in.Spec.Subject).WithLabel(unikornv1.UserSubjectIDLabel, unikornv1.GlobalUserName(in.Spec.Subject)).Get(),
 		Spec: unikornv1.UserSpec{
 			Subject: in.Spec.Subject,
 			State:   unikornv1.UserStateActive,
@@ -317,10 +308,6 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	return out, nil
-}
-
-func globalUserName(subject string) string {
-	return util.GenerateDeterministicResourceID(globalUserNamespace(), subject)
 }
 
 func organizationUserName(organizationID ids.OrganizationID, userID string) string {
@@ -368,14 +355,14 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 	}
 
 	if lastActive != nil {
-		out.Status.LastActive = &lastActive.Time
+		lastActiveTime := lastActive.Time
+		out.Status.LastActive = &lastActiveTime
 	}
 
-	// Report membership the way RBAC resolves it: HasMemberByID sees a subject
-	// stored by ID as well as the deprecated UserIDs list, so a subject-only
-	// membership is not invisible over the API.
+	// Report membership the way RBAC resolves it. A legacy UserIDs entry alone
+	// does not confer roles and is not reported.
 	for _, group := range groups.Items {
-		if group.Spec.HasMemberByID(in.Name, user.Spec.Subject) {
+		if group.Spec.HasMemberByID(user.Spec.Subject) {
 			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
 		}
 	}
@@ -416,20 +403,27 @@ func (c *Client) getGlobalUserByID(ctx context.Context, id string) (*unikornv1.U
 }
 
 func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
-	user, err := c.getCanonicalGlobalUser(ctx, subject)
-	if err == nil || !goerrors.Is(err, ErrReference) {
-		return user, err
-	}
-
 	users := &unikornv1.UserList{}
 
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
 	index, ambiguous := unikornv1.MatchSubject(users.Items, subject)
 	if ambiguous {
 		return nil, fmt.Errorf("%w: subject %q matches more than one user", coreerrors.ErrConsistency, subject)
+	}
+
+	matches := 0
+
+	for _, user := range users.Items {
+		if user.Spec.Subject == subject {
+			matches++
+		}
+	}
+
+	if matches > 1 {
+		return nil, fmt.Errorf("%w: multiple legacy users have subject %q", coreerrors.ErrConsistency, subject)
 	}
 
 	if index < 0 {
@@ -442,7 +436,7 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 func (c *Client) getCanonicalGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	user := &unikornv1.User{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: globalUserName(subject)}, user); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: unikornv1.GlobalUserName(subject)}, user); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, ErrReference
 		}
@@ -577,30 +571,7 @@ func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization 
 		return nil
 	}
 
-	// Resolve what already exists without creating it.  Either record may be
-	// absent on a first-time create, which just means there is no prior
-	// membership to exempt.
-	var orgUserID string
-
-	user, err := c.getGlobalUser(ctx, request.Spec.Subject)
-
-	switch {
-	case err == nil:
-		orgUser, err := c.getOrganizationUserByGlobalUserID(ctx, organization, user.Name)
-
-		switch {
-		case err == nil:
-			orgUserID = orgUser.Name
-		case goerrors.Is(err, ErrReference):
-		default:
-			return err
-		}
-	case goerrors.Is(err, ErrReference):
-	default:
-		return err
-	}
-
-	return c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, orgUserID, request.Spec.GroupIDs, groups)
+	return c.validateGroupAdditions(ctx, organization.ID, request.Spec.Subject, request.Spec.GroupIDs, groups)
 }
 
 // Create makes a new user.  This creates a new user in an organization, but they
@@ -609,8 +580,8 @@ func (c *Client) validateCreateGroupAdditions(ctx context.Context, organization 
 func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	// Any accounts that aren't email based must use kubectl-unikorn to create them,
 	// e.g. users for unikorn services.
-	if _, err := mail.ParseAddress(request.Spec.Subject); err != nil {
-		return nil, errors.OAuth2InvalidRequest("subject address invalid").WithError(err)
+	if !unikornv1.IsBareAddress(strings.TrimSpace(request.Spec.Subject)) {
+		return nil, errors.OAuth2InvalidRequest("subject address invalid")
 	}
 
 	// Fold the subject, so that a new global record stores the canonical form.
@@ -662,7 +633,7 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 
 	users := &unikornv1.UserList{}
 
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
@@ -719,7 +690,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	// tags and label changes below land on the organization user record, so a
 	// membership refusal discovered after them would have already applied
 	// part of a request the caller was told it could not make.
-	if err := c.validateGroupAdditions(ctx, organization.ID, user.Spec.Subject, userID, request.Spec.GroupIDs, groups); err != nil {
+	if err := c.validateGroupAdditions(ctx, organization.ID, user.Spec.Subject, request.Spec.GroupIDs, groups); err != nil {
 		return nil, err
 	}
 

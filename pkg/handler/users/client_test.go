@@ -237,6 +237,7 @@ func TestClient_Create(t *testing.T) {
 		require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
 		require.Len(t, globalUsers.Items, 1)
 		assert.Equal(t, "daa84183-d29f-5c81-bbfc-d2e55ac14fe4", globalUsers.Items[0].Name, "global users retain their deterministic storage name")
+		assert.Equal(t, globalUsers.Items[0].Name, globalUsers.Items[0].Labels[unikornv1.UserSubjectIDLabel])
 
 		organizationUsers := &unikornv1.OrganizationUserList{}
 		require.NoError(t, fixture.client.List(ctx, organizationUsers, &client.ListOptions{Namespace: testOrgNS}))

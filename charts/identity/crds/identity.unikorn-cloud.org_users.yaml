@@ -94,7 +94,11 @@ spec:
                   Subject is usually and email address, sadly this cannot be made
                   a label for selection that way.  This will map to the subject in
                   a JWT.
+                minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: subject is immutable
+                  rule: self == oldSelf
               tags:
                 description: Tags are aribrary user data.
                 items:

@@ -47,8 +47,9 @@ The package is deliberately narrow and read-only.
 It does not own user mutation, organization membership mutation, or token lifecycle. It only
 normalizes local identity lookups for other parts of the system.
 
-`GetUser` scans the User cache without deep copies. It returns a deep copy of the single match,
-so the caller owns the result.
+`GetUser` reads the deterministic User name derived from its subject. On a miss, it selects
+random-named legacy records by the subject-ID label. Unlabelled records remain a final
+list-and-filter compatibility fallback. The returned record is owned by the caller.
 
 ### Active-State Gatekeeping
 
@@ -84,8 +85,8 @@ two or more, a pick depends on that order. It can give a different user from one
 
 - The package is tightly coupled to the current Kubernetes-backed identity storage model even
   though its purpose is to shield other packages from that coupling.
-- Several lookups are implemented as list-and-filter operations, so they depend on label hygiene
-  and on the current storage layout remaining coherent.
+- Canonical users use their deterministic name. Labelled legacy users use an indexed selector;
+  only unlabelled legacy users require list-and-filter compatibility lookup.
 - Missing and multiply-resolved identities return `ErrResourceReference`. `GetActiveUser` instead
   returns `ErrUserInactive` for an inactive global user, which wraps `ErrResourceReference` so
   existing `errors.Is` callers are unaffected; `GetActiveOrganizationUser` still returns the plain
