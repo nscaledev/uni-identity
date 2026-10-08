@@ -14,8 +14,8 @@ Identity has a limited **producer** surface, so the starting point matters:
   default — the one telemetry knob in the chart, `otlpEndpoint`, is commented
   out). A shared telemetry setup is used by all four binaries. With no endpoint
   configured the MeterProvider has no reader and **nothing is exported at all**.
-- **The first-party metric surface is two counters**, both OTel
-  `Int64Counter` created via `otel.Meter(constants.Application)`:
+- **The first-party metric surface includes two counters** created via
+  `otel.Meter(constants.Application)`:
   `unikorn_identity_bearer_tokens_unroutable{surface,reason}`
   (`pkg/oauth2/oauth2.go:174`, incremented in `pkg/oauth2/passport.go:262,272,279`)
   and `unikorn_identity_auth0_jwks_refreshes_throttled`
@@ -29,8 +29,8 @@ Identity has a limited **producer** surface, so the starting point matters:
   `rest_client_*`, Go/process collectors) on the shared registry, bridged to OTLP
   via `prombridge`. **The API server runs no manager**, so it has none of these.
 - **Each controller publishes build and readiness gauges.** Controller readiness
-  follows cache sync and leader acquisition. The API server has no equivalent
-  first-party lifecycle gauges today.
+  follows cache sync and leader acquisition. The API server also publishes build
+  and listener-readiness gauges.
 - **CRD lifecycle state is not exported by identity.** Three Kinds are reconciled
   and carry the shared core conditions — Organization, Project, OAuth2Client — but
   those conditions live only in CR status. Nothing in identity turns them into
@@ -85,26 +85,44 @@ the default controller registry remains active and is bridged to OTLP.
 - Go/process collectors (`go_*`, `process_*`), controller-runtime
   leader-election gauge
 - `unikorn_identity_controller_build_info{controller,version,revision}` and
-  `unikorn_identity_controller_ready{controller,version,revision}`. Readiness is
+  `unikorn_controller_ready{controller,version,revision}`. Readiness is
   `1` only after the manager cache has synced and the controller holds its leader
   lease; build info remains `1` for the process lifetime.
 
 **API server** — no controller-runtime manager, so none of the controller metrics.
-It emits the two counters and HTTP RED metrics.
+It emits the two counters, HTTP RED metrics, and
+`unikorn_identity_server_build_info{version,revision}` and
+`unikorn_server_ready{version,revision}`. Build info is `1` for the
+process lifetime; readiness is `1` only while the server owns its bound HTTP
+listener.
 
 **HTTP RED (API server only, via OTLP)** —
-`unikorn_identity_http_requests_total{route,method,status_class}`,
-`unikorn_identity_http_request_duration_seconds{route,method,status_class}`, and
-`unikorn_identity_http_requests_in_flight{route,method}`. The metrics cover
+`http_server_request_duration_seconds{route,method,status_class}` (a histogram;
+its `_count` serves as the request counter) and
+`http_server_active_requests{route,method}`. The metrics cover
 OpenAPI-resolved routes; route-resolution failures have no stable route label and
 are not included.
+
+**Metric naming.** The RED and readiness families use platform-generic names —
+the RED pair is the OTel HTTP server semantic conventions in their
+Prometheus-stored form — so one dashboard or alert can aggregate them across
+services. A stored series is attributed to identity by the OTLP resource's
+`service.name` (set to `unikorn-identity` via `OTEL_SERVICE_NAME` in every
+deployment), not by the metric name. Pipelines store that as the `job` label,
+per the Prometheus OTLP convention (`service.namespace/service.name`, bare
+`service.name` when the namespace is unset), and `service.instance.id` — set
+from the pod name — as `instance`, which keeps the four workloads' otherwise
+unlabelled runtime series apart since they share one `service.name`. Only the
+`build_info` families keep the per-service prefix, following the Prometheus
+convention for build identity.
 
 **State / kube-state exporter (in identity)** — **absent.**
 
 **Build and readiness gauges** — each controller emits
 `unikorn_identity_controller_build_info` and
-`unikorn_identity_controller_ready`. API server build and readiness gauges are a
-recommended producer gap, not part of the current metric contract.
+`unikorn_controller_ready`. The API server emits
+`unikorn_identity_server_build_info` and `unikorn_server_ready` as part
+of the current metric contract.
 
 ### Optional lifecycle-state contract
 
@@ -148,10 +166,10 @@ does not have.
 | Scrape plumbing | **REBUT → ADAPT** | Identity exposes no scrape targets, so there is **no identity `up` series and no ServiceMonitor target-membership check**. Identity binary liveness is inferred from its OTLP series arriving (and from Kubernetes pod state), not from `up`. |
 
 Cross-cutting constraints: bounded, operationally-useful labels only (already true
-— the two counters are bounded; the external lifecycle contract is bounded by
-object count plus a reason enum, and carries **no external IDs**. The dashboards
-make series absence explicit where it can otherwise be mistaken for a healthy
-resource.
+— the counters and build/readiness gauges are bounded; the external lifecycle
+contract is bounded by object count plus a reason enum, and carries **no external
+IDs**. The dashboards make series absence explicit where it can otherwise be
+mistaken for a healthy resource.
 
 ## Metric contract — adopt vs rebut the reference's metrics
 
@@ -161,9 +179,10 @@ producers. The adopted contract for Identity is:
 - **Adopt the two first-party counters** as the auth-path signal
   (`unikorn_identity_bearer_tokens_unroutable`,
   `unikorn_identity_auth0_jwks_refreshes_throttled`). Bounded, already discipline-clean.
-- **Adopt the controller-runtime built-ins** for the three controllers as the
-  reconcile-health and capacity signal. These arrive via the OTLP bridge, not a
-  scrape.
+- **Do not query controller-runtime built-ins in dashboards yet.** They reach
+  the OTLP bridge, but the stored Prometheus names have not been verified
+  across that bridge and its collector. The Operations dashboard uses the
+  first-party readiness and build gauges instead.
 - **Adopt the external `uni_resource_*` contract** for
   Organization/Project/OAuth2Client lifecycle — *conditional on the prerequisite
   below*. Query hazards to bake into dashboards:
@@ -200,9 +219,6 @@ the two pipeline prerequisites, which are what make any of these series exist.
    would expose stalled rotation before tokens fail verification.
 2. **External lifecycle-exporter coverage of Identity kinds.** See prerequisites —
    this is what turns the lifecycle section from design into live series.
-3. **API server lifecycle gauges.** Bounded build and listener-readiness gauges
-   would add server lifecycle coverage without treating request traffic as a
-   liveness signal.
 
 ## Prerequisites (cross-repo, with merge order)
 
@@ -213,8 +229,19 @@ Identity's suite depends on two changes *outside* this repository:
    dashboard panels have no source series.
 2. **Identity binaries get `--otlp-endpoint` set** in the deployment, pointing at
    the collector that relays to the backend the dashboards query. Until then the
-   two counters and the controller-runtime built-ins are not exported.
-3. **Then** deploy `charts/identity-observability` (this work).
+   first-party counters, server gauges, and controller-runtime metrics are not
+   exported.
+3. **The collector pipeline preserves the Prometheus-convention OTLP mapping**
+   — `job` from the resource's `service.name`, `instance` from
+   `service.instance.id` — on every stored series (alongside the `cluster`
+   label it already attaches). The central observability stack does this
+   natively (Mimir's OTLP translation; VictoriaMetrics' ingest relabeling); a
+   pipeline that scrapes a collector's Prometheus exporter instead needs
+   `honor_labels`, or `job` arrives renamed to `exported_job`. The identity
+   chart sets `OTEL_SERVICE_NAME=unikorn-identity` and a pod-name
+   `service.instance.id` on every workload; without the `job` mapping, queries
+   on the platform-generic metric names cannot select identity's series.
+4. **Then** deploy `charts/identity-observability` (this work).
 
 The lifecycle-exporter series and the OTLP relay must land in the metric store that
 Grafana queries. This must be verified in the deployment environment rather than
@@ -266,26 +293,27 @@ renders sidecar-labelled ConfigMaps (`grafana_dashboard: "1"`,
 metric store. They are otherwise absent from workload clusters.
 
 Every dashboard has a top-level `cluster` selector and filters every panel on it.
-The OTLP collector or scrape configuration must attach `cluster` before storage;
-dashboard queries must not rely on Prometheus external labels, which are not
-available to Grafana's local query path.
+Every panel query also filters on `job="unikorn-identity"`: the RED and
+readiness families use platform-generic metric names, so the service must be
+selected by label, not by name, and `job` is where the Prometheus OTLP
+convention stores the resource's `service.name`. The OTLP collector or scrape
+configuration must attach `cluster` before storage and must preserve that
+`job` mapping on every stored series (see prerequisite 3); dashboard queries
+must not rely on Prometheus external labels, which are not available to
+Grafana's local query path.
 
 1. **Identity Operations** — resource lifecycle and controller health: count of
    Organization/Project/OAuth2Client with `Available != True` by `reason`
    (`uni_resource_error_reason`), time-in-provisioning from
    `uni_resource_state_timestamp_seconds{state="Provisioning"}`, per-kind
    provisioning-duration quantiles and outcomes
-   (`uni_<kind>_provisioning_duration_seconds`), reconcile rate/error-rate/latency
-   and workqueue depth per controller (controller-runtime, via OTLP), controller
-   readiness and build revision for controllers, and pod memory/restarts for the
-   four workloads. API server lifecycle gauges are not available yet.
-2. **Identity Auth & Federation** — the auth
-   path: `unikorn_identity_bearer_tokens_unroutable` by `surface`/`reason` and
-   `unikorn_identity_auth0_jwks_refreshes_throttled` rate (the only first-party
-   signals today), plus token-endpoint request rate by
-   grant/route, the 401-untrusted-issuer vs 503-trust-cache-not-ready split, and
-   latency quantiles. A logs panel (via the Loki datasource) scopes the audit and
-   OAuth2 error lines alongside the metric panels.
+   (`uni_<kind>_provisioning_duration_seconds`), controller readiness and build
+   revision, plus API server listener readiness and build revision. Controller-
+   runtime reconcile and workqueue series need an end-to-end stored-name contract
+   before dashboards can query them.
+2. **Identity API** — request rate, 4xx and 5xx ratios, p95 latency, request
+   rate by route and status class, route-level error and latency breakdowns,
+   latency quantiles, and active requests by route.
 3. **Identity Controller Leadership** *(opt-in)* — `leader_election_master_status`
    by lease name. It is rendered only when
    `grafana.dashboards.leaderElection.enabled=true`, because a dashboard without

@@ -71,10 +71,13 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Update chart dependencies
       run: helm dependency update "charts/${CHART_NAME}"
-    - name: Package and push chart
+    - name: Package and push charts
       run: |
-        helm package "charts/${CHART_NAME}" --version "${CHART_VERSION}" --app-version "${CHART_VERSION}"
-        helm push "${CHART_PACKAGE_NAME}-${CHART_VERSION}.tgz" "oci://ghcr.io/nscaledev/charts-nightly"
+        for CHART in $(sed -n 's/^CHARTS = //p' Makefile); do
+          NAME=$(grep '^name:' "${CHART}/Chart.yaml" | awk '{print $2}')
+          helm package "${CHART}" --version "${CHART_VERSION}" --app-version "${CHART_VERSION}"
+          helm push "${NAME}-${CHART_VERSION}.tgz" "oci://ghcr.io/nscaledev/charts-nightly"
+        done
     # Tag is pushed after successful artifact publishes so a failed publish does
     # not leave a dangling tag pointing at a commit with no artifacts.
     - name: Push tag

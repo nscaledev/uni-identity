@@ -12,23 +12,31 @@ set -euo pipefail
 chart=charts/identity-observability
 central=$(helm template identity-observability "$chart" -f "$chart/values-central.yaml" --api-versions grafana.integreatly.org/v1beta1)
 central_leadership=$(helm template identity-observability "$chart" -f "$chart/values-central.yaml" --set grafana.dashboards.leaderElection.enabled=true --api-versions grafana.integreatly.org/v1beta1)
+legacy_leadership=$(helm template identity-observability "$chart" -f "$chart/values-central.yaml" --set-json grafana.dashboards.leaderElection=null --api-versions grafana.integreatly.org/v1beta1)
 workload=$(helm template identity-observability "$chart" -f "$chart/values-workload.yaml")
 
 grep -q 'kind: GrafanaDashboard' <<<"$central"
 grep -q 'grafana_datasource: "1"' <<<"$central"
 grep -q 'grafana_folder: "UNI/Identity"' <<<"$central"
-grep -q 'dashboard-auth' <<<"$central"
+grep -q 'dashboard-uni-identity-api' <<<"$central"
+grep -q 'uni-identity-api.json' <<<"$central"
+grep -q 'dashboard-uni-identity-operations' <<<"$central"
+grep -q 'uni-identity-operations.json' <<<"$central"
 
 if grep -q 'dashboard-leader-election' <<<"$central"; then
 	echo "leader-election dashboard must be opt-in" >&2
 	exit 1
 fi
 
-if grep -qE 'dashboard-(collection-health|operations)' <<<"$central$central_leadership"; then
-	echo "chart must render only complete dashboards" >&2
+if grep -q 'dashboard-leader-election' <<<"$legacy_leadership"; then
+	echo "legacy values must leave leader-election disabled" >&2
 	exit 1
 fi
 
+if grep -q 'dashboard-collection-health' <<<"$central$central_leadership"; then
+	echo "chart must not render the removed collection-health dashboard" >&2
+	exit 1
+fi
 grep -q 'dashboard-leader-election' <<<"$central_leadership"
 
 if grep -qE 'GrafanaDashboard|grafana_datasource' <<<"$workload"; then
@@ -43,8 +51,8 @@ fi
 
 dashboard_uid_count=$(jq -r '.uid' "$chart"/files/dashboards/*.json | sort -u | wc -l | tr -d ' ')
 
-if [[ "$dashboard_uid_count" -ne 2 ]]; then
-	echo "identity dashboards must have two unique UIDs" >&2
+if [[ "$dashboard_uid_count" -ne 3 ]]; then
+	echo "identity dashboards must have three unique UIDs" >&2
 	exit 1
 fi
 
@@ -72,6 +80,8 @@ jq --exit-status '
 ' "$chart/files/dashboards/leader-election.json" >/dev/null
 
 jq --exit-status '
+	.uid == "uni-identity-api" and
+	.title == "Identity API" and
 	[.panels[].title] as $titles |
 	all(
 		"Request Rate",
@@ -92,4 +102,43 @@ jq --exit-status '
 	any($expressions[]; contains("http_server_request_duration_seconds_bucket")) and
 	any($expressions[]; contains("http_server_active_requests")) and
 	all(($expressions + [.templating.list[0].query])[]; contains("job=\"unikorn-identity\""))
-' "$chart/files/dashboards/auth.json" >/dev/null
+' "$chart/files/dashboards/uni-identity-api.json" >/dev/null
+
+jq --exit-status '
+	[.panels[].title] as $titles |
+	all("Ready controllers", "Controller builds", "Server ready", "Server builds";
+		. as $title | $titles | index($title)
+	) and
+	[.panels[].targets[].expr] as $expressions |
+	any($expressions[]; contains("unikorn_controller_ready")) and
+	any($expressions[]; contains("unikorn_identity_controller_build_info")) and
+	any($expressions[]; contains("unikorn_server_ready")) and
+	any($expressions[]; contains("unikorn_identity_server_build_info")) and
+	all(($expressions + [.templating.list[0].query])[]; contains("job=\"unikorn-identity\"")) and
+	all($expressions[]; contains("controller_runtime") | not) and
+	all($expressions[]; contains("state-metrics") | not) and
+	[.panels[] | select(.title == "Ready controllers")] as $controllerReadiness |
+	($controllerReadiness | length == 1) and
+	all($controllerReadiness[];
+		.targets[0].expr == "sum by (cluster) (unikorn_controller_ready{job=\"unikorn-identity\", cluster=~\"$cluster\"})" and
+		.targets[0].legendFormat == "{{cluster}}" and
+		.options.textMode == "value_and_name" and
+		.options.reduceOptions.values == false and
+		.fieldConfig.defaults.mappings[0].type == "value" and
+		.fieldConfig.defaults.mappings[0].options["0"].text == "0/3" and
+		.fieldConfig.defaults.mappings[0].options["1"].text == "1/3" and
+		.fieldConfig.defaults.mappings[0].options["2"].text == "2/3" and
+		.fieldConfig.defaults.mappings[0].options["3"].text == "3/3"
+	) and
+	[.panels[] | select(.title == "Server ready")] as $serverReadiness |
+	($serverReadiness | length == 1) and
+	all($serverReadiness[];
+		.targets[0].expr == "sum by (cluster) (unikorn_server_ready{job=\"unikorn-identity\", cluster=~\"$cluster\"})" and
+		.targets[0].legendFormat == "{{cluster}}" and
+		.options.textMode == "value_and_name" and
+		.options.reduceOptions.values == false and
+		.fieldConfig.defaults.mappings[0].type == "value" and
+		.fieldConfig.defaults.mappings[0].options["0"].text == "0/1" and
+		.fieldConfig.defaults.mappings[0].options["1"].text == "1/1"
+	)
+' "$chart/files/dashboards/uni-identity-operations.json" >/dev/null
