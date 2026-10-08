@@ -293,9 +293,9 @@ func (f *allocationTestFixture) getTotalAllocations(t *testing.T, resourceKind s
 	return total
 }
 
-// TestConcurrentAllocations_SerializedByMutex tests that concurrent allocations
-// are properly serialized by the mutex, preventing race conditions.
-func TestConcurrentAllocations_SerializedByMutex(t *testing.T) {
+// TestConcurrentAllocations_SerializedByOrganizationLease verifies concurrent
+// allocations are serialized by the organization's Kubernetes Lease.
+func TestConcurrentAllocations_SerializedByOrganizationLease(t *testing.T) {
 	t.Parallel()
 
 	f := setupAllocationTestFixture(t)
@@ -338,9 +338,9 @@ func TestConcurrentAllocations_SerializedByMutex(t *testing.T) {
 	assert.Equal(t, int64(10*oneGigabyte), totalMemory, "Total memory allocations should equal quota limit")
 }
 
-// TestConcurrentAllocationUpdates_SerializedByMutex tests that concurrent
-// updates to allocations are properly serialized.
-func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
+// TestConcurrentAllocationUpdates_SerializedByOrganizationLease verifies
+// concurrent updates are serialized by the organization's Kubernetes Lease.
+func TestConcurrentAllocationUpdates_SerializedByOrganizationLease(t *testing.T) {
 	t.Parallel()
 
 	f := setupAllocationTestFixture(t)
