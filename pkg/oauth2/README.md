@@ -86,7 +86,8 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
 - Decoded token claims are cached because cryptographic validation is expensive. The stable
   Organization namespace used to route service-account lookups is cache-synchronized, while
   revocable service-account and user-session state is checked directly against Kubernetes on every
-  request.
+  request. Userinfo reuses the user that the session check read for the organization lookup, so a
+  federated request reads its user once.
 - Token classes for federated users, service accounts, and services are intentionally distinct.
 - Admission is intentionally coupled to local system validity: users who are inactive or not
   meaningful participants in the local authorization model should not be allowed to proceed as if
