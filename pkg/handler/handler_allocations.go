@@ -33,7 +33,7 @@ func (h *Handler) allocationsClient() *allocations.Client {
 }
 
 func (h *Handler) allocationsSyncClient() *allocations.SyncClient {
-	return allocations.NewSync(h.client, h.namespace, &h.allocationMutex)
+	return allocations.NewSync(h.client, h.namespace)
 }
 
 func (h *Handler) PostApiV1OrganizationsOrganizationIDProjectsProjectIDAllocations(w http.ResponseWriter, r *http.Request, organizationID openapi.OrganizationIDParameter, projectID openapi.ProjectIDParameter) {

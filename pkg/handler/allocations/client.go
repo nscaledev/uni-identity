@@ -21,7 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"sync"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
@@ -52,9 +51,6 @@ type Client struct {
 
 type SyncClient struct {
 	*Client
-	// mutex is for serialising allocation decisions; this is supplied
-	// when constructing the client, so it can be centralised.
-	mutex *sync.Mutex
 }
 
 func New(client client.Client, namespace string) *Client {
@@ -64,10 +60,9 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func NewSync(client client.Client, namespace string, mutex *sync.Mutex) *SyncClient {
+func NewSync(client client.Client, namespace string) *SyncClient {
 	return &SyncClient{
 		Client: New(client, namespace),
-		mutex:  mutex,
 	}
 }
 
@@ -167,15 +162,21 @@ func (c *SyncClient) Create(ctx context.Context, organizationID ids.Organization
 		return nil, err
 	}
 
-	// Lock around deciding if we can do this allocation
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	lease, lockedContext, err := common.AcquireOrganizationLease(ctx, c.client, c.namespace, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer common.ReleaseOrganizationLease(ctx, lease)
 
-	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
+	if err := common.New(c.client).CheckQuotaConsistency(lockedContext, organizationID, nil, resource); err != nil {
 		return nil, err
 	}
 
-	if err := c.client.Create(ctx, resource); err != nil {
+	if err := lease.Check(lockedContext); err != nil {
+		return nil, err
+	}
+
+	if err := c.client.Create(lockedContext, resource); err != nil {
 		return nil, fmt.Errorf("%w: failed to create allocation", err)
 	}
 
@@ -221,25 +222,25 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 }
 
 func (c *SyncClient) Update(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
-	common := common.New(c.client)
+	commonClient := common.New(c.client)
 
-	namespace, err := common.ProjectNamespace(ctx, organizationID, projectID)
+	namespace, err := commonClient.ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Lock around deciding if we can do this allocation.
-	// Taking the lock here means that each operation will get the most recent revision and
-	// succeed at patching. Otherwise, first concurrent update here wins and the rest fail.
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	lease, lockedContext, err := common.AcquireOrganizationLease(ctx, c.client, c.namespace, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer common.ReleaseOrganizationLease(ctx, lease)
 
-	current, err := c.get(ctx, namespace.Name, allocationID)
+	current, err := c.get(lockedContext, namespace.Name, allocationID)
 	if err != nil {
 		return nil, err
 	}
 
-	required, err := generate(ctx, namespace, organizationID, projectID, request)
+	required, err := generate(lockedContext, namespace, organizationID, projectID, request)
 	if err != nil {
 		return nil, err
 	}
@@ -253,11 +254,15 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
+	if err := commonClient.CheckQuotaConsistency(lockedContext, organizationID, nil, updated); err != nil {
 		return nil, err
 	}
 
-	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := lease.Check(lockedContext); err != nil {
+		return nil, err
+	}
+
+	if err := c.client.Patch(lockedContext, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		if kerrors.IsConflict(err) {
 			return nil, errors.HTTPConflict().WithError(err)
 		}
