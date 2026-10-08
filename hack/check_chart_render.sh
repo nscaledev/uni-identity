@@ -239,4 +239,19 @@ for resource in \
 	has_server_get "$resource" || die "expected get permission for server resource: $resource"
 done
 
+# The identity API server defaults to two replicas and its PDB permits one
+# voluntary disruption without preventing a one-replica node drain.
+deployment=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 2$' <<<"$deployment") -eq 1 ]] || die "expected identity server to default to two replicas"
+
+deployment=$(helm template test "$CHART" --set server.replicas=3 | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 3$' <<<"$deployment") -eq 1 ]] || die "expected identity server replica override"
+
+deployment=$(helm template test "$CHART" --set server.replicas=1 | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 1$' <<<"$deployment") -eq 1 ]] || die "expected identity server one-replica override"
+
+pdb=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: PodDisruptionBudget/ && /name: test-server/ { print }')
+[[ $(grep -c '^  maxUnavailable: 1$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB to allow one unavailable pod"
+[[ $(grep -c '^      app: test-server$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB selector"
+
 echo "chart render checks OK"
