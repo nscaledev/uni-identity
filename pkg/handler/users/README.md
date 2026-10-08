@@ -160,7 +160,9 @@ create path scans the same way and returns a deep copy of the single match.
 - the API-managed path only allows bare email-address subjects for normal user creation
 
 Legacy random-named records remain readable while there is exactly one matching record. Multiple
-legacy records for one subject or membership are a consistency error. New writes use deterministic
+records for one subject, legacy or deterministic, or for one membership are a consistency error,
+and `Create` refuses them before writing. Lookups by subject rely on this check rather than
+repeating it. New writes use deterministic
 names, so Kubernetes conflict handling makes concurrent creates converge on the same records.
 
 ## Caveats

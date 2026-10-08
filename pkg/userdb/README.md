@@ -51,6 +51,11 @@ normalizes local identity lookups for other parts of the system.
 random-named legacy records by the subject-ID label. Unlabelled records remain a final
 list-and-filter compatibility fallback. The returned record is owned by the caller.
 
+A lookup that finds the deterministic record trusts it without checking for another record with
+the same subject. User creation refuses that state (see
+[`pkg/handler/users`](../handler/users/README.md)), and the subject-label backfill refuses to run
+while it exists.
+
 ### Active-State Gatekeeping
 
 The package treats "active" as part of identity resolution rather than as downstream policy.

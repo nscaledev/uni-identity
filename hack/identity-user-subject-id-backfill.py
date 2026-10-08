@@ -45,6 +45,20 @@ def main() -> int:
         print(result.stderr.strip(), file=sys.stderr)
         return 1
     users = json.loads(result.stdout).get("items", [])
+    # Lookups trust a user found by its deterministic name or subject label
+    # without checking for another record with the same subject, so refuse to
+    # label anything while such duplicates exist.
+    by_subject: dict[str, list[str]] = {}
+    for user in users:
+        metadata = user.get("metadata", {})
+        by_subject.setdefault(user.get("spec", {}).get("subject", ""), []).append(
+            f"{metadata.get('namespace')}/{metadata.get('name')}"
+        )
+    duplicates = {subject: names for subject, names in by_subject.items() if subject and len(names) > 1}
+    if duplicates:
+        for subject, names in sorted(duplicates.items()):
+            print(f"error: subject {subject!r} has more than one user: {', '.join(sorted(names))}", file=sys.stderr)
+        return 1
     missing = applied = 0
     for user in users:
         metadata, spec = user.get("metadata", {}), user.get("spec", {})
