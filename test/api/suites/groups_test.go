@@ -487,6 +487,15 @@ var _ = Describe("Group Subject Compatibility", func() {
 				return hasPermission == expected
 			}).WithTimeout(timeout).WithPolling(2*time.Second).Should(BeTrue(),
 				"ACL permission %s/%s should become %t", permission.endpoint, permission.operation, expected)
+
+			// Seeing a revocation shows only that the replica which answered
+			// has dropped the permission. Another replica can keep serving its
+			// cached ACL for up to the cache timeout, and later specs expect
+			// this user to be refused, so wait for every cached copy to expire.
+			// The extra second covers a replica whose watch is slightly behind.
+			if !expected {
+				time.Sleep(config.ACLCacheTimeout + time.Second)
+			}
 		}
 
 		fixtureUserSubject := func() identityopenapi.Subject {
