@@ -58,12 +58,11 @@ func TestUpdateGroupResolvesAUserStoredInAnotherCase(t *testing.T) {
 	assert.Equal(t, storedOrgUserID, updatedGroup.Spec.UserIDs[0])
 }
 
-// TestUpdateGroupResolvesAMixedCaseSubjectAtOwnIssuer pins the claim side of a
-// group write.  The stored subject is in canonical form and the request carries
-// it in another case.  The lookup must still resolve the organization user.  The
-// entry keeps the case that the request supplied, because a group write stores a
-// subject as supplied.
-func TestUpdateGroupResolvesAMixedCaseSubjectAtOwnIssuer(t *testing.T) {
+// TestUpdateGroupFoldsMixedCaseSubjectAtOwnIssuer pins both sides of a group
+// write.  The request carries the stored subject in another case.  The lookup
+// must still resolve the organization user, and the entry must be stored in
+// canonical form.
+func TestUpdateGroupFoldsMixedCaseSubjectAtOwnIssuer(t *testing.T) {
 	t.Parallel()
 
 	f := setupGroupTestFixture(t)
@@ -82,5 +81,110 @@ func TestUpdateGroupResolvesAMixedCaseSubjectAtOwnIssuer(t *testing.T) {
 	require.Len(t, updatedGroup.Spec.UserIDs, 1, "a mixed-case subject must resolve its organization user")
 	assert.Equal(t, orguserAliceID, updatedGroup.Spec.UserIDs[0])
 	require.Len(t, updatedGroup.Spec.Subjects, 1)
-	assert.Equal(t, "Alice@Example.com", updatedGroup.Spec.Subjects[0].ID, "the entry is stored as supplied")
+	assert.Equal(t, userAliceSubject, updatedGroup.Spec.Subjects[0].ID)
+	assert.Equal(t, userAliceSubject, updatedGroup.Spec.Subjects[0].Email)
+}
+
+// TestUpdateGroupFoldsMixedCaseSubjectAtExternalIssuer pins the storage fold on
+// its own.  An external subject gets no user lookup, so generateSubjects is the
+// only place that folds it.
+func TestUpdateGroupFoldsMixedCaseSubjectAtExternalIssuer(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createGroup(t)
+
+	subjects := []openapi.Subject{
+		{Id: "External-User@GitHub.com", Issuer: "https://github.com", Email: ptr.To("External-User@GitHub.com")},
+	}
+
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	require.NoError(t, err)
+
+	updatedGroup := f.getGroup(t)
+
+	require.Len(t, updatedGroup.Spec.Subjects, 1)
+	assert.Equal(t, "external-user@github.com", updatedGroup.Spec.Subjects[0].ID)
+	assert.Equal(t, "external-user@github.com", updatedGroup.Spec.Subjects[0].Email)
+}
+
+// TestUpdateGroupKeepsTheCaseOfAnOpaqueExternalID pins the limit of the fold.
+// An external issuer can give an opaque ID in which case is significant, and
+// the claim that RBAC matches it against keeps that case.  Only the email,
+// which is an address, folds.
+func TestUpdateGroupKeepsTheCaseOfAnOpaqueExternalID(t *testing.T) {
+	t.Parallel()
+
+	const opaqueID = "AAAAAAAAAAAAAAAAAAAAAIkzqFVrSaSaFHy782bbtaQ"
+
+	f := setupGroupTestFixture(t)
+	f.createGroup(t)
+
+	subjects := []openapi.Subject{
+		{Id: opaqueID, Issuer: "https://login.example.com", Email: ptr.To("External-User@Example.com")},
+	}
+
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	require.NoError(t, err)
+
+	updatedGroup := f.getGroup(t)
+
+	require.Len(t, updatedGroup.Spec.Subjects, 1)
+	assert.Equal(t, opaqueID, updatedGroup.Spec.Subjects[0].ID)
+	assert.Equal(t, "external-user@example.com", updatedGroup.Spec.Subjects[0].Email)
+}
+
+// TestUpdateGroupCollapsesCaseVariantSubjectsInOneRequest pins that the fold
+// comes before deduplication.  Two spellings of one address in a request name
+// one principal, so they must become one entry.
+func TestUpdateGroupCollapsesCaseVariantSubjectsInOneRequest(t *testing.T) {
+	t.Parallel()
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, userAliceID, userAliceSubject, orguserAliceID)
+	f.createGroup(t)
+
+	subjects := []openapi.Subject{
+		{Id: "Alice@Example.com", Issuer: testIssuerURL, Email: ptr.To("Alice@Example.com")},
+		{Id: userAliceSubject, Issuer: testIssuerURL, Email: ptr.To(userAliceSubject)},
+	}
+
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(&subjects, nil))
+	require.NoError(t, err)
+
+	updatedGroup := f.getGroup(t)
+
+	require.Len(t, updatedGroup.Spec.Subjects, 1, "two spellings of one address must collapse to one entry")
+	assert.Equal(t, userAliceSubject, updatedGroup.Spec.Subjects[0].ID)
+}
+
+// TestUpdateGroupFoldsSubjectDerivedFromUserID pins the entry that a group
+// write builds from a user ID.  It copies the stored subject, which can be in
+// another case when kubectl-unikorn or an older writer stored it.  The entry
+// must still carry the canonical form, as the users handler and the uni-auth0
+// member sync write it.
+func TestUpdateGroupFoldsSubjectDerivedFromUserID(t *testing.T) {
+	t.Parallel()
+
+	const (
+		mixedCaseUserID    = "user-mixed"
+		mixedCaseOrgUserID = "orguser-mixed"
+		mixedCaseSubject   = "Mixed@Example.com"
+		foldedSubject      = "mixed@example.com"
+	)
+
+	f := setupGroupTestFixture(t)
+	f.createUserWithOrgMembership(t, mixedCaseUserID, mixedCaseSubject, mixedCaseOrgUserID)
+	f.createGroup(t)
+
+	userIDs := openapi.StringList{mixedCaseOrgUserID}
+
+	err := f.groupsClient.Update(newContext(t), ids.MustParseOrganizationID(testOrgID), groupTestID, makeGroupUpdateRequest(nil, &userIDs))
+	require.NoError(t, err)
+
+	updatedGroup := f.getGroup(t)
+
+	require.Len(t, updatedGroup.Spec.Subjects, 1)
+	assert.Equal(t, foldedSubject, updatedGroup.Spec.Subjects[0].ID)
+	assert.Equal(t, foldedSubject, updatedGroup.Spec.Subjects[0].Email)
 }

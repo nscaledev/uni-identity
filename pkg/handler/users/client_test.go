@@ -496,12 +496,13 @@ func newRadarGroup(name string, userIDs []string, subjects []unikornv1.GroupSubj
 	}
 }
 
-// newPlainGroup builds a group carrying no roles, so joining it is never a grant.
-func newPlainGroup(name string) *unikornv1.Group {
+// newPlainGroup builds group alpha carrying no roles, so joining it is never a
+// grant.
+func newPlainGroup() *unikornv1.Group {
 	return &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testOrgNS,
-			Name:      name,
+			Name:      groupAlphaID,
 		},
 	}
 }
@@ -604,7 +605,7 @@ func TestClient_GroupMembershipGrantGate(t *testing.T) {
 			newGlobalUser(userAliceID, userAliceSubject),
 			newOrganizationUser(orgUserAliceID, userAliceID),
 			radarRole(),
-			newPlainGroup(groupAlphaID),
+			newPlainGroup(),
 			newRadarGroup(groupBetaID, nil, nil),
 		}, interceptor.Funcs{})
 
@@ -832,7 +833,7 @@ func TestClient_GroupMembershipUnknownGroup(t *testing.T) {
 		fixture := newUserTestFixtureWithObjects(t, []client.Object{
 			newGlobalUser(userAliceID, userAliceSubject),
 			newOrganizationUser(orgUserAliceID, userAliceID),
-			newPlainGroup(groupAlphaID),
+			newPlainGroup(),
 		}, interceptor.Funcs{})
 
 		ctx := aclContext(t, openapi.AclEndpoints{
@@ -862,7 +863,7 @@ func TestClient_GroupMembershipUnknownGroup(t *testing.T) {
 		t.Parallel()
 
 		fixture := newUserTestFixtureWithObjects(t, []client.Object{
-			newPlainGroup(groupAlphaID),
+			newPlainGroup(),
 		}, interceptor.Funcs{})
 
 		ctx := aclContext(t, openapi.AclEndpoints{

@@ -184,6 +184,11 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 // groupSubject builds the membership subject for a user of this deployment's
 // own issuer.
 func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
+	// Fold the stored subject.  A record that kubectl-unikorn or an older
+	// writer stored can hold another case, and the entry must carry the form
+	// that every other writer stores.
+	userSubject = unikornv1.NormalizeSubject(userSubject)
+
 	return unikornv1.GroupSubject{
 		ID:     userSubject,
 		Email:  userSubject,
@@ -498,6 +503,11 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 	if !unikornv1.IsBareAddress(strings.TrimSpace(request.Spec.Subject)) {
 		return nil, errors.OAuth2InvalidRequest("subject address invalid")
 	}
+
+	// Fold the subject, so that a new global record stores the canonical form.
+	// The lookups accept either case, so an existing record in another case is
+	// reused.
+	request.Spec.Subject = unikornv1.NormalizeSubject(request.Spec.Subject)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {

@@ -41,13 +41,14 @@ This compatibility behaviour is one of the main reasons the package is more than
 
 ### Subject Matching
 
-A group write stores a subject entry as the request supplies it. To fill in the `UserIDs`
-counterpart, `findUserBySubject` finds the `User` for each subject at this deployment's issuer. It
-resolves the subject through
-[`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching), so a user stored in
-another case still resolves. If the subject folds onto two or more users and matches none exactly,
-the write fails with a consistency error. The scan reads the cache without deep copies and returns
-a deep copy of the single match.
+A group write folds the `id` and the `email` of each subject entry to canonical form before it
+removes duplicates, so two spellings of one address give one entry. An entry derived from a user ID
+carries the canonical form of the stored subject. To fill in the `UserIDs` counterpart,
+`findUserBySubject` finds the `User` for each subject at this deployment's issuer. It resolves the
+subject through [`MatchSubject`](../../apis/unikorn/v1alpha1/README.md#subject-matching), so a user
+stored in another case still resolves. If the subject folds onto two or more users and matches none
+exactly, the write fails with a consistency error. The scan reads the cache without deep copies and
+returns a deep copy of the single match.
 
 ### Role Assignment Guard Rails
 
