@@ -107,7 +107,6 @@ func TestTokens(t *testing.T) {
 		RefreshTokenDuration: refreshTokenDuration,
 		TokenLeewayDuration:  accessTokenDuration,
 		TokenCacheSize:       1024,
-		CodeCacheSize:        1024,
 	}
 
 	issuerVal := handlercommon.IssuerValue{
@@ -180,7 +179,7 @@ func TestVerifyServiceAccountUsesOrganizationReader(t *testing.T) {
 	require.NoError(t, issuer.Run(t.Context(), &josetesting.FakeCoordinationClientGetter{}))
 	time.Sleep(2 * josetesting.RefreshPeriod)
 
-	authenticator, err := oauth2.New(&oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 1, CodeCacheSize: 1}, josetesting.Namespace, handlercommon.IssuerValue{
+	authenticator, err := oauth2.New(&oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 1}, josetesting.Namespace, handlercommon.IssuerValue{
 		URL:      "https://test.com",
 		Hostname: "test.com",
 	}, directClient, organizationReader, issuer, userdb.NewUserDatabase(directClient, josetesting.Namespace), rbac.New(directClient, josetesting.Namespace, &rbac.Options{}))
@@ -475,7 +474,6 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				RefreshTokenDuration: refreshTokenDuration,
 				TokenLeewayDuration:  accessTokenDuration,
 				TokenCacheSize:       1024,
-				CodeCacheSize:        1024,
 			}, josetesting.Namespace, issuerHost, client, client, issuer, userDatabase, rbac)
 			require.NoError(t, err)
 
@@ -575,7 +573,6 @@ func TestUserinfoReadsUserOnce(t *testing.T) {
 		AccessTokenDuration:  time.Hour,
 		RefreshTokenDuration: time.Hour,
 		TokenCacheSize:       16,
-		CodeCacheSize:        16,
 	}
 
 	issuerVal := handlercommon.IssuerValue{URL: "https://foo.com", Hostname: "foo.com"}

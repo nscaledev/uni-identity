@@ -92,7 +92,6 @@ func newCasingAuthenticator(t *testing.T) (*Authenticator, *jose.JWTIssuer, clie
 		AccessTokenDuration:  time.Hour,
 		RefreshTokenDuration: time.Hour,
 		TokenCacheSize:       16,
-		CodeCacheSize:        16,
 	}
 
 	issuerValue := handlercommon.IssuerValue{URL: "https://test.com", Hostname: "test.com"}

@@ -73,6 +73,11 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
   on the other record fails its next verification. So each canonical subject must have only one
   record.
 - Federated user sessions are persisted per client in the user record.
+- Pending authorization codes are persisted on the user with a one-minute
+  expiry. Issuance prunes expired entries, and exchange consumes the matching
+  entry in the same user update that creates the session. This keeps codes
+  single-use across replicas and revokes the session when a consumed code is
+  reused.
 - The package intentionally keeps a single active session/token chain per client.
 - Refresh tokens are single-use.
 - Reissuing tokens for a client session invalidates the prior active token for that session.

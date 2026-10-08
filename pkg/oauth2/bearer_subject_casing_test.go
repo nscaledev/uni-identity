@@ -120,7 +120,6 @@ func casingEnv(t *testing.T, issuer *auth0TestIssuer, records ...client.Object) 
 		TokenLeewayDuration:     accessTokenDuration,
 		TokenVerificationLeeway: 0,
 		TokenCacheSize:          1024,
-		CodeCacheSize:           1024,
 	}, objects...)
 }
 
