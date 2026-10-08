@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 
@@ -53,6 +54,8 @@ func TestOrganizationLease(t *testing.T) {
 	now := time.Now().UTC()
 
 	t.Run("acquires independent leases for different organizations", func(t *testing.T) {
+		t.Parallel()
+
 		client := leaseTestClient(t)
 		options := []LeaseOption{WithLeaseDuration(4 * time.Second), withLeaseMargin(time.Second), withLeaseClock(func() time.Time { return now })}
 
@@ -68,6 +71,8 @@ func TestOrganizationLease(t *testing.T) {
 	})
 
 	t.Run("takes over only after an unchanged lease lasts a full duration", func(t *testing.T) {
+		t.Parallel()
+
 		client := leaseTestClient(t, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}})
 		calls := 0
 		clock := func() time.Time {
@@ -90,6 +95,8 @@ func TestOrganizationLease(t *testing.T) {
 	})
 
 	t.Run("reports contention as a retryable conflict", func(t *testing.T) {
+		t.Parallel()
+
 		client := leaseTestClient(t, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}})
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
 		t.Cleanup(cancel)
@@ -117,6 +124,8 @@ func TestOrganizationLease(t *testing.T) {
 		require.True(t, servererrors.IsConflict(lease.Check(expired)))
 	})
 	t.Run("does not release a lease another holder has taken over", func(t *testing.T) {
+		t.Parallel()
+
 		fakeClient := leaseTestClient(t)
 		lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA)
 		require.NoError(t, err)

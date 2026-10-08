@@ -68,9 +68,9 @@ func metaObj(name, def string) unikornv1.QuotaMetadata {
 	}
 }
 
-func allocationObj(kind, committed, reserved string) unikornv1.Allocation {
+func allocationObj(committed, reserved string) unikornv1.Allocation {
 	return unikornv1.Allocation{
-		Spec: unikornv1.AllocationSpec{Allocations: []unikornv1.ResourceAllocation{{Kind: kind, Committed: qty(committed), Reserved: qty(reserved)}}},
+		Spec: unikornv1.AllocationSpec{Allocations: []unikornv1.ResourceAllocation{{Kind: "gpus", Committed: qty(committed), Reserved: qty(reserved)}}},
 	}
 }
 
@@ -132,6 +132,7 @@ func TestUpdateRendersRequestListAndGetNormalises(t *testing.T) {
 	require.Equal(t, 6, readAfterPatch.Quotas[1].Quantity)
 
 	var leases coordinationv1.LeaseList
+
 	require.NoError(t, c.client.List(ctx, &leases))
 	require.Empty(t, leases.Items, "quota updates release their organization Lease")
 }
@@ -149,7 +150,7 @@ func TestUpdateRejectsFirstQuotaBelowLiveAllocations(t *testing.T) {
 		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
 	}
 	gpus := metaObj("gpus", "1")
-	allocation := allocationObj("gpus", "3", "0")
+	allocation := allocationObj("3", "0")
 	allocation.ObjectMeta = metav1.ObjectMeta{
 		Name:      "allocation",
 		Namespace: "project-a",
@@ -162,10 +163,12 @@ func TestUpdateRejectsFirstQuotaBelowLiveAllocations(t *testing.T) {
 	require.True(t, servererrors.IsForbidden(err), "first quota creation cannot undercut current allocation")
 
 	var quotas unikornv1.QuotaList
+
 	require.NoError(t, k8s.List(t.Context(), &quotas))
 	require.Empty(t, quotas.Items, "the rejected quota is not stored")
 
 	var leases coordinationv1.LeaseList
+
 	require.NoError(t, k8s.List(t.Context(), &leases))
 	require.Empty(t, leases.Items, "the rejected quota releases its organization Lease")
 }
@@ -204,7 +207,7 @@ func TestGetRendersStoredAndVirtualQuotas(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "org-a", Labels: labels},
 		Spec:       unikornv1.QuotaSpec{Quotas: []unikornv1.ResourceQuota{{Kind: "gpus", Quantity: qty("8")}}},
 	}
-	used := allocationObj("gpus", "3", "1")
+	used := allocationObj("3", "1")
 	used.ObjectMeta = metav1.ObjectMeta{Name: "alloc", Namespace: "org-a", Labels: labels}
 
 	scheme := runtime.NewScheme()

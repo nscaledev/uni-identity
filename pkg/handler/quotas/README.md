@@ -23,6 +23,9 @@ The current model defines one quota envelope per organization.
 
 That envelope is the top-level capacity contract against which allocations are checked. A quota
 update is only allowed if the resulting values still cover current committed and reserved usage.
+Allocation admission and quota updates share a per-organization Lease, so the read and write are
+serialized across server replicas. The quota client uses the direct Kubernetes client for that
+check, including first-time quota creation, rather than informer-cache state.
 
 ### Derived Read Model
 
@@ -63,6 +66,7 @@ reporting and dashboard problem.
 - each organization stores new quota state in the fixed `quota` object name
 - quota reads are derived from stored quota values, quota metadata, and current allocation totals
 - quota updates must not reduce capacity below already committed plus reserved usage
+- quota updates and allocation admission use fresh API-server reads under one organization Lease
 - `QuotaMetadata` is mandatory contextual data, not optional display garnish
 - `quotas.Convert` returns a consistency error, not a crash, for a quota kind with no matching
   `QuotaMetadata` entry or a nil quantity. `common.Normalise` drops a kind with no metadata as

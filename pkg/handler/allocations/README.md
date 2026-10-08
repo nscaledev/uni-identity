@@ -24,10 +24,15 @@ actual project-scoped object.
 
 ### Serialized Capacity Decisions
 
-Allocation create/update operations are deliberately serialized with a shared mutex.
+Allocation create/update and quota update operations hold a per-organization Kubernetes Lease.
+The Lease lasts ten seconds, and the holder stops writing two seconds before its expiry. The
+holder is deleted on either success or failure; a crashed holder delays only that organization
+until the first contender has observed its unchanged Lease for a full duration.
 
-That exists so quota checks and writes happen coherently enough to avoid obvious concurrent
-overcommit decisions when multiple allocation changes arrive at the same time.
+Contenders receive a retryable HTTP 409 when their request context expires. Different
+organizations use different Leases and do not wait for each other. The holder checks its bounded
+context immediately before writing, although an API-server write sent before that deadline can
+still be committed after the Lease expires.
 
 This is a clear example of the handler layer implementing application-level accounting discipline
 on top of Kubernetes storage.
@@ -46,7 +51,7 @@ linkage model.
 - allocations are the consumption ledger checked against organization quotas
 - allocation writes must pass quota-consistency checks before being persisted
 - committed and reserved quantities are both part of the effective used total
-- allocation decisions are serialized to reduce concurrent overcommit races
+- allocation and quota decisions are serialized per organization
 
 ## Caveats
 

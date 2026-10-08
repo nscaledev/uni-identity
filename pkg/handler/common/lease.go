@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 
@@ -42,7 +43,10 @@ const (
 	organizationLeaseReleaseTimeout = time.Second
 )
 
-var ErrLeaseDeadline = goerrors.New("organization allocation lease deadline passed")
+var (
+	ErrLeaseDeadline = goerrors.New("organization allocation lease deadline passed")
+	ErrLeaseMargin   = goerrors.New("organization lease margin leaves no critical section")
+)
 
 type leaseOptions struct {
 	duration time.Duration
@@ -109,6 +113,8 @@ func leaseConflict(err error) error {
 
 // AcquireOrganizationLease waits for the organization Lease, then returns a context
 // whose deadline leaves time to abandon an overdue write.
+//
+//nolint:cyclop,wsl // Lease creation and takeover share the retry loop.
 func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace string, organizationID ids.OrganizationID, options ...LeaseOption) (*OrganizationLease, context.Context, error) {
 	config := organizationLeaseOptions(options)
 	name := organizationLeaseName(organizationID)
@@ -123,7 +129,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
 			Spec: coordinationv1.LeaseSpec{
 				HolderIdentity:       ptr.To(identity),
-				LeaseDurationSeconds: ptr.To(int32(config.duration / time.Second)),
+				LeaseDurationSeconds: ptr.To(int32(config.duration / time.Second)), //nolint:gosec // durations are bounded by configuration.
 				AcquireTime:          &metav1.MicroTime{Time: now},
 				RenewTime:            &metav1.MicroTime{Time: now},
 			},
@@ -148,7 +154,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			observedAt = now
 		} else if now.Sub(observedAt) >= config.duration {
 			lease.Spec.HolderIdentity = ptr.To(identity)
-			lease.Spec.LeaseDurationSeconds = ptr.To(int32(config.duration / time.Second))
+			lease.Spec.LeaseDurationSeconds = ptr.To(int32(config.duration / time.Second)) //nolint:gosec // durations are bounded by configuration.
 			lease.Spec.AcquireTime = &metav1.MicroTime{Time: now}
 			lease.Spec.RenewTime = &metav1.MicroTime{Time: now}
 
@@ -165,6 +171,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			if !timer.Stop() {
 				<-timer.C
 			}
+
 			return nil, nil, leaseConflict(fmt.Errorf("organization is busy: %w", ctx.Err()))
 		case <-timer.C:
 		}
@@ -174,7 +181,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 func newOrganizationLease(ctx context.Context, cli client.Client, lease *coordinationv1.Lease, acquiredAt time.Time, margin time.Duration) (*OrganizationLease, context.Context, error) {
 	until := acquiredAt.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second).Add(-margin)
 	if !until.After(acquiredAt) {
-		return nil, nil, fmt.Errorf("organization lease margin leaves no critical section")
+		return nil, nil, ErrLeaseMargin
 	}
 
 	lockedContext, cancel := context.WithDeadline(ctx, until)
@@ -201,6 +208,7 @@ func (l *OrganizationLease) Release(ctx context.Context) error {
 	if kerrors.IsNotFound(err) || kerrors.IsConflict(err) {
 		return nil
 	}
+
 	if err != nil {
 		return fmt.Errorf("release organization lease: %w", err)
 	}
