@@ -50,6 +50,33 @@ spec:
             type: object
           spec:
             properties:
+              pendingAuthorizationCodes:
+                description: |-
+                  PendingAuthorizationCodes are authorization codes that have been issued
+                  but not exchanged. They provide a shared, single-use record across
+                  identity replicas.
+                items:
+                  description: PendingAuthorizationCode records an authorization code
+                    that may be exchanged.
+                  properties:
+                    clientID:
+                      description: ClientID identifies the OAuth2 client that received
+                        the code.
+                      type: string
+                    codeID:
+                      description: CodeID identifies the authorization code.
+                      type: string
+                    expiry:
+                      description: Expiry is the last time that the authorization
+                        code can be exchanged.
+                      format: date-time
+                      type: string
+                  required:
+                  - clientID
+                  - codeID
+                  - expiry
+                  type: object
+                type: array
               sessions:
                 description: Sessions record active user sessions.
                 items:
