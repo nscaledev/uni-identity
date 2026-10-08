@@ -322,6 +322,11 @@ three-second duration, then takes it over. The default eight-second request
 deadline leaves time for that and the change itself; a request that runs out
 of time gets a retryable HTTP 409. Other organizations remain unaffected.
 
+Each replica caches the ACLs it computes for `--acl-cache-timeout` (default one
+minute). A change to a user's permissions can therefore take that long to apply,
+as it does with one replica, and until it has, replicas may disagree: one can
+refuse a request that another still allows.
+
 ### Installing the Management Plugin
 
 Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/releases) and install them in your path:

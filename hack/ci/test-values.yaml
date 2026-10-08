@@ -3,6 +3,14 @@
 systemAccounts:
   ci-fixtures: platform-administrator
 
+# Each server replica caches ACLs for this long, so a permission change can
+# take this long to reach every replica. A short timeout keeps the specs
+# that wait out the cache fast. hack/ci/install reads it back from the
+# deployment for the tests.
+server:
+  extraFlags:
+  - --acl-cache-timeout=5s
+
 # Bound via the legacy platformAdministrators.subjects path; map-merges with
 # the chart default so the default platformAdministrators.roles survives.
 platformAdministrators:
