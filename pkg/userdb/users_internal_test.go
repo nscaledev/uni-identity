@@ -119,7 +119,7 @@ func TestGetUserUsesCanonicalName(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alice@example.com", result.Spec.Subject)
 	require.Equal(t, []client.ObjectKey{{Namespace: testNamespace, Name: unikornv1.GlobalUserName(user.Spec.Subject)}}, r.gets)
-	require.Len(t, r.lists, 1)
+	require.Empty(t, r.lists, "a user found by its deterministic name must not need a list")
 }
 
 func TestGetUserRejectsAmbiguousLegacyRecords(t *testing.T) {

@@ -63,10 +63,6 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 			return nil, fmt.Errorf("%w: canonical user subject does not match", ErrResourceReference)
 		}
 
-		if err := d.rejectDuplicateExactSubjects(ctx, subject); err != nil {
-			return nil, err
-		}
-
 		return user, nil
 	} else if !kerrors.IsNotFound(err) {
 		return nil, err
@@ -92,28 +88,6 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 	}
 
 	return d.getLegacyUser(ctx, subject)
-}
-
-func (d *UserDatabase) rejectDuplicateExactSubjects(ctx context.Context, subject string) error {
-	result := &unikornv1.UserList{}
-
-	if err := d.client.List(ctx, result); err != nil {
-		return err
-	}
-
-	matches := 0
-
-	for _, user := range result.Items {
-		if user.Spec.Subject == subject {
-			matches++
-		}
-	}
-
-	if matches > 1 {
-		return fmt.Errorf("%w: duplicate exact subject", ErrAmbiguousSubject)
-	}
-
-	return nil
 }
 
 func (d *UserDatabase) getLegacyUser(ctx context.Context, subject string) (*unikornv1.User, error) {
