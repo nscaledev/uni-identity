@@ -18,6 +18,7 @@ package oauth2
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -185,7 +186,6 @@ func TestIssueSurvivesAConcurrentWriteToTheUser(t *testing.T) {
 	t.Parallel()
 
 	authenticator, cli := newConflictAuthenticator(t, migrateSubject)
-
 	info := &IssueInfo{
 		Federated: &FederatedClaims{
 			ClientID: conflictClientID,
@@ -198,7 +198,7 @@ func TestIssueSurvivesAConcurrentWriteToTheUser(t *testing.T) {
 		RefreshToken: ptr.To("refresh-reissued"),
 	}
 
-	authTime, err := authenticator.updateSession(t.Context(), info, tokens, ptr.To("code-reissued"))
+	authTime, err := authenticator.updateSession(t.Context(), info, tokens, nil)
 	require.NoError(t, err, "a login must not fail because the migration wrote the record first")
 
 	// The reissue is not interactive, so auth_time must still report the last
@@ -211,7 +211,7 @@ func TestIssueSurvivesAConcurrentWriteToTheUser(t *testing.T) {
 	require.Len(t, user.Spec.Sessions, 1)
 	assert.Equal(t, "access-reissued", user.Spec.Sessions[0].AccessToken)
 	assert.Equal(t, "refresh-reissued", user.Spec.Sessions[0].RefreshToken)
-	assert.Equal(t, "code-reissued", user.Spec.Sessions[0].AuthorizationCodeID)
+	assert.Equal(t, conflictCodeID, user.Spec.Sessions[0].AuthorizationCodeID)
 }
 
 func TestCodeReuseRevokesTheSessionDespiteAConcurrentWrite(t *testing.T) {
@@ -219,14 +219,174 @@ func TestCodeReuseRevokesTheSessionDespiteAConcurrentWrite(t *testing.T) {
 
 	authenticator, cli := newConflictAuthenticator(t, migrateSubject)
 
-	// RFC 6749 4.1.2: a reused code must revoke the tokens issued from it.
-	// The caller ignores this error.  If the revocation loses the race, the
-	// session stays live and nothing reports it.
-	require.NoError(t, authenticator.revokeSession(t.Context(), conflictClientID, conflictCodeID, conflictStored))
+	_, err := authenticator.updateSession(t.Context(), &IssueInfo{
+		Federated: &FederatedClaims{
+			ClientID: conflictClientID,
+			UserID:   conflictUserID,
+		},
+	}, &Tokens{}, ptr.To(conflictCodeID))
+	require.Error(t, err)
 
 	user := getConflictUser(t, cli)
 	assert.Equal(t, conflictMigrated, user.Spec.Subject, "the revocation must not undo the migration")
 	assert.Empty(t, user.Spec.Sessions, "a reused code must revoke the session")
+}
+
+func TestUnknownAuthorizationCodeLeavesOtherClientSession(t *testing.T) {
+	t.Parallel()
+
+	otherClientID := "other-client"
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: conflictUserID},
+		Spec: unikornv1.UserSpec{
+			Subject: conflictStored,
+			State:   unikornv1.UserStateActive,
+			Sessions: []unikornv1.UserSession{
+				{ClientID: conflictClientID, AuthorizationCodeID: "other-code", AccessToken: conflictAccess},
+				{ClientID: otherClientID, AuthorizationCodeID: conflictCodeID, AccessToken: "other-access"},
+			},
+		},
+	}
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user).Build()
+	authenticator := &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}
+
+	_, err := authenticator.updateSession(t.Context(), &IssueInfo{
+		Federated: &FederatedClaims{ClientID: conflictClientID, UserID: conflictUserID},
+	}, &Tokens{}, ptr.To(conflictCodeID))
+	require.Error(t, err)
+
+	stored := getConflictUser(t, cli)
+	require.Len(t, stored.Spec.Sessions, 2)
+	assert.Equal(t, conflictAccess, stored.Spec.Sessions[0].AccessToken)
+	assert.Equal(t, "other-access", stored.Spec.Sessions[1].AccessToken)
+}
+
+func TestPendingAuthorizationCodesAreSharedAndPruned(t *testing.T) {
+	t.Parallel()
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: conflictUserID},
+		Spec:       unikornv1.UserSpec{Subject: conflictStored, State: unikornv1.UserStateActive},
+	}
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user).Build()
+	first := &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}
+	second := &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}
+
+	issued, err := first.getUser(t.Context(), conflictUserID)
+	require.NoError(t, err)
+	require.NoError(t, first.addPendingAuthorizationCode(t.Context(), issued, "first", conflictClientID))
+	require.NoError(t, first.addPendingAuthorizationCode(t.Context(), issued, "second", conflictClientID))
+
+	info := &IssueInfo{Federated: &FederatedClaims{ClientID: conflictClientID, UserID: conflictUserID}}
+	_, err = second.updateSession(t.Context(), info, &Tokens{AccessToken: "first-access"}, ptr.To("first"))
+	require.NoError(t, err)
+	_, err = first.updateSession(t.Context(), info, &Tokens{AccessToken: "second-access"}, ptr.To("second"))
+	require.NoError(t, err)
+
+	stored := getConflictUser(t, cli)
+	assert.Empty(t, stored.Spec.PendingAuthorizationCodes)
+	require.Len(t, stored.Spec.Sessions, 1)
+	assert.Equal(t, "second", stored.Spec.Sessions[0].AuthorizationCodeID)
+}
+
+func TestExpiredPendingAuthorizationCodeIsRejectedAndPruned(t *testing.T) {
+	t.Parallel()
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: conflictUserID},
+		Spec: unikornv1.UserSpec{
+			Subject: conflictStored,
+			State:   unikornv1.UserStateActive,
+			PendingAuthorizationCodes: []unikornv1.PendingAuthorizationCode{{
+				CodeID: conflictCodeID, ClientID: conflictClientID, Expiry: metav1.NewTime(time.Now().Add(-time.Second)),
+			}},
+		},
+	}
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user).Build()
+	authenticator := &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}
+
+	_, err := authenticator.updateSession(t.Context(), &IssueInfo{Federated: &FederatedClaims{ClientID: conflictClientID, UserID: conflictUserID}}, &Tokens{}, ptr.To(conflictCodeID))
+	require.Error(t, err)
+	assert.Empty(t, getConflictUser(t, cli).Spec.PendingAuthorizationCodes)
+}
+
+func newPendingCodeAuthenticator(t *testing.T, pending []unikornv1.PendingAuthorizationCode) (*Authenticator, client.Client) {
+	t.Helper()
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: passportTestNamespace, Name: conflictUserID},
+		Spec: unikornv1.UserSpec{
+			Subject:                   conflictStored,
+			State:                     unikornv1.UserStateActive,
+			PendingAuthorizationCodes: pending,
+		},
+	}
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user).Build()
+
+	return &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}, cli
+}
+
+func pendingCodeIDs(user *unikornv1.User) []string {
+	ids := make([]string, len(user.Spec.PendingAuthorizationCodes))
+	for i := range user.Spec.PendingAuthorizationCodes {
+		ids[i] = user.Spec.PendingAuthorizationCodes[i].CodeID
+	}
+
+	return ids
+}
+
+func TestPendingAuthorizationCodesStopAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	authenticator, cli := newPendingCodeAuthenticator(t, nil)
+
+	want := make([]string, 0, unikornv1.MaxPendingAuthorizationCodes)
+
+	for i := range unikornv1.MaxPendingAuthorizationCodes {
+		id := fmt.Sprintf("code-%d", i)
+		want = append(want, id)
+
+		require.NoError(t, authenticator.addPendingAuthorizationCode(t.Context(), getConflictUser(t, cli), id, conflictClientID))
+	}
+
+	assert.Equal(t, want, pendingCodeIDs(getConflictUser(t, cli)), "codes up to the limit must all be kept")
+
+	require.NoError(t, authenticator.addPendingAuthorizationCode(t.Context(), getConflictUser(t, cli), "newest", conflictClientID))
+
+	stored := getConflictUser(t, cli)
+	assert.Equal(t, append(want[1:], "newest"), pendingCodeIDs(stored), "the oldest code must be evicted")
+
+	info := &IssueInfo{Federated: &FederatedClaims{ClientID: conflictClientID, UserID: conflictUserID}}
+	_, err := authenticator.updateSession(t.Context(), info, &Tokens{}, ptr.To("code-0"))
+	require.Error(t, err, "an evicted code must not be exchangeable")
+	_, err = authenticator.updateSession(t.Context(), info, &Tokens{AccessToken: "access"}, ptr.To("code-1"))
+	require.NoError(t, err, "a retained code must still be exchangeable")
+}
+
+func TestPendingAuthorizationCodesPruneExpiredBeforeEvicting(t *testing.T) {
+	t.Parallel()
+
+	expired := metav1.NewTime(time.Now().Add(-time.Second))
+	live := metav1.NewTime(time.Now().Add(time.Minute))
+
+	// The expired code is newest, so evicting by age alone would keep it
+	// and drop a live code.
+	pending := make([]unikornv1.PendingAuthorizationCode, 0, unikornv1.MaxPendingAuthorizationCodes)
+	want := make([]string, 0, unikornv1.MaxPendingAuthorizationCodes)
+
+	for i := range unikornv1.MaxPendingAuthorizationCodes - 1 {
+		id := fmt.Sprintf("code-%d", i)
+		want = append(want, id)
+		pending = append(pending, unikornv1.PendingAuthorizationCode{CodeID: id, ClientID: conflictClientID, Expiry: live})
+	}
+
+	pending = append(pending, unikornv1.PendingAuthorizationCode{CodeID: "expired", ClientID: conflictClientID, Expiry: expired})
+
+	authenticator, cli := newPendingCodeAuthenticator(t, pending)
+
+	require.NoError(t, authenticator.addPendingAuthorizationCode(t.Context(), getConflictUser(t, cli), "newest", conflictClientID))
+
+	assert.Equal(t, append(want, "newest"), pendingCodeIDs(getConflictUser(t, cli)))
 }
 
 func TestRefreshSurvivesAConcurrentWriteToTheUser(t *testing.T) {

@@ -326,7 +326,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	oauth2Options := &oauth2.Options{
 		AccessTokenDuration: time.Hour,
 		TokenCacheSize:      10,
-		CodeCacheSize:       10,
 	}
 
 	u, _ := url.Parse(mtlsServer.URL())
