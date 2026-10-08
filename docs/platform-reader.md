@@ -56,7 +56,7 @@ deliberate re-audit before `platform-reader` gains the surface, instead of silen
 
 ### Included scopes
 
-The 32 scopes below are the ones `platform-reader` actually carries, all at global scope with
+The 33 scopes below are the ones `platform-reader` actually carries, all at global scope with
 `[read]` only. This table is the audit's condensed record of what each read surface actually
 returns.
 
@@ -81,6 +81,7 @@ returns.
 | `region:volumeclasses:v2` | Storage catalog | uni-region `handler_v2_volumeclass.go:31` |
 | `region:filestorage:v2` | Includes `mountSource`/NFS `mountOptions` — data-plane topology, not credentials (deliberately included) | uni-region `storage/client.go:320,354,151` |
 | `region:filestorageclass:v2` | Catalog | uni-region `storage/client.go:746` |
+| `region:filestoragesnapshots:v2` | File storage snapshot read access | `charts/identity/values.yaml` |
 | `region:sshcertificateauthorities:v2` | CA **public** key only; private material never stored/served | uni-region `sshcertificateauthority/client_v2.go:62-66` |
 | `kubernetes:regions` / `flavors` / `images` | Catalog passthrough | uni-kubernetes `handler.go:112,131,150` |
 | `kubernetes:clustermanagers` | Metadata-only | uni-kubernetes `handler.go:184` |
