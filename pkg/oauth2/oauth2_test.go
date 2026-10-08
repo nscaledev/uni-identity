@@ -22,6 +22,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -519,4 +520,105 @@ func TestUserinfoCustomClaims(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUserinfoReadsUserOnce checks that userinfo for a federated token looks
+// the user up once: verification already loads it to check the session, and
+// the organization lookup reuses it.
+func TestUserinfoReadsUserOnce(t *testing.T) {
+	t.Parallel()
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "fake",
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: "barry@foo.com",
+			State:   unikornv1.UserStateActive,
+		},
+	}
+
+	var userReads atomic.Int64
+
+	counting := interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*unikornv1.User); ok {
+				userReads.Add(1)
+			}
+
+			return c.Get(ctx, key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*unikornv1.UserList); ok {
+				userReads.Add(1)
+			}
+
+			return c.List(ctx, list, opts...)
+		},
+	}
+
+	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(user).WithInterceptorFuncs(counting).Build()
+
+	josetesting.RotateCertificate(t, cli)
+
+	issuer := jose.NewJWTIssuer(cli, josetesting.Namespace, &jose.Options{
+		IssuerSecretName: josetesting.KeySecretName,
+		RotationPeriod:   josetesting.RefreshPeriod,
+	})
+
+	ctx := t.Context()
+
+	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
+
+	options := &oauth2.Options{
+		AccessTokenDuration:  time.Hour,
+		RefreshTokenDuration: time.Hour,
+		TokenCacheSize:       16,
+		CodeCacheSize:        16,
+	}
+
+	issuerVal := handlercommon.IssuerValue{URL: "https://foo.com", Hostname: "foo.com"}
+
+	userDatabase := userdb.NewUserDatabase(cli, josetesting.Namespace)
+
+	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, cli, cli, issuer,
+		userDatabase, rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
+	require.NoError(t, err)
+
+	time.Sleep(2 * josetesting.RefreshPeriod)
+
+	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
+		Issuer:   "https://foo.com",
+		Audience: "foo.com",
+		Subject:  "barry@foo.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID:   "fake",
+			ClientID: "client",
+		},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "https://foo.com/oauth2/v2/userinfo", nil)
+
+	// The first call decrypts the token and caches its claims.
+	_, _, err = authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+	require.NoError(t, err)
+
+	// A lookup may take more than one read, so compare with what looking the
+	// user up once costs.
+	userReads.Store(0)
+
+	_, err = userDatabase.GetActiveUser(ctx, "barry@foo.com")
+	require.NoError(t, err)
+
+	oneLookup := userReads.Load()
+	require.Positive(t, oneLookup)
+
+	userReads.Store(0)
+
+	_, _, err = authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+	require.NoError(t, err)
+	require.Equal(t, oneLookup, userReads.Load(), "userinfo should look the user up once")
 }
