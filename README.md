@@ -325,6 +325,16 @@ of time gets a retryable HTTP 409. Other organizations remain unaffected.
 The server Deployment also uses best-effort hostname spreading. Kubernetes
 places replicas on different nodes when capacity permits, but keeps them
 scheduled when it does not.
+
+Each replica checks tokens and builds ACLs from its own informer cache, which
+a write reaches within that replica's watch lag, and caches the ACLs it builds
+for `--acl-cache-timeout` (default one minute). A change to a user's permissions
+can therefore take the watch lag plus that timeout to apply, as it does with one
+replica, and until it has, replicas may disagree: one can refuse a request that
+another still allows. A newly issued token can likewise fail its first use on
+any replica until that replica's cache has it; see
+[`pkg/oauth2`](pkg/oauth2/README.md#readers).
+
 ### Installing the Management Plugin
 
 Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/releases) and install them in your path:

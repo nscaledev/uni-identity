@@ -41,6 +41,9 @@ type TestConfig struct {
 	UserSAID             string
 	UnauthorisedOrgID    string
 	ServiceAccountToken  string
+	// ACLCacheTimeout is how long each server replica caches an ACL, so how
+	// long a permission change can take to reach every replica.
+	ACLCacheTimeout time.Duration
 }
 
 // LoadTestConfig loads configuration from environment variables and .env files using viper.
@@ -95,6 +98,8 @@ func LoadTestConfig() (*TestConfig, error) {
 		UserSAID:             v.GetString("TEST_USER_SA_ID"),
 		UnauthorisedOrgID:    v.GetString("UNAUTHORISED_ORG_ID"),
 		ServiceAccountToken:  v.GetString("SERVICE_ACCOUNT_TOKEN"),
+		// Defaults to the server's own default for --acl-cache-timeout.
+		ACLCacheTimeout: coreconfig.GetDurationFromViper(v, "ACL_CACHE_TIMEOUT", time.Minute),
 	}
 
 	// Validate required fields
