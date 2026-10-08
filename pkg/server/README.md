@@ -128,6 +128,11 @@ convention.
   cache holds Organizations in the identity namespace, for namespace routing and the full
   organization list, and Quotas, Allocations and Projects in all namespaces, for the organization
   list includes. Revocation-sensitive token and membership state is always read directly
+- each API server replica may keep only refreshable derived caches locally; authorization codes,
+  sessions, revocation checks, allocation admission, and quota changes use persisted state or
+  per-organization Kubernetes Leases instead
+- JOSE key rotation is leader-elected through its Kubernetes Lease, while every replica reads the
+  shared `SigningKey` resource for signing and verification
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
 - API readiness reflects ownership of the bound HTTP listener, not construction
@@ -141,6 +146,11 @@ convention.
   give a false picture of how the service actually behaves at runtime.
 - The package is intentionally coupled to the current built-in identity stack. Changing the authn or
   trust model would require coordinated changes across several of the composed subsystems.
+- A lost API server that held an organization Lease delays that organization's allocation or quota
+  requests until a contender has seen the Lease unchanged for its three-second duration and takes
+  it over. The default eight-second request deadline leaves time for that and the critical section;
+  a request that runs out of time gets a retryable HTTP 409. Other organizations and login traffic
+  continue through remaining replicas.
 
 ## Related Documentation
 
