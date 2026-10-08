@@ -571,6 +571,10 @@ func (a *Authenticator) authorizationSilent(r *http.Request, redirector *redirec
 		return false
 	}
 
+	// A cookie that an earlier release set can carry an unfolded claim.  The
+	// new code reuses this id_token, so fold it before the reuse.
+	normalizeIDTokenSubject(code.IDToken)
+
 	clientQuery, err := url.ParseQuery(code.ClientQuery)
 	if err != nil {
 		return false
@@ -872,6 +876,16 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
+// normalizeIDTokenSubject folds the email claim of an id_token in place.  A
+// decoded code or session cookie can carry no id_token.
+func normalizeIDTokenSubject(idToken *oidc.IDToken) {
+	if idToken == nil {
+		return
+	}
+
+	idToken.Email.Email = unikornv1.NormalizeSubject(idToken.Email.Email)
+}
+
 // OIDCCallback is called by the authorization endpoint in order to return an
 // authorization back to us.  We then exchange the code for an ID token, and
 // refresh token.  Remember, as far as the client is concerned we're still doing
@@ -932,6 +946,11 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		redirector.raise(ErrorServerError, "code exchange failed: "+err.Error())
 		return
 	}
+
+	// The authorization code and the session cookie store this id_token, and
+	// every token minted from them takes its subject from the claim.  So fold
+	// the claim once, here.
+	normalizeIDTokenSubject(idToken)
 
 	user, err := a.userdb.GetUser(r.Context(), idToken.Email.Email)
 	if err != nil {
@@ -1340,9 +1359,11 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 	}
 
 	info := &IssueInfo{
-		Issuer:    a.getInternalIssuer(),
-		Audience:  a.getAudience(),
-		Subject:   claims.Subject,
+		Issuer:   a.getInternalIssuer(),
+		Audience: a.getAudience(),
+		// A refresh token that an earlier release minted can carry an unfolded
+		// subject.  Fold it, or the reissued tokens keep that case.
+		Subject:   unikornv1.NormalizeSubject(claims.Subject),
 		Type:      TokenTypeFederated,
 		Federated: claims.Federated,
 	}

@@ -32,6 +32,66 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
+// TestClient_CreateFoldsMixedCaseEmailSubject pins that the API stores a new
+// record in canonical form, as every other writer does.  A record in another
+// case beside a canonical record for the same address is a case-variant pair,
+// and the lookups then resolve the address by the case of the claim.
+func TestClient_CreateFoldsMixedCaseEmailSubject(t *testing.T) {
+	t.Parallel()
+
+	fixture := newUserTestFixture(t)
+	ctx := newContext(t)
+
+	request := &openapi.UserWrite{
+		Spec: openapi.UserSpec{
+			Subject: "Bob@Example.com",
+			State:   openapi.Active,
+		},
+	}
+
+	created, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), request)
+	require.NoError(t, err)
+	assert.Equal(t, userBobSubject, created.Spec.Subject)
+
+	globalUsers := &unikornv1.UserList{}
+	require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+	require.Len(t, globalUsers.Items, 1)
+	assert.Equal(t, userBobSubject, globalUsers.Items[0].Spec.Subject)
+}
+
+// TestClient_MembershipWrittenFromAStoredSubjectIsFolded pins groupSubject.  The
+// entry comes from the stored subject, which can be in another case when
+// kubectl-unikorn or an older writer stored it.  The entry must still carry the
+// canonical form, as the uni-auth0 member sync writes it, so that both writers
+// store one entry.
+func TestClient_MembershipWrittenFromAStoredSubjectIsFolded(t *testing.T) {
+	t.Parallel()
+
+	fixture := newUserTestFixtureWithObjects(t, []client.Object{
+		newGlobalUser(userBobID, storedMixedCaseSubject),
+		newOrganizationUser(orgUserBobID, userBobID),
+		newPlainGroup(),
+	}, interceptor.Funcs{})
+	ctx := newContext(t)
+
+	_, err := fixture.usersClient.Update(ctx, ids.MustParseOrganizationID(testOrgID), orgUserBobID,
+		&openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userBobSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{groupAlphaID},
+			},
+		})
+	require.NoError(t, err)
+
+	group := &unikornv1.Group{}
+	require.NoError(t, fixture.client.Get(ctx, client.ObjectKey{Namespace: testOrgNS, Name: groupAlphaID}, group))
+
+	require.Len(t, group.Spec.Subjects, 1)
+	assert.Equal(t, userBobSubject, group.Spec.Subjects[0].ID)
+	assert.Equal(t, userBobSubject, group.Spec.Subjects[0].Email)
+}
+
 // TestClient_CreateReusesRecordDifferingOnlyByCase pins the create-path dedupe.
 // If the match is exact, onboarding BOB@example.com beside bob@example.com adds
 // a second global record.  Two records for one principal make every later fold

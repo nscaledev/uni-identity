@@ -48,9 +48,9 @@ func (s *GroupSubject) IdentityKey() string {
 // principal that has no record yet.
 func (s *GroupSpec) HasMemberByID(subjectID string) bool {
 	// Compare canonical forms on both sides. A stored entry and the subject it is
-	// checked against can each be in either case until the data migration
-	// completes, and a membership that already confers the roles must not read as
-	// an addition and be refused.
+	// checked against can each be in either case, because kubectl-unikorn and
+	// older writers store a subject as given, and a membership that already
+	// confers the roles must not read as an addition and be refused.
 	canonical := NormalizeSubject(subjectID)
 	if canonical == "" {
 		return false

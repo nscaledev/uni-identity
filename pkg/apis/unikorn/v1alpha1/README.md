@@ -90,9 +90,13 @@ case. Other letters keep their case, because Unicode case mapping joins distinct
 bare address keeps its case, because a service user created with `kubectl-unikorn` can be case
 sensitive.
 
-No writer changes the form of a subject that it stores, so a stored `User.spec.subject` or
-`GroupSubject.ID` can be in either form. Every lookup of a stored subject, and every comparison
-against one, accepts both forms:
+The identity writers store a subject in canonical form: user `Create`, the group subject entries
+that [`pkg/handler/users`](../../../handler/users/README.md) and
+[`pkg/handler/groups`](../../../handler/groups/README.md) write, and the email claim that
+[`pkg/oauth2`](../../../oauth2/README.md) puts in a session. A stored `User.spec.subject` or
+`GroupSubject.ID` can still be in another form. For example, `kubectl-unikorn` writes a record
+directly, and an earlier release stored a subject as given. So every lookup of a stored subject, and
+every comparison against one, accepts both forms:
 
 - `MatchSubject` resolves a subject against a list of users. An exact match wins. If no record
   matches exactly, the one record with the same canonical form matches.

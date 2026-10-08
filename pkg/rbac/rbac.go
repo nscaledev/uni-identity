@@ -1053,7 +1053,11 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 		// doc comment for why this default is safe.
 		// X-Principal never carries groups, because group bindings must fail
 		// closed on delegated hops.
-		return r.processUserAccountACL(ctx, p.Actor, idconstants.UNISentinel, organizationID, authz, nil)
+		//
+		// Fold the actor, so that it matches a global role binding the way a
+		// direct call's subject does.  The actor comes from userinfo.Sub, and a
+		// token from an earlier release can carry another case.
+		return r.processUserAccountACL(ctx, unikornv1.NormalizeSubject(p.Actor), idconstants.UNISentinel, organizationID, authz, nil)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)
 	case openapi.System:

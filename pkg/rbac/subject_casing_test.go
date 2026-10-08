@@ -23,6 +23,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -88,4 +91,49 @@ func TestAnEmptySubjectIsInNoGroup(t *testing.T) {
 	// The group still confers its roles on a real member.
 	acl := getACLForUser(t, f.rbac, "dana@example.com")
 	assert.NotNil(t, acl.Organization, "a member must receive the group's organization scopes")
+}
+
+// TestImpersonatedActorSubjectIsFoldedBeforeBindingMatch pins the delegated
+// actor.  A global role binding matches its subject exactly, and the chart
+// accepts only canonical subjects, so a direct call matches with the folded
+// claim.  The actor is the userinfo.Sub of the original call, and a token from
+// before the claim folded can carry another case.  Without the fold, a
+// delegated call loses the binding that the same user gets directly.
+func TestImpersonatedActorSubjectIsFoldedBeforeBindingMatch(t *testing.T) {
+	t.Parallel()
+
+	const boundRoleID = "role-uni-binding-casing"
+
+	boundRole := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      boundRoleID,
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	}
+
+	f := setupImpersonationEnvironmentWithBindings(t,
+		[]unikornv1.RoleScope{
+			{Name: "identity:organizations", Operations: []unikornv1.Operation{unikornv1.Read}},
+		},
+		rbac.Options{
+			GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+				{Issuer: constants.UNISentinel, Subject: userBobSubject, RoleIDs: []string{boundRoleID}},
+			},
+		},
+		boundRole,
+	)
+
+	acl := impersonate(t, f, "Bob@Example.com")
+
+	require.NotNil(t, acl.Global, "a mixed-case actor must still match its canonical binding")
+	assert.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:organizations", Operations: []openapi.AclOperation{openapi.Read}},
+	}, *acl.Global)
 }

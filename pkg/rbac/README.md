@@ -202,8 +202,9 @@ URL (no commas or whitespace) are all rejected at flag-parse time — the proces
 malformed binding.
 
 **Subjects must be in their canonical lower-case form.** Matching is case-sensitive end to end: the
-authenticated subject arrives already lower-cased (Auth0's `validateEmail` normalizes the claim
-before it reaches RBAC), so a binding subject typed in any other case would simply stop matching.
+authenticated subject arrives already lower-cased (Auth0's `validateEmail` and the UNI `Callback`
+fold the email claim, and a delegated call folds the actor, before the subject reaches RBAC), so a
+binding subject typed in any other case would simply stop matching.
 The chart fails to render if a `globalRoleBindings` or `platformAdministrators.subjects` entry
 contains an upper-case ASCII letter (the literal wildcard `*` is exempt, having no letters to
 begin with), catching the mistake before deploy rather than deploying a binding that silently
@@ -478,6 +479,8 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
   cannot disagree. As a result, an entry in either case confers its roles and counts as an existing
   membership. An empty subject is a member of no group, so a junk entry with an empty `id` confers
   nothing.
+- A global role binding matches its subject exactly. So a delegated call folds the actor to
+  canonical form before the match, as the token paths fold the subject that they mint.
 - The ACL output is both an enforcement artifact and a visibility artifact, so incorrect ACL
   construction affects both authorization and UX.
 - Global role binding matching is always issuer-qualified at runtime. Subject and wildcard-subject

@@ -156,11 +156,16 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, gro
 func generateSubjects(in []openapi.Subject) []unikornv1.GroupSubject {
 	subjects := make([]unikornv1.GroupSubject, len(in))
 	for i, insub := range in {
-		subjects[i].ID = insub.Id
+		// Fold before deduplication and before the user lookup, so that two
+		// spellings of one address in a request collapse to one entry.
+		// GroupSubject.ID can be an opaque ID at an external issuer.
+		// NormalizeSubject folds only an ID that parses as a bare address, so
+		// any other ID keeps its case.
+		subjects[i].ID = unikornv1.NormalizeSubject(insub.Id)
 		subjects[i].Issuer = insub.Issuer
 
 		if insub.Email != nil {
-			subjects[i].Email = *insub.Email
+			subjects[i].Email = unikornv1.NormalizeSubject(*insub.Email)
 		}
 	}
 
@@ -336,11 +341,16 @@ func (c *Client) userIDsToPrincipals(ctx context.Context, userIDs []string, orga
 			return nil, fmt.Errorf("%w: failed to get user record", err)
 		}
 
+		// Fold the stored subject.  A record that kubectl-unikorn or an older
+		// writer stored can hold another case, and the entry must carry the
+		// form that every other writer stores.
+		subject := unikornv1.NormalizeSubject(user.Spec.Subject)
+
 		principals = append(principals, groupPrincipal{
 			userID: orgUserID,
 			subject: unikornv1.GroupSubject{
-				ID:     user.Spec.Subject,
-				Email:  user.Spec.Subject,
+				ID:     subject,
+				Email:  subject,
 				Issuer: c.issuer.URL,
 			},
 		})
