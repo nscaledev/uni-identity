@@ -67,6 +67,11 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
   them carries the canonical subject. Silent reauthentication folds the claim of a cookie that an
   earlier release set, and a refresh folds the subject of a refresh token that an earlier release
   minted.
+- `Callback` folds the claim before the lookup, so it does not prefer an exact match. With two `User`
+  records whose subjects differ only in case, it resolves the record that stores the canonical form.
+  If neither record stores it, `Callback` refuses the sign-in. A session that an earlier release put
+  on the other record fails its next verification. So each canonical subject must have only one
+  record.
 - Federated user sessions are persisted per client in the user record.
 - The package intentionally keeps a single active session/token chain per client.
 - Refresh tokens are single-use.

@@ -1055,9 +1055,8 @@ func (r *RBAC) processImpersonatedPrincipalACL(ctx context.Context, p *principal
 		// closed on delegated hops.
 		//
 		// Fold the actor, so that it matches a global role binding the way a
-		// direct call's subject does.  The actor comes from userinfo.Sub or
-		// from principal.FromResource, and a token or an annotation from an
-		// earlier release can carry another case.
+		// direct call's subject does.  The actor comes from userinfo.Sub, and a
+		// token from an earlier release can carry another case.
 		return r.processUserAccountACL(ctx, unikornv1.NormalizeSubject(p.Actor), idconstants.UNISentinel, organizationID, authz, nil)
 	case openapi.Service:
 		return r.processServiceAccountACL(ctx, p.Actor, organizationID, authz)

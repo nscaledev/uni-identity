@@ -96,10 +96,9 @@ func TestAnEmptySubjectIsInNoGroup(t *testing.T) {
 // TestImpersonatedActorSubjectIsFoldedBeforeBindingMatch pins the delegated
 // actor.  A global role binding matches its subject exactly, and the chart
 // accepts only canonical subjects, so a direct call matches with the folded
-// claim.  The actor is the live userinfo.Sub, or else the creator annotation of
-// a resource, which the creator principal annotation overrides.  Either can
-// carry the case of a token or annotation from before the claim folded.  Without
-// the fold, a delegated call loses the binding that the same user gets directly.
+// claim.  The actor is the userinfo.Sub of the original call, and a token from
+// before the claim folded can carry another case.  Without the fold, a
+// delegated call loses the binding that the same user gets directly.
 func TestImpersonatedActorSubjectIsFoldedBeforeBindingMatch(t *testing.T) {
 	t.Parallel()
 
