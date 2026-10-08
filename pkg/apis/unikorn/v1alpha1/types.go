@@ -344,6 +344,26 @@ type UserSpec struct {
 	// +listType=map
 	// +listMapKey=clientID
 	Sessions []UserSession `json:"sessions,omitempty"`
+	// PendingAuthorizationCodes are authorization codes that have been issued
+	// but not exchanged. They provide a shared, single-use record across
+	// identity replicas.
+	// +kubebuilder:validation:MaxItems=16
+	PendingAuthorizationCodes []PendingAuthorizationCode `json:"pendingAuthorizationCodes,omitempty"`
+}
+
+// MaxPendingAuthorizationCodes is how many pending authorization codes a user
+// may hold. Issuing another code evicts the oldest. The CRD enforces the same
+// limit separately (see the MaxItems marker above).
+const MaxPendingAuthorizationCodes = 16
+
+// PendingAuthorizationCode records an authorization code that may be exchanged.
+type PendingAuthorizationCode struct {
+	// CodeID identifies the authorization code.
+	CodeID string `json:"codeID"`
+	// ClientID identifies the OAuth2 client that received the code.
+	ClientID string `json:"clientID"`
+	// Expiry is the last time that the authorization code can be exchanged.
+	Expiry metav1.Time `json:"expiry"`
 }
 
 type UserSession struct {
