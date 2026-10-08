@@ -52,6 +52,11 @@ case finds a record stored in any case. On a miss, it selects random-named legac
 subject-ID label, which is derived the same way. Unlabelled records remain a final list-and-filter
 compatibility fallback. The returned record is owned by the caller.
 
+A lookup that finds the deterministic record trusts it without checking for another record with
+the same subject. User creation refuses that state (see
+[`pkg/handler/users`](../handler/users/README.md)), and the subject-label backfill refuses to run
+while it exists.
+
 ### Active-State Gatekeeping
 
 The package treats "active" as part of identity resolution rather than as downstream policy.

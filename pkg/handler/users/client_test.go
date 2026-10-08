@@ -265,6 +265,23 @@ func TestClient_Create(t *testing.T) {
 		assert.Contains(t, err.Error(), "multiple legacy users")
 	})
 
+	t.Run("rejects a legacy user with the same subject as a deterministic one", func(t *testing.T) {
+		t.Parallel()
+
+		// Lookups by subject trust the deterministic record without checking for
+		// others, so creating a user must refuse this state.
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(unikornv1.GlobalUserName(userAliceSubject), userAliceSubject),
+			newGlobalUser("user-alice-legacy", userAliceSubject),
+		}, interceptor.Funcs{})
+
+		_, err := fixture.usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{Subject: userAliceSubject, State: openapi.Active},
+		})
+
+		require.ErrorIs(t, err, coreerrors.ErrConsistency)
+	})
+
 	t.Run("reconciles groups when reusing existing organization user", func(t *testing.T) {
 		t.Parallel()
 
