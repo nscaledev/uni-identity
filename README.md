@@ -320,6 +320,11 @@ different replicas safely. If a pod holding that Lease is lost, requests for
 that organization can wait for the ten-second Lease to expire before retrying;
 other organizations remain unaffected.
 
+Each replica caches the ACLs it computes for `--acl-cache-timeout` (default one
+minute). A change to a user's permissions can therefore take that long to apply,
+as it does with one replica, and until it has, replicas may disagree: one can
+refuse a request that another still allows.
+
 ### Installing the Management Plugin
 
 Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/releases) and install them in your path:
