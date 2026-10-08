@@ -24,6 +24,7 @@ import (
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel"
 
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
@@ -36,6 +37,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
+	redmetrics "github.com/unikorn-cloud/identity/pkg/middleware/metrics"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -111,11 +113,18 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	opentelemetry := opentelemetry.New(constants.Application, constants.Version)
 	logging := logging.New()
 	routeresolver := routeresolver.New(schema)
+
+	metrics, err := redmetrics.New(otel.Meter(constants.Application))
+	if err != nil {
+		return nil, err
+	}
+
 	cors := cors.New(&s.CORSOptions)
 
 	router.Use(opentelemetry.Middleware)
 	router.Use(logging.Middleware)
 	router.Use(routeresolver.Middleware)
+	router.Use(metrics.Middleware)
 	router.Use(cors.Middleware)
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))

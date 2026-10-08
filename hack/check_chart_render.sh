@@ -203,4 +203,23 @@ if helm template test "$CHART" --set-string server.runtimeSchemaValidation=false
 	die "expected render failure for string server.runtimeSchemaValidation"
 fi
 
+# The shared endpoint must reach every workload.  The controller-runtime
+# registry is process-local, so configuring only the API server omits the
+# controller metrics from the OTLP export.  Every workload must also carry
+# OTEL_SERVICE_NAME: the exported metrics use platform-generic names, so a
+# series missing service.name cannot be attributed to identity.  All four
+# workloads share that service.name, so each must also set service.instance.id
+# (from the pod name) or their unlabelled runtime series would collide.
+out=$(helm template test "$CHART" --set otlp.endpoint=collector.example:4318)
+for workload in server organization-controller oauth2client-controller project-controller; do
+	flag=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].args[] | select(. == \"--otlp-endpoint=collector.example:4318\")" <<<"$out")
+	[[ "$flag" == "--otlp-endpoint=collector.example:4318" ]] || die "expected OTLP endpoint on test-${workload}"
+	service_name=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"OTEL_SERVICE_NAME\") | .value" <<<"$out")
+	[[ "$service_name" == "unikorn-identity" ]] || die "expected OTEL_SERVICE_NAME=unikorn-identity on test-${workload}"
+	attributes=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"OTEL_RESOURCE_ATTRIBUTES\") | .value" <<<"$out")
+	[[ "$attributes" == 'service.instance.id=$(POD_NAME)' ]] || die "expected service.instance.id from POD_NAME on test-${workload}"
+	pod_name_source=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"POD_NAME\") | .valueFrom.fieldRef.fieldPath" <<<"$out")
+	[[ "$pod_name_source" == "metadata.name" ]] || die "expected POD_NAME from the downward API on test-${workload}"
+done
+
 echo "chart render checks OK"

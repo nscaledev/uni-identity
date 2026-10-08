@@ -606,5 +606,7 @@ ingress:
 #   # How long to cache the CORS preflight for, mostly useless as browsers override this.
 #   maxAge: 86400
 
-# Sets the OTLP endpoint for shipping spans.
-# otlpEndpoint: jaeger-collector.default:4318
+# Configures telemetry export for the server and every controller.
+otlp:
+  # Leave empty when no collector is available.
+  endpoint: ""
