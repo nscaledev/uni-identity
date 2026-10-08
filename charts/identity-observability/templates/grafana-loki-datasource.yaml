@@ -1,0 +1,17 @@
+{{- if .Values.lokiDatasource.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "identity-observability.fullname" . }}-loki
+  namespace: {{ .Values.lokiDatasource.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "identity-observability.labels" . | nindent 4 }}
+    grafana_datasource: "1"
+data:
+  loki.yaml: |-
+    apiVersion: 1
+    datasources:
+    - name: Loki
+      type: loki
+      url: {{ required "lokiDatasource.url is required when enabled" .Values.lokiDatasource.url | quote }}
+{{- end }}

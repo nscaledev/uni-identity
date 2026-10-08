@@ -1,0 +1,66 @@
+{
+  "id": null,
+  "uid": "identity-controller-leadership",
+  "title": "Identity Controller Leadership",
+  "tags": ["identity", "controllers", "leadership"],
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "query": "label_values(leader_election_master_status{job=\"unikorn-identity\"}, cluster)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active controller leaders",
+      "description": "Each Identity controller manager holds one lease. Fewer active leases than controllers means reconciliation has stopped for at least one resource type.",
+      "type": "stat",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(max by (name) (leader_election_master_status{job=\"unikorn-identity\", cluster=~\"$cluster\"}))",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Leadership by lease",
+      "description": "A lease reports 1 while any manager is leader and 0 when no manager holds it.",
+      "type": "state-timeline",
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "max by (name) (leader_election_master_status{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "legendFormat": "{{name}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

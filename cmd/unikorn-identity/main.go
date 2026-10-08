@@ -21,18 +21,22 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel"
 
 	"github.com/unikorn-cloud/core/pkg/client"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/server"
+	servermetrics "github.com/unikorn-cloud/identity/pkg/server/metrics"
 
 	"k8s.io/client-go/rest"
 
@@ -65,25 +69,9 @@ func start() {
 		return
 	}
 
-	client, err := client.New(ctx, unikornv1.AddToScheme)
+	client, directclient, err := newKubernetesClients(ctx)
 	if err != nil {
-		logger.Error(err, "failed to create client")
-
-		return
-	}
-
-	clientconfig, err := rest.InClusterConfig()
-	if err != nil {
-		logger.Error(err, "failed to get client config")
-
-		return
-	}
-
-	directclient, err := ctrlclient.New(clientconfig, ctrlclient.Options{
-		Scheme: client.Scheme(),
-	})
-	if err != nil {
-		logger.Error(err, "failed to create direct Kubernetes client")
+		logger.Error(err, "failed to create Kubernetes clients")
 
 		return
 	}
@@ -91,6 +79,21 @@ func start() {
 	server, err := s.GetServer(client, directclient)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
+
+		return
+	}
+
+	metrics, err := servermetrics.New(otel.Meter(constants.Application), constants.ServiceDescriptor())
+	if err != nil {
+		logger.Error(err, "failed to setup server metrics")
+
+		return
+	}
+	defer closeServerMetrics(metrics, logger)
+
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		logger.Error(err, "failed to bind server listener")
 
 		return
 	}
@@ -115,7 +118,7 @@ func start() {
 		}
 	}()
 
-	if err := server.ListenAndServe(); err != nil {
+	if err := metrics.Serve(server, listener); err != nil {
 		if errors.Is(err, http.ErrServerClosed) {
 			return
 		}
@@ -123,6 +126,33 @@ func start() {
 		logger.Error(err, "unexpected server error")
 
 		return
+	}
+}
+
+func newKubernetesClients(ctx context.Context) (ctrlclient.Client, ctrlclient.Client, error) {
+	kubernetesClient, err := client.New(ctx, unikornv1.AddToScheme)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	clientConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	directClient, err := ctrlclient.New(clientConfig, ctrlclient.Options{
+		Scheme: kubernetesClient.Scheme(),
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return kubernetesClient, directClient, nil
+}
+
+func closeServerMetrics(metrics *servermetrics.Reporter, logger logr.Logger) {
+	if err := metrics.Close(); err != nil {
+		logger.Error(err, "failed to close server metrics")
 	}
 }
 

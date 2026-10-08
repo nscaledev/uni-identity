@@ -104,6 +104,9 @@ At a high level, `GetServer()` does the following:
 7. construct the top-level handler implementation
 8. attach everything through the generated OpenAPI router and return `http.Server`
 
+The command process publishes build metadata for its lifetime and reports ready
+only while it owns the bound HTTP listener.
+
 This makes the trust pipeline an application-level invariant rather than a handler-by-handler
 convention.
 
@@ -116,6 +119,8 @@ convention.
 - `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
+- API readiness reflects ownership of the bound HTTP listener, not construction
+  of the handler graph
 
 ## Caveats
 

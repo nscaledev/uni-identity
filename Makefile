@@ -44,6 +44,7 @@ CMDDIR = cmd
 SRCDIR = src
 GENDIR = generated
 CRDDIR = charts/identity/crds
+CHARTS = charts/identity charts/identity-observability
 
 # Where to install things.
 PREFIX = $(HOME)/bin
@@ -207,8 +208,9 @@ touch:
 lint: $(GENDIR)
 	@go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(LINT_VERSION)
 	$(GOBIN)/golangci-lint run ./...
-	helm lint --strict charts/identity
+	for chart in $(CHARTS); do helm lint --strict $$chart; done
 	./hack/check_chart_render.sh
+	./hack/check_observability_chart_render.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate

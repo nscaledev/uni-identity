@@ -1,0 +1,8 @@
+# Workload Grafana must query the central Identity metric store before dashboards are enabled.
+lokiDatasource:
+  enabled: false
+
+grafana:
+  dashboards:
+    enabled: false
+    provisioningMode: sidecar

@@ -48,6 +48,7 @@ OIDC §3.1.3.7) — there is no issuer normalization.
 - [middleware](./middleware/README.md)
 - [handler](./handler/README.md)
 - [server](./server/README.md)
+- [server metrics](./server/metrics/README.md)
 
 These packages show how the request pipeline is assembled, how the API layer
 applies read/modify/write and secure error-handling conventions, how the API
@@ -57,7 +58,8 @@ the generic `core` server stack with identity-specific trust logic.
 
 ### Controllers And Provisioners
 
-- [controllers](./controllers/README.md)
+- [controllers](./controllers/README.md) and
+  [controller metrics](./controllers/metrics/README.md)
 - [provisioners/organization](./provisioners/organization/README.md)
 - [provisioners/project](./provisioners/project/README.md)
 - [provisioners/oauth2client](./provisioners/oauth2client/README.md)
