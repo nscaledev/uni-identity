@@ -145,9 +145,9 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*o
 	return c.convert(ctx, result, organizationID)
 }
 
-func (c *Client) create(ctx context.Context, organizationID ids.OrganizationID, common *common.Client, required *unikornv1.Quota) (*openapi.QuotasRead, error) {
+func (c *Client) create(ctx context.Context, organizationID ids.OrganizationID, common *common.Client, required *unikornv1.Quota) (*unikornv1.Quota, error) {
 	if err := c.client.Create(ctx, required); err == nil {
-		return c.convert(ctx, required, organizationID)
+		return required, nil
 	} else if !kerrors.IsAlreadyExists(err) {
 		return nil, errors.OAuth2InvalidRequest("unable to create quota").WithError(err)
 	}
@@ -161,7 +161,7 @@ func (c *Client) create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, errors.OAuth2InvalidRequest("conflicting quota has unexpected name")
 	}
 
-	return c.convert(ctx, current, organizationID)
+	return current, nil
 }
 
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
@@ -169,25 +169,52 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	common := common.New(c.client)
-
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	current, virtual, err := common.GetQuota(ctx, organizationID)
+	quota, err := c.write(ctx, organizationID, organization, request)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.convert(ctx, quota, organizationID)
+}
+
+// write checks and stores the quota while holding the organization Lease, which is
+// released before the response is rendered.
+//
+//nolint:cyclop // First-time creation and update share the Lease and consistency checks.
+func (c *Client) write(ctx context.Context, organizationID ids.OrganizationID, organization *organizations.Meta, request *openapi.QuotasWrite) (*unikornv1.Quota, error) {
+	commonClient := common.New(c.client)
+
+	lease, lockedContext, err := common.AcquireOrganizationLease(ctx, c.client, c.namespace, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer common.ReleaseOrganizationLease(ctx, lease)
+
+	current, virtual, err := commonClient.GetQuota(lockedContext, organizationID)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
 
-	required, err := generate(ctx, organization, request)
+	required, err := generate(lockedContext, organization, request)
 	if err != nil {
 		return nil, err
 	}
 
 	if virtual {
-		return c.create(ctx, organizationID, common, required)
+		if err := commonClient.CheckQuotaConsistency(lockedContext, organizationID, required, nil); err != nil {
+			return nil, err
+		}
+
+		if err := lease.Check(lockedContext); err != nil {
+			return nil, err
+		}
+
+		return c.create(lockedContext, organizationID, commonClient, required)
 	}
 
 	updated := current.DeepCopy()
@@ -195,11 +222,15 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
+	if err := commonClient.CheckQuotaConsistency(lockedContext, organizationID, updated, nil); err != nil {
 		return nil, err
 	}
 
-	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := lease.Check(lockedContext); err != nil {
+		return nil, err
+	}
+
+	if err := c.client.Patch(lockedContext, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		if kerrors.IsConflict(err) {
 			return nil, errors.HTTPConflict().WithError(err)
 		}
@@ -207,5 +238,5 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, fmt.Errorf("%w: failed to patch quotas", err)
 	}
 
-	return c.convert(ctx, updated, organizationID)
+	return updated, nil
 }

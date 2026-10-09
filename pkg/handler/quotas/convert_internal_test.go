@@ -30,7 +30,7 @@ func TestConvertSumsAllocationsAndSortsByKind(t *testing.T) {
 
 	metadata := []unikornv1.QuotaMetadata{metaObj("servers", "10"), metaObj("gpus", "4")}
 	quotas := []unikornv1.ResourceQuota{{Kind: "servers", Quantity: qty("20")}, {Kind: "gpus", Quantity: qty("8")}}
-	allocations := []unikornv1.Allocation{allocationObj("gpus", "3", "1"), allocationObj("gpus", "2", "0")}
+	allocations := []unikornv1.Allocation{allocationObj("3", "1"), allocationObj("2", "0")}
 
 	before := make([]unikornv1.ResourceQuota, 0, len(quotas))
 
