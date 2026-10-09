@@ -19,7 +19,9 @@ the published verification material, and the token compatibility window that hig
 ## Key Lifecycle Model
 
 The root cryptographic material comes from a cert-manager managed TLS secret. `JWTIssuer.Run()`
-uses leader election so only one replica manages key rotation state at a time.
+uses leader election so only one replica manages key rotation state at a time. The leader
+reconciles the keys as soon as it is elected, then once per `--jose-tls-rotation-period`, so a
+fresh install can sign tokens without waiting a full period.
 
 The package then projects that live key into the `SigningKey` resource as a rolling compatibility
 window:

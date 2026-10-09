@@ -18,6 +18,7 @@ limitations under the License.
 package jose_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -91,6 +93,45 @@ func TestRotation(t *testing.T) {
 
 	time.Sleep(josetesting.RefreshPeriod * 2)
 	josetesting.CheckSigningKeys(t, client, key3, key2)
+}
+
+// TestSigningKeysCreatedOnLeadership tests that a new leader creates the signing keys
+// straight away, rather than after the first rotation period.
+func TestSigningKeysCreatedOnLeadership(t *testing.T) {
+	t.Parallel()
+
+	client := fake.NewClientBuilder().WithScheme(getScheme(t)).Build()
+
+	key := josetesting.RotateCertificate(t, client)
+
+	options := &jose.Options{
+		IssuerSecretName: josetesting.KeySecretName,
+		RotationPeriod:   time.Hour,
+	}
+
+	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, options)
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		issuer.StartLeading(ctx)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	require.Eventually(t, func() bool {
+		var signingKeys unikornv1.SigningKey
+
+		return client.Get(ctx, ctrlclient.ObjectKey{Namespace: josetesting.Namespace, Name: jose.SigningKeyName}, &signingKeys) == nil
+	}, 5*time.Second, 10*time.Millisecond)
+
+	josetesting.CheckSigningKeys(t, client, key)
 }
 
 // TestJWTIssue tests that issued JWTs validate across key rotation, and cease working
