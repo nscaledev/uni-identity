@@ -21,6 +21,7 @@ spec:
         {{- include "unikorn.core.flags" . | nindent 8 }}
         {{- include "unikorn.cors.flags" . | nindent 8 }}
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        {{- include "unikorn.audit.flags" . | nindent 8 }}
         - --host=https://{{ include "unikorn.identity.host" . }}
         - --jose-tls-secret={{ .Release.Name }}-jose-tls
         - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
