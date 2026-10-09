@@ -469,28 +469,45 @@ func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organiza
 	}
 }
 
-func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, globalUserID string) (*unikornv1.OrganizationUser, error) {
+func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, globalUserID string) (*unikornv1.OrganizationUser, bool, error) {
 	resource, err := c.getOrganizationUserByGlobalUserID(ctx, organization, globalUserID)
 	if err == nil {
 		// Create is idempotent: an existing membership is returned as-is. Call Update
 		// to intentionally change organization-local state.
-		return resource, nil
+		return resource, true, nil
 	}
 
 	if !goerrors.Is(err, ErrReference) {
-		return nil, fmt.Errorf("%w: failed to create organization user", err)
+		return nil, false, fmt.Errorf("%w: failed to create organization user", err)
 	}
 
 	resource, err = generateOrganizationUser(ctx, organization, request, globalUserID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
-		return nil, fmt.Errorf("%w: failed to create organization user", err)
+		return nil, false, fmt.Errorf("%w: failed to create organization user", err)
 	}
 
-	return resource, nil
+	return resource, false, nil
+}
+
+func groupIDsForCreate(resource *unikornv1.OrganizationUser, user *unikornv1.User, groups *unikornv1.GroupList, requested openapi.GroupIDs, existing bool) openapi.GroupIDs {
+	if !existing {
+		return requested
+	}
+
+	// Create is also the invite operation. When the organization user already
+	// exists, retain its current groups; callers use Update to replace membership.
+	groupIDs := convert(resource, user, groups).Spec.GroupIDs
+	for _, groupID := range requested {
+		if !slices.Contains(groupIDs, groupID) {
+			groupIDs = append(groupIDs, groupID)
+		}
+	}
+
+	return groupIDs
 }
 
 // Create makes a new user.  This creates a new user in an organization, but they
@@ -533,12 +550,14 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, err
 	}
 
-	resource, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
+	resource, existing, err := c.getOrCreateOrganizationUser(ctx, organization, request, user.Name)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, request.Spec.GroupIDs, groups); err != nil {
+	groupIDs := groupIDsForCreate(resource, user, groups, request.Spec.GroupIDs, existing)
+
+	if err := c.updateGroups(ctx, user.Spec.Subject, resource.Name, groupIDs, groups); err != nil {
 		return nil, err
 	}
 

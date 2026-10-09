@@ -245,7 +245,7 @@ func TestClient_Create(t *testing.T) {
 		assert.Equal(t, globalUsers.Items[0].Name, organizationUsers.Items[0].Labels[constants.UserLabel])
 	})
 
-	t.Run("reconciles groups when reusing existing organization user", func(t *testing.T) {
+	t.Run("adds groups when reusing existing organization user", func(t *testing.T) {
 		t.Parallel()
 
 		fixture := newUserTestFixture(t)
@@ -299,12 +299,36 @@ func TestClient_Create(t *testing.T) {
 		}
 
 		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
-		assert.NotContains(t, alphaGroup.Spec.UserIDs, first.Metadata.Id)
-		assert.NotContains(t, alphaGroup.Spec.Subjects, subject)
+		assert.Contains(t, alphaGroup.Spec.UserIDs, first.Metadata.Id)
+		assert.Contains(t, alphaGroup.Spec.Subjects, subject)
 
 		betaGroup := getGroup(ctx, t, fixture.client, groupBetaID)
 		assert.Contains(t, betaGroup.Spec.UserIDs, first.Metadata.Id)
 		assert.Contains(t, betaGroup.Spec.Subjects, subject)
+	})
+
+	t.Run("removes unrequested subject-only groups when creating an organization user", func(t *testing.T) {
+		t.Parallel()
+
+		fixture := newUserTestFixtureWithObjects(t, []client.Object{
+			newGlobalUser(userAliceID, userAliceSubject),
+			newRadarGroup(groupAlphaID, nil, []unikornv1.GroupSubject{aliceSubject()}),
+		}, interceptor.Funcs{})
+		ctx := newContext(t)
+
+		created, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{
+				Subject:  userAliceSubject,
+				State:    openapi.Active,
+				GroupIDs: openapi.GroupIDs{},
+			},
+		})
+		require.NoError(t, err)
+		assert.Empty(t, created.Spec.GroupIDs)
+
+		alphaGroup := getGroup(ctx, t, fixture.client, groupAlphaID)
+		assert.Empty(t, alphaGroup.Spec.UserIDs)
+		assert.Empty(t, alphaGroup.Spec.Subjects)
 	})
 
 	t.Run("returns consistency error for duplicate organization users", func(t *testing.T) {
