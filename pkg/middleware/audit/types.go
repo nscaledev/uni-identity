@@ -38,3 +38,13 @@ type Operation struct {
 type Result struct {
 	Status int `json:"status"`
 }
+
+// Scope is the tenancy the operation affected.
+//
+// It comes from the authorization decision, not the URL.  v1 APIs happened to
+// carry it in the path and v2 APIs do not, so the path was never a dependable
+// source and is not consulted.
+type Scope struct {
+	OrganizationID string `json:"organizationId,omitempty"`
+	ProjectID      string `json:"projectId,omitempty"`
+}
