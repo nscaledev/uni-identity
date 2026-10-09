@@ -51,14 +51,21 @@ The ordering here is intentional and should be read as precedent for other API s
 
 The `core` middleware stack is applied directly to the raw router in this order:
 
-1. OpenTelemetry
-2. logging
-3. route resolver
-4. RED metrics
-5. CORS
+1. request deadline
+2. OpenTelemetry
+3. logging
+4. route resolver
+5. RED metrics
+6. CORS
 
 The reasons matter:
 
+- The request deadline runs first so it bounds all later work. The server's write timeout stops
+  response writes but does not cancel the request context, so the deadline is the shorter of
+  `--server-request-timeout` and `--server-write-timeout` minus two seconds. Those two seconds
+  cover organization Lease cleanup and the response write. The server refuses to start if the
+  deadline is shorter than an organization Lease takeover plus its critical section (see
+  [`pkg/handler/allocations`](../handler/allocations/README.md)).
 - OpenTelemetry must run first so trace context exists before anything else happens.
 - Logging must run early so even requests that fail before deep routing or service-specific
   middleware still get captured, and so those logs can include the trace context established
@@ -97,7 +104,7 @@ At a high level, `GetServer()` does the following:
 
 1. build the OpenAPI schema helper
 2. create the raw router
-3. install the shared `core` middleware stack
+3. compute the request deadline and install the shared `core` middleware stack
 4. install generic `NotFound` and `MethodNotAllowed` handling
 5. construct process-wide identity helper services (`jose`, `userdb`, `rbac`, `oauth2`)
 6. construct identity-specific middleware (`local` authorizer, validator, audit)
