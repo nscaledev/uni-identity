@@ -30,6 +30,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -671,6 +672,11 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 	if err != nil {
 		return err
 	}
+
+	// A user's name is its subject, which is only knowable once the resource has
+	// been read.  Naming it here matters most on a deletion: afterwards there is
+	// nothing left to resolve the identifier against.
+	authz.Name(ctx, user.Spec.Subject)
 
 	// Deletion only strips memberships, which confers nothing, so there is no
 	// grant pre-pass to run.
