@@ -30,6 +30,7 @@ import (
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -189,6 +190,8 @@ func (a *Authenticator) updateUser(ctx context.Context, user *unikornv1.User, ch
 // updateSession updates the user record to indicate the current access token and single-use refresh
 // token bound to a specific client.  This ensures only a single session can be active per-client
 // at a time, tokens are automatically revoked when reissued etc.
+//
+//nolint:cyclop
 func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, tokens *Tokens, authorizationCodeID *string) (time.Time, error) {
 	var lastAuthentication *metav1.Time
 
@@ -197,7 +200,33 @@ func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, toke
 		return time.Time{}, err
 	}
 
+	var authorizationCodeErr error
+
 	err = a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
+		changed := prunePendingAuthorizationCodes(user, time.Now())
+
+		if authorizationCodeID != nil {
+			index := slices.IndexFunc(user.Spec.PendingAuthorizationCodes, func(code unikornv1.PendingAuthorizationCode) bool {
+				return code.CodeID == *authorizationCodeID && code.ClientID == info.Federated.ClientID
+			})
+			if index < 0 {
+				sessionIndex := slices.IndexFunc(user.Spec.Sessions, func(session unikornv1.UserSession) bool {
+					return session.ClientID == info.Federated.ClientID && session.AuthorizationCodeID == *authorizationCodeID
+				})
+				if sessionIndex >= 0 {
+					a.InvalidateToken(ctx, user.Spec.Sessions[sessionIndex].AccessToken)
+					user.Spec.Sessions = append(user.Spec.Sessions[:sessionIndex], user.Spec.Sessions[sessionIndex+1:]...)
+					changed = true
+				}
+
+				authorizationCodeErr = oauth2errors.OAuth2InvalidGrant("authorization code is invalid or has expired")
+
+				return changed, nil
+			}
+
+			user.Spec.PendingAuthorizationCodes = append(user.Spec.PendingAuthorizationCodes[:index], user.Spec.PendingAuthorizationCodes[index+1:]...)
+		}
+
 		session, err := user.Session(info.Federated.ClientID)
 		if err != nil {
 			user.Spec.Sessions = append(user.Spec.Sessions, unikornv1.UserSession{
@@ -233,6 +262,10 @@ func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, toke
 		return time.Time{}, err
 	}
 
+	if authorizationCodeErr != nil {
+		return time.Time{}, authorizationCodeErr
+	}
+
 	lastAuthenticationTime := time.Now()
 
 	if lastAuthentication != nil {
@@ -240,6 +273,30 @@ func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, toke
 	}
 
 	return lastAuthenticationTime, nil
+}
+
+const authorizationCodeLifetime = time.Minute
+
+func prunePendingAuthorizationCodes(user *unikornv1.User, now time.Time) bool {
+	before := len(user.Spec.PendingAuthorizationCodes)
+	user.Spec.PendingAuthorizationCodes = slices.DeleteFunc(user.Spec.PendingAuthorizationCodes, func(code unikornv1.PendingAuthorizationCode) bool {
+		return !code.Expiry.After(now)
+	})
+
+	return len(user.Spec.PendingAuthorizationCodes) != before
+}
+
+func (a *Authenticator) addPendingAuthorizationCode(ctx context.Context, user *unikornv1.User, codeID, clientID string) error {
+	return a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
+		prunePendingAuthorizationCodes(user, time.Now())
+		user.Spec.PendingAuthorizationCodes = append(user.Spec.PendingAuthorizationCodes, unikornv1.PendingAuthorizationCode{
+			CodeID:   codeID,
+			ClientID: clientID,
+			Expiry:   metav1.NewTime(time.Now().Add(authorizationCodeLifetime)),
+		})
+
+		return true, nil
+	})
 }
 
 // Issue issues a new JWT access token.

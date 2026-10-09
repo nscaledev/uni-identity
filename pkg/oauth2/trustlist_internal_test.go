@@ -81,7 +81,6 @@ func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trust
 	return setupAuthenticatorWithOptions(t, &Options{
 		AccessTokenDuration: accessTokenDurationTL,
 		TokenCacheSize:      64,
-		CodeCacheSize:       64,
 		ValidatorCacheSize:  64,
 	}, objects...)
 }
@@ -314,7 +313,6 @@ func TestGroupsClaimByIssuerIncludesLegacyAuth0Exchange(t *testing.T) {
 	env := setupAuthenticatorWithOptions(t, &Options{
 		AccessTokenDuration:   accessTokenDurationTL,
 		TokenCacheSize:        64,
-		CodeCacheSize:         64,
 		ValidatorCacheSize:    64,
 		Auth0ExchangeIssuer:   legacyIssuer,
 		Auth0ExchangeAudience: "legacy-aud",
@@ -354,7 +352,6 @@ func TestGroupsClaimByIssuerCRDShadowsLegacySynthetic(t *testing.T) {
 	env := setupAuthenticatorWithOptions(t, &Options{
 		AccessTokenDuration:   accessTokenDurationTL,
 		TokenCacheSize:        64,
-		CodeCacheSize:         64,
 		ValidatorCacheSize:    64,
 		Auth0ExchangeIssuer:   legacyIssuer,
 		Auth0ExchangeAudience: "legacy-aud",
@@ -389,7 +386,6 @@ func TestBearerTrustProvidersSortsByName(t *testing.T) {
 	env := setupAuthenticatorWithOptions(t, &Options{
 		AccessTokenDuration:   accessTokenDurationTL,
 		TokenCacheSize:        64,
-		CodeCacheSize:         64,
 		ValidatorCacheSize:    64,
 		Auth0ExchangeIssuer:   legacyIssuer,
 		Auth0ExchangeAudience: "legacy-aud",
