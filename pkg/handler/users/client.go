@@ -204,10 +204,7 @@ func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
 // other write, so a refusal cannot leave an earlier part of the request
 // applied.
 func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
-	// The subject is supplied by the caller rather than re-read here: on the
-	// create path the global user was just written to the API server, and a
-	// read back through the cached client can miss it while the informer catches
-	// up, spuriously failing the request. Callers already hold the user.
+	// Callers supply the subject from the user they created or loaded.
 	subject := c.groupSubject(userSubject)
 
 	for i := range groups.Items {

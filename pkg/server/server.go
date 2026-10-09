@@ -94,7 +94,7 @@ func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
 	return s.CoreOptions.SetupOpenTelemetry(ctx)
 }
 
-func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
+func (s *Server) GetServer(client client.Client, organizationReader client.Reader) (*http.Server, error) {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
@@ -149,7 +149,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	s.RBACOptions.PlatformAdministratorSubjects = expandBareAdminSubjects(s.RBACOptions.PlatformAdministratorSubjects, s.OAuth2Options.Auth0ExchangeIssuer)
 
 	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, directclient, issuer, userdb, rbac)
+	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, organizationReader, issuer, userdb, rbac)
 
 	if err != nil {
 		return nil, err
@@ -197,7 +197,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		},
 	}
 
-	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -240,9 +240,8 @@ func expandBareAdminSubjects(subjects []rbac.PlatformAdministratorSubject, legac
 // expandBareAdminSubjects already mirrors bare admin entries onto it, so its
 // presence alone leaves nothing to migrate.
 //
-// A List failure (e.g. informer cache not yet warm) is returned as an error
-// so the caller can skip the advisory check rather than mistake it for a
-// genuinely empty trusted-issuer list.
+// A List failure is returned as an error so the caller can skip the advisory
+// check rather than mistake it for a genuinely empty trusted-issuer list.
 func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace string) ([]string, error) {
 	var providers unikornv1.OAuth2ProviderList
 

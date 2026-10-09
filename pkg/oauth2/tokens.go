@@ -323,24 +323,36 @@ type VerifyInfo struct {
 
 // Verify checks the access token parses and validates.
 func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, error) {
-	// The verification process is very expensive, so we add a cache in here to
-	// improve interactivity.  Once this is in place, then the network latency becomes
-	// the bottle neck, presumably this is the TLS handshake.  Similar code can be
-	// in the remote client-side verification middleware.
+	claims, _, err := a.verify(ctx, info)
+
+	return claims, err
+}
+
+// verify checks the access token parses and validates. For a federated token
+// it also returns the active user it checked the session against, so callers
+// can use it without reading it again.
+func (a *Authenticator) verify(ctx context.Context, info *VerifyInfo) (*Claims, *unikornv1.User, error) {
+	// Decoding and cryptographic validation are expensive, so cache the claims.
+	// Revocable identity state is always checked against Kubernetes below.
 	if value, ok := a.tokenCache.Get(info.Token); ok {
 		claims, ok := value.(*Claims)
 		if !ok {
-			return nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
+			return nil, nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
 		}
 
-		return claims, nil
+		user, err := a.verifyRevocableState(ctx, info, claims)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return claims, user, nil
 	}
 
 	// Parse and verify the claims with the public key.
 	claims := &Claims{}
 
 	if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
-		return nil, fmt.Errorf("failed to decrypt claims: %w", err)
+		return nil, nil, fmt.Errorf("failed to decrypt claims: %w", err)
 	}
 
 	// Verify the claims.
@@ -353,21 +365,17 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 	}
 
 	if err := claims.ValidateWithLeeway(expected, a.options.TokenVerificationLeeway); err != nil {
-		return nil, fmt.Errorf("failed to validate claims: %w", err)
+		return nil, nil, fmt.Errorf("failed to validate claims: %w", err)
 	}
 
-	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
-		return nil, err
+	user, err := a.verifyRevocableState(ctx, info, claims)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// Ensure the access token is valid for the current user session...
-	if err := a.verifyUserSession(ctx, info, claims); err != nil {
-		return nil, err
-	}
-
-	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
-	// could still be valid for months...
+	// Bound the cache entry's lifetime: evict entries eventually to cap memory,
+	// and never let one outlive the token's own expiry, since the cache-hit path
+	// skips the time-based claim checks. Revocation is checked live on every hit.
 	timeout := time.Hour
 
 	if tokenExpiresIn := time.Until(claims.Expiry.Time()); tokenExpiresIn < timeout {
@@ -376,7 +384,17 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 
 	a.tokenCache.Add(info.Token, claims, timeout)
 
-	return claims, nil
+	return claims, user, nil
+}
+
+// verifyRevocableState checks identity state that can change before a token
+// expires. It returns the active user for a federated token, and nil otherwise.
+func (a *Authenticator) verifyRevocableState(ctx context.Context, info *VerifyInfo, claims *Claims) (*unikornv1.User, error) {
+	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
+		return nil, err
+	}
+
+	return a.verifyUserSession(ctx, info, claims)
 }
 
 func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyInfo, claims *Claims) error {
@@ -386,7 +404,7 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 
 	organization := &unikornv1.Organization{}
 
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
+	if err := a.organizationReader.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
 		return err
 	}
 
@@ -403,15 +421,15 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 	return nil
 }
 
-func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo, claims *Claims) error {
+func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo, claims *Claims) (*unikornv1.User, error) {
 	if claims.Type != TokenTypeFederated {
-		return nil
+		return nil, nil //nolint:nilnil // only federated tokens have a user
 	}
 
 	// TODO: the subject should be the user ID anyway...
 	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	lookupSession := func(session unikornv1.UserSession) bool {
@@ -420,14 +438,14 @@ func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo,
 
 	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
 	if index < 0 {
-		return fmt.Errorf("%w: no active session for token", ErrTokenVerification)
+		return nil, fmt.Errorf("%w: no active session for token", ErrTokenVerification)
 	}
 
 	if user.Spec.Sessions[index].AccessToken != info.Token {
-		return fmt.Errorf("%w: token invalid for active session", ErrTokenVerification)
+		return nil, fmt.Errorf("%w: token invalid for active session", ErrTokenVerification)
 	}
 
-	return nil
+	return user, nil
 }
 
 // InvalidateToken immediately invalidates the token so it's unusable again.

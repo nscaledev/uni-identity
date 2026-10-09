@@ -52,8 +52,7 @@ const (
 // errBoom is a sentinel error for tests that need a non-NotFound failure.
 var errBoom = errors.New("boom")
 
-// recorder records the options of each cache read that the code under test
-// makes.
+// recorder records the options of each read that the code under test makes.
 type recorder struct {
 	lists []client.ListOptions
 	gets  []client.GetOptions
@@ -124,19 +123,19 @@ func memberContext(t *testing.T) context.Context {
 	return authorization.NewContext(ctx, &authorization.Info{Userinfo: &openapi.Userinfo{Sub: subject}})
 }
 
-func requireNoDeepCopy(t *testing.T, r *recorder) {
+func requireNoCacheOptions(t *testing.T, r *recorder) {
 	t.Helper()
 
 	for _, options := range r.lists {
-		require.True(t, ptr.Deref(options.UnsafeDisableDeepCopy, false), "list must disable deep copies")
+		require.Nil(t, options.UnsafeDisableDeepCopy)
 	}
 
 	for _, options := range r.gets {
-		require.True(t, ptr.Deref(options.UnsafeDisableDeepCopy, false), "get must disable deep copies")
+		require.Nil(t, options.UnsafeDisableDeepCopy)
 	}
 }
 
-func TestListGlobalBranchReadsWithoutDeepCopy(t *testing.T) {
+func TestListGlobalBranchReadsWithoutCacheOptions(t *testing.T) {
 	t.Parallel()
 
 	r := &recorder{}
@@ -147,7 +146,7 @@ func TestListGlobalBranchReadsWithoutDeepCopy(t *testing.T) {
 	require.Len(t, out, 2)
 	require.Equal(t, orgA, out[0].Metadata.Id)
 	require.Equal(t, orgB, out[1].Metadata.Id)
-	requireNoDeepCopy(t, r)
+	requireNoCacheOptions(t, r)
 }
 
 func TestListMembershipBranchGetsEachOrganization(t *testing.T) {
@@ -161,13 +160,7 @@ func TestListMembershipBranchGetsEachOrganization(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out, 2, "duplicate memberships still return the organization twice")
 	require.Equal(t, orgB, out[0].Metadata.Id)
-	require.Len(t, r.gets, 2)
-
-	// This test checks only the organization reads. The OrganizationUser list
-	// in organizationIDs still makes deep copies.
-	for _, options := range r.gets {
-		require.True(t, ptr.Deref(options.UnsafeDisableDeepCopy, false), "get must disable deep copies")
-	}
+	requireNoCacheOptions(t, r)
 }
 
 func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {

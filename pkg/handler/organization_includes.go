@@ -41,8 +41,7 @@ import (
 const quotasErrorText = "quota data is inconsistent"
 
 // organizationExtras holds the supporting objects of one request, grouped by
-// organization ID. Every object comes from the informer cache without a copy,
-// so treat it as read-only.
+// organization ID.
 type organizationExtras struct {
 	quotas      map[string][]unikornv1.Quota
 	allocations map[string][]unikornv1.Allocation
@@ -50,15 +49,14 @@ type organizationExtras struct {
 	metadata    []unikornv1.QuotaMetadata
 }
 
-// listShared lists every object of one kind in all namespaces, without deep
-// copies.
+// listShared lists every object of one kind in all namespaces.
 //
-// YAGNI: each request scans every cached object of the kind, whatever the
+// YAGNI: each request scans every object of the kind, whatever the
 // caller can see. A label selector over the caller's IDs still compares each
 // object with the full ID list. Add the selector only if this scan becomes a
 // hot path.
 func (h *Handler) listShared(ctx context.Context, list client.ObjectList) error {
-	return h.client.List(ctx, list, &client.ListOptions{UnsafeDisableDeepCopy: ptr.To(true)})
+	return h.client.List(ctx, list)
 }
 
 // byOrganizationLabel groups items by their organization label. Items
@@ -93,7 +91,7 @@ func (h *Handler) loadQuotaExtras(ctx context.Context, extras *organizationExtra
 
 	metadataList := &unikornv1.QuotaMetadataList{}
 
-	if err := h.client.List(ctx, metadataList, &client.ListOptions{Namespace: h.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
+	if err := h.client.List(ctx, metadataList, &client.ListOptions{Namespace: h.namespace}); err != nil {
 		return err
 	}
 

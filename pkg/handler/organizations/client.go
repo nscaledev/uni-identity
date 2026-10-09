@@ -101,8 +101,8 @@ func copyString(in *string) *string {
 	return ptr.To(*in)
 }
 
-// convert copies every value it takes from in. in can come from the informer
-// cache without a copy, and the result never points into it.
+// convert copies every value it takes from in, and the result never points
+// into it.
 func convert(in *unikornv1.Organization) *openapi.OrganizationRead {
 	out := &openapi.OrganizationRead{
 		Metadata: conversion.ResourceReadMetadata(in, in.Spec.Tags),
@@ -246,15 +246,11 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 	// If we don't have that then we need to use RBAC to get a list of organizations we are
 	// members of and return only them.
 	//
-	// Both branches read the cache without deep copies. The organization
-	// objects come from the informer and are read-only. convert copies every
-	// value it takes, so the returned list shares no memory with the cache.
 	if err := rbac.AllowGlobalScope(ctx, "identity:organizations", openapi.Read); err == nil && email == nil {
 		var result unikornv1.OrganizationList
 
 		options := &client.ListOptions{
-			Namespace:             c.namespace,
-			UnsafeDisableDeepCopy: ptr.To(true),
+			Namespace: c.namespace,
 		}
 
 		if err := c.client.List(ctx, &result, options); err != nil {
@@ -276,7 +272,7 @@ func (c *Client) List(ctx context.Context, userdb *userdb.UserDatabase, email *s
 	for _, organizationID := range organizationIDs {
 		organization := &unikornv1.Organization{}
 
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization, client.UnsafeDisableDeepCopy); err != nil {
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization); err != nil {
 			if kerrors.IsNotFound(err) {
 				return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
 			}

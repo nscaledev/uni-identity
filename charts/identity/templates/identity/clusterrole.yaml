@@ -20,6 +20,7 @@ rules:
   - users
   - organizationusers
   verbs:
+  - get
   - list
   - watch
   - update
@@ -52,6 +53,7 @@ rules:
   resources:
   - signingkeys
   verbs:
+  - get
   - list
   - watch
   - create
@@ -60,6 +62,13 @@ rules:
   - ""
   resources:
   - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - configmaps
   - namespaces
   verbs:

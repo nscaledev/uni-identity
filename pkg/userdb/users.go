@@ -26,7 +26,6 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -62,9 +61,7 @@ func NewUserDatabase(client client.Client, namespace string) *UserDatabase {
 func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
-	// Scan the cache without deep copies. Copy only the match, so the caller
-	// owns the result.
-	if err := d.client.List(ctx, result, &client.ListOptions{UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
+	if err := d.client.List(ctx, result); err != nil {
 		return nil, err
 	}
 
@@ -145,13 +142,8 @@ func (d *UserDatabase) GetServiceAccount(ctx context.Context, id string) (*uniko
 	return &result.Items[0], nil
 }
 
-// getOrgIDs returns the organization IDs for a user.
-func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) ([]string, error) {
-	user, err := d.GetActiveUser(ctx, subject)
-	if err != nil {
-		return nil, err
-	}
-
+// GetOrganizationIDsForUser returns the active organization IDs for an active user.
+func (d *UserDatabase) GetOrganizationIDsForUser(ctx context.Context, user *unikornv1.User) ([]string, error) {
 	selector := labels.SelectorFromSet(map[string]string{
 		constants.UserLabel: user.Name,
 	})
@@ -172,4 +164,14 @@ func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) (
 	}
 
 	return result, nil
+}
+
+// GetOrganizationIDs returns the active organization IDs for a user subject.
+func (d *UserDatabase) GetOrganizationIDs(ctx context.Context, subject string) ([]string, error) {
+	user, err := d.GetActiveUser(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+
+	return d.GetOrganizationIDsForUser(ctx, user)
 }

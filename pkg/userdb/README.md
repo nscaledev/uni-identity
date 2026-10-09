@@ -62,8 +62,9 @@ organization-local membership is active before returning it.
 `GetUser` resolves a subject through
 [`MatchSubject`](../apis/unikorn/v1alpha1/README.md#subject-matching). An exact match wins. If no
 record matches exactly, the one record with the same canonical form matches. As a result, a login
-works whether the stored subject is folded or not. `GetActiveUser` and `GetOrganizationIDs` go
-through `GetUser`, so they resolve the same way.
+works whether the stored subject is folded or not. `GetActiveUser` and the subject-based
+`GetOrganizationIDs` go through `GetUser`, so they resolve the same way. Callers that already hold
+an active user can use `GetOrganizationIDsForUser` to avoid resolving it a second time.
 
 The lookup lists users in no fixed order. If the subject matches no record exactly but folds onto
 two or more, a pick depends on that order. It can give a different user from one call to the next.

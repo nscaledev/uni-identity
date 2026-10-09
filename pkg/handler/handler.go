@@ -53,13 +53,8 @@ import (
 )
 
 type Handler struct {
-	// client gives cached access to Kubernetes.
+	// client accesses Kubernetes directly.
 	client client.Client
-
-	// directclient gives uncached access to Kubernetes; this is needed
-	// for e.g., allocations, where we need to have reads consistent with
-	// writes.
-	directclient client.Client
 
 	// namespace is the namespace we are running in.
 	namespace string
@@ -83,16 +78,15 @@ type Handler struct {
 	allocationMutex sync.Mutex
 }
 
-func New(client client.Client, directclient client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, options *Options) (*Handler, error) {
+func New(client client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, options *Options) (*Handler, error) {
 	h := &Handler{
-		client:       client,
-		directclient: directclient,
-		namespace:    namespace,
-		issuer:       issuer,
-		oauth2:       oauth2,
-		rbac:         rbac,
-		userdb:       userdb,
-		options:      options,
+		client:    client,
+		namespace: namespace,
+		issuer:    issuer,
+		oauth2:    oauth2,
+		rbac:      rbac,
+		userdb:    userdb,
+		options:   options,
 	}
 
 	return h, nil
