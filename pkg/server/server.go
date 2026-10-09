@@ -20,7 +20,10 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
@@ -32,9 +35,11 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
 	redmetrics "github.com/unikorn-cloud/identity/pkg/middleware/metrics"
@@ -48,6 +53,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// responseWriteReserve is the time left after Lease cleanup to write a response
+// before the server's write deadline.
+const responseWriteReserve = time.Second
+
+var errRequestTimeout = errors.New("server timeouts too short")
 
 type Server struct {
 	// CoreOptions are all common across everything e.g. namespace.
@@ -100,10 +111,16 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 		return nil, err
 	}
 
+	requestDeadline, err := requestDeadlineMiddleware(&s.ServerOptions)
+	if err != nil {
+		return nil, err
+	}
+
 	router := chi.NewRouter()
 
 	// Middleware specified here is applied to all requests pre-routing.
 	// Ordering is important:
+	// * The request deadline comes first so it bounds everything else.
 	// * OpenTelemetry middleware optionally transmits spans over OTLP, but also
 	//   establishes a trace ID that is used to correlate logs with user issues.
 	// * Logging ensures at least all errors are captured by logging telemetry and we
@@ -121,6 +138,7 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 
 	cors := cors.New(&s.CORSOptions)
 
+	router.Use(requestDeadline)
 	router.Use(opentelemetry.Middleware)
 	router.Use(logging.Middleware)
 	router.Use(routeresolver.Middleware)
@@ -211,6 +229,45 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 	}
 
 	return server, nil
+}
+
+// requestTimeout returns the request context deadline. The server's write timeout
+// does not cancel the request context, so the deadline ends early enough to release
+// an organization Lease and write the response, success or 409, before it.
+// It must also leave time for a takeover of a crashed holder's Lease.
+func requestTimeout(o *options.ServerOptions) (time.Duration, error) {
+	if o.RequestTimeout <= 0 && o.WriteTimeout <= 0 {
+		return 0, nil
+	}
+
+	result := o.RequestTimeout
+
+	if o.WriteTimeout > 0 {
+		limit := o.WriteTimeout - handlercommon.OrganizationLeaseReleaseTimeout - responseWriteReserve
+		if result <= 0 || limit < result {
+			result = limit
+		}
+	}
+
+	if result < handlercommon.OrganizationLeaseTakeoverBudget {
+		return 0, fmt.Errorf("%w: request deadline %v from --server-request-timeout=%v and --server-write-timeout=%v is shorter than the organization Lease takeover budget %v",
+			errRequestTimeout, result, o.RequestTimeout, o.WriteTimeout, handlercommon.OrganizationLeaseTakeoverBudget)
+	}
+
+	return result, nil
+}
+
+func requestDeadlineMiddleware(o *options.ServerOptions) (func(http.Handler) http.Handler, error) {
+	result, err := requestTimeout(o)
+	if err != nil {
+		return nil, err
+	}
+
+	if result == 0 {
+		return func(next http.Handler) http.Handler { return next }, nil
+	}
+
+	return timeout.Middleware(result), nil
 }
 
 // expandBareAdminSubjects mirrors bare (UNI-sentinel) admin entries onto the
