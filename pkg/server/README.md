@@ -119,6 +119,11 @@ convention.
 - `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
 - Organization namespace routing uses a synchronized cache; revocation-sensitive token state uses
   direct Kubernetes reads
+- each API server replica may keep only refreshable derived caches locally; authorization codes,
+  sessions, revocation checks, allocation admission, and quota changes use persisted state or
+  per-organization Kubernetes Leases instead
+- JOSE key rotation is leader-elected through its Kubernetes Lease, while every replica reads the
+  shared `SigningKey` resource for signing and verification
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
 - API readiness reflects ownership of the bound HTTP listener, not construction
@@ -132,6 +137,9 @@ convention.
   give a false picture of how the service actually behaves at runtime.
 - The package is intentionally coupled to the current built-in identity stack. Changing the authn or
   trust model would require coordinated changes across several of the composed subsystems.
+- A lost API server that held an organization Lease can delay that organization's allocation or quota
+  request until the Lease expires. This is bounded by the ten-second Lease duration; other
+  organizations and login traffic continue through remaining replicas.
 
 ## Related Documentation
 

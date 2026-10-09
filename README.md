@@ -301,6 +301,30 @@ Deploy:
 helm upgrade --install --namespace unikorn-identity uni-identity/uni-identity -f values.yaml
 ```
 
+### Running Multiple Identity Server Replicas
+
+The identity API server defaults to two replicas. Set `server.replicas` to
+choose another count; this setting applies only to the identity API server,
+not the organization, project, or OAuth2 client controllers.
+
+```yaml
+server:
+  replicas: 2
+```
+
+The chart also installs a PodDisruptionBudget that permits one unavailable
+API server pod during voluntary disruption. Login and token operations use
+persisted session and authorization-code state, and allocation and quota
+changes use a per-organization Kubernetes Lease, so requests may reach
+different replicas safely. If a pod holding that Lease is lost, requests for
+that organization can wait for the ten-second Lease to expire before retrying;
+other organizations remain unaffected.
+
+Each replica caches the ACLs it computes for `--acl-cache-timeout` (default one
+minute). A change to a user's permissions can therefore take that long to apply,
+as it does with one replica, and until it has, replicas may disagree: one can
+refuse a request that another still allows.
+
 ### Installing the Management Plugin
 
 Download the following [artefacts](https://github.com/nscaledev/kubectl-uni/releases) and install them in your path:
