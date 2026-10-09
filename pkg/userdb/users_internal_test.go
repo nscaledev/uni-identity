@@ -26,6 +26,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,6 +39,7 @@ const testNamespace = "identity"
 // recorder records the ListOptions of each read that the code under test makes.
 type recorder struct {
 	lists []client.ListOptions
+	gets  []client.ObjectKey
 }
 
 func (r *recorder) funcs() interceptor.Funcs {
@@ -48,6 +50,11 @@ func (r *recorder) funcs() interceptor.Funcs {
 			r.lists = append(r.lists, options)
 
 			return inner.List(ctx, list, opts...)
+		},
+		Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+			r.gets = append(r.gets, key)
+
+			return inner.Get(ctx, key, object, opts...)
 		},
 	}
 }
@@ -68,7 +75,7 @@ func testUser() *unikornv1.User {
 	}
 }
 
-func TestGetUserListsWithoutCacheOptions(t *testing.T) {
+func TestGetUserListsLegacyRecordsWithoutCacheOptions(t *testing.T) {
 	t.Parallel()
 
 	r := &recorder{}
@@ -77,8 +84,56 @@ func TestGetUserListsWithoutCacheOptions(t *testing.T) {
 	user, err := d.GetUser(t.Context(), "alice@example.com")
 	require.NoError(t, err)
 	require.Equal(t, "alice@example.com", user.Spec.Subject)
+	require.Len(t, r.lists, 2)
+	require.Equal(t, unikornv1.UserSubjectIDLabel+"="+unikornv1.GlobalUserName("alice@example.com"), r.lists[0].LabelSelector.String())
+	require.Nil(t, r.lists[1].UnsafeDisableDeepCopy)
+}
+
+func TestGetUserUsesSubjectIDLabel(t *testing.T) {
+	t.Parallel()
+
+	r := &recorder{}
+	user := testUser()
+	user.Labels = map[string]string{
+		unikornv1.UserSubjectIDLabel: unikornv1.GlobalUserName(user.Spec.Subject),
+	}
+	d := NewUserDatabase(newTestClient(t, r, user), testNamespace)
+
+	result, err := d.GetUser(t.Context(), user.Spec.Subject)
+	require.NoError(t, err)
+	require.Equal(t, user.Name, result.Name)
+	require.Equal(t, []client.ObjectKey{{Namespace: testNamespace, Name: unikornv1.GlobalUserName(user.Spec.Subject)}}, r.gets)
 	require.Len(t, r.lists, 1)
-	require.Nil(t, r.lists[0].UnsafeDisableDeepCopy)
+	require.True(t, r.lists[0].LabelSelector.Matches(labels.Set(user.Labels)))
+}
+
+func TestGetUserUsesCanonicalName(t *testing.T) {
+	t.Parallel()
+
+	r := &recorder{}
+	user := testUser()
+	user.Name = unikornv1.GlobalUserName(user.Spec.Subject)
+	d := NewUserDatabase(newTestClient(t, r, user), testNamespace)
+
+	result, err := d.GetUser(t.Context(), "alice@example.com")
+	require.NoError(t, err)
+	require.Equal(t, "alice@example.com", result.Spec.Subject)
+	require.Equal(t, []client.ObjectKey{{Namespace: testNamespace, Name: unikornv1.GlobalUserName(user.Spec.Subject)}}, r.gets)
+	require.Empty(t, r.lists, "a user found by its deterministic name must not need a list")
+}
+
+func TestGetUserRejectsAmbiguousLegacyRecords(t *testing.T) {
+	t.Parallel()
+
+	r := &recorder{}
+	first := testUser()
+	second := testUser()
+	second.Name = "u2222222-2222-4222-8222-222222222222"
+	d := NewUserDatabase(newTestClient(t, r, first, second), testNamespace)
+
+	_, err := d.GetUser(t.Context(), "alice@example.com")
+	require.ErrorIs(t, err, ErrResourceReference)
+	require.Len(t, r.lists, 2)
 }
 
 func TestGetOrganizationIDsForUserDoesNotResolveTheUserAgain(t *testing.T) {

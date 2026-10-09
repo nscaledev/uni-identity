@@ -60,6 +60,7 @@ reporting and dashboard problem.
 ## Invariants
 
 - quotas are organization-scoped capacity contracts
+- each organization stores new quota state in the fixed `quota` object name
 - quota reads are derived from stored quota values, quota metadata, and current allocation totals
 - quota updates must not reduce capacity below already committed plus reserved usage
 - `QuotaMetadata` is mandatory contextual data, not optional display garnish
@@ -68,6 +69,9 @@ reporting and dashboard problem.
   retired, and returns a consistency error for a nil quantity.
 - a quota write that names a kind with no `QuotaMetadata` entry returns 400 before it stores
   anything
+
+A single legacy random-named quota is adopted for compatibility. Multiple labeled quota objects
+are a consistency error; a concurrent first write converges through the fixed name.
 
 ## Caveats
 

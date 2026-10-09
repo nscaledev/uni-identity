@@ -25,6 +25,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,11 +39,7 @@ var (
 	// ErrResourceReference for compatibility.
 	ErrUserInactive = fmt.Errorf("%w: user is not active", ErrResourceReference)
 
-	// ErrAmbiguousSubject identifies a subject that matches no user exactly but
-	// folds onto two or more.  It wraps ErrResourceReference, so a caller that
-	// does not test for it treats the subject as a record it cannot resolve.
-	// The bearer path tests for it: an ambiguous subject is onboarded, so it
-	// must not pass as an external identity.
+	// ErrAmbiguousSubject identifies a subject that folds onto multiple users.
 	ErrAmbiguousSubject = fmt.Errorf("%w: subject matches more than one user", ErrResourceReference)
 )
 
@@ -59,16 +56,59 @@ func NewUserDatabase(client client.Client, namespace string) *UserDatabase {
 }
 
 func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+	user := &unikornv1.User{}
+
+	if err := d.client.Get(ctx, client.ObjectKey{Namespace: d.namespace, Name: unikornv1.GlobalUserName(subject)}, user); err == nil {
+		if user.Spec.Subject != subject {
+			return nil, fmt.Errorf("%w: canonical user subject does not match", ErrResourceReference)
+		}
+
+		return user, nil
+	} else if !kerrors.IsNotFound(err) {
+		return nil, err
+	}
+
+	result := &unikornv1.UserList{}
+	selector := labels.SelectorFromSet(map[string]string{unikornv1.UserSubjectIDLabel: unikornv1.GlobalUserName(subject)})
+
+	if err := d.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
+		return nil, err
+	}
+
+	if len(result.Items) == 1 {
+		if result.Items[0].Spec.Subject != subject {
+			return nil, fmt.Errorf("%w: subject label does not match", ErrResourceReference)
+		}
+
+		return result.Items[0].DeepCopy(), nil
+	}
+
+	if len(result.Items) > 1 {
+		return nil, fmt.Errorf("%w: multiple users match subject label", ErrResourceReference)
+	}
+
+	return d.getLegacyUser(ctx, subject)
+}
+
+func (d *UserDatabase) getLegacyUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
 	if err := d.client.List(ctx, result); err != nil {
 		return nil, err
 	}
 
-	// Every user resolution goes through here: GetActiveUser, and through it
-	// GetOrganizationIDs.  Accepting either stored form lets the data migrate
-	// with no login or authorization affected.  An exact match still wins, so a
-	// lookup that matched before resolves to the same record.
+	matches := 0
+
+	for _, user := range result.Items {
+		if user.Spec.Subject == subject {
+			matches++
+		}
+	}
+
+	if matches > 1 {
+		return nil, fmt.Errorf("%w: duplicate exact subject", ErrAmbiguousSubject)
+	}
+
 	index, ambiguous := unikornv1.MatchSubject(result.Items, subject)
 	if ambiguous {
 		return nil, fmt.Errorf("%w: subject %q", ErrAmbiguousSubject, subject)

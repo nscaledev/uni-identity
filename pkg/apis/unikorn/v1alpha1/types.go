@@ -335,6 +335,8 @@ type UserSpec struct {
 	// Subject is usually and email address, sadly this cannot be made
 	// a label for selection that way.  This will map to the subject in
 	// a JWT.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="subject is immutable"
 	Subject string `json:"subject"`
 	// State controls what the user is allowed to do.
 	State UserState `json:"state"`
