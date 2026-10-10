@@ -97,8 +97,9 @@ process lifetime; readiness is `1` only while the server owns its bound HTTP
 listener.
 
 **HTTP RED (API server only, via OTLP)** —
-`http_server_request_duration_seconds{route,method,status_class}` (a histogram;
-its `_count` serves as the request counter) and
+`http_server_request_duration_seconds{route,method,status_class,code}` (a
+histogram; its `_count` serves as the request counter; `code` is the exact
+HTTP status, so 401, 403 and 429 can be told apart) and
 `http_server_active_requests{route,method}`. The metrics cover
 OpenAPI-resolved routes; route-resolution failures have no stable route label and
 are not included.
