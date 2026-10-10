@@ -1,0 +1,141 @@
+# Hand-written Cerbos test suite for the generated store (NOT generator
+# output).  Encodes WHY the generated policies exist: they must reproduce
+# pkg/rbac's semantics — exact (endpoint, operation) match with no verb
+# subsumption, one-directional flow-down expressed in the derived-role
+# binding-match conditions, additive union across roles, and tenant isolation
+# on the binding's org/project IDs.  Run via `make validate-policies`.
+name: GeneratedRootPolicies
+description: >
+  Behavioural contract for the M1 root-scope grantor policies emitted by
+  pkg/authz/cerbos/generate from the fixture Role CRs.
+tests:
+  - name: global grantor - a global binding allows project, org and platform level resources
+    input:
+      principals: [platform_admin]
+      resources: [cluster_proj1, projects_org, projects_noattrs]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: platform_admin
+        resource: cluster_proj1
+        actions: {create: EFFECT_ALLOW, read: EFFECT_ALLOW, update: EFFECT_ALLOW, delete: EFFECT_ALLOW}
+      - principal: platform_admin
+        resource: projects_org
+        actions: {create: EFFECT_ALLOW, read: EFFECT_ALLOW, update: EFFECT_ALLOW, delete: EFFECT_ALLOW}
+      - principal: platform_admin
+        resource: projects_noattrs
+        actions: {create: EFFECT_ALLOW, read: EFFECT_ALLOW, update: EFFECT_ALLOW, delete: EFFECT_ALLOW}
+
+  - name: flow-down - an org-bound administrator binding allows a project-level resource in the same org
+    input:
+      principals: [admin_acme]
+      resources: [cluster_proj1]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: admin_acme
+        resource: cluster_proj1
+        actions: {create: EFFECT_ALLOW, read: EFFECT_ALLOW, update: EFFECT_ALLOW, delete: EFFECT_ALLOW}
+
+  - name: no flow-up - an org binding never satisfies a platform-level resource (no organization attribute)
+    input:
+      principals: [admin_acme]
+      resources: [projects_noattrs]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: admin_acme
+        resource: projects_noattrs
+        actions: {create: EFFECT_DENY, read: EFFECT_DENY, update: EFFECT_DENY, delete: EFFECT_DENY}
+
+  - name: no flow-up - a project-only binding is denied on an org-level resource and in other projects
+    input:
+      principals: [reader_proj1]
+      resources: [projects_org, projects_proj1, projects_proj2]
+      actions: [read, update]
+    expected:
+      - principal: reader_proj1
+        resource: projects_org
+        actions: {read: EFFECT_DENY, update: EFFECT_DENY}
+      - principal: reader_proj1
+        resource: projects_proj1
+        actions: {read: EFFECT_ALLOW, update: EFFECT_DENY}
+      - principal: reader_proj1
+        resource: projects_proj2
+        actions: {read: EFFECT_DENY, update: EFFECT_DENY}
+
+  - name: tenant isolation - the same role bound to a different org is denied everything
+    input:
+      principals: [admin_other]
+      resources: [cluster_proj1, projects_org]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: admin_other
+        resource: cluster_proj1
+        actions: {create: EFFECT_DENY, read: EFFECT_DENY, update: EFFECT_DENY, delete: EFFECT_DENY}
+      - principal: admin_other
+        resource: projects_org
+        actions: {create: EFFECT_DENY, read: EFFECT_DENY, update: EFFECT_DENY, delete: EFFECT_DENY}
+
+  - name: tenant isolation - a project binding never matches the same project ID in a different org
+    input:
+      principals: [reader_proj1]
+      resources: [projects_proj1_other_org]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: reader_proj1
+        resource: projects_proj1_other_org
+        actions: {create: EFFECT_DENY, read: EFFECT_DENY, update: EFFECT_DENY, delete: EFFECT_DENY}
+
+  - name: exact operations - read-only auditor cannot write, update-only grant cannot read
+    input:
+      principals: [auditor_acme, updater_acme]
+      resources: [groups_acme]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: auditor_acme
+        resource: groups_acme
+        actions: {create: EFFECT_DENY, read: EFFECT_ALLOW, update: EFFECT_DENY, delete: EFFECT_DENY}
+      - principal: updater_acme
+        resource: groups_acme
+        actions: {create: EFFECT_DENY, read: EFFECT_DENY, update: EFFECT_ALLOW, delete: EFFECT_DENY}
+
+  - name: exact operations - a create+delete grant does not imply read (global bucket)
+    input:
+      principals: [region_service]
+      resources: [projrefs_platform]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: region_service
+        resource: projrefs_platform
+        actions: {create: EFFECT_ALLOW, read: EFFECT_DENY, update: EFFECT_DENY, delete: EFFECT_ALLOW}
+
+  - name: union - bindings from two roles combine additively on one endpoint
+    input:
+      principals: [auditor_updater_acme]
+      resources: [groups_acme]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: auditor_updater_acme
+        resource: groups_acme
+        actions: {create: EFFECT_DENY, read: EFFECT_ALLOW, update: EFFECT_ALLOW, delete: EFFECT_DENY}
+
+  - name: open vocabulary - example:* endpoints behave exactly like built-ins
+    input:
+      principals: [example_op_acme]
+      resources: [widgets_acme]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: example_op_acme
+        resource: widgets_acme
+        actions: {create: EFFECT_ALLOW, read: EFFECT_ALLOW, update: EFFECT_DENY, delete: EFFECT_DENY}
+
+  - name: open vocabulary - sample:* endpoints behave exactly like built-ins including tenant isolation
+    input:
+      principals: [sample_admin_acme, sample_admin_other]
+      resources: [assets_acme]
+      actions: [create, read, update, delete]
+    expected:
+      - principal: sample_admin_acme
+        resource: assets_acme
+        actions: {create: EFFECT_ALLOW, read: EFFECT_ALLOW, update: EFFECT_ALLOW, delete: EFFECT_ALLOW}
+      - principal: sample_admin_other
+        resource: assets_acme
+        actions: {create: EFFECT_DENY, read: EFFECT_DENY, update: EFFECT_DENY, delete: EFFECT_DENY}
