@@ -284,14 +284,16 @@ type redirector struct {
 	r           *http.Request
 	redirectURI string
 	state       string
+	clientID    string
 }
 
-func newRedirector(w http.ResponseWriter, r *http.Request, redirectURI, state string) *redirector {
+func newRedirector(w http.ResponseWriter, r *http.Request, redirectURI, state, clientID string) *redirector {
 	return &redirector{
 		w:           w,
 		r:           r,
 		redirectURI: redirectURI,
 		state:       state,
+		clientID:    clientID,
 	}
 }
 
@@ -300,8 +302,11 @@ func (e *redirector) redirect(values url.Values) {
 }
 
 // raise redirects to the client's callback URI with an error
-// code in the query.
+// code in the query.  The response is a 302, which the logging middleware
+// ignores, so log the failure here or it leaves no trace.
 func (e *redirector) raise(kind Error, description string) {
+	log.FromContext(e.r.Context()).Info("oauth2: redirecting with error", "error", kind, "error_description", description, "client_id", e.clientID)
+
 	values := url.Values{}
 	values.Set("error", string(kind))
 	values.Set("error_description", description)
@@ -680,7 +685,7 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirector := newRedirector(w, r, client.Spec.RedirectURI, query.Get("state"))
+	redirector := newRedirector(w, r, client.Spec.RedirectURI, query.Get("state"), query.Get("client_id"))
 
 	// Validate the other request parameters based on what we support, on error this
 	// returns control back to the client via the redirect.
@@ -772,7 +777,7 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirector := newRedirector(w, r, query.Get("redirect_uri"), query.Get("state"))
+	redirector := newRedirector(w, r, query.Get("redirect_uri"), query.Get("state"), query.Get("client_id"))
 
 	// Handle the case where the provider is explicitly specified.
 	if providerType := r.Form.Get("provider"); providerType != "" {
@@ -914,7 +919,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirector := newRedirector(w, r, clientQuery.Get("redirect_uri"), clientQuery.Get("state"))
+	redirector := newRedirector(w, r, clientQuery.Get("redirect_uri"), clientQuery.Get("state"), clientQuery.Get("client_id"))
 
 	if query.Has("error") {
 		redirector.raise(Error(query.Get("error")), query.Get("error_description"))
