@@ -20,9 +20,11 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
@@ -291,6 +293,65 @@ func TestRemoteEngineBearerEchoMismatchFailsClosed(t *testing.T) {
 			require.NotErrorIs(t, err, rbac.ErrPolicyDenied, "an echo failure is not a policy deny")
 		})
 	}
+}
+
+func TestRemoteShadowCompareIsDetachedAndTimedOut(t *testing.T) {
+	t.Parallel()
+
+	// identityDelay stays under the one-second remote shadow backstop.  A
+	// compare that the check timeout does not end then logs identity's allow,
+	// or the backstop ends it with a latency above identityDelay.
+	const (
+		checkTimeout  = 200 * time.Millisecond
+		identityDelay = 900 * time.Millisecond
+	)
+
+	h := &checkHandler{delay: identityDelay, results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+	auth := newCheckAuthorizer(t, h, authorizer.WithCheckTimeout(checkTimeout))
+
+	capture := &logCapture{}
+	requestCtx, cancel := context.WithCancel(capture.into(checkAuthContext(t, "", false)))
+	acl := &identityapi.Acl{Global: &identityapi.AclEndpoints{{Name: "identity:groups", Operations: identityapi.AclOperations{identityapi.Read}}}}
+	ctx := rbac.NewRemoteEngineContext(rbac.NewContext(requestCtx, acl), auth.RemoteDecisionEngine(), rbac.RemoteShadow)
+
+	require.NoError(t, rbac.AllowGlobalScope(ctx, "identity:groups", identityapi.Read))
+	require.Empty(t, capture.messages(), "the request must return before the compare ends")
+
+	require.NoError(t, principal.EnrichUserPrincipalOrganizationScopeID(ctx, ids.MustParseOrganizationID("f47ac10b-58cc-4372-a567-0e02b2c3d479")),
+		"a create handler changes the principal while the compare runs, which -race checks")
+	cancel()
+
+	require.Eventually(t, func() bool { return len(capture.messages()) == 1 }, 10*time.Second, 5*time.Millisecond)
+
+	attrs := logAttrs(t, capture.messages()[0])
+	require.Equal(t, "unavailable", attrs["decision"], "the check timeout must end the compare before identity answers")
+
+	latency, err := time.ParseDuration(attrs["latency"])
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, latency, checkTimeout, "the end of the request must not cancel the compare")
+	require.Less(t, latency, identityDelay, "the check timeout must end the compare")
+}
+
+func TestRemoteEngineStopsAtTheCallerDeadlineWithoutACheckTimeout(t *testing.T) {
+	t.Parallel()
+
+	const (
+		callerDeadline = 50 * time.Millisecond
+		identityDelay  = 5 * time.Second
+	)
+
+	h := &checkHandler{delay: identityDelay, results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+	engine := newCheckAuthorizer(t, h, authorizer.WithCheckTimeout(0)).RemoteDecisionEngine()
+
+	ctx, cancel := context.WithTimeout(checkAuthContext(t, "", false), callerDeadline)
+	defer cancel()
+
+	start := time.Now()
+
+	err := engine.AllowCoarse(ctx, rbac.Resource{Kind: "identity:groups"}, identityapi.Read)
+	require.ErrorIs(t, err, rbac.ErrDecisionUnavailable)
+	require.ErrorIs(t, err, context.DeadlineExceeded, "the remote shadow backstop is a caller deadline, and with a zero check timeout it is the only one")
+	require.Less(t, time.Since(start), identityDelay, "the call must end at the caller's deadline, not when identity answers")
 }
 
 func BenchmarkAllowCoarseManyBearer(b *testing.B) {

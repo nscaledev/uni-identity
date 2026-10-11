@@ -105,11 +105,16 @@ type CoarseEngine interface {
   | Remote mode | Behavior |
   |---|---|
   | `off` (not seeded) | legacy ACL walk (today's behavior) |
-  | `shadow` | **serve the legacy walk**, also call `AllowCoarse` remotely, log any divergence |
+  | `shadow` | **serve the legacy walk** at once, call `AllowCoarse` remotely in the background, log any divergence |
   | `enforce` | remote is **authoritative** (no legacy fallback; fail-closed) |
 
   The `shadow` comparator is a downstream analog of `pkg/rbac/shadow.go` (`remoteShadowed`), emitting a
-  distinct, greppable divergence message so a gate can assert zero divergence.
+  distinct, greppable divergence message so a gate can assert zero divergence. The request does not
+  wait for the remote call. In one process, at most `remoteShadowRunLimit` compares call identity at
+  the same time, and up to `remoteShadowQueueLimit` more wait in a queue. Each compare has a backstop
+  deadline (`remoteShadowBackstop`) from the time it gets a run slot. A check gets no remote call
+  only when the run slots and the queue are full. Then the log has a `remote shadow compare skipped`
+  line, which is neither divergence nor evaluation failure. `pkg/rbac/README.md` gives the values.
 
 Consumer change: **one line in each `server.go`** to construct the service with the remote engine
 mode from config. The ~65 `Allow*` sites are untouched.
@@ -218,7 +223,12 @@ facade is provided (it is just the existing `CheckMany`) for any per-resource AB
   `../identity/hack/ci/install`, then the service; run the **two-principal RBAC matrix**
   (`test/e2e/rbac_matrix_test.go`) asserting decisions route through the check endpoint.
 - **Shadow divergence gate** for the pilot: adapt `hack/ci/divergence-gate` to read the *consumer's*
-  server logs and fail on any `remote shadow divergence` after the matrix runs.
+  server logs and fail on any `remote shadow divergence` after the matrix runs. Also count
+  `remote shadow compare skipped` lines, because a skipped check was not compared.
+  If the engine call honours its context, a full queue takes up to
+  `remoteShadowQueueLimit / remoteShadowRunLimit` times the shorter of the check timeout and
+  `remoteShadowBackstop` to drain. The gate must wait at least that long after the last request,
+  plus a margin, before it reads the logs.
 - **Fail-closed test:** identity unavailable ⇒ mutating/privileged ops denied with
   `ErrDecisionUnavailable` (not allowed, not a policy deny).
 - **Timeout test:** a slow/no-response PDP ⇒ fail fast within the deadline.
