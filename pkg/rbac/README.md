@@ -829,14 +829,59 @@ dispatch fork alongside the local Cerbos path documented above.
   own.** `remoteShadowed` always returns the legacy verdict UNCHANGED — a policy deny, a
   decision-endpoint outage, or a recovered panic on the remote side can never alter the
   served verdict, the same zero-behaviour-change contract the local comparator gives its own
-  path. Disagreement is logged into its own two-class taxonomy, mirroring the local split
-  exactly:
+  path. The comparator logs three messages. The first two mirror the local split exactly:
   - `remote shadow divergence` — a verdict was obtained and it differs from legacy's,
     compared on allow/deny only, never error strings.
   - `remote shadow evaluation failure` — no verdict was obtained (unavailability, an
     unclassified error, or a recovered panic) — infra signal, never divergence signal.
+  - `remote shadow compare skipped` means that no compare ran, because the run slots and the
+    queue were full. It is neither divergence nor evaluation failure.
 
-  Both messages are new and distinct from `shadow.go`'s `cerbos shadow …` pair, so the two
+  Unlike the local comparator, the remote compare does not delay the request.
+  `remoteShadowed` returns the legacy verdict at once, and a goroutine runs the compare.
+  The goroutine has these properties:
+  - It uses `context.WithoutCancel`. It keeps the request values (the logger, the
+    authorization info, the passport, the trace context), and the end of the request does
+    not cancel it. The `CheckMany` timeout (`WithCheckTimeout`, default 250ms) applies to
+    each compare when the timeout is positive.
+  - Each compare also has a backstop deadline of one second (`remoteShadowBackstop`). The
+    backstop starts when the compare gets a run slot. It ends a compare that the check
+    timeout does not end, for example with a zero check timeout, if the engine call honours
+    its context. An engine call that blocks on something else keeps its run slot. For shadow
+    compares, the backstop also caps a check timeout longer than one second.
+  - It sends a copy of the principal, taken at the check, with its own copy of
+    `OrganizationIDs`. A downstream handler can call `principal.EnrichUserPrincipal*` after
+    the check, and that function changes the principal in place.
+  - The goroutine recovers every panic, also a panic from a log sink in the recover of
+    `remoteShadowCompare`. A panic that is not recovered stops the process.
+  - At most `remoteShadowRunLimit` (32) compares call identity at the same time in one
+    process. Up to `remoteShadowQueueLimit` (1024) more compares wait for a run slot in FIFO
+    order. A list endpoint that checks each item puts one compare per item in the queue, and
+    the compares run 32 at a time.
+  - A check gets no remote call only when the run slots and the queue are full. Together
+    they hold 1056 compares. One request that checks more than 1056 items, or two requests at
+    the same time that check more than 528 items each, can fill them before the first
+    compares end. Then the comparator logs `remote shadow compare skipped` with the subject,
+    actor type, endpoint, operation, organization and project IDs, and legacy verdict. A log
+    sink that panics on this line does not fail the request. A soak
+    gate must count skips too, because a skipped check was not compared. A process that exits
+    also drops the compares that it admitted, up to 1056, with no skip or failure line.
+  - If the engine call honours its context, a compare takes at most the shorter of the check
+    timeout and the backstop. A full queue then drains in at most 32 of these compare times
+    (`remoteShadowQueueLimit / remoteShadowRunLimit`), which is 8 seconds at the default
+    check timeout. A gate that reads the logs must wait at least this worst drain after the
+    last request, plus a margin for the last compare and for scheduling delay.
+  - A cached passport can reach a handler with only about 10 seconds left, because the
+    downstream token cache drops a passport 10 seconds before it expires (`cacheTTLFudge`).
+    Identity accepts a passport for 5 seconds after it expires (`passportLeeway`). So a
+    compare that reaches identity more than about 15 seconds after authentication can get
+    a 401. The 8 second worst drain at the default stays inside this budget. A passport that
+    is not cached can have less than 10 seconds left, and a compare late in the drain can
+    then get a 401 and log an evaluation failure. A check timeout longer than about 470ms
+    (15 seconds divided by 32), or a zero check timeout, makes the worst drain longer than
+    this budget.
+
+  The three messages are new and distinct from `shadow.go`'s `cerbos shadow …` pair, so the two
   comparators' signals never blur under the same grep. Unlike the local comparator, a remote
   divergence carries no `policy_hash` correlate: the remote `CoarseEngine` has no local
   policy-store hasher to pin a revision against — the generated policy lives at identity, not
@@ -849,8 +894,9 @@ dispatch fork alongside the local Cerbos path documented above.
   production choke point that seeds the local engine — seeds the pair into every handler
   context via `NewRemoteEngineContext`. No `Allow*` call site changes.
 - **Guardrail essentials, delivered.** The remote call carries its own hard per-call deadline
-  (`WithCheckTimeout`, default 250ms) applied via `context.WithTimeout`, independent of whatever
-  deadline the caller's own context carries, so a slow or wedged identity cannot block a downstream
+  (`WithCheckTimeout`, default 250ms) applied via `context.WithTimeout` on the caller's context. A
+  deadline that the caller's context already carries also applies, and the earlier deadline ends the
+  call. So a slow or wedged identity cannot block a downstream
   request indefinitely — an expired deadline surfaces through the same fail-closed path as any other
   transport failure. Every `AllowCoarse`/`AllowCoarseMany` round trip also gets caller-side
   telemetry, distinct from identity's own server-side decision instruments: a decision log

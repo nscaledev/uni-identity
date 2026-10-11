@@ -55,8 +55,9 @@ type checkHandler struct {
 	// results is the canned per-check response served on a 200.
 	results []identityapi.AuthorizationCheckResult
 
-	// delay, when set, sleeps before serving the response, simulating a slow
-	// backend for timeout tests.
+	// delay, when set, waits before serving the response, simulating a slow
+	// backend for timeout tests.  The wait ends early when the client gives up,
+	// so a long delay does not hold the server open after the test.
 	delay time.Duration
 
 	passportSubject     string
@@ -102,7 +103,7 @@ func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.delay > 0 {
-		time.Sleep(h.delay)
+		waitUnlessCanceled(r, h.delay)
 	}
 
 	if h.echoPerCheck {
@@ -142,6 +143,14 @@ func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Error responses carry the core Error shape PropagateError renders.
 	writeJSON(w, coreapi.Error{Error: coreapi.AccessDenied, ErrorDescription: "denied"})
+}
+
+// waitUnlessCanceled waits for d, or until the client gives up on r.
+func waitUnlessCanceled(r *http.Request, d time.Duration) {
+	select {
+	case <-time.After(d):
+	case <-r.Context().Done():
+	}
 }
 
 func (h *checkHandler) response(results []identityapi.AuthorizationCheckResult) identityapi.AuthorizationCheckResponse {
