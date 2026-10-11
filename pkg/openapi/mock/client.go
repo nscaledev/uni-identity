@@ -641,6 +641,46 @@ func (mr *MockClientWithResponsesInterfaceMockRecorder) GetWellKnownOpenidProtec
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetWellKnownOpenidProtectedResourceWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).GetWellKnownOpenidProtectedResourceWithResponse), varargs...)
 }
 
+// PostApiV1AuthorizationCheckWithBodyWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) PostApiV1AuthorizationCheckWithBodyWithResponse(arg0 context.Context, arg1 string, arg2 io.Reader, arg3 ...openapi.RequestEditorFn) (*openapi.PostApiV1AuthorizationCheckResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1, arg2}
+	for _, a := range arg3 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "PostApiV1AuthorizationCheckWithBodyWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.PostApiV1AuthorizationCheckResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PostApiV1AuthorizationCheckWithBodyWithResponse indicates an expected call of PostApiV1AuthorizationCheckWithBodyWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1AuthorizationCheckWithBodyWithResponse(arg0, arg1, arg2 any, arg3 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1, arg2}, arg3...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostApiV1AuthorizationCheckWithBodyWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostApiV1AuthorizationCheckWithBodyWithResponse), varargs...)
+}
+
+// PostApiV1AuthorizationCheckWithResponse mocks base method.
+func (m *MockClientWithResponsesInterface) PostApiV1AuthorizationCheckWithResponse(arg0 context.Context, arg1 openapi.AuthorizationCheckRequestSchema, arg2 ...openapi.RequestEditorFn) (*openapi.PostApiV1AuthorizationCheckResponse, error) {
+	m.ctrl.T.Helper()
+	varargs := []any{arg0, arg1}
+	for _, a := range arg2 {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "PostApiV1AuthorizationCheckWithResponse", varargs...)
+	ret0, _ := ret[0].(*openapi.PostApiV1AuthorizationCheckResponse)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// PostApiV1AuthorizationCheckWithResponse indicates an expected call of PostApiV1AuthorizationCheckWithResponse.
+func (mr *MockClientWithResponsesInterfaceMockRecorder) PostApiV1AuthorizationCheckWithResponse(arg0, arg1 any, arg2 ...any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{arg0, arg1}, arg2...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PostApiV1AuthorizationCheckWithResponse", reflect.TypeOf((*MockClientWithResponsesInterface)(nil).PostApiV1AuthorizationCheckWithResponse), varargs...)
+}
+
 // PostApiV1OrganizationsOrganizationIDGroupsWithBodyWithResponse mocks base method.
 func (m *MockClientWithResponsesInterface) PostApiV1OrganizationsOrganizationIDGroupsWithBodyWithResponse(arg0 context.Context, arg1 ids.OrganizationID, arg2 string, arg3 io.Reader, arg4 ...openapi.RequestEditorFn) (*openapi.PostApiV1OrganizationsOrganizationIDGroupsResponse, error) {
 	m.ctrl.T.Helper()

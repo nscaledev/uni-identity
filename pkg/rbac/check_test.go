@@ -346,7 +346,7 @@ func TestCheckImpersonatedPlatformAdministratorActor(t *testing.T) {
 	// processUserAccountACL early return): the actor string is
 	// caller-propagated, so this is a distinct input path from a direct
 	// admin request and pinned separately.
-	ctx := impersonatedContext(t, &principal.Principal{Actor: parityAdminSubject, Type: openapi.User, OrganizationIDs: []string{parityOrgA}})
+	ctx := impersonatedContext(t, &principal.Principal{Actor: parityAdminSubject, Issuer: parityAdminIssuer, Type: openapi.User, OrganizationIDs: []string{parityOrgA}})
 
 	require.NoError(t, fx.rbac.Check(ctx, rbac.Resource{Kind: "identity:organizations", OrganizationID: parityOrgA}, openapi.Read))
 	require.Equal(t, 2, pdp.calls)

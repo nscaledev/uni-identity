@@ -227,9 +227,8 @@ func TestResolveGlobalRoleBindings(t *testing.T) {
 		{Issuer: constants.UNISentinel, Subject: "local@x.com", RoleIDs: []string{"a"}},
 		// Defense in depth: even if misconfigured into Options directly
 		// (bypassing Set), a sentinel/empty-issuer wildcard never matches.
-		// (Also pins the impersonation path: impersonated principals carry the
-		// sentinel — processImpersonatedPrincipalACL — so they can never
-		// acquire a wildcard or external-issuer binding.)
+		// Impersonated principals can carry this issuer, but wildcard bindings
+		// remain disabled for the sentinel regardless of request path.
 		{Issuer: constants.UNISentinel, Subject: "*", RoleIDs: []string{"a"}, Wildcard: true},
 		{Issuer: "", Subject: "*", RoleIDs: []string{"a"}, Wildcard: true},
 	}
@@ -246,8 +245,7 @@ func TestResolveGlobalRoleBindings(t *testing.T) {
 		{"", "anyone@x.com", nil},                    // empty srcIss guarded
 		{"https://other.com/", "boss@x.com", nil},    // issuer exact match
 		// Pin: the external-exact binding's subject ("boss@x.com") must not
-		// match at the sentinel — an impersonated principal (always evaluated
-		// at the sentinel) can never acquire an external-issuer exact binding.
+		// match when the principal carries the sentinel issuer.
 		{constants.UNISentinel, "boss@x.com", nil},
 	}
 

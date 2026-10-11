@@ -215,6 +215,9 @@ one. See [`users`](./users/README.md) and [`serviceaccounts`](./serviceaccounts/
 - [`allocations`](./allocations/README.md): consumption ledger checked against quotas
 - `GET /api/version`: authenticated deployment metadata for clients and CI gates that need to
   identify the exact identity server build
+- `POST /api/v1/authorization/check`: batch authorization decisions for system accounts only, the
+  server side of downstream remote authorization (see
+  [`pkg/rbac`](../rbac/README.md#the-remote-decision-endpoint))
 
 ## Related Documentation
 

@@ -40,6 +40,10 @@ type Info struct {
 	// SystemAccount means this belongs to a system account that is
 	// authenticated with X.509.
 	SystemAccount bool
+	// ClientCert is the certificate that authenticated a system account, in
+	// the form that TLS termination or a relaying service sent it.  Only the
+	// remote decision check relays it, so that identity decides for this caller.
+	ClientCert string
 	// ServiceAccount means this belongs explicitly to a service account.
 	ServiceAccount bool
 	// SrcIss is the issuer URL (verbatim, as the IdP emits it) that authenticated

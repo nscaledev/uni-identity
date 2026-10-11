@@ -30,6 +30,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -88,18 +89,43 @@ func getResource(w *middleware.Capture, r *http.Request, route *routers.Route, p
 	}
 }
 
+// newDecisions converts the rbac accumulator's entries to this package's
+// own DTO, mirroring Resource/Operation/etc.: the audit record's shape
+// stays decoupled from pkg/rbac's internal type.
+func newDecisions(accumulated []rbac.Decision) []Decision {
+	decisions := make([]Decision, len(accumulated))
+
+	for i, d := range accumulated {
+		decisions[i] = Decision{
+			ResourceKind: d.ResourceKind,
+			ResourceID:   d.ResourceID,
+			Action:       d.Action,
+			Decision:     d.Decision,
+			Reason:       d.Reason,
+		}
+	}
+
+	return decisions
+}
+
 // ServeHTTP implements the http.Handler interface.
 func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	capture := middleware.CaptureResponse(w, r, next)
-
-	// Users and auditors care about things coming, going and changing, who did
-	// those things and when?  Certainly not periodic polling that is par for the
-	// course. Failures of reads may be indicative of someone trying to do
-	// something they shouldn't via the API (or indeed a bug in a UI leeting them
-	// attempt something they are forbidden to do).
 	if r.Method == http.MethodGet {
+		next.ServeHTTP(w, r)
+
 		return
 	}
+
+	// The route is resolved pre-routing (server.go wires routeresolver ahead of
+	// this middleware), so it is available here, BEFORE next.
+	route, routeErr := routeresolver.FromContext(r.Context())
+
+	// Seed the request-scoped decision accumulator (pkg/rbac) BEFORE
+	// calling next, so any Allow* dispatch the handler chain performs appends
+	// to it (read back below).
+	r = r.WithContext(rbac.NewDecisionAccumulatorContext(r.Context()))
+
+	capture := middleware.CaptureResponse(w, r, next)
 
 	// If there is not accountibility e.g. a global call, it's not worth logging.
 	info, err := authorization.FromContext(r.Context())
@@ -107,9 +133,8 @@ func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handle
 		return
 	}
 
-	route, err := routeresolver.FromContext(r.Context())
-	if err != nil {
-		errors.HandleError(w, r, err)
+	if routeErr != nil {
+		errors.HandleError(w, r, routeErr)
 		return
 	}
 
@@ -117,6 +142,8 @@ func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handle
 	if len(route.Parameters) == 0 {
 		return
 	}
+
+	decisions := rbac.DecisionsFromContext(r.Context())
 
 	// If you cannot derive the resource, then discard.
 	resource := getResource(capture, r, route.Route, route.Parameters)
@@ -140,6 +167,7 @@ func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handle
 		"result", &Result{
 			Status: capture.StatusCode(),
 		},
+		"decisions", newDecisions(decisions),
 	}
 
 	log.FromContext(r.Context()).Info("audit", logParams...)

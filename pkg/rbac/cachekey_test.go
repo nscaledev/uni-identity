@@ -30,11 +30,11 @@ import (
 
 // This is the coarse-decision cache-key test, analogous to
 // pkg/middleware/openapi/cachekey_test.go.  decisionCacheKey is the coarse
-// decision cache's whole correctness surface: it must key on the FULL coarse
-// authorization scope plus the policy-store hash, so a republish (hash change)
-// can never serve a stale verdict and an impersonated request can never
-// collide with a direct one — and it must bypass (ok=false) whenever the hash
-// is unavailable.
+// decision cache's whole correctness surface: it must key injectively on every
+// binding-resolution input, the FULL coarse authorization scope and the
+// policy-store hash. A republish (hash change) can never serve a stale verdict,
+// distinct identities cannot share a cached denial, and the cache must bypass
+// (ok=false) whenever the hash is unavailable.
 
 const (
 	keySubject = "compute-service"
@@ -92,6 +92,10 @@ func impersonate(ctx context.Context) context.Context {
 	return principal.NewImpersonateContext(ctx)
 }
 
+// The table is the point: every field of the key gets a row, so the
+// function is long by design and splitting it would hide the matrix.
+//
+//nolint:maintidx
 func TestDecisionCacheKey(t *testing.T) {
 	t.Parallel()
 
@@ -103,11 +107,27 @@ func TestDecisionCacheKey(t *testing.T) {
 		key, ok := keyEngine(fixedHasher{hash: keyHash, ok: true}).decisionCacheKey(subjectContext(t), orgResource, openapi.Read)
 
 		require.True(t, ok)
-		// The direct key carries the caller's account type and org set (both
-		// empty here — subjectContext sets no auth claims — hence the two empty
-		// "||" fields) alongside the subject: a direct request resolves its own
-		// bindings from all three, so all three key the entry.
-		require.Equal(t, "direct|compute-service|||identity:groups|org-1||read|hash-1", key)
+		// The direct key carries the complete caller resolution input. The
+		// length-prefixed shape also pins the absent claims and empty collection
+		// encodings used by subjectContext.
+		require.Equal(t, "6:direct|15:compute-service|0:|1:0|0:|1:0|1:0|15:identity:groups|5:org-1|0:|4:read|6:hash-1|", key)
+	})
+
+	t.Run("DirectClaimsPresenceDistinguishesTheKey", func(t *testing.T) {
+		t.Parallel()
+
+		engine := keyEngine(fixedHasher{hash: keyHash, ok: true})
+		withoutClaims := subjectContext(t)
+		withEmptyClaims := authorization.NewContext(t.Context(), &authorization.Info{
+			Userinfo: &openapi.Userinfo{Sub: keySubject, HttpsunikornCloudOrgauthz: &openapi.AuthClaims{}},
+		})
+
+		withoutClaimsKey, ok := engine.decisionCacheKey(withoutClaims, orgResource, openapi.Read)
+		require.True(t, ok)
+		withEmptyClaimsKey, ok := engine.decisionCacheKey(withEmptyClaims, orgResource, openapi.Read)
+		require.True(t, ok)
+
+		require.NotEqual(t, withoutClaimsKey, withEmptyClaimsKey, "nil claims fail resolution while present empty claims resolve to no bindings")
 	})
 
 	t.Run("DirectAccountTypeDistinguishesTheKey", func(t *testing.T) {
@@ -161,7 +181,7 @@ func TestDecisionCacheKey(t *testing.T) {
 		// impersonated result can never be served to a direct call or vice
 		// versa (impersonate() sets Type=user and no orgs — hence the empty
 		// org field).
-		require.Equal(t, "impersonated|compute-service|alice@example.com|user||identity:groups|org-1||read|hash-1", key)
+		require.Equal(t, "12:impersonated|15:compute-service|0:|1:0|0:|1:0|1:0|17:alice@example.com|0:|4:user|1:0|15:identity:groups|5:org-1|0:|4:read|6:hash-1|", key)
 		require.Contains(t, key, keySubject)
 		require.Contains(t, key, keyActor)
 	})
@@ -225,6 +245,97 @@ func TestDecisionCacheKey(t *testing.T) {
 		require.Equal(t, keyAB, keyBA, "org-set order must not change the key (sorted)")
 	})
 
+	t.Run("IssuerDistinguishesDirectAndImpersonatedKeys", func(t *testing.T) {
+		t.Parallel()
+
+		engine := keyEngine(fixedHasher{hash: keyHash, ok: true})
+
+		directA := authorization.NewContext(t.Context(), &authorization.Info{SrcIss: "https://a.example.com/", Userinfo: &openapi.Userinfo{Sub: keySubject, HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.User}}})
+		directB := authorization.NewContext(t.Context(), &authorization.Info{SrcIss: "https://b.example.com/", Userinfo: &openapi.Userinfo{Sub: keySubject, HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.User}}})
+
+		directKeyA, ok := engine.decisionCacheKey(directA, orgResource, openapi.Read)
+		require.True(t, ok)
+		directKeyB, ok := engine.decisionCacheKey(directB, orgResource, openapi.Read)
+		require.True(t, ok)
+		require.NotEqual(t, directKeyA, directKeyB, "the same direct subject from different issuers must not share a decision")
+
+		impersonatedA := principal.NewImpersonateContext(principal.NewContext(subjectContext(t), &principal.Principal{Actor: keyActor, Issuer: "https://a.example.com/", Type: openapi.User}))
+		impersonatedB := principal.NewImpersonateContext(principal.NewContext(subjectContext(t), &principal.Principal{Actor: keyActor, Issuer: "https://b.example.com/", Type: openapi.User}))
+
+		impersonatedKeyA, ok := engine.decisionCacheKey(impersonatedA, orgResource, openapi.Read)
+		require.True(t, ok)
+		impersonatedKeyB, ok := engine.decisionCacheKey(impersonatedB, orgResource, openapi.Read)
+		require.True(t, ok)
+		require.NotEqual(t, impersonatedKeyA, impersonatedKeyB, "the same impersonated actor from different issuers must not share a decision")
+	})
+
+	t.Run("CallerGroupsDistinguishDirectAndImpersonatedKeys", func(t *testing.T) {
+		t.Parallel()
+
+		engine := keyEngine(fixedHasher{hash: keyHash, ok: true})
+		newContext := func(groups []string) context.Context {
+			return authorization.NewContext(t.Context(), &authorization.Info{
+				SrcIss: "https://idp.example.com/",
+				Groups: groups,
+				Userinfo: &openapi.Userinfo{
+					Sub:                       keySubject,
+					HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.User, OrgIds: []string{"org-1"}},
+				},
+			})
+		}
+
+		groupsAB := newContext([]string{"group-a", "group-b"})
+		groupsBA := newContext([]string{"group-b", "group-a"})
+		groupsAC := newContext([]string{"group-a", "group-c"})
+
+		directAB, ok := engine.decisionCacheKey(groupsAB, orgResource, openapi.Read)
+		require.True(t, ok)
+		directBA, ok := engine.decisionCacheKey(groupsBA, orgResource, openapi.Read)
+		require.True(t, ok)
+		directAC, ok := engine.decisionCacheKey(groupsAC, orgResource, openapi.Read)
+		require.True(t, ok)
+
+		require.Equal(t, directAB, directBA, "group order does not change resolved bindings")
+		require.NotEqual(t, directAB, directAC, "different direct groups must not share a cached denial")
+
+		impersonatedAB, ok := engine.decisionCacheKey(impersonate(groupsAB), orgResource, openapi.Read)
+		require.True(t, ok)
+		impersonatedAC, ok := engine.decisionCacheKey(impersonate(groupsAC), orgResource, openapi.Read)
+		require.True(t, ok)
+
+		require.NotEqual(t, impersonatedAB, impersonatedAC, "caller groups also resolve the service side of an impersonated decision")
+	})
+
+	t.Run("DirectDelimiterValuesCannotShiftFieldBoundaries", func(t *testing.T) {
+		t.Parallel()
+
+		engine := keyEngine(fixedHasher{hash: keyHash, ok: true})
+		first := authorization.NewContext(t.Context(), &authorization.Info{SrcIss: "def", Userinfo: &openapi.Userinfo{Sub: "auth0|abc"}})
+		second := authorization.NewContext(t.Context(), &authorization.Info{SrcIss: "abc|def", Userinfo: &openapi.Userinfo{Sub: "auth0"}})
+
+		firstKey, ok := engine.decisionCacheKey(first, orgResource, openapi.Read)
+		require.True(t, ok)
+		secondKey, ok := engine.decisionCacheKey(second, orgResource, openapi.Read)
+		require.True(t, ok)
+
+		require.NotEqual(t, firstKey, secondKey, "length prefixes must distinguish values that collide under raw delimiter joining")
+	})
+
+	t.Run("ImpersonatedDelimiterValuesCannotShiftFieldBoundaries", func(t *testing.T) {
+		t.Parallel()
+
+		engine := keyEngine(fixedHasher{hash: keyHash, ok: true})
+		first := principal.NewImpersonateContext(principal.NewContext(subjectContext(t), &principal.Principal{Actor: "alice|issuer", Issuer: "external", Type: openapi.User}))
+		second := principal.NewImpersonateContext(principal.NewContext(subjectContext(t), &principal.Principal{Actor: "alice", Issuer: "issuer|external", Type: openapi.User}))
+
+		firstKey, ok := engine.decisionCacheKey(first, orgResource, openapi.Read)
+		require.True(t, ok)
+		secondKey, ok := engine.decisionCacheKey(second, orgResource, openapi.Read)
+		require.True(t, ok)
+
+		require.NotEqual(t, firstKey, secondKey, "actor and issuer delimiters must not produce the same impersonated key")
+	})
+
 	t.Run("ScopeActionAndHashEachDistinguishTheKey", func(t *testing.T) {
 		t.Parallel()
 
@@ -270,7 +381,7 @@ func TestDecisionCacheKey(t *testing.T) {
 		key, ok := keyEngine(fixedHasher{hash: keyHash, ok: true}).decisionCacheKey(ctx, orgResource, openapi.Read)
 
 		require.True(t, ok)
-		require.Equal(t, "direct|compute-service|||identity:groups|org-1||read|hash-1", key)
+		require.Equal(t, "6:direct|15:compute-service|0:|1:0|0:|1:0|1:0|15:identity:groups|5:org-1|0:|4:read|6:hash-1|", key)
 	})
 
 	t.Run("NoHasherBypasses", func(t *testing.T) {
