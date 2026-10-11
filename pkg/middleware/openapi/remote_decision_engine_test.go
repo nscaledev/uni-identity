@@ -63,18 +63,33 @@ const (
 // consulted, so tests can prove whether the remote engine was actually
 // dispatched to.  It also records the certificate that the call relayed.
 type checkStub struct {
-	allowed     bool
-	calls       atomic.Int32
-	relayedCert atomic.Value
+	allowed         bool
+	passportSubject string
+	calls           atomic.Int32
+	relayedCert     atomic.Value
+	gotPassport     atomic.Value
+	gotImpersonate  atomic.Value
 }
 
 func (s *checkStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.calls.Add(1)
 	s.relayedCert.Store(r.Header.Get("Unikorn-Client-Certificate"))
+	s.gotImpersonate.Store(r.Header.Get("X-Impersonate"))
 
-	body, err := json.Marshal(identityapi.AuthorizationCheckResponse{
+	var request identityapi.AuthorizationCheckRequest
+
+	_ = json.NewDecoder(r.Body).Decode(&request)
+
+	response := identityapi.AuthorizationCheckResponse{
 		Results: []identityapi.AuthorizationCheckResult{{Allowed: s.allowed}},
-	})
+	}
+
+	if request.Passport != nil {
+		s.gotPassport.Store(*request.Passport)
+		response.PassportSubject = &s.passportSubject
+	}
+
+	body, err := json.Marshal(response)
 	if err != nil {
 		panic(err)
 	}
@@ -215,16 +230,21 @@ func TestRemoteDecisionEngineSeededFromProviderInEnforceMode(t *testing.T) {
 	defer c.Finish()
 
 	mockAuth := mock.NewMockAuthorizer(c)
-	mockAuth.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(engineActor, identityapi.User), nil)
+	info := authInfoFixture(engineActor, identityapi.User)
+	info.Passport = "raw.passport.jws"
+
+	mockAuth.EXPECT().Authorize(gomock.Any()).Return(info, nil)
 	mockAuth.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
 
-	stub := &checkStub{allowed: true}
+	stub := &checkStub{allowed: true, passportSubject: engineActor}
 	remoteAuth := newRemoteAuthorizerForSeedTest(t, stub, remoteauthorizer.WithRemoteEngineMode(rbac.RemoteEnforce))
 
 	h := serveAllowCheck(t, &remoteProviderAuthorizer{Authorizer: mockAuth, remote: remoteAuth})
 
 	require.NoError(t, h.err, "the remote engine's allow verdict must be served even though the (empty) ACL would deny under the legacy path")
 	require.Equal(t, int32(1), stub.calls.Load(), "the remote engine must have been consulted exactly once")
+	require.Equal(t, "raw.passport.jws", stub.gotPassport.Load(), "a bearer caller's check must carry its passport through the middleware")
+	require.Empty(t, stub.gotImpersonate.Load(), "a bearer caller's check must not be impersonated")
 }
 
 // TestRemoteDecisionRelaysTheCallersCertificate pins whose rights the remote

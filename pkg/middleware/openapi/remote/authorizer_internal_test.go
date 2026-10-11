@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -265,6 +267,252 @@ func TestAuthorizeDoesNotCacheNonPositiveTTL(t *testing.T) {
 		"a passport whose TTL would be ≤ 0 must not be cached, so repeat requests must re-exchange")
 }
 
+func TestAuthorizeReturnsTheRawPassport(t *testing.T) {
+	t.Parallel()
+
+	raw := mintTestPassport(t, validTestPassportClaims())
+	exchange := &recordingTokenExchange{passport: raw}
+	auth := newTestAuthorizer(exchange)
+
+	fresh, err := auth.Authorize(scopedAuthInput(t, "", ""))
+	require.NoError(t, err)
+	assert.Equal(t, raw, fresh.Passport, "a fresh exchange must set the raw passport")
+
+	cached, err := auth.Authorize(scopedAuthInput(t, "", ""))
+	require.NoError(t, err)
+	assert.Equal(t, raw, cached.Passport, "a cache hit must return the same raw passport")
+	assert.Equal(t, int32(1), exchange.calls.Load(), "the second request must be served from the cache")
+}
+
+// TestAuthorizeCacheHitDoesNotDecodeThePassport seeds an entry whose raw value
+// is not a JWS. A cache hit that decodes the raw value again fails on it. A
+// cache hit that returns the claims without the raw value fails the second
+// assertion.
+func TestAuthorizeCacheHitDoesNotDecodeThePassport(t *testing.T) {
+	t.Parallel()
+
+	exchange := &recordingTokenExchange{}
+	auth := newTestAuthorizer(exchange)
+
+	const raw = "opaque-raw-passport"
+
+	claims := validTestPassportClaims()
+	key := newTokenCacheKey(testSourceToken, tokenExchangeOptions{})
+	auth.tokenCache.Add(key, cachedPassport{claims: claims, raw: raw}, time.Minute)
+
+	info, err := auth.Authorize(scopedAuthInput(t, "", ""))
+	require.NoError(t, err)
+	assert.Equal(t, claims.Subject, info.Userinfo.Sub, "a cache hit must use the stored claims")
+	assert.Equal(t, raw, info.Passport, "a cache hit must return the stored raw passport")
+	assert.Equal(t, testSourceToken, info.Token)
+	assert.Zero(t, exchange.calls.Load(), "a cache hit must not exchange the token again")
+}
+
+// passportPerTokenExchange mints a distinct passport for each source token, so a
+// test can tell whose passport a request received.
+type passportPerTokenExchange struct {
+	t     *testing.T
+	calls atomic.Int32
+}
+
+func (e *passportPerTokenExchange) Exchange(_ context.Context, sourceToken string, _ *tokenExchangeOptions) (string, error) {
+	e.calls.Add(1)
+
+	claims := validTestPassportClaims()
+	claims.Subject = "user-of-" + sourceToken
+
+	return mintTestPassport(e.t, claims), nil
+}
+
+func authInputWithToken(t *testing.T, token, organizationID, projectID string) *openapi3filter.AuthenticationInput {
+	t.Helper()
+
+	input := scopedAuthInput(t, organizationID, projectID)
+	input.RequestValidationInput.Request.Header.Set("Authorization", "Bearer "+token)
+
+	return input
+}
+
+// TestCacheKeyIncludesSourceToken guards the check body. The cached raw passport
+// goes to identity, so a key without the source token would send one user's
+// passport for another user's request.
+func TestCacheKeyIncludesSourceToken(t *testing.T) {
+	t.Parallel()
+
+	exchange := &passportPerTokenExchange{t: t}
+	auth := newTestAuthorizer(exchange)
+
+	first, err := auth.Authorize(authInputWithToken(t, "token-a", "org-1", "proj-1"))
+	require.NoError(t, err)
+
+	second, err := auth.Authorize(authInputWithToken(t, "token-b", "org-1", "proj-1"))
+	require.NoError(t, err)
+
+	assert.Equal(t, "user-of-token-a", first.Userinfo.Sub)
+	assert.Equal(t, "user-of-token-b", second.Userinfo.Sub, "a second token must not get the first token's cached claims")
+	assert.NotEqual(t, first.Passport, second.Passport, "a second token must not get the first token's raw passport")
+	assert.EqualValues(t, 2, exchange.calls.Load(), "each source token needs its own exchange")
+}
+
+// TestCacheKeyIncludesEachScopeField changes one scope field at a time, so a key
+// that drops only that field is caught.
+func TestCacheKeyIncludesEachScopeField(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		first, second [2]string
+	}{
+		"organization": {first: [2]string{"org-1", "proj-1"}, second: [2]string{"org-2", "proj-1"}},
+		"project":      {first: [2]string{"org-1", "proj-1"}, second: [2]string{"org-1", "proj-2"}},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			exchange := &recordingTokenExchange{passport: mintTestPassport(t, validTestPassportClaims())}
+			auth := newTestAuthorizer(exchange)
+
+			for _, scope := range [][2]string{tt.first, tt.second} {
+				_, err := auth.Authorize(scopedAuthInput(t, scope[0], scope[1]))
+				require.NoError(t, err)
+			}
+
+			assert.EqualValues(t, 2, exchange.calls.Load(), "the same token on a different %s needs its own exchange", name)
+		})
+	}
+}
+
+func TestAuthorizeRequestsTheServicesOwnAudience(t *testing.T) {
+	t.Parallel()
+
+	exchange := &recordingTokenExchange{passport: mintTestPassport(t, validTestPassportClaims())}
+	auth := newTestAuthorizer(exchange)
+	auth.clientCN = "service-cn"
+
+	_, err := auth.Authorize(scopedAuthInput(t, "org-1", "project-1"))
+	require.NoError(t, err)
+
+	calls := exchange.recorded()
+	require.Len(t, calls, 1)
+	assert.Equal(t, "service-cn", calls[0].audience)
+	assert.Equal(t, "org-1", calls[0].organizationID, "the audience must not replace the route scope")
+}
+
+func LargeTestPassport(tb testing.TB) string {
+	tb.Helper()
+
+	claims := validTestPassportClaims()
+	claims.OrgIDs = make([]string, 56)
+
+	for i := range claims.OrgIDs {
+		claims.OrgIDs[i] = fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
+	}
+
+	claims.Groups = []string{"bound-group-one-with-a-long-name", "bound-group-two-with-a-long-name", "bound-group-three-with-a-long-name", "bound-group-four-with-a-long-name"}
+
+	passport := mintTestPassport(tb, claims)
+	if len(passport) > 4<<10 {
+		tb.Fatalf("the test passport has %d bytes, more than the passport size gate", len(passport))
+	}
+
+	return passport
+}
+
+func BenchmarkCachedPassportMemory(b *testing.B) {
+	passport := LargeTestPassport(b)
+
+	decode := func(raw string) *oauth2.PassportClaims {
+		claims, err := decodePassportClaims(raw)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		return claims
+	}
+
+	b.Run("raw", func(b *testing.B) {
+		measureCacheHeap(b, passport, strings.Clone)
+	})
+
+	b.Run("claims", func(b *testing.B) {
+		measureCacheHeap(b, passport, decode)
+	})
+
+	b.Run("claims_and_raw", func(b *testing.B) {
+		measureCacheHeap(b, passport, func(raw string) cachedPassport {
+			return cachedPassport{claims: decode(raw), raw: strings.Clone(raw)}
+		})
+	})
+}
+
+func measureCacheHeap[T any](b *testing.B, passport string, value func(string) T) {
+	b.Helper()
+
+	key := func(i int) tokenCacheKey {
+		return newTokenCacheKey(fmt.Sprintf("source-token-%d", i), tokenExchangeOptions{})
+	}
+
+	for range b.N {
+		tokenCache := cache.NewLRUExpireCache[tokenCacheKey, T](tokenCacheSize)
+
+		var before, after runtime.MemStats
+
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+
+		for i := range tokenCacheSize {
+			tokenCache.Add(key(i), value(passport), time.Minute)
+		}
+
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+
+		for i := range tokenCacheSize {
+			if _, ok := tokenCache.Get(key(i)); !ok {
+				b.Fatalf("cache entry %d is missing, so the measurement is not of a full cache", i)
+			}
+		}
+
+		b.ReportMetric(float64(after.HeapAlloc)-float64(before.HeapAlloc), "B/cache")
+	}
+
+	b.ReportMetric(float64(len(passport)), "B/passport")
+}
+
+func BenchmarkAuthorizeCacheHit(b *testing.B) {
+	exchange := &recordingTokenExchange{passport: LargeTestPassport(b)}
+	auth := newTestAuthorizer(exchange)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/test", nil)
+	req.Header.Set("Authorization", "Bearer "+testSourceToken)
+
+	input := &openapi3filter.AuthenticationInput{
+		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: req},
+		SecurityScheme:         &openapi3.SecurityScheme{Type: "oauth2"},
+	}
+
+	if _, err := auth.Authorize(input); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		info, err := auth.Authorize(input)
+		if err != nil || info.Passport == "" {
+			b.Fatalf("cache hit failed: %v", err)
+		}
+	}
+
+	b.StopTimer()
+
+	if exchange.calls.Load() != 1 {
+		b.Fatalf("%d exchanges, want 1", exchange.calls.Load())
+	}
+}
+
 // TestPassportToUserinfo verifies projection into the handler-facing identity
 // shape without synthesizing profile fields.
 func TestPassportToUserinfo(t *testing.T) {
@@ -314,6 +562,7 @@ type tokenExchangeCall struct {
 	sourceToken    string
 	organizationID string
 	projectID      string
+	audience       string
 }
 
 func (e *recordingTokenExchange) Exchange(_ context.Context, sourceToken string, options *tokenExchangeOptions) (string, error) {
@@ -323,6 +572,7 @@ func (e *recordingTokenExchange) Exchange(_ context.Context, sourceToken string,
 	if options != nil {
 		call.organizationID = options.organizationID
 		call.projectID = options.projectID
+		call.audience = options.audience
 	}
 
 	existing := e.mu.Load()
@@ -347,7 +597,7 @@ func (e *recordingTokenExchange) recorded() []tokenExchangeCall {
 }
 
 func newTestAuthorizer(exchange TokenExchange) *Authorizer {
-	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *oauth2.PassportClaims](16)
+	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, cachedPassport](16)
 
 	return &Authorizer{
 		exchange:   exchange,
@@ -357,20 +607,20 @@ func newTestAuthorizer(exchange TokenExchange) *Authorizer {
 
 // mintTestPassport signs test claims with the algorithm accepted by the
 // production parser.
-func mintTestPassport(t *testing.T, claims *oauth2.PassportClaims) string {
-	t.Helper()
+func mintTestPassport(tb testing.TB, claims *oauth2.PassportClaims) string {
+	tb.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.ES512, Key: key},
 		(&jose.SignerOptions{}).WithType("JWT"),
 	)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	passport, err := jwt.Signed(signer).Claims(claims).Serialize()
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	return passport
 }

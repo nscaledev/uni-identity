@@ -43,10 +43,20 @@ var (
 	// ErrPassportInvalid indicates exchange returned an unusable passport payload.
 	ErrPassportInvalid = errors.New("passport invalid")
 
+	// ErrClientCertificateMissing indicates that the base client has no
+	// client certificate with a common name, which a passport audience needs.
+	ErrClientCertificateMissing = errors.New("client certificate missing")
+
 	// ErrDecisionUnavailable is the fail-closed mapping for an authorization
 	// check that could not obtain a verdict from identity: transport failures,
 	// 5xx responses, and malformed successful responses.  The caller MUST
 	// treat it as a deny.  It mirrors rbac.ErrDecisionUnavailable across the
 	// wire without importing pkg/rbac into consumers of this package.
 	ErrDecisionUnavailable = errors.New("authorization decision unavailable")
+
+	// ErrPassportSubjectUnconfirmed indicates that identity did not echo the
+	// subject of the passport that the check sent.  The caller MUST treat it as
+	// a deny.  It is not ErrDecisionUnavailable, so it does not count toward the
+	// circuit breaker.
+	ErrPassportSubjectUnconfirmed = errors.New("identity did not confirm the passport subject")
 )

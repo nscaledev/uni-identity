@@ -52,6 +52,12 @@ func NewImpersonateContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, impersonateKey, true)
 }
 
+// NewContextWithoutImpersonation clears an impersonation marker that an
+// earlier NewImpersonateContext set.
+func NewContextWithoutImpersonation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, impersonateKey, false)
+}
+
 // ImpersonateFromContext reports whether the request carries an impersonation signal.
 func ImpersonateFromContext(ctx context.Context) bool {
 	v, _ := ctx.Value(impersonateKey).(bool)

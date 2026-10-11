@@ -18,16 +18,28 @@ limitations under the License.
 package authorizer_test
 
 import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
+	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
+	gojose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 
@@ -37,10 +49,13 @@ import (
 	identityclient "github.com/unikorn-cloud/identity/pkg/client"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
+	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
@@ -108,6 +123,169 @@ func TestRemoteTokenCaching(t *testing.T) {
 	require.NotNil(t, info2)
 	require.Equal(t, info1.Userinfo.Sub, info2.Userinfo.Sub)
 	require.Equal(t, int32(1), server.Called.Load())
+	require.NotEmpty(t, info1.Passport, "a fresh exchange must return the raw passport")
+	require.Equal(t, info1.Passport, info2.Passport, "a cache hit must return the same raw passport")
+}
+
+func TestRemotePassportGoesOnlyInTheCheckBody(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, accessToken := setupTestEnvironment(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	var passport string
+
+	// The first request exchanges the token. The second one is a cache hit, which serves most bearer requests.
+	for range 2 {
+		req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+
+		info, err := auth.Authorize(authInput(req))
+		require.NoError(t, err)
+		require.NotEmpty(t, info.Passport)
+
+		passport = info.Passport
+
+		actor := &principal.Principal{Actor: testSubject, Type: identityapi.User}
+		ctx := authorization.NewContext(principal.NewContext(t.Context(), actor), info)
+
+		_, err = auth.GetACL(ctx, "")
+		require.NoError(t, err)
+
+		allowed, err := auth.RemoteDecisionEngine().AllowCoarseMany(ctx, []rbac.Resource{{Kind: "identity:groups"}}, identityapi.Read)
+		require.NoError(t, err)
+		require.Equal(t, []bool{true}, allowed)
+	}
+
+	require.Equal(t, int32(1), server.Called.Load(), "the second request must be a cache hit")
+
+	paths := map[string]int{}
+
+	for _, call := range server.recorded() {
+		paths[call.path]++
+
+		require.NotContains(t, call.query, passport, "the query of %s must not carry the passport", call.path)
+
+		for name, values := range call.header {
+			for _, value := range values {
+				require.NotContains(t, value, passport, "header %s of %s must not carry the passport", name, call.path)
+
+				for _, encoding := range headerEncodings() {
+					if decoded, err := encoding.DecodeString(value); err == nil {
+						require.NotContains(t, string(decoded), passport, "decoded header %s of %s must not carry the passport", name, call.path)
+					}
+				}
+			}
+		}
+
+		if call.path == checkPath {
+			require.Contains(t, string(call.body), passport, "the check body carries the passport")
+
+			continue
+		}
+
+		require.NotContains(t, string(call.body), passport, "the body of %s must not carry the passport", call.path)
+	}
+
+	require.Equal(t, map[string]int{"/oauth2/v2/token": 1, "/api/v1/acl": 2, checkPath: 2}, paths, "the test must see the exchange, two ACL calls and two checks")
+}
+
+func TestRemoteExchangeRequestsAudienceOfClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, accessToken := setupTestEnvironment(t)
+
+	auth := createRemoteAuthorizer(t, k8sClient, server.URL())
+
+	req := httptest.NewRequest(http.MethodGet, server.URL()+"/api/v1/test", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	info, err := auth.Authorize(authInput(req))
+	require.NoError(t, err)
+
+	clientCN := certificateCN(t, server.ClientCertPEM)
+	require.NotEmpty(t, clientCN)
+	require.Equal(t, clientCN, server.Audience.Load(), "the exchange form must name the certificate CN as audience")
+
+	token, err := jwt.ParseSigned(info.Passport, []gojose.SignatureAlgorithm{gojose.ES512})
+	require.NoError(t, err)
+
+	var claims jwt.Claims
+
+	require.NoError(t, token.UnsafeClaimsWithoutVerification(&claims))
+	require.Equal(t, jwt.Audience{clientCN}, claims.Audience)
+}
+
+func TestNewAuthorizerNeedsClientCertificateOnlyWhenRemoteIsOn(t *testing.T) {
+	t.Parallel()
+
+	k8sClient, server, _ := setupTestEnvironment(t)
+
+	noCertificate := &coreclient.HTTPClientOptions{}
+	noCertificate.AddFlags(pflag.NewFlagSet("test-no-certificate", pflag.PanicOnError))
+
+	identityOptions := createIdentityOptions(t, server.URL())
+
+	t.Run("off starts", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := authorizer.NewAuthorizer(k8sClient, identityOptions, noCertificate)
+		require.NoError(t, err)
+	})
+
+	for name, mode := range map[string]rbac.RemoteMode{"shadow": rbac.RemoteShadow, "enforce": rbac.RemoteEnforce} {
+		t.Run(name+" refuses", func(t *testing.T) {
+			t.Parallel()
+
+			_, err := authorizer.NewAuthorizer(k8sClient, identityOptions, noCertificate, authorizer.WithRemoteEngineMode(mode))
+			require.ErrorIs(t, err, authorizer.ErrClientCertificateMissing)
+			require.ErrorContains(t, err, "client certificate")
+		})
+	}
+
+	t.Run("a certificate with no common name refuses", func(t *testing.T) {
+		t.Parallel()
+
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		require.NoError(t, err)
+
+		der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{SerialNumber: big.NewInt(1), NotAfter: time.Now().Add(time.Hour)}, &x509.Certificate{}, &key.PublicKey, key)
+		require.NoError(t, err)
+
+		keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+		require.NoError(t, err)
+
+		scheme := runtime.NewScheme()
+		require.NoError(t, corev1.AddToScheme(scheme))
+
+		unnamed := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "client-cert"},
+				Type:       corev1.SecretTypeTLS,
+				Data: map[string][]byte{
+					corev1.TLSCertKey:       pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+					corev1.TLSPrivateKeyKey: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
+				},
+			},
+			&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "ca-cert"},
+				Type:       corev1.SecretTypeTLS,
+				Data:       map[string][]byte{corev1.TLSCertKey: server.CACertPEM, corev1.TLSPrivateKeyKey: server.CAKeyPEM},
+			},
+		).Build()
+
+		_, err = authorizer.NewAuthorizer(unnamed, identityOptions, createCoreClientOptions(t), authorizer.WithRemoteEngineMode(rbac.RemoteShadow))
+		require.ErrorIs(t, err, authorizer.ErrClientCertificateMissing)
+		require.ErrorContains(t, err, "common name")
+	})
+
+	t.Run("shadow starts with a certificate", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := authorizer.NewAuthorizer(k8sClient, identityOptions, createCoreClientOptions(t), authorizer.WithRemoteEngineMode(rbac.RemoteShadow))
+		require.NoError(t, err)
+	})
 }
 
 // TestRemoteInvalidToken tests authentication with an invalid token.
@@ -176,7 +354,51 @@ func TestRemoteUnsupportedScheme(t *testing.T) {
 
 type server struct {
 	*mtlstest.MTLSServer
-	Called *atomic.Int32 // used to check that cache is used rather than repeating calls
+	Called   *atomic.Int32 // used to check that cache is used rather than repeating calls
+	Audience *atomic.Value
+	calls    *callRecorder
+}
+
+const checkPath = "/api/v1/authorization/check"
+
+// headerEncodings are every base64 form in which a header could hide the passport.
+func headerEncodings() []*base64.Encoding {
+	return []*base64.Encoding{base64.RawURLEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.StdEncoding}
+}
+
+type recordedCall struct {
+	path   string
+	query  string
+	header http.Header
+	body   []byte
+}
+
+type callRecorder struct {
+	mu    sync.Mutex
+	calls []recordedCall
+}
+
+func (r *callRecorder) record(req *http.Request) error {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return err
+	}
+
+	req.Body = io.NopCloser(bytes.NewReader(body))
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.calls = append(r.calls, recordedCall{path: req.URL.Path, query: req.URL.RawQuery, header: req.Header.Clone(), body: body})
+
+	return nil
+}
+
+func (s *server) recorded() []recordedCall {
+	s.calls.mu.Lock()
+	defer s.calls.mu.Unlock()
+
+	return append([]recordedCall(nil), s.calls.calls...)
 }
 
 // setupTestEnvironment creates a test environment with necessary K8s resources and identity server.
@@ -195,11 +417,20 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	// Similarly, the handler needs the server URL, so declare first and assign after.
 	var mtlsServer *mtlstest.MTLSServer
 
-	var called atomic.Int32
+	var (
+		called   atomic.Int32
+		audience atomic.Value
+		calls    callRecorder
+	)
 
 	// Create mTLS server with handler
 	var err error
 	mtlsServer, err = mtlstest.NewMTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := calls.record(r); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		switch r.URL.Path {
 		case "/.well-known/openid-configuration":
 			u := mtlsServer.URL()
@@ -217,6 +448,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 
 		case "/oauth2/v2/token":
 			called.Add(1)
+			audience.Store(r.PostFormValue("audience"))
 
 			result, err := authenticator.Token(w, r)
 			if err != nil {
@@ -226,6 +458,28 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(result)
+
+		case "/api/v1/acl":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(identityapi.Acl{})
+
+		case checkPath:
+			var request identityapi.AuthorizationCheckRequest
+
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			subject := testSubject
+			results := make([]identityapi.AuthorizationCheckResult, len(request.Checks))
+
+			for i := range results {
+				results[i].Allowed = true
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(identityapi.AuthorizationCheckResponse{Results: results, PassportSubject: &subject})
 
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -361,50 +615,62 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	require.NotNil(t, tokens)
 	accessToken := tokens.AccessToken
 
-	return fakeClient, &server{mtlsServer, &called}, accessToken
+	return fakeClient, &server{mtlsServer, &called, &audience, &calls}, accessToken
+}
+
+func certificateCN(tb testing.TB, certPEM []byte) string {
+	tb.Helper()
+
+	block, _ := pem.Decode(certPEM)
+	require.NotNil(tb, block)
+
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(tb, err)
+
+	return certificate.Subject.CommonName
 }
 
 // The fields are all unexported, and the only way to set them is with flags. So,
 // flags we use.
-func createIdentityOptions(t *testing.T, host string) *identityclient.Options {
-	t.Helper()
+func createIdentityOptions(tb testing.TB, host string) *identityclient.Options {
+	tb.Helper()
 
 	flags := pflag.NewFlagSet("test-identity-options", pflag.PanicOnError)
 	options := identityclient.NewOptions()
 	options.AddFlags(flags)
 	// there is a brittle dependence here on the service name prefix ("identity") being correct
-	require.NoError(t, flags.Set("identity-host", host))
-	require.NoError(t, flags.Set("identity-ca-secret-namespace", testNamespace))
-	require.NoError(t, flags.Set("identity-ca-secret-name", "ca-cert"))
+	require.NoError(tb, flags.Set("identity-host", host))
+	require.NoError(tb, flags.Set("identity-ca-secret-namespace", testNamespace))
+	require.NoError(tb, flags.Set("identity-ca-secret-name", "ca-cert"))
 
 	return options
 }
 
-func createCoreClientOptions(t *testing.T) *coreclient.HTTPClientOptions {
-	t.Helper()
+func createCoreClientOptions(tb testing.TB) *coreclient.HTTPClientOptions {
+	tb.Helper()
 
 	options := &coreclient.HTTPClientOptions{}
 	flags := pflag.NewFlagSet("test-http-options", pflag.PanicOnError)
 	options.AddFlags(flags)
 	// Configure client certificate for mTLS; these flags are defined in uni-core/pkg/client
-	require.NoError(t, flags.Set("client-certificate-namespace", testNamespace))
-	require.NoError(t, flags.Set("client-certificate-name", "client-cert"))
+	require.NoError(tb, flags.Set("client-certificate-namespace", testNamespace))
+	require.NoError(tb, flags.Set("client-certificate-name", "client-cert"))
 
 	return options
 }
 
-func createRemoteAuthorizer(t *testing.T, k8sClient client.Client, issuer string, opts ...authorizer.Option) *authorizer.Authorizer {
-	t.Helper()
+func createRemoteAuthorizer(tb testing.TB, k8sClient client.Client, issuer string, opts ...authorizer.Option) *authorizer.Authorizer {
+	tb.Helper()
 
-	identityOptions := createIdentityOptions(t, issuer)
-	clientOptions := createCoreClientOptions(t)
+	identityOptions := createIdentityOptions(tb, issuer)
+	clientOptions := createCoreClientOptions(tb)
 
 	// TLS setup can exceed the production 250ms decision deadline under the
 	// race detector. Explicit test options follow this default and still win.
 	opts = append([]authorizer.Option{authorizer.WithCheckTimeout(remoteTestCheckTimeout)}, opts...)
 
 	a, err := authorizer.NewAuthorizer(k8sClient, identityOptions, clientOptions, opts...)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	return a
 }

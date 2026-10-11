@@ -31,6 +31,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -310,6 +311,44 @@ func TestRemoteMetricsBatch(t *testing.T) {
 	require.Len(t, data.DataPoints, 1)
 	require.Equal(t, uint64(1), data.DataPoints[0].Count,
 		"ONE latency observation for the whole 3-check batch round trip, not three")
+}
+
+//nolint:paralleltest // installManualReader swaps the process-global OTel meter provider.
+func TestRemoteMetricsCountACallThatSentNothing(t *testing.T) {
+	reader := installManualReader(t)
+
+	h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+	engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
+
+	ctx := checkSystemAccountAuthContext(t, false)
+
+	info, err := authorization.FromContext(ctx)
+	require.NoError(t, err)
+
+	info.Passport = ""
+
+	_, err = engine.AllowCoarseMany(ctx, []rbac.Resource{{Kind: "identity:groups", OrganizationID: "org-1"}}, identityapi.Read)
+	require.ErrorIs(t, err, rbac.ErrDecisionUnavailable)
+	require.Zero(t, h.requests, "a bearer caller with no passport sends no check")
+
+	var rm metricdata.ResourceMetrics
+
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+
+	counter, found := findMetric(&rm, "unikorn_identity_authz_remote_decision_total")
+	require.True(t, found)
+
+	sum, ok := counter.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Equal(t, int64(1), outcomeValue(t, sum, "unavailable"))
+
+	histogram, found := findMetric(&rm, "unikorn_identity_authz_remote_decision_latency")
+	require.True(t, found, "the histogram must count the call that the counter counts")
+
+	data, ok := histogram.Data.(metricdata.Histogram[float64])
+	require.True(t, ok)
+	require.Len(t, data.DataPoints, 1)
+	require.Equal(t, uint64(1), data.DataPoints[0].Count, "the counter and the histogram must count the same calls")
 }
 
 // TestRemoteMetricsDenyLogsAtInfo pins the deny log line: unconditional Info,

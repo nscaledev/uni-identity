@@ -25,7 +25,6 @@ import (
 
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
-	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
 
@@ -38,9 +37,10 @@ import (
 // Allow*/list-filtering decisions identity's own *RBAC serves in-process.
 //
 // Error sentinels are translated at this boundary, not just forwarded:
-// CheckMany fails closed with THIS package's ErrDecisionUnavailable (or a
-// propagated 4xx), never pkg/rbac's, because decision.go does not import
-// pkg/rbac. AllowCoarseMany re-wraps any CheckMany error with
+// CheckMany fails closed with THIS package's ErrDecisionUnavailable, a
+// propagated 4xx, or ErrPassportSubjectUnconfirmed, never pkg/rbac's, because
+// decision.go does not import pkg/rbac. AllowCoarseMany re-wraps any CheckMany
+// error with
 // rbac.ErrDecisionUnavailable (preserving the original via %w) so a caller
 // checking errors.Is against rbac's sentinels gets the identical answer
 // regardless of whether the local or remote CoarseEngine served the
@@ -88,31 +88,6 @@ func (a *Authorizer) RemoteDecisionEngine() rbac.CoarseEngine {
 // increment per (resource, action) entry.  AllowCoarse below funnels through
 // here, so it is instrumented for free without a second observation.
 func (e *RemoteEngine) AllowCoarseMany(ctx context.Context, resources []rbac.Resource, action identityapi.AclOperation) ([]bool, error) {
-	// Impersonate on the outbound check iff the AUTHENTICATED caller is a bearer
-	// principal (authorization.Info.SystemAccount == false).  A system-account
-	// (mTLS) caller is conveyed to identity by the cert-relay
-	// (Unikorn-Client-Certificate) and resolved directly, so forcing
-	// impersonation there would wrongly compute intersect(user, caller) and deny
-	// service-privilege ops the caller holds but the propagated user lacks (e.g.
-	// compute→region:servers).  A bearer caller cannot be conveyed by cert (the
-	// check endpoint is mTLS-only and drops the bearer), so it is impersonated to
-	// be resolved as the user.  An inbound X-Impersonate (a caller already
-	// delegating) flows through unchanged — this only ADDS marking for bearer
-	// callers, never strips.  Mirrors identity's own getSystemAccountACL branch.
-	// Scoped to this call only: reached solely from Allow* dispatch, long AFTER
-	// the middleware fetched the ACL via GetACL on the unmarked request context,
-	// so GetACL — and thus the shadow legacy baseline — is untouched.
-	if info, err := authorization.FromContext(ctx); err == nil && info != nil && !info.SystemAccount {
-		ctx = principal.NewImpersonateContext(ctx)
-	}
-
-	// The middleware keeps the certificate out of the handler context, so that
-	// other calls from the handler do not relay it.  Relay the certificate of a
-	// system-account caller on this call only.
-	if info, err := authorization.FromContext(ctx); err == nil && info != nil && info.ClientCert != "" {
-		ctx = authorization.NewContextWithClientCert(ctx, info.ClientCert)
-	}
-
 	checks := make([]CheckRequest, len(resources))
 	for i, resource := range resources {
 		checks[i] = CheckRequest{Resource: Resource(resource), Action: action}
@@ -120,7 +95,7 @@ func (e *RemoteEngine) AllowCoarseMany(ctx context.Context, resources []rbac.Res
 
 	start := time.Now()
 
-	allowed, err := e.checkManyChunked(ctx, checks)
+	allowed, err := e.checkAsCaller(ctx, checks)
 
 	elapsed := time.Since(start)
 
@@ -132,6 +107,25 @@ func (e *RemoteEngine) AllowCoarseMany(ctx context.Context, resources []rbac.Res
 	}
 
 	return allowed, nil
+}
+
+func (e *RemoteEngine) checkAsCaller(ctx context.Context, checks []CheckRequest) ([]bool, error) {
+	info, err := authorization.FromContext(ctx)
+
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%w: no authenticated caller: %w", ErrDecisionUnavailable, err)
+	case info.SystemAccount:
+		if info.ClientCert != "" {
+			ctx = authorization.NewContextWithClientCert(ctx, info.ClientCert)
+		}
+
+		return e.checkManyChunked(ctx, checks)
+	case info.Userinfo == nil:
+		return nil, fmt.Errorf("%w: bearer caller has no subject", ErrDecisionUnavailable)
+	default:
+		return e.checkManyChunked(ctx, checks, WithPassport(info.Passport, info.Userinfo.Sub))
+	}
 }
 
 // AllowCoarse is the single-resource convenience the Allow* facade uses; nil
@@ -170,9 +164,9 @@ const maxChecksPerRequest = 50
 // Fail-closed: any chunk that fails to obtain a verdict fails the WHOLE batch
 // (the error is returned and no partial verdicts leak out), and each chunk is
 // independently guarded by the circuit breaker inside CheckMany.
-func (e *RemoteEngine) checkManyChunked(ctx context.Context, checks []CheckRequest) ([]bool, error) {
+func (e *RemoteEngine) checkManyChunked(ctx context.Context, checks []CheckRequest, opts ...CheckOption) ([]bool, error) {
 	if len(checks) <= maxChecksPerRequest {
-		return e.authorizer.CheckMany(ctx, checks)
+		return e.authorizer.CheckMany(ctx, checks, opts...)
 	}
 
 	allowed := make([]bool, 0, len(checks))
@@ -180,7 +174,7 @@ func (e *RemoteEngine) checkManyChunked(ctx context.Context, checks []CheckReque
 	for start := 0; start < len(checks); start += maxChecksPerRequest {
 		end := min(start+maxChecksPerRequest, len(checks))
 
-		chunk, err := e.authorizer.CheckMany(ctx, checks[start:end])
+		chunk, err := e.authorizer.CheckMany(ctx, checks[start:end], opts...)
 		if err != nil {
 			return nil, err
 		}

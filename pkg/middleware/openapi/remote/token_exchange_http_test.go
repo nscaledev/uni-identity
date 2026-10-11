@@ -46,6 +46,7 @@ func TestExchangeClient(t *testing.T) {
 			options: &tokenExchangeOptions{
 				organizationID: "org-1",
 				projectID:      "proj-1",
+				audience:       "service-cn",
 			},
 		},
 		{
@@ -111,6 +112,7 @@ func TestExchangeClient(t *testing.T) {
 				if tt.options != nil {
 					assert.Equal(t, tt.options.organizationID, r.Form.Get("x_organization_id"))
 					assert.Equal(t, tt.options.projectID, r.Form.Get("x_project_id"))
+					assert.Equal(t, tt.options.audience, r.Form.Get("audience"))
 				}
 
 				w.WriteHeader(tt.status)
@@ -140,6 +142,14 @@ func TestExchangeClient(t *testing.T) {
 			assert.Equal(t, "passport-token", passport)
 		})
 	}
+}
+
+func TestTokenExchangeFormAudience(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "service-cn", tokenExchangeForm("raw-token", &tokenExchangeOptions{audience: "service-cn"}).Get("audience"))
+	assert.False(t, tokenExchangeForm("raw-token", &tokenExchangeOptions{}).Has("audience"))
+	assert.False(t, tokenExchangeForm("raw-token", nil).Has("audience"))
 }
 
 // Regression: the error-body sniff cap must not apply to 200 — passports

@@ -56,10 +56,11 @@ type Info struct {
 	// BearerTrustSpec.GroupsClaim). It is nil for UNI-local tokens, system
 	// accounts, and issuers with no claim configured. Only the identity
 	// process populates it, in the local authorizer and in passport exchange.
-	// The remote authorizer used downstream always leaves it nil: passports
-	// deliberately do not carry groups, and neither does the X-Principal
-	// header, which the caller asserts.
+	// The remote authorizer used downstream always leaves it nil.
 	Groups []string
+	// Passport is the raw identity-signed passport of a bearer caller. Only
+	// the remote authorizer sets it.
+	Passport string
 }
 
 type keyType int
@@ -73,7 +74,7 @@ func NewContext(ctx context.Context, info *Info) context.Context {
 
 func FromContext(ctx context.Context) (*Info, error) {
 	if value := ctx.Value(key); value != nil {
-		if info, ok := value.(*Info); ok {
+		if info, ok := value.(*Info); ok && info != nil {
 			return info, nil
 		}
 	}

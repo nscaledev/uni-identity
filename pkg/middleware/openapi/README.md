@@ -39,7 +39,7 @@ The package operates around two distinct trust paths.
 
 - the caller must use mTLS
 - the calling service identity comes from the client certificate
-- RBAC is resolved either as that service or as the intersection of that service and an impersonated principal
+- RBAC is resolved as that service, as the intersection of that service and an impersonated principal, or, on the authorization check, as the subject of the passport that the calling service sends
 - principal information is required and is propagated explicitly
 
 This distinction is central to how UNI services compose. `pkg/middleware/openapi` is the package
@@ -147,14 +147,15 @@ in production is a separate, later concern — this seam only makes the choice r
 
 ### The Remote Decision Call
 
-`remote/decision.go` adds `Authorizer.CheckMany(ctx, []CheckRequest) ([]bool, error)`, the
+`remote/decision.go` adds `Authorizer.CheckMany(ctx, []CheckRequest, ...CheckOption) ([]bool, error)`, the
 downstream side of identity's `POST /api/v1/authorization/check`. It mirrors the `GetACL` wire
 pattern — the generated typed client (`PostApiV1AuthorizationCheckWithResponse`) over the cached
 mTLS/trace-context HTTP client, with the `X-Principal`/`X-Impersonate` principal headers injected
 via `principal.Injector` — with one deliberate divergence: it forwards **no** bearer. The check
 endpoint is system-account-only and rejects any `Authorization` header, so the caller is
-authenticated by the mTLS peer certificate and the acting user is conveyed by `X-Principal`, never a
-token (unlike `GetACL`, which is not system-gated and forwards the bearer to name the user).
+authenticated by the mTLS peer certificate and the acting user is conveyed by `X-Principal` with the
+passport (see "The Passport On The Check"), never by the bearer token (unlike `GetACL`, which is not
+system-gated and forwards the bearer to name the user).
 When the inbound caller is a service, `RemoteEngine` relays that caller's certificate in
 `Unikorn-Client-Certificate`, like `GetACL`, so identity decides for the caller and not for this
 service. The middleware keeps the certificate out of the handler context and records it in
@@ -195,11 +196,15 @@ the `unikorn_identity_authz_remote_breaker_transitions_total` counter, keyed by 
 this is how an operator sees the breaker open without reading source.
 
 **Load-bearing invariant — trips on unavailability, never on denies.** `CheckMany` returns
-`([]bool, nil)` for any successfully served check, however many entries denied; it returns
-`(nil, err)` only when no verdict was obtained at all (transport failure, timeout, 5xx, or a
-malformed response — see above). The breaker's default any-error-is-a-failure handling therefore
-already trips on exactly "no verdict obtained" and never on a returned deny: a high deny rate under
-normal load can never open the breaker, only a genuine failure to reach/parse identity can.
+`([]bool, nil)` for any successfully served check, however many entries denied. It returns
+`(nil, err)` when no verdict was obtained: a transport failure, a timeout, a 5xx, a malformed
+response, a 4xx, or a failed `passportSubject` echo. The breaker counts only the first four, which
+`isBreakerFailure` selects as `ErrDecisionUnavailable`. So a high deny rate under normal load can
+never open the breaker, only a genuine failure to reach or parse identity can.
+Three error classes do not count as failures: a request that the caller canceled, a 4xx from
+identity, and a missing or different `passportSubject` echo. A `WithPassport` call with an empty
+passport or subject also cannot open the breaker, because `CheckMany` refuses it before the
+breaker runs.
 
 **Defaults (`NewAuthorizer`):** a time-based failure **rate** — not a raw consecutive count, so one
 flaky call cannot trip it, but sustained majority failure trips it quickly — opens the breaker once
@@ -225,10 +230,24 @@ left as a follow-up rather than bundled in here.
 The `remote` authorizer's bearer-token path is exchange-backed. On a cache miss it performs RFC 8693
 token exchange against identity's `/oauth2/v2/token` endpoint, decodes the returned passport claims
 (without local signature verification — trust is established by the channel, not by JWKS), and
-populates the existing `authorization.Info` and `userinfo` structures. The cached value is the
-passport claims payload, and the per-entry TTL is derived from the passport's `exp` claim minus a
-10 s clock-skew fudge. Identity caps the passport expiry to the source token's expiry before
+populates the existing `authorization.Info` and `userinfo` structures. The exchange asks for a
+passport whose audience (the RFC 8693 `audience` field) is the common name of this service's own
+client certificate. The authorizer reads that name once at construction, from the certificate that
+the TLS client presents. When the remote engine mode is not `off`, construction fails if the
+certificate cannot be read. The TLS client loads the certificate again on each handshake, but the
+audience stays the name that construction read. If the common name of the certificate changes,
+restart the service. The cached value holds the decoded claims and the raw passport. A cache hit does
+not decode the passport again, and it returns the stored raw passport in `Info.Passport`. The per-entry TTL is
+derived from the passport's `exp` claim minus a 10 s clock-skew fudge. Identity caps the passport expiry to the source token's expiry before
 minting it, so middleware does not need to parse the source token locally.
+
+The 10 s margin limits how late a handler can send the passport. A passport from the cache can
+reach a handler with about 10 s of life left. Identity accepts a passport for 5 s after its `exp`
+(`passportLeeway`). So an authorization check that a handler sends more than about 15 s after
+authentication can get a 401, and the engine then gives no verdict. In remote `shadow`, the
+downstream log has the same `remote shadow evaluation failure` line for a 401, a 503 and an echo
+failure. Identity's own log shows each refused passport and its cause (the `error detail` line), so
+count the late-passport 401s there.
 
 The exchange path fails closed. Token-endpoint responses project to the API edge as follows:
 
@@ -245,9 +264,38 @@ The exchange path fails closed. Token-endpoint responses project to the API edge
 - Malformed or temporally invalid passport after a successful exchange → 500
 
 Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There
-is no fallback to the legacy userinfo path. Passports are consumed in-process and are never
-forwarded on outbound calls — internal service-to-service communication continues to use mTLS plus
-`X-Principal` exactly as before.
+is no fallback to the legacy userinfo path. Middleware and handlers use the passport in-process. The
+raw passport leaves the process in one place only: the remote authorizer sends it to identity, in
+the body of `POST /api/v1/authorization/check`. No other outbound call carries it. Internal
+service-to-service communication continues to use mTLS plus `X-Principal` exactly as before.
+
+### The Passport On The Check
+
+For a bearer caller, `RemoteEngine.AllowCoarseMany` sends the raw passport (`authorization.Info.Passport`)
+to identity through `CheckMany(..., WithPassport(passport, subject))`. Identity verifies the
+signature, the claims and the presenting certificate, and decides for the passport's subject with no
+service role in between.
+
+- The check carries no `X-Impersonate` header. Identity answers 400 for a passport with that
+  header, so `CheckMany` clears an impersonation marker in the context whenever it sends a passport
+  (`principal.NewContextWithoutImpersonation`).
+- A bearer caller with no passport gets no verdict. The engine returns `ErrDecisionUnavailable` and
+  makes no HTTP call. It never falls back to impersonation, because that gives answers that are
+  known to be capped. A check with no `authorization.Info` in the context also gets no verdict, and
+  the engine makes no HTTP call. The engine never sends a check with the rights of this service in
+  place of an unknown caller.
+- `WithPassport` needs both the passport and its subject. If either one is empty, `CheckMany`
+  returns `ErrDecisionUnavailable` and makes no HTTP call.
+- Identity echoes the subject it decided for in `passportSubject`. `CheckMany` accepts the verdicts
+  only when the echo equals the passport's subject. An identity that does not know the passport
+  field ignores it and decides with the service's own role. The echo check turns that case into a
+  fail-closed answer (`ErrPassportSubjectUnconfirmed`). This error is not `ErrDecisionUnavailable`,
+  so it does not count toward the circuit breaker. An identity without passport support still
+  answers the system-account checks correctly, so the breaker must not refuse them.
+- A 401 from identity for a refused passport propagates as a 4xx. It does not count toward the
+  circuit breaker.
+- A system-account caller sends no passport. It keeps the certificate relay and any inbound
+  `X-Impersonate`.
 
 ## Validation Error Disclosure
 
@@ -355,8 +403,9 @@ decision is to keep trust-the-channel for now.
   [Trust The Channel, And The Deferred Signed-Propagation Option](#trust-the-channel-and-the-deferred-signed-propagation-option)
   above — not a blanket deletion candidate.
 - Remote bearer-token validation depends on an identity round-trip per cache miss; cache hits avoid
-  it. Phase 2 deliberately does not introduce downstream JWKS verification — the trust model for
-  passports remains channel-scoped to identity rather than signature-scoped per service.
+  it. Phase 2 deliberately does not introduce downstream JWKS verification. The downstream decodes
+  the passport without verifying it. Identity verifies the signature on the authorization check,
+  where it decides.
 
 ## TODO
 

@@ -59,11 +59,16 @@ type checkHandler struct {
 	// backend for timeout tests.
 	delay time.Duration
 
+	passportSubject     string
+	omitPassportSubject bool
+
 	// captured request state, for header/absence assertions.
 	gotAuthorization string
 	gotPrincipal     string
 	gotImpersonate   string
+	gotClientCert    string
 	gotBody          identityapi.AuthorizationCheckRequest
+	passportRequests int
 
 	// requests counts every ServeHTTP invocation, i.e. every actual HTTP
 	// round trip that reached the transport. The circuit-breaker tests drive
@@ -87,8 +92,14 @@ func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.gotAuthorization = r.Header.Get("Authorization")
 	h.gotPrincipal = r.Header.Get(principal.Header)
 	h.gotImpersonate = r.Header.Get(principal.ImpersonateHeader)
+	h.gotClientCert = r.Header.Get("Unikorn-Client-Certificate")
 
+	h.gotBody = identityapi.AuthorizationCheckRequest{}
 	_ = json.NewDecoder(r.Body).Decode(&h.gotBody)
+
+	if h.gotBody.Passport != nil {
+		h.passportRequests++
+	}
 
 	if h.delay > 0 {
 		time.Sleep(h.delay)
@@ -110,7 +121,7 @@ func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		writeJSON(w, identityapi.AuthorizationCheckResponse{Results: results})
+		writeJSON(w, h.response(results))
 
 		return
 	}
@@ -124,13 +135,28 @@ func (h *checkHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(status)
 
 	if status == http.StatusOK {
-		writeJSON(w, identityapi.AuthorizationCheckResponse{Results: h.results})
+		writeJSON(w, h.response(h.results))
 
 		return
 	}
 
 	// Error responses carry the core Error shape PropagateError renders.
 	writeJSON(w, coreapi.Error{Error: coreapi.AccessDenied, ErrorDescription: "denied"})
+}
+
+func (h *checkHandler) response(results []identityapi.AuthorizationCheckResult) identityapi.AuthorizationCheckResponse {
+	response := identityapi.AuthorizationCheckResponse{Results: results}
+
+	if h.gotBody.Passport != nil && !h.omitPassportSubject {
+		subject := checkActorSubject
+		if h.passportSubject != "" {
+			subject = h.passportSubject
+		}
+
+		response.PassportSubject = &subject
+	}
+
+	return response
 }
 
 // writeJSON encodes v to the response, ignoring the write error (the client
@@ -149,16 +175,16 @@ func writeJSON(w http.ResponseWriter, v any) {
 // the mtlstest CA/client-cert plumbing and the createRemoteAuthorizer/secret
 // conventions the exchange tests exercise; the decision path needs no JWT or
 // oauth2 wiring, so this is a deliberately minimal stand-up.
-func newCheckAuthorizer(t *testing.T, h *checkHandler, opts ...authorizer.Option) *authorizer.Authorizer {
-	t.Helper()
+func newCheckAuthorizer(tb testing.TB, h *checkHandler, opts ...authorizer.Option) *authorizer.Authorizer {
+	tb.Helper()
 
 	mtlsServer, err := mtlstest.NewMTLSServer(h)
-	require.NoError(t, err)
-	t.Cleanup(mtlsServer.Close)
+	require.NoError(tb, err)
+	tb.Cleanup(mtlsServer.Close)
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, unikornv1.AddToScheme(scheme))
+	require.NoError(tb, corev1.AddToScheme(scheme))
+	require.NoError(tb, unikornv1.AddToScheme(scheme))
 
 	// The client-cert and ca-cert secrets the identity HTTP client mutator
 	// reads for mTLS, keyed exactly as createIdentityOptions/createCoreClientOptions expect.
@@ -185,26 +211,32 @@ func newCheckAuthorizer(t *testing.T, h *checkHandler, opts ...authorizer.Option
 		WithObjects(clientCertSecret, caCertSecret).
 		Build()
 
-	return createRemoteAuthorizer(t, k8sClient, mtlsServer.URL(), opts...)
+	return createRemoteAuthorizer(tb, k8sClient, mtlsServer.URL(), opts...)
 }
+
+const (
+	checkActorSubject = "actor@example.com"
+	checkPassport     = "raw.passport.jws" //nolint:gosec // a placeholder, not a credential
+)
 
 // checkAuthContext seeds the context a downstream call carries: a principal
 // (for the injector) and authorization info with the given bearer token
 // (empty for an mTLS-only system caller); impersonate rides the marker.
-func checkAuthContext(t *testing.T, token string, impersonate bool) context.Context {
-	t.Helper()
+func checkAuthContext(tb testing.TB, token string, impersonate bool) context.Context {
+	tb.Helper()
 
 	p := &principal.Principal{Actor: "actor@example.com", Issuer: "https://issuer.example.com/", Type: identityapi.User, OrganizationIDs: []string{"org-1"}}
 
-	ctx := principal.NewContext(t.Context(), p)
+	ctx := principal.NewContext(tb.Context(), p)
 	if impersonate {
 		ctx = principal.NewImpersonateContext(ctx)
 	}
 
 	return authorization.NewContext(ctx, &authorization.Info{
-		Token: token,
+		Token:    token,
+		Passport: checkPassport,
 		Userinfo: &identityapi.Userinfo{
-			Sub: "actor@example.com",
+			Sub: checkActorSubject,
 			HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
 				Acctype: identityapi.User,
 			},
@@ -225,7 +257,13 @@ func checkSystemAccountAuthContext(t *testing.T, systemAccount bool) context.Con
 
 	ctx := principal.NewContext(t.Context(), p)
 
-	return authorization.NewContext(ctx, &authorization.Info{SystemAccount: systemAccount})
+	info := &authorization.Info{SystemAccount: systemAccount}
+	if !systemAccount {
+		info.Passport = checkPassport
+		info.Userinfo = &identityapi.Userinfo{Sub: checkActorSubject}
+	}
+
+	return authorization.NewContext(ctx, info)
 }
 
 // TestRemoteCheckManyResultsInOrder pins the happy path: a batch of checks
@@ -408,4 +446,121 @@ func TestRemoteCheckManyFailClosed(t *testing.T) {
 		require.ErrorIs(t, err, authorizer.ErrDecisionUnavailable)
 		require.Nil(t, allowed)
 	})
+}
+
+func TestRemoteCheckManyPassport(t *testing.T) {
+	t.Parallel()
+
+	results := []identityapi.AuthorizationCheckResult{{Allowed: true}}
+
+	tests := map[string]struct {
+		handler *checkHandler
+		wantErr bool
+	}{
+		"matching echo gives the verdicts":     {handler: &checkHandler{results: results}},
+		"missing echo is unavailable":          {handler: &checkHandler{results: results, omitPassportSubject: true}, wantErr: true},
+		"different subject is unavailable":     {handler: &checkHandler{results: results, passportSubject: "other@example.com"}, wantErr: true},
+		"echo that differs in case is refused": {handler: &checkHandler{results: results, passportSubject: "Actor@example.com"}, wantErr: true},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			auth := newCheckAuthorizer(t, tt.handler)
+
+			allowed, err := auth.CheckMany(checkAuthContext(t, "", false), singleCheck(), authorizer.WithPassport(checkPassport, checkActorSubject))
+
+			require.NotNil(t, tt.handler.gotBody.Passport, "the passport must ride in the request body")
+			require.Equal(t, checkPassport, *tt.handler.gotBody.Passport)
+
+			if tt.wantErr {
+				require.ErrorIs(t, err, authorizer.ErrPassportSubjectUnconfirmed)
+				require.Nil(t, allowed, "no verdict may leak when the echo is wrong")
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, []bool{true}, allowed)
+		})
+	}
+
+	t.Run("a call without a passport needs no echo", func(t *testing.T) {
+		t.Parallel()
+
+		h := &checkHandler{results: results}
+		auth := newCheckAuthorizer(t, h)
+
+		allowed, err := auth.CheckMany(checkAuthContext(t, "", false), singleCheck())
+		require.NoError(t, err)
+		require.Equal(t, []bool{true}, allowed)
+		require.Nil(t, h.gotBody.Passport, "no passport option, no passport field")
+	})
+}
+
+func TestRemoteCheckManyPassportRefusalPropagatesAndNeverTripsBreaker(t *testing.T) {
+	t.Parallel()
+
+	h := &checkHandler{status: http.StatusUnauthorized}
+	auth := newCheckAuthorizer(t, h) // the real NewAuthorizer default breaker and classifier
+	ctx := checkAuthContext(t, "", false)
+
+	const refusals = 20
+
+	for range refusals {
+		_, err := auth.CheckMany(ctx, singleCheck(), authorizer.WithPassport(checkPassport, checkActorSubject))
+		require.Error(t, err)
+		require.NotErrorIs(t, err, authorizer.ErrDecisionUnavailable, "a 401 propagates verbatim, it is not unavailability")
+	}
+
+	require.Equal(t, refusals, h.requests, "a 401 must not count toward the breaker")
+
+	h.status = http.StatusServiceUnavailable
+
+	for range refusals {
+		_, err := auth.CheckMany(ctx, singleCheck(), authorizer.WithPassport(checkPassport, checkActorSubject))
+		require.ErrorIs(t, err, authorizer.ErrDecisionUnavailable)
+	}
+
+	before := h.requests
+	_, err := auth.CheckMany(ctx, singleCheck(), authorizer.WithPassport(checkPassport, checkActorSubject))
+	require.ErrorIs(t, err, authorizer.ErrDecisionUnavailable)
+	require.Equal(t, before, h.requests, "the breaker must be open after a burst of 503, so the next call makes no HTTP request")
+}
+
+func TestRemoteCheckManyPassportNeedsBothParts(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]authorizer.CheckOption{
+		"a passport with no subject": authorizer.WithPassport(checkPassport, ""),
+		"a subject with no passport": authorizer.WithPassport("", checkActorSubject),
+	}
+
+	for name, option := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}, omitPassportSubject: true}
+			auth := newCheckAuthorizer(t, h)
+
+			allowed, err := auth.CheckMany(checkAuthContext(t, "", false), singleCheck(), option)
+			require.ErrorIs(t, err, authorizer.ErrDecisionUnavailable)
+			require.Nil(t, allowed, "no verdict may come back without a confirmed subject")
+			require.Zero(t, h.requests, "an incomplete passport option must not reach identity")
+		})
+	}
+}
+
+func TestRemoteCheckManyPassportClearsImpersonation(t *testing.T) {
+	t.Parallel()
+
+	h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+	auth := newCheckAuthorizer(t, h)
+
+	allowed, err := auth.CheckMany(checkAuthContext(t, "", true), singleCheck(), authorizer.WithPassport(checkPassport, checkActorSubject))
+	require.NoError(t, err)
+	require.Equal(t, []bool{true}, allowed)
+	require.NotNil(t, h.gotBody.Passport)
+	require.Empty(t, h.gotImpersonate, "identity answers 400 to a passport with X-Impersonate, so CheckMany must clear the marker")
 }
