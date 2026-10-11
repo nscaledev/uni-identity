@@ -49,6 +49,16 @@ must_fail() {
 	fi
 }
 
+# A Cerbos authorization engine needs the PDP that cerbos.enabled renders.
+if out=$(helm template test "$CHART" --set identity.authorizationEngine=shadow 2>&1); then
+	die "authorizationEngine=shadow without cerbos.enabled must fail to render"
+fi
+grep -qF -- "set cerbos.enabled to true" <<<"$out" || die "render failed, but not for the expected reason: $out"
+helm template test "$CHART" --set identity.authorizationEngine=shadow --set cerbos.enabled=true >/dev/null ||
+	die "authorizationEngine=shadow with cerbos.enabled must render"
+helm template test "$CHART" --set identity.authorizationEngine=legacy >/dev/null ||
+	die "authorizationEngine=legacy must render without cerbos.enabled"
+
 out=$(render '[{"issuer":"https://staff.example.com/","subject":"*","roles":["reader"]}]')
 reader_role_id=$(role_id_of reader <<<"$out")
 [[ -n "$reader_role_id" ]] || die "could not resolve role ID for 'reader'"

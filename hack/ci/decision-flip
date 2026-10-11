@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# Decision-flip end-to-end: prove that applying a Role CR flips a live
+# authorization decision on BOTH engines — legacy (live CR reads behind the
+# ~1m ACL cache, --acl-cache-timeout) and Cerbos (policy controller republish
+# -> ~1m kubelet ConfigMap propagation -> silent hot reload) — and that the
+# shadow comparator converges once both have flipped.  This is the "apply a
+# Role, watch a decision flip" assertion deferred from the policy-controller
+# work (see pkg/authz/cerbos/README.md).
+#
+# ORDERING IS LOAD-BEARING: run AFTER hack/ci/divergence-gate.  The two
+# engines flip at different times, so this test deliberately opens a
+# transient window in which shadow logs "cerbos shadow divergence"; running
+# it before the gate would poison the gate with expected, by-design
+# divergence.  The assertion here is that the divergence CEASES (both engines
+# converge on the new verdict), not that it never appears.
+#
+# The flipped decision: identity:roles read at organization scope (GET
+# /api/v1/organizations/{org}/roles), which the rbac_matrix suite pins to 403
+# for the user persona.  (identity:quotas read would NOT work — the built-in
+# user role already grants it.)  The user's fixture group is edited via
+# kubectl: grantability checks (AllowRole) guard the identity API, not direct
+# CR edits, so no admin-token plumbing is needed here — this is deliberate.
+#
+# Usage: hack/ci/decision-flip  (sources test/.env.install and test/.env)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# shellcheck source=/dev/null
+source "${REPO_ROOT}/test/.env.install"
+# shellcheck source=/dev/null
+source "${REPO_ROOT}/test/.env"
+
+DEPLOYMENT="deploy/${IDENTITY_RELEASE}-server"
+CONTAINER="${IDENTITY_RELEASE}-server"
+DIVERGENCE_MSG='cerbos shadow divergence'
+FAILURE_MSG='cerbos shadow evaluation failure'
+
+# Seconds of continued probe traffic with no NEW divergence (while the endpoint
+# holds the post-flip code) that count as Cerbos having converged.
+STABLE_SECONDS=90
+
+FLIP_ROLE="ci-decision-flip"
+ENDPOINT="${IDENTITY_BASE_URL}/api/v1/organizations/${TEST_ORG_ID}/roles"
+
+ORG_NAMESPACE=$(kubectl get organizations.identity.unikorn-cloud.org "${TEST_ORG_ID}" \
+  -n "${IDENTITY_NAMESPACE}" -o jsonpath='{.status.namespace}')
+if [[ -z "${ORG_NAMESPACE}" ]]; then
+  echo "ERROR: organization ${TEST_ORG_ID} has no status namespace" >&2
+  exit 1
+fi
+
+# probe echoes the HTTP status of the flip endpoint as the user persona and
+# never fails (curl errors surface as 000 and are retried by the poll loops).
+probe() {
+  curl -s -o /dev/null -w '%{http_code}' \
+    --cacert "${IDENTITY_CA_CERT}" \
+    -H "Authorization: Bearer ${USER_AUTH_TOKEN}" \
+    "${ENDPOINT}" || echo 000
+}
+
+# divergences_since echoes the number of shadow-divergence lines logged since
+# the given RFC3339 timestamp (the exact zap message from pkg/rbac/shadow.go).
+divergences_since() {
+  kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
+    --since-time="$1" 2>/dev/null \
+    | grep -cF "\"msg\":\"${DIVERGENCE_MSG}\"" || true
+}
+
+# failures_since echoes the number of shadow evaluation-failure lines logged
+# since the given RFC3339 timestamp.  These mean the PDP produced NO verdict
+# (outage, timeout, resolver failure); a dead PDP emits ONLY these, so the flip
+# must reject them rather than mistake a silent PDP for convergence.
+failures_since() {
+  kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
+    --since-time="$1" 2>/dev/null \
+    | grep -cF "\"msg\":\"${FAILURE_MSG}\"" || true
+}
+
+# set_group_roles replaces the fixture user group's role IDs with the given
+# JSON array (idempotent, unlike JSON-patch index surgery).
+set_group_roles() {
+  kubectl patch groups.identity.unikorn-cloud.org "${TEST_USER_GROUP_ID}" \
+    -n "${ORG_NAMESPACE}" --type=merge -p "{\"spec\":{\"roleIDs\":$1}}" >&2
+}
+
+group_roles_without_flip_role() {
+  kubectl get groups.identity.unikorn-cloud.org "${TEST_USER_GROUP_ID}" \
+    -n "${ORG_NAMESPACE}" -o json \
+    | jq -c --arg role "${FLIP_ROLE}" '[.spec.roleIDs[] | select(. != $role)]'
+}
+
+# converge_phase asserts Cerbos AUTHORITATIVELY converges after a flip:
+#   $1 label   human label for logs ("grant" / "revoke")
+#   $2 marker  RFC3339 timestamp the flip started at (log --since-time anchor)
+#   $3 want    the HTTP code the endpoint must hold throughout convergence
+#
+# It requires, since the marker: (a) ZERO evaluation-failure lines — a dead or
+# unreachable PDP emits only those, and tolerating them would let a silent PDP
+# masquerade as convergence; (b) AT LEAST ONE divergence — the two engines flip
+# at different times, so a live, evaluating PDP MUST transiently disagree with
+# legacy, and zero divergence would mean Cerbos never produced a differing
+# verdict (dead or not evaluating); then (c) no NEW divergence for
+# STABLE_SECONDS while the endpoint holds ${want}.  The plain "wait for
+# divergence to cease" this replaces passed vacuously on a dead PDP (zero
+# divergence ceases instantly).
+converge_phase() {
+  local label="$1" marker="$2" want="$3"
+  local deadline last_count last_change now code count failures
+
+  echo "==> [${label}] awaiting shadow divergence to appear then cease (Cerbos converging)..." >&2
+  deadline=$(( $(date +%s) + 360 ))
+  last_count=$(divergences_since "${marker}")
+  last_change=$(date +%s)
+
+  while true; do
+    now=$(date +%s)
+    if [[ "${now}" -gt "${deadline}" ]]; then
+      echo "ERROR: [${label}] divergence did not cease within 360s — Cerbos never converged on the new verdict" >&2
+      kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
+        --since-time="${marker}" | grep -F "\"msg\":\"${DIVERGENCE_MSG}\"" | tail -20 >&2 || true
+      exit 1
+    fi
+
+    failures=$(failures_since "${marker}")
+    if [[ "${failures}" -gt 0 ]]; then
+      echo "ERROR: [${label}] ${failures} shadow evaluation failure(s) during the flip — the PDP produced no verdict (outage/timeout/resolver). The flip cannot certify Cerbos, and a dead PDP looks exactly like this, so this fails:" >&2
+      kubectl logs "${DEPLOYMENT}" -c "${CONTAINER}" -n "${IDENTITY_NAMESPACE}" \
+        --since-time="${marker}" | grep -F "\"msg\":\"${FAILURE_MSG}\"" | tail -20 >&2 || true
+      exit 1
+    fi
+
+    code=$(probe)
+    if [[ "${code}" != "${want}" ]]; then
+      echo "ERROR: [${label}] endpoint returned ${code}, expected ${want} while Cerbos converges" >&2
+      exit 1
+    fi
+
+    count=$(divergences_since "${marker}")
+    if [[ "${count}" -gt "${last_count}" ]]; then
+      last_count="${count}"
+      last_change="${now}"
+    elif [[ $(( now - last_change )) -ge "${STABLE_SECONDS}" ]]; then
+      break
+    fi
+
+    sleep 3
+  done
+
+  if [[ "${last_count}" -eq 0 ]]; then
+    echo "ERROR: [${label}] shadow logged ZERO divergences during the flip window. The engines flip at different times, so a live, evaluating PDP must transiently disagree with legacy; zero means Cerbos never produced a differing verdict (dead or not evaluating), so 'converged' would be vacuous." >&2
+    exit 1
+  fi
+
+  echo "==> [${label}] converged: ${last_count} divergence line(s) during the window, none for ${STABLE_SECONDS}s while holding ${want}, and 0 evaluation failures." >&2
+}
+
+CLEANED=false
+cleanup() {
+  [[ "${CLEANED}" == true ]] && return
+  CLEANED=true
+  echo "==> Cleaning up: unbinding and deleting the ${FLIP_ROLE} role..." >&2
+  # Unbind BEFORE deleting the Role CR: a group referencing a missing role is
+  # a hard resolution error on both engines.
+  set_group_roles "$(group_roles_without_flip_role)" || true
+  kubectl delete roles.identity.unikorn-cloud.org "${FLIP_ROLE}" \
+    -n "${IDENTITY_NAMESPACE}" --ignore-not-found >&2 || true
+}
+trap cleanup EXIT
+
+# ── Self-heal leftovers from a previous run, then pin the 403 baseline ───────
+cleanup
+CLEANED=false
+
+echo "==> Waiting for the baseline 403 (user persona, ${ENDPOINT})..." >&2
+for i in $(seq 1 60); do
+  CODE=$(probe)
+  if [[ "${CODE}" == "403" ]]; then
+    break
+  fi
+  if [[ "${i}" -eq 60 ]]; then
+    echo "ERROR: expected a 403 baseline, got ${CODE} — the flip would prove nothing" >&2
+    exit 1
+  fi
+  sleep 3
+done
+
+# ── The flip: apply the Role CR, then bind it to the user's group ────────────
+FLIP_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+FLIP_START_EPOCH=$(date +%s)
+echo "==> Applying the ${FLIP_ROLE} Role CR and binding it (marker: ${FLIP_START})..." >&2
+
+kubectl apply -f - >&2 <<EOF
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: ${FLIP_ROLE}
+  namespace: ${IDENTITY_NAMESPACE}
+  labels:
+    unikorn-cloud.org/name: ${FLIP_ROLE}
+  annotations:
+    unikorn-cloud.org/description: Transient role for the CI decision-flip test
+spec:
+  scopes:
+    organization:
+      - name: identity:roles
+        operations: [read]
+EOF
+
+set_group_roles "$(group_roles_without_flip_role | jq -c --arg role "${FLIP_ROLE}" '. + [$role]')"
+
+# ── Legacy flip: live CR reads surface once the ~1m ACL cache expires ────────
+echo "==> Waiting for the legacy engine to flip 403 -> 200..." >&2
+for i in $(seq 1 100); do
+  CODE=$(probe)
+  if [[ "${CODE}" == "200" ]]; then
+    echo "==> Legacy flipped after $(( $(date +%s) - FLIP_START_EPOCH ))s." >&2
+    break
+  fi
+  if [[ "${i}" -eq 100 ]]; then
+    echo "ERROR: endpoint still returns ${CODE} after 300s — the legacy engine never flipped" >&2
+    exit 1
+  fi
+  sleep 3
+done
+
+# ── Cerbos flip + convergence (grant): the engines flip at different times, so
+# shadow MUST transiently diverge, then converge.  converge_phase asserts both
+# — a divergence appears (proving Cerbos actually evaluated and disagreed) and
+# then ceases, with zero evaluation failures, while the endpoint holds 200. ──
+converge_phase "grant" "${FLIP_START}" 200
+
+# ── Reverse flip: revoke, then prove BOTH engines return to 403 with Cerbos
+# authoritatively converging — the same rigor as the grant, not just a legacy
+# 403 poll (which a dead PDP would satisfy vacuously). ──────────────────────
+REVERT_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+REVERT_START_EPOCH=$(date +%s)
+echo "==> Revoking (unbind + delete the ${FLIP_ROLE} role; marker: ${REVERT_START})..." >&2
+cleanup
+
+echo "==> Waiting for the legacy engine to flip 200 -> 403..." >&2
+for i in $(seq 1 100); do
+  CODE=$(probe)
+  if [[ "${CODE}" == "403" ]]; then
+    echo "==> Legacy reverted after $(( $(date +%s) - REVERT_START_EPOCH ))s." >&2
+    break
+  fi
+  if [[ "${i}" -eq 100 ]]; then
+    echo "ERROR: endpoint still returns ${CODE} after 300s — the revert never landed on legacy" >&2
+    exit 1
+  fi
+  sleep 3
+done
+
+converge_phase "revoke" "${REVERT_START}" 403
+
+echo "==> Decision flip complete: 403 -> 200 -> 403, Cerbos authoritatively converged on both the grant and the revoke." >&2

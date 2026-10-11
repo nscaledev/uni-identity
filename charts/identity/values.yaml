@@ -106,6 +106,12 @@ identity:
   auth0Exchange:
     issuer: ~
     audience: ~
+  # Authorization engine serving RBAC enforcement (Allow*) decisions:
+  # "legacy" (the in-process ACL walk), "shadow" (serve legacy, also evaluate
+  # the PDP and log verdict divergence) or "cerbos" (the PDP sidecar).
+  # Leave unset for the default (legacy).  "shadow" and "cerbos" need
+  # cerbos.enabled: true.
+  authorizationEngine: ~
 
 # Issuer related configuration.
 issuer:

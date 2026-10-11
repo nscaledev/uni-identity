@@ -42,7 +42,7 @@ import (
 type allowAllAuthorizer struct{}
 
 func (allowAllAuthorizer) Authorize(*openapi3filter.AuthenticationInput) (*authorization.Info, error) {
-	return authInfoFixture(identityapi.User), nil
+	return authInfoFixture(userActor, identityapi.User), nil
 }
 
 func (allowAllAuthorizer) GetACL(context.Context, string) (*identityapi.Acl, error) {

@@ -157,20 +157,10 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// deprecated auth0-exchange flags.
 	s.RBACOptions.PlatformAdministratorSubjects = expandBareAdminSubjects(s.RBACOptions.PlatformAdministratorSubjects, s.OAuth2Options.Auth0ExchangeIssuer)
 
-	// The Cerbos PDP client is lazy: no connection is attempted until the
-	// first RPC, so construction is safe before the sidecar is ready (an
-	// eager connectivity check here would race the pod's own sidecar;
-	// readiness is the sidecar health probe's job).  It backs the decision
-	// API (rbac.Check/CheckMany); enforcement call sites migrate to that
-	// API through the dual-path Allow* facade.
-	cerbosClient, err := cerbos.New(&s.CerbosOptions)
+	rbac, err := s.newRBAC(client, directclient)
 	if err != nil {
 		return nil, err
 	}
-
-	s.Cerbos = cerbosClient
-
-	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
 
 	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, directclient, issuer, userdb, rbac)
 
@@ -234,6 +224,38 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	}
 
 	return server, nil
+}
+
+// newRBAC builds the RBAC engine on top of the Cerbos PDP client.
+func (s *Server) newRBAC(client client.Client, directclient client.Client) (*rbac.RBAC, error) {
+	// The Cerbos PDP client is lazy: no connection is attempted until the
+	// first RPC, so construction is safe before the sidecar is ready (an
+	// eager connectivity check here would race the pod's own sidecar;
+	// readiness is the sidecar health probe's job).  It backs the decision
+	// API (rbac.Check/CheckMany); enforcement call sites migrate to that
+	// API through the dual-path Allow* facade.
+	cerbosClient, err := cerbos.New(&s.CerbosOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	s.Cerbos = cerbosClient
+
+	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions).WithCerbos(cerbosClient)
+
+	// Key the coarse-decision cache on the policy-store hash so a controller
+	// republish busts every cached verdict.  The hasher reads the
+	// controller-owned policies ConfigMap through the DIRECT (uncached)
+	// client: a cache-backed client would spin up a cluster-wide ConfigMap
+	// informer the chart's narrow `get` grant forbids — the same reason the
+	// policy controller reads uncached.  An unset ConfigMap name leaves the
+	// hasher off, so the cache stays inert (safe default).
+	if s.CerbosOptions.PoliciesConfigMap != "" {
+		hasher := cerbos.NewPolicyStoreHasher(directclient, s.CoreOptions.Namespace, s.CerbosOptions.PoliciesConfigMap, s.RBACOptions.DecisionCacheTimeout)
+		rbac = rbac.WithPolicyStoreHash(hasher)
+	}
+
+	return rbac, nil
 }
 
 // expandBareAdminSubjects mirrors bare (UNI-sentinel) admin entries onto the

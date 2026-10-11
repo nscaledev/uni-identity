@@ -65,6 +65,18 @@ rules:
   verbs:
   - list
   - watch
+{{- if .Values.cerbos.enabled }}
+# The policy-store hasher (coarse-decision cache invalidation) does a
+# direct Get on the controller-owned policies ConfigMap.  Grant only get on
+# configmaps here, as a dedicated rule, rather than broadening the shared
+# secrets+configmaps+namespaces rule above (secrets/namespaces stay list+watch).
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+{{- end }}
 - apiGroups:
   - coordination.k8s.io
   resources:
