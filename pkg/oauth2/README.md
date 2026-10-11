@@ -121,6 +121,11 @@ The token endpoint implements the RFC 8693 token-exchange grant for UNI passport
 In the current flow, a caller presents an access token as the `subject_token` and identity issues a
 short-lived signed passport JWT. The passport records the source identity, account type, organization
 context, optional project context, and requested audience/resource values. It does not embed an ACL.
+When the source token is external, the passport also carries a `groups` claim. The claim lists only
+the IdP groups that match a configured group role binding for the token's issuer
+(`rbac.BoundGroups`), sorted and without duplicates. IdP groups with no binding stay out of the
+passport, so its size depends on the Helm values and not on the IdP. The claim is omitted when no
+group matches and for UNI-local tokens.
 The exchange computes ACL only to authorize the requested organization/project scope; downstream
 services continue to resolve permissions through the normal remote authorizer path keyed off the
 passport-verified principal.
@@ -234,8 +239,9 @@ The claim name is part of the validator-cache fingerprint (`validatorFingerprint
 `pkg/oauth2/trustlist.go`), so an edit to `groupsClaim` on the `OAuth2Provider` takes effect on the
 next lookup rather than after the validator cache's TTL.
 
-The validator carries extracted groups on `authorization.Info.Groups` for RBAC to consume. It never
-embeds them in the minted passport, and never propagates them through the `X-Principal` header. See
+The validator carries extracted groups on `authorization.Info.Groups` for RBAC to consume. The
+minted passport embeds only the bound subset (see Token Exchange), and groups are never propagated
+through the `X-Principal` header. See
 [`pkg/rbac/README.md#global-role-bindings`](../rbac/README.md#global-role-bindings) for how a
 trusted issuer's groups become global authority.
 

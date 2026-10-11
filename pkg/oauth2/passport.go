@@ -109,6 +109,9 @@ type PassportClaims struct {
 	// Actor expresses delegation per RFC 8693 section 4.1; omitted when the
 	// passport's subject is itself the acting party.
 	Actor *ActorClaim `json:"act,omitempty"`
+	// Groups holds the IdP groups that match a configured group role binding
+	// for SrcIss, never the full IdP group list. Omitted when none match.
+	Groups []string `json:"groups,omitempty"`
 }
 
 // TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports
@@ -211,7 +214,7 @@ func (a *Authenticator) ExchangePassport(ctx context.Context, options *openapi.T
 		return nil, err
 	}
 
-	return a.mintPassport(ctx, res.Userinfo, res.Claims, res.Source, audience, organizationID, projectID)
+	return a.mintPassport(ctx, res.Userinfo, res.Claims, res.Source, res.SrcIss, a.rbac.BoundGroups(res.SrcIss, res.Groups), audience, organizationID, projectID)
 }
 
 const (
@@ -433,11 +436,6 @@ func peekIssuer(token string) (string, error) {
 // when trust.AllowExternalIdentity is true; an inactive one is always
 // rejected. Rejections reuse the prior error message, preserving the existing
 // wire contract. See docs/multi-issuer-token-contract.md#membership-resolution.
-//
-// sourceClaims.Issuer is stamped with rawIss (the verbatim issuer the IdP
-// emitted, as resolved by validatorForIssuer) so that srcIssForSource can compute
-// the correct src_iss for the resulting passport regardless of which provider
-// produced the claims.
 func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, token, rawIss string, trust *unikornv1.BearerTrustSpec, v *auth0.Validator) (*openapi.Userinfo, *Claims, []string, error) {
 	user, err := v.Validate(ctx, token)
 	if err != nil {
@@ -495,22 +493,11 @@ func (a *Authenticator) externalUserinfo(ctx context.Context, r *http.Request, t
 	return userinfo, sourceClaims, user.Groups, nil
 }
 
-// srcIssForSource resolves the src_iss stamped on a passport. The UNI-local path
-// uses a fixed sentinel (a UNI access token's iss is not guaranteed to be an HTTPS
-// URL); external paths use the verbatim issuer already resolved by the dispatcher.
-func srcIssForSource(rawIssuer, source string) string {
-	if source == PassportSourceUNI {
-		return PassportSourceUNI
-	}
-
-	return rawIssuer
-}
-
 // mintPassport encodes the signed passport once scope authorisation has
 // completed. It also enforces the source-token expiry precondition: a passport
 // with expires_in ≤ 0 would be internally inconsistent, so the exchange fails
 // closed when the source token's exp is already at or before now.
-func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.Userinfo, sourceClaims *Claims, source string, audience jwt.Audience, organizationID, projectID string) (*openapi.Token, error) {
+func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.Userinfo, sourceClaims *Claims, source, srcIss string, groups []string, audience jwt.Audience, organizationID, projectID string) (*openapi.Token, error) {
 	log := log.FromContext(ctx)
 
 	now := time.Now()
@@ -538,10 +525,11 @@ func (a *Authenticator) mintPassport(ctx context.Context, userinfo *openapi.User
 		Type:      PassportType,
 		Acctype:   authz.Acctype,
 		Source:    source,
-		SrcIss:    srcIssForSource(sourceClaims.Issuer, source),
+		SrcIss:    srcIss,
 		OrgIDs:    authz.OrgIds,
 		OrgID:     organizationID,
 		ProjectID: projectID,
+		Groups:    groups,
 	}
 
 	if userinfo.Email != nil {
