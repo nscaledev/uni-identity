@@ -54,7 +54,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -69,9 +68,11 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3filter"
 	chi "github.com/go-chi/chi/v5"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	corehelpers "github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
@@ -80,11 +81,16 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/authz/cerbos/generate"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/jose"
+	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -115,6 +121,18 @@ const (
 	itServiceRole = "remote-authz-service-role"
 	itUserRole    = "remote-authz-user-role"
 	itGroup       = "remote-authz-group"
+
+	itNarrowCN = "remote-authz-narrow"
+
+	itServiceAccount = "remote-authz-sa"
+	itNarrowRole     = "remote-authz-narrow-role"
+
+	itExternalSubject = "remote-authz-external@example.com"
+	itGroupIssuer     = "https://groups.example.com/"
+	itIDPGroup        = "remote-authz-idp-group"
+	itGroupRole       = "remote-authz-group-role"
+	itStaffIssuer     = "https://staff.example.com/"
+	itStaffRole       = "remote-authz-staff-role"
 )
 
 // itAuthorizer is a middleware Authorizer for the mTLS-only decision endpoint.
@@ -181,17 +199,27 @@ func itRoles() []unikornv1.Role {
 		role(itUserRole, unikornv1.RoleScopes{
 			Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read, unikornv1.Update)},
 		}),
+		role(itNarrowRole, unikornv1.RoleScopes{
+			Organization: []unikornv1.RoleScope{scope("identity:quotas", unikornv1.Read)},
+		}),
+		role(itGroupRole, unikornv1.RoleScopes{
+			Global: []unikornv1.RoleScope{scope("identity:projects", unikornv1.Read)},
+		}),
+		role(itStaffRole, unikornv1.RoleScopes{
+			Global: []unikornv1.RoleScope{scope("identity:organizations", unikornv1.Read, unikornv1.Update)},
+		}),
 	}
 }
 
 // newRemoteAuthzServer builds the in-process identity slice and returns its
-// base URL.  The Cerbos PDP is the real pinned image (docker), started with a
-// store generated from the fixture roles.
-func newRemoteAuthzServer(t *testing.T) string {
-	t.Helper()
+// base URL and the JWT issuer that signs its passports.  The Cerbos PDP is the
+// real pinned image (docker), started with a store generated from the fixture
+// roles.
+func newRemoteAuthzServer(tb testing.TB) (string, *jose.JWTIssuer) {
+	tb.Helper()
 
 	scheme := runtime.NewScheme()
-	require.NoError(t, unikornv1.AddToScheme(scheme))
+	require.NoError(tb, unikornv1.AddToScheme(scheme))
 
 	organization := &unikornv1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Namespace: itNamespace, Name: itOrgID},
@@ -201,12 +229,50 @@ func newRemoteAuthzServer(t *testing.T) string {
 	group := &unikornv1.Group{
 		ObjectMeta: metav1.ObjectMeta{Namespace: itOrgNS, Name: itGroup},
 		Spec: unikornv1.GroupSpec{
-			RoleIDs:  []string{itUserRole},
-			Subjects: []unikornv1.GroupSubject{{ID: itAliceSubject}},
+			RoleIDs:           []string{itUserRole},
+			Subjects:          []unikornv1.GroupSubject{{ID: itAliceSubject}},
+			ServiceAccountIDs: []string{itServiceAccount},
 		},
 	}
 
-	objects := []client.Object{organization, group}
+	trust := func(name, issuer string) *unikornv1.OAuth2Provider {
+		return &unikornv1.OAuth2Provider{
+			ObjectMeta: metav1.ObjectMeta{Namespace: itNamespace, Name: name},
+			Spec: unikornv1.OAuth2ProviderSpec{
+				Issuer: issuer,
+				BearerTrust: &unikornv1.BearerTrustSpec{
+					Audience:              "https://identity.example.com",
+					AllowExternalIdentity: true,
+				},
+			},
+		}
+	}
+
+	objects := []client.Object{
+		organization,
+		group,
+		josetesting.SigningKey(tb, itNamespace),
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{Namespace: itNamespace, Name: "remote-authz-alice"},
+			Spec:       unikornv1.UserSpec{Subject: itAliceSubject, State: unikornv1.UserStateActive},
+		},
+		&unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: itOrgNS,
+				Name:      "remote-authz-alice",
+				Labels: map[string]string{
+					coreconstants.UserLabel:         "remote-authz-alice",
+					coreconstants.OrganizationLabel: itOrgID,
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+		},
+		&unikornv1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Namespace: itOrgNS, Name: itServiceAccount},
+		},
+		trust("remote-authz-groups", itGroupIssuer),
+		trust("remote-authz-staff", itStaffIssuer),
+	}
 
 	roles := itRoles()
 	for i := range roles {
@@ -216,24 +282,28 @@ func newRemoteAuthzServer(t *testing.T) string {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 
 	r := rbac.New(c, itNamespace, &rbac.Options{
-		SystemAccountRoleIDs: map[string]string{itSystemCN: itServiceRole},
+		SystemAccountRoleIDs: map[string]string{itSystemCN: itServiceRole, itNarrowCN: itNarrowRole},
 		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
 			{Issuer: constants.UNISentinel, Subject: itIssuerBoundSubject, RoleIDs: []string{itServiceRole}},
+			{Issuer: itStaffIssuer, Subject: rbac.WildcardSubject, RoleIDs: []string{itStaffRole}, Wildcard: true},
+		},
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: itGroupIssuer, Group: itIDPGroup, RoleIDs: []string{itGroupRole}},
 		},
 	})
 
 	// Start the real Cerbos PDP over the generated store.
-	endpoint := startRemoteAuthzCerbos(t, writeRemoteAuthzStore(t, roles))
+	endpoint := startRemoteAuthzCerbos(tb, writeRemoteAuthzStore(tb, roles))
 
 	pdp, err := cerbos.New(&cerbos.Options{Endpoint: endpoint, CheckTimeout: 5 * time.Second})
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	r.WithCerbos(pdp)
 
 	// Build the real server pipeline: route resolver + the openapi validator
 	// middleware + the generated router around the real handler.
 	schema, err := corehelpers.NewSchema(openapi.GetSwagger)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	router := chi.NewRouter()
 
@@ -242,8 +312,14 @@ func newRemoteAuthzServer(t *testing.T) string {
 
 	validator := openapimiddleware.NewValidator(itValidatorOptions(), &itAuthorizer{rbac: r})
 
-	h, err := handler.New(c, c, itNamespace, nil, nil, nil, r, &handler.Options{})
-	require.NoError(t, err)
+	users := userdb.NewUserDatabase(c, itNamespace)
+	jwtIssuer := jose.NewJWTIssuer(c, itNamespace, &jose.Options{})
+
+	authenticator, err := oauth2.New(&oauth2.Options{TokenCacheSize: 1, CodeCacheSize: 1}, itNamespace, handlercommon.IssuerValue{}, c, c, jwtIssuer, users, r)
+	require.NoError(tb, err)
+
+	h, err := handler.New(c, c, itNamespace, jwtIssuer, authenticator, users, r, &handler.Options{})
+	require.NoError(tb, err)
 
 	chiServerOptions := openapi.ChiServerOptions{
 		BaseRouter:       router,
@@ -252,21 +328,21 @@ func newRemoteAuthzServer(t *testing.T) string {
 	}
 
 	server := httptest.NewServer(openapi.HandlerWithOptions(h, chiServerOptions))
-	t.Cleanup(server.Close)
+	tb.Cleanup(server.Close)
 
-	return server.URL
+	return server.URL, jwtIssuer
 }
 
 // systemCertHeader returns a url-encoded PEM certificate with the given common
 // name, as the ingress injects it into Ssl-Client-Cert.
-func systemCertHeader(t *testing.T, commonName string) string {
-	t.Helper()
+func systemCertHeader(tb testing.TB, commonName string) string {
+	tb.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	template := &x509.Certificate{
 		SerialNumber: serial,
@@ -276,7 +352,7 @@ func systemCertHeader(t *testing.T, commonName string) string {
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 
@@ -290,10 +366,10 @@ func systemCertHeader(t *testing.T, commonName string) string {
 // injects its principal via principal.Injector).  When impersonated is
 // non-nil it is the propagated principal and the X-Impersonate marker rides;
 // otherwise the acting service's own principal is sent for attribution only.
-func systemClient(t *testing.T, baseURL, commonName string, impersonated *principal.Principal) *openapi.ClientWithResponses {
-	t.Helper()
+func systemClient(tb testing.TB, baseURL, commonName string, impersonated *principal.Principal) *openapi.ClientWithResponses {
+	tb.Helper()
 
-	certHeader := systemCertHeader(t, commonName)
+	certHeader := systemCertHeader(tb, commonName)
 
 	p := impersonated
 	impersonate := impersonated != nil
@@ -303,7 +379,7 @@ func systemClient(t *testing.T, baseURL, commonName string, impersonated *princi
 		p = &principal.Principal{Actor: commonName, Type: openapi.System}
 	}
 
-	principalHeader := base64.RawURLEncoding.EncodeToString(mustMarshal(t, p))
+	principalHeader := base64.RawURLEncoding.EncodeToString(mustMarshal(tb, p))
 
 	editor := func(_ context.Context, req *http.Request) error {
 		req.Header.Set("Ssl-Client-Cert", certHeader)
@@ -318,16 +394,45 @@ func systemClient(t *testing.T, baseURL, commonName string, impersonated *princi
 	}
 
 	c, err := openapi.NewClientWithResponses(baseURL, openapi.WithRequestEditorFn(editor))
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	return c
 }
 
-func mustMarshal(t *testing.T, v any) []byte {
-	t.Helper()
+func passportClient(tb testing.TB, baseURL, commonName string, p *principal.Principal, relayedCN string) *openapi.ClientWithResponses {
+	tb.Helper()
+
+	certHeader := systemCertHeader(tb, commonName)
+	principalHeader := base64.RawURLEncoding.EncodeToString(mustMarshal(tb, p))
+
+	var relayHeader string
+	if relayedCN != "" {
+		relayHeader = systemCertHeader(tb, relayedCN)
+	}
+
+	editor := func(_ context.Context, req *http.Request) error {
+		req.Header.Set("Ssl-Client-Cert", certHeader)
+		req.Header.Set("Ssl-Client-Verify", "SUCCESS")
+		req.Header.Set(principal.Header, principalHeader)
+
+		if relayHeader != "" {
+			req.Header.Set(authorization.ClientCertificateHeader, relayHeader)
+		}
+
+		return nil
+	}
+
+	c, err := openapi.NewClientWithResponses(baseURL, openapi.WithRequestEditorFn(editor))
+	require.NoError(tb, err)
+
+	return c
+}
+
+func mustMarshal(tb testing.TB, v any) []byte {
+	tb.Helper()
 
 	raw, err := json.Marshal(v)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	return raw
 }
@@ -355,7 +460,7 @@ func bearerClient(t *testing.T, baseURL string) *openapi.ClientWithResponses {
 func TestRemoteAuthorizationCheckSystemAccount(t *testing.T) {
 	t.Parallel()
 
-	baseURL := newRemoteAuthzServer(t)
+	baseURL, _ := newRemoteAuthzServer(t)
 	c := systemClient(t, baseURL, itSystemCN, nil)
 
 	// The service holds GLOBAL identity:groups read only.  read at org scope
@@ -389,7 +494,7 @@ func TestRemoteAuthorizationCheckSystemAccount(t *testing.T) {
 func TestRemoteAuthorizationCheckImpersonatedDualCheck(t *testing.T) {
 	t.Parallel()
 
-	baseURL := newRemoteAuthzServer(t)
+	baseURL, _ := newRemoteAuthzServer(t)
 
 	impersonated := &principal.Principal{Actor: itAliceSubject, Issuer: constants.UNISentinel, Type: openapi.User, OrganizationIDs: []string{itOrgID}}
 	c := systemClient(t, baseURL, itSystemCN, impersonated)
@@ -425,7 +530,7 @@ func TestRemoteAuthorizationCheckImpersonatedDualCheck(t *testing.T) {
 func TestRemoteAuthorizationCheckDistinguishesImpersonatedIssuers(t *testing.T) {
 	t.Parallel()
 
-	baseURL := newRemoteAuthzServer(t)
+	baseURL, _ := newRemoteAuthzServer(t)
 	body := openapi.AuthorizationCheckRequest{
 		Checks: []openapi.AuthorizationCheck{
 			{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups"}, Action: openapi.Read},
@@ -454,7 +559,7 @@ func TestRemoteAuthorizationCheckDistinguishesImpersonatedIssuers(t *testing.T) 
 func TestRemoteAuthorizationCheckRejectsBearer(t *testing.T) {
 	t.Parallel()
 
-	baseURL := newRemoteAuthzServer(t)
+	baseURL, _ := newRemoteAuthzServer(t)
 	c := bearerClient(t, baseURL)
 
 	body := openapi.AuthorizationCheckRequest{
@@ -555,49 +660,49 @@ const remoteAuthzDefaultImage = "ghcr.io/cerbos/cerbos:0.53.0"
 
 const remoteAuthzCerbosUID = "65534"
 
-func writeRemoteAuthzStore(t *testing.T, roles []unikornv1.Role) string {
-	t.Helper()
+func writeRemoteAuthzStore(tb testing.TB, roles []unikornv1.Role) string {
+	tb.Helper()
 
 	output, err := generate.Generate(roles)
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	files, err := output.Files()
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
-	dir := remoteAuthzStoreDir(t)
+	dir := remoteAuthzStoreDir(tb)
 
 	for name, data := range files {
 		//nolint:gosec // the store must be readable by the container's non-root cerbos user.
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0o644))
+		require.NoError(tb, os.WriteFile(filepath.Join(dir, name), data, 0o644))
 	}
 
 	return dir
 }
 
-func remoteAuthzStoreDir(t *testing.T) string {
-	t.Helper()
+func remoteAuthzStoreDir(tb testing.TB) string {
+	tb.Helper()
 
-	dir := t.TempDir()
+	dir := tb.TempDir()
 
 	if goruntime.GOOS != "linux" {
 		cwd, err := os.Getwd()
-		require.NoError(t, err)
+		require.NoError(tb, err)
 
 		dir, err = os.MkdirTemp(cwd, ".cerbos-remote-store-*") //nolint:usetesting // must live under the repository for docker file sharing.
-		require.NoError(t, err)
+		require.NoError(tb, err)
 
-		t.Cleanup(func() {
-			require.NoError(t, os.RemoveAll(dir))
+		tb.Cleanup(func() {
+			require.NoError(tb, os.RemoveAll(dir))
 		})
 	}
 
-	require.NoError(t, os.Chmod(dir, 0o755))
+	require.NoError(tb, os.Chmod(dir, 0o755))
 
 	return dir
 }
 
-func startRemoteAuthzCerbos(t *testing.T, policiesDir string) string {
-	t.Helper()
+func startRemoteAuthzCerbos(tb testing.TB, policiesDir string) string {
+	tb.Helper()
 
 	image := os.Getenv("CERBOS_IMAGE")
 	if image == "" {
@@ -605,20 +710,20 @@ func startRemoteAuthzCerbos(t *testing.T, policiesDir string) string {
 	}
 
 	cwd, err := os.Getwd()
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	// The single fixture PDP config unit tests pin to the chart's, under
 	// pkg/authz/cerbos/testdata/config (pkg/handler -> ../authz/...).
 	configDir := filepath.Clean(filepath.Join(cwd, "..", "authz", "cerbos", "testdata", "config"))
 
-	name := fmt.Sprintf("cerbos-remote-authz-test-%d", time.Now().UnixNano())
+	name := "cerbos-remote-authz-test-" + strings.ToLower(rand.Text())
 
-	t.Cleanup(func() {
-		//nolint:usetesting // t.Context() is already canceled inside Cleanup.
+	tb.Cleanup(func() {
+		//nolint:usetesting // tb.Context() is already canceled inside Cleanup.
 		_ = exec.CommandContext(context.Background(), "docker", "rm", "--force", name).Run()
 	})
 
-	cmd := exec.CommandContext(t.Context(), "docker", "run",
+	cmd := exec.CommandContext(tb.Context(), "docker", "run",
 		"--detach",
 		"--name", name,
 		"--user", remoteAuthzCerbosUID+":"+remoteAuthzCerbosUID,
@@ -633,27 +738,27 @@ func startRemoteAuthzCerbos(t *testing.T, policiesDir string) string {
 	)
 
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "docker run: %s", out)
+	require.NoError(tb, err, "docker run: %s", out)
 
-	remoteAuthzWaitHealthy(t, name)
+	remoteAuthzWaitHealthy(tb, name)
 
-	return remoteAuthzHostPort(t, name, "3593/tcp")
+	return remoteAuthzHostPort(tb, name, "3593/tcp")
 }
 
-func remoteAuthzHostPort(t *testing.T, name, port string) string {
-	t.Helper()
+func remoteAuthzHostPort(tb testing.TB, name, port string) string {
+	tb.Helper()
 
-	out, err := exec.CommandContext(t.Context(), "docker", "port", name, port).Output()
-	require.NoError(t, err, "docker port %s %s", name, port)
+	out, err := exec.CommandContext(tb.Context(), "docker", "port", name, port).Output()
+	require.NoError(tb, err, "docker port %s %s", name, port)
 
 	addr, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
-	require.NotEmpty(t, addr)
+	require.NotEmpty(tb, addr)
 
 	return addr
 }
 
-func remoteAuthzWaitHealthy(t *testing.T, name string) {
-	t.Helper()
+func remoteAuthzWaitHealthy(tb testing.TB, name string) {
+	tb.Helper()
 
 	deadline := time.Now().Add(time.Minute)
 
@@ -661,11 +766,11 @@ func remoteAuthzWaitHealthy(t *testing.T, name string) {
 
 	for {
 		if time.Now().After(deadline) {
-			logs, _ := exec.CommandContext(t.Context(), "docker", "logs", name).CombinedOutput()
-			require.FailNowf(t, "cerbos did not become healthy", "container logs:\n%s", logs)
+			logs, _ := exec.CommandContext(tb.Context(), "docker", "logs", name).CombinedOutput()
+			require.FailNowf(tb, "cerbos did not become healthy", "container logs:\n%s", logs)
 		}
 
-		if err := exec.CommandContext(t.Context(), "docker", arguments...).Run(); err == nil {
+		if err := exec.CommandContext(tb.Context(), "docker", arguments...).Run(); err == nil {
 			return
 		}
 
@@ -738,4 +843,198 @@ func TestRemoteAuthorizationCheckOversizedBatch(t *testing.T) {
 	response, err := systemClient(t, server.URL, itSystemCN, nil).PostApiV1AuthorizationCheckWithResponse(t.Context(), openapi.AuthorizationCheckRequest{Checks: checks})
 	require.NoError(t, err)
 	require.Equal(t, http.StatusBadRequest, response.StatusCode(), "a batch over maxItems:50 must be a 400 from the validator; body: %s", string(response.Body))
+}
+
+func itAlice() *principal.Principal {
+	return &principal.Principal{Actor: itAliceSubject, Issuer: constants.UNISentinel, Type: openapi.User, OrganizationIDs: []string{itOrgID}}
+}
+
+func itPassport(tb testing.TB, issuer *jose.JWTIssuer, subject, srcIss string, groups ...string) string {
+	tb.Helper()
+
+	claims := testPassportClaims(subject, openapi.User, itNarrowCN)
+	claims.SrcIss = srcIss
+	claims.Groups = groups
+
+	return signTestPassport(tb, issuer, claims)
+}
+
+func TestRemoteAuthorizationCheckPassportNoServiceCap(t *testing.T) {
+	t.Parallel()
+
+	baseURL, issuer := newRemoteAuthzServer(t)
+
+	checks := []openapi.AuthorizationCheck{
+		{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(itOrgID)}, Action: openapi.Update},
+	}
+
+	passport := itPassport(t, issuer, itAliceSubject, constants.UNISentinel)
+
+	response, err := passportClient(t, baseURL, itNarrowCN, itAlice(), "").PostApiV1AuthorizationCheckWithResponse(t.Context(),
+		openapi.AuthorizationCheckRequest{Checks: checks, Passport: &passport})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode(), "body: %s", string(response.Body))
+	require.NotNil(t, response.JSON200)
+	require.Len(t, response.JSON200.Results, 1)
+	require.True(t, response.JSON200.Results[0].Allowed, "the passport decision must be the verdict of alice alone")
+	require.NotNil(t, response.JSON200.PassportSubject)
+	require.Equal(t, itAliceSubject, *response.JSON200.PassportSubject)
+
+	impersonated, err := systemClient(t, baseURL, itNarrowCN, itAlice()).PostApiV1AuthorizationCheckWithResponse(t.Context(),
+		openapi.AuthorizationCheckRequest{Checks: checks})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, impersonated.StatusCode(), "body: %s", string(impersonated.Body))
+	require.NotNil(t, impersonated.JSON200)
+	require.Len(t, impersonated.JSON200.Results, 1)
+	require.False(t, impersonated.JSON200.Results[0].Allowed, "the dual check must deny, because the narrow service lacks the grant")
+	require.Nil(t, impersonated.JSON200.PassportSubject)
+}
+
+func TestRemoteAuthorizationCheckPassportGroupsFromClaim(t *testing.T) {
+	t.Parallel()
+
+	baseURL, issuer := newRemoteAuthzServer(t)
+
+	actor := &principal.Principal{Actor: itExternalSubject, Issuer: itGroupIssuer, Type: openapi.User}
+	checks := []openapi.AuthorizationCheck{
+		{Resource: openapi.AuthorizationCheckResource{Kind: "identity:projects"}, Action: openapi.Read},
+	}
+
+	check := func(passport string) bool {
+		response, err := passportClient(t, baseURL, itNarrowCN, actor, "").PostApiV1AuthorizationCheckWithResponse(t.Context(),
+			openapi.AuthorizationCheckRequest{Checks: checks, Passport: &passport})
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, response.StatusCode(), "body: %s", string(response.Body))
+		require.NotNil(t, response.JSON200)
+		require.Len(t, response.JSON200.Results, 1)
+
+		return response.JSON200.Results[0].Allowed
+	}
+
+	require.True(t, check(itPassport(t, issuer, itExternalSubject, itGroupIssuer, itIDPGroup)), "the bound group in the claim must grant the role")
+	require.False(t, check(itPassport(t, issuer, itExternalSubject, itGroupIssuer)), "with no group in the claim, nothing must grant the role")
+}
+
+func TestRemoteAuthorizationCheckPassportWildcardBinding(t *testing.T) {
+	t.Parallel()
+
+	baseURL, issuer := newRemoteAuthzServer(t)
+
+	actor := &principal.Principal{Actor: itExternalSubject, Issuer: itStaffIssuer, Type: openapi.User}
+	passport := itPassport(t, issuer, itExternalSubject, itStaffIssuer)
+
+	response, err := passportClient(t, baseURL, itNarrowCN, actor, "").PostApiV1AuthorizationCheckWithResponse(t.Context(), openapi.AuthorizationCheckRequest{
+		Checks: []openapi.AuthorizationCheck{
+			{Resource: openapi.AuthorizationCheckResource{Kind: "identity:organizations"}, Action: openapi.Read},
+			{Resource: openapi.AuthorizationCheckResource{Kind: "identity:organizations"}, Action: openapi.Update},
+		},
+		Passport: &passport,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode(), "body: %s", string(response.Body))
+	require.NotNil(t, response.JSON200)
+	require.Len(t, response.JSON200.Results, 2)
+	require.True(t, response.JSON200.Results[0].Allowed, "the wildcard binding must grant the read of its role")
+	require.False(t, response.JSON200.Results[1].Allowed, "the wildcard binding must not grant the write of its role")
+}
+
+func TestRemoteAuthorizationCheckPassportRelayedCertificate(t *testing.T) {
+	t.Parallel()
+
+	baseURL, issuer := newRemoteAuthzServer(t)
+
+	passport := itPassport(t, issuer, itAliceSubject, constants.UNISentinel)
+
+	response, err := passportClient(t, baseURL, itSystemCN, itAlice(), itNarrowCN).PostApiV1AuthorizationCheckWithResponse(t.Context(), openapi.AuthorizationCheckRequest{
+		Checks: []openapi.AuthorizationCheck{
+			{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(itOrgID)}, Action: openapi.Read},
+		},
+		Passport: &passport,
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, response.StatusCode(), "body: %s", string(response.Body))
+	require.Nil(t, response.JSON200)
+}
+
+func TestRemoteAuthorizationCheckPassportSchemaBounds(t *testing.T) {
+	t.Parallel()
+
+	baseURL, _ := newRemoteAuthzServer(t)
+	c := passportClient(t, baseURL, itNarrowCN, itAlice(), "")
+
+	cases := []struct {
+		name       string
+		passport   string
+		wantStatus int
+	}{
+		{name: "Empty", passport: "", wantStatus: http.StatusBadRequest},
+		{name: "OverMaximum", passport: strings.Repeat("a", 8193), wantStatus: http.StatusBadRequest},
+		{name: "AtMaximum", passport: strings.Repeat("a", 8192), wantStatus: http.StatusUnauthorized},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			response, err := c.PostApiV1AuthorizationCheckWithResponse(t.Context(), openapi.AuthorizationCheckRequest{
+				Checks: []openapi.AuthorizationCheck{
+					{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups"}, Action: openapi.Read},
+				},
+				Passport: &tc.passport,
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.wantStatus, response.StatusCode(), "body: %s", string(response.Body))
+			require.Nil(t, response.JSON200)
+		})
+	}
+}
+
+func BenchmarkAuthorizationCheck(b *testing.B) {
+	checks := []openapi.AuthorizationCheck{
+		{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(itOrgID)}, Action: openapi.Read},
+	}
+
+	run := func(b *testing.B, c *openapi.ClientWithResponses, body openapi.AuthorizationCheckRequest) {
+		b.Helper()
+
+		for b.Loop() {
+			response, err := c.PostApiV1AuthorizationCheckWithResponse(b.Context(), body)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			if response.StatusCode() != http.StatusOK || !response.JSON200.Results[0].Allowed {
+				b.Fatalf("expected an allow, got status %d body %s", response.StatusCode(), response.Body)
+			}
+		}
+	}
+
+	b.Run("impersonated", func(b *testing.B) {
+		baseURL, _ := newRemoteAuthzServer(b)
+
+		run(b, systemClient(b, baseURL, itSystemCN, itAlice()), openapi.AuthorizationCheckRequest{Checks: checks})
+	})
+
+	b.Run("passport", func(b *testing.B) {
+		baseURL, issuer := newRemoteAuthzServer(b)
+
+		claims := testPassportClaims(itAliceSubject, openapi.User, itSystemCN)
+		claims.Expiry = jwt.NewNumericDate(time.Now().Add(time.Hour))
+		passport := signTestPassport(b, issuer, claims)
+
+		run(b, passportClient(b, baseURL, itSystemCN, itAlice(), ""), openapi.AuthorizationCheckRequest{Checks: checks, Passport: &passport})
+	})
+
+	b.Run("service-passport", func(b *testing.B) {
+		baseURL, issuer := newRemoteAuthzServer(b)
+
+		claims := testPassportClaims(itServiceAccount, openapi.Service, itSystemCN)
+		claims.OrgIDs = []string{itOrgID}
+		claims.Expiry = jwt.NewNumericDate(time.Now().Add(time.Hour))
+		passport := signTestPassport(b, issuer, claims)
+
+		actor := &principal.Principal{Actor: itServiceAccount, Type: openapi.Service, Issuer: constants.UNISentinel}
+
+		run(b, passportClient(b, baseURL, itSystemCN, actor, ""), openapi.AuthorizationCheckRequest{Checks: checks, Passport: &passport})
+	})
 }

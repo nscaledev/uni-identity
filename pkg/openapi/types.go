@@ -292,6 +292,12 @@ type AuthorizationCheckRequestSchema struct {
 	// wiring plus the PDP default.  Keep this in sync if the sidecar's
 	// requestLimits are ever configured.
 	Checks AuthorizationCheckList `json:"checks"`
+
+	// Passport The identity-signed passport of the bearer caller that the
+	// presenting service serves.  Identity decides for the passport
+	// subject, with no cap from the role of the presenting service.  The
+	// audience must contain the certificate CN of the presenting service.
+	Passport *string `json:"passport,omitempty"`
 }
 
 // AuthorizationCheckResource Identifies what an authorization decision is about.  Scope is encoded
@@ -324,6 +330,11 @@ type AuthorizationCheckResource struct {
 
 // AuthorizationCheckResponseSchema The per-check authorization decisions.
 type AuthorizationCheckResponseSchema struct {
+	// PassportSubject The subject of the passport that identity decided for.  Identity
+	// sets it only when it decided for a passport subject.  The caller
+	// must make sure that it is equal to the subject that it sent.
+	PassportSubject *string `json:"passportSubject,omitempty"`
+
 	// Results The per-check results, one per requested check, in order.
 	Results AuthorizationCheckResultList `json:"results"`
 }

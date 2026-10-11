@@ -529,6 +529,10 @@ func main() {
 
 	certPEM, keyPEM := issueCert(ctx, k8s, *namespace, "ci-fixtures", "ci-fixtures")
 
+	logf("Issuing mTLS client certificate for ci-narrow...")
+
+	narrowCertPEM, narrowKeyPEM := issueCert(ctx, k8s, *namespace, "ci-narrow", "ci-narrow")
+
 	ac := newAPIClient(*baseURL, *caCertPath, certPEM, keyPEM)
 
 	// ── Create Organization ──────────────────────────────────────────────────
@@ -644,6 +648,8 @@ func main() {
 	// verified-cert headers.
 	fmt.Printf("IDENTITY_MTLS_CLIENT_CERT=%s\n", base64.StdEncoding.EncodeToString(certPEM))
 	fmt.Printf("IDENTITY_MTLS_CLIENT_KEY=%s\n", base64.StdEncoding.EncodeToString(keyPEM))
+	fmt.Printf("IDENTITY_MTLS_NARROW_CLIENT_CERT=%s\n", base64.StdEncoding.EncodeToString(narrowCertPEM))
+	fmt.Printf("IDENTITY_MTLS_NARROW_CLIENT_KEY=%s\n", base64.StdEncoding.EncodeToString(narrowKeyPEM))
 	fmt.Printf("TEST_ORG_ID=%s\n", orgID)
 	fmt.Printf("UNAUTHORISED_ORG_ID=%s\n", unauthorisedOrgID)
 	fmt.Printf("TEST_PROJECT_ID=%s\n", projectID)

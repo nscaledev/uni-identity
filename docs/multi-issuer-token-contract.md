@@ -230,10 +230,13 @@ token with multiple audiences is accepted if the configured value is among them.
 must ensure the configured audience value is specific enough to prevent replay of tokens
 minted for unrelated audiences at this IdP.
 
-**(d) Downstream passport decode is unverified (trusted channel).** The passport issued after
-a successful bearer exchange is a short-lived signed JWT carried over internal service-to-service
-channels. Downstream services decode passports without reverifying the signature on the original
-bearer token — the identity service is the verification trust anchor. The internal channel trust
-model is based on the assumption that connections between UNI services are made over a
-mutually-authenticated channel (e.g. mTLS). Full sender-constraining of passports (proof-of-possession,
-token-binding) is a separate, not-yet-implemented track.
+**(d) Downstream passport decode is unverified. Identity verifies a passport that comes back.**
+The passport issued after a successful bearer exchange is a short-lived signed JWT. A downstream
+service gets it from identity over mTLS and decodes it without a signature check, because identity
+is the verification trust anchor. A passport goes back to identity only, in the `passport` body
+field of `POST /api/v1/authorization/check`. A service never forwards it to another service. On
+that call identity verifies the signature, the issuer, the type, the lifetime, and an audience that
+must contain the CN of the presenting service. Identity also reads the subject's current state
+before it decides (see [`pkg/handler`](../pkg/handler/README.md#authorization-check)). Full
+sender-constraining of passports (proof-of-possession, token binding) is a separate track that is
+not implemented.

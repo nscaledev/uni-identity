@@ -21,6 +21,7 @@ package handler
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -44,6 +45,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
@@ -333,16 +335,6 @@ func (h *Handler) GetApiV1OrganizationsOrganizationIDAcl(w http.ResponseWriter, 
 // path regardless of --authorization-engine (that flag only selects what
 // serves identity's OWN Allow* facade), just like open-vocabulary roles: it is
 // a Cerbos-only path with no legacy twin.
-//
-// This handler is deliberately thin.  The oauth2 security scheme multiplexes
-// bearer and mTLS onto the same route, so its ONE security obligation is to
-// reject non-system-account (bearer) callers here — that is the real
-// "mTLS-only" guarantee; x-hidden is documentation only.  Everything else is
-// inherited with ZERO extra plumbing from rbac.CheckMany off the context the
-// middleware already built: the acting service Info from the verified peer CN,
-// any X-Principal/X-Impersonate principal + marker, and therefore the
-// impersonation dual check, and the decision-log records and metrics, all apply
-// unchanged.
 func (h *Handler) PostApiV1AuthorizationCheck(w http.ResponseWriter, r *http.Request) {
 	// System-account enforcement: only system accounts may obtain decisions.
 	// The invariant is the account TYPE, not the transport — a system account
@@ -370,6 +362,19 @@ func (h *Handler) PostApiV1AuthorizationCheck(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	var passportSubject *string
+
+	if request.Passport != nil {
+		passportRequest, subject, err := h.passportRequest(r, info, *request.Passport)
+		if err != nil {
+			errors.HandleError(w, r, err)
+			return
+		}
+
+		r = passportRequest
+		passportSubject = &subject
+	}
+
 	// CheckMany fail-closed semantics (check.go): per-entry policy denials are
 	// false entries (200); a batch-level failure (ErrDecisionUnavailable /
 	// ErrResolutionFailed / ErrImpersonationNotSupported, plus the empty-batch
@@ -389,7 +394,57 @@ func (h *Handler) PostApiV1AuthorizationCheck(w http.ResponseWriter, r *http.Req
 	}
 
 	h.setUncacheable(w)
-	util.WriteJSONResponse(w, r, http.StatusOK, &openapi.AuthorizationCheckResponse{Results: results})
+	util.WriteJSONResponse(w, r, http.StatusOK, &openapi.AuthorizationCheckResponse{Results: results, PassportSubject: passportSubject})
+}
+
+const passportRefused = "passport is not valid"
+
+var errPresenterNotRegistered = goerrors.New("passport presenter is not a registered system account")
+
+func (h *Handler) passportRequest(r *http.Request, info *authorization.Info, passport string) (*http.Request, string, error) {
+	ctx := r.Context()
+
+	// The gate above accepts any system account, which includes any certificate that the
+	// ingress verifies.  The direct and impersonated forms refuse a common name with no
+	// system account role, so the passport form must too, before it reads any store.
+	if !h.rbac.IsSystemAccount(info.Userinfo.Sub) {
+		return nil, "", errors.AccessDenied(r, passportRefused).WithError(fmt.Errorf("%w: %s", errPresenterNotRegistered, info.Userinfo.Sub))
+	}
+
+	if principal.ImpersonateFromContext(ctx) || r.Header.Get(principal.ImpersonateHeader) != "" {
+		return nil, "", errors.OAuth2InvalidRequest("a passport is not permitted with impersonation")
+	}
+
+	if authorization.HasRelayedClientCert(r.Header) {
+		return nil, "", errors.OAuth2InvalidRequest("a passport is not permitted with a relayed client certificate")
+	}
+
+	verified, err := h.oauth2.VerifyPassport(ctx, passport, info.Userinfo.Sub)
+	if err != nil {
+		return nil, "", passportError(r, err)
+	}
+
+	actor, err := principal.FromContext(ctx)
+	if err != nil {
+		return nil, "", errors.AccessDenied(r, passportRefused).WithError(err)
+	}
+
+	subjectInfo, err := h.oauth2.ResolvePassportSubject(ctx, verified, actor)
+	if err != nil {
+		return nil, "", passportError(r, err)
+	}
+
+	ctx = rbac.NewPassportContext(authorization.NewContext(ctx, subjectInfo), info.Userinfo.Sub)
+
+	return r.WithContext(ctx), subjectInfo.Userinfo.Sub, nil
+}
+
+func passportError(r *http.Request, err error) error {
+	if goerrors.Is(err, oauth2.ErrPassportRefused) {
+		return errors.AccessDenied(r, passportRefused).WithError(err)
+	}
+
+	return err
 }
 
 // authorizationCheckRequests maps the wire request to rbac.CheckRequests.

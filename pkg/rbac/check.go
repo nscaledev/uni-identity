@@ -358,6 +358,78 @@ func impersonatedInfo(p *principal.Principal) *authorization.Info {
 	}
 }
 
+// PassportSubject is the subject of a verified passport.
+type PassportSubject struct {
+	Subject         string
+	AccountType     openapi.AuthClaimsAcctype
+	SrcIss          string
+	Email           string
+	OrganizationIDs []string
+	Groups          []string
+}
+
+// PassportSubjectInfo returns the authorization info for a passport subject.
+// It sets the fields that binding resolution reads.  It keeps the subject
+// verbatim, as the bearer path does, and takes the groups from the passport
+// claim.
+func PassportSubjectInfo(s PassportSubject) *authorization.Info {
+	userinfo := &openapi.Userinfo{
+		Sub: s.Subject,
+		HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+			Acctype: s.AccountType,
+			OrgIds:  s.OrganizationIDs,
+		},
+	}
+
+	if s.Email != "" {
+		email := s.Email
+		userinfo.Email = &email
+	}
+
+	return &authorization.Info{
+		SrcIss:         s.SrcIss,
+		Groups:         s.Groups,
+		ServiceAccount: s.AccountType == openapi.Service,
+		Userinfo:       userinfo,
+	}
+}
+
+// PrincipalMatchesPassport reports whether the propagated principal names the
+// passport subject.  A user actor matches after the subject fold, as on the
+// impersonation path.  A service actor must match exactly.
+func PrincipalMatchesPassport(p *principal.Principal, s PassportSubject) bool {
+	if p == nil || p.Type != s.AccountType || srcIssOrUNISentinel(p.Issuer) != s.SrcIss {
+		return false
+	}
+
+	if s.AccountType == openapi.User {
+		return unikornv1.NormalizeSubject(p.Actor) == unikornv1.NormalizeSubject(s.Subject)
+	}
+
+	return p.Actor == s.Subject
+}
+
+type passportPresenterKeyType int
+
+const passportPresenterKey passportPresenterKeyType = iota
+
+// NewPassportContext marks a decision as made for a passport subject that
+// presenterCN presented.  Identity decides every check of the batch for the
+// subject, whatever the org_id and project_id of the passport.
+//
+// TODO: the passport's org_id and project_id do not limit the batch, as the
+// legacy ACL walk does not.  Cap them once remote shadow shows which handlers
+// check outside the request's scope.
+func NewPassportContext(ctx context.Context, presenterCN string) context.Context {
+	return context.WithValue(ctx, passportPresenterKey, presenterCN)
+}
+
+func passportPresenterFromContext(ctx context.Context) (string, bool) {
+	presenterCN, ok := ctx.Value(passportPresenterKey).(string)
+
+	return presenterCN, ok
+}
+
 // decideImpersonated serves an impersonated request as TWO AND-ed
 // single-principal evaluations over the identical (resource, action) set:
 // the impersonated principal and the acting service (the impersonation

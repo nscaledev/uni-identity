@@ -19,9 +19,15 @@ Its main responsibilities are:
 ## Invariants
 
 - `Info` is the canonical request-local authorization payload.
-- Authorization facts are set once by trusted middleware and then consumed downstream.
+- Authorization facts are set once by trusted middleware and then consumed downstream. One handler
+  makes a derived context with a different `Info`: the authorization check puts the `Info` of a
+  verified passport subject in the context of its decision only.
 - The propagated client certificate is carried verbatim from the trusted ingress/service chain
   headers and is used primarily for certificate-bound token handling.
+- `HasRelayedClientCert` reports whether a request has a relayed certificate in
+  `ClientCertificateHeader` (`Unikorn-Client-Certificate`). `ExtractClientCert` uses the same
+  function to choose between the relayed certificate and the peer certificate. The authorization
+  check refuses a passport on such a request, so that the passport audience binds to the TLS peer.
 - Client certificate propagation is contextual and explicit, not global process state.
 - This package does not itself authenticate the request; it carries the results of authentication.
 

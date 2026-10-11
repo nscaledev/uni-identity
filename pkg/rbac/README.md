@@ -368,8 +368,9 @@ storage, so that line is the only place UNI records who exercised global authori
 
 **Direct bearer tokens only.** UNI populates `authorization.Info.Groups` only for tokens that pass
 external-bearer validation inside the identity process — the local authorizer and the RFC 8693
-passport-exchange path. UNI does not proxy an external IdP's groups back onto its own tokens, so a
-UNI-issued interactive-login access token carries no groups claim at all, even when that login
+passport-exchange path. It also populates it from the `groups` claim of a passport that the
+authorization check verified (see [The remote decision endpoint](#the-remote-decision-endpoint)).
+A UNI-issued interactive-login access token carries no groups claim at all, even when that login
 federates to the same IdP. Only a token presented directly as a bearer, or as the token-exchange
 `subject_token`, can carry groups.
 
@@ -669,15 +670,17 @@ allows at `V(1)`** — this satisfies the design's "every decision" with allows 
 verbosity. Fields (closed set, credential-free — only `Sub` and `Acctype` are read from the
 authorization info, NEVER tokens/passports/claims): `subject`, `actor_type`, `endpoint`,
 `resource_id` (empty for coarse checks), `operation`, `organization_id`, `project_id`, `decision`
-(`allow|deny`), `reason` (`policy|unavailable|resolution|impersonation`, derived from the sentinel
-taxonomy via `errors.Is` — `policy` covers both verdicts, including a dual-check deny from either
-side; `impersonation` is **narrowed** to the type-gate refusal only; the rest are the fail-closed
-classes), `policy_hash` (the policy-store hash correlate pinning the store revision, only claimed
+(`allow|deny`), `reason` (`policy|unavailable|resolution|impersonation`, derived
+from the sentinel taxonomy via `errors.Is` — `policy` covers both verdicts, including a dual-check
+deny from either side; `impersonation` is **narrowed** to the type-gate refusal only; the rest are
+the fail-closed classes), `policy_hash` (the policy-store hash correlate pinning the store revision, only claimed
 when a verdict was obtained and empty when no hasher is configured), and `latency` (the whole
 decision: resolution + PDP + mapping). Impersonated decisions carry exactly two more fields —
 `impersonated_subject` and `impersonated_type`, read from the propagated principal — the design's
 `(impersonated-sub, actor)` pair, while `subject` stays the acting service (the legacy cache-key
-convention).
+convention). Passport decisions carry exactly one more field, `passport_presenter`, the CN of the
+system account that presented the passport. Their `subject` and `actor_type` are the passport
+subject.
 
 **Metrics.**
 
@@ -727,22 +730,48 @@ System-impersonation error parity.
 `POST /api/v1/authorization/check` (`pkg/handler`, `x-hidden`/`x-no-authorization` in the spec) is
 how a downstream service **without** an in-process Cerbos sidecar obtains a decision: it POSTs a
 batch of `(resource, action)` checks over mTLS and identity resolves bindings, consults the PDP, and
-returns per-check `allowed` booleans in request order. The handler is deliberately thin — it maps
-the wire body to `[]CheckRequest` (absence semantics preserved: an omitted
+returns per-check `allowed` booleans in request order. Without a passport the handler is thin — it
+maps the wire body to `[]CheckRequest` (absence semantics preserved: an omitted
 `organizationId`/`projectId` stays absent, never an empty string, so an org check cannot gain a
 project attribute) and calls `CheckMany`. Everything else is inherited: the dual check, the decision
 records and metrics all apply with no extra plumbing, off the same context the middleware builds for
-any mTLS caller.
+any mTLS caller. With a passport the handler first verifies it and builds the subject's context
+(below).
 
 - **Cerbos-authoritative from day one, no legacy twin.** This endpoint IS the Cerbos path regardless
   of `--authorization-engine` (that flag only selects what serves identity's own `Allow*` facade).
   It has no legacy `Allow*` equivalent to shadow-compare against, which is exactly why the kind-CI
   divergence gate dropped its dependency on this endpoint (nothing to feed it).
 - **mTLS-only.** The `oauth2` security scheme multiplexes bearer and mTLS onto the one route, so the
-  handler's single security obligation is to reject non-system-account (bearer) callers (it checks
+  handler's first security obligation is to reject non-system-account (bearer) callers (it checks
   `authorization.Info.SystemAccount`, set by the middleware from the verified peer CN); a bearer
   caller gets a 401. Hardening the header-strip deploy invariant and moving to signed-principal
   propagation are named follow-ups, not delivered here.
+- **A passport decides for the bearer caller, with no service cap.** A downstream service that
+  serves a bearer caller sends the caller's passport in the `passport` body field. The handler
+  first refuses a presenter CN that has no system account role (`IsSystemAccount`, the lookup that
+  the resolver uses), as the direct and impersonated forms do. In the server, the middleware's ACL
+  step refuses such a CN before the handler. It then verifies the passport
+  (`oauth2.VerifyPassport`). `oauth2.ResolvePassportSubject` then requires the
+  `X-Principal` actor, type, and issuer to match the passport subject (`PrincipalMatchesPassport`),
+  and reads the subject's current state again. The handler then calls `CheckMany` with the subject's
+  `Info` (`PassportSubjectInfo`) and a passport context (`NewPassportContext`). `decide` runs one
+  evaluation for the subject, so the role of the presenting service does not cap the answer. The
+  dual check exists because `X-Principal` is a statement that the calling service makes. A passport
+  is a statement that identity signed at the token exchange, for this subject, with the presenting
+  service in its audience. Relayed hops keep the dual check. The
+  [handler README](../handler/README.md#authorization-check) lists each refusal and its status code.
+- **The passport scope does not limit the decision.** The `org_id` and `project_id` claims of the
+  passport do not limit a check. `decide` evaluates every check of the batch for the passport
+  subject, in any organization or project. The legacy path fetches the ACL with the user's own
+  token. That ACL lists every organization and project that the user can reach, whatever the
+  request scope. So the passport path answers as the legacy path does. Every record on this path
+  has `passport_presenter`. A `TODO` at `NewPassportContext` marks this: cap the claims once remote
+  shadow shows which handlers check outside the request scope.
+- **Groups come from the passport.** The group role bindings of an external subject read the
+  `groups` claim of the passport. `PassportSubjectInfo` copies that claim and `src_iss` into `Info`,
+  so the subject resolves the same bindings as its direct bearer token. The parity cell
+  `TestCerbosDecisionParityGlobalRoleBindings/PassportSubjectGroupBinding` holds this.
 - **Fail-closed crosses the wire.** A per-check policy deny is `allowed: false` at HTTP 200; a
   batch-level failure
   (`ErrDecisionUnavailable`/`ErrResolutionFailed`/`ErrImpersonationNotSupported`) is a non-200 the
@@ -755,7 +784,9 @@ any mTLS caller.
 proof: it drives the real router + middleware validator + handler + a real Cerbos-backed RBAC
 through the generated typed client, asserting an allowed and a denied check for a system
 caller, the dual-check verdict for an impersonated call, bearer rejection, and PDP-down
-fail-closed.
+fail-closed. Its passport cases show that a caller with no grants of its own gets the subject's
+allow through a passport and a deny through impersonation, that groups come from the claim, that
+a wildcard binding stays read-clamped, and that a relayed certificate is a 400.
 
 ### Downstream remote-authorization adoption
 
@@ -1063,6 +1094,11 @@ walk, Cerbos, or a remote engine, and changes no authorization decision itself.
 - The confused-deputy invariant: a system service acting as an impersonated principal cannot hold
   permissions that either the principal's ACL or the service's ACL denies. The ACL intersection
   enforces this regardless of which IdP authenticated the principal.
+- A passport decision has no service cap, and the confused-deputy invariant still holds. On the
+  passport path the presenting service does not assert the subject. It forwards a statement that
+  identity signed for that subject, with the CN of the service in its audience. Identity accepts the
+  passport only from the TLS peer that the audience names, only with a matching `X-Principal`, and
+  only while the subject is still active.
 
 ## Caveats
 
