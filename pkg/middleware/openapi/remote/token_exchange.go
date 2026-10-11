@@ -24,6 +24,7 @@ import "context"
 type tokenExchangeOptions struct {
 	organizationID string
 	projectID      string
+	audience       string
 }
 
 // TokenExchange exchanges a source access token for a passport token via

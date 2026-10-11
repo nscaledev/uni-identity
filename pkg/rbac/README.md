@@ -99,8 +99,8 @@ deployment time.
   accounts mapped from an mTLS certificate common name (see the Actor Model). By default each
   holds only the global permissions the corresponding service actually exercises. The
   remote-authorization seam (`docs/authorization/downstream-remote-authorization-design.md`) does
-  not change that. A direct-user check through the seam resolves `intersection(user, service)`, so
-  it waits for the check to accept the user's own credential, not for wider service roles.
+  not change that. A direct-user check through the seam sends the user's passport, so identity
+  decides for the user, not for `intersection(user, service)`, and needs no wider service roles.
 
 ### User-facing roles
 

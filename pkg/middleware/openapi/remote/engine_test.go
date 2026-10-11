@@ -17,11 +17,13 @@ limitations under the License.
 package authorizer_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	authorizer "github.com/unikorn-cloud/identity/pkg/middleware/openapi/remote"
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -78,48 +80,56 @@ func TestRemoteEngineAllowCoarse(t *testing.T) {
 	})
 }
 
-// TestRemoteEngineAllowCoarseManyImpersonation pins the impersonation trigger
-// for user-facing forwards: AllowCoarseMany marks the outbound check as
-// impersonated when — and only when — the
-// AUTHENTICATED caller is a bearer principal (authorization.Info.SystemAccount
-// == false), never off the propagated X-Principal's Type.  X-Principal carries
-// the user as attribution on attributed service-to-service calls too, so
-// keying off its Type would wrongly force intersect(user, caller) and deny
-// service-privilege ops the caller holds but the user lacks.  A system-account
-// (mTLS) caller stays attribution-only unless it already carries an inbound
-// X-Impersonate, which must flow through unchanged (case c below) — this gate
-// only ADDS marking for bearer callers, it never strips an existing one.
-func TestRemoteEngineAllowCoarseManyImpersonation(t *testing.T) {
+func TestRemoteEngineAllowCoarseManyCallerForms(t *testing.T) {
 	t.Parallel()
 
 	resource := rbac.Resource{Kind: "identity:groups", OrganizationID: "org-1"}
 
-	t.Run("bearer caller is impersonated", func(t *testing.T) {
+	t.Run("bearer caller sends its passport", func(t *testing.T) {
 		t.Parallel()
 
 		h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
 		engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
 
-		ctx := checkSystemAccountAuthContext(t, false)
-
-		_, err := engine.AllowCoarseMany(ctx, []rbac.Resource{resource}, identityapi.Read)
+		_, err := engine.AllowCoarseMany(checkSystemAccountAuthContext(t, false), []rbac.Resource{resource}, identityapi.Read)
 		require.NoError(t, err)
 
-		require.Equal(t, "true", h.gotImpersonate, "a bearer caller (SystemAccount=false) must be impersonated on the outbound check")
+		require.NotNil(t, h.gotBody.Passport, "a bearer caller must send its passport in the body")
+		require.Equal(t, checkPassport, *h.gotBody.Passport)
+		require.Empty(t, h.gotImpersonate, "a bearer caller must not be impersonated: identity refuses a passport with X-Impersonate")
+		require.NotEmpty(t, h.gotPrincipal, "X-Principal is mandatory on every check")
 	})
 
-	t.Run("system-account caller is attribution-only", func(t *testing.T) {
+	t.Run("bearer caller with an impersonation marker in context", func(t *testing.T) {
 		t.Parallel()
 
 		h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
 		engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
 
-		ctx := checkSystemAccountAuthContext(t, true)
+		ctx := principal.NewImpersonateContext(checkSystemAccountAuthContext(t, false))
 
 		_, err := engine.AllowCoarseMany(ctx, []rbac.Resource{resource}, identityapi.Read)
 		require.NoError(t, err)
 
-		require.Empty(t, h.gotImpersonate, "a system-account caller (SystemAccount=true) must stay attribution-only, never forced into impersonation")
+		require.NotNil(t, h.gotBody.Passport)
+		require.Empty(t, h.gotImpersonate, "the engine must clear the marker, or identity answers 400")
+	})
+
+	t.Run("system-account caller sends no passport and relays its certificate", func(t *testing.T) {
+		t.Parallel()
+
+		h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+		engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
+
+		p := &principal.Principal{Actor: "actor@example.com", Type: identityapi.User, OrganizationIDs: []string{"org-1"}}
+		ctx := authorization.NewContext(principal.NewContext(t.Context(), p), &authorization.Info{SystemAccount: true, ClientCert: "relayed-certificate"})
+
+		_, err := engine.AllowCoarseMany(ctx, []rbac.Resource{resource}, identityapi.Read)
+		require.NoError(t, err)
+
+		require.Nil(t, h.gotBody.Passport, "a system-account caller must send no passport")
+		require.Empty(t, h.gotImpersonate, "a system-account caller must stay attribution-only, never forced into impersonation")
+		require.Equal(t, "relayed-certificate", h.gotClientCert, "a system-account caller is conveyed by the relayed certificate")
 	})
 
 	t.Run("system-account caller with inbound impersonate flows through", func(t *testing.T) {
@@ -128,16 +138,74 @@ func TestRemoteEngineAllowCoarseManyImpersonation(t *testing.T) {
 		h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
 		engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
 
-		// An inbound X-Impersonate hop (e.g. a proxy already delegating)
-		// arrives pre-marked; the gate must let it flow through rather than
-		// stripping it just because the caller itself is a system account.
 		ctx := principal.NewImpersonateContext(checkSystemAccountAuthContext(t, true))
 
 		_, err := engine.AllowCoarseMany(ctx, []rbac.Resource{resource}, identityapi.Read)
 		require.NoError(t, err)
 
+		require.Nil(t, h.gotBody.Passport)
 		require.Equal(t, "true", h.gotImpersonate, "an inbound X-Impersonate must flow through unchanged, never stripped for a system-account caller")
 	})
+}
+
+func TestRemoteEngineBearerWithoutPassportFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	resource := rbac.Resource{Kind: "identity:groups", OrganizationID: "org-1"}
+
+	tests := map[string]func(*authorization.Info){
+		"empty passport": func(info *authorization.Info) { info.Passport = "" },
+		"no subject":     func(info *authorization.Info) { info.Userinfo.Sub = "" },
+		"no userinfo":    func(info *authorization.Info) { info.Userinfo = nil },
+	}
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+			engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
+
+			info := &authorization.Info{Passport: checkPassport, Userinfo: &identityapi.Userinfo{Sub: checkActorSubject}}
+			mutate(info)
+
+			p := &principal.Principal{Actor: checkActorSubject, Type: identityapi.User}
+			ctx := authorization.NewContext(principal.NewContext(t.Context(), p), info)
+
+			allowed, err := engine.AllowCoarseMany(ctx, []rbac.Resource{resource}, identityapi.Read)
+			require.ErrorIs(t, err, rbac.ErrDecisionUnavailable)
+			require.Nil(t, allowed)
+			require.Zero(t, h.requests, "no check call may go out without a passport, and never an impersonated one")
+		})
+	}
+}
+
+func TestRemoteEngineWithoutAuthenticatedCallerFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	resource := rbac.Resource{Kind: "identity:groups", OrganizationID: "org-1"}
+
+	tests := map[string]func(context.Context) context.Context{
+		"no authorization info":  func(ctx context.Context) context.Context { return ctx },
+		"nil authorization info": func(ctx context.Context) context.Context { return authorization.NewContext(ctx, nil) },
+	}
+
+	for name, withInfo := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+			engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
+
+			p := &principal.Principal{Actor: checkActorSubject, Type: identityapi.User}
+			ctx := withInfo(principal.NewContext(t.Context(), p))
+
+			allowed, err := engine.AllowCoarseMany(ctx, []rbac.Resource{resource}, identityapi.Read)
+			require.ErrorIs(t, err, rbac.ErrDecisionUnavailable)
+			require.Nil(t, allowed)
+			require.Zero(t, h.requests, "a check with no authenticated caller must not go out with this service's own rights")
+		})
+	}
 }
 
 // TestRemoteEngineAllowCoarseManyBatchOrder pins the batch primitive: verdicts
@@ -189,8 +257,70 @@ func TestRemoteEngineAllowCoarseManyChunksAtWireCap(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, allowed, resources, "every resource in an over-cap batch must get a verdict")
 	require.Equal(t, []int{50, 50, 20}, h.batchSizes, "the batch must be split into wire-cap-sized chunks, not sent as one over-cap request")
+	require.Equal(t, 3, h.passportRequests, "every chunk must carry the passport")
+	require.Equal(t, checkPassport, *h.gotBody.Passport)
 
 	for i, a := range allowed {
 		require.Equal(t, i != deniedIndex, a, "verdict for index %d must survive the chunk split in order", i)
+	}
+}
+
+func TestRemoteEngineBearerEchoMismatchFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	resource := rbac.Resource{Kind: "identity:groups", OrganizationID: "org-1"}
+
+	tests := map[string]*checkHandler{
+		"different echo": {results: []identityapi.AuthorizationCheckResult{{Allowed: true}}, passportSubject: "someone-else@example.com"},
+		"no echo":        {results: []identityapi.AuthorizationCheckResult{{Allowed: true}}, omitPassportSubject: true},
+	}
+
+	for name, h := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
+
+			allowed, err := engine.AllowCoarseMany(checkAuthContext(t, "", false), []rbac.Resource{resource}, identityapi.Read)
+			require.ErrorIs(t, err, rbac.ErrDecisionUnavailable)
+			require.Nil(t, allowed)
+
+			err = engine.AllowCoarse(checkAuthContext(t, "", false), resource, identityapi.Read)
+			require.ErrorIs(t, err, rbac.ErrDecisionUnavailable, "the remote shadow comparator reads this as no verdict")
+			require.ErrorIs(t, err, authorizer.ErrPassportSubjectUnconfirmed)
+			require.NotErrorIs(t, err, rbac.ErrPolicyDenied, "an echo failure is not a policy deny")
+		})
+	}
+}
+
+func BenchmarkAllowCoarseManyBearer(b *testing.B) {
+	h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+	engine := authorizer.NewRemoteEngine(newCheckAuthorizer(b, h))
+	ctx := checkAuthContext(b, "", false)
+	resources := []rbac.Resource{{Kind: "identity:groups", OrganizationID: "org-1"}}
+
+	info, err := authorization.FromContext(ctx)
+	require.NoError(b, err)
+
+	info.Passport = authorizer.LargeTestPassport(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		allowed, err := engine.AllowCoarseMany(ctx, resources, identityapi.Read)
+		if err != nil || !allowed[0] {
+			b.Fatalf("check did not allow: %v", err)
+		}
+	}
+
+	b.StopTimer()
+
+	if h.requests != b.N {
+		b.Fatalf("stub saw %d requests, want %d", h.requests, b.N)
+	}
+
+	if h.passportRequests != b.N || *h.gotBody.Passport != info.Passport {
+		b.Fatalf("stub saw the large passport on %d of %d requests", h.passportRequests, b.N)
 	}
 }

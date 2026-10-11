@@ -20,6 +20,8 @@ package authorizer
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	goerrors "errors"
 	"fmt"
 	"net/http"
@@ -86,7 +88,9 @@ type Authorizer struct {
 	clientOptions *coreclient.HTTPClientOptions
 	httpClient    *http.Client
 	exchange      TokenExchange
-	tokenCache    *cache.LRUExpireCache[tokenCacheKey, *oauth2.PassportClaims]
+	tokenCache    *cache.LRUExpireCache[tokenCacheKey, cachedPassport]
+
+	clientCN string
 
 	// checkTimeout is the hard per-call deadline CheckMany applies to the
 	// remote authorization-check call.
@@ -118,6 +122,14 @@ type Authorizer struct {
 
 var _ openapi.Authorizer = &Authorizer{}
 var _ openapi.RemoteDecisionEngineProvider = &Authorizer{}
+
+// cachedPassport is the token cache value. It holds the decoded claims and the
+// raw JWS, so a cache hit needs no decode and still has the raw passport that
+// the check body carries.
+type cachedPassport struct {
+	claims *oauth2.PassportClaims
+	raw    string
+}
 
 type tokenCacheKey struct {
 	sourceToken    string
@@ -170,7 +182,7 @@ func WithRemoteEngineMode(m rbac.RemoteMode) Option {
 // circuit breaker: ONLY a genuine failure to obtain a verdict from a
 // struggling identity — a transport error, a 5xx, a malformed 200, or this
 // package's own checkTimeout expiry, all folded into ErrDecisionUnavailable.
-// Two error classes are deliberately EXCLUDED so caller behaviour can never
+// Three error classes are deliberately EXCLUDED so caller behaviour can never
 // open a breaker that fail-closes authorization for unrelated users:
 //
 //   - a caller-canceled request (context.Canceled, wrapped inside
@@ -180,6 +192,9 @@ func WithRemoteEngineMode(m rbac.RemoteMode) Option {
 //     intended trip signal.
 //   - a deterministic 4xx (propagated verbatim, so NOT ErrDecisionUnavailable):
 //     a rejected request is the caller's fault, not an availability failure.
+//   - a missing or different passportSubject echo (ErrPassportSubjectUnconfirmed,
+//     which is not ErrDecisionUnavailable): an identity without passport support
+//     still answers system-account checks, so the breaker must stay closed.
 //
 // Without this, failsafe-go's default predicate counts EVERY non-nil error, so
 // a client that repeatedly cancels (or sends rejected) requests could trip the
@@ -190,12 +205,14 @@ func isBreakerFailure(_ []bool, err error) bool {
 
 // NewAuthorizer returns a new authorizer with required parameters.
 func NewAuthorizer(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions, opts ...Option) (*Authorizer, error) {
-	httpClient, err := getIdentityHTTPClient(client, options, clientOptions)
+	httpClient, baseClient, err := getIdentityHTTPClient(client, options, clientOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, *oauth2.PassportClaims](tokenCacheSize)
+	clientCN, clientCNErr := clientCertificateCN(baseClient)
+
+	tokenCache := cache.NewLRUExpireCache[tokenCacheKey, cachedPassport](tokenCacheSize)
 
 	// The safe-default breaker (see the constants above): every consumer
 	// (region/compute/kubernetes) gets a working breaker for free from this
@@ -216,12 +233,17 @@ func NewAuthorizer(client client.Client, options *identityclient.Options, client
 		clientOptions: clientOptions,
 		exchange:      NewHTTPTokenExchange(httpClient, TokenExchangeURL(options.Host())),
 		tokenCache:    tokenCache,
+		clientCN:      clientCN,
 		checkTimeout:  defaultCheckTimeout,
 		breaker:       breaker,
 	}
 
 	for _, opt := range opts {
 		opt(a)
+	}
+
+	if a.remoteMode != rbac.RemoteOff && clientCNErr != nil {
+		return nil, fmt.Errorf("remote authorization needs a client certificate: %w", clientCNErr)
 	}
 
 	// Build the CoarseEngine view once, now that options are applied; see
@@ -258,16 +280,43 @@ func (t *requestMutatingTransport) RoundTrip(req *http.Request) (*http.Response,
 	return t.base.RoundTrip(req)
 }
 
+func clientCertificateCN(baseClient *http.Client) (string, error) {
+	transport, ok := baseClient.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil || transport.TLSClientConfig.GetClientCertificate == nil {
+		return "", ErrClientCertificateMissing
+	}
+
+	certificate, err := transport.TLSClientConfig.GetClientCertificate(&tls.CertificateRequestInfo{})
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrClientCertificateMissing, err)
+	}
+
+	if len(certificate.Certificate) == 0 {
+		return "", ErrClientCertificateMissing
+	}
+
+	parsed, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrClientCertificateMissing, err)
+	}
+
+	if parsed.Subject.CommonName == "" {
+		return "", fmt.Errorf("%w: certificate has no common name", ErrClientCertificateMissing)
+	}
+
+	return parsed.Subject.CommonName, nil
+}
+
 // getIdentityHTTPClient returns a raw HTTP client for the identity service
 // that handles TLS, trace context and client certificate propagation.
-func getIdentityHTTPClient(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*http.Client, error) {
+func getIdentityHTTPClient(client client.Client, options *identityclient.Options, clientOptions *coreclient.HTTPClientOptions) (*http.Client, *http.Client, error) {
 	ctx := context.TODO()
 
 	identity := identityclient.New(client, options, clientOptions)
 
 	baseClient, err := identity.HTTPClient(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	mutator := func(req *http.Request) error {
@@ -289,7 +338,7 @@ func getIdentityHTTPClient(client client.Client, options *identityclient.Options
 		},
 	}
 
-	return httpClient, nil
+	return httpClient, baseClient, nil
 }
 
 // authorizeOAuth2 resolves a bearer token into the Userinfo-compatible
@@ -307,15 +356,17 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 	}
 
 	cacheKey := newTokenCacheKey(rawToken, scope)
-	if claims, ok := a.tokenCache.Get(cacheKey); ok {
+	if cached, ok := a.tokenCache.Get(cacheKey); ok {
 		return &authorization.Info{
 			Token:    rawToken,
-			Userinfo: passportToUserinfo(claims),
-			SrcIss:   claims.SrcIss,
+			Userinfo: passportToUserinfo(cached.claims),
+			SrcIss:   cached.claims.SrcIss,
+			Passport: cached.raw,
 		}, nil
 	}
 
 	exchangeOptions := scope
+	exchangeOptions.audience = a.clientCN
 
 	passport, err := a.exchange.Exchange(ctx, rawToken, &exchangeOptions)
 	if err != nil {
@@ -343,13 +394,14 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 	userinfo := passportToUserinfo(claims)
 
 	if ttl := cacheTTL(claims, time.Now()); ttl > 0 {
-		a.tokenCache.Add(cacheKey, claims, ttl)
+		a.tokenCache.Add(cacheKey, cachedPassport{claims: claims, raw: passport}, ttl)
 	}
 
 	return &authorization.Info{
 		Token:    rawToken,
 		Userinfo: userinfo,
 		SrcIss:   claims.SrcIss,
+		Passport: passport,
 	}, nil
 }
 

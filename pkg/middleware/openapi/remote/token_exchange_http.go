@@ -81,6 +81,10 @@ func tokenExchangeForm(sourceToken string, options *tokenExchangeOptions) url.Va
 		if options.projectID != "" {
 			form.Set("x_project_id", options.projectID)
 		}
+
+		if options.audience != "" {
+			form.Set("audience", options.audience)
+		}
 	}
 
 	return form

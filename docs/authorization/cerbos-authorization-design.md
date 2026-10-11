@@ -93,8 +93,8 @@ rather than a hard rule, that's called out (the team owns the spec).
   check must inherit the same global→org→project flow-down today's *asymmetric*
   `intersectACL` (`rbac.go`) relies on, or M1 shadow will diverge on system-account
   impersonation. The two-principal split lives in **identity**: remote services
-  forward only one principal + a boolean `X-Impersonate` today. ABAC raises "whose
-  attributes apply", [D7](#open-decisions).
+  forward one principal plus a boolean `X-Impersonate` or, for a bearer caller, the
+  caller's passport. ABAC raises "whose attributes apply", [D7](#open-decisions).
 - **Identity is the sole issuer of *platform* tokens and the trust root.** External
   IdPs issue upstream tokens; identity validates and **exchanges (RFC 8693) into a
   passport**, a short-lived JWS **signed ES512** (JWKS-verifiable) that carries

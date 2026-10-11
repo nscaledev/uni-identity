@@ -57,6 +57,26 @@ type CheckRequest struct {
 	Action   identityapi.AclOperation
 }
 
+// CheckOption changes one CheckMany call.
+type CheckOption func(*checkCall)
+
+type checkCall struct {
+	passport *passportCheck
+}
+
+type passportCheck struct {
+	raw     string
+	subject string
+}
+
+// WithPassport makes identity decide for the passport's subject. The call
+// fails closed unless identity echoes subject back.
+func WithPassport(passport, subject string) CheckOption {
+	return func(c *checkCall) {
+		c.passport = &passportCheck{raw: passport, subject: subject}
+	}
+}
+
 // CheckMany obtains authorization decisions from identity for a batch of
 // checks: the generated typed client over the cached mTLS/trace-context HTTP
 // client, with the X-Principal/X-Impersonate principal headers injected via
@@ -66,16 +86,18 @@ type CheckRequest struct {
 // system-account-only and REJECTS any Authorization header
 // (handler.PostApiV1AuthorizationCheck; TestRemoteAuthorizationCheckRejectsBearer):
 // the CALLER is authenticated by the cached client's mTLS peer certificate CN,
-// and the ACTING user is conveyed by X-Principal/X-Impersonate — not by a
-// token.  Forwarding the request's user bearer here would 401 every check.
-// This is the one place the wire pattern diverges from GetACL, which is not
-// system-gated and forwards the bearer to name the user.
+// and the ACTING user is conveyed by X-Principal plus either X-Impersonate or
+// the passport of WithPassport — not by a token.  Forwarding the request's
+// user bearer here would 401 every check.  This is the one place the wire
+// pattern diverges from GetACL, which is not system-gated and forwards the
+// bearer to name the user.
 //
 // FAIL-CLOSED: any transport or server error is returned and the caller MUST
 // treat it as a deny for every check; a per-entry false is a policy deny.  The
 // sentinel distinction is preserved as far as the wire allows — a 5xx (or a
-// transport/decode failure) maps to ErrDecisionUnavailable, while a 401/other
-// 4xx is propagated verbatim via errors.PropagateError.
+// transport/decode failure) maps to ErrDecisionUnavailable, a 401/other 4xx is
+// propagated verbatim via errors.PropagateError, and a missing or different
+// passportSubject echo is ErrPassportSubjectUnconfirmed.
 //
 // It also applies its own hard per-call deadline (checkTimeout, see
 // WithCheckTimeout), independent of the caller's context: a slow identity
@@ -87,11 +109,22 @@ type CheckRequest struct {
 // NewAuthorizer/WithCircuitBreaker): once open it fails instantly with
 // ErrDecisionUnavailable and makes NO HTTP round trip, protecting a
 // struggling identity from further load until a cooldown elapses. It trips
-// on CheckMany's own error return only — i.e. failure to obtain a verdict —
-// and NEVER on a returned deny: a successful check that denies some or all
-// entries is (allowed, nil), a success as far as the breaker is concerned. A
-// nil breaker (WithCircuitBreaker(nil)) disables this guard entirely.
-func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest) ([]bool, error) {
+// only on the errors that isBreakerFailure counts — a failure to obtain a
+// verdict from identity — and NEVER on a returned deny: a successful check that
+// denies some or all entries is (allowed, nil), a success as far as the breaker
+// is concerned. A 4xx, a canceled request, an incomplete WithPassport and an
+// echo failure return an error but do not count. A nil breaker
+// (WithCircuitBreaker(nil)) disables this guard entirely.
+func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest, opts ...CheckOption) ([]bool, error) {
+	call := &checkCall{}
+	for _, opt := range opts {
+		opt(call)
+	}
+
+	if call.passport != nil && (call.passport.raw == "" || call.passport.subject == "") {
+		return nil, fmt.Errorf("%w: a passport check needs the passport and its subject", ErrDecisionUnavailable)
+	}
+
 	if a.checkTimeout > 0 {
 		var cancel context.CancelFunc
 
@@ -100,11 +133,11 @@ func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest) ([]bo
 	}
 
 	if a.breaker == nil {
-		return a.checkManyRequest(ctx, checks)
+		return a.checkManyRequest(ctx, checks, call)
 	}
 
 	allowed, err := failsafe.With[[]bool](a.breaker).WithContext(ctx).Get(func() ([]bool, error) {
-		return a.checkManyRequest(ctx, checks)
+		return a.checkManyRequest(ctx, checks, call)
 	})
 	if err != nil {
 		if goerrors.Is(err, circuitbreaker.ErrOpen) {
@@ -122,7 +155,7 @@ func (a *Authorizer) CheckMany(ctx context.Context, checks []CheckRequest) ([]bo
 // own (bounded retry is a deliberate follow-up, see the package README).
 // Split out of CheckMany so the circuit breaker guards precisely this call,
 // never the timeout setup or the breaker plumbing around it.
-func (a *Authorizer) checkManyRequest(ctx context.Context, checks []CheckRequest) ([]bool, error) {
+func (a *Authorizer) checkManyRequest(ctx context.Context, checks []CheckRequest, call *checkCall) ([]bool, error) {
 	// Trace context and TLS (the system-account identity) ride the cached
 	// client; the acting principal rides X-Principal via the injector.
 	options := []identityapi.ClientOption{
@@ -135,13 +168,20 @@ func (a *Authorizer) checkManyRequest(ctx context.Context, checks []CheckRequest
 		return nil, fmt.Errorf("%w: failed to create identity client", err)
 	}
 
-	response, err := rawClient.PostApiV1AuthorizationCheckWithResponse(ctx, checksToWire(checks))
+	body := checksToWire(checks)
+
+	if call.passport != nil {
+		body.Passport = &call.passport.raw
+		ctx = principal.NewContextWithoutImpersonation(ctx)
+	}
+
+	response, err := rawClient.PostApiV1AuthorizationCheckWithResponse(ctx, body)
 	if err != nil {
 		// Transport failure: fail closed, distinguishable as unavailable.
 		return nil, fmt.Errorf("%w: failed to perform authorization check call: %w", ErrDecisionUnavailable, err)
 	}
 
-	return mapCheckResponse(response, len(checks))
+	return mapCheckResponse(response, len(checks), call.passport)
 }
 
 // checksToWire maps the local DTO batch onto the generated request body,
@@ -177,7 +217,7 @@ func checksToWire(checks []CheckRequest) identityapi.AuthorizationCheckRequest {
 // error body PropagateError cannot render) are unavailability, 401/other 4xx
 // propagate verbatim, and a result-count mismatch is unavailability — never a
 // guessed verdict.  The caller treats any returned error as a deny.
-func mapCheckResponse(response *identityapi.PostApiV1AuthorizationCheckResponse, want int) ([]bool, error) {
+func mapCheckResponse(response *identityapi.PostApiV1AuthorizationCheckResponse, want int, passport *passportCheck) ([]bool, error) {
 	if response.StatusCode() != http.StatusOK {
 		if response.StatusCode() >= http.StatusInternalServerError {
 			return nil, fmt.Errorf("%w: identity returned status %d", ErrDecisionUnavailable, response.StatusCode())
@@ -193,6 +233,10 @@ func mapCheckResponse(response *identityapi.PostApiV1AuthorizationCheckResponse,
 	results := response.JSON200.Results
 	if len(results) != want {
 		return nil, fmt.Errorf("%w: expected %d results, got %d", ErrDecisionUnavailable, want, len(results))
+	}
+
+	if passport != nil && (response.JSON200.PassportSubject == nil || *response.JSON200.PassportSubject != passport.subject) {
+		return nil, ErrPassportSubjectUnconfirmed
 	}
 
 	allowed := make([]bool, len(results))

@@ -262,3 +262,55 @@ func TestCircuitBreakerDefault4xxDoesNotTrip(t *testing.T) {
 
 	require.Equal(t, calls, h.requests, "a 4xx must not count toward the breaker, so every call still reaches the transport (the breaker never opens)")
 }
+
+func TestCircuitBreakerDefaultPassportEchoFailureDoesNotTrip(t *testing.T) {
+	t.Parallel()
+
+	h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}, omitPassportSubject: true}
+	engine := authorizer.NewRemoteEngine(newCheckAuthorizer(t, h))
+	resources := []rbac.Resource{{Kind: "identity:groups", OrganizationID: "org-1"}}
+
+	const refusals = 20
+
+	for range refusals {
+		_, err := engine.AllowCoarseMany(checkSystemAccountAuthContext(t, false), resources, identityapi.Read)
+		require.ErrorIs(t, err, rbac.ErrDecisionUnavailable, "a bearer check with no echo must fail closed")
+	}
+
+	allowed, err := engine.AllowCoarseMany(checkSystemAccountAuthContext(t, true), resources, identityapi.Read)
+	require.NoError(t, err, "an identity that ignores the passport still answers system-account checks, so the breaker must stay closed")
+	require.Equal(t, []bool{true}, allowed)
+	require.Equal(t, refusals+1, h.requests)
+}
+
+func TestCircuitBreakerDefaultIncompletePassportDoesNotTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]authorizer.CheckOption{
+		"an empty passport": authorizer.WithPassport("", checkActorSubject),
+		"an empty subject":  authorizer.WithPassport(checkPassport, ""),
+	}
+
+	for name, option := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &checkHandler{results: []identityapi.AuthorizationCheckResult{{Allowed: true}}}
+			auth := newCheckAuthorizer(t, h)
+
+			const refusals = 20
+
+			for range refusals {
+				_, err := auth.CheckMany(checkAuthContext(t, "", false), singleCheck(), option)
+				require.ErrorIs(t, err, authorizer.ErrDecisionUnavailable, "an incomplete passport must fail closed")
+			}
+
+			require.Zero(t, h.requests, "a refusal before any call must not reach identity")
+
+			allowed, err := auth.CheckMany(checkAuthContext(t, "", false), singleCheck())
+			require.NoError(t, err, "a caller bug in one caller must not open the breaker for system-account checks")
+			require.Equal(t, []bool{true}, allowed)
+			require.Equal(t, 1, h.requests)
+		})
+	}
+}

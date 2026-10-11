@@ -126,26 +126,27 @@ mode from config. The ~65 `Allow*` sites are untouched.
   (`region-service`), verified `openapi.go:238,251`. The middleware keeps the certificate out of
   the handler context, so that other calls from the handler do not relay it. It records the
   certificate in `authorization.Info.ClientCert`, and only `RemoteEngine` relays it.
-- **The seam does NOT force impersonation.** The decision follows the **authenticated subject + the
-  inbound `X-Impersonate` flag**, mirroring identity's own `getSystemAccountACL` (`rbac.go:1029-1056`):
+- **The seam does NOT force impersonation.** The decision follows the **authenticated subject**. For
+  a system-account caller it also follows the inbound `X-Impersonate` flag, mirroring identity's own
+  `getSystemAccountACL` (`pkg/rbac/rbac.go`). A bearer caller's check carries the passport and never
+  `X-Impersonate`:
   - **Attributed s2s** (system-account caller, no inbound flag) → decide against the **relayed caller
     alone** (`compute-service`). The propagated user rides `X-Principal` for **attribution/trace only**,
     never the decision. (Trusted-subsystem model.)
-  - **Impersonated s2s / direct bearer user** (inbound flag set, or a bearer-authenticated user) →
-    `intersection(user, service)` per specification §4.6.1.
+  - **Impersonated s2s** (inbound flag set) → `intersection(user, service)` per specification §4.6.1.
+  - **Direct bearer user** → the user's own permissions, from the passport (see below).
 - **Do not derive impersonation from "a User is present in `X-Principal`".** `X-Principal` carries the
   user as attribution on attributed s2s too; forcing impersonation there makes identity compute
   `intersect(user, caller)` and **wrongly denies** service-privilege ops the user lacks (e.g.
   `compute→region:servers`, where only `compute-service` holds `region:servers`). The trigger must key
   off `authorization.Info` (the authenticated subject), not the propagated principal's type.
-- **Direct-user path: not supported yet.** The check refuses the bearer token, so a bearer user
-  reaches identity only by impersonation, and identity computes `intersection(user,
-  consumer-service)`. That equals the user's own permissions only if the consumer's service role
-  holds everything its API authorizes. The service roles are not widened for this, because a wider
-  role also applies to every direct call made with that service's certificate. Until the check
-  accepts the user's own credential, remote `shadow` reports a divergence for each direct-user
-  request that legacy allows, and remote `enforce` must not be turned on for direct-user traffic.
-  Attributed s2s does not depend on this, because it resolves the caller.
+- **Direct-user path: the passport.** A bearer user is not impersonated. The service exchanges the
+  user's token at identity for a passport whose audience is the service's own certificate CN. The
+  remote engine sends the raw passport in the body of the check. Identity verifies it and decides
+  for the passport's subject, with no service role in between. The check carries no
+  `X-Impersonate` header, because identity refuses the two together. The passport goes back to
+  identity only, on this one call. Attributed s2s does not depend on this, because it resolves the
+  caller.
 - **Rejected, `intersection(caller-service, receiver-service)`:** an anti-escalation cap (bound the
   caller by the relaying receiver's own role) was considered and dropped. Revisit only to reduce
   trust in the relayer below the "trust the channel" model (specification §10.1).
@@ -175,6 +176,20 @@ mode from config. The ~65 `Allow*` sites are untouched.
   always asks the PDP, so it needs the sidecar even while identity's own engine is `legacy`. The
   `X-Principal` issuer does not constrain the order: identity reads a header without one as it did
   before issuer propagation.
+- Deploy order for the passport path: identity with passport support on the check first, then the
+  services. A service whose library sends the passport against an older identity gets no verdict.
+  The older identity ignores the unknown body field, and the response has no `passportSubject`.
+  The library requires that echo and fails closed. That failure does not count toward the circuit
+  breaker, so the service's system-account checks still get verdicts from the older identity. Before
+  you roll identity back past this change, set every service's remote mode to `off`.
+- A cached passport can reach a handler with about 10 s of life left, because the token cache drops
+  an entry 10 s before the passport expires. Identity accepts a passport for 5 s after it expires.
+  So a check that a handler sends more than about 15 s after authentication can get a 401 and no
+  verdict. In `shadow`, the downstream log has the same `remote shadow evaluation failure` line for a
+  401, a 503 and an echo failure. Identity's own log shows each refused passport and its cause (the
+  `error detail` line), so count the late-passport 401s there.
+- Gate each service on its own. A mixed fleet, where some services are in `enforce` and some in
+  `shadow`, is a normal state during rollout.
 - Sequence per pilot service: deploy in `shadow` → run traffic / RBAC matrix → confirm **zero
   divergence** (fix provisioning if not) → flip to `enforce` → keep `off` as rollback.
 
@@ -214,10 +229,11 @@ facade is provided (it is just the existing `CheckMany`) for any per-resource AB
 
 | Risk | Mitigation |
 |---|---|
-| Intersection (`intersect(user, service)`) tightens **impersonated / direct-user** decisions vs the local walk. Attributed s2s is unaffected (resolves the caller, matches legacy) | Shadow-first proves parity for attributed s2s; the direct-user path waits for the check to accept the user's own credential (§4.3) |
+| Intersection (`intersect(user, service)`) tightens **impersonated** decisions vs the local walk. Attributed s2s is unaffected (resolves the caller, matches legacy) | Shadow-first proves parity for attributed s2s. A direct-user request is decided from its passport, not by intersection (§4.3) |
 | Trusted-subsystem: attributed s2s decides on the **caller's** credential, so per-user confused-deputy checks on downstream refs are the **caller's** responsibility, not identity's | Caller must impersonate (or check entitlement) on user-facing forwards; the current lifecycle gap is the compute-lifecycle finding (§7) |
 | Added network hop: latency + hard dependency on identity PDP | Hard timeout + fail-closed now; circuit breaker (a follow-up) before broad enforce |
-| Direct-user requests resolve `intersection(user, service)` ⇒ divergence in shadow, denials on enforce | Do not enforce direct-user traffic until the check accepts the user's own credential (§4.3) |
+| A service library that sends the passport meets an identity that ignores it ⇒ the service's own role would decide | The library requires the `passportSubject` echo and fails closed. The echo failure does not open the circuit breaker, so system-account checks still get verdicts. Set the remote mode to `off` before an identity rollback (§4.5) |
+| A check sent more than about 15 s after authentication meets an expired passport ⇒ 401, no verdict | The 10 s cache margin stays for now. Identity's log shows each refused passport and its cause, so the shadow window can count it there (§4.5) |
 | Regression in the shared `pkg/rbac` seam affecting identity itself | Remote path is a separate context slot/mode; local `*RBAC`/shadow/cutover untouched; existing identity tests must stay green |
 
 ## 7. Deferred findings: trusted-subsystem grounding (2026-07-15)
