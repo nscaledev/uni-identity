@@ -186,6 +186,14 @@ support_role_id=$(role_id_of support-quota-editor <<<"$out")
 [[ -n "$support_role_id" ]] || die "could not resolve role ID for 'support-quota-editor'"
 assert_one_match "$out" "--global-group-role-binding=https://staff.example.com/::Support Engineering::${support_role_id}\""
 
+# A cutover kind is served by the PDP alone, so it needs cerbos.enabled.
+if out=$(helm template test "$CHART" --set-json 'identity.cerbosAuthoritativeKinds=["identity:groups"]' 2>&1); then
+	die "cerbosAuthoritativeKinds without cerbos.enabled must fail to render"
+fi
+grep -qF -- "set cerbos.enabled to true" <<<"$out" || die "render failed, but not for the expected reason: $out"
+helm template test "$CHART" --set-json 'identity.cerbosAuthoritativeKinds=["identity:groups"]' --set cerbos.enabled=true >/dev/null ||
+	die "cerbosAuthoritativeKinds with cerbos.enabled must render"
+
 must_fail_group '[{"group":"SRE","roles":["platform-administrator"]}]' "issuer is required"
 must_fail_group '[{"issuer":"https://a.com/ ","group":"SRE","roles":["platform-administrator"]}]' "issuer must not contain whitespace"
 must_fail_group '[{"issuer":"https://x.com/?q=a::b","group":"SRE","roles":["platform-administrator"]}]' 'issuer must not contain "::"'

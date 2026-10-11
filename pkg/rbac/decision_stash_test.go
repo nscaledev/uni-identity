@@ -17,13 +17,23 @@ limitations under the License.
 package rbac_test
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
+
+// errIdentityTransport stands in for a failed call to identity, so a test
+// can assert the stash records the decision as unavailable.
+var errIdentityTransport = errors.New("transport failure")
 
 // These tests pin the decision stash's contract (decision_stash.go): a
 // context seeded with NewDecisionAccumulatorContext (production caller:
@@ -186,10 +196,9 @@ func TestRecordDecisionAbsentIsNoOp(t *testing.T) {
 	require.Nil(t, rbac.DecisionsFromContext(t.Context()))
 }
 
-// TestDecisionAccumulatorAllowProjectScopeCreate proves the second hook
-// site: AllowProjectScopeCreate deliberately never calls dispatchCoarse
-// (see its own NOTE in handler.go), so it carries its own appendDecision
-// call rather than inheriting one.
+// TestDecisionAccumulatorAllowProjectScopeCreate proves the second hook site:
+// AllowProjectScopeCreate records authorization before live project validation,
+// so validation failures do not masquerade as policy denials.
 func TestDecisionAccumulatorAllowProjectScopeCreate(t *testing.T) {
 	t.Parallel()
 
@@ -213,6 +222,127 @@ func TestDecisionAccumulatorAllowProjectScopeCreate(t *testing.T) {
 				Reason:       "policy",
 			},
 		}, decisions)
+	})
+
+	t.Run("authoritative allow remains allow when project validation returns not found", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		client := openapiMock.NewMockClientWithResponsesInterface(ctrl)
+		client.EXPECT().
+			GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
+			Return(&openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{
+				HTTPResponse: &http.Response{StatusCode: http.StatusNotFound},
+			}, nil)
+
+		fake := &fakeRemoteEngine{}
+		ctx := rbac.NewContext(t.Context(), globalACL(resourceType1, openapi.Create))
+		ctx = rbac.NewRemoteEngineContext(ctx, fake, rbac.RemoteEnforce)
+		ctx = rbac.NewDecisionAccumulatorContext(ctx)
+
+		err := rbac.AllowProjectScopeCreate(ctx, client, resourceType1, openapi.Create, organizationID, projectID)
+		require.True(t, coreerrors.IsHTTPNotFound(err))
+		require.Equal(t, []rbac.Decision{{
+			ResourceKind: resourceType1,
+			Action:       "create",
+			Decision:     "allow",
+			Reason:       "policy",
+		}}, rbac.DecisionsFromContext(ctx))
+	})
+
+	t.Run("authoritative deny and unavailable decisions are preserved", func(t *testing.T) {
+		t.Parallel()
+
+		for _, test := range []struct {
+			name     string
+			sentinel error
+			decision string
+			reason   string
+		}{
+			{name: "policy deny", sentinel: rbac.ErrPolicyDenied, decision: "deny", reason: "policy"},
+			{name: "unavailable", sentinel: rbac.ErrDecisionUnavailable, decision: "unavailable", reason: "unavailable"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
+
+				fake := &fakeRemoteEngine{err: rbac.CoarseForbidden(rbac.Resource{Kind: resourceType1}, openapi.Create, test.sentinel)}
+				ctx := rbac.NewContext(t.Context(), globalACL(resourceType1, openapi.Create))
+				ctx = rbac.NewRemoteEngineContext(ctx, fake, rbac.RemoteEnforce)
+				ctx = rbac.NewDecisionAccumulatorContext(ctx)
+
+				require.Error(t, rbac.AllowProjectScopeCreate(ctx, nil, resourceType1, openapi.Create, organizationID, projectID))
+				require.Equal(t, []rbac.Decision{{
+					ResourceKind: resourceType1,
+					Action:       "create",
+					Decision:     test.decision,
+					Reason:       test.reason,
+				}}, rbac.DecisionsFromContext(ctx))
+			})
+		}
+	})
+
+	t.Run("legacy allow remains allow across project validation failures", func(t *testing.T) {
+		t.Parallel()
+
+		orgACL := &openapi.Acl{Organizations: &openapi.AclOrganizationList{{
+			Id: organizationID,
+			Endpoints: &openapi.AclEndpoints{{
+				Name: resourceType1, Operations: openapi.AclOperations{openapi.Create},
+			}},
+		}}}
+
+		for _, test := range []struct {
+			name      string
+			projectID string
+			setup     func(*openapiMock.MockClientWithResponsesInterface)
+		}{
+			{name: "invalid project ID", projectID: "invalid"},
+			{
+				name:      "project not found",
+				projectID: projectID,
+				setup: func(client *openapiMock.MockClientWithResponsesInterface) {
+					client.EXPECT().
+						GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
+						Return(&openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{HTTPResponse: &http.Response{StatusCode: http.StatusNotFound}}, nil)
+				},
+			},
+			{
+				name:      "identity transport failure",
+				projectID: projectID,
+				setup: func(client *openapiMock.MockClientWithResponsesInterface) {
+					client.EXPECT().
+						GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
+						Return(nil, errIdentityTransport)
+				},
+			},
+			{
+				name:      "unexpected identity status",
+				projectID: projectID,
+				setup: func(client *openapiMock.MockClientWithResponsesInterface) {
+					client.EXPECT().
+						GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
+						Return(&openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{HTTPResponse: &http.Response{StatusCode: http.StatusInternalServerError}}, nil)
+				},
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				t.Parallel()
+
+				client := openapiMock.NewMockClientWithResponsesInterface(gomock.NewController(t))
+				if test.setup != nil {
+					test.setup(client)
+				}
+
+				ctx := rbac.NewDecisionAccumulatorContext(rbac.NewContext(t.Context(), orgACL))
+				require.Error(t, rbac.AllowProjectScopeCreate(ctx, client, resourceType1, openapi.Create, organizationID, test.projectID))
+				require.Equal(t, []rbac.Decision{{
+					ResourceKind: resourceType1,
+					Action:       "create",
+					Decision:     "allow",
+					Reason:       "policy",
+				}}, rbac.DecisionsFromContext(ctx))
+			})
+		}
 	})
 
 	t.Run("deny", func(t *testing.T) {

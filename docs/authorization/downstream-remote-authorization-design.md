@@ -28,9 +28,8 @@ resilience essentials, rolled out **shadow-first** so the cutover is proven befo
 ### Out of scope (explicit follow-ups)
 - The full **circuit-breaker** profile (`failsafe-go`): a follow-up, before broad enforce.
 - **`uni-kubernetes`** adoption: a later follow-up.
-- Remote paths for `AllowProjectScopeCreate*` (the project-scope-create migration) and `AllowRole`
-  (the grantability cross-parity): these intentionally never dispatch to an engine and stay on
-  their existing paths.
+- `AllowRole` remote enforcement (the grantability cross-parity): it intentionally stays on its
+  existing thin-Go path.
 
 ## 2. Current state (verified)
 
