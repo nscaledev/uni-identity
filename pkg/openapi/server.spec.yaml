@@ -250,9 +250,20 @@ paths:
         serves identity's own Allow* facade); there is no legacy twin.
 
         FAIL-CLOSED CONTRACT: a per-check policy deny is returned as
-        `allowed: false` with a 200 status.  Any NON-200 response (401, 500)
-        is a batch-level failure and the caller MUST treat it as a deny for
-        every check in the request — never as allow.
+        `allowed: false` with a 200 status.  Any NON-200 response (400, 401,
+        500) is a batch-level failure and the caller MUST treat it as a deny
+        for every check in the request — never as allow.
+
+        PASSPORT CONTRACT: a system account can send the passport of the
+        bearer caller that it serves.  Identity then decides for the passport
+        subject, and the role of the presenting service does not cap the
+        result.  Identity accepts a passport only from a system account that
+        its own TLS peer certificate authenticates.  A passport together with
+        `X-Impersonate`, or together with a relayed client certificate, is a
+        400.  A passport that fails verification is a 401.  An `X-Principal`
+        that does not match the passport subject is a 401.  A subject that is
+        no longer active is a 401.  The organization and project scope of
+        the passport does not limit the check.
       security:
       - oauth2Authentication: []
       requestBody:
@@ -2150,6 +2161,15 @@ components:
       properties:
         checks:
           $ref: '#/components/schemas/authorizationCheckList'
+        passport:
+          description: |-
+            The identity-signed passport of the bearer caller that the
+            presenting service serves.  Identity decides for the passport
+            subject, with no cap from the role of the presenting service.  The
+            audience must contain the certificate CN of the presenting service.
+          type: string
+          minLength: 1
+          maxLength: 8192
     authorizationCheckResult:
       description: The decision for one check, in request order.
       type: object
@@ -2174,6 +2194,12 @@ components:
       properties:
         results:
           $ref: '#/components/schemas/authorizationCheckResultList'
+        passportSubject:
+          description: |-
+            The subject of the passport that identity decided for.  Identity
+            sets it only when it decided for a passport subject.  The caller
+            must make sure that it is equal to the subject that it sent.
+          type: string
     stringList:
       description: A list of strings.
       type: array

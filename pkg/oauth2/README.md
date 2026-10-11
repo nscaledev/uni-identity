@@ -281,6 +281,45 @@ the service runs with `--otlp-endpoint` set: core attaches the metrics reader on
 chart leaves the endpoint unset by default, so a default deployment records the metrics but exports
 nothing and the alerts cannot fire until that endpoint is configured.
 
+### Passport verification
+
+A passport comes back to identity only in the `passport` body field of
+`POST /api/v1/authorization/check` (see [`pkg/handler`](../handler/README.md#authorization-check)).
+`VerifyPassport` checks it there. It refuses the passport, with `ErrPassportRefused`, unless all of
+these are true:
+
+- `DecodeJWT` verifies the ES512 signature with the key that `kid` names, from either key of the
+  signing-key resource.
+- `exp` is present. `exp` and `nbf` hold with 5 s of leeway. The check does not use `Validate`,
+  because its one-minute default leeway doubles the 60 s lifetime of a passport.
+- `iss` is `uni-identity`, `typ` is `passport`, and `aud` contains the CN of the presenting
+  service. `EncodeJWT` also signs the OIDC id_token, so the `typ` check is necessary.
+- `sub` is set, `acctype` is `user` or `service`, and the passport has no `act` claim.
+
+`ResolvePassportSubject` then requires the `X-Principal` actor, type, and issuer to match the
+passport subject. It reads the current state of the subject:
+
+- A user must resolve through `GetOrganizationIDs`. The decision uses the live organization IDs,
+  not the `org_ids` claim. An inactive or ambiguous user is refused. A user with no record passes
+  only when the `bearerTrust` of its issuer sets `allowExternalIdentity`, as in `externalUserinfo`.
+  The UNI sentinel issuer never passes this way.
+- A service account must still exist in the namespace of the one organization that the passport
+  names. The check reads the organization, then the service account by name, as
+  `verifyServiceAccount` does on the bearer path.
+
+A refusal wraps `ErrPassportRefused`, and the handler returns 401 for it. A token fault that
+`DecodeJWT` returns as `jose.ErrJOSE` is a refusal. An issuer trust that identity cannot use, for a
+user with no record, is a refusal, as on the bearer path. A failure to read the signing keys, the
+trust list, or the records of the subject is not a refusal, so the handler returns 500 for it.
+
+The passport path does not see these changes within the lifetime of a passport:
+
+- A service account token rotation. `ResolvePassportSubject` does not compare the token, so a
+  passport minted before a rotation stays valid until it expires.
+- The deletion of the issuer trust of a user that has a record. `GetOrganizationIDs` resolves that
+  user, and it does not read the trust list.
+- The revocation of a UNI session. The path does not read the session of the source token.
+
 ## Caveats
 
 - The package mixes protocol handling, provider integration, local session persistence, local user

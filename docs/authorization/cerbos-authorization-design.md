@@ -99,7 +99,9 @@ rather than a hard rule, that's called out (the team owns the spec).
   IdPs issue upstream tokens; identity validates and **exchanges (RFC 8693) into a
   passport**, a short-lived JWS **signed ES512** (JWKS-verifiable) that carries
   the principal (its resolved **role bindings** + attributes) to the decision
-  boundary. The passport is the operative service-to-service token. No downstream
+  boundary. A passport goes back to identity only: a downstream service sends it in
+  the body of `POST /api/v1/authorization/check`, where identity verifies it, and
+  never forwards it to another service. No downstream
   service trusts an external token directly; external claims (`orgIds`) are advisory
  , effective authority comes from identity's own state, by actor type (§3.2).
 

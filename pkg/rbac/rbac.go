@@ -816,6 +816,14 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 	return nil
 }
 
+// IsSystemAccount reports whether the X.509 common name has a system account role.
+// The legacy and Cerbos resolvers refuse a common name that has none.
+func (r *RBAC) IsSystemAccount(commonName string) bool {
+	_, ok := r.options.SystemAccountRoleIDs[commonName]
+
+	return ok
+}
+
 // processSystemAccountACL looks up the role assigned to a system account and adds
 // the permissions to the ACL.  As system accounts operate on behalf of users, the
 // assumption here is all roles are global and span all user organizations and projects.

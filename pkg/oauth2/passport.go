@@ -37,10 +37,12 @@ import (
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/auth0"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
@@ -66,7 +68,14 @@ const (
 	// PassportSourceUNI indicates the source token was a UNI access token.
 	// It aliases constants.UNISentinel so all existing references continue to compile.
 	PassportSourceUNI = constants.UNISentinel
+
+	// The one-minute default of go-jose would double the passport lifetime.
+	passportLeeway = 5 * time.Second
 )
+
+// ErrPassportRefused is the cause of every refusal from VerifyPassport and
+// ResolvePassportSubject.
+var ErrPassportRefused = goerrors.New("passport refused")
 
 // ActorClaim is the RFC 8693 section 4.1 "act" claim. It identifies the
 // acting party in a delegation chain and is omitted when no delegation has
@@ -109,6 +118,9 @@ type PassportClaims struct {
 	// Actor expresses delegation per RFC 8693 section 4.1; omitted when the
 	// passport's subject is itself the acting party.
 	Actor *ActorClaim `json:"act,omitempty"`
+	// Groups holds the IdP groups that match a configured group role binding
+	// for SrcIss, never the full IdP group list. Omitted when none match.
+	Groups []string `json:"groups,omitempty"`
 }
 
 // TokenExchange implements RFC 8693 OAuth 2.0 Token Exchange for UNI passports
@@ -968,4 +980,163 @@ func (a *Authenticator) projectInOrganization(ctx context.Context, organizationI
 	}
 
 	return true, nil
+}
+
+// VerifiedPassport is a passport that VerifyPassport accepted.  Only
+// ResolvePassportSubject turns it into an Info.
+type VerifiedPassport struct {
+	subject                rbac.PassportSubject
+	claimedOrganizationIDs []string
+}
+
+// VerifyPassport verifies a passport that the system account callerCN
+// presents.  The audience binds the passport to that caller.
+func (a *Authenticator) VerifyPassport(ctx context.Context, raw, callerCN string) (*VerifiedPassport, error) {
+	if callerCN == "" {
+		return nil, fmt.Errorf("%w: no caller CN", ErrPassportRefused)
+	}
+
+	claims := &PassportClaims{}
+
+	if err := a.jwtIssuer.DecodeJWT(ctx, raw, claims); err != nil {
+		return nil, refuseIf(goerrors.Is(err, jose.ErrJOSE), err)
+	}
+
+	// ValidateWithLeeway does not check a missing expiry.
+	if claims.Expiry == nil {
+		return nil, fmt.Errorf("%w: no expiry", ErrPassportRefused)
+	}
+
+	expected := jwt.Expected{
+		Issuer:      PassportIssuer,
+		AnyAudience: jwt.Audience{callerCN},
+		Time:        time.Now(),
+	}
+
+	if err := claims.ValidateWithLeeway(expected, passportLeeway); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrPassportRefused, err)
+	}
+
+	if claims.Type != PassportType {
+		return nil, fmt.Errorf("%w: token type %q", ErrPassportRefused, claims.Type)
+	}
+
+	if claims.Subject == "" {
+		return nil, fmt.Errorf("%w: no subject", ErrPassportRefused)
+	}
+
+	if claims.Acctype != openapi.User && claims.Acctype != openapi.Service {
+		return nil, fmt.Errorf("%w: account type %q", ErrPassportRefused, claims.Acctype)
+	}
+
+	if claims.Actor != nil {
+		return nil, fmt.Errorf("%w: delegated passport", ErrPassportRefused)
+	}
+
+	return &VerifiedPassport{
+		subject: rbac.PassportSubject{
+			Subject:     claims.Subject,
+			AccountType: claims.Acctype,
+			SrcIss:      claims.SrcIss,
+			Email:       claims.Email,
+			Groups:      claims.Groups,
+		},
+		claimedOrganizationIDs: claims.OrgIDs,
+	}, nil
+}
+
+// ResolvePassportSubject returns the authorization info of the passport
+// subject, when the X-Principal actor names that subject.  It reads the
+// subject state again at decision time, because the passport can outlive a
+// change to it.  A refusal wraps ErrPassportRefused.  It returns a read
+// failure as is.
+func (a *Authenticator) ResolvePassportSubject(ctx context.Context, p *VerifiedPassport, actor *principal.Principal) (*authorization.Info, error) {
+	subject := p.subject
+
+	if actor == nil {
+		return nil, fmt.Errorf("%w: no X-Principal", ErrPassportRefused)
+	}
+
+	if !rbac.PrincipalMatchesPassport(actor, subject) {
+		return nil, fmt.Errorf("%w: X-Principal type %q issuer %q does not match the passport subject type %q issuer %q",
+			ErrPassportRefused, actor.Type, actor.Issuer, subject.AccountType, subject.SrcIss)
+	}
+
+	switch subject.AccountType {
+	case openapi.User:
+		organizationIDs, err := a.passportUserOrganizationIDs(ctx, subject)
+		if err != nil {
+			return nil, err
+		}
+
+		subject.OrganizationIDs = organizationIDs
+	case openapi.Service:
+		if err := a.findPassportServiceAccount(ctx, subject.Subject, p.claimedOrganizationIDs); err != nil {
+			return nil, err
+		}
+
+		subject.OrganizationIDs = p.claimedOrganizationIDs
+	case openapi.System:
+		return nil, fmt.Errorf("%w: account type %q", ErrPassportRefused, subject.AccountType)
+	default:
+		return nil, fmt.Errorf("%w: account type %q", ErrPassportRefused, subject.AccountType)
+	}
+
+	return rbac.PassportSubjectInfo(subject), nil
+}
+
+func (a *Authenticator) passportUserOrganizationIDs(ctx context.Context, subject rbac.PassportSubject) ([]string, error) {
+	organizationIDs, err := a.userdb.GetOrganizationIDs(ctx, subject.Subject)
+
+	switch {
+	case err == nil:
+		return organizationIDs, nil
+	case goerrors.Is(err, userdb.ErrUserInactive), goerrors.Is(err, userdb.ErrAmbiguousSubject):
+		return nil, fmt.Errorf("%w: %w", ErrPassportRefused, err)
+	case !goerrors.Is(err, userdb.ErrResourceReference):
+		return nil, err
+	case subject.SrcIss == PassportSourceUNI:
+		return nil, fmt.Errorf("%w: %w", ErrPassportRefused, err)
+	}
+
+	trusted, err := a.validatorForIssuer(ctx, subject.SrcIss)
+
+	switch {
+	case goerrors.Is(err, ErrCacheNotReady):
+		return nil, err
+	case err != nil:
+		return nil, fmt.Errorf("%w: %w", ErrPassportRefused, err)
+	case !trusted.Trust.AllowExternalIdentity:
+		return nil, fmt.Errorf("%w: user does not exist", ErrPassportRefused)
+	}
+
+	return nil, nil
+}
+
+func (a *Authenticator) findPassportServiceAccount(ctx context.Context, name string, organizationIDs []string) error {
+	if len(organizationIDs) != 1 {
+		return fmt.Errorf("%w: a service passport must have one organization", ErrPassportRefused)
+	}
+
+	organization := &unikornv1.Organization{}
+
+	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: organizationIDs[0]}, organization); err != nil {
+		return refuseIf(kerrors.IsNotFound(err), err)
+	}
+
+	serviceAccount := &unikornv1.ServiceAccount{}
+
+	if err := a.client.Get(ctx, client.ObjectKey{Namespace: organization.Status.Namespace, Name: name}, serviceAccount); err != nil {
+		return refuseIf(kerrors.IsNotFound(err), err)
+	}
+
+	return nil
+}
+
+func refuseIf(refuse bool, err error) error {
+	if refuse {
+		return fmt.Errorf("%w: %w", ErrPassportRefused, err)
+	}
+
+	return err
 }

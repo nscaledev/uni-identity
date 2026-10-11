@@ -24,25 +24,39 @@ import (
 	goerrors "errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
 	effectv1 "github.com/cerbos/cerbos/api/genpb/cerbos/effect/v1"
 	responsev1 "github.com/cerbos/cerbos/api/genpb/cerbos/response/v1"
+	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/require"
 
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/jose"
+	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // These tests pin the internal POST /api/v1/authorization/check handler.
@@ -76,11 +90,13 @@ type capturingPDP struct {
 	response *sdk.CheckResourcesResponse
 	err      error
 
-	batches []*sdk.ResourceBatch
+	batches    []*sdk.ResourceBatch
+	principals []*sdk.Principal
 }
 
-func (p *capturingPDP) CheckResources(_ context.Context, _ *sdk.Principal, batch *sdk.ResourceBatch) (*sdk.CheckResourcesResponse, error) {
+func (p *capturingPDP) CheckResources(_ context.Context, checkPrincipal *sdk.Principal, batch *sdk.ResourceBatch) (*sdk.CheckResourcesResponse, error) {
 	p.batches = append(p.batches, batch)
+	p.principals = append(p.principals, checkPrincipal)
 
 	if p.err != nil {
 		return nil, p.err
@@ -502,4 +518,656 @@ func TestAuthorizationCheckProjectWithoutOrg(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	require.Empty(t, pdp.batches, "a malformed check must be rejected before the decision layer")
+}
+
+const (
+	passportUser    = "passport-user@example.com"
+	passportSA      = "passport-sa"
+	authzOtherOrgID = "authz-other-org-id"
+	authzOrgNS      = "authz-org-ns"
+	relayedCN       = "authz-relayed-cn"
+
+	externalUser          = "external@example.com"
+	misconfiguredIssuer   = "https://misconfigured.example.com/"
+	unknownExternalIssuer = "https://external.example.com/"
+)
+
+var errStore = goerrors.New("store read failure")
+
+func failGets[T client.Object]() interceptor.Funcs {
+	return interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if _, ok := obj.(T); ok {
+			return errStore
+		}
+
+		return c.Get(ctx, key, obj, opts...)
+	}}
+}
+
+func failLists[T client.ObjectList]() interceptor.Funcs {
+	return interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		if _, ok := list.(T); ok {
+			return errStore
+		}
+
+		return c.List(ctx, list, opts...)
+	}}
+}
+
+type passportHandlerEnv struct {
+	handler   *handler.Handler
+	jwtIssuer *jose.JWTIssuer
+}
+
+func newPassportHandler(t *testing.T, pdp rbac.PolicyDecisionPoint, funcs interceptor.Funcs) *passportHandlerEnv {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	objects := []client.Object{
+		josetesting.SigningKey(t, authzNS),
+		&unikornv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Namespace: authzNS, Name: authzRoleID},
+			Spec: unikornv1.RoleSpec{Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
+			}},
+		},
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{Namespace: authzNS, Name: authzOrgID},
+			Status:     unikornv1.OrganizationStatus{Namespace: authzOrgNS},
+		},
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{Namespace: authzNS, Name: "passport-user"},
+			Spec:       unikornv1.UserSpec{Subject: passportUser, State: unikornv1.UserStateActive},
+		},
+		&unikornv1.OrganizationUser{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: authzOrgNS,
+				Name:      "passport-org-user",
+				Labels: map[string]string{
+					coreconstants.UserLabel:         "passport-user",
+					coreconstants.OrganizationLabel: authzOrgID,
+				},
+			},
+			Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+		},
+		&unikornv1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: authzOrgNS,
+				Name:      passportSA,
+				Labels:    map[string]string{coreconstants.OrganizationLabel: authzOrgID},
+			},
+		},
+		&unikornv1.OAuth2Provider{
+			ObjectMeta: metav1.ObjectMeta{Namespace: authzNS, Name: "misconfigured"},
+			Spec: unikornv1.OAuth2ProviderSpec{
+				Issuer:      misconfiguredIssuer,
+				BearerTrust: &unikornv1.BearerTrustSpec{AllowExternalIdentity: true},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(funcs).Build()
+	clientWithoutInterceptors := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+
+	r := rbac.New(c, authzNS, &rbac.Options{
+		SystemAccountRoleIDs: map[string]string{authzSystemCN: authzRoleID, relayedCN: authzRoleID},
+	}).WithCerbos(pdp)
+
+	users := userdb.NewUserDatabase(c, authzNS)
+	jwtIssuer := jose.NewJWTIssuer(c, authzNS, &jose.Options{})
+
+	authenticator, err := oauth2.New(&oauth2.Options{TokenCacheSize: 1, CodeCacheSize: 1}, authzNS, handlercommon.IssuerValue{}, c, c, jwtIssuer, users, r)
+	require.NoError(t, err)
+
+	h, err := handler.New(c, c, authzNS, jwtIssuer, authenticator, users, r, &handler.Options{})
+	require.NoError(t, err)
+
+	return &passportHandlerEnv{handler: h, jwtIssuer: jose.NewJWTIssuer(clientWithoutInterceptors, authzNS, &jose.Options{})}
+}
+
+func testPassportClaims(subject string, accountType openapi.AuthClaimsAcctype, audience string) *oauth2.PassportClaims {
+	now := time.Now()
+
+	return &oauth2.PassportClaims{
+		Claims: jwt.Claims{
+			Issuer:    oauth2.PassportIssuer,
+			Subject:   subject,
+			Audience:  jwt.Audience{audience},
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			Expiry:    jwt.NewNumericDate(now.Add(oauth2.PassportTTL)),
+		},
+		Type:    oauth2.PassportType,
+		Acctype: accountType,
+		Source:  oauth2.PassportSourceUNI,
+		SrcIss:  oauth2.PassportSourceUNI,
+	}
+}
+
+func signTestPassport(tb testing.TB, issuer *jose.JWTIssuer, claims *oauth2.PassportClaims) string {
+	tb.Helper()
+
+	token, err := issuer.EncodeJWT(tb.Context(), claims)
+	require.NoError(tb, err)
+
+	return token
+}
+
+func (e *passportHandlerEnv) passportFor(t *testing.T, subject string, accountType openapi.AuthClaimsAcctype, audience, organizationID string) string {
+	t.Helper()
+
+	claims := testPassportClaims(subject, accountType, audience)
+	claims.OrgIDs = []string{authzOrgID}
+	claims.OrgID = organizationID
+
+	return signTestPassport(t, e.jwtIssuer, claims)
+}
+
+func presenterContext(t *testing.T, commonName string, p *principal.Principal) context.Context {
+	t.Helper()
+
+	ctx := authorization.NewContext(t.Context(), &authorization.Info{
+		SystemAccount: true,
+		Userinfo: &openapi.Userinfo{
+			Sub:                       commonName,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.System},
+		},
+	})
+
+	return principal.NewContext(ctx, p)
+}
+
+func userPrincipal(actor string) *principal.Principal {
+	return &principal.Principal{Actor: actor, Type: openapi.User, Issuer: constants.UNISentinel}
+}
+
+func passportCheckBody(passport string, checks ...openapi.AuthorizationCheck) openapi.AuthorizationCheckRequest {
+	if len(checks) == 0 {
+		checks = []openapi.AuthorizationCheck{{
+			Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(authzOrgID)},
+			Action:   openapi.Read,
+		}}
+	}
+
+	return openapi.AuthorizationCheckRequest{Checks: checks, Passport: &passport}
+}
+
+func allowGroupsRead() *sdk.CheckResourcesResponse {
+	return authzPDPResponse(authzPDPResult(map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}))
+}
+
+func responseKeys(t *testing.T, w *httptest.ResponseRecorder) map[string]json.RawMessage {
+	t.Helper()
+
+	var keys map[string]json.RawMessage
+
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &keys))
+
+	return keys
+}
+
+func TestAuthorizationCheckPassportDecidesForSubject(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	passport := env.passportFor(t, passportUser, openapi.User, authzSystemCN, "")
+
+	w := doCheck(presenterContext(t, authzSystemCN, userPrincipal(passportUser)), t, env.handler, passportCheckBody(passport))
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var response openapi.AuthorizationCheckResponse
+
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	require.Len(t, response.Results, 1)
+	require.True(t, response.Results[0].Allowed)
+	require.NotNil(t, response.PassportSubject, "the caller must be able to make sure that identity decided for the subject it sent")
+	require.Equal(t, passportUser, *response.PassportSubject)
+
+	require.Len(t, pdp.principals, 1, "a passport decision is one evaluation, with no service side")
+	require.Equal(t, passportUser, pdp.principals[0].Obj.GetId(), "the decision must be for the passport subject, not the presenting service")
+}
+
+func TestAuthorizationCheckPassportWithImpersonation(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	passport := env.passportFor(t, passportUser, openapi.User, authzSystemCN, "")
+	ctx := principal.NewImpersonateContext(presenterContext(t, authzSystemCN, userPrincipal(passportUser)))
+
+	w := doCheck(ctx, t, env.handler, passportCheckBody(passport))
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "a passport with impersonation must be refused")
+	require.Empty(t, pdp.batches, "a refused request must not reach the decision layer")
+}
+
+func TestAuthorizationCheckPassportRelayedCertificate(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	passport := env.passportFor(t, passportUser, openapi.User, relayedCN, "")
+
+	w := doCheckWithHeaders(presenterContext(t, relayedCN, userPrincipal(passportUser)), t, env.handler, passportCheckBody(passport), map[string]string{
+		authorization.ClientCertificateHeader: "relayed-certificate",
+	})
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "the audience must bind to the TLS peer, not to a relayed certificate")
+	require.Empty(t, pdp.batches)
+}
+
+func TestAuthorizationCheckPassportUnregisteredPresenter(t *testing.T) {
+	t.Parallel()
+
+	const unregisteredCN = "authz-unregistered-cn"
+
+	failAll := interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return errStore
+		},
+		List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+			return errStore
+		},
+	}
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, failAll)
+
+	// The passport is valid and names the unregistered CN as its audience, so only the
+	// presenter check can refuse it.  The direct form refuses the same CN.
+	passport := signTestPassport(t, env.jwtIssuer, testPassportClaims(passportUser, openapi.User, unregisteredCN))
+
+	w := doCheck(presenterContext(t, unregisteredCN, userPrincipal(passportUser)), t, env.handler, passportCheckBody(passport))
+
+	require.Equal(t, http.StatusUnauthorized, w.Code, "a presenter with no system account role must be refused as a caller; body: %s", w.Body.String())
+	require.JSONEq(t, `"passport is not valid"`, string(responseKeys(t, w)["error_description"]))
+	require.NotContains(t, responseKeys(t, w), "passportSubject")
+	require.Empty(t, pdp.batches, "a refused presenter must not reach the decision layer")
+}
+
+func TestAuthorizationCheckPassportFromBearer(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	passport := env.passportFor(t, passportUser, openapi.User, "user@example.com", "")
+
+	w := doCheck(principal.NewContext(bearerContext(t), userPrincipal(passportUser)), t, env.handler, passportCheckBody(passport))
+
+	require.Equal(t, http.StatusUnauthorized, w.Code, "a passport must not open the endpoint to a bearer caller")
+	require.Empty(t, pdp.batches)
+}
+
+func TestAuthorizationCheckPassportPrincipalMismatch(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		accountType openapi.AuthClaimsAcctype
+		subject     string
+		principal   *principal.Principal
+		wantStatus  int
+	}{
+		{name: "ActorMismatch", accountType: openapi.User, subject: passportUser, principal: userPrincipal("someone-else@example.com"), wantStatus: http.StatusUnauthorized},
+		{name: "TypeMismatch", accountType: openapi.User, subject: passportUser, principal: &principal.Principal{Actor: passportUser, Type: openapi.Service, Issuer: constants.UNISentinel}, wantStatus: http.StatusUnauthorized},
+		{name: "IssuerMismatch", accountType: openapi.User, subject: passportUser, principal: &principal.Principal{Actor: passportUser, Type: openapi.User, Issuer: "https://external.example.com/"}, wantStatus: http.StatusUnauthorized},
+		{name: "UserCaseOnly", accountType: openapi.User, subject: passportUser, principal: userPrincipal(strings.ToUpper(passportUser)), wantStatus: http.StatusOK},
+		{name: "ServiceCaseDiffers", accountType: openapi.Service, subject: passportSA, principal: &principal.Principal{Actor: strings.ToUpper(passportSA), Type: openapi.Service, Issuer: constants.UNISentinel}, wantStatus: http.StatusUnauthorized},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			pdp := &capturingPDP{response: allowGroupsRead()}
+			env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+			passport := env.passportFor(t, tc.subject, tc.accountType, authzSystemCN, "")
+
+			w := doCheck(presenterContext(t, authzSystemCN, tc.principal), t, env.handler, passportCheckBody(passport))
+			require.Equal(t, tc.wantStatus, w.Code, "body: %s", w.Body.String())
+
+			if tc.wantStatus != http.StatusOK {
+				require.Empty(t, pdp.batches, "an X-Principal that does not name the passport subject must not reach the decision layer")
+			}
+		})
+	}
+}
+
+func TestAuthorizationCheckPassportScope(t *testing.T) {
+	t.Parallel()
+
+	allow := effectv1.Effect_EFFECT_ALLOW
+	deny := effectv1.Effect_EFFECT_DENY
+
+	// The canned PDP answers by position, so the verdict of each check is the
+	// verdict of the subject, not a function of the passport scope.
+	cases := []struct {
+		name        string
+		effects     []effectv1.Effect
+		wantAllowed []bool
+	}{
+		{name: "SubjectHasRights", effects: []effectv1.Effect{allow, deny}, wantAllowed: []bool{true, false}},
+		{name: "SubjectLacksRights", effects: []effectv1.Effect{deny, allow}, wantAllowed: []bool{false, true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			pdp := &capturingPDP{response: authzPDPResponse(
+				authzPDPResult(map[string]effectv1.Effect{"read": tc.effects[0]}),
+				authzPDPResult(map[string]effectv1.Effect{"read": tc.effects[1]}),
+			)}
+			env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+			passport := env.passportFor(t, passportUser, openapi.User, authzSystemCN, authzOrgID)
+
+			w := doCheck(presenterContext(t, authzSystemCN, userPrincipal(passportUser)), t, env.handler, passportCheckBody(passport,
+				openapi.AuthorizationCheck{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(authzOtherOrgID)}, Action: openapi.Read},
+				openapi.AuthorizationCheck{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(authzOrgID)}, Action: openapi.Read},
+			))
+			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+			var response openapi.AuthorizationCheckResponse
+
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+			require.Len(t, response.Results, 2)
+			require.Equal(t, tc.wantAllowed[0], response.Results[0].Allowed, "the passport organization must not limit a check in another organization")
+			require.Equal(t, tc.wantAllowed[1], response.Results[1].Allowed)
+
+			require.Len(t, pdp.batches, 1)
+			require.Len(t, pdp.batches[0].Batch, 2, "every check must reach the PDP, whatever the passport scope")
+		})
+	}
+}
+
+func TestAuthorizationCheckPassportProjectScope(t *testing.T) {
+	t.Parallel()
+
+	allow := effectv1.Effect_EFFECT_ALLOW
+	deny := effectv1.Effect_EFFECT_DENY
+
+	cases := []struct {
+		name        string
+		effects     []effectv1.Effect
+		wantAllowed []bool
+	}{
+		{name: "SubjectHasRights", effects: []effectv1.Effect{allow, deny}, wantAllowed: []bool{true, false}},
+		{name: "SubjectLacksRights", effects: []effectv1.Effect{deny, allow}, wantAllowed: []bool{false, true}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			pdp := &capturingPDP{response: authzPDPResponse(
+				authzPDPResult(map[string]effectv1.Effect{"read": tc.effects[0]}),
+				authzPDPResult(map[string]effectv1.Effect{"read": tc.effects[1]}),
+			)}
+			env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+			claims := testPassportClaims(passportUser, openapi.User, authzSystemCN)
+			claims.OrgIDs = []string{authzOrgID}
+			claims.OrgID = authzOrgID
+			claims.ProjectID = "passport-project"
+
+			groups := func(projectID string) openapi.AuthorizationCheck {
+				return openapi.AuthorizationCheck{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(authzOrgID), ProjectId: ptr.To(projectID)}, Action: openapi.Read}
+			}
+
+			w := doCheck(presenterContext(t, authzSystemCN, userPrincipal(passportUser)), t, env.handler,
+				passportCheckBody(signTestPassport(t, env.jwtIssuer, claims), groups("other-project"), groups("passport-project")))
+			require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+			require.Len(t, pdp.batches, 1)
+			require.Len(t, pdp.batches[0].Batch, 2, "every check must reach the decision layer, whatever the passport project")
+
+			var response openapi.AuthorizationCheckResponse
+
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+			require.Len(t, response.Results, 2)
+			require.Equal(t, tc.wantAllowed[0], response.Results[0].Allowed, "the passport project must not limit a check for another project")
+			require.Equal(t, tc.wantAllowed[1], response.Results[1].Allowed)
+		})
+	}
+}
+
+func TestAuthorizationCheckPassportSubjectOnlyOnPassportPath(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	direct := doCheck(presenterContext(t, authzSystemCN, &principal.Principal{Actor: authzSystemCN, Type: openapi.System}), t, env.handler, openapi.AuthorizationCheckRequest{
+		Checks: []openapi.AuthorizationCheck{{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(authzOrgID)}, Action: openapi.Read}},
+	})
+	require.Equal(t, http.StatusOK, direct.Code, "body: %s", direct.Body.String())
+	require.NotContains(t, responseKeys(t, direct), "passportSubject", "a direct decision must not name a passport subject")
+
+	impersonated := doCheck(principal.NewImpersonateContext(presenterContext(t, authzSystemCN, userPrincipal(passportUser))), t, env.handler, openapi.AuthorizationCheckRequest{
+		Checks: []openapi.AuthorizationCheck{{Resource: openapi.AuthorizationCheckResource{Kind: "identity:groups", OrganizationId: ptr.To(authzOrgID)}, Action: openapi.Read}},
+	})
+	require.Equal(t, http.StatusOK, impersonated.Code, "body: %s", impersonated.Body.String())
+	require.NotContains(t, responseKeys(t, impersonated), "passportSubject", "an impersonated decision must not name a passport subject")
+
+	passport := env.passportFor(t, passportUser, openapi.User, authzSystemCN, "")
+
+	withPassport := doCheck(presenterContext(t, authzSystemCN, userPrincipal(passportUser)), t, env.handler, passportCheckBody(passport))
+	require.Equal(t, http.StatusOK, withPassport.Code, "body: %s", withPassport.Body.String())
+	require.Contains(t, responseKeys(t, withPassport), "passportSubject")
+}
+
+func TestAuthorizationCheckPassportSubjectState(t *testing.T) {
+	t.Parallel()
+
+	servicePrincipal := &principal.Principal{Actor: passportSA, Type: openapi.Service, Issuer: constants.UNISentinel}
+
+	t.Run("LiveServiceAccount", func(t *testing.T) {
+		t.Parallel()
+
+		pdp := &capturingPDP{response: allowGroupsRead()}
+		env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+		w := doCheck(presenterContext(t, authzSystemCN, servicePrincipal), t, env.handler, passportCheckBody(env.passportFor(t, passportSA, openapi.Service, authzSystemCN, "")))
+		require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	})
+
+	t.Run("DeletedServiceAccount", func(t *testing.T) {
+		t.Parallel()
+
+		pdp := &capturingPDP{response: allowGroupsRead()}
+		env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+		deleted := &principal.Principal{Actor: "deleted-sa", Type: openapi.Service, Issuer: constants.UNISentinel}
+
+		w := doCheck(presenterContext(t, authzSystemCN, deleted), t, env.handler, passportCheckBody(env.passportFor(t, "deleted-sa", openapi.Service, authzSystemCN, "")))
+		require.Equal(t, http.StatusUnauthorized, w.Code, "a passport for a deleted subject must be refused")
+		require.Empty(t, pdp.batches)
+	})
+
+	t.Run("StoreFailure", func(t *testing.T) {
+		t.Parallel()
+
+		pdp := &capturingPDP{response: allowGroupsRead()}
+		env := newPassportHandler(t, pdp, failGets[*unikornv1.ServiceAccount]())
+
+		w := doCheck(presenterContext(t, authzSystemCN, servicePrincipal), t, env.handler, passportCheckBody(env.passportFor(t, passportSA, openapi.Service, authzSystemCN, "")))
+		require.Equal(t, http.StatusInternalServerError, w.Code, "a store failure is an outage, not a refusal of the passport")
+		require.Empty(t, pdp.batches)
+	})
+}
+
+func TestAuthorizationCheckPassportRefusalsShareOneMessage(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	refusals := []*httptest.ResponseRecorder{
+		doCheck(presenterContext(t, authzSystemCN, userPrincipal(passportUser)), t, env.handler,
+			passportCheckBody(env.passportFor(t, passportUser, openapi.User, "another-service", ""))),
+		doCheck(presenterContext(t, authzSystemCN, userPrincipal("someone-else@example.com")), t, env.handler,
+			passportCheckBody(env.passportFor(t, passportUser, openapi.User, authzSystemCN, ""))),
+		doCheck(presenterContext(t, authzSystemCN, &principal.Principal{Actor: "deleted-sa", Type: openapi.Service, Issuer: constants.UNISentinel}), t, env.handler,
+			passportCheckBody(env.passportFor(t, "deleted-sa", openapi.Service, authzSystemCN, ""))),
+	}
+
+	for _, w := range refusals {
+		require.Equal(t, http.StatusUnauthorized, w.Code, "body: %s", w.Body.String())
+		require.JSONEq(t, `"passport is not valid"`, string(responseKeys(t, w)["error_description"]), "every passport refusal must give the same description")
+	}
+}
+
+func externalPassport(t *testing.T, env *passportHandlerEnv, issuer string) (string, *principal.Principal) {
+	t.Helper()
+
+	claims := testPassportClaims(externalUser, openapi.User, authzSystemCN)
+	claims.SrcIss = issuer
+
+	return signTestPassport(t, env.jwtIssuer, claims), &principal.Principal{Actor: externalUser, Type: openapi.User, Issuer: issuer}
+}
+
+func TestAuthorizationCheckPassportImpersonateHeader(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	passport := env.passportFor(t, passportUser, openapi.User, authzSystemCN, "")
+
+	w := doCheckWithHeaders(presenterContext(t, authzSystemCN, userPrincipal(passportUser)), t, env.handler, passportCheckBody(passport), map[string]string{
+		principal.ImpersonateHeader: "true",
+	})
+
+	require.Equal(t, http.StatusBadRequest, w.Code, "a signed X-Principal sets no impersonation marker, so the header itself must refuse the passport")
+	require.Empty(t, pdp.batches)
+}
+
+func TestAuthorizationCheckPassportDecisionRecordNamesPresenter(t *testing.T) {
+	t.Parallel()
+
+	env := newPassportHandler(t, &capturingPDP{response: allowGroupsRead()}, interceptor.Funcs{})
+
+	var logged []string
+
+	logger := funcr.NewJSON(func(obj string) { logged = append(logged, obj) }, funcr.Options{Verbosity: 1})
+
+	w := doCheck(logr.NewContext(presenterContext(t, authzSystemCN, userPrincipal(passportUser)), logger), t, env.handler,
+		passportCheckBody(env.passportFor(t, passportUser, openapi.User, authzSystemCN, "")))
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.Len(t, logged, 1)
+
+	var line map[string]any
+
+	require.NoError(t, json.Unmarshal([]byte(logged[0]), &line))
+	require.Equal(t, passportUser, line["subject"], "the record is for the passport subject")
+	require.Equal(t, authzSystemCN, line["passport_presenter"], "the record must name the service that presented the passport, not the subject")
+}
+
+func TestAuthorizationCheckPassportPrincipalMismatchLogsCause(t *testing.T) {
+	t.Parallel()
+
+	env := newPassportHandler(t, &capturingPDP{response: allowGroupsRead()}, interceptor.Funcs{})
+
+	var logged []string
+
+	logger := funcr.NewJSON(func(obj string) { logged = append(logged, obj) }, funcr.Options{})
+	actor := &principal.Principal{Actor: passportUser, Type: openapi.Service, Issuer: unknownExternalIssuer}
+
+	w := doCheck(logr.NewContext(presenterContext(t, authzSystemCN, actor), logger), t, env.handler,
+		passportCheckBody(env.passportFor(t, passportUser, openapi.User, authzSystemCN, "")))
+	require.Equal(t, http.StatusUnauthorized, w.Code, "body: %s", w.Body.String())
+	require.Len(t, logged, 1)
+
+	var line struct {
+		Error string `json:"error"`
+	}
+
+	require.NoError(t, json.Unmarshal([]byte(logged[0]), &line))
+
+	for _, want := range []string{`"service"`, `"` + unknownExternalIssuer + `"`, `"user"`, `"` + constants.UNISentinel + `"`} {
+		require.Contains(t, line.Error, want, "the refusal log must name the type and issuer on both sides")
+	}
+}
+
+func TestAuthorizationCheckPassportReadFailures(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		funcs      interceptor.Funcs
+		issuer     string
+		service    bool
+		wantStatus int
+	}{
+		{name: "SigningKeyUnreadable", funcs: failGets[*unikornv1.SigningKey](), wantStatus: http.StatusInternalServerError},
+		{name: "TrustListNotReady", funcs: failLists[*unikornv1.OAuth2ProviderList](), issuer: unknownExternalIssuer, wantStatus: http.StatusInternalServerError},
+		{name: "TrustConfigError", issuer: misconfiguredIssuer, wantStatus: http.StatusUnauthorized},
+		{name: "OrganizationUnreadable", funcs: failGets[*unikornv1.Organization](), service: true, wantStatus: http.StatusInternalServerError},
+		{name: "UserListUnreadable", funcs: failLists[*unikornv1.UserList](), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			pdp := &capturingPDP{response: allowGroupsRead()}
+			env := newPassportHandler(t, pdp, tc.funcs)
+
+			passport, actor := env.passportFor(t, passportUser, openapi.User, authzSystemCN, ""), userPrincipal(passportUser)
+			if tc.issuer != "" {
+				passport, actor = externalPassport(t, env, tc.issuer)
+			}
+
+			if tc.service {
+				passport = env.passportFor(t, passportSA, openapi.Service, authzSystemCN, "")
+				actor = &principal.Principal{Actor: passportSA, Type: openapi.Service, Issuer: constants.UNISentinel}
+			}
+
+			w := doCheck(presenterContext(t, authzSystemCN, actor), t, env.handler, passportCheckBody(passport))
+			require.Equal(t, tc.wantStatus, w.Code, "body: %s", w.Body.String())
+			require.Empty(t, pdp.batches)
+		})
+	}
+}
+
+func TestAuthorizationCheckPassportServiceAccountLookup(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, failLists[*unikornv1.ServiceAccountList]())
+
+	servicePrincipal := &principal.Principal{Actor: passportSA, Type: openapi.Service, Issuer: constants.UNISentinel}
+
+	w := doCheck(presenterContext(t, authzSystemCN, servicePrincipal), t, env.handler, passportCheckBody(env.passportFor(t, passportSA, openapi.Service, authzSystemCN, "")))
+	require.Equal(t, http.StatusOK, w.Code, "the check must read one service account by name, not list them all; body: %s", w.Body.String())
+}
+
+func TestAuthorizationCheckPassportFromCertificateBoundToken(t *testing.T) {
+	t.Parallel()
+
+	pdp := &capturingPDP{response: allowGroupsRead()}
+	env := newPassportHandler(t, pdp, interceptor.Funcs{})
+
+	ctx := authorization.NewContext(t.Context(), &authorization.Info{
+		Token:         "certificate-bound-service-token",
+		SystemAccount: true,
+		Userinfo: &openapi.Userinfo{
+			Sub:                       authzSystemCN,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.System, OrgIds: []string{}},
+		},
+	})
+
+	w := doCheck(principal.NewContext(ctx, userPrincipal(passportUser)), t, env.handler,
+		passportCheckBody(env.passportFor(t, passportUser, openapi.User, authzSystemCN, "")))
+	require.Equal(t, http.StatusOK, w.Code, "a bound service token has the certificate CN as its subject, so the audience check accepts it; body: %s", w.Body.String())
+	require.Contains(t, responseKeys(t, w), "passportSubject")
 }

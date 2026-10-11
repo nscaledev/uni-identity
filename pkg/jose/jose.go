@@ -456,7 +456,7 @@ func (i *JWTIssuer) EncodeJWT(ctx context.Context, claims any) (string, error) {
 func (i *JWTIssuer) DecodeJWT(ctx context.Context, tokenString string, claims any) error {
 	token, err := jwt.ParseSigned(tokenString, []jose.SignatureAlgorithm{jose.ES512})
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrJOSE, err)
 	}
 
 	if len(token.Headers) != 1 {
@@ -475,7 +475,7 @@ func (i *JWTIssuer) DecodeJWT(ctx context.Context, tokenString string, claims an
 
 	// Annoyingly this cannot extract the public key from the private one...
 	if err := token.Claims(pub, claims); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrJOSE, err)
 	}
 
 	return nil

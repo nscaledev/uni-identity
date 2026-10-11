@@ -62,16 +62,14 @@ func injectCIPrincipal(_ context.Context, req *http.Request) error {
 }
 
 // newAuthzMTLSClient builds a generated typed client that reaches identity over a
-// GENUINE mTLS handshake.  With withClientCert it presents the ci-fixtures client
+// GENUINE mTLS handshake.  With a certificate it presents that base64 PEM client
 // certificate (so nginx sets Ssl-Client-Verify: SUCCESS and identity resolves a
-// system account) and injects X-Principal; without it, no client certificate is
-// presented, so the endpoint has no verified mTLS peer to trust.  It Skips when
-// hack/ci/fixtures did not export mTLS credentials (e.g. a focused local run).
-func newAuthzMTLSClient(withClientCert bool) *openapi.ClientWithResponses {
+// system account).
+func newAuthzMTLSClient(certificate, key string, editor openapi.RequestEditorFn) *openapi.ClientWithResponses {
 	GinkgoHelper()
 
 	caCertPath := os.Getenv("IDENTITY_CA_CERT")
-	if config.BaseURL == "" || caCertPath == "" || config.MTLSClientCert == "" || config.MTLSClientKey == "" {
+	if config.BaseURL == "" || caCertPath == "" || (certificate == "") != (key == "") {
 		Skip("mTLS client credentials unavailable (run via `make integration-fixtures`)")
 	}
 
@@ -88,11 +86,11 @@ func newAuthzMTLSClient(withClientCert bool) *openapi.ClientWithResponses {
 
 	var editors []openapi.ClientOption
 
-	if withClientCert {
-		certPEM, err := base64.StdEncoding.DecodeString(config.MTLSClientCert)
+	if certificate != "" {
+		certPEM, err := base64.StdEncoding.DecodeString(certificate)
 		Expect(err).NotTo(HaveOccurred(), "decoding mTLS client certificate")
 
-		keyPEM, err := base64.StdEncoding.DecodeString(config.MTLSClientKey)
+		keyPEM, err := base64.StdEncoding.DecodeString(key)
 		Expect(err).NotTo(HaveOccurred(), "decoding mTLS client key")
 
 		clientCert, err := tls.X509KeyPair(certPEM, keyPEM)
@@ -100,7 +98,7 @@ func newAuthzMTLSClient(withClientCert bool) *openapi.ClientWithResponses {
 
 		tlsConfig.Certificates = []tls.Certificate{clientCert}
 
-		editors = append(editors, openapi.WithRequestEditorFn(injectCIPrincipal))
+		editors = append(editors, openapi.WithRequestEditorFn(editor))
 	}
 
 	httpClient := &http.Client{
@@ -132,7 +130,11 @@ var _ = Describe("Authorization check decision endpoint", func() {
 	Context("When reached over a genuine mTLS connection", func() {
 		Describe("Given a valid, trusted client certificate", func() {
 			It("returns a per-check authorization decision", func() {
-				client := newAuthzMTLSClient(true)
+				if config.MTLSClientCert == "" || config.MTLSClientKey == "" {
+					Skip("mTLS client credentials unavailable (run via `make integration-fixtures`)")
+				}
+
+				client := newAuthzMTLSClient(config.MTLSClientCert, config.MTLSClientKey, injectCIPrincipal)
 
 				resp, err := client.PostApiV1AuthorizationCheckWithResponse(ctx, authzCheckBody())
 				Expect(err).NotTo(HaveOccurred(), "genuine mTLS authorization check")
@@ -152,7 +154,7 @@ var _ = Describe("Authorization check decision endpoint", func() {
 
 		Describe("Given no client certificate", func() {
 			It("rejects the request at the mTLS/authorization layer", func() {
-				client := newAuthzMTLSClient(false)
+				client := newAuthzMTLSClient("", "", nil)
 
 				// The ingress runs auth-tls-verify-client: optional, so the handshake
 				// succeeds without a client certificate and identity refuses at the

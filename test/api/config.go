@@ -31,6 +31,8 @@ type TestConfig struct {
 	// they are absent (e.g. a focused local run without a full fixtures pass).
 	MTLSClientCert       string
 	MTLSClientKey        string
+	MTLSNarrowClientCert string
+	MTLSNarrowClientKey  string
 	AdminToken           string
 	UserToken            string
 	AuditToken           string
@@ -87,6 +89,8 @@ func LoadTestConfig() (*TestConfig, error) {
 		},
 		MTLSClientCert:       v.GetString("IDENTITY_MTLS_CLIENT_CERT"),
 		MTLSClientKey:        v.GetString("IDENTITY_MTLS_CLIENT_KEY"),
+		MTLSNarrowClientCert: v.GetString("IDENTITY_MTLS_NARROW_CLIENT_CERT"),
+		MTLSNarrowClientKey:  v.GetString("IDENTITY_MTLS_NARROW_CLIENT_KEY"),
 		AdminToken:           firstNonEmpty(v.GetString("ADMIN_AUTH_TOKEN"), v.GetString("API_AUTH_TOKEN")),
 		UserToken:            v.GetString("USER_AUTH_TOKEN"),
 		AuditToken:           v.GetString("AUDIT_AUTH_TOKEN"),

@@ -41,6 +41,8 @@ TEST_ADMIN_SA_ID=<uuid>
 TEST_USER_SA_ID=<uuid>
 ADMIN_AUTH_TOKEN=<jwt>   # administrator role — full org-level identity CRUD
 USER_AUTH_TOKEN=<jwt>    # user role — project-scoped access
+IDENTITY_MTLS_NARROW_CLIENT_CERT=<base64 PEM>   # ci-narrow client certificate
+IDENTITY_MTLS_NARROW_CLIENT_KEY=<base64 PEM>    # ci-narrow client key
 ```
 
 Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
@@ -50,7 +52,7 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | File | Purpose |
 |------|---------|
 | `kind-config.yaml` | KinD cluster config (ingress-ready node label) |
-| `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account, sets `cerbos.enabled` and runs the server in shadow authorization mode (feeding `divergence-gate`), and injects placeholder open-vocabulary `example:*`/`sample:*` roles so the whole generate→compile→publish pipeline is exercised on them |
+| `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account and the `ci-narrow` system account (role `project-viewer`, no global grants, for the passport tests of the authorization check), sets `cerbos.enabled` and runs the server in shadow authorization mode (feeding `divergence-gate`), and injects placeholder open-vocabulary `example:*`/`sample:*` roles so the whole generate→compile→publish pipeline is exercised on them |
 | `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 

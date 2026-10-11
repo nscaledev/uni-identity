@@ -19,15 +19,18 @@ package rbac_test
 import (
 	"context"
 	goerrors "errors"
+	"strings"
 	"testing"
 
 	sdk "github.com/cerbos/cerbos-sdk-go/cerbos"
 	effectv1 "github.com/cerbos/cerbos/api/genpb/cerbos/effect/v1"
 	responsev1 "github.com/cerbos/cerbos/api/genpb/cerbos/response/v1"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/identity/pkg/authz/cerbos"
+	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
@@ -53,6 +56,7 @@ type fakePDP struct {
 	calls      int
 	principal  *sdk.Principal
 	principals []*sdk.Principal
+	batches    []*sdk.ResourceBatch
 }
 
 // fakePDPStep is one canned per-call reply.
@@ -61,10 +65,11 @@ type fakePDPStep struct {
 	err      error
 }
 
-func (f *fakePDP) CheckResources(_ context.Context, checkPrincipal *sdk.Principal, _ *sdk.ResourceBatch) (*sdk.CheckResourcesResponse, error) {
+func (f *fakePDP) CheckResources(_ context.Context, checkPrincipal *sdk.Principal, batch *sdk.ResourceBatch) (*sdk.CheckResourcesResponse, error) {
 	f.calls++
 	f.principal = checkPrincipal
 	f.principals = append(f.principals, checkPrincipal)
+	f.batches = append(f.batches, batch)
 
 	if len(f.steps) > 0 {
 		step := f.steps[0]
@@ -499,4 +504,225 @@ func TestCheckManyEmptyBatchIsAnError(t *testing.T) {
 	// surfaced as a deny-shaped resolution failure, never a silent success.
 	_, err := fx.rbac.CheckMany(aliceContext(t), nil)
 	require.ErrorIs(t, err, rbac.ErrResolutionFailed)
+
+	_, err = fx.rbac.CheckMany(passportContext(t), nil)
+	require.ErrorIs(t, err, rbac.ErrResolutionFailed, "a passport context must not turn an empty batch into a success")
+}
+
+const passportPresenterCN = "passport-presenter"
+
+func passportContext(t *testing.T) context.Context {
+	t.Helper()
+
+	info := rbac.PassportSubjectInfo(rbac.PassportSubject{
+		Subject:         parityAliceSubject,
+		AccountType:     openapi.User,
+		SrcIss:          idconstants.UNISentinel,
+		OrganizationIDs: []string{parityOrgA},
+	})
+
+	return rbac.NewPassportContext(authorization.NewContext(t.Context(), info), passportPresenterCN)
+}
+
+func TestPassportSubjectInfo(t *testing.T) {
+	t.Parallel()
+
+	info := rbac.PassportSubjectInfo(rbac.PassportSubject{
+		Subject:         "Alice@Example.com",
+		AccountType:     openapi.User,
+		SrcIss:          parityExternalIssuer,
+		Email:           "alice@example.com",
+		OrganizationIDs: []string{parityOrgA},
+		Groups:          []string{parityExternalGroup},
+	})
+
+	require.Equal(t, []string{parityExternalGroup}, info.Groups, "the groups claim must reach the resolver, or a group role binding cannot match")
+	require.Equal(t, parityExternalIssuer, info.SrcIss, "the source issuer must reach the resolver, or an issuer-bound global binding matches the wrong issuer")
+	require.Equal(t, "Alice@Example.com", info.Userinfo.Sub, "the subject must stay verbatim, as on the bearer path")
+	require.NotNil(t, info.Userinfo.Email)
+	require.Equal(t, "alice@example.com", *info.Userinfo.Email)
+	require.Equal(t, openapi.User, info.Userinfo.HttpsunikornCloudOrgauthz.Acctype)
+	require.Equal(t, []string{parityOrgA}, info.Userinfo.HttpsunikornCloudOrgauthz.OrgIds)
+	require.False(t, info.ServiceAccount)
+	require.False(t, info.SystemAccount, "a passport subject is never a system account")
+
+	service := rbac.PassportSubjectInfo(rbac.PassportSubject{Subject: paritySA1, AccountType: openapi.Service, SrcIss: idconstants.UNISentinel})
+	require.True(t, service.ServiceAccount, "a service passport must look like a service account token")
+	require.Nil(t, service.Userinfo.Email, "a passport with no email must give no email, not an empty one")
+}
+
+func TestPrincipalMatchesPassport(t *testing.T) {
+	t.Parallel()
+
+	user := rbac.PassportSubject{Subject: parityAliceSubject, AccountType: openapi.User, SrcIss: idconstants.UNISentinel}
+	external := rbac.PassportSubject{Subject: parityAliceSubject, AccountType: openapi.User, SrcIss: parityExternalIssuer}
+	service := rbac.PassportSubject{Subject: "Robot@Example.com", AccountType: openapi.Service, SrcIss: idconstants.UNISentinel}
+
+	cases := []struct {
+		name      string
+		principal *principal.Principal
+		subject   rbac.PassportSubject
+		want      bool
+	}{
+		{name: "UserExact", principal: &principal.Principal{Actor: parityAliceSubject, Type: openapi.User, Issuer: idconstants.UNISentinel}, subject: user, want: true},
+		{name: "UserCaseOnly", principal: &principal.Principal{Actor: strings.ToUpper(parityAliceSubject), Type: openapi.User, Issuer: idconstants.UNISentinel}, subject: user, want: true},
+		{name: "ActorMismatch", principal: &principal.Principal{Actor: parityBobSubject, Type: openapi.User, Issuer: idconstants.UNISentinel}, subject: user},
+		{name: "TypeMismatch", principal: &principal.Principal{Actor: parityAliceSubject, Type: openapi.Service, Issuer: idconstants.UNISentinel}, subject: user},
+		{name: "IssuerMismatch", principal: &principal.Principal{Actor: parityAliceSubject, Type: openapi.User, Issuer: parityExternalIssuer}, subject: user},
+		{name: "EmptyIssuerIsUNI", principal: &principal.Principal{Actor: parityAliceSubject, Type: openapi.User}, subject: user, want: true},
+		{name: "EmptyIssuerIsNotExternal", principal: &principal.Principal{Actor: parityAliceSubject, Type: openapi.User}, subject: external},
+		{name: "ServiceExact", principal: &principal.Principal{Actor: "Robot@Example.com", Type: openapi.Service, Issuer: idconstants.UNISentinel}, subject: service, want: true},
+		{name: "ServiceCaseDiffers", principal: &principal.Principal{Actor: "robot@example.com", Type: openapi.Service, Issuer: idconstants.UNISentinel}, subject: service},
+		{name: "NilPrincipal", subject: user},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tc.want, rbac.PrincipalMatchesPassport(tc.principal, tc.subject))
+		})
+	}
+}
+
+func TestCheckManyPassportScopeDoesNotLimitBatch(t *testing.T) {
+	t.Parallel()
+
+	allow := effectv1.Effect_EFFECT_ALLOW
+	deny := effectv1.Effect_EFFECT_DENY
+
+	// A passport carries an org_id and a project_id.  Neither limits the
+	// batch, as the legacy ACL walk does not: the verdict of every check is
+	// the verdict of the PDP for the subject.
+	cases := []struct {
+		name     string
+		resource rbac.Resource
+	}{
+		{name: "OtherOrganization", resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgB}},
+		{name: "OtherProject", resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA, ProjectID: parityProjectY}},
+		{name: "Global", resource: rbac.Resource{Kind: "identity:groups"}},
+	}
+
+	for _, tc := range cases {
+		for _, effect := range []effectv1.Effect{allow, deny} {
+			t.Run(tc.name+"/"+effect.String(), func(t *testing.T) {
+				t.Parallel()
+
+				fx := newParityFixture(t)
+				pdp := &fakePDP{response: pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effect}))}
+				fx.rbac.WithCerbos(pdp)
+
+				allowed, err := fx.rbac.CheckMany(passportContext(t), []rbac.CheckRequest{{Resource: tc.resource, Action: openapi.Read}})
+				require.NoError(t, err)
+				require.Equal(t, []bool{effect == allow}, allowed, "the verdict must be the verdict of the subject, whatever the resource scope")
+				require.Equal(t, 1, pdp.calls, "the check must reach the PDP")
+				require.Len(t, pdp.batches[0].Batch, 1)
+			})
+		}
+	}
+}
+
+func TestCheckManyPassportBatchKeepsRequestOrder(t *testing.T) {
+	t.Parallel()
+
+	fx := newParityFixture(t)
+	pdp := &fakePDP{response: pdpResponse(
+		pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}),
+		pdpResult("identity:organizations", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_DENY}),
+		pdpResult("compute:clusters", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}),
+		pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_DENY}),
+		pdpResult("compute:clusters", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}),
+	)}
+	fx.rbac.WithCerbos(pdp)
+
+	allowed, err := fx.rbac.CheckMany(passportContext(t), []rbac.CheckRequest{
+		{Resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgB}, Action: openapi.Read},
+		{Resource: rbac.Resource{Kind: "identity:organizations"}, Action: openapi.Read},
+		{Resource: rbac.Resource{Kind: "compute:clusters", OrganizationID: parityOrgA, ProjectID: parityProjectY}, Action: openapi.Read},
+		{Resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}, Action: openapi.Read},
+		{Resource: rbac.Resource{Kind: "compute:clusters", OrganizationID: parityOrgA, ProjectID: parityProjectX}, Action: openapi.Read},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, []bool{true, false, true, false, true}, allowed, "verdicts must come back in request order")
+
+	require.Equal(t, 1, pdp.calls, "every check must go to the PDP in one call")
+	require.Len(t, pdp.batches[0].Batch, 5, "every check must reach the PDP")
+}
+
+func TestDecisionLogPassport(t *testing.T) {
+	t.Parallel()
+
+	fx := newParityFixture(t)
+	fx.rbac.WithCerbos(&fakePDP{response: pdpResponse(
+		pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}),
+		pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}),
+	)})
+	fx.rbac.WithPolicyStoreHash(&stubHasher{hash: "store-hash", ok: true})
+
+	capture := &logCapture{}
+
+	_, err := fx.rbac.CheckMany(capture.into(passportContext(t)), []rbac.CheckRequest{
+		{Resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgB}, Action: openapi.Read},
+		{Resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}, Action: openapi.Read},
+	})
+	require.NoError(t, err)
+
+	records := capture.messages(decisionMessage)
+	require.Len(t, records, 2)
+
+	for i, record := range records {
+		attrs := logAttrs(t, record)
+		require.Len(t, attrs, decisionFieldCount+1, "a passport decision carries exactly one extra field")
+		require.Equal(t, passportPresenterCN, attrs["passport_presenter"], "every record of a passport decision must name the presenter")
+		require.Equal(t, parityAliceSubject, attrs["subject"], "the subject is the passport subject")
+		require.Equal(t, "allow", attrs["decision"], "entry %d must carry the verdict of the PDP, whatever the organization", i)
+		require.Equal(t, "policy", attrs["reason"], "a check in another organization is a policy decision, not a scope refusal")
+		require.Equal(t, "store-hash", attrs["policy_hash"])
+	}
+
+	require.Equal(t, parityOrgB, logAttrs(t, records[0])["organization_id"])
+
+	fx.rbac.WithCerbos(&fakePDP{response: pdpResponse(pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}))})
+
+	direct := &logCapture{}
+	require.NoError(t, fx.rbac.Check(direct.into(aliceContext(t)), rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}, openapi.Read))
+
+	directRecords := direct.messages(decisionMessage)
+	require.Len(t, directRecords, 1)
+
+	directAttrs := logAttrs(t, directRecords[0])
+	require.Len(t, directAttrs, decisionFieldCount, "a decision without a passport must keep the field set of today")
+	require.NotContains(t, directAttrs, "passport_presenter")
+}
+
+//nolint:paralleltest // installManualReader swaps the process-global OTel meter provider.
+func TestDecisionMetricsPassport(t *testing.T) {
+	reader := installManualReader(t)
+
+	fx := newParityFixture(t)
+	fx.rbac.WithCerbos(&fakePDP{response: pdpResponse(
+		pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_DENY}),
+		pdpResult("identity:groups", "*", map[string]effectv1.Effect{"read": effectv1.Effect_EFFECT_ALLOW}),
+	)})
+
+	_, err := fx.rbac.CheckMany(passportContext(t), []rbac.CheckRequest{
+		{Resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgB}, Action: openapi.Read},
+		{Resource: rbac.Resource{Kind: "identity:groups", OrganizationID: parityOrgA}, Action: openapi.Read},
+	})
+	require.NoError(t, err)
+
+	var rm metricdata.ResourceMetrics
+
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+
+	counter, found := findMetric(&rm, "unikorn_identity_authz_decisions_total")
+	require.True(t, found)
+
+	sum, ok := counter.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+
+	require.Equal(t, int64(1), counterValue(t, sum, "deny", "policy"), "a check in another organization must count as a policy decision")
+	require.Equal(t, int64(1), counterValue(t, sum, "allow", "policy"))
+	require.Len(t, sum.DataPoints, 2)
 }

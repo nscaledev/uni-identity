@@ -1008,6 +1008,42 @@ func TestCerbosDecisionParityGlobalRoleBindings(t *testing.T) {
 		}
 	})
 
+	t.Run("PassportSubjectGroupBinding", func(t *testing.T) {
+		t.Parallel()
+
+		r := bindingRBAC(func(o *rbac.Options) {
+			o.GlobalGroupRoleBindings = rbac.GlobalGroupRoleBindingsValue{{
+				Issuer:  parityExternalIssuer,
+				Group:   parityExternalGroup,
+				RoleIDs: []string{parityRoleMixed},
+			}}
+		})
+
+		bearer := parityCase{
+			name:        "BearerInfo",
+			info:        parityExternalUserInfo(parityAliceSubject, parityOrgA, parityOrgB),
+			endpoint:    "identity:oauth2providers",
+			operation:   openapi.Read,
+			expectAllow: true,
+		}
+
+		passport := bearer
+		passport.name = "PassportSubjectInfo"
+		passport.info = rbac.PassportSubjectInfo(rbac.PassportSubject{
+			Subject:         parityAliceSubject,
+			AccountType:     openapi.User,
+			SrcIss:          parityExternalIssuer,
+			OrganizationIDs: []string{parityOrgA, parityOrgB},
+			Groups:          []string{parityExternalGroup},
+		})
+
+		legacy := legacyVerdict(t, r, bearer)
+		require.True(t, legacy, "the LEGACY verdict diverges from the intended fixture semantics — fix the fixture or the case, not the comparison")
+
+		cerbosAllowed := cerbosVerdict(t, r, passport)
+		require.Equal(t, legacy, cerbosAllowed, "DECISION PARITY VIOLATION: legacy=%v cerbos=%v — the passport subject must resolve the grants of its bearer token", legacy, cerbosAllowed)
+	})
+
 	// Subject and group bindings that match together grant the UNION, and the
 	// PDP must honour both global buckets: accumulateMatchedBindings loops both
 	// lists, so a policy that served only one of them would diverge.

@@ -127,6 +127,30 @@ func RotateCertificate(t *testing.T, client client.Client) []byte {
 	return key
 }
 
+// SigningKey returns a signing key resource that holds one new key.  A
+// JWTIssuer over a client that holds it signs and verifies with no Run.
+func SigningKey(tb testing.TB, namespace string) *unikornv1.SigningKey {
+	tb.Helper()
+
+	pkey, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	require.NoError(tb, err)
+
+	keyDER, err := x509.MarshalPKCS8PrivateKey(pkey)
+	require.NoError(tb, err)
+
+	return &unikornv1.SigningKey{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      jose.SigningKeyName,
+		},
+		Spec: unikornv1.SigningKeySpec{
+			PrivateKeys: []unikornv1.PrivateKey{
+				{PEM: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})},
+			},
+		},
+	}
+}
+
 func CheckSigningKeys(t *testing.T, cli client.Client, keys ...[]byte) {
 	t.Helper()
 

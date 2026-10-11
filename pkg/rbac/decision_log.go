@@ -218,6 +218,12 @@ func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allow
 		}
 	}
 
+	var passportFields []any
+
+	if presenterCN, ok := passportPresenterFromContext(ctx); ok {
+		passportFields = []any{"passport_presenter", presenterCN}
+	}
+
 	// The policy-store hash is the correlate, claimed only for an obtained
 	// verdict: a failure record pins no store revision — the
 	// decision never reached a policy verdict.  One evaluation runs against
@@ -236,6 +242,7 @@ func (r *RBAC) recordDecisions(ctx context.Context, checks []CheckRequest, allow
 		}
 
 		fields = append(fields, impersonatedFields...)
+		fields = append(fields, passportFields...)
 
 		fields = append(fields,
 			"endpoint", check.Resource.Kind,

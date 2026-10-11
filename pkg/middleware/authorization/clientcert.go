@@ -50,15 +50,15 @@ func ClientCertFromContext(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("%w: client certificate is not defined", errors.ErrInvalidContext)
 }
 
-const (
-	clientCertificateHeader = "Unikorn-Client-Certificate"
-)
+// ClientCertificateHeader relays the client certificate that started the call
+// chain to the next server.
+const ClientCertificateHeader = "Unikorn-Client-Certificate"
 
 // ExtractClientCert is called from the API to either propagate an existing
 // certificate to the context, or to extract one from headers injected by TLS termination.
 func ExtractClientCert(ctx context.Context, header http.Header) (context.Context, error) {
-	if clientCert := header.Get(clientCertificateHeader); clientCert != "" {
-		return NewContextWithClientCert(ctx, clientCert), nil
+	if HasRelayedClientCert(header) {
+		return NewContextWithClientCert(ctx, header.Get(ClientCertificateHeader)), nil
 	}
 
 	clientCert, err := util.GetClientCertificateHeader(header)
@@ -75,11 +75,17 @@ func ExtractClientCert(ctx context.Context, header http.Header) (context.Context
 	return NewContextWithClientCert(ctx, clientCert), nil
 }
 
+// HasRelayedClientCert reports whether the request relays a client certificate
+// in place of the certificate of its TLS peer.
+func HasRelayedClientCert(header http.Header) bool {
+	return header.Get(ClientCertificateHeader) != ""
+}
+
 // InjectClientCert is called by clients to propagate the client certificate
 // that started the call chain, and thus owns the access token, to the next server.
 func InjectClientCert(ctx context.Context, header http.Header) {
 	clientCert, err := ClientCertFromContext(ctx)
 	if err == nil {
-		header.Set(clientCertificateHeader, clientCert)
+		header.Set(ClientCertificateHeader, clientCert)
 	}
 }

@@ -198,6 +198,59 @@ writes anything, so a refusal applies none of it. What can still leave a partial
 infrastructure failure partway through, which is the limitation above and not an authorization
 one. See [`users`](./users/README.md) and [`serviceaccounts`](./serviceaccounts/README.md).
 
+## Authorization Check
+
+`POST /api/v1/authorization/check` returns one decision for each check in a batch. Only system
+accounts can call it. The decision logic is in
+[`pkg/rbac`](../rbac/README.md#the-remote-decision-endpoint). A request has one of three forms:
+
+- Direct. The request has no `X-Impersonate: true` and no `passport`. Identity decides for the
+  calling system account.
+- Impersonated. The request has `X-Impersonate: true` and an `X-Principal` actor. Identity applies
+  the impersonation dual check, so the actor and the calling system account must both allow.
+- Passport. The body has `passport`, the passport that the token exchange gave the calling service
+  for its bearer caller. Identity decides for the passport subject alone, and the response has
+  `passportSubject`.
+
+A downstream service uses the passport form for its own bearer callers. The role of the service
+then does not cap the answer. A relayed hop keeps the impersonated form.
+
+The schema limits `passport` to 1 to 8192 characters. A value outside that limit is a 400. The
+handler then refuses a passport request in this order:
+
+| Condition | Status |
+| --- | --- |
+| The caller is not a system account | 401 |
+| The caller CN has no system account role (`rbac.IsSystemAccount`); in the server, the middleware refuses it first with a 500 | 401 |
+| The request also has an `X-Impersonate` header | 400 |
+| The request has a relayed client certificate (`Unikorn-Client-Certificate`) | 400 |
+| `oauth2.VerifyPassport` refuses the passport | 401 |
+| `oauth2.VerifyPassport` cannot read the signing keys | 500 |
+| `oauth2.ResolvePassportSubject` refuses the request, because the `X-Principal` actor, type, or issuer does not match the passport subject, or the subject is no longer active or no longer exists | 401 |
+| `oauth2.ResolvePassportSubject` cannot read the trust list or the records of the subject | 500 |
+
+Every 401 on this path has the same description, so the response does not tell which check failed.
+
+The check of the caller CN keeps the passport form the same as the other two forms. In the server,
+the ACL step of the OpenAPI middleware already refuses a CN with no system account role, with a 500,
+because the resolver cannot find its role, so such a request does not reach the handler. The handler
+checks the CN again, first, before it verifies the passport or reads any store, so the passport form
+stays safe if that middleware step changes. The log has the cause.
+
+The refusal of a relayed certificate keeps the passport audience bound to the TLS peer. When the
+request has a relayed certificate, the middleware takes the caller CN from it, not from the TLS
+peer. The audience check must compare against the peer CN. A system account can use either of its
+forms on this path. In the mTLS peer form, the caller CN is the CN of the peer certificate. A
+certificate-bound service token has the certificate CN as its subject, and the middleware accepts
+the token only with the certificate that it is bound to. In both forms, the audience check
+compares against the CN of the peer certificate.
+
+The `org_id` and `project_id` of the passport do not limit the checks. Identity decides each check
+for the passport subject, in any organization or project, as the legacy ACL walk does. A `TODO` in
+`rbac.NewPassportContext` marks this. The caller must compare `passportSubject` with the subject of
+the passport that it sent. A 200 response without that value means that identity did not decide for
+the passport subject, and the caller must treat it as a deny.
+
 ## Package Map
 
 - [`organizations`](./organizations/README.md): tenancy-root visibility and current `v1`
@@ -216,8 +269,7 @@ one. See [`users`](./users/README.md) and [`serviceaccounts`](./serviceaccounts/
 - `GET /api/version`: authenticated deployment metadata for clients and CI gates that need to
   identify the exact identity server build
 - `POST /api/v1/authorization/check`: batch authorization decisions for system accounts only, the
-  server side of downstream remote authorization (see
-  [`pkg/rbac`](../rbac/README.md#the-remote-decision-endpoint))
+  server side of downstream remote authorization (see [Authorization Check](#authorization-check))
 
 ## Related Documentation
 

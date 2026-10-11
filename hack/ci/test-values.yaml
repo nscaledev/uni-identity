@@ -2,6 +2,7 @@
 # Passed to hack/ci/install via --values.
 systemAccounts:
   ci-fixtures: platform-administrator
+  ci-narrow: project-viewer
 
 # Shadow mode below needs the PDP sidecar and the policy controller.
 cerbos:
