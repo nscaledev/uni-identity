@@ -84,27 +84,30 @@ const (
 
 // RoleBinding is one (role, scope) grant held by a principal.  A zero
 // OrganizationID means a global grant; a zero ProjectID means an org-level
-// grant.  RoleID is the Role CR metadata.name, treated as opaque.
+// grant.  GlobalRead marks a global grant clamped to read: it activates the
+// role's read-only global bucket instead of its full global bucket, which is
+// what a wildcard subject binding gets (see pkg/rbac).  A clamped grant is
+// global by definition, so GlobalRead excludes both scope fields.  RoleID is
+// the Role CR metadata.name, treated as opaque.
 type RoleBinding struct {
 	RoleID         string
 	OrganizationID string
 	ProjectID      string
+	GlobalRead     bool
 }
 
 // BindingString renders the byte-exact wire form matched by the generated
 // CEL conditions (generate.bindingExpr): <roleID>#global,
-// <roleID>#org#<organizationID>, or
+// <roleID>#global-read, <roleID>#org#<organizationID>, or
 // <roleID>#project#<organizationID>#<projectID>.
 func (b RoleBinding) BindingString() (string, error) {
-	if b.RoleID == "" {
-		return "", fmt.Errorf("%w: role ID is empty", ErrInvalidBinding)
-	}
-
-	if b.ProjectID != "" && b.OrganizationID == "" {
-		return "", fmt.Errorf("%w: project %q binding has no organization", ErrInvalidBinding, b.ProjectID)
+	if err := b.validate(); err != nil {
+		return "", err
 	}
 
 	switch {
+	case b.GlobalRead:
+		return b.RoleID + "#global-read", nil
 	case b.OrganizationID == "":
 		return b.RoleID + "#global", nil
 	case b.ProjectID == "":
@@ -112,6 +115,27 @@ func (b RoleBinding) BindingString() (string, error) {
 	default:
 		return b.RoleID + "#project#" + b.OrganizationID + "#" + b.ProjectID, nil
 	}
+}
+
+// validate rejects the binding shapes the wire format cannot represent: an
+// empty role ID renders an unmatchable string, a project scope needs the
+// organization it embeds, and a read-clamped grant is global by definition.
+// Emitting a scoped clamped form would put the read-only bucket behind a
+// binding string no generated condition matches, which denies silently.
+func (b RoleBinding) validate() error {
+	if b.RoleID == "" {
+		return fmt.Errorf("%w: role ID is empty", ErrInvalidBinding)
+	}
+
+	if b.ProjectID != "" && b.OrganizationID == "" {
+		return fmt.Errorf("%w: project %q binding has no organization", ErrInvalidBinding, b.ProjectID)
+	}
+
+	if b.GlobalRead && (b.OrganizationID != "" || b.ProjectID != "") {
+		return fmt.Errorf("%w: read-clamped binding for role %q is scoped to an organization or project", ErrInvalidBinding, b.RoleID)
+	}
+
+	return nil
 }
 
 // BuildPrincipal renders a resolved principal for CheckResources: the subject

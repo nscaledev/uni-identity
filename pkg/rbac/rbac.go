@@ -68,13 +68,6 @@ var (
 	ErrUntrustedBindingIssuer    = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
 	ErrGroupBindingNoGroupsClaim = goerrors.New("global group role binding issuer has no groupsClaim configured; the binding can never match")
 	ErrMalformedGroupsClaim      = goerrors.New("groupsClaim is not a namespaced URI (no \"://\"); validator construction will reject it and every token from this issuer will fail")
-
-	// ErrWildcardBindingUnsupported fails the Cerbos decision path closed for a
-	// matched wildcard subject binding.  The legacy path clamps such a binding
-	// to read (accumulateGlobalReadPermissions), but a cerbos.RoleBinding
-	// activates a role's whole global bucket, so the clamp cannot be expressed
-	// and emitting one would over-grant.
-	ErrWildcardBindingUnsupported = goerrors.New("wildcard subject binding matched: the read clamp is not expressible as a Cerbos role binding")
 )
 
 // PlatformAdministratorSubject binds an admin subject to the issuer that must
