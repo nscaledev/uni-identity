@@ -21,6 +21,7 @@ rules:
   - events
   verbs:
   - create
+  - patch
   - update
 # The policy store ConfigMap I publish is the effective authorization policy,
 # so least privilege applies: writes are scoped to that one object.  Create

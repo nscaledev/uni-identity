@@ -228,6 +228,19 @@ wider store serving in those cases: it publishes a known-valid empty store
 the original rejection for retry with backoff.  There is no code path that
 publishes an unvetted candidate, and the gate never passes `--skip-tests`.
 
+**Compile-gate resources**: `cerbos compile` runs as a child process inside
+the controller container, so the container limits (`policyController.resources`
+in the chart) must cover the compile, not only the controller.  Compile memory
+and CPU time grow with the number of generated policies, which follows the
+number of Roles.  A container that exceeds its memory limit is killed whole,
+controller and compile child together, with no event and no log line, and the
+pod then crash-loops.  A compile that passes `compileTimeout` is an
+inconclusive gate result, so the controller keeps the last-good store.  The
+chart default is a 512Mi memory limit and a 500m CPU limit.  Raise them if Role
+growth brings the container near a limit.  The chart Role grants `patch` on
+`events` so the event recorder can count a repeated event instead of dropping
+it.
+
 ### The publication marker
 
 Every publish carries one extra ConfigMap key, `.store-version`, holding
