@@ -31,10 +31,12 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	controllermetrics "github.com/unikorn-cloud/identity/pkg/controllers/metrics"
 	"github.com/unikorn-cloud/identity/pkg/provisioners/project"
+	"github.com/unikorn-cloud/identity/pkg/telemetry"
 
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -56,7 +58,11 @@ func (*Factory) Options() coremanager.ControllerOptions {
 }
 
 // Initialize registers metrics that follow the manager lifecycle.
-func (*Factory) Initialize(_ context.Context, manager manager.Manager, _ *options.Options) error {
+func (*Factory) Initialize(ctx context.Context, manager manager.Manager, _ *options.Options) error {
+	if err := telemetry.Configure(ctx, ctrlmetrics.Registry); err != nil {
+		return err
+	}
+
 	reporter, err := controllermetrics.New(otel.Meter(constants.Application), constants.ServiceDescriptor())
 	if err != nil {
 		return err

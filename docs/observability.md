@@ -9,11 +9,11 @@ dashboards and datasource wiring.
 
 Identity has a limited **producer** surface, so the starting point matters:
 
-- **There is no Prometheus scrape endpoint anywhere in identity.** All metrics
-  leave via **OTLP push**, and only when `--otlp-endpoint` is set (it is unset by
-  default — the one telemetry knob in the chart, `otlpEndpoint`, is commented
-  out). A shared telemetry setup is used by all four binaries. With no endpoint
-  configured the MeterProvider has no reader and **nothing is exported at all**.
+- **Every Identity workload exposes Prometheus metrics on `:8080/metrics`.**
+  The controller-runtime processes use their existing metrics listener; the API
+  server owns an equivalent dedicated listener. The chart declares the port as
+  `prometheus`, allowing platform PodMonitors to discover it without exposing it
+  through the API Service or Ingress.
 - **The first-party metric surface includes two counters** created via
   `otel.Meter(constants.Application)`:
   `unikorn_identity_bearer_tokens_unroutable{surface,reason}`
@@ -23,11 +23,12 @@ Identity has a limited **producer** surface, so the starting point matters:
 - **HTTP RED middleware records the API surface.** The server middleware chain
   emits request count, duration, and in-flight metrics after OpenAPI route
   resolution. Labels use the templated route, method, and status class, never
-  raw resource IDs. These metrics follow the existing OTLP push path.
+  raw resource IDs. These metrics are collected from the dedicated scrape
+  endpoint.
 - **The three controllers** (organization, project, oauth2client) register the
   controller-runtime built-ins (`controller_runtime_reconcile_*`, `workqueue_*`,
   `rest_client_*`, Go/process collectors) on the shared registry, bridged to OTLP
-  via `prombridge`. **The API server runs no manager**, so it has none of these.
+  directly. **The API server runs no manager**, so it has none of these.
 - **Each controller publishes build and readiness gauges.** Controller readiness
   follows cache sync and leader acquisition. The API server also publishes build
   and listener-readiness gauges.
@@ -36,14 +37,12 @@ Identity has a limited **producer** surface, so the starting point matters:
   those conditions live only in CR status. Nothing in identity turns them into
   metrics.
 
-The decision taken here (confirmed with the service owner) is **not** to add a
-scrape endpoint to identity's binaries, and **not** to build a bespoke identity
-state exporter. Instead:
+The decision taken here is to use the platform's normal Prometheus scrape path,
+and not to build a bespoke identity state exporter. Instead:
 
-- **Transport:** keep the OTLP-push posture and design around it. The
-  observability chart owns **no ServiceMonitors**; identity's own series reach the
-  backend through the existing OTLP collector pipeline. This is the identity-shaped
-  equivalent of the reference's "document, don't harden" transport decision.
+- **Transport:** expose a dedicated Pod-level metrics port. The observability
+  chart owns **no Identity ServiceMonitor**; platform PodMonitors select the
+  named port for local Prometheus and the agent Collector.
 - **Object-state signals:** consume condition-based lifecycle metrics from a
   separately operated exporter once it covers Identity kinds. This keeps Identity
   from inventing a second state-export mechanism.
@@ -53,8 +52,7 @@ state exporter. Instead:
   the datasource. Its central profile owns the complete dashboard suite.
   Its workload profile can render only dashboards, and only when that Grafana
   instance can query the central Identity metric store. Identity's existing
-  single chart (`charts/identity`) is unchanged except for documenting the
-  posture.
+  single chart (`charts/identity`) owns the named scrape port.
 
 The gap this design closes is the dashboard side: there are no Identity dashboards,
 datasource wiring, or render validation. What it cannot close on its own is the
@@ -63,8 +61,9 @@ over (see "Producer gaps").
 
 ## Producer inventory (what identity emits, and how it leaves)
 
-All export is OTLP/HTTP push, gated on `--otlp-endpoint`, plain-HTTP
-(`otlpmetrichttp.WithInsecure()`), no auth, no `/metrics` endpoint to protect.
+All metrics are exposed at `:8080/metrics` and collected by the platform
+Prometheus scrape configuration. Traces remain optional OTLP/HTTP output,
+gated on `--otlp-endpoint`.
 
 **First-party application counters (API server only)** — `otel.Meter(constants.Application)`
 
@@ -75,8 +74,8 @@ All export is OTLP/HTTP push, gated on `--otlp-endpoint`, plain-HTTP
 - `unikorn_identity_auth0_jwks_refreshes_throttled` — `Int64Counter`, unit
   `{fetch}`, no labels. `pkg/oauth2/auth0/throttled_transport.go:72,96`.
 
-**controller-runtime built-ins (the three controllers only, via OTLP bridge)** —
-the default controller registry remains active and is bridged to OTLP.
+**controller-runtime built-ins (the three controllers only)** — the default
+controller registry is served directly at the metrics endpoint.
 
 - `controller_runtime_reconcile_total{controller,result}`,
   `controller_runtime_reconcile_errors_total{controller}`,
@@ -96,25 +95,18 @@ It emits the two counters, HTTP RED metrics, and
 process lifetime; readiness is `1` only while the server owns its bound HTTP
 listener.
 
-**HTTP RED (API server only, via OTLP)** —
+**HTTP RED (API server only)** —
 `http_server_request_duration_seconds{route,method,status_class}` (a histogram;
 its `_count` serves as the request counter) and
 `http_server_active_requests{route,method}`. The metrics cover
 OpenAPI-resolved routes; route-resolution failures have no stable route label and
 are not included.
 
-**Metric naming.** The RED and readiness families use platform-generic names —
-the RED pair is the OTel HTTP server semantic conventions in their
-Prometheus-stored form — so one dashboard or alert can aggregate them across
-services. A stored series is attributed to identity by the OTLP resource's
-`service.name` (set to `unikorn-identity` via `OTEL_SERVICE_NAME` in every
-deployment), not by the metric name. Pipelines store that as the `job` label,
-per the Prometheus OTLP convention (`service.namespace/service.name`, bare
-`service.name` when the namespace is unset), and `service.instance.id` — set
-from the pod name — as `instance`, which keeps the four workloads' otherwise
-unlabelled runtime series apart since they share one `service.name`. Only the
-`build_info` families keep the per-service prefix, following the Prometheus
-convention for build identity.
+**Metric naming.** The RED and readiness families use platform-generic names,
+so a dashboard or alert must identify Identity through scrape labels. The
+Prometheus exporter publishes OpenTelemetry resource identity as `target_info`;
+the platform scrape configuration must provide the stable `job`, `instance`, and
+`cluster` labels consumed by dashboards.
 
 **State / kube-state exporter (in identity)** — **absent.**
 
@@ -162,7 +154,7 @@ does not have.
 | Collection and resource safety | **ADAPT** | Self-observability of the collection path. Identity has two pipelines: an external condition-state exporter and the **OTLP export pipeline**, which emits nothing unless `--otlp-endpoint` is set. Include controller-runtime reconcile health and pod memory/OOM/restarts for the four workloads. |
 | Security, PKI & audit | **REBUT → ADAPT** | Identity *is* the trust root/PKI. Metrics are plain HTTP, so there is no serving-cert expiry to watch. Token signing (ES512, two-key rotation) runs in the jose issuer's own leader-elected loop (`pkg/jose/jose.go`, a `coordination/v1` Lease) — **rotation failure is observable only in logs today**, a stated gap. Audit is the audit middleware (`pkg/middleware/audit/logging.go:145`) emitting structured log lines, not a metric or separate sink. |
 | Snapshot & retention | **REBUT** | Identity takes no snapshots. |
-| Capacity & platform hygiene | **ADAPT (light)** | Pod memory/OOM/FD/restarts for the four workloads from the controller-runtime process collectors (via OTLP). **Object-population counts are *not* available** from `uni_resource_error_reason` — it emits series only for *unhealthy* resources, so it cannot count healthy orgs/projects. Population counting would need a new `_info`-style family (out of scope). |
+| Capacity & platform hygiene | **ADAPT (light)** | Pod memory/OOM/FD/restarts for the four workloads from the controller-runtime process collectors. **Object-population counts are *not* available** from `uni_resource_error_reason` — it emits series only for *unhealthy* resources, so it cannot count healthy orgs/projects. Population counting would need a new `_info`-style family (out of scope). |
 | Scrape plumbing | **REBUT → ADAPT** | Identity exposes no scrape targets, so there is **no identity `up` series and no ServiceMonitor target-membership check**. Identity binary liveness is inferred from its OTLP series arriving (and from Kubernetes pod state), not from `up`. |
 
 Cross-cutting constraints: bounded, operationally-useful labels only (already true
@@ -227,25 +219,18 @@ Identity's suite depends on two changes *outside* this repository:
 1. **A lifecycle exporter gains Identity coverage.** It must publish the
    `uni_resource_*` series to the metric store. Until this lands, lifecycle
    dashboard panels have no source series.
-2. **Identity binaries get `--otlp-endpoint` set** in the deployment, pointing at
-   the collector that relays to the backend the dashboards query. Until then the
-   first-party counters, server gauges, and controller-runtime metrics are not
-   exported.
-3. **The collector pipeline preserves the Prometheus-convention OTLP mapping**
-   — `job` from the resource's `service.name`, `instance` from
-   `service.instance.id` — on every stored series (alongside the `cluster`
-   label it already attaches). The central observability stack does this
-   natively (Mimir's OTLP translation; VictoriaMetrics' ingest relabeling); a
-   pipeline that scrapes a collector's Prometheus exporter instead needs
-   `honor_labels`, or `job` arrives renamed to `exported_job`. The identity
-   chart sets `OTEL_SERVICE_NAME=unikorn-identity` and a pod-name
-   `service.instance.id` on every workload; without the `job` mapping, queries
-   on the platform-generic metric names cannot select identity's series.
+2. **The platform PodMonitor selects the named `prometheus` port** and both
+   local Prometheus and TargetAllocator report healthy targets.
+3. **The scrape configuration supplies the dashboard label contract** — stable
+   `job`, `instance`, and `cluster` labels — on stored series. The Identity
+   chart continues to set `OTEL_SERVICE_NAME` and `service.instance.id` for
+   optional tracing and `target_info`, but those resource attributes do not
+   replace scrape labels.
 4. **Then** deploy `charts/identity-observability` (this work).
 
-The lifecycle-exporter series and the OTLP relay must land in the metric store that
-Grafana queries. This must be verified in the deployment environment rather than
-assumed.
+The lifecycle-exporter series and the Prometheus scrape path must land in the
+metric store that Grafana queries. This must be verified in the deployment
+environment rather than assumed.
 
 ## Ownership, deployment profiles & scrape path
 
@@ -254,9 +239,9 @@ One owner per asset class, rendered through two explicitly different profiles:
 
 | Asset | Owner | Central observability profile | Workload profile |
 | --- | --- | --- |
-| Grafana dashboards | `identity-observability` | enabled; Grafana queries the store that receives Identity OTLP and lifecycle-exporter series | opt-in sidecar ConfigMaps only when its datasource can query that same store |
+| Grafana dashboards | `identity-observability` | enabled; Grafana queries the store that receives Identity and lifecycle-exporter series | opt-in sidecar ConfigMaps only when its datasource can query that same store |
 | Grafana Loki datasource | `identity-observability` | enabled for the Grafana instance | never rendered; a workload Grafana must use its separately owned datasource |
-| ServiceMonitors | **none** | Identity pushes via OTLP; any lifecycle scrape target is owned externally | none |
+| ServiceMonitors | **none** | Identity uses the platform-owned PodMonitor | none |
 | metrics-reader RBAC | **n/a** | this chart scrapes nothing | none |
 
 `values-central.yaml` enables the datasource and dashboard provisioning.
@@ -267,22 +252,20 @@ misleading rather than useful and must remain disabled.
 ```text
 Identity workloads                         Observability backend
 ------------------                         ---------------------
-server / 3 controllers ── OTLP push ──▶ collector ──▶ metric store
-  (application and runtime metrics)                         ▲
-                                                            │
-external lifecycle exporter ────────────────────────────────┘
+server / 3 controllers ── PodMonitor ──▶ agent Collector ──▶ metric store
+  (application and runtime metrics)          ▲
+                                               │
+                                     local Prometheus
+
+external lifecycle exporter ────────────────────────────────▶ metric store
   (condition-state metrics)                         Grafana dashboards + datasource
 ```
 
 ### Transport posture (documented, not hardened)
 
-Identity serves no `/metrics`; the only listener is the API itself (`:6080`,
-`pkg/server/options.go`). Metrics leave over OTLP/HTTP push, plain-text
-(`WithInsecure`), reachable only as far as the collector endpoint it is pointed at.
-The chart does not configure the externally operated lifecycle exporter. Transport
-settings for that component are therefore outside this chart's scope. This posture
-is stated in the chart README so an operator does not mistake the OTLP default-off
-for a broken scrape.
+Identity exposes `:8080/metrics` only on pod IPs. The API Service and Ingress do
+not expose that port. The chart does not configure the platform-owned PodMonitor
+or the externally operated lifecycle exporter.
 
 ## Dashboards (focused set, 2 + optional leadership)
 
@@ -295,11 +278,9 @@ metric store. They are otherwise absent from workload clusters.
 Every dashboard has a top-level `cluster` selector and filters every panel on it.
 Every panel query also filters on `job="unikorn-identity"`: the RED and
 readiness families use platform-generic metric names, so the service must be
-selected by label, not by name, and `job` is where the Prometheus OTLP
-convention stores the resource's `service.name`. The OTLP collector or scrape
-configuration must attach `cluster` before storage and must preserve that
-`job` mapping on every stored series (see prerequisite 3); dashboard queries
-must not rely on Prometheus external labels, which are not available to
+selected by label, not by name. The PodMonitor and scrape configuration must
+attach the required `job`, `instance`, and `cluster` labels before storage; dashboard
+queries must not rely on Prometheus external labels, which are not available to
 Grafana's local query path.
 
 1. **Identity Operations** — resource lifecycle and controller health: count of
@@ -333,10 +314,9 @@ Every panel query is checked against its producer contract (see Testing).
   **only when both `--otlp-endpoint` is set and the sampling ratio is greater than
   zero**, and it does not trace reconcile flows. This is **not** distributed
   tracing.
-- **Metrics over OTLP:** the same setup installs a MeterProvider with a
-  Prometheus→OTLP bridge over `ctrlmetrics.Registry`, plus the two `otel.Meter`
-  counters. This is the **sole** metrics export path — gated on the endpoint only
-  (no ratio gate), and emitting nothing when the endpoint is unset.
+- **Metrics:** an OpenTelemetry Prometheus exporter registers the application
+  instruments beside controller-runtime's native registry. Both are served from
+  the dedicated pod-local `/metrics` listener.
 - **Logs:** `logr` over zap via controller-runtime; **console only**, no OTLP logs
   signal and no Loki client — identity ships no log-forwarding path. Trace-ID
   correlation is stamped into the request logger by the otel middleware. The audit

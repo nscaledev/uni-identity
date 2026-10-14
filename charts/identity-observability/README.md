@@ -1,7 +1,7 @@
 # Identity observability
 
 This chart owns Identity dashboards and the central Loki datasource.
-It owns no ServiceMonitor: Identity exports metrics through OTLP.
+It owns no ServiceMonitor: the platform-owned PodMonitor scrapes Identity.
 
 Use `values-central.yaml` in the central observability cluster. It renders dashboards
 and the datasource. `values-workload.yaml` renders no datasource; enable its
