@@ -222,4 +222,7 @@ for workload in server organization-controller oauth2client-controller project-c
 	[[ "$pod_name_source" == "metadata.name" ]] || die "expected POD_NAME from the downward API on test-${workload}"
 done
 
+metrics_port=$(yq -r 'select(.kind == "Deployment" and .metadata.name == "test-server") | .spec.template.spec.containers[].ports[] | select(.name == "prometheus") | .containerPort' <<<"$out")
+[[ "$metrics_port" == "8080" ]] || die "expected Prometheus port on test-server"
+
 echo "chart render checks OK"
