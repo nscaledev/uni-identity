@@ -44,6 +44,7 @@ import (
 type Factory struct{}
 
 var _ coremanager.ControllerFactory = &Factory{}
+var _ coremanager.ControllerScrapedMetrics = &Factory{}
 
 // Metadata returns the application, version and revision.
 func (*Factory) Metadata() util.ServiceDescriptor {
@@ -53,6 +54,11 @@ func (*Factory) Metadata() util.ServiceDescriptor {
 // Options returns any options to be added to the CLI flags and passed to the reconciler.
 func (*Factory) Options() coremanager.ControllerOptions {
 	return nil
+}
+
+// ScrapedMetrics uses the manager metrics endpoint for application metrics.
+func (*Factory) ScrapedMetrics() bool {
+	return true
 }
 
 // Initialize registers metrics that follow the manager lifecycle.

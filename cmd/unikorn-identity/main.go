@@ -63,13 +63,12 @@ func start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := s.SetupOpenTelemetry(ctx); err != nil {
-		logger.Error(err, "failed to setup OpenTelemetry")
-
+	if !setupTelemetry(ctx, s, logger) {
 		return
 	}
 
 	client, directclient, err := newKubernetesClients(ctx)
+
 	if err != nil {
 		logger.Error(err, "failed to create Kubernetes clients")
 
@@ -90,6 +89,12 @@ func start() {
 		return
 	}
 	defer closeServerMetrics(metrics, logger)
+
+	go func() {
+		if err := s.CoreOptions.ServeMetrics(ctx, ":8080"); err != nil {
+			logger.Error(err, "metrics server error")
+		}
+	}()
 
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
@@ -127,6 +132,22 @@ func start() {
 
 		return
 	}
+}
+
+func setupTelemetry(ctx context.Context, server *server.Server, logger logr.Logger) bool {
+	if err := server.CoreOptions.SetupTracing(ctx); err != nil {
+		logger.Error(err, "failed to setup tracing")
+
+		return false
+	}
+
+	if err := server.CoreOptions.SetupMetrics(); err != nil {
+		logger.Error(err, "failed to setup metrics")
+
+		return false
+	}
+
+	return true
 }
 
 func newKubernetesClients(ctx context.Context) (ctrlclient.Client, ctrlclient.Client, error) {

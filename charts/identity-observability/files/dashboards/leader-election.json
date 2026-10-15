@@ -16,7 +16,7 @@
         "name": "cluster",
         "label": "Cluster",
         "type": "query",
-        "query": "label_values(leader_election_master_status{job=\"unikorn-identity\"}, cluster)",
+        "query": "label_values(leader_election_master_status{app=~\"unikorn-identity-.*-controller\"}, cluster)",
         "includeAll": true,
         "allValue": ".*",
         "multi": true,
@@ -38,7 +38,7 @@
       },
       "targets": [
         {
-          "expr": "sum(max by (name) (leader_election_master_status{job=\"unikorn-identity\", cluster=~\"$cluster\"}))",
+          "expr": "sum(max by (name) (leader_election_master_status{app=~\"unikorn-identity-.*-controller\", cluster=~\"$cluster\"}))",
           "refId": "A"
         }
       ]
@@ -56,7 +56,7 @@
       },
       "targets": [
         {
-          "expr": "max by (name) (leader_election_master_status{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "expr": "max by (name) (leader_election_master_status{app=~\"unikorn-identity-.*-controller\", cluster=~\"$cluster\"})",
           "legendFormat": "{{name}}",
           "refId": "A"
         }

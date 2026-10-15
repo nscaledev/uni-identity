@@ -19,7 +19,7 @@
         "name": "cluster",
         "label": "Cluster",
         "type": "query",
-        "query": "label_values(http_server_request_duration_seconds_count{job=\"unikorn-identity\"}, cluster)",
+        "query": "label_values(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\"}, cluster)",
         "includeAll": true,
         "allValue": ".*",
         "multi": true,
@@ -41,7 +41,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -59,7 +59,7 @@
       },
       "targets": [
         {
-          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])), 1e-9)",
           "refId": "A"
         }
       ]
@@ -77,7 +77,7 @@
       },
       "targets": [
         {
-          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])), 1e-9)",
           "refId": "A"
         }
       ]
@@ -95,7 +95,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])))",
           "refId": "A"
         }
       ]
@@ -113,7 +113,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (route, status_class) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
+          "expr": "sum by (route, status_class) (rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -131,7 +131,7 @@
       },
       "targets": [
         {
-          "expr": "100 * sum by (status_class) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=~\"[45]xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "expr": "100 * sum by (status_class) (rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\", status_class=~\"[45]xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])), 1e-9)",
           "refId": "A"
         }
       ]
@@ -149,7 +149,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m]))",
+          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -167,7 +167,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m]))",
+          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{app=\"unikorn-identity-server\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -185,7 +185,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])))",
           "refId": "A"
         }
       ]
@@ -203,17 +203,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.90, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(http_server_request_duration_seconds_bucket{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])))",
           "legendFormat": "p90",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{app=\"unikorn-identity-server\", cluster=~\"$cluster\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -232,7 +232,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (route) (http_server_active_requests{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "expr": "sum by (route) (http_server_active_requests{app=\"unikorn-identity-server\", cluster=~\"$cluster\"})",
           "refId": "A"
         }
       ]

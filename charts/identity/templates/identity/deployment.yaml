@@ -214,6 +214,8 @@ spec:
         ports:
         - name: http
           containerPort: 6080
+        - name: prometheus
+          containerPort: 8080
         resources:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
