@@ -90,10 +90,6 @@ func (s *Server) SetupLogging() {
 	s.CoreOptions.SetupLogging()
 }
 
-func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
-	return s.CoreOptions.SetupOpenTelemetry(ctx)
-}
-
 func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {

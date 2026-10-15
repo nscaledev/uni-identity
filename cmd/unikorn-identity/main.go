@@ -21,7 +21,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -30,7 +29,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel"
 
@@ -39,13 +37,11 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/server"
 	servermetrics "github.com/unikorn-cloud/identity/pkg/server/metrics"
-	"github.com/unikorn-cloud/identity/pkg/telemetry"
 
 	"k8s.io/client-go/rest"
 
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 // start is the entry point to server.
@@ -67,9 +63,7 @@ func start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := s.SetupOpenTelemetry(ctx); err != nil {
-		logger.Error(err, "failed to setup OpenTelemetry")
-
+	if !setupTelemetry(ctx, s, logger) {
 		return
 	}
 
@@ -96,12 +90,11 @@ func start() {
 	}
 	defer closeServerMetrics(metrics, logger)
 
-	metricsServer, err := newMetricsServer(ctx, logger)
-	if err != nil {
-		logger.Error(err, "failed to setup metrics server")
-
-		return
-	}
+	go func() {
+		if err := s.CoreOptions.ServeMetrics(ctx, ":8080"); err != nil {
+			logger.Error(err, "metrics server error")
+		}
+	}()
 
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
@@ -125,7 +118,9 @@ func start() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		shutdownServers(ctx, server, metricsServer, logger)
+		if err := server.Shutdown(ctx); err != nil {
+			logger.Error(err, "server shutdown error")
+		}
 	}()
 
 	if err := metrics.Serve(server, listener); err != nil {
@@ -139,34 +134,20 @@ func start() {
 	}
 }
 
-func newMetricsServer(ctx context.Context, logger logr.Logger) (*http.Server, error) {
-	if err := telemetry.Configure(ctx, ctrlmetrics.Registry); err != nil {
-		return nil, fmt.Errorf("configure Prometheus metrics: %w", err)
+func setupTelemetry(ctx context.Context, server *server.Server, logger logr.Logger) bool {
+	if err := server.CoreOptions.SetupTracing(ctx); err != nil {
+		logger.Error(err, "failed to setup tracing")
+
+		return false
 	}
 
-	//nolint:gosec // Prometheus and the Collector scrape the pod network.
-	listener, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		return nil, fmt.Errorf("bind metrics listener: %w", err)
+	if err := server.CoreOptions.SetupMetrics(); err != nil {
+		logger.Error(err, "failed to setup metrics")
+
+		return false
 	}
 
-	server := &http.Server{
-		Handler:           promhttp.HandlerFor(ctrlmetrics.Registry, promhttp.HandlerOpts{}),
-		ReadHeaderTimeout: time.Second,
-	}
-	go serveMetrics(server, listener, logger)
-
-	return server, nil
-}
-
-func shutdownServers(ctx context.Context, server, metricsServer *http.Server, logger logr.Logger) {
-	if err := server.Shutdown(ctx); err != nil {
-		logger.Error(err, "server shutdown error")
-	}
-
-	if err := metricsServer.Shutdown(ctx); err != nil {
-		logger.Error(err, "metrics server shutdown error")
-	}
+	return true
 }
 
 func newKubernetesClients(ctx context.Context) (ctrlclient.Client, ctrlclient.Client, error) {
@@ -193,12 +174,6 @@ func newKubernetesClients(ctx context.Context) (ctrlclient.Client, ctrlclient.Cl
 func closeServerMetrics(metrics *servermetrics.Reporter, logger logr.Logger) {
 	if err := metrics.Close(); err != nil {
 		logger.Error(err, "failed to close server metrics")
-	}
-}
-
-func serveMetrics(server *http.Server, listener net.Listener, logger logr.Logger) {
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error(err, "metrics server error")
 	}
 }
 

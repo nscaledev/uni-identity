@@ -30,12 +30,10 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	controllermetrics "github.com/unikorn-cloud/identity/pkg/controllers/metrics"
 	"github.com/unikorn-cloud/identity/pkg/provisioners/oauth2client"
-	"github.com/unikorn-cloud/identity/pkg/telemetry"
 
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -45,6 +43,7 @@ import (
 type Factory struct{}
 
 var _ coremanager.ControllerFactory = &Factory{}
+var _ coremanager.ControllerScrapedMetrics = &Factory{}
 
 // Metadata returns the application, version and revision.
 func (*Factory) Metadata() util.ServiceDescriptor {
@@ -56,12 +55,13 @@ func (*Factory) Options() coremanager.ControllerOptions {
 	return nil
 }
 
-// Initialize registers metrics that follow the manager lifecycle.
-func (*Factory) Initialize(ctx context.Context, manager manager.Manager, _ *options.Options) error {
-	if err := telemetry.Configure(ctx, ctrlmetrics.Registry); err != nil {
-		return err
-	}
+// ScrapedMetrics uses the manager metrics endpoint for application metrics.
+func (*Factory) ScrapedMetrics() bool {
+	return true
+}
 
+// Initialize registers metrics that follow the manager lifecycle.
+func (*Factory) Initialize(_ context.Context, manager manager.Manager, _ *options.Options) error {
 	reporter, err := controllermetrics.New(otel.Meter(constants.Application), constants.ServiceDescriptor())
 	if err != nil {
 		return err

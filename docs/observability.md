@@ -104,9 +104,9 @@ are not included.
 
 **Metric naming.** The RED and readiness families use platform-generic names,
 so a dashboard or alert must identify Identity through scrape labels. The
-Prometheus exporter publishes OpenTelemetry resource identity as `target_info`;
-the platform scrape configuration must provide the stable `job`, `instance`, and
-`cluster` labels consumed by dashboards.
+platform PodMonitor copies the pod `app` label to each target. Dashboards use
+that label with `cluster`; scrapers own `job` and `instance` and they are not a
+dashboard contract.
 
 **State / kube-state exporter (in identity)** — **absent.**
 
