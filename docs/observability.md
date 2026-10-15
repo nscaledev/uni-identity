@@ -222,10 +222,9 @@ Identity's suite depends on two changes *outside* this repository:
 2. **The platform PodMonitor selects the named `prometheus` port** and both
    local Prometheus and TargetAllocator report healthy targets.
 3. **The scrape configuration supplies the dashboard label contract** — stable
-   `job`, `instance`, and `cluster` labels — on stored series. The Identity
-   chart continues to set `OTEL_SERVICE_NAME` and `service.instance.id` for
-   optional tracing and `target_info`, but those resource attributes do not
-   replace scrape labels.
+   `app` and `cluster` labels — on stored series. The platform PodMonitor
+   copies the pod `app` label to each target. Scrapers own `job` and `instance`;
+   dashboard queries must not depend on either value.
 4. **Then** deploy `charts/identity-observability` (this work).
 
 The lifecycle-exporter series and the Prometheus scrape path must land in the
@@ -276,12 +275,12 @@ renders sidecar-labelled ConfigMaps (`grafana_dashboard: "1"`,
 metric store. They are otherwise absent from workload clusters.
 
 Every dashboard has a top-level `cluster` selector and filters every panel on it.
-Every panel query also filters on `job="unikorn-identity"`: the RED and
-readiness families use platform-generic metric names, so the service must be
-selected by label, not by name. The PodMonitor and scrape configuration must
-attach the required `job`, `instance`, and `cluster` labels before storage; dashboard
-queries must not rely on Prometheus external labels, which are not available to
-Grafana's local query path.
+Every panel query also filters on the pod `app` label: the RED and readiness
+families use platform-generic metric names, so the service must be selected by
+label, not by name. The PodMonitor must attach `app` before storage. Scrapers
+own `job` and `instance`, and dashboard queries must not rely on them or on
+Prometheus external labels, which are not available to Grafana's local query
+path.
 
 1. **Identity Operations** — resource lifecycle and controller health: count of
    Organization/Project/OAuth2Client with `Available != True` by `reason`

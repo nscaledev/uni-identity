@@ -16,7 +16,7 @@
         "name": "cluster",
         "label": "Cluster",
         "type": "query",
-        "query": "label_values(unikorn_controller_ready{job=\"unikorn-identity\"}, cluster)",
+        "query": "label_values(unikorn_controller_ready{app=~\"unikorn-identity-.*\"}, cluster)",
         "includeAll": true,
         "allValue": ".*",
         "multi": true,
@@ -54,7 +54,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (cluster) (unikorn_controller_ready{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "expr": "sum by (cluster) (unikorn_controller_ready{app=~\"unikorn-identity-.*\", cluster=~\"$cluster\"})",
           "legendFormat": "{{cluster}}",
           "refId": "A"
         }
@@ -81,7 +81,7 @@
       },
       "targets": [
         {
-          "expr": "max by (controller, version, revision) (unikorn_identity_controller_build_info{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "expr": "max by (controller, version, revision) (unikorn_identity_controller_build_info{app=~\"unikorn-identity-.*\", cluster=~\"$cluster\"})",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -115,7 +115,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (cluster) (unikorn_server_ready{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "expr": "sum by (cluster) (unikorn_server_ready{app=~\"unikorn-identity-.*\", cluster=~\"$cluster\"})",
           "legendFormat": "{{cluster}}",
           "refId": "A"
         }
@@ -142,7 +142,7 @@
       },
       "targets": [
         {
-          "expr": "max by (version, revision) (unikorn_identity_server_build_info{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "expr": "max by (version, revision) (unikorn_identity_server_build_info{app=~\"unikorn-identity-.*\", cluster=~\"$cluster\"})",
           "format": "table",
           "instant": true,
           "refId": "A"

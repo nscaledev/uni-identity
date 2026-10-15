@@ -12,13 +12,10 @@ the controllers' leader-election metrics. It adds the optional leadership dashbo
 
 Dashboards are provisioned in the `UNI/Identity` Grafana folder.
 
-Every dashboard filters on the required `cluster` and `job` labels. OTLP
-collectors and scrape configurations must attach `cluster` and preserve the
-Prometheus-convention OTLP mapping — `job` from the resource's `service.name`,
-`instance` from `service.instance.id` — before metrics reach the store, so
-local and central queries have the same label shape. (A pipeline that scrapes
-a collector's Prometheus exporter needs `honorLabels: true`, or `job` arrives
-renamed to `exported_job`.) Identity's metrics use platform-generic names (the
-OTel HTTP server semantic conventions for the RED families), so
-`job="unikorn-identity"` — set by the identity chart via `OTEL_SERVICE_NAME` —
-is what scopes a query to Identity.
+Every dashboard filters on the required `cluster` and `app` labels. The
+platform PodMonitor must copy the pod `app` label to each target before metrics
+reach the store. Identity's metrics use platform-generic names (the OTel HTTP
+server semantic conventions for the RED families), so dashboard queries scope
+the API to `app="unikorn-identity-server"` and controller metrics to
+`app=~"unikorn-identity-.*"`. The scraper owns `job` and `instance`; neither
+is a dashboard contract.
