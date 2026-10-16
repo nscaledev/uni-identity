@@ -25,7 +25,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
@@ -78,9 +77,6 @@ type Handler struct {
 
 	// options allows behaviour to be defined on the CLI.
 	options *Options
-
-	// allocationMutex serialises allocation decisions
-	allocationMutex sync.Mutex
 }
 
 func New(client client.Client, readCache client.Reader, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, options *Options) (*Handler, error) {

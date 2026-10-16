@@ -261,6 +261,9 @@ watched=$(yq -r '
 [[ "$(server_verbs signingkeys)" == "create,get,update" ]] || die "expected only create, get and update on signingkeys for the server"
 [[ "$(server_verbs secrets)" == "get" ]] || die "expected only get on secrets for the server"
 [[ "$(server_verbs namespaces)" == "list" ]] || die "expected only list on namespaces for the server"
+# Organization Lease release deletes the Lease; without delete every release
+# fails and the next writer waits for a takeover.
+[[ "$(server_verbs leases)" == "create,delete,get,update" ]] || die "expected only create, delete, get and update on leases for the server"
 [[ -z "$(server_verbs configmaps)" ]] || die "expected no configmaps permission for the server"
 
 echo "chart render checks OK"
