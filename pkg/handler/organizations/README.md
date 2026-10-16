@@ -37,11 +37,13 @@ own record. It never gets a record that differs from its own only in case.
 That makes this package the bridge between authenticated identity context and organization-level
 visibility.
 
-Organization reads on both branches skip deep copies. The global branch lists Organizations with
-`UnsafeDisableDeepCopy`. The membership branch reads one organization per membership with a
-cached `Get` and the same option. The `OrganizationUser` list that resolves memberships still
-makes deep copies. `convert` copies every value it takes from those objects, including the
-pointer fields and the deletion time, so the returned list shares no memory with the cache.
+The global branch lists Organizations from the read cache with `UnsafeDisableDeepCopy`, because
+it returns every organization and a direct read would load the API server on each request. The
+list can briefly lag a write. The permission check that selects this branch does not use the
+cache. The membership branch reads the `OrganizationUser` records and one organization per
+membership directly, so a removed membership takes effect at once and a new organization is found
+before the cache has seen it. `convert` copies every value it takes from those objects, including
+the pointer fields and the deletion time, so the returned list shares no memory with the cache.
 The handler package, not this package, fills the extras that `include` requests.
 
 ### Namespace Handoff To The Rest Of `v1`
@@ -89,8 +91,8 @@ to its present-day role.
   API shape.
 - Domain/provider-directed login behaviour remains supported, but it is a secondary path relative
   to the package's main tenancy-root and membership-resolution role.
-- Inside this package, organizations from either branch come from the cache without a copy.
-  Treat them as read-only, and make a deep copy before any change.
+- Organizations from the global branch come from the cache without a copy. Treat them as
+  read-only, and make a deep copy before any change.
 - With the include extras, a project-scope member whose projects are all deleted gets no
   `projectsCount`. The row reads as not permitted, not as zero.
 

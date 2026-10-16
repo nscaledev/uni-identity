@@ -52,11 +52,18 @@ const (
 // errBoom is a sentinel error for tests that need a non-NotFound failure.
 var errBoom = errors.New("boom")
 
-// recorder records the options of each cache read that the code under test
-// makes.
+// recorder records the options of each read that the code under test makes
+// through one reader.
 type recorder struct {
 	lists []client.ListOptions
 	gets  []client.GetOptions
+
+	// organizationGets holds the options of the gets for Organizations.
+	organizationGets []client.GetOptions
+}
+
+func (r *recorder) reads() int {
+	return len(r.lists) + len(r.gets)
 }
 
 func (r *recorder) funcs() interceptor.Funcs {
@@ -73,18 +80,26 @@ func (r *recorder) funcs() interceptor.Funcs {
 			options.ApplyOptions(opts)
 			r.gets = append(r.gets, options)
 
+			if _, ok := obj.(*unikornv1.Organization); ok {
+				r.organizationGets = append(r.organizationGets, options)
+			}
+
 			return inner.Get(ctx, key, obj, opts...)
 		},
 	}
 }
 
-func newTestClient(t *testing.T, r *recorder, objects ...client.Object) client.Client {
+// newTestClients returns a direct client and a cache over the same objects.
+// Each records its reads in its own recorder.
+func newTestClients(t *testing.T, direct, cached *recorder, objects ...client.Object) (client.Client, client.Reader) {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(r.funcs()).Build()
+	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+
+	return interceptor.NewClient(store, direct.funcs()), interceptor.NewClient(store, cached.funcs())
 }
 
 func org(id string) *unikornv1.Organization {
@@ -124,50 +139,61 @@ func memberContext(t *testing.T) context.Context {
 	return authorization.NewContext(ctx, &authorization.Info{Userinfo: &openapi.Userinfo{Sub: subject}})
 }
 
-func requireNoDeepCopy(t *testing.T, r *recorder) {
-	t.Helper()
-
-	for _, options := range r.lists {
-		require.True(t, ptr.Deref(options.UnsafeDisableDeepCopy, false), "list must disable deep copies")
-	}
-
-	for _, options := range r.gets {
-		require.True(t, ptr.Deref(options.UnsafeDisableDeepCopy, false), "get must disable deep copies")
-	}
-}
-
-func TestListGlobalBranchReadsWithoutDeepCopy(t *testing.T) {
+// The global branch returns every organization, so it reads the cache, in the
+// identity namespace and without deep copies.
+func TestListGlobalBranchReadsTheCache(t *testing.T) {
 	t.Parallel()
 
-	r := &recorder{}
-	c := New(newTestClient(t, r, org(orgB), org(orgA)), testNamespace)
+	direct, cached := &recorder{}, &recorder{}
+	k8s, cache := newTestClients(t, direct, cached, org(orgB), org(orgA))
 
-	out, err := c.List(globalReadContext(t), nil, nil)
+	out, err := New(k8s, testNamespace).List(globalReadContext(t), cache, nil, nil)
 	require.NoError(t, err)
 	require.Len(t, out, 2)
 	require.Equal(t, orgA, out[0].Metadata.Id)
 	require.Equal(t, orgB, out[1].Metadata.Id)
-	requireNoDeepCopy(t, r)
+
+	require.Zero(t, direct.reads())
+	require.Len(t, cached.lists, 1)
+	require.Equal(t, testNamespace, cached.lists[0].Namespace)
+	require.True(t, ptr.Deref(cached.lists[0].UnsafeDisableDeepCopy, false))
 }
 
-func TestListMembershipBranchGetsEachOrganization(t *testing.T) {
+// The membership branch reads directly, so a removed membership takes effect
+// at once.
+func TestListMembershipBranchReadsDirectly(t *testing.T) {
 	t.Parallel()
 
-	r := &recorder{}
-	k8s := newTestClient(t, r, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgB))
-	c := New(k8s, testNamespace)
+	direct, cached := &recorder{}, &recorder{}
+	k8s, cache := newTestClients(t, direct, cached, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgB))
 
-	out, err := c.List(memberContext(t), userdb.NewUserDatabase(k8s, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(k8s, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 2, "duplicate memberships still return the organization twice")
 	require.Equal(t, orgB, out[0].Metadata.Id)
-	require.Len(t, r.gets, 2)
 
-	// This test checks only the organization reads. The OrganizationUser list
-	// in organizationIDs still makes deep copies.
-	for _, options := range r.gets {
-		require.True(t, ptr.Deref(options.UnsafeDisableDeepCopy, false), "get must disable deep copies")
+	require.Zero(t, cached.reads())
+	require.Len(t, direct.organizationGets, 2, "one organization read per membership")
+
+	for _, options := range direct.organizationGets {
+		require.Nil(t, options.UnsafeDisableDeepCopy)
 	}
+}
+
+// An email filter takes the membership branch even for a global reader.
+func TestListEmailFilterReadsDirectly(t *testing.T) {
+	t.Parallel()
+
+	direct, cached := &recorder{}, &recorder{}
+	k8s, cache := newTestClients(t, direct, cached, org(orgA), user(), membership("m1", orgA))
+
+	ctx := authorization.NewContext(globalReadContext(t), &authorization.Info{Userinfo: &openapi.Userinfo{Sub: subject, Email: ptr.To(subject)}})
+
+	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(k8s, testNamespace), ptr.To(subject))
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, orgA, out[0].Metadata.Id)
+	require.Zero(t, cached.reads())
 }
 
 func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
@@ -186,7 +212,7 @@ func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
 		},
 	}).Build()
 
-	_, err := New(k8s, testNamespace).List(memberContext(t), userdb.NewUserDatabase(k8s, testNamespace), nil)
+	_, err := New(k8s, testNamespace).List(memberContext(t), nil, userdb.NewUserDatabase(k8s, testNamespace), nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, errBoom)
 	require.NotErrorIs(t, err, coreerrors.ErrConsistency)
@@ -195,9 +221,9 @@ func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
 func TestListMembershipBranchSortsByID(t *testing.T) {
 	t.Parallel()
 
-	k8s := newTestClient(t, &recorder{}, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgA))
+	k8s, cache := newTestClients(t, &recorder{}, &recorder{}, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgA))
 
-	out, err := New(k8s, testNamespace).List(memberContext(t), userdb.NewUserDatabase(k8s, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(k8s, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 2)
 	require.Equal(t, orgA, out[0].Metadata.Id)
@@ -207,10 +233,9 @@ func TestListMembershipBranchSortsByID(t *testing.T) {
 func TestListMembershipBranchDanglingMembershipIsInconsistent(t *testing.T) {
 	t.Parallel()
 
-	r := &recorder{}
-	k8s := newTestClient(t, r, user(), membership("m1", orgA))
+	k8s, cache := newTestClients(t, &recorder{}, &recorder{}, user(), membership("m1", orgA))
 
-	_, err := New(k8s, testNamespace).List(memberContext(t), userdb.NewUserDatabase(k8s, testNamespace), nil)
+	_, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(k8s, testNamespace), nil)
 	require.ErrorIs(t, err, coreerrors.ErrConsistency)
 }
 

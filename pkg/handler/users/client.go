@@ -38,7 +38,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -204,10 +203,7 @@ func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
 // other write, so a refusal cannot leave an earlier part of the request
 // applied.
 func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
-	// The subject is supplied by the caller rather than re-read here: on the
-	// create path the global user was just written to the API server, and a
-	// read back through the cached client can miss it while the informer catches
-	// up, spuriously failing the request. Callers already hold the user.
+	// Callers supply the subject from the user they created or loaded.
 	subject := c.groupSubject(userSubject)
 
 	for i := range groups.Items {
@@ -232,7 +228,7 @@ func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string
 			}
 
 			// Reflect the change in the caller's in-memory list so responses can be
-			// built from it without a cached reload that may lag the write.
+			// built from it without a reload.
 			groups.Items[i] = *updated
 		}
 	}
@@ -350,8 +346,6 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 		}
 	}
 
-	// Copy the time: the User can come from the cache without a deep copy,
-	// and the result must share no memory with it.
 	if lastActive != nil {
 		lastActiveTime := lastActive.Time
 		out.Status.LastActive = &lastActiveTime
@@ -404,9 +398,7 @@ func (c *Client) getGlobalUserByID(ctx context.Context, id string) (*unikornv1.U
 func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	users := &unikornv1.UserList{}
 
-	// Scan the cache without deep copies. Copy only the match, so the caller
-	// owns the result.
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
@@ -554,10 +546,7 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 
 	users := &unikornv1.UserList{}
 
-	// Scan the cache without deep copies.  Only the members of this
-	// organization are read, and convert copies every value it takes from a
-	// User, so the result shares no memory with the cache.
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
@@ -641,8 +630,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	}
 
 	// updateGroups applies its membership changes to the in-memory group list, so
-	// the response reflects the update just made without a cached reload that could
-	// still be lagging the writes.
+	// the response reflects the update just made without a reload.
 	return convert(updated, user, groups), nil
 }
 

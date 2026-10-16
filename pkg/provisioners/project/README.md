@@ -16,8 +16,8 @@ allowing the project namespace itself to disappear.
 
 ### Namespace Projection For Current `v1`
 
-The provisioner derives labels from the `Project`, resolves or creates the projected namespace, and
-writes `Status.Namespace`.
+The provisioner derives labels from the `Project`, resolves the projected namespace through the
+Kubernetes API reader or creates it, and writes `Status.Namespace`.
 
 That is part of the current `v1` compatibility model and the live handoff consumed later by the
 API/handler layer. It is not the preferred long-term architecture.

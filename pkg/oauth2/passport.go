@@ -302,12 +302,12 @@ func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, t
 }
 
 // handleValidatorError returns the appropriate error response for validatorForIssuer failures.
-// If the provider cache is not yet synced, it returns 503 Service Unavailable (transient).
+// If Kubernetes cannot read providers, it returns 503 Service Unavailable.
 // Otherwise, it returns 401 Unauthorized (issuer not trusted).
 func (a *Authenticator) handleValidatorError(ctx context.Context, r *http.Request, err error, surface string) error {
-	if goerrors.Is(err, ErrCacheNotReady) {
-		log.FromContext(ctx).Info("provider cache not ready", "surface", surface)
-		return errors.OAuth2ServiceUnavailable("identity service warming up").WithError(err)
+	if goerrors.Is(err, ErrKubernetesReadUnavailable) {
+		log.FromContext(ctx).Info("provider list unavailable", "surface", surface)
+		return errors.OAuth2ServiceUnavailable("identity provider lookup unavailable").WithError(err)
 	}
 
 	return coreerrors.AccessDenied(r, "issuer trust unavailable").WithError(err)

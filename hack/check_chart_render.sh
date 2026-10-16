@@ -222,4 +222,45 @@ for workload in server organization-controller oauth2client-controller project-c
 	[[ "$pod_name_source" == "metadata.name" ]] || die "expected POD_NAME from the downward API on test-${workload}"
 done
 
+# Direct Kubernetes reads require a get permission; list/watch only permit
+# informer synchronization and cannot authorize an API-server GET.
+has_server_get() {
+	resource="$1" yq -e '
+		select(.kind == "ClusterRole" and .metadata.name == "test-server") |
+		.rules[] |
+		select(.resources[] == strenv(resource)) |
+		select(.verbs[] == "get")
+	' <<<"$out" >/dev/null
+}
+
+for resource in \
+	groups oauth2clients oauth2providers organizations projects quotas quotametadata \
+	roles serviceaccounts users organizationusers signingkeys secrets; do
+	has_server_get "$resource" || die "expected get permission for server resource: $resource"
+done
+
+# server_verbs prints the sorted verbs the server role grants on a resource.
+server_verbs() {
+	resource="$1" yq -r '
+		select(.kind == "ClusterRole" and .metadata.name == "test-server") |
+		.rules[] |
+		select(.resources[] == strenv(resource)) |
+		.verbs[]
+	' <<<"$out" | sort -u | paste -sd, -
+}
+
+# Only the read cache watches, and only the kinds it holds.  Core resources
+# are read directly and only with the verbs the server uses.
+watched=$(yq -r '
+	select(.kind == "ClusterRole" and .metadata.name == "test-server") |
+	.rules[] |
+	select(.verbs[] == "watch") |
+	.resources[]
+' <<<"$out" | sort -u | paste -sd, -)
+[[ "$watched" == "allocations,organizations,projects,quotas" ]] || die "expected watch only on the read cache kinds for the server, got: $watched"
+[[ "$(server_verbs signingkeys)" == "create,get,update" ]] || die "expected only create, get and update on signingkeys for the server"
+[[ "$(server_verbs secrets)" == "get" ]] || die "expected only get on secrets for the server"
+[[ "$(server_verbs namespaces)" == "list" ]] || die "expected only list on namespaces for the server"
+[[ -z "$(server_verbs configmaps)" ]] || die "expected no configmaps permission for the server"
+
 echo "chart render checks OK"

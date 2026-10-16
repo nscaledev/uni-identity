@@ -53,13 +53,13 @@ import (
 )
 
 type Handler struct {
-	// client gives cached access to Kubernetes.
+	// client accesses Kubernetes directly.
 	client client.Client
 
-	// directclient gives uncached access to Kubernetes; this is needed
-	// for e.g., allocations, where we need to have reads consistent with
-	// writes.
-	directclient client.Client
+	// readCache serves the organization list and its includes. They return
+	// every object of a kind, so a direct read would load the API server on
+	// each request.
+	readCache client.Reader
 
 	// namespace is the namespace we are running in.
 	namespace string
@@ -83,16 +83,16 @@ type Handler struct {
 	allocationMutex sync.Mutex
 }
 
-func New(client client.Client, directclient client.Client, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, options *Options) (*Handler, error) {
+func New(client client.Client, readCache client.Reader, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, options *Options) (*Handler, error) {
 	h := &Handler{
-		client:       client,
-		directclient: directclient,
-		namespace:    namespace,
-		issuer:       issuer,
-		oauth2:       oauth2,
-		rbac:         rbac,
-		userdb:       userdb,
-		options:      options,
+		client:    client,
+		readCache: readCache,
+		namespace: namespace,
+		issuer:    issuer,
+		oauth2:    oauth2,
+		rbac:      rbac,
+		userdb:    userdb,
+		options:   options,
 	}
 
 	return h, nil
@@ -418,7 +418,7 @@ func (h *Handler) DeleteApiV1OrganizationsOrganizationIDOauth2providersProviderI
 }
 
 func (h *Handler) GetApiV1Organizations(w http.ResponseWriter, r *http.Request, params openapi.GetApiV1OrganizationsParams) {
-	result, err := organizations.New(h.client, h.namespace).List(r.Context(), h.userdb, params.Email)
+	result, err := organizations.New(h.client, h.namespace).List(r.Context(), h.readCache, h.userdb, params.Email)
 	if err != nil {
 		errors.HandleError(w, r, err)
 		return

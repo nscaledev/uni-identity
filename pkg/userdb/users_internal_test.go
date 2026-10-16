@@ -22,11 +22,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -35,8 +35,7 @@ import (
 
 const testNamespace = "identity"
 
-// recorder records the ListOptions of each cache read that the code under
-// test makes.
+// recorder records the ListOptions of each read that the code under test makes.
 type recorder struct {
 	lists []client.ListOptions
 }
@@ -69,7 +68,7 @@ func testUser() *unikornv1.User {
 	}
 }
 
-func TestGetUserListsWithoutDeepCopy(t *testing.T) {
+func TestGetUserListsWithoutCacheOptions(t *testing.T) {
 	t.Parallel()
 
 	r := &recorder{}
@@ -79,5 +78,31 @@ func TestGetUserListsWithoutDeepCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "alice@example.com", user.Spec.Subject)
 	require.Len(t, r.lists, 1)
-	require.True(t, ptr.Deref(r.lists[0].UnsafeDisableDeepCopy, false))
+	require.Nil(t, r.lists[0].UnsafeDisableDeepCopy)
+}
+
+func TestGetOrganizationIDsForUserDoesNotResolveTheUserAgain(t *testing.T) {
+	t.Parallel()
+
+	user := testUser()
+	user.Spec.State = unikornv1.UserStateActive
+	organizationUser := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: testNamespace,
+			Name:      "organization-user",
+			Labels: map[string]string{
+				constants.UserLabel:         user.Name,
+				constants.OrganizationLabel: "organization",
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+	}
+
+	r := &recorder{}
+	d := NewUserDatabase(newTestClient(t, r, user, organizationUser), testNamespace)
+
+	organizationIDs, err := d.GetOrganizationIDsForUser(t.Context(), user)
+	require.NoError(t, err)
+	require.Equal(t, []string{"organization"}, organizationIDs)
+	require.Len(t, r.lists, 1)
 }

@@ -37,10 +37,7 @@ import (
 // Membership reconciliation walks the groups that exist and asks of each
 // whether the request names it, so a requested ID matching nothing matches no
 // branch: without this the principal is neither joined to it nor told, and the
-// response reports only the memberships that did apply.  Note the list is read
-// through an informer cache, so a group created moments earlier may not be in
-// it yet; refusing is still the better answer, because the alternative is a
-// success whose body silently contradicts the request.
+// response reports only the memberships that did apply.
 func ValidateGroupsExist(groupIDs []string, groups *unikornv1.GroupList) error {
 	for _, groupID := range groupIDs {
 		if !slices.ContainsFunc(groups.Items, func(group unikornv1.Group) bool {
