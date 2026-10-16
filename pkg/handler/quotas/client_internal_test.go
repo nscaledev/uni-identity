@@ -17,11 +17,13 @@ limitations under the License.
 package quotas
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common/fixtures"
@@ -32,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -80,6 +83,10 @@ func TestUpdateRendersRequestListAndGetNormalises(t *testing.T) {
 	require.Len(t, written.Quotas, 1)
 	require.Equal(t, "gpus", written.Quotas[0].Kind)
 	require.Equal(t, 4, written.Quotas[0].Quantity)
+
+	stored := &unikornv1.Quota{}
+	require.NoError(t, c.client.Get(ctx, client.ObjectKey{Namespace: "org-a", Name: quotaName}, stored))
+	require.Equal(t, quotaName, stored.Name, "new quotas use the fixed persisted name")
 
 	read, err := c.Get(ctx, organizationID)
 	require.NoError(t, err)
@@ -176,4 +183,103 @@ func TestUpdateRejectsUnknownKindBeforeWriting(t *testing.T) {
 
 	require.NoError(t, k8s.List(ctx, &stored))
 	require.Empty(t, stored.Items, "the rejected request writes nothing")
+}
+
+func TestUpdateAdoptsOneLegacyQuota(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	legacy := &unikornv1.Quota{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "legacy-quota",
+			Namespace: "org-a",
+			Labels:    map[string]string{constants.OrganizationLabel: organizationID.String()},
+		},
+	}
+
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus, legacy).Build()
+	_, err := New(k8s, "identity").Update(fixtures.HandlerContextFixture(t.Context(), 0), organizationID, &openapi.QuotasWrite{
+		Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}},
+	})
+	require.NoError(t, err)
+
+	stored := &unikornv1.QuotaList{}
+	require.NoError(t, k8s.List(t.Context(), stored, &client.ListOptions{Namespace: "org-a"}))
+	require.Len(t, stored.Items, 1)
+	require.Equal(t, "legacy-quota", stored.Items[0].Name)
+}
+
+func TestUpdateRejectsMultipleLegacyQuotas(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	labels := map[string]string{constants.OrganizationLabel: organizationID.String()}
+	first := &unikornv1.Quota{ObjectMeta: metav1.ObjectMeta{Name: "legacy-quota-a", Namespace: "org-a", Labels: labels}}
+	second := &unikornv1.Quota{ObjectMeta: metav1.ObjectMeta{Name: "legacy-quota-b", Namespace: "org-a", Labels: labels}}
+
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus, first, second).Build()
+	_, err := New(k8s, "identity").Update(fixtures.HandlerContextFixture(t.Context(), 0), organizationID, &openapi.QuotasWrite{
+		Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}},
+	})
+
+	require.ErrorIs(t, err, coreerrors.ErrConsistency)
+}
+
+func TestUpdateConcurrentCreatesOneQuota(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus).Build()
+	quotas := New(k8s, "identity")
+	request := &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}}}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+
+	var wg sync.WaitGroup
+
+	for range 2 {
+		wg.Go(func() {
+			<-start
+
+			_, err := quotas.Update(fixtures.HandlerContextFixture(t.Context(), 0), organizationID, request)
+			errs <- err
+		})
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	stored := &unikornv1.QuotaList{}
+	require.NoError(t, k8s.List(t.Context(), stored, &client.ListOptions{Namespace: "org-a"}))
+	require.Len(t, stored.Items, 1)
+	require.Equal(t, quotaName, stored.Items[0].Name)
 }
