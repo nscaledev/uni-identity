@@ -30,6 +30,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
+	coremetrics "github.com/unikorn-cloud/core/pkg/server/middleware/metrics"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -37,7 +38,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
-	redmetrics "github.com/unikorn-cloud/identity/pkg/middleware/metrics"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -104,13 +104,14 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	//   establishes a trace ID that is used to correlate logs with user issues.
 	// * Logging ensures at least all errors are captured by logging telemetry and we
 	//   can trigger alerts based on them.
+	// * Metrics tracks each route before resolution can reject it.
 	// * Route resolver provides routing and OpenAPI information to child middlewares.
 	// * CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
 	opentelemetry := opentelemetry.New(constants.Application, constants.Version)
 	logging := logging.New()
 	routeresolver := routeresolver.New(schema)
 
-	metrics, err := redmetrics.New(otel.Meter(constants.Application))
+	metrics, err := coremetrics.New(otel.Meter(constants.Application))
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +120,8 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 
 	router.Use(opentelemetry.Middleware)
 	router.Use(logging.Middleware)
-	router.Use(routeresolver.Middleware)
 	router.Use(metrics.Middleware)
+	router.Use(routeresolver.Middleware)
 	router.Use(cors.Middleware)
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
