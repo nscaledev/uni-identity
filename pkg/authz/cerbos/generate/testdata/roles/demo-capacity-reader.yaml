@@ -1,0 +1,17 @@
+# Placeholder fixture for an out-of-repo service exposing open-vocabulary
+# endpoints (demo:*) with both organization and project buckets; the generator
+# must pass them through opaquely.  The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000103
+  labels:
+    unikorn-cloud.org/name: demo-capacity-reader
+spec:
+  scopes:
+    organization:
+      - name: demo:slots
+        operations: [read]
+    project:
+      - name: demo:tickets
+        operations: [read]
