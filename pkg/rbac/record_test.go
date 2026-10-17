@@ -22,11 +22,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func recordingContext(t *testing.T) (context.Context, *authz.Recorder) {
@@ -51,7 +54,7 @@ func TestAllowProjectScopeRecordsTheScope(t *testing.T) {
 	decisions := recorder.Decisions()
 	require.Len(t, decisions, 1)
 	require.Equal(t, resourceType2, decisions[0].Endpoint)
-	require.Equal(t, openapi.Read, decisions[0].Operation)
+	require.Equal(t, openapi.Read, decisions[0].Operation.Access)
 	require.Equal(t, ids.MustParseOrganizationID(organizationID), decisions[0].Scope.OrganizationID)
 	require.Equal(t, ids.MustParseProjectID(projectID), decisions[0].Scope.ProjectID)
 	require.True(t, decisions[0].Allowed)
@@ -161,7 +164,17 @@ func TestGrantCheckDoesNotFanOut(t *testing.T) {
 	}
 
 	require.NoError(t, rbac.AllowRole(ctx, role, ids.MustParseOrganizationID(organizationID)))
-	require.Empty(t, recorder.Decisions(), "a grant check is a precondition, not the request's operation")
+
+	// One decision for the grant, not one per permission the role confers.
+	decisions := recorder.Decisions()
+	require.Len(t, decisions, 1)
+	require.Equal(t, "identity:roles", decisions[0].Endpoint)
+	require.Equal(t, "grant", decisions[0].Operation.Action)
+
+	// A precondition, not the request's own operation, so it never becomes a
+	// record in its own right.
+	require.Equal(t, authz.Subordinate, decisions[0].Kind)
+	require.Empty(t, authz.Primaries(decisions))
 }
 
 // Authorization runs in controllers and internal paths that never install a
@@ -175,4 +188,27 @@ func TestGatesWithoutARecorder(t *testing.T) {
 		_ = rbac.AllowOrganizationScopeID(ctx, resourceType1, openapi.Read,
 			ids.MustParseOrganizationID(organizationID))
 	})
+}
+
+// The record has to say which grant a change relied on, not merely that one was
+// checked.  "A role was granted" does not distinguish a rename from somebody
+// giving themselves administrator.
+func TestGrantNamesTheRole(t *testing.T) {
+	t.Parallel()
+
+	ctx, recorder := recordingContext(t)
+
+	role := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "16fd2706-8baf-433b-82eb-8c7fada847da",
+			Labels: map[string]string{constants.NameLabel: "platform-admin"},
+		},
+	}
+
+	require.NoError(t, rbac.AllowRole(ctx, role, ids.MustParseOrganizationID(organizationID)))
+
+	decisions := recorder.Decisions()
+	require.Len(t, decisions, 1)
+	require.Equal(t, "platform-admin", decisions[0].ObjectName)
+	require.Equal(t, "16fd2706-8baf-433b-82eb-8c7fada847da", decisions[0].ObjectID.String())
 }

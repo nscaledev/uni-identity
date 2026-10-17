@@ -93,6 +93,23 @@ Two rules keep that record honest:
 Only allowed decisions are recorded today. Recording refusals has to wait until every service
 distinguishes a gate from a predicate, because a predicate refusing is routine filtering.
 
+### Stating the target explicitly
+
+The `On` family takes a target: the resource type, the resource itself, the access required, the
+action performed, and whether this is the operation the request is or a precondition of it. None of
+that is reliably recoverable from the request afterwards.
+
+- v2 APIs carry no organisation or project in the path.
+- An action sub-resource, such as starting an instance, is a `POST` exactly like creating one, so
+  the method says nothing about what happened.
+- A path ending in a sub-resource, such as a reference on a network, names the sub-resource rather
+  than the thing being changed.
+
+The older gates remain and keep working, so adopting this is incremental and no other service has
+to change. They record the scope, which is the part that matters most, but cannot name an object or
+an action, and their decisions count as preconditions. A consumer can therefore tell a migrated
+call site from an unmigrated one, rather than being silently given a worse record.
+
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 

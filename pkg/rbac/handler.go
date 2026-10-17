@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/google/uuid"
 	"github.com/spjmurray/go-util/pkg/set"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
@@ -66,17 +67,28 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 // It wraps the result so that a gate records exactly where it returns, and
 // only the public gates call it: the internal cascade uses the check functions
 // so that one question does not leave three decisions behind.
-func record(ctx context.Context, endpoint string, operation openapi.AclOperation, scope authz.Scope, err error) error {
+func record(ctx context.Context, target authz.Target, scope authz.Scope, err error) error {
 	if err == nil {
 		authz.Record(ctx, authz.Decision{
-			Endpoint:  endpoint,
-			Operation: operation,
-			Scope:     scope,
-			Allowed:   true,
+			Target:  target,
+			Scope:   scope,
+			Allowed: true,
 		})
 	}
 
 	return err
+}
+
+// deprecatedTarget describes a check made through one of the gates that predate
+// the explicit form.  Those callers state only the resource type and the access
+// required, so the record names no object and no action, and counts as a
+// precondition rather than the request's own operation.  Migrating a call site
+// to the On form is what fills those in.
+func deprecatedTarget(endpoint string, operation openapi.AclOperation) authz.Target {
+	return authz.Target{
+		Endpoint:  endpoint,
+		Operation: authz.Operation{Access: operation},
+	}
 }
 
 // parseScope recovers typed identifiers for a check made through one of the
@@ -103,7 +115,7 @@ func parseScope(organizationID, projectID string) authz.Scope {
 
 // AllowGlobalScope tries to allow the requested operation at the global scope.
 func AllowGlobalScope(ctx context.Context, endpoint string, operation openapi.AclOperation) error {
-	return record(ctx, endpoint, operation, authz.Scope{}, checkGlobalScope(ctx, endpoint, operation))
+	return record(ctx, deprecatedTarget(endpoint, operation), authz.Scope{}, checkGlobalScope(ctx, endpoint, operation))
 }
 
 // checkGlobalScope is AllowGlobalScope without the recording, for the internal
@@ -124,7 +136,7 @@ func checkGlobalScope(ctx context.Context, endpoint string, operation openapi.Ac
 func AllowOrganizationScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
 	scope := authz.Scope{OrganizationID: organizationID}
 
-	return record(ctx, endpoint, operation, scope, checkOrganizationScope(ctx, endpoint, operation, organizationID.String()))
+	return record(ctx, deprecatedTarget(endpoint, operation), scope, checkOrganizationScope(ctx, endpoint, operation, organizationID.String()))
 }
 
 // AllowOrganizationScopeReader is the variant of AllowOrganizationScope for callers that
@@ -149,7 +161,7 @@ func AllowOrganizationScopeReader(ctx context.Context, endpoint string, operatio
 // deal in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories)
 // and will be removed once those callers have migrated.
 func AllowOrganizationScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID string) error {
-	return record(ctx, endpoint, operation, parseScope(organizationID, ""), checkOrganizationScope(ctx, endpoint, operation, organizationID))
+	return record(ctx, deprecatedTarget(endpoint, operation), parseScope(organizationID, ""), checkOrganizationScope(ctx, endpoint, operation, organizationID))
 }
 
 // checkOrganizationScope is AllowOrganizationScope without the recording.
@@ -183,7 +195,7 @@ func checkOrganizationScope(ctx context.Context, endpoint string, operation open
 func AllowProjectScopeID(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
 	scope := authz.Scope{OrganizationID: organizationID, ProjectID: projectID}
 
-	return record(ctx, endpoint, operation, scope, checkProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String()))
+	return record(ctx, deprecatedTarget(endpoint, operation), scope, checkProjectScope(ctx, endpoint, operation, organizationID.String(), projectID.String()))
 }
 
 // AllowProjectScopeReader is the variant of AllowProjectScope for callers that hold a resource
@@ -208,7 +220,7 @@ func AllowProjectScopeReader(ctx context.Context, endpoint string, operation ope
 // in plain strings (e.g. IDs from API response bodies or pre-typed-ID repositories) and
 // will be removed once those callers have migrated.
 func AllowProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
-	return record(ctx, endpoint, operation, parseScope(organizationID, projectID), checkProjectScope(ctx, endpoint, operation, organizationID, projectID))
+	return record(ctx, deprecatedTarget(endpoint, operation), parseScope(organizationID, projectID), checkProjectScope(ctx, endpoint, operation, organizationID, projectID))
 }
 
 // checkProjectScope is AllowProjectScope without the recording.
@@ -439,6 +451,22 @@ func allowGrantProjectScope(ctx context.Context, endpoint string, operation open
 // The project case is why granting is subset-preserving rather than escalation-prone: a
 // caller may only ever grant a role whose permissions they already hold at the grant's
 // scope or broader.
+// grantTarget describes a role grant check, naming the role so a record can say
+// which grant a change relied on rather than merely that one was checked.
+func grantTarget(role *unikornv1.Role) authz.Target {
+	target := authz.Target{
+		Endpoint:   "identity:roles",
+		Operation:  authz.Action(openapi.Update, "grant"),
+		ObjectName: role.Labels[constants.NameLabel],
+	}
+
+	if id, err := uuid.Parse(role.Name); err == nil {
+		target.ObjectID = id
+	}
+
+	return target
+}
+
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	for _, endpoint := range role.Spec.Scopes.Global {
 		for _, operation := range endpoint.Operations {
@@ -463,6 +491,15 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 			}
 		}
 	}
+
+	// One decision for the grant, not one per permission the role confers.  A
+	// modest role is twenty checks, and recording each would bury the operation
+	// that was actually performed.
+	authz.Record(ctx, authz.Decision{
+		Target:  grantTarget(role),
+		Scope:   authz.Scope{OrganizationID: organizationID},
+		Allowed: true,
+	})
 
 	return nil
 }
