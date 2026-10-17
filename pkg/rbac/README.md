@@ -74,6 +74,25 @@ organization.
 Using a gate's `error` as a boolean, as `AllowX(...) == nil`, loses that distinction at exactly the
 point it matters, and is why the predicates exist.
 
+### Recorded decisions
+
+A gate records what it authorised, so that later middleware can say which organisation and project
+an operation affected. That fact cannot be recovered from the URL: v2 APIs address resources by ID
+alone and resolve tenancy from the resource's labels, so only the component that performed the
+check knows it. See [`pkg/authz`](../authz/README.md).
+
+Two rules keep that record honest:
+
+- **Only the public gates record.** Each gate is a thin wrapper over an unexported `check`
+  function, and every internal path uses `check`. A project check that falls back through
+  organisation and global scope is one question, not three, and recording each step would bury the
+  real decision. The same applies to `AllowRole`, which walks every permission a role confers.
+- **Predicates record nothing**, for the reasons above. A list of forty visible resources must not
+  leave forty decisions behind.
+
+Only allowed decisions are recorded today. Recording refusals has to wait until every service
+distinguishes a gate from a predicate, because a predicate refusing is routine filtering.
+
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 
