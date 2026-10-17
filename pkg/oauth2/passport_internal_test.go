@@ -1141,8 +1141,7 @@ func TestExternalUserinfoRejectsInactiveUserDespiteAllowExternalIdentity(t *test
 func TestExternalUserinfoStampsIssuer(t *testing.T) {
 	t.Parallel()
 
-	// sourceClaims.Issuer must equal the verbatim issuer so srcIssForSource can
-	// embed the correct src_iss in the resulting passport.
+	// sourceClaims.Issuer must equal the verbatim issuer the IdP emitted.
 	a, iss, trust, v := buildExternalUserinfoEnv(t, withAllowExternalIdentity(true))
 
 	tok := iss.token(t, externalTestAudience, emailNotInUserDB, time.Now().Add(30*time.Second))

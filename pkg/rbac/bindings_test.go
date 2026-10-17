@@ -786,6 +786,49 @@ func TestGroupRoleBindingWrongIssuerDoesNotMatch(t *testing.T) {
 	}
 }
 
+// TestBoundGroups pins that a passport carries only the groups that can change
+// a decision: bound for the authenticating issuer, sorted, without duplicates.
+func TestBoundGroups(t *testing.T) {
+	t.Parallel()
+
+	const issuer = "https://staff.example.com/"
+
+	r := rbac.New(nil, "ns", &rbac.Options{
+		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
+			{Issuer: issuer, Group: "SRE", RoleIDs: []string{"admin"}},
+			{Issuer: issuer, Group: "SRE", RoleIDs: []string{"reader"}},
+			{Issuer: issuer, Group: "Platform", RoleIDs: []string{"admin"}},
+			{Issuer: "https://other.example.com/", Group: "Other", RoleIDs: []string{"admin"}},
+		},
+	})
+
+	cases := []struct {
+		name   string
+		srcIss string
+		groups []string
+		want   []string
+	}{
+		{name: "bound and unbound returns the bound one", srcIss: issuer, groups: []string{"SRE", "Unused"}, want: []string{"SRE"}},
+		{name: "same name under another issuer returns none", srcIss: "https://third.example.com/", groups: []string{"SRE"}},
+		{name: "group bound only for another issuer returns none", srcIss: issuer, groups: []string{"Other"}},
+		{name: "two bindings on one group collapse", srcIss: issuer, groups: []string{"SRE"}, want: []string{"SRE"}},
+		{name: "repeated token group collapses", srcIss: issuer, groups: []string{"SRE", "SRE"}, want: []string{"SRE"}},
+		{name: "result is sorted", srcIss: issuer, groups: []string{"SRE", "Platform"}, want: []string{"Platform", "SRE"}},
+		{name: "case mismatch returns none", srcIss: issuer, groups: []string{"sre"}},
+		{name: "nil input returns nil", srcIss: issuer},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := r.BoundGroups(tc.srcIss, tc.groups); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("BoundGroups(%q, %q) = %q, want %q", tc.srcIss, tc.groups, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestUnmatchedGroupsFallsThroughToMembershipResolution pins that replace
 // semantics do not fire when no group binding matches (a case mismatch here) and
 // that membership resolution proceeds as normal. The fake client has no

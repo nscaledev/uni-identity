@@ -356,6 +356,12 @@ UNI-issued interactive-login access token carries no groups claim at all, even w
 federates to the same IdP. Only a token presented directly as a bearer, or as the token-exchange
 `subject_token`, can carry groups.
 
+The passport that the token exchange mints from an external token carries the bound groups only.
+`BoundGroups(srcIss, groups)` returns them: the sorted, deduplicated `Group` values of the group
+bindings that match the issuer and the token's groups. Only group role bindings read IdP groups, so
+a passport with just those groups resolves the same bindings. Unbound IdP groups stay out of the
+passport, so its size depends on the Helm values and not on the IdP.
+
 **Impersonated hops never carry groups. This is by design, not by gap.**
 `processImpersonatedPrincipalACL` passes `nil` for `groups`, and, independently, always evaluates
 impersonated principals against the UNI sentinel issuer, which no group binding can be configured
