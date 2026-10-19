@@ -72,10 +72,12 @@ Each role also reports what it permits:
 - `scopes` is the role's effective scopes, from `Role.EffectiveScopes()`. For a normal role that is
   `spec.scopes`. For an aggregating role (see the [role controller](../../controllers/role/README.md))
   it is `status.effectiveScopes`, so `administrator` reports the service scopes it holds, not just
-  its description. An aggregating role the controller has not reconciled yet reports no scopes,
-  matching what the ACL build gives its holders.
+  its description. An aggregating role the controller has not reconciled yet reports what
+  `unikornv1.BootstrapRoles` gives it (its own `spec.scopes` plus what its `roleRefs` hold), the
+  same as the ACL build gives its holders, and is not grantable.
 - `aggregatedFrom` names each source role (ID, name, description) an aggregating role takes scopes
-  from. It is absent for a role that does not aggregate.
+  from. Protected sources (for example `administrator-base`) are left out, as they are left out of
+  the list. It is absent for a role that does not aggregate or has only protected sources.
 
 The per-source `scopesHash` in the role status is not exposed. It is for the controller and the change
 record, not for customers.

@@ -43,7 +43,10 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
+// convert returns one role as the API shows it.  Protected sources are
+// internal, so they are left out of aggregatedFrom as they are left out of
+// the list.
+func convert(in unikornv1.Role, grantable bool, protected map[string]bool) openapi.RoleRead {
 	out := openapi.RoleRead{
 		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),
 		Grantable: grantable,
@@ -54,6 +57,10 @@ func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
 		sources := make([]openapi.RoleSource, 0, len(in.Status.AggregatedFrom))
 
 		for _, source := range in.Status.AggregatedFrom {
+			if protected[source.ID] {
+				continue
+			}
+
 			s := openapi.RoleSource{
 				Id:   source.ID,
 				Name: source.Name,
@@ -66,7 +73,9 @@ func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
 			sources = append(sources, s)
 		}
 
-		out.AggregatedFrom = &sources
+		if len(sources) > 0 {
+			out.AggregatedFrom = &sources
+		}
 	}
 
 	return out
@@ -104,7 +113,7 @@ func convertEndpoints(in []unikornv1.RoleScope) *openapi.AclEndpoints {
 	return &out
 }
 
-func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID) openapi.Roles {
+func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID, protected map[string]bool) openapi.Roles {
 	// Allocated rather than declared nil: the schema types this response as a
 	// non-nullable array, and a nil slice marshals to null, which response
 	// validation rejects.
@@ -113,7 +122,7 @@ func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.
 	for _, resource := range in.Items {
 		grantable := rbac.AllowRole(ctx, &resource, organizationID) == nil
 
-		out = append(out, convert(resource, grantable))
+		out = append(out, convert(resource, grantable, protected))
 	}
 
 	slices.SortFunc(out, func(a, b openapi.RoleRead) int {
@@ -130,6 +139,24 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return nil, err
 	}
 
+	// An aggregating role the controller has not reconciled yet reports what
+	// the ACL build gives its holders.  This needs every role, protected
+	// base roles included.
+	all := make(map[string]*unikornv1.Role, len(result.Items))
+	protected := map[string]bool{}
+
+	for i := range result.Items {
+		role := &result.Items[i]
+
+		all[role.Name] = role
+
+		if role.Spec.Protected {
+			protected[role.Name] = true
+		}
+	}
+
+	unikornv1.BootstrapRoles(all)
+
 	// Protected roles are internal and never exposed.  Ungrantable roles ARE
 	// exposed (grantable: false), because a client has to be able to resolve
 	// every role ID a group carries in order to display it.  These are two
@@ -138,5 +165,5 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return role.Spec.Protected
 	})
 
-	return convertList(ctx, result, organizationID), nil
+	return convertList(ctx, result, organizationID, protected), nil
 }

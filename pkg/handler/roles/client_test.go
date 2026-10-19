@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/roles"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -120,8 +121,8 @@ func TestListEmptyCatalogueMarshalsAsAnEmptyArray(t *testing.T) {
 	require.JSONEq(t, "[]", string(body))
 }
 
-func aggregatingRole(name string, effective []unikornv1.RoleScope, sources ...unikornv1.RoleAggregationSource) *unikornv1.Role {
-	role := newRole(name, false, nil)
+func adminRole(effective []unikornv1.RoleScope, sources ...unikornv1.RoleAggregationSource) *unikornv1.Role {
+	role := newRole("administrator", false, nil)
 	role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{FlattenToOrganization: true}
 	role.Status.EffectiveScopes = &unikornv1.RoleScopes{Organization: effective}
 	role.Status.AggregatedFrom = sources
@@ -166,7 +167,7 @@ func listAsAdmin(t *testing.T, objects ...*unikornv1.Role) map[string]openapi.Ro
 func TestListShowsEffectiveScopesAndSources(t *testing.T) {
 	t.Parallel()
 
-	admin := aggregatingRole("administrator",
+	admin := adminRole(
 		[]unikornv1.RoleScope{
 			{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
 			{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
@@ -222,13 +223,13 @@ func TestListShowsPlainRoleScopes(t *testing.T) {
 func TestListFollowsChangedSources(t *testing.T) {
 	t.Parallel()
 
-	before := aggregatingRole("administrator",
+	before := adminRole(
 		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
 		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
 	)
 	require.Len(t, *listAsAdmin(t, before)["administrator"].AggregatedFrom, 1)
 
-	after := aggregatingRole("administrator",
+	after := adminRole(
 		[]unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
 		unikornv1.RoleAggregationSource{ID: "base-id", Name: "administrator-base", ScopesHash: "sha256:aa"},
 	)
@@ -252,6 +253,60 @@ func TestListUnreconciledAggregatingRoleHoldsNothing(t *testing.T) {
 
 	require.Nil(t, got.Scopes.Organization)
 	require.Nil(t, got.AggregatedFrom)
+}
+
+// TestListUnreconciledAggregatingRoleReportsBootstrapScopes checks an
+// aggregating role the controller has not reconciled yet reports what its
+// roleRefs hold, as the ACL build gives its holders, and is not grantable.
+func TestListUnreconciledAggregatingRoleReportsBootstrapScopes(t *testing.T) {
+	t.Parallel()
+
+	base := newRole("administrator-base", true, []unikornv1.RoleScope{
+		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+
+	admin := newRole("administrator", false, nil)
+	admin.Spec.AggregationRule = &unikornv1.RoleAggregationRule{RoleRefs: []string{base.Name}, FlattenToOrganization: true}
+
+	got := listAsAdmin(t, base, admin)["administrator"]
+
+	require.NotNil(t, got.Scopes.Organization)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+	require.False(t, got.Grantable)
+}
+
+// TestListHidesProtectedSources checks a protected source role is left out
+// of aggregatedFrom, as it is left out of the list.
+func TestListHidesProtectedSources(t *testing.T) {
+	t.Parallel()
+
+	base := newRole("platform-secret-base", true, []unikornv1.RoleScope{
+		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+	base.Annotations = map[string]string{"unikorn-cloud.org/description": "internal: do not expose"}
+
+	fleet := newRole("fleet-operator", false, []unikornv1.RoleScope{
+		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+
+	admin := newRole("administrator", false, nil)
+	admin.Spec.AggregationRule = &unikornv1.RoleAggregationRule{RoleRefs: []string{base.Name, fleet.Name}, FlattenToOrganization: true}
+
+	res := aggregation.Compute(t.Context(), map[string]*unikornv1.Role{base.Name: base, fleet.Name: fleet, admin.Name: admin})[admin.Name]
+	require.Len(t, res.AggregatedFrom, 2)
+
+	byName := listAsAdmin(t, base, fleet, adminRole(res.EffectiveScopes.Organization, res.AggregatedFrom...))
+	require.NotContains(t, byName, "platform-secret-base")
+
+	got := byName["administrator"]
+	require.NotNil(t, got.AggregatedFrom)
+	require.Equal(t, []openapi.RoleSource{{Id: "fleet-operator", Name: "fleet-operator"}}, *got.AggregatedFrom)
+
+	// Only protected sources: nothing to show.
+	byName = listAsAdmin(t, base, adminRole(res.EffectiveScopes.Organization, res.AggregatedFrom[1]))
+	require.Nil(t, byName["administrator"].AggregatedFrom)
 }
 
 func ptr[T any](v T) *T {

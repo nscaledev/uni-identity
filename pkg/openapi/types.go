@@ -670,8 +670,9 @@ type ResponseType string
 // RoleRead A role.
 type RoleRead struct {
 	// AggregatedFrom The source roles an aggregating role (for example the organization
-	// administrator) takes its scopes from. Absent for a role that does
-	// not aggregate.
+	// administrator) takes its scopes from. Internal source roles are not
+	// listed. Absent for a role that does not aggregate or has only
+	// internal sources.
 	AggregatedFrom *[]RoleSource `json:"aggregatedFrom,omitempty"`
 
 	// Grantable Whether the calling principal holds every permission in this role
