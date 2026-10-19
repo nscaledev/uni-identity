@@ -29,6 +29,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -117,16 +119,12 @@ func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*
 		snapshot[roles.Items[i].Name] = &roles.Items[i]
 	}
 
-	// The list comes from the cache and may lag the get, so use the fresh copy.
+	// Use the copy this reconcile was asked about, in case the list differs.
 	snapshot[role.Name] = role
 
 	result, ok := aggregation.Compute(ctx, snapshot)[role.Name]
 	if !ok {
 		return nil, fmt.Errorf("%w: no aggregation result for role %s", errNoResult, role.Name)
-	}
-
-	if len(role.Spec.Scopes.Global)+len(role.Spec.Scopes.Organization)+len(role.Spec.Scopes.Project) > 0 {
-		log.FromContext(ctx).Info("aggregating role has spec.scopes, they are ignored: move them to a base role in roleRefs")
 	}
 
 	scopes := result.EffectiveScopes
@@ -137,25 +135,35 @@ func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*
 		Conditions:      slices.Clone(role.Status.Conditions),
 	}
 
-	unikornv1core.UpdateCondition(&status.Conditions, unikornv1core.ConditionAvailable, result.Available.Status, result.Available.Reason, result.Available.Message)
-	unikornv1core.UpdateCondition(&status.Conditions, unikornv1.RoleConditionGrantable, result.Grantable.Status, result.Grantable.Reason, result.Grantable.Message)
-
-	for _, skipped := range result.Skipped {
-		log.FromContext(ctx).Info("selector match not aggregated", "source", skipped)
-	}
+	// ObservedGeneration tells grant checks the status matches the current
+	// aggregationRule (see Role.AggregationReady).
+	setCondition(status, role.Generation, unikornv1core.ConditionAvailable, result.Available)
+	setCondition(status, role.Generation, unikornv1.RoleConditionGrantable, result.Grantable)
 
 	return status, nil
+}
+
+func setCondition(status *unikornv1.RoleStatus, generation int64, t unikornv1core.ConditionType, c aggregation.Condition) {
+	meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+		Type:               string(t),
+		Status:             metav1.ConditionStatus(c.Status),
+		Reason:             c.Reason,
+		Message:            c.Message,
+		ObservedGeneration: generation,
+	})
 }
 
 // recordChanges emits an Event and a log line when the effective scopes
 // change, naming each source that was added, removed or changed with its old
 // and new hash.  The hashes let a reader see exactly which source moved.
 func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, previous *unikornv1.RoleStatus) {
-	if equality.Semantic.DeepEqual(previous.EffectiveScopes, role.Status.EffectiveScopes) {
-		return
-	}
-
 	log := log.FromContext(ctx)
+
+	r.recordConditionChanges(ctx, role, previous)
+
+	if len(role.Spec.Scopes.Global)+len(role.Spec.Scopes.Organization)+len(role.Spec.Scopes.Project) > 0 {
+		log.Info("aggregating role has spec.scopes, they are ignored: move them to a base role in roleRefs")
+	}
 
 	oldScopes := unikornv1.RoleScopes{}
 	if previous.EffectiveScopes != nil {
@@ -164,6 +172,11 @@ func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, pr
 
 	oldHash := aggregation.Hash(oldScopes)
 	newHash := aggregation.Hash(role.EffectiveScopes())
+
+	// Compare by hash, so going from no status to empty scopes is no change.
+	if oldHash == newHash {
+		return
+	}
 
 	changes := sourceChanges(previous.AggregatedFrom, role.Status.AggregatedFrom)
 	if len(changes) == 0 {
@@ -183,6 +196,28 @@ func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, pr
 			"oldHash", oldHash, "newHash", newHash,
 			"source", change.id, "sourceName", change.name, "change", change.kind,
 			"oldSourceHash", change.oldHash, "newSourceHash", change.newHash)
+	}
+}
+
+// recordConditionChanges emits a Warning Event and a log line when Available
+// or Grantable turns False, or changes reason or message while False, so a
+// stuck role is loud.  While stuck its scopes are frozen, so the scope change
+// record alone would say nothing.
+func (r *Reconciler) recordConditionChanges(ctx context.Context, role *unikornv1.Role, previous *unikornv1.RoleStatus) {
+	for _, t := range []unikornv1core.ConditionType{unikornv1core.ConditionAvailable, unikornv1.RoleConditionGrantable} {
+		current := meta.FindStatusCondition(role.Status.Conditions, string(t))
+		if current == nil || current.Status != metav1.ConditionFalse {
+			continue
+		}
+
+		old := meta.FindStatusCondition(previous.Conditions, string(t))
+		if old != nil && old.Status == current.Status && old.Reason == current.Reason && old.Message == current.Message {
+			continue
+		}
+
+		r.recorder.Eventf(role, nil, corev1.EventTypeWarning, current.Reason, "Aggregate", "%s is False: %s", t, current.Message)
+
+		log.FromContext(ctx).Info("role condition is false", "condition", t, "reason", current.Reason, "message", current.Message)
 	}
 }
 

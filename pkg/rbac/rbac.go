@@ -319,6 +319,10 @@ func (r *RBAC) getRoles(ctx context.Context) (map[string]*unikornv1.Role, error)
 		out[result.Items[i].Name] = &result.Items[i]
 	}
 
+	// Aggregating roles the role controller has not reconciled yet hold what
+	// their roleRefs hold, so admins keep working while a role is converted.
+	unikornv1.BootstrapRoles(out)
+
 	return out, nil
 }
 

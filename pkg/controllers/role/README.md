@@ -45,7 +45,7 @@ status:
       description: ...
       scopesHash: sha256:...
   conditions:
-    - type: Available           # Aggregated | MissingRoleRef | Cycle | Errored
+    - type: Available           # Aggregated | MissingRoleRef | Cycle | InvalidSelector
     - type: Grantable           # Grantable | NotGrantable
 ```
 
@@ -75,7 +75,11 @@ logged. Its own hand-written scopes live in a protected base role that it
 - **`roleRefs`:** always used, and may name protected roles (the base roles).
   Global scopes are still dropped.
 - **A role never selects itself.**
-- **An empty selector is refused**, because it would select every role.
+- **Selectors may only use `aggregate-to-*` match labels set to `"true"`.** An
+  empty selector, a `matchExpressions` entry (such as `DoesNotExist`) or any
+  other label is refused, because it could select every role.
+- **A role being deleted** (deletion timestamp set) no longer counts as a
+  source.
 - A source can itself be an aggregating role. Its effective scopes are used,
   which is how the chain works: `reader` → `auditor` and `user`; `auditor` and
   `user` → `administrator`.
@@ -88,16 +92,52 @@ A bad aggregation must never empty an org's admin ACL.
 | --- | --- | --- |
 | A `roleRef` names a missing role | last value kept | `False`, `MissingRoleRef` |
 | The role is in a cycle | last value kept (every role in the cycle) | `False`, `Cycle` |
-| A selector is invalid or empty | last value kept | `False`, `Errored` |
+| A selector is not allowed | last value kept | `False`, `InvalidSelector` |
 
-A role above a broken one is not itself broken: it takes the broken role's
-kept scopes.
+- **"Last value"** is the last status, without global scopes. Before the
+  controller has ever written status, it is the role's own `spec.scopes` plus
+  what its `roleRefs` hold, so adding an `aggregationRule` never takes
+  anything away, even with a bad ref.
+- **Cycles** are found with Tarjan's strongly connected components, so every
+  role in a cycle is flagged, however it is reached.
+- **A role above a broken one** is not itself broken: it takes the broken
+  role's kept scopes.
+- **Turning False is loud:** a Warning Event and a log line, once per change of
+  reason or message.
+
+## Before the first reconcile
+
+Two rules cover the time between a role becoming aggregating and the
+controller writing its status:
+
+- **Holders keep working.** The ACL build (`unikornv1.BootstrapRoles`, called
+  from `pkg/rbac`) gives the role its own `spec.scopes` plus what its
+  `roleRefs` hold. For a converted built-in role that is its base role, which
+  holds exactly its old hand-written scopes. Without this, every org admin
+  would hold nothing until the reconcile, and the one-minute ACL cache would
+  keep that.
+- **Nobody can grant it.** `rbac.AllowRole` refuses an aggregating role until
+  `Role.AggregationReady()`: status written for the current generation
+  (`Available` carries `observedGeneration`). Otherwise a caller holding
+  nothing could grant a role that is about to hold far more.
+
+Global scopes are never read from status, whoever wrote it.
 
 ## Grantable condition
 
 `Grantable` runs the real grant check (`rbac.AllowRole`) from a holder of the
-aggregating role's effective scopes against each source its selectors matched.
-It is `False`, naming each source it can't grant, if any fails.
+aggregating role's effective scopes against every non-protected role its
+selectors match. It is `False`, naming each role it can't grant, if any fails.
+
+A matched role that is used is held, so it passes. The useful failures are:
+
+- a labelled role with global scopes, which is skipped and which no org admin
+  can ever grant
+- a stuck role (kept scopes) that can't grant a newly labelled role
+
+The holder ACL puts project scopes in one linked project. A holder of a role
+without `flattenToOrganization` whose group has no linked project can grant
+less than the condition says.
 
 The grant-tree unit test only sees the uni-identity chart. Roles also come
 from k8s-deploy-unikorn and per-environment config, so this condition is the

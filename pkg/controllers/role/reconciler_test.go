@@ -257,3 +257,27 @@ func TestWatchEnqueuesEveryAggregatingRole(t *testing.T) {
 	require.ElementsMatch(t, []string{"fleet-operator", "administrator", "user"}, names)
 	require.NotContains(t, strings.Join(names, ","), "unrelated")
 }
+
+func TestReconcileWarnsOnceWhenStuck(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole()
+	admin.Spec.AggregationRule.RoleRefs = []string{"administrator-base"}
+
+	r, cli, recorder := setup(t, admin)
+
+	reconcileRole(t, r, "administrator")
+
+	events := drain(recorder)
+	require.Len(t, events, 1)
+	require.Contains(t, events[0], "Warning")
+	require.Contains(t, events[0], unikornv1.RoleReasonMissingRoleRef)
+
+	available, err := unikornv1core.GetCondition(getRole(t, cli, "administrator").Status.Conditions, unikornv1core.ConditionAvailable)
+	require.NoError(t, err)
+	require.Equal(t, getRole(t, cli, "administrator").Generation, available.ObservedGeneration)
+
+	reconcileRole(t, r, "administrator")
+
+	require.Empty(t, drain(recorder), "a role that stays stuck does not warn again")
+}

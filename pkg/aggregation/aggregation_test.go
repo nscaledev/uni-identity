@@ -24,10 +24,15 @@ import (
 	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/ids"
+	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const testOrganizationID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
 func scope(name string, ops ...unikornv1.Operation) unikornv1.RoleScope {
 	return unikornv1.RoleScope{Name: name, Operations: ops}
@@ -376,4 +381,176 @@ func TestEffectiveScopesFailsClosed(t *testing.T) {
 	role := newRole("administrator", aggregates(true), org(scope("svc:ignored", unikornv1.Read)))
 
 	require.Empty(t, role.EffectiveScopes().Organization)
+}
+
+func refsOnly(refs ...string) roleOption {
+	return func(r *unikornv1.Role) {
+		r.Spec.AggregationRule = &unikornv1.RoleAggregationRule{RoleRefs: refs}
+	}
+}
+
+// TestCycleThroughFinishedRole checks every role in a cycle is flagged, even
+// when the cycle is reached through a role that was already computed:
+// a -> c -> b -> a.
+func TestCycleThroughFinishedRole(t *testing.T) {
+	t.Parallel()
+
+	roles := catalogue(
+		newRole("a", refsOnly("b", "c")),
+		newRole("b", refsOnly("a")),
+		newRole("c", refsOnly("b")),
+	)
+
+	results := aggregation.Compute(t.Context(), roles)
+
+	for _, id := range []string{"a", "b", "c"} {
+		require.Equalf(t, unikornv1.RoleReasonCycle, results[id].Available.Reason, "%s should be in the cycle", id)
+	}
+}
+
+// TestBadRefOnConversionKeepsScopes checks that turning a role with
+// hand-written scopes into an aggregating one with a bad ref does not empty
+// it before the controller has ever written status.
+func TestBadRefOnConversionKeepsScopes(t *testing.T) {
+	t.Parallel()
+
+	roles := catalogue(
+		newRole("administrator", org(scope("identity:groups", unikornv1.Create)), refsOnly("typo")),
+	)
+
+	result := aggregation.Compute(t.Context(), roles)["administrator"]
+
+	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, result.Available.Reason)
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create)}, result.EffectiveScopes.Organization)
+}
+
+// TestGlobalScopesInStatusAreNeverKept checks global scopes someone wrote
+// into status are dropped, both when the controller keeps the last scopes
+// and when a reader asks for the effective scopes.
+func TestGlobalScopesInStatusAreNeverKept(t *testing.T) {
+	t.Parallel()
+
+	tampered := lastStatus(unikornv1.RoleScopes{Global: []unikornv1.RoleScope{scope("identity:organizations", unikornv1.Create)}})
+
+	roles := catalogue(newRole("a", refsOnly("missing"), tampered))
+
+	require.Empty(t, aggregation.Compute(t.Context(), roles)["a"].EffectiveScopes.Global)
+	require.Empty(t, newRole("a", refsOnly("x"), tampered).EffectiveScopes().Global)
+}
+
+// TestMatchExpressionSelectorRefused checks a selector that could match
+// every role is refused, not only the empty selector.
+func TestMatchExpressionSelectorRefused(t *testing.T) {
+	t.Parallel()
+
+	roles := catalogue(
+		newRole("agg"),
+		newRole("x", org(scope("radar:secret", unikornv1.Delete))),
+	)
+
+	roles["agg"].Spec.AggregationRule = &unikornv1.RoleAggregationRule{
+		RoleSelectors: []metav1.LabelSelector{{MatchExpressions: []metav1.LabelSelectorRequirement{
+			{Key: "nope", Operator: metav1.LabelSelectorOpDoesNotExist},
+		}}},
+	}
+
+	result := aggregation.Compute(t.Context(), roles)["agg"]
+
+	require.Equal(t, unikornv1.RoleReasonInvalidSelector, result.Available.Reason)
+	require.Empty(t, result.AggregatedFrom)
+	require.Empty(t, result.EffectiveScopes.Organization)
+}
+
+// TestNonAggregateLabelSelectorRefused checks a selector on any other label
+// is refused.
+func TestNonAggregateLabelSelectorRefused(t *testing.T) {
+	t.Parallel()
+
+	admin := newRole("administrator")
+	admin.Spec.AggregationRule = &unikornv1.RoleAggregationRule{
+		RoleSelectors: []metav1.LabelSelector{{MatchLabels: map[string]string{coreconstants.NameLabel: "fleet-operator"}}},
+	}
+
+	roles := catalogue(admin, newRole("fleet-operator", org(scope("radar:topology", unikornv1.Read))))
+
+	require.Equal(t, unikornv1.RoleReasonInvalidSelector, aggregation.Compute(t.Context(), roles)["administrator"].Available.Reason)
+}
+
+// TestUnreconciledAggregatingRoleIsNotGrantable checks a caller with no
+// scopes cannot grant an aggregating role the controller has not
+// reconciled, which would otherwise pass because it holds nothing yet.
+func TestUnreconciledAggregatingRoleIsNotGrantable(t *testing.T) {
+	t.Parallel()
+
+	organizations := openapi.AclOrganizationList{{Id: testOrganizationID}}
+	ctx := rbac.NewContext(t.Context(), &openapi.Acl{Organizations: &organizations})
+
+	err := rbac.AllowRole(ctx, newRole("administrator", refsOnly("administrator-base")), ids.MustParseOrganizationID(testOrganizationID))
+	require.Error(t, err)
+}
+
+// TestStaleGenerationIsNotGrantable checks a role whose aggregationRule
+// changed since the controller last wrote status cannot be granted until it
+// catches up.
+func TestStaleGenerationIsNotGrantable(t *testing.T) {
+	t.Parallel()
+
+	role := newRole("administrator", refsOnly("administrator-base"), lastStatus(unikornv1.RoleScopes{}))
+	role.Generation = 2
+	role.Status.Conditions = []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue, ObservedGeneration: 1}}
+
+	require.False(t, role.AggregationReady())
+
+	role.Status.Conditions[0].ObservedGeneration = 2
+
+	require.True(t, role.AggregationReady())
+}
+
+// TestLabelledGlobalRoleIsNotGrantable checks a role labelled for
+// aggregation that has global scopes is skipped, and Grantable names it,
+// because no org admin can ever grant it.
+func TestLabelledGlobalRoleIsNotGrantable(t *testing.T) {
+	t.Parallel()
+
+	roles := catalogue(
+		newRole("administrator", aggregates(true)),
+		newRole("svc-global", aggregateTo("administrator"), global(scope("svc:everything", unikornv1.Read))),
+	)
+
+	result := aggregation.Compute(t.Context(), roles)["administrator"]
+
+	require.Equal(t, corev1.ConditionTrue, result.Available.Status)
+	require.Equal(t, corev1.ConditionFalse, result.Grantable.Status)
+	require.Contains(t, result.Grantable.Message, "svc-global")
+}
+
+// TestDeletingSourceIsNotUsed checks a source held by a finalizer while it is
+// deleted stops counting at once.
+func TestDeletingSourceIsNotUsed(t *testing.T) {
+	t.Parallel()
+
+	deleting := newRole("fleet-operator", aggregateTo("administrator"), org(scope("radar:topology", unikornv1.Read)))
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+
+	result := aggregation.Compute(t.Context(), catalogue(newRole("administrator", aggregates(true)), deleting))["administrator"]
+
+	require.Empty(t, result.EffectiveScopes.Organization)
+}
+
+// TestBootstrapRolesKeepsAdminsWorking checks that before the controller has
+// run, the ACL build gives a converted role what its base role holds.
+func TestBootstrapRolesKeepsAdminsWorking(t *testing.T) {
+	t.Parallel()
+
+	roles := catalogue(
+		newRole("administrator-base", protected(), org(scope("identity:groups", unikornv1.Create)), global(scope("svc:everything", unikornv1.Read))),
+		newRole("administrator", aggregates(true, "administrator-base")),
+	)
+
+	unikornv1.BootstrapRoles(roles)
+
+	scopes := roles["administrator"].EffectiveScopes()
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create)}, scopes.Organization)
+	require.Empty(t, scopes.Global)
 }
