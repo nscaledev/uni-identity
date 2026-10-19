@@ -86,9 +86,10 @@ func loadChartValues(t *testing.T) chartValues {
 }
 
 // chartRoleResources builds the Role resources charts/identity/templates/roles.yaml
-// renders with aggregation.builtinRoles on, keyed by name (the template derives each ID
-// from the name, so names stand in for IDs here): aggregateTo becomes aggregate-to-*
-// labels, and an aggregationRule selects aggregate-to-<its name> and refs its roleRefs.
+// renders with aggregation.builtinRoles on, keyed by role ID (the template derives each ID
+// from the name with resource.id, which unikornv1.ChartRoleID mirrors): aggregateTo
+// becomes aggregate-to-* labels, and an aggregationRule selects aggregate-to-<its name>
+// and refs the IDs of its roleRefs.
 // With it off, each built-in role renders its base role's scopes inline, which
 // TestBuiltinRolesUnchangedByAggregation shows is the same set.
 func chartRoleResources(t *testing.T) map[string]*unikornv1.Role {
@@ -98,7 +99,7 @@ func chartRoleResources(t *testing.T) map[string]*unikornv1.Role {
 
 	for name, in := range loadChartValues(t).Roles {
 		role := asRole(in)
-		role.Name = name
+		role.Name = unikornv1.ChartRoleID(name)
 		role.Labels = map[string]string{coreconstants.NameLabel: name}
 
 		for _, target := range in.AggregateTo {
@@ -110,15 +111,25 @@ func chartRoleResources(t *testing.T) map[string]*unikornv1.Role {
 				RoleSelectors: []metav1.LabelSelector{
 					{MatchLabels: map[string]string{unikornv1.AggregateToLabel(name): "true"}},
 				},
-				RoleRefs:              in.AggregationRule.RoleRefs,
+				RoleRefs:              chartRoleIDs(in.AggregationRule.RoleRefs),
 				FlattenToOrganization: in.AggregationRule.FlattenToOrganization,
 			}
 		}
 
-		out[name] = role
+		out[role.Name] = role
 	}
 
 	return out
+}
+
+func chartRoleIDs(names []string) []string {
+	ids := make([]string, len(names))
+
+	for i, name := range names {
+		ids[i] = unikornv1.ChartRoleID(name)
+	}
+
+	return ids
 }
 
 // loadChartRoles returns the chart's roles with the scopes each one really holds: an
@@ -130,7 +141,14 @@ func loadChartRoles(t *testing.T) map[string]chartRole {
 	roles := loadChartValues(t).Roles
 	results := aggregation.Compute(t.Context(), chartRoleResources(t))
 
-	for name, result := range results {
+	names := make(map[string]string, len(roles))
+	for name := range roles {
+		names[unikornv1.ChartRoleID(name)] = name
+	}
+
+	for id, result := range results {
+		name := names[id]
+
 		require.Equalf(t, corev1.ConditionTrue, result.Available.Status, "%s: %s", name, result.Available.Message)
 		require.Equalf(t, corev1.ConditionTrue, result.Grantable.Status, "%s: %s", name, result.Grantable.Message)
 
