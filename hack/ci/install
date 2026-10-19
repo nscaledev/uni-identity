@@ -162,6 +162,23 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
+# ── Wait for the built-in roles to aggregate ──────────────────────────────────
+# With aggregation.builtinRoles on, the built-in roles hold nothing until the
+# role controller has written their effective scopes, so fixtures and tests
+# created before that would race it.
+BUILTIN_AGGREGATE=$(helm get values "${RELEASE_NAME}" -n "${NAMESPACE}" --all -o json | jq -r '.aggregation.builtinRoles // false')
+if [[ "${BUILTIN_AGGREGATE}" == true ]]; then
+  echo "==> Waiting for the built-in roles to be Available..." >&2
+  kubectl wait --for=condition=Available roles.identity.unikorn-cloud.org \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME},unikorn-cloud.org/name in (administrator,auditor,user,reader)" \
+    -n "${NAMESPACE}" --timeout=120s >&2
+  if [[ $(kubectl get roles.identity.unikorn-cloud.org -n "${NAMESPACE}" -o name \
+    -l "app.kubernetes.io/instance=${RELEASE_NAME},unikorn-cloud.org/name in (administrator,auditor,user,reader)" | wc -l) -ne 4 ]]; then
+    echo "ERROR: expected 4 built-in roles in ${NAMESPACE}" >&2
+    exit 1
+  fi
+fi
+
 echo "==> Identity installed successfully." >&2
 
 # ── Output .env fragment to stdout ───────────────────────────────────────────

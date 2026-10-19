@@ -573,7 +573,11 @@ roles:
   # With it off, each renders as a plain role holding its base role's scopes.
   # The role IDs are the same either way, so every group that names them is
   # too.  The chain is fixed: reader, user and auditor must ref exactly their
-  # own base role.  See pkg/controllers/role/README.md.
+  # own base role, aggregateTo is exactly as below, and administrator and
+  # auditor flatten while user and reader don't.  The render and the
+  # admission policy refuse any other shape.  With aggregation.builtinRoles
+  # off none of this is checked: these roles render plain.
+  # See pkg/controllers/role/README.md.
   administrator:
     description: Organization administrator
     aggregationRule:
@@ -617,14 +621,21 @@ aggregation:
   # release is fully rolled out: an old CRD drops aggregationRule and an old
   # server reads spec.scopes, and either leaves every holder with nothing.
   # On a helm upgrade the chart checks the installed CRD and refuses to render.
+  # Turn it on only once unikorn-role-controller is Ready: the controller
+  # writes the effective scopes, so until it runs the built-in roles hold
+  # nothing.  Alert on a Role with Grantable or Available False, and on the
+  # controller being down, before turning it on.
+  # Must be a bool: a string "false" fails the render.
   builtinRoles: false
 
   # A Role in the release namespace may carry an aggregate-to-* label only if
   # its name is on this list, it is not protected, it has no global scopes, no
   # identity:*, credential (.../accesskeys) or platform-only scopes (scopes
-  # this chart's roles only grant globally), and it does not itself aggregate
+  # only granted globally; a labelled role does not make a scope this chart
+  # grants globally a tenant scope), and it does not itself aggregate
   # (except the reader/user/auditor chain).  An admission policy enforces
-  # this for every Role, whichever chart ships it.
+  # this for every Role, whichever chart ships it.  The render script checks
+  # this list is exactly the agreed set.
   # Adding a name is a reviewed change: a labelled role widens every org admin.
   # NCP-0005 §4 warns a selector makes a role "whatever happens to be labelled";
   # this list makes it what we agreed to label.  See ID-550 and ID-556.
@@ -655,7 +666,6 @@ aggregation:
   - environment-admin
   - environment-deployer
   - environment-viewer
-  - org-access-admin
   - org-catalog-admin
   - org-catalog-viewer
   - project-environment-admin

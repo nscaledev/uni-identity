@@ -107,13 +107,61 @@ func kubeForAggregation() (kubeclient.Client, string) {
 	return kube, identityNamespace
 }
 
+func builtinRoleNames() []string {
+	return []string{"administrator", "auditor", "user", "reader"}
+}
+
+// builtinsAggregating reports whether aggregation.builtinRoles is on: the
+// chart renders administrator with spec.aggregationRule only then.
+func builtinsAggregating(kube kubeclient.Client, identityNamespace string) bool {
+	GinkgoHelper()
+
+	admin := &unikornv1.Role{}
+	Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID("administrator")}, admin)).To(Succeed())
+
+	return admin.Spec.AggregationRule != nil
+}
+
+// kubeForAggregatingBuiltins is kubeForAggregation, also skipping when the
+// built-in roles are plain (aggregation.builtinRoles off).
+func kubeForAggregatingBuiltins() (kubeclient.Client, string) {
+	GinkgoHelper()
+
+	kube, identityNamespace := kubeForAggregation()
+	if !builtinsAggregating(kube, identityNamespace) {
+		Skip("aggregation.builtinRoles is off: the built-in roles do not aggregate")
+	}
+
+	return kube, identityNamespace
+}
+
+// expectAvailable checks a role's Available condition is True for its
+// current generation.
+func expectAvailable(g Gomega, role *unikornv1.Role) {
+	available, err := unikornv1core.GetCondition(role.Status.Conditions, unikornv1core.ConditionAvailable)
+	g.Expect(err).NotTo(HaveOccurred(), "%s has no Available condition", role.Name)
+	g.Expect(available.Status).To(Equal(metav1.ConditionTrue), available.Message)
+	g.Expect(available.ObservedGeneration).To(Equal(role.Generation), "Available should be for the current generation")
+}
+
 // Serial: the specs install a Role with the fixed fleet-operator ID, which
 // parallel processes would collide on.
 var _ = Describe("Role Aggregation", Serial, func() {
 	Context("When reading the built-in roles", func() {
 		Describe("Given the role controller has run", func() {
 			It("should report each built-in role's sources", func() {
+				kube, identityNamespace := kubeForAggregatingBuiltins()
+
 				Eventually(func(g Gomega) {
+					// Every built-in role, reader included, has been
+					// reconciled: an empty source list alone proves nothing.
+					for _, name := range builtinRoleNames() {
+						role := &unikornv1.Role{}
+						g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID(name)}, role)).To(Succeed())
+						g.Expect(role.Status.EffectiveScopes).NotTo(BeNil(), "%s has no effective scopes", name)
+						expectAvailable(g, role)
+					}
+
 					roles, err := client.ListRoles(ctx, config.OrgID)
 					g.Expect(err).NotTo(HaveOccurred())
 
@@ -144,6 +192,36 @@ var _ = Describe("Role Aggregation", Serial, func() {
 		})
 	})
 
+	Context("When aggregation.builtinRoles is off", func() {
+		Describe("Given the chart renders the built-in roles plain", func() {
+			It("should give each built-in role its own scopes and no aggregation", func() {
+				kube, identityNamespace := kubeForAggregation()
+				if builtinsAggregating(kube, identityNamespace) {
+					Skip("aggregation.builtinRoles is on")
+				}
+
+				for _, name := range builtinRoleNames() {
+					role := &unikornv1.Role{}
+					Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID(name)}, role)).To(Succeed())
+					Expect(role.Spec.AggregationRule).To(BeNil(), "%s should not aggregate", name)
+					Expect(role.Spec.Protected).To(BeFalse(), "%s should not be protected", name)
+					Expect(role.Spec.Scopes.Organization).NotTo(BeEmpty(), "%s should hold its scopes inline", name)
+
+					for key := range role.Labels {
+						Expect(key).NotTo(HavePrefix(unikornv1.AggregateToLabelPrefix), "%s should carry no aggregate-to-* label", name)
+					}
+				}
+
+				roles, err := client.ListRoles(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+
+				admin := roleByName(roles, "administrator")
+				Expect(admin).NotTo(BeNil())
+				Expect(holdsEndpoint(admin.Scopes.Organization, "identity:groups")).To(BeTrue(), "administrator should hold its inline scopes")
+			})
+		})
+	})
+
 	Context("When a service labels a role for aggregation", func() {
 		Describe("Given an allow-listed role labelled aggregate-to-reader", func() {
 			var (
@@ -153,7 +231,7 @@ var _ = Describe("Role Aggregation", Serial, func() {
 			)
 
 			BeforeEach(func() {
-				kube, identityNamespace = kubeForAggregation()
+				kube, identityNamespace = kubeForAggregatingBuiltins()
 
 				// fleet-operator is on the chart's allow-list, and the policy
 				// checks the ID, so the fixture takes its real ID.
@@ -184,6 +262,13 @@ var _ = Describe("Role Aggregation", Serial, func() {
 								Name:       "radar:topology",
 								Operations: []unikornv1.Operation{unikornv1.Read},
 							}},
+							// administrator and auditor flatten this to
+							// organization scope; user and reader keep it at
+							// project scope.
+							Project: []unikornv1.RoleScope{{
+								Name:       "radar:fleetprojects",
+								Operations: []unikornv1.Operation{unikornv1.Read},
+							}},
 						},
 					},
 				}
@@ -207,7 +292,22 @@ var _ = Describe("Role Aggregation", Serial, func() {
 						g.Expect(held).To(BeTrue(), "%s should hold radar:topology", name)
 					}
 
-					g.Expect(sourceNames(roleByName(roles, "reader"))).To(ContainElement("fleet-operator"))
+					for _, name := range []string{"reader", "user"} {
+						role := roleByName(roles, name)
+						g.Expect(holdsEndpoint(role.Scopes.Project, "radar:fleetprojects")).To(BeTrue(), "%s should hold radar:fleetprojects at project scope", name)
+						g.Expect(holdsEndpoint(role.Scopes.Organization, "radar:fleetprojects")).To(BeFalse(), "%s should not flatten radar:fleetprojects", name)
+					}
+
+					for _, name := range []string{"auditor", "administrator"} {
+						role := roleByName(roles, name)
+						g.Expect(holdsEndpoint(role.Scopes.Organization, "radar:fleetprojects")).To(BeTrue(), "%s should flatten radar:fleetprojects to organization scope", name)
+						g.Expect(holdsEndpoint(role.Scopes.Project, "radar:fleetprojects")).To(BeFalse(), "%s should not hold radar:fleetprojects at project scope", name)
+					}
+
+					reader := roleByName(roles, "reader")
+					g.Expect(reader.AggregatedFrom).NotTo(BeNil())
+					g.Expect(*reader.AggregatedFrom).NotTo(BeEmpty())
+					g.Expect(sourceNames(reader)).To(ContainElement("fleet-operator"))
 				}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
 			})
 
@@ -253,21 +353,23 @@ var _ = Describe("Role Aggregation", Serial, func() {
 					g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID("administrator")}, admin)).To(Succeed())
 					g.Expect(admin.Status.EffectiveScopes).NotTo(BeNil())
 
-					held := false
+					held := map[string]bool{}
 					for _, scope := range admin.Status.EffectiveScopes.Organization {
-						held = held || scope.Name == "radar:topology"
+						held[scope.Name] = true
 					}
 
-					g.Expect(held).To(BeTrue(), "administrator should hold radar:topology")
+					g.Expect(held).To(HaveKey("radar:topology"), "administrator should hold radar:topology")
+					g.Expect(held).To(HaveKey("radar:fleetprojects"), "administrator should hold the project scope radar:fleetprojects at organization scope")
+
+					for _, scope := range admin.Status.EffectiveScopes.Project {
+						g.Expect(scope.Name).NotTo(Equal("radar:fleetprojects"), "administrator flattens, so radar:fleetprojects should not stay at project scope")
+					}
 
 					grantable, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1.RoleConditionGrantable)
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(grantable.Status).To(Equal(metav1.ConditionTrue), grantable.Message)
 
-					available, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1core.ConditionAvailable)
-					g.Expect(err).NotTo(HaveOccurred())
-					g.Expect(available.Status).To(Equal(metav1.ConditionTrue), available.Message)
-					g.Expect(available.ObservedGeneration).To(Equal(admin.Generation), "Available should be for the current generation")
+					expectAvailable(g, admin)
 				}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
 			})
 		})

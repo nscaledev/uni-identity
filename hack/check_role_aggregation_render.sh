@@ -17,7 +17,7 @@
 # role-aggregation admission policy).  `make lint` runs this script.
 set -euo pipefail
 
-CHART=charts/identity
+CHART=${CHART:-charts/identity}
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -33,8 +33,14 @@ must_role_doc() {
 	echo "$doc"
 }
 
-# spec_of <doc> prints the spec block of a Role manifest, without protected.
-spec_of() { awk '/^spec:/{p=1} p' <<<"$1" | grep -vx '  protected: true'; }
+# spec_of <doc> prints the spec block of a Role manifest.
+spec_of() { awk '/^spec:/{p=1} p' <<<"$1"; }
+
+# must_render <helm args...> requires the render to succeed.
+must_render() {
+	local out
+	out=$(helm template test "$CHART" "$@" 2>&1 >/dev/null) || die "expected render to succeed ($*), but: $out"
+}
 
 # id_of <name> computes the role ID the chart derives from a name.
 sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
@@ -65,8 +71,15 @@ for name in administrator auditor user reader; do
 	grep -q "aggregate-to-" <<<"$doc" && die "$name carries an aggregate-to-* label with aggregation.builtinRoles off"
 	grep -q "sync-wave" <<<"$doc" && die "$name has a sync wave with aggregation.builtinRoles off"
 	grep -q "protected: true" <<<"$base" || die "$name-base is not protected"
-	[[ "$(spec_of "$doc")" == "$(spec_of "$base")" ]] || die "$name does not hold exactly the scopes of $name-base"
+	[[ "$(spec_of "$doc")" == "$(spec_of "$base" | grep -vx '  protected: true')" ]] || die "$name does not hold exactly the scopes of $name-base"
 	grep -q "^    organization:" <<<"$doc" || die "$name has no organization scopes"
+done
+
+# The built-in roles are never protected: an org admin grants them.
+for render in "$default" "$aggregating"; do
+	for name in administrator auditor user reader; do
+		grep -q "protected: true" <<<"$(must_role_doc "$render" "$name")" && die "$name is protected"
+	done
 done
 
 # aggregation.builtinRoles on: the built-in roles aggregate, keeping their IDs.
@@ -84,6 +97,14 @@ grep -qF 'identity.unikorn-cloud.org/aggregate-to-auditor: "true"' <<<"$(role_do
 grep -qF 'identity.unikorn-cloud.org/aggregate-to-user: "true"' <<<"$(role_doc "$aggregating" reader)" || die "reader is not labelled for user"
 grep -qF 'identity.unikorn-cloud.org/aggregate-to-administrator: "true"' <<<"$(role_doc "$aggregating" user)" || die "user is not labelled for administrator"
 grep -qF 'identity.unikorn-cloud.org/aggregate-to-administrator: "true"' <<<"$(role_doc "$aggregating" auditor)" || die "auditor is not labelled for administrator"
+
+# Only administrator and auditor flatten project scopes into organization.
+for name in administrator auditor; do
+	grep -qx '    flattenToOrganization: true' <<<"$(role_doc "$aggregating" "$name")" || die "$name does not flatten"
+done
+for name in user reader; do
+	grep -q 'flattenToOrganization' <<<"$(role_doc "$aggregating" "$name")" && die "$name flattens"
+done
 
 # Each aggregating role selects exactly its own label.
 for name in administrator auditor user reader; do
@@ -113,7 +134,16 @@ for render in "$default" "$aggregating"; do
 	grep -qF "'$(id_of fleet-operator)'" <<<"$render" || die "fleet-operator is not on the rendered allow-list"
 	grep -qF "'$(id_of resource-pool-admin)'" <<<"$render" && die "resource-pool-admin is on the rendered allow-list"
 	grep -qF "'region:identities'" <<<"$render" || die "region:identities is not on the rendered platform-only list"
+	grep -qF "'$(id_of administrator)': true, '$(id_of auditor)': true, '$(id_of reader)': false, '$(id_of user)': false" <<<"$render" || die "the policy does not pin flattenToOrganization on the built-in roles"
+	grep -qF "'$(id_of reader)': ['identity.unikorn-cloud.org/aggregate-to-auditor', 'identity.unikorn-cloud.org/aggregate-to-user']" <<<"$render" || die "the policy does not pin reader's aggregate-to-* labels"
 done
+
+# The allow-list is exactly the agreed set; adding a name is a reviewed change.
+want_sources="auditor environment-admin environment-deployer environment-viewer fleet-operator nks-organization-admin nks-organization-auditor nks-organization-kubernetes-api-reader nks-organization-kubernetes-api-writer nks-project-admin nks-project-auditor nks-project-kubernetes-api-reader nks-project-kubernetes-api-writer org-catalog-admin org-catalog-viewer project-environment-admin project-product-admin project-viewer reader reservation-capacity-manager reservation-capacity-reader reservation-placement-operator reservation-placement-reader reservation-placement-user resource-pool-viewer user"
+got_sources=$(yq '.aggregation.allowedSources[]' "$CHART/values.yaml" | sort | tr '\n' ' ' | sed 's/ $//')
+[[ "$got_sources" == "$want_sources" ]] || die "aggregation.allowedSources is not the agreed set
+  want: $want_sources
+  got:  $got_sources"
 
 # The role controller is deployed, and writes role status in its own namespace only.
 awk 'BEGIN{RS="\n---\n"} /kind: Deployment\n/ && /\n  name: test-role-controller\n/ {found=1} END{exit !found}' <<<"$default" || die "role controller Deployment is not rendered"
@@ -123,7 +153,7 @@ awk 'BEGIN{RS="\n---\n"} /kind: Role\n/ && /name: test-role-controller\n/ && /ro
 # Custom labels and aggregateTo on additionalRoles; duplicate targets render once.
 out=$(helm template test "$CHART" --set-json 'additionalRoles={"fleet-operator":{"description":"Fleet operator","labels":{"example.com/team":"radar"},"aggregateTo":["reader","reader"],"scopes":{"organization":{"radar:topology":["read"]}}}}')
 doc=$(must_role_doc "$out" fleet-operator) || exit 1
-grep -qF 'example.com/team: "radar"' <<<"$doc" || die "custom label not rendered"
+grep -qF '"example.com/team": "radar"' <<<"$doc" || die "custom label not rendered"
 [[ $(grep -cF 'identity.unikorn-cloud.org/aggregate-to-reader: "true"' <<<"$doc") -eq 1 ]] || die "aggregateTo label not rendered exactly once"
 
 must_fail "must not set scopes" --set-json 'additionalRoles={"x":{"aggregationRule":{"roleRefs":["reader-base"]},"scopes":{"organization":{"a:b":["read"]}}}}'
@@ -138,11 +168,42 @@ must_fail "global scopes cannot opt into aggregation" --set-json 'additionalRole
 must_fail "identity:* or credential" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"organization":{"identity:allocations":["read"]}}}}'
 must_fail "identity:* or credential" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"project":{"storage:objectstorageendpoints/accesskeys":["read"]}}}}'
 must_fail "cannot also aggregate, except the built-in chain roles" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"aggregationRule":{"roleRefs":["platform-administrator"]}}}'
-must_fail "a chain role must ref exactly reader-base" --set-json 'roles.reader.aggregationRule={"roleRefs":["reader-base","platform-administrator"]}'
+must_fail "a chain role must ref exactly reader-base" --set aggregation.builtinRoles=true --set-json 'roles.reader.aggregationRule={"roleRefs":["reader-base","platform-administrator"]}'
 must_fail "labels must not set \"identity.unikorn-cloud.org/aggregate-to-administrator\"" --set-json 'additionalRoles={"x":{"labels":{"identity.unikorn-cloud.org/aggregate-to-administrator":"true"},"scopes":{"organization":{"a:b":["read"]}}}}'
 must_fail "labels must not set \"unikorn-cloud.org/name\"" --set-json 'additionalRoles={"x":{"labels":{"unikorn-cloud.org/name":"administrator"},"scopes":{"organization":{"a:b":["read"]}}}}'
 
-# A null aggregation block means an empty allow-list: a clear error, not a nil pointer.
-must_fail "aggregateTo needs the role on aggregation.allowedSources" --set aggregation=null
+# A labelled role can't hold a platform-only scope, and holding one in values
+# does not take it off the list.
+must_fail "platform-only scope \"region:servers\"" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"organization":{"region:servers":["create"]}}}}'
+must_fail "platform-only scope \"region:identities\"" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"project":{"region:identities":["create"]}}}}'
+
+# With aggregation.builtinRoles on, the built-in roles keep their fixed shape.
+on=(--set aggregation.builtinRoles=true)
+must_fail "a built-in role's aggregateTo must be exactly [auditor user]" "${on[@]}" --set-json 'roles.reader.aggregateTo=["user"]'
+must_fail "a built-in role's aggregateTo must be exactly [administrator]" "${on[@]}" --set-json 'roles.user.aggregateTo=["administrator","auditor"]'
+must_fail "a built-in role's aggregateTo must be exactly []" "${on[@]}" --set-json 'roles.administrator.aggregateTo=["auditor"]'
+must_fail "\"auditor\": a built-in role's flattenToOrganization must be true" "${on[@]}" --set-json 'roles.auditor.aggregationRule={"roleRefs":["auditor-base"],"flattenToOrganization":false}'
+must_fail "\"administrator\": a built-in role's flattenToOrganization must be true" "${on[@]}" --set-json 'roles.administrator.aggregationRule={"roleRefs":["administrator-base"],"flattenToOrganization":null}'
+must_fail "\"user\": a built-in role's flattenToOrganization must be false" "${on[@]}" --set-json 'roles.user.aggregationRule={"roleRefs":["user-base"],"flattenToOrganization":true}'
+must_fail "\"reader\": a built-in role's flattenToOrganization must be false" "${on[@]}" --set-json 'roles.reader.aggregationRule={"roleRefs":["reader-base"],"flattenToOrganization":true}'
+must_fail "a built-in role must set aggregationRule" "${on[@]}" --set-json 'roles.reader.aggregationRule=null'
+must_fail "must not set scopes" "${on[@]}" --set-json 'roles.reader.scopes={"organization":{"a:b":["read"]}}'
+must_fail "needs the role on aggregation.allowedSources" "${on[@]}" --set-json 'aggregation.allowedSources=["fleet-operator"]'
+
+# With it off, the built-in roles render plain and their aggregation is not checked.
+must_render --set-json 'roles.reader.scopes={"organization":{"a:b":["read"]}}'
+must_render --set-json 'aggregation.allowedSources=["fleet-operator"]'
+
+# aggregation.builtinRoles must be a bool: a string "false" is truthy.
+must_fail "aggregation.builtinRoles must be true or false" --set-string aggregation.builtinRoles=false
+must_fail "aggregation.builtinRoles must be true or false" --set aggregation=null
+
+# Label keys are checked, so a key can't inject YAML into the Role.
+must_fail "is not a valid label key" --set-json 'additionalRoles={"x":{"labels":{"a: b\n    identity.unikorn-cloud.org/aggregate-to-administrator":"true"},"scopes":{"organization":{"a:b":["read"]}}}}'
+must_fail "is not a valid label key" --set-json 'additionalRoles={"x":{"labels":{"Bad_Prefix/x":"y"},"scopes":{"organization":{"a:b":["read"]}}}}'
+must_fail "is not a valid label key" --set-json 'additionalRoles={"bad name":{"aggregationRule":{"roleRefs":["reader-base"]}}}'
+
+# A null allow-list is an empty one: a clear error, not a nil pointer.
+must_fail "aggregateTo needs the role on aggregation.allowedSources" --set aggregation.allowedSources=null --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"organization":{"radar:topology":["read"]}}}}'
 
 echo "role aggregation render checks passed"

@@ -58,32 +58,104 @@ values, so a values change cannot widen the chain.
 {{- end }}
 
 {{/*
-Scope names only platform roles hold: in some role's global block and in no
-tenant role's organization or project block.  Tenant roles are unprotected
-roles and the built-in base roles.  A labelled role may hold none of them.
+The fixed shape of each built-in role with aggregation.builtinRoles on: the
+aggregating roles it feeds (its aggregateTo) and its flattenToOrganization.
+The render guards and the admission policy both pin the built-in roles to it.
+*/}}
+{{- define "unikorn.identity.chainShape" -}}
+{{- dict
+  "administrator" (dict "to" (list) "flatten" true)
+  "auditor" (dict "to" (list "administrator") "flatten" true)
+  "user" (dict "to" (list "administrator") "flatten" false)
+  "reader" (dict "to" (list "auditor" "user") "flatten" false)
+  | toJson }}
+{{- end }}
+
+{{/*
+unikorn.identity.checkLabelKey fails the render unless .key is a valid
+Kubernetes label key: an optional DNS subdomain prefix (at most 253
+characters) and "/", then a name of at most 63 characters.  A key is written
+into the Role manifest, so an invalid one could inject YAML.
+*/}}
+{{- define "unikorn.identity.checkLabelKey" -}}
+{{- $parts := splitList "/" .key }}
+{{- $name := last $parts }}
+{{- $ok := and (le (len $parts) 2) (regexMatch "^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $name) }}
+{{- if eq (len $parts) 2 }}
+{{- $prefix := first $parts }}
+{{- $ok = and $ok (le (len $prefix) 253) (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $prefix) }}
+{{- end }}
+{{- if not $ok }}
+{{- fail (printf "role %q: %q is not a valid label key" .role .key) }}
+{{- end }}
+{{- end }}
+
+{{/*
+unikorn.identity.labelled is "true" if a role in values carries an
+aggregate-to-* label, by aggregateTo or by labels.
+*/}}
+{{- define "unikorn.identity.labelled" -}}
+{{- $labelled := not (empty .aggregateTo) }}
+{{- range $key, $_ := .labels }}
+{{- if hasPrefix "identity.unikorn-cloud.org/aggregate-to-" $key }}
+{{- $labelled = true }}
+{{- end }}
+{{- end }}
+{{- $labelled }}
+{{- end }}
+
+{{/*
+Scope names only platform roles hold.  A labelled role may hold none of them.
+Tenant roles are the built-in base roles and the unprotected roles that are
+not built-in roles (those count through their base roles).  A scope is
+platform-only if:
+- this chart's roles (.Values.roles) grant it globally and no unlabelled
+  tenant role grants it in an organization or project block.  A labelled role
+  does not count here, so it cannot take a chart platform scope (such as
+  region:servers) off the list by holding it itself;
+- or only additionalRoles grant it globally and no tenant role, labelled or
+  not, grants it in an organization or project block.  A service's labelled
+  role does count here: it is how the service's own tenant scopes (held
+  globally by its platform role, such as radar-global-operator) reach org
+  admins.
 */}}
 {{- define "unikorn.identity.platformOnlyScopes" -}}
-{{- $roles := merge (dict) (default (dict) .Values.roles) (default (dict) .Values.additionalRoles) }}
+{{- $chartRoles := default (dict) .Values.roles }}
+{{- $roles := merge (dict) $chartRoles (default (dict) .Values.additionalRoles) }}
+{{- $builtins := include "unikorn.identity.builtinRoles" . | fromJsonArray }}
 {{- $bases := list }}
-{{- range (include "unikorn.identity.builtinRoles" . | fromJsonArray) }}
+{{- range $builtins }}
 {{- $bases = append $bases (printf "%s-base" .) }}
 {{- end }}
+{{- $chartGlobal := dict }}
 {{- $global := dict }}
 {{- $tenant := dict }}
+{{- $unlabelledTenant := dict }}
 {{- range $name, $spec := $roles }}
 {{- $scopes := default (dict) $spec.scopes }}
 {{- range $scope, $ops := default (dict) $scopes.global }}
 {{- $_ := set $global $scope true }}
+{{- if hasKey $chartRoles $name }}
+{{- $_ := set $chartGlobal $scope true }}
 {{- end }}
-{{- if or (not $spec.protected) (has $name $bases) }}
+{{- end }}
+{{- if or (has $name $bases) (and (not $spec.protected) (not (has $name $builtins))) }}
+{{- $labelled := eq (include "unikorn.identity.labelled" $spec) "true" }}
 {{- range $scope, $ops := merge (dict) (default (dict) $scopes.organization) (default (dict) $scopes.project) }}
 {{- $_ := set $tenant $scope true }}
+{{- if not $labelled }}
+{{- $_ := set $unlabelledTenant $scope true }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
 {{- $out := list }}
 {{- range $scope, $_ := $global }}
-{{- if not (hasKey $tenant $scope) }}
+{{- if hasKey $chartGlobal $scope }}
+{{- if not (hasKey $unlabelledTenant $scope) }}
+{{- $out = append $out $scope }}
+{{- end }}
+{{- else if not (hasKey $tenant $scope) }}
 {{- $out = append $out $scope }}
 {{- end }}
 {{- end }}

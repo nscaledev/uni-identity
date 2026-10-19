@@ -12,11 +12,18 @@ A Role may carry an aggregate-to-* label only if:
 - it has no identity:* scopes and no credential (.../accesskeys) scopes
   (identity scopes are trust and tenancy surfaces: providers, organizations,
   users, allocations),
-- it has no platform-only scopes (in a global block of this chart's roles and
-  in no tenant role's organization or project block),
+- it has no platform-only scopes (granted globally and held by no tenant
+  role; a labelled role in values does not count as a tenant role for this
+  chart's own global scopes, see unikorn.identity.platformOnlyScopes),
 - it is not itself aggregating, unless it is a chain role (reader, user,
   auditor) whose rule selects only its own label and refs only its base role
   (otherwise its roleRefs or selector could pull in any role).
+
+The built-in roles are pinned to their fixed shape (unikorn.identity.chainShape):
+- a labelled built-in role carries exactly its aggregate-to-* labels (reader:
+  auditor and user; user and auditor: administrator; administrator: none),
+- an aggregating built-in role has its fixed flattenToOrganization
+  (administrator and auditor true, user and reader false).
 
 An aggregating Role (one with spec.aggregationRule) must not set spec.scopes:
 all of its scopes come from its sources.
@@ -28,6 +35,16 @@ all of its scopes come from its sources.
 {{- $chain := list }}
 {{- range (include "unikorn.identity.chainRoles" . | fromJsonArray) }}
 {{- $chain = append $chain (printf "'%s': {'ref': '%s', 'label': 'identity.unikorn-cloud.org/aggregate-to-%s'}" (include "resource.id" .) (include "resource.id" (printf "%s-base" .)) .) }}
+{{- end }}
+{{- $targets := list }}
+{{- $flatten := list }}
+{{- range $role, $want := (include "unikorn.identity.chainShape" . | fromJson) }}
+{{- $labels := list }}
+{{- range $want.to }}
+{{- $labels = append $labels (printf "'identity.unikorn-cloud.org/aggregate-to-%s'" .) }}
+{{- end }}
+{{- $targets = append $targets (printf "'%s': [%s]" (include "resource.id" $role) (join ", " $labels)) }}
+{{- $flatten = append $flatten (printf "'%s': %t" (include "resource.id" $role) $want.flatten) }}
 {{- end }}
 {{- $platformOnly := list }}
 {{- range (include "unikorn.identity.platformOnlyScopes" . | fromJsonArray) }}
@@ -64,6 +81,10 @@ spec:
     expression: "object.?spec.?aggregationRule.hasValue()"
   - name: chain
     expression: "{ {{- join ", " $chain -}} }"
+  - name: chainTargets
+    expression: "{ {{- join ", " $targets -}} }"
+  - name: chainFlatten
+    expression: "{ {{- join ", " $flatten -}} }"
   validations:
   - expression: "!variables.labelled || object.metadata.name in [{{ join ", " $allowed }}]"
     messageExpression: "'role ' + object.metadata.name + ' carries an aggregate-to-* label but is not on the identity chart aggregation.allowedSources list'"
@@ -88,6 +109,17 @@ spec:
       object.spec.aggregationRule.roleSelectors[0].?matchLabels.orValue({}) == {variables.chain[object.metadata.name].label: 'true'} &&
       size(object.spec.aggregationRule.roleSelectors[0].?matchExpressions.orValue([])) == 0)
     message: A role with an aggregate-to-* label cannot also aggregate, except the built-in chain roles selecting their own label and refing only their base role
+    reason: Forbidden
+  - expression: >-
+      !variables.labelled || !(object.metadata.name in variables.chainTargets) ||
+      (object.metadata.labels.filter(k, k.startsWith('identity.unikorn-cloud.org/aggregate-to-')).all(k, k in variables.chainTargets[object.metadata.name]) &&
+      variables.chainTargets[object.metadata.name].all(k, k in object.metadata.labels))
+    message: A built-in role must carry exactly its own aggregate-to-* labels (reader to auditor and user, user and auditor to administrator, administrator none)
+    reason: Forbidden
+  - expression: >-
+      !variables.aggregating || !(object.metadata.name in variables.chainFlatten) ||
+      object.spec.aggregationRule.?flattenToOrganization.orValue(false) == variables.chainFlatten[object.metadata.name]
+    message: A built-in role must keep its flattenToOrganization (administrator and auditor true, user and reader false)
     reason: Forbidden
   - expression: "!variables.aggregating || (size(variables.global) == 0 && size(variables.scoped) == 0)"
     message: An aggregating role (spec.aggregationRule) must not set spec.scopes; move them to a base role in roleRefs

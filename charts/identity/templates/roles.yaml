@@ -10,6 +10,12 @@
 {{- $aggregation := default (dict) .Values.aggregation }}
 {{- $allowedSources := $aggregation.allowedSources | default (list) }}
 {{- $builtinAggregate := $aggregation.builtinRoles }}
+{{- /* A string "false" is truthy in a template, so it would turn aggregation on. */}}
+{{- if not (kindIs "bool" $builtinAggregate) }}
+{{- fail (printf "aggregation.builtinRoles must be true or false, not %q" (toString $builtinAggregate)) }}
+{{- end }}
+{{- $platformOnly := include "unikorn.identity.platformOnlyScopes" . | fromJsonArray }}
+{{- $shape := include "unikorn.identity.chainShape" . | fromJson }}
 {{- $builtins := include "unikorn.identity.builtinRoles" . | fromJsonArray }}
 {{- $chain := include "unikorn.identity.chainRoles" . | fromJsonArray }}
 {{- /*
@@ -60,15 +66,30 @@ Without this, administrator (f194...) is applied before administrator-base
 {{- /*
 Render-time guards for aggregation.  They mirror the admission policy and the
 role controller, so a bad values file fails here, before it reaches a cluster.
-The platform-only scope rule has no guard here: a role in values counts as a
-tenant role, so its own scopes are never platform-only.
+With aggregation.builtinRoles off the built-in roles render plain, so their
+aggregateTo and aggregationRule are not checked.
 */}}
+{{- $checked := or $builtinAggregate (not (has $name $builtins)) }}
 {{- range $key, $_ := $spec.labels }}
+  {{- include "unikorn.identity.checkLabelKey" (dict "role" $name "key" $key) }}
   {{- if or (hasPrefix "identity.unikorn-cloud.org/aggregate-to-" $key) (eq $key "unikorn-cloud.org/name") }}
     {{- fail (printf "role %q: labels must not set %q, use aggregateTo for aggregation" $name $key) }}
   {{- end }}
 {{- end }}
-{{- if $spec.aggregationRule }}
+{{- if and $checked (has $name $builtins) }}
+  {{- $want := index $shape $name }}
+  {{- if not $spec.aggregationRule }}
+    {{- fail (printf "role %q: with aggregation.builtinRoles on, a built-in role must set aggregationRule" $name) }}
+  {{- end }}
+  {{- if ne ($spec.aggregateTo | default (list) | uniq | sortAlpha | toJson) ($want.to | toJson) }}
+    {{- fail (printf "role %q: a built-in role's aggregateTo must be exactly %v" $name $want.to) }}
+  {{- end }}
+  {{- if ne (default false $spec.aggregationRule.flattenToOrganization) $want.flatten }}
+    {{- fail (printf "role %q: a built-in role's flattenToOrganization must be %v" $name $want.flatten) }}
+  {{- end }}
+{{- end }}
+{{- if and $checked $spec.aggregationRule }}
+  {{- include "unikorn.identity.checkLabelKey" (dict "role" $name "key" (printf "identity.unikorn-cloud.org/aggregate-to-%s" $name)) }}
   {{- if $spec.scopes }}
     {{- fail (printf "role %q: an aggregating role must not set scopes, move them to a base role in aggregationRule.roleRefs" $name) }}
   {{- end }}
@@ -89,7 +110,7 @@ tenant role, so its own scopes are never platform-only.
     {{- end }}
   {{- end }}
 {{- end }}
-{{- if $spec.aggregateTo }}
+{{- if and $checked $spec.aggregateTo }}
   {{- if $spec.protected }}
     {{- fail (printf "role %q: a protected role cannot opt into aggregation" $name) }}
   {{- end }}
@@ -104,8 +125,12 @@ tenant role, so its own scopes are never platform-only.
     {{- if or (hasPrefix "identity:" $scope) (hasSuffix "/accesskeys" $scope) }}
       {{- fail (printf "role %q: a role with identity:* or credential (.../accesskeys) scope %q cannot opt into aggregation" $name $scope) }}
     {{- end }}
+    {{- if has $scope $platformOnly }}
+      {{- fail (printf "role %q: a role with platform-only scope %q (granted only globally) cannot opt into aggregation" $name $scope) }}
+    {{- end }}
   {{- end }}
   {{- range $target := $spec.aggregateTo }}
+    {{- include "unikorn.identity.checkLabelKey" (dict "role" $name "key" (printf "identity.unikorn-cloud.org/aggregate-to-%s" $target)) }}
     {{- $targetSpec := index $roles $target }}
     {{- if not (and $targetSpec $targetSpec.aggregationRule) }}
       {{- fail (printf "role %q: aggregateTo names %q, which is not an aggregating role" $name $target) }}
@@ -124,7 +149,7 @@ metadata:
     {{- include "unikorn.labels" $ | nindent 4 }}
     unikorn-cloud.org/name: {{ $name }}
     {{- range $key, $value := $spec.labels }}
-    {{ $key }}: {{ $value | quote }}
+    {{ $key | quote }}: {{ $value | quote }}
     {{- end }}
     {{- range $spec.aggregateTo | default (list) | uniq }}
     identity.unikorn-cloud.org/aggregate-to-{{ . }}: "true"
