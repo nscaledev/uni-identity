@@ -504,6 +504,12 @@ func TestStaleGenerationIsNotGrantable(t *testing.T) {
 	role.Status.Conditions[0].ObservedGeneration = 2
 
 	require.True(t, role.AggregationReady())
+
+	// A stuck role (Available=False) is not grantable either: its kept
+	// scopes may be empty.
+	role.Status.Conditions[0].Status = metav1.ConditionFalse
+
+	require.False(t, role.AggregationReady())
 }
 
 // TestLabelledGlobalRoleIsNotGrantable checks a role labelled for

@@ -118,8 +118,10 @@ controller writing its status:
   keep that.
 - **Nobody can grant it.** `rbac.AllowRole` refuses an aggregating role until
   `Role.AggregationReady()`: status written for the current generation
-  (`Available` carries `observedGeneration`). Otherwise a caller holding
-  nothing could grant a role that is about to hold far more.
+  (`Available` carries `observedGeneration`) and `Available=True`. Otherwise a
+  caller holding nothing could grant a role that is about to hold far more.
+  A stuck role cannot be granted either, since its kept scopes may be empty;
+  its holders keep them.
 
 Global scopes are never read from status, whoever wrote it.
 
@@ -153,7 +155,9 @@ grantor); see ID-641.
 
 ## Runtime
 
-- **Watches:** every `Role`. A create or delete, or an update that changes the
+- **Watches:** every `Role` in the controller's own namespace (`POD_NAMESPACE`,
+  set by the chart), so a second identity release in one cluster never touches
+  this release's roles. A create or delete, or an update that changes the
   generation, labels or annotations, enqueues every aggregating role in the
   namespace. Labels are watched as well as generation because a label is how
   a role opts in, and labels do not bump the generation. Status-only updates

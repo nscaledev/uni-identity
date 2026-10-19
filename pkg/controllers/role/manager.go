@@ -18,6 +18,7 @@ package role
 
 import (
 	"context"
+	"os"
 
 	"go.opentelemetry.io/otel"
 
@@ -82,8 +83,13 @@ func (*Factory) Reconciler(_ *options.Options, _ coremanager.ControllerOptions, 
 // opts in.  Status-only updates are ignored: the computation reads specs,
 // labels and annotations, so they can't change the result, and ignoring
 // them stops the controller waking itself.
+//
+// Only roles in the controller's own namespace (POD_NAMESPACE, set by the
+// chart) are watched, so a second identity release in the same cluster
+// never writes status on this release's roles.
 func (*Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
 	cli := manager.GetClient()
+	namespace := os.Getenv("POD_NAMESPACE")
 
 	enqueue := handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, role *unikornv1.Role) []reconcile.Request {
 		return aggregatingRoles(ctx, cli, role)
@@ -102,7 +108,11 @@ func (*Factory) RegisterWatches(manager manager.Manager, controller controller.C
 		},
 	}
 
-	return controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Role{}, enqueue, filter))
+	inNamespace := predicate.NewTypedPredicateFuncs(func(role *unikornv1.Role) bool {
+		return namespace == "" || role.Namespace == namespace
+	})
+
+	return controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Role{}, enqueue, filter, inNamespace))
 }
 
 // aggregatingRoles returns a request for the changed role and for every

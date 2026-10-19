@@ -23,6 +23,7 @@ import (
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -89,10 +90,11 @@ func (r *Role) EffectiveScopes() RoleScopes {
 
 // AggregationReady tells whether a role's effective scopes can be trusted for
 // a grant check.  A role that does not aggregate always can.  An aggregating
-// role can once the controller has written status for its current
-// generation.  Before that its effective scopes are empty or out of date, so
-// a grant check against them would let anyone hand out a role that is about
-// to hold far more.
+// role can once the controller has written status for its current generation
+// and that status is Available.  Before that, or while it is stuck (missing
+// ref, cycle, bad selector), its effective scopes may be empty or out of
+// date, so a grant check against them could let anyone hand out a role that
+// is about to hold far more.
 func (r *Role) AggregationReady() bool {
 	if !r.IsAggregating() {
 		return true
@@ -104,7 +106,7 @@ func (r *Role) AggregationReady() bool {
 
 	condition := meta.FindStatusCondition(r.Status.Conditions, string(unikornv1core.ConditionAvailable))
 
-	return condition != nil && condition.ObservedGeneration == r.Generation
+	return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == r.Generation
 }
 
 // BootstrapRoles fills in the effective scopes of every aggregating role the
