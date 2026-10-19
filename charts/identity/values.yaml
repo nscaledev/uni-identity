@@ -563,14 +563,17 @@ roles:
         region:sshcertificateauthorities:v2: [read]
         kubernetes:clusters: [read]
         compute:instances: [read]
-  # The user-facing built-in roles aggregate: each holds its base role (via
-  # roleRefs) plus every role labelled for it.  A service opts a role in by
-  # labelling it once, at its lowest level, and the chain carries it up:
+  # The user-facing built-in roles.  With aggregation.builtinRoles on, each
+  # holds its base role (via roleRefs) plus every role labelled for it.  A
+  # service opts a role in by labelling it once, at its lowest level, and the
+  # chain carries it up:
   #
   #   reader -> auditor and user;  auditor and user -> administrator
   #
-  # The role IDs are unchanged, so every group that names them is too.
-  # See pkg/controllers/role/README.md.
+  # With it off, each renders as a plain role holding its base role's scopes.
+  # The role IDs are the same either way, so every group that names them is
+  # too.  The chain is fixed: reader, user and auditor must ref exactly their
+  # own base role.  See pkg/controllers/role/README.md.
   administrator:
     description: Organization administrator
     aggregationRule:
@@ -596,7 +599,8 @@ roles:
 # Optional additional roles that can be injected alongside the defaults.
 # Shape matches the roles map above. Same names will raise an error.
 # Besides description, protected and scopes, a role may set:
-#   labels:          extra labels on the Role
+#   labels:          extra labels on the Role (not unikorn-cloud.org/name or
+#                    identity.unikorn-cloud.org/aggregate-to-*; use aggregateTo)
 #   aggregateTo:     names of aggregating roles to opt into, e.g. [reader];
 #                    each adds identity.unikorn-cloud.org/aggregate-to-<name>
 #   aggregationRule: makes the role aggregating (no scopes allowed then):
@@ -604,15 +608,27 @@ roles:
 #     flattenToOrganization: copy source project scopes into organization
 additionalRoles: {}
 
-# Role aggregation.  A Role may carry an aggregate-to-* label only if its name
-# is on this list, it is not protected, it has no global scopes, no
-# identity:* scopes and no credential (.../accesskeys) scopes, and it does not
-# itself aggregate (except the reader/user/auditor chain).  An admission
-# policy enforces this for every Role, whichever chart ships it.
-# Adding a name is a reviewed change: a labelled role widens every org admin.
-# NCP-0005 §4 warns a selector makes a role "whatever happens to be labelled";
-# this list makes it what we agreed to label.  See ID-550 and ID-556.
+# Role aggregation.
 aggregation:
+  # Make administrator, auditor, user and reader aggregating roles.  Off, they
+  # render as on a chart without aggregation (scopes inline, no labels).
+  # Turn it on in a later sync than the release that ships the Role CRD, the
+  # role controller and the server that reads effective scopes, once that
+  # release is fully rolled out: an old CRD drops aggregationRule and an old
+  # server reads spec.scopes, and either leaves every holder with nothing.
+  # On a helm upgrade the chart checks the installed CRD and refuses to render.
+  builtinRoles: false
+
+  # A Role in the release namespace may carry an aggregate-to-* label only if
+  # its name is on this list, it is not protected, it has no global scopes, no
+  # identity:*, credential (.../accesskeys) or platform-only scopes (scopes
+  # this chart's roles only grant globally), and it does not itself aggregate
+  # (except the reader/user/auditor chain).  An admission policy enforces
+  # this for every Role, whichever chart ships it.
+  # Adding a name is a reviewed change: a labelled role widens every org admin.
+  # NCP-0005 §4 warns a selector makes a role "whatever happens to be labelled";
+  # this list makes it what we agreed to label.  See ID-550 and ID-556.
+  # An override replaces this list, it does not add to it: copy the whole list.
   allowedSources:
   # Built-in chain.
   - reader
@@ -637,19 +653,14 @@ aggregation:
   - reservation-placement-user
   # envir
   - environment-admin
-  - environment-app-admin
-  - environment-app-user-permissive
-  - environment-app-user-restrictive
   - environment-deployer
   - environment-viewer
   - org-access-admin
   - org-catalog-admin
   - org-catalog-viewer
-  - project-byo-admin
   - project-environment-admin
   - project-product-admin
   - project-viewer
-  - resource-pool-admin
   - resource-pool-viewer
 
 # Quota metadata and defaults are defined here.  Quotas are extensible

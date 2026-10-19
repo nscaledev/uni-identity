@@ -14,10 +14,21 @@ rules:
   - create
   - get
   - update
+# Write the status of aggregating roles (my job).  The controller never
+# writes spec, labels or annotations.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - roles/status
+  verbs:
+  - update
+  - patch
 # The change record: EffectiveScopesChanged and condition warnings.  The
-# controller uses the events.k8s.io API.
+# controller uses the events.k8s.io API; leader election records events with
+# the core API.
 - apiGroups:
   - events.k8s.io
+  - ""
   resources:
   - events
   verbs:

@@ -7,7 +7,36 @@
 {{- end }}
 {{- $roles := merge (dict) $base }}
 {{- $roles = merge $roles $additional }}
-{{- $allowedSources := (default (dict) .Values.aggregation).allowedSources | default (list) }}
+{{- $aggregation := default (dict) .Values.aggregation }}
+{{- $allowedSources := $aggregation.allowedSources | default (list) }}
+{{- $builtinAggregate := $aggregation.builtinRoles }}
+{{- $builtins := include "unikorn.identity.builtinRoles" . | fromJsonArray }}
+{{- $chain := include "unikorn.identity.chainRoles" . | fromJsonArray }}
+{{- /*
+An old Role CRD prunes spec.aggregationRule, and the built-in roles would hold
+nothing.  lookup is empty under helm template and Argo CD, so this only runs
+on a real helm install or upgrade.
+*/}}
+{{- if $builtinAggregate }}
+{{- with lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "roles.identity.unikorn-cloud.org" }}
+{{- range .spec.versions }}
+{{- if and (eq .name "v1alpha1") (not (dig "schema" "openAPIV3Schema" "properties" "spec" "properties" "aggregationRule" "" .)) }}
+{{- fail "aggregation.builtinRoles needs the Role CRD with spec.aggregationRule: apply charts/identity/crds first (helm upgrade does not update CRDs)" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /*
+With aggregation.builtinRoles off, a built-in role is a plain role holding its
+base role's scopes.
+*/}}
+{{- $plain := dict }}
+{{- range $name := $builtins }}
+{{- $spec := index $roles $name }}
+{{- if and $spec (not $builtinAggregate) }}
+{{- $_ := set $plain $name (dict "description" $spec.description "scopes" (index $roles (printf "%s-base" $name)).scopes) }}
+{{- end }}
+{{- end }}
 {{- /*
 Two passes: roles that don't aggregate first, then aggregating roles, so a
 base role exists before the role that refs it.  Helm applies in this order;
@@ -17,22 +46,28 @@ Without this, administrator (f194...) is applied before administrator-base
 */}}
 {{- $ordered := list }}
 {{- range $name, $spec := $roles }}
-{{- if not $spec.aggregationRule }}
+{{- if or (not $spec.aggregationRule) (hasKey $plain $name) }}
 {{- $ordered = append $ordered $name }}
 {{- end }}
 {{- end }}
 {{- range $name, $spec := $roles }}
-{{- if $spec.aggregationRule }}
+{{- if and $spec.aggregationRule (not (hasKey $plain $name)) }}
 {{- $ordered = append $ordered $name }}
 {{- end }}
 {{- end }}
 {{- range $name := $ordered }}
 {{- $spec := index $roles $name }}
 {{- /*
-Render-time guards for aggregation.  The admission policy and the role
-controller enforce the same rules at runtime; failing here catches a bad
-values file before it reaches a cluster.
+Render-time guards for aggregation.  They mirror the admission policy and the
+role controller, so a bad values file fails here, before it reaches a cluster.
+The platform-only scope rule has no guard here: a role in values counts as a
+tenant role, so its own scopes are never platform-only.
 */}}
+{{- range $key, $_ := $spec.labels }}
+  {{- if or (hasPrefix "identity.unikorn-cloud.org/aggregate-to-" $key) (eq $key "unikorn-cloud.org/name") }}
+    {{- fail (printf "role %q: labels must not set %q, use aggregateTo for aggregation" $name $key) }}
+  {{- end }}
+{{- end }}
 {{- if $spec.aggregationRule }}
   {{- if $spec.scopes }}
     {{- fail (printf "role %q: an aggregating role must not set scopes, move them to a base role in aggregationRule.roleRefs" $name) }}
@@ -45,18 +80,40 @@ values file before it reaches a cluster.
       {{- fail (printf "role %q: aggregationRule.roleRefs names itself" $name) }}
     {{- end }}
   {{- end }}
+  {{- if $spec.aggregateTo }}
+    {{- if not (has $name $chain) }}
+      {{- fail (printf "role %q: a role with aggregateTo cannot also aggregate, except the built-in chain roles" $name) }}
+    {{- end }}
+    {{- if not (deepEqual $spec.aggregationRule.roleRefs (list (printf "%s-base" $name))) }}
+      {{- fail (printf "role %q: a chain role must ref exactly %s-base" $name $name) }}
+    {{- end }}
+  {{- end }}
 {{- end }}
-{{- range $target := $spec.aggregateTo }}
+{{- if $spec.aggregateTo }}
   {{- if $spec.protected }}
     {{- fail (printf "role %q: a protected role cannot opt into aggregation" $name) }}
   {{- end }}
   {{- if not (has $name $allowedSources) }}
     {{- fail (printf "role %q: aggregateTo needs the role on aggregation.allowedSources" $name) }}
   {{- end }}
-  {{- $targetSpec := index $roles $target }}
-  {{- if not (and $targetSpec $targetSpec.aggregationRule) }}
-    {{- fail (printf "role %q: aggregateTo names %q, which is not an aggregating role" $name $target) }}
+  {{- $scopes := default (dict) $spec.scopes }}
+  {{- if $scopes.global }}
+    {{- fail (printf "role %q: a role with global scopes cannot opt into aggregation" $name) }}
   {{- end }}
+  {{- range $scope, $_ := merge (dict) (default (dict) $scopes.organization) (default (dict) $scopes.project) }}
+    {{- if or (hasPrefix "identity:" $scope) (hasSuffix "/accesskeys" $scope) }}
+      {{- fail (printf "role %q: a role with identity:* or credential (.../accesskeys) scope %q cannot opt into aggregation" $name $scope) }}
+    {{- end }}
+  {{- end }}
+  {{- range $target := $spec.aggregateTo }}
+    {{- $targetSpec := index $roles $target }}
+    {{- if not (and $targetSpec $targetSpec.aggregationRule) }}
+      {{- fail (printf "role %q: aggregateTo names %q, which is not an aggregating role" $name $target) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if hasKey $plain $name }}
+{{- $spec = index $plain $name }}
 {{- end }}
 ---
 apiVersion: identity.unikorn-cloud.org/v1alpha1
@@ -69,7 +126,7 @@ metadata:
     {{- range $key, $value := $spec.labels }}
     {{ $key }}: {{ $value | quote }}
     {{- end }}
-    {{- range $spec.aggregateTo }}
+    {{- range $spec.aggregateTo | default (list) | uniq }}
     identity.unikorn-cloud.org/aggregate-to-{{ . }}: "true"
     {{- end }}
   {{- if or $spec.description $spec.aggregationRule }}

@@ -117,14 +117,24 @@ var _ = Describe("Role Aggregation", Serial, func() {
 					roles, err := client.ListRoles(ctx, config.OrgID)
 					g.Expect(err).NotTo(HaveOccurred())
 
+					// Protected base roles are sources too, but the API never
+					// lists them.
 					admin := roleByName(roles, "administrator")
 					g.Expect(admin).NotTo(BeNil())
-					g.Expect(sourceNames(admin)).To(ContainElements("administrator-base", "auditor", "user"))
+					g.Expect(sourceNames(admin)).To(ContainElements("auditor", "user"))
+					g.Expect(sourceNames(admin)).NotTo(ContainElement("administrator-base"))
+
+					for _, name := range []string{"auditor", "user"} {
+						role := roleByName(roles, name)
+						g.Expect(role).NotTo(BeNil())
+						g.Expect(sourceNames(role)).To(ContainElement("reader"), "%s should aggregate reader", name)
+					}
 
 					reader := roleByName(roles, "reader")
 					g.Expect(reader).NotTo(BeNil())
-					g.Expect(sourceNames(reader)).To(ConsistOf("reader-base"))
+					g.Expect(sourceNames(reader)).NotTo(ContainElement("reader-base"))
 
+					// public-administrator only exists in some environments.
 					public := roleByName(roles, "public-administrator")
 					if public != nil {
 						g.Expect(public.AggregatedFrom).To(BeNil(), "public-administrator never aggregates")
@@ -137,13 +147,12 @@ var _ = Describe("Role Aggregation", Serial, func() {
 	Context("When a service labels a role for aggregation", func() {
 		Describe("Given an allow-listed role labelled aggregate-to-reader", func() {
 			var (
-				roleID string
-				kube   kubeclient.Client
+				roleID            string
+				kube              kubeclient.Client
+				identityNamespace string
 			)
 
 			BeforeEach(func() {
-				var identityNamespace string
-
 				kube, identityNamespace = kubeForAggregation()
 
 				// fleet-operator is on the chart's allow-list, and the policy
@@ -230,8 +239,26 @@ var _ = Describe("Role Aggregation", Serial, func() {
 
 			It("should report the administrator as able to grant every labelled role", func() {
 				Eventually(func(g Gomega) {
+					reader := &unikornv1.Role{}
+					g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID("reader")}, reader)).To(Succeed())
+
+					sources := make([]string, 0, len(reader.Status.AggregatedFrom))
+					for _, source := range reader.Status.AggregatedFrom {
+						sources = append(sources, source.ID)
+					}
+
+					g.Expect(sources).To(ContainElement(roleID), "reader should aggregate fleet-operator")
+
 					admin := &unikornv1.Role{}
-					g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespaceOf(kube), Name: chartRoleID("administrator")}, admin)).To(Succeed())
+					g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID("administrator")}, admin)).To(Succeed())
+					g.Expect(admin.Status.EffectiveScopes).NotTo(BeNil())
+
+					held := false
+					for _, scope := range admin.Status.EffectiveScopes.Organization {
+						held = held || scope.Name == "radar:topology"
+					}
+
+					g.Expect(held).To(BeTrue(), "administrator should hold radar:topology")
 
 					grantable, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1.RoleConditionGrantable)
 					g.Expect(err).NotTo(HaveOccurred())
@@ -240,6 +267,7 @@ var _ = Describe("Role Aggregation", Serial, func() {
 					available, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1core.ConditionAvailable)
 					g.Expect(err).NotTo(HaveOccurred())
 					g.Expect(available.Status).To(Equal(metav1.ConditionTrue), available.Message)
+					g.Expect(available.ObservedGeneration).To(Equal(admin.Generation), "Available should be for the current generation")
 				}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
 			})
 		})
@@ -301,7 +329,7 @@ var _ = Describe("Role Aggregation", Serial, func() {
 			})
 
 			It("should refuse the label on a role with identity:allocations", func() {
-				expectRefused(labelled(chartRoleID("fleet-operator"), unikornv1.RoleSpec{Scopes: orgScope("identity:allocations")}), "identity:allocations")
+				expectRefused(labelled(chartRoleID("fleet-operator"), unikornv1.RoleSpec{Scopes: orgScope("identity:allocations")}), "identity:*")
 			})
 
 			It("should refuse the label on a role with credential scopes", func() {
@@ -326,13 +354,3 @@ var _ = Describe("Role Aggregation", Serial, func() {
 		})
 	})
 })
-
-// identityNamespaceOf finds the identity namespace from the test organization.
-func identityNamespaceOf(kube kubeclient.Client) string {
-	GinkgoHelper()
-
-	identityNamespace, _, err := api.OrganizationNamespaces(ctx, kube, config.OrgID)
-	Expect(err).NotTo(HaveOccurred())
-
-	return identityNamespace
-}

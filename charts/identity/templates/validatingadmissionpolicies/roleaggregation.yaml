@@ -1,8 +1,8 @@
 {{- /*
 Role aggregation guard.  An aggregate-to-* label on a Role widens every org
 admin at the next reconcile, with nobody approving it, so the label is a quiet
-escalation path (CNPRE-521, CNPRE-712).  This policy applies to every Role,
-whichever chart ships it.
+escalation path (CNPRE-521, CNPRE-712).  This policy applies to every Role in
+the release namespace, whichever chart ships it.
 
 A Role may carry an aggregate-to-* label only if:
 - its ID is on aggregation.allowedSources (names, turned into IDs here, so the
@@ -12,8 +12,11 @@ A Role may carry an aggregate-to-* label only if:
 - it has no identity:* scopes and no credential (.../accesskeys) scopes
   (identity scopes are trust and tenancy surfaces: providers, organizations,
   users, allocations),
-- it is not itself aggregating, unless it is one of the chart's chain roles
-  (otherwise its roleRefs could pull in any role, past every rule above).
+- it has no platform-only scopes (in a global block of this chart's roles and
+  in no tenant role's organization or project block),
+- it is not itself aggregating, unless it is a chain role (reader, user,
+  auditor) whose rule selects only its own label and refs only its base role
+  (otherwise its roleRefs or selector could pull in any role).
 
 An aggregating Role (one with spec.aggregationRule) must not set spec.scopes:
 all of its scopes come from its sources.
@@ -22,28 +25,21 @@ all of its scopes come from its sources.
 {{- range ((default (dict) .Values.aggregation).allowedSources | default (list)) }}
 {{- $allowed = append $allowed (printf "'%s'" (include "resource.id" .)) }}
 {{- end }}
-{{- /*
-Roles this chart defines as aggregating.  They must keep their
-aggregationRule: a stale CRD prunes the field (and the chart has already
-removed their scopes), which would leave every holder with nothing.
-Of these, only the ones that are also labelled (the chain: reader, user,
-auditor) may be both a source and an aggregating role.
-*/}}
-{{- $roles := merge (dict) (default (dict) .Values.roles) (default (dict) .Values.additionalRoles) }}
-{{- $aggregating := list }}
 {{- $chain := list }}
-{{- range $name, $spec := $roles }}
-{{- if $spec.aggregationRule }}
-{{- $aggregating = append $aggregating (printf "'%s'" (include "resource.id" $name)) }}
-{{- if $spec.aggregateTo }}
-{{- $chain = append $chain (printf "'%s'" (include "resource.id" $name)) }}
+{{- range (include "unikorn.identity.chainRoles" . | fromJsonArray) }}
+{{- $chain = append $chain (printf "'%s': {'ref': '%s', 'label': 'identity.unikorn-cloud.org/aggregate-to-%s'}" (include "resource.id" .) (include "resource.id" (printf "%s-base" .)) .) }}
 {{- end }}
+{{- $platformOnly := list }}
+{{- range (include "unikorn.identity.platformOnlyScopes" . | fromJsonArray) }}
+{{- $platformOnly = append $platformOnly (printf "'%s'" .) }}
 {{- end }}
-{{- end }}
+{{- $name := printf "%s-role-aggregation.identity.unikorn-cloud.org" .Release.Name }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
-  name: role-aggregation.identity.unikorn-cloud.org
+  name: {{ $name }}
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -60,38 +56,54 @@ spec:
   variables:
   - name: labelled
     expression: "object.metadata.?labels.orValue({}).exists(k, k.startsWith('identity.unikorn-cloud.org/aggregate-to-'))"
-  - name: scopes
-    expression: "object.spec.?scopes.orValue({})"
+  - name: global
+    expression: "object.?spec.?scopes.?global.orValue([])"
   - name: scoped
-    expression: "variables.scopes.?organization.orValue([]) + variables.scopes.?project.orValue([])"
+    expression: "object.?spec.?scopes.?organization.orValue([]).map(s, s.name) + object.?spec.?scopes.?project.orValue([]).map(s, s.name)"
+  - name: aggregating
+    expression: "object.?spec.?aggregationRule.hasValue()"
+  - name: chain
+    expression: "{ {{- join ", " $chain -}} }"
   validations:
   - expression: "!variables.labelled || object.metadata.name in [{{ join ", " $allowed }}]"
     messageExpression: "'role ' + object.metadata.name + ' carries an aggregate-to-* label but is not on the identity chart aggregation.allowedSources list'"
     reason: Forbidden
-  - expression: "!variables.labelled || !object.spec.?protected.orValue(false)"
+  - expression: "!variables.labelled || !object.?spec.?protected.orValue(false)"
     message: A protected role cannot carry an aggregate-to-* label
     reason: Forbidden
-  - expression: "!variables.labelled || size(variables.scopes.?global.orValue([])) == 0"
+  - expression: "!variables.labelled || size(variables.global) == 0"
     message: A role with global scopes cannot carry an aggregate-to-* label
     reason: Forbidden
-  - expression: "!variables.labelled || !variables.scoped.exists(s, s.name.startsWith('identity:') || s.name.endsWith('/accesskeys'))"
+  - expression: "!variables.labelled || !variables.scoped.exists(s, s.startsWith('identity:') || s.endsWith('/accesskeys'))"
     message: A role with identity:* or credential (.../accesskeys) scopes cannot carry an aggregate-to-* label
     reason: Forbidden
-  - expression: "!variables.labelled || !has(object.spec.aggregationRule) || object.metadata.name in [{{ join ", " $chain }}]"
-    message: A role with an aggregate-to-* label cannot also aggregate, except the built-in chain roles
+  - expression: "!variables.labelled || !variables.scoped.exists(s, s in [{{ join ", " $platformOnly }}])"
+    message: A role with platform-only scopes (granted only globally by the identity chart) cannot carry an aggregate-to-* label
     reason: Forbidden
-  - expression: "!(object.metadata.name in [{{ join ", " $aggregating }}]) || has(object.spec.aggregationRule)"
-    message: This role is aggregating in the identity chart and must keep spec.aggregationRule; is the Role CRD up to date?
-    reason: Invalid
-  - expression: "!has(object.spec.aggregationRule) || (size(variables.scopes.?global.orValue([])) == 0 && size(variables.scoped) == 0)"
+  - expression: >-
+      !variables.labelled || !variables.aggregating ||
+      (object.metadata.name in variables.chain &&
+      object.spec.aggregationRule.?roleRefs.orValue([]) == [variables.chain[object.metadata.name].ref] &&
+      size(object.spec.aggregationRule.?roleSelectors.orValue([])) == 1 &&
+      object.spec.aggregationRule.roleSelectors[0].?matchLabels.orValue({}) == {variables.chain[object.metadata.name].label: 'true'} &&
+      size(object.spec.aggregationRule.roleSelectors[0].?matchExpressions.orValue([])) == 0)
+    message: A role with an aggregate-to-* label cannot also aggregate, except the built-in chain roles selecting their own label and refing only their base role
+    reason: Forbidden
+  - expression: "!variables.aggregating || (size(variables.global) == 0 && size(variables.scoped) == 0)"
     message: An aggregating role (spec.aggregationRule) must not set spec.scopes; move them to a base role in roleRefs
     reason: Invalid
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
 metadata:
-  name: role-aggregation.identity.unikorn-cloud.org
+  name: {{ $name }}
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
 spec:
-  policyName: role-aggregation.identity.unikorn-cloud.org
+  policyName: {{ $name }}
   validationActions:
   - Deny
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}

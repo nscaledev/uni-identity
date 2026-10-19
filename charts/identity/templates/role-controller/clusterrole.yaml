@@ -5,8 +5,8 @@ metadata:
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 rules:
-# Read every role, write the status of aggregating roles (my job).
-# The controller never writes spec, labels or annotations.
+# Read every role.  Status writes are granted in the release namespace only,
+# see role.yaml.
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:
@@ -15,10 +15,3 @@ rules:
   - list
   - get
   - watch
-- apiGroups:
-  - identity.unikorn-cloud.org
-  resources:
-  - roles/status
-  verbs:
-  - update
-  - patch

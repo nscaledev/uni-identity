@@ -86,9 +86,11 @@ func loadChartValues(t *testing.T) chartValues {
 }
 
 // chartRoleResources builds the Role resources charts/identity/templates/roles.yaml
-// renders, keyed by name (the template derives each ID from the name, so names stand in
-// for IDs here): aggregateTo becomes aggregate-to-* labels, and an aggregationRule
-// selects aggregate-to-<its name> and refs its roleRefs.
+// renders with aggregation.builtinRoles on, keyed by name (the template derives each ID
+// from the name, so names stand in for IDs here): aggregateTo becomes aggregate-to-*
+// labels, and an aggregationRule selects aggregate-to-<its name> and refs its roleRefs.
+// With it off, each built-in role renders its base role's scopes inline, which
+// TestBuiltinRolesUnchangedByAggregation shows is the same set.
 func chartRoleResources(t *testing.T) map[string]*unikornv1.Role {
 	t.Helper()
 
