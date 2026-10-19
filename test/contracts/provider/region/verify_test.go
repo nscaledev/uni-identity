@@ -288,7 +288,7 @@ func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Opt
 		k8sClient,
 		k8sClient,
 		TestNamespace,
-		nil, // JWT issuer only serves JWKS, which no consumer reads
+		nil, // the handler's own issuer only serves /oauth2/v2/jwks, which no consumer reads; the authenticator has its own
 		authenticator,
 		nil, // UserDatabase not used in contract tests
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
