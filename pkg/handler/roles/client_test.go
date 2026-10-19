@@ -176,7 +176,11 @@ func TestListShowsEffectiveScopesAndSources(t *testing.T) {
 		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
 	)
 
-	byName := listAsAdmin(t, admin)
+	base := newRole("base-id", false, nil)
+	base.Labels["unikorn-cloud.org/name"] = "administrator-base"
+	fleet := newRole("fleet-id", false, nil)
+
+	byName := listAsAdmin(t, admin, base, fleet)
 
 	got := byName["administrator"]
 	require.True(t, got.Grantable)
@@ -227,14 +231,17 @@ func TestListFollowsChangedSources(t *testing.T) {
 		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
 		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
 	)
-	require.Len(t, *listAsAdmin(t, before)["administrator"].AggregatedFrom, 1)
+	base := newRole("base-id", false, nil)
+	fleet := newRole("fleet-id", false, nil)
+
+	require.Len(t, *listAsAdmin(t, before, base, fleet)["administrator"].AggregatedFrom, 1)
 
 	after := adminRole(
 		[]unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
 		unikornv1.RoleAggregationSource{ID: "base-id", Name: "administrator-base", ScopesHash: "sha256:aa"},
 	)
 
-	got := listAsAdmin(t, after)["administrator"]
+	got := listAsAdmin(t, after, base, fleet)["administrator"]
 	require.Equal(t, []openapi.RoleSource{{Id: "base-id", Name: "administrator-base"}}, *got.AggregatedFrom)
 	require.Equal(t, "identity:groups", (*got.Scopes.Organization)[0].Name)
 	require.Len(t, *got.Scopes.Organization, 1)
@@ -282,7 +289,7 @@ func TestListUnreconciledAggregatingRoleReportsBootstrapScopes(t *testing.T) {
 func TestListHidesProtectedSources(t *testing.T) {
 	t.Parallel()
 
-	base := newRole("platform-secret-base", true, []unikornv1.RoleScope{
+	base := newRole("administrator-base", true, []unikornv1.RoleScope{
 		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
 	})
 	base.Annotations = map[string]string{"unikorn-cloud.org/description": "internal: do not expose"}
@@ -298,15 +305,40 @@ func TestListHidesProtectedSources(t *testing.T) {
 	require.Len(t, res.AggregatedFrom, 2)
 
 	byName := listAsAdmin(t, base, fleet, adminRole(res.EffectiveScopes.Organization, res.AggregatedFrom...))
-	require.NotContains(t, byName, "platform-secret-base")
+	require.NotContains(t, byName, "administrator-base")
 
 	got := byName["administrator"]
 	require.NotNil(t, got.AggregatedFrom)
 	require.Equal(t, []openapi.RoleSource{{Id: "fleet-operator", Name: "fleet-operator"}}, *got.AggregatedFrom)
 
 	// Only protected sources: nothing to show.
-	byName = listAsAdmin(t, base, adminRole(res.EffectiveScopes.Organization, res.AggregatedFrom[1]))
+	require.Equal(t, base.Name, res.AggregatedFrom[0].ID)
+
+	byName = listAsAdmin(t, base, fleet, adminRole(res.EffectiveScopes.Organization, res.AggregatedFrom[0]))
 	require.Nil(t, byName["administrator"].AggregatedFrom)
+}
+
+// TestListHidesSourcesThatAreGone checks aggregatedFrom never shows a source
+// that no longer exists, even when status still names it, protected or not.
+func TestListHidesSourcesThatAreGone(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole(
+		[]unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		unikornv1.RoleAggregationSource{ID: "base-id", Name: "administrator-base"},
+		unikornv1.RoleAggregationSource{ID: "gone-id", Name: "gone"},
+	)
+
+	require.Nil(t, listAsAdmin(t, admin)["administrator"].AggregatedFrom)
+
+	deleting := newRole("fleet-id", false, nil)
+	deleting.Finalizers = []string{"test"}
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+
+	admin = adminRole(nil, unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator"})
+
+	require.Nil(t, listAsAdmin(t, admin, deleting)["administrator"].AggregatedFrom)
 }
 
 func ptr[T any](v T) *T {

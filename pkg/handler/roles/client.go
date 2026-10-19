@@ -43,10 +43,11 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-// convert returns one role as the API shows it.  Protected sources are
-// internal, so they are left out of aggregatedFrom as they are left out of
-// the list.
-func convert(in unikornv1.Role, grantable bool, protected map[string]bool) openapi.RoleRead {
+// convert returns one role as the API shows it.  aggregatedFrom lists only
+// sources the status records as used that are live and not protected:
+// protected sources are internal, as they are left out of the list, and a
+// source that is gone, or that someone wrote into status, is not shown.
+func convert(in unikornv1.Role, grantable bool, listable map[string]bool) openapi.RoleRead {
 	out := openapi.RoleRead{
 		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),
 		Grantable: grantable,
@@ -57,7 +58,7 @@ func convert(in unikornv1.Role, grantable bool, protected map[string]bool) opena
 		sources := make([]openapi.RoleSource, 0, len(in.Status.AggregatedFrom))
 
 		for _, source := range in.Status.AggregatedFrom {
-			if protected[source.ID] {
+			if !listable[source.ID] {
 				continue
 			}
 
@@ -113,7 +114,7 @@ func convertEndpoints(in []unikornv1.RoleScope) *openapi.AclEndpoints {
 	return &out
 }
 
-func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID, protected map[string]bool) openapi.Roles {
+func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID, listable map[string]bool) openapi.Roles {
 	// Allocated rather than declared nil: the schema types this response as a
 	// non-nullable array, and a nil slice marshals to null, which response
 	// validation rejects.
@@ -122,7 +123,7 @@ func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.
 	for _, resource := range in.Items {
 		grantable := rbac.AllowRole(ctx, &resource, organizationID) == nil
 
-		out = append(out, convert(resource, grantable, protected))
+		out = append(out, convert(resource, grantable, listable))
 	}
 
 	slices.SortFunc(out, func(a, b openapi.RoleRead) int {
@@ -143,15 +144,15 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 	// the ACL build gives its holders.  This needs every role, protected
 	// base roles included.
 	all := make(map[string]*unikornv1.Role, len(result.Items))
-	protected := map[string]bool{}
+	listable := map[string]bool{}
 
 	for i := range result.Items {
 		role := &result.Items[i]
 
 		all[role.Name] = role
 
-		if role.Spec.Protected {
-			protected[role.Name] = true
+		if !role.Spec.Protected && role.DeletionTimestamp.IsZero() {
+			listable[role.Name] = true
 		}
 	}
 
@@ -165,5 +166,5 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return role.Spec.Protected
 	})
 
-	return convertList(ctx, result, organizationID, protected), nil
+	return convertList(ctx, result, organizationID, listable), nil
 }
