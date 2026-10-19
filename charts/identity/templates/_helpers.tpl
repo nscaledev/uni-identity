@@ -21,6 +21,10 @@ v{{ .Chart.Version }}
 {{- .Values.projectController.image | default (printf "%s/unikorn-project-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
 {{- end }}
 
+{{- define "unikorn.roleControllerImage" -}}
+{{- .Values.roleController.image | default (printf "%s/unikorn-role-controller:%s" (include "unikorn.defaultRepositoryPath" .) (.Values.tag | default (include "unikorn.defaultTag" .))) }}
+{{- end }}
+
 {{/*
 OTLP resource identity. The exported metrics use platform-generic names, so a
 stored series is attributed to this service by the resource's service.name

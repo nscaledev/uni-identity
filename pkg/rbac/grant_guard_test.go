@@ -24,10 +24,15 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/yaml"
 )
@@ -55,13 +60,18 @@ type chartRole struct {
 		Organization endpointOperations `json:"organization"`
 		Project      endpointOperations `json:"project"`
 	} `json:"scopes"`
+	AggregateTo     []string `json:"aggregateTo"`
+	AggregationRule *struct {
+		RoleRefs              []string `json:"roleRefs"`
+		FlattenToOrganization bool     `json:"flattenToOrganization"`
+	} `json:"aggregationRule"`
 }
 
 type chartValues struct {
 	Roles map[string]chartRole `json:"roles"`
 }
 
-func loadChartRoles(t *testing.T) map[string]chartRole {
+func loadChartValues(t *testing.T) chartValues {
 	t.Helper()
 
 	raw, err := os.ReadFile(filepath.Clean(chartValuesPath))
@@ -72,7 +82,80 @@ func loadChartRoles(t *testing.T) map[string]chartRole {
 	require.NoError(t, yaml.Unmarshal(raw, &values))
 	require.NotEmpty(t, values.Roles)
 
-	return values.Roles
+	return values
+}
+
+// chartRoleResources builds the Role resources charts/identity/templates/roles.yaml
+// renders, keyed by name (the template derives each ID from the name, so names stand in
+// for IDs here): aggregateTo becomes aggregate-to-* labels, and an aggregationRule
+// selects aggregate-to-<its name> and refs its roleRefs.
+func chartRoleResources(t *testing.T) map[string]*unikornv1.Role {
+	t.Helper()
+
+	out := map[string]*unikornv1.Role{}
+
+	for name, in := range loadChartValues(t).Roles {
+		role := asRole(in)
+		role.Name = name
+		role.Labels = map[string]string{coreconstants.NameLabel: name}
+
+		for _, target := range in.AggregateTo {
+			role.Labels[unikornv1.AggregateToLabel(target)] = "true"
+		}
+
+		if in.AggregationRule != nil {
+			role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel(name): "true"}},
+				},
+				RoleRefs:              in.AggregationRule.RoleRefs,
+				FlattenToOrganization: in.AggregationRule.FlattenToOrganization,
+			}
+		}
+
+		out[name] = role
+	}
+
+	return out
+}
+
+// loadChartRoles returns the chart's roles with the scopes each one really holds: an
+// aggregating role's scopes are computed by pkg/aggregation exactly as the role
+// controller computes them in a cluster, so every test below runs on effective scopes.
+func loadChartRoles(t *testing.T) map[string]chartRole {
+	t.Helper()
+
+	roles := loadChartValues(t).Roles
+	results := aggregation.Compute(t.Context(), chartRoleResources(t))
+
+	for name, result := range results {
+		require.Equalf(t, corev1.ConditionTrue, result.Available.Status, "%s: %s", name, result.Available.Message)
+		require.Equalf(t, corev1.ConditionTrue, result.Grantable.Status, "%s: %s", name, result.Grantable.Message)
+
+		role := roles[name]
+		role.Scopes.Global = nil
+		role.Scopes.Organization = fromRoleScopes(result.EffectiveScopes.Organization)
+		role.Scopes.Project = fromRoleScopes(result.EffectiveScopes.Project)
+		roles[name] = role
+	}
+
+	return roles
+}
+
+func fromRoleScopes(in []unikornv1.RoleScope) endpointOperations {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := endpointOperations{}
+
+	for _, scope := range in {
+		for _, operation := range scope.Operations {
+			out[scope.Name] = append(out[scope.Name], string(operation))
+		}
+	}
+
+	return out
 }
 
 func toRoleScopes(in endpointOperations) []unikornv1.RoleScope {
@@ -424,4 +507,25 @@ func TestAdministratorCannotWriteOAuth2Providers(t *testing.T) {
 	require.True(t, ok, "built-in role \"administrator\" is missing")
 
 	require.Equal(t, []string{"read"}, role.Scopes.Organization["identity:oauth2providers"])
+}
+
+// TestBuiltinRolesUnchangedByAggregation asserts that turning the built-in roles into
+// aggregating roles changes nothing until a service labels a role: each one holds exactly
+// the hand-written scopes now kept in its base role.  The chain (reader into auditor and
+// user, those into administrator) only adds scopes the higher role already has.
+func TestBuiltinRolesUnchangedByAggregation(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+
+	for _, name := range []string{"administrator", "auditor", "user", "reader"} {
+		base, ok := roles[name+"-base"]
+		require.Truef(t, ok, "%s-base is missing", name)
+		require.True(t, base.Protected, "%s-base must be protected", name)
+
+		require.Equalf(t,
+			aggregation.Hash(asRole(base).Spec.Scopes),
+			aggregation.Hash(asRole(roles[name]).Spec.Scopes),
+			"%s must hold exactly its base role's scopes until a service role is labelled", name)
+	}
 }

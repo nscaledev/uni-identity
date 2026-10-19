@@ -8,6 +8,32 @@
 {{- $roles := merge (dict) $base }}
 {{- $roles = merge $roles $additional }}
 {{- range $name, $spec := $roles }}
+{{- /*
+Render-time guards for aggregation.  The admission policy and the role
+controller enforce the same rules at runtime; failing here catches a bad
+values file before it reaches a cluster.
+*/}}
+{{- if $spec.aggregationRule }}
+  {{- if $spec.scopes }}
+    {{- fail (printf "role %q: an aggregating role must not set scopes, move them to a base role in aggregationRule.roleRefs" $name) }}
+  {{- end }}
+  {{- range $spec.aggregationRule.roleRefs }}
+    {{- if not (hasKey $roles .) }}
+      {{- fail (printf "role %q: aggregationRule.roleRefs names unknown role %q" $name .) }}
+    {{- end }}
+    {{- if eq . $name }}
+      {{- fail (printf "role %q: aggregationRule.roleRefs names itself" $name) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- range $spec.aggregateTo }}
+  {{- if $spec.protected }}
+    {{- fail (printf "role %q: a protected role cannot opt into aggregation" $name) }}
+  {{- end }}
+  {{- if not (has $name $.Values.aggregation.allowedSources) }}
+    {{- fail (printf "role %q: aggregateTo needs the role on aggregation.allowedSources" $name) }}
+  {{- end }}
+{{- end }}
 ---
 apiVersion: identity.unikorn-cloud.org/v1alpha1
 kind: Role
@@ -16,6 +42,12 @@ metadata:
   labels:
     {{- include "unikorn.labels" $ | nindent 4 }}
     unikorn-cloud.org/name: {{ $name }}
+    {{- range $key, $value := $spec.labels }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+    {{- range $spec.aggregateTo }}
+    identity.unikorn-cloud.org/aggregate-to-{{ . }}: "true"
+    {{- end }}
   {{- if $spec.description }}
   annotations:
     unikorn-cloud.org/description: {{ $spec.description }}
@@ -23,6 +55,21 @@ metadata:
 spec:
   {{- if $spec.protected }}
   protected: true
+  {{- end }}
+  {{- with $rule := $spec.aggregationRule }}
+  aggregationRule:
+    roleSelectors:
+    - matchLabels:
+        identity.unikorn-cloud.org/aggregate-to-{{ $name }}: "true"
+    {{- with $rule.roleRefs }}
+    roleRefs:
+      {{- range . }}
+    - {{ include "resource.id" . }}
+      {{- end }}
+    {{- end }}
+    {{- if $rule.flattenToOrganization }}
+    flattenToOrganization: true
+    {{- end }}
   {{- end }}
   {{- with $scopes := $spec.scopes }}
   scopes:

@@ -1,0 +1,69 @@
+{{- /*
+Role aggregation guard.  An aggregate-to-* label on a Role widens every org
+admin at the next reconcile, with nobody approving it, so the label is a quiet
+escalation path (CNPRE-521, CNPRE-712).  This policy applies to every Role,
+whichever chart ships it.
+
+A Role may carry an aggregate-to-* label only if:
+- its ID is on aggregation.allowedSources (names, turned into IDs here, so the
+  check can't be passed by copying a name label),
+- it is not protected,
+- it has no global scopes,
+- it has no identity:allocations and no credential (.../accesskeys) scopes.
+
+An aggregating Role (one with spec.aggregationRule) must not set spec.scopes:
+all of its scopes come from its sources.
+*/}}
+{{- $allowed := list }}
+{{- range .Values.aggregation.allowedSources }}
+{{- $allowed = append $allowed (printf "'%s'" (include "resource.id" .)) }}
+{{- end }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: role-aggregation.identity.unikorn-cloud.org
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - identity.unikorn-cloud.org
+      apiVersions:
+      - '*'
+      resources:
+      - roles
+      operations:
+      - CREATE
+      - UPDATE
+  variables:
+  - name: labelled
+    expression: "object.metadata.?labels.orValue({}).exists(k, k.startsWith('identity.unikorn-cloud.org/aggregate-to-'))"
+  - name: scopes
+    expression: "object.spec.?scopes.orValue({})"
+  - name: scoped
+    expression: "variables.scopes.?organization.orValue([]) + variables.scopes.?project.orValue([])"
+  validations:
+  - expression: "!variables.labelled || object.metadata.name in [{{ join ", " $allowed }}]"
+    messageExpression: "'role ' + object.metadata.name + ' carries an aggregate-to-* label but is not on the identity chart aggregation.allowedSources list'"
+    reason: Forbidden
+  - expression: "!variables.labelled || !object.spec.?protected.orValue(false)"
+    message: A protected role cannot carry an aggregate-to-* label
+    reason: Forbidden
+  - expression: "!variables.labelled || size(variables.scopes.?global.orValue([])) == 0"
+    message: A role with global scopes cannot carry an aggregate-to-* label
+    reason: Forbidden
+  - expression: "!variables.labelled || !variables.scoped.exists(s, s.name == 'identity:allocations' || s.name.endsWith('/accesskeys'))"
+    message: A role with identity:allocations or credential (.../accesskeys) scopes cannot carry an aggregate-to-* label
+    reason: Forbidden
+  - expression: "!has(object.spec.aggregationRule) || (size(variables.scopes.?global.orValue([])) == 0 && size(variables.scoped) == 0)"
+    message: An aggregating role (spec.aggregationRule) must not set spec.scopes; move them to a base role in roleRefs
+    reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: role-aggregation.identity.unikorn-cloud.org
+spec:
+  policyName: role-aggregation.identity.unikorn-cloud.org
+  validationActions:
+  - Deny

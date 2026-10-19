@@ -105,6 +105,29 @@ deployment time.
 These carry `organization` and/or `project` scope blocks and are the roles an
 administrator grants to groups.
 
+All four are aggregating roles (see [Role aggregation](#role-aggregation)). Their
+hand-written scopes, shown below, live in protected base roles (`administrator-base`,
+`auditor-base`, `user-base`, `reader-base`) that each one names in `roleRefs`. The role
+names, and so the role IDs every group stores, are unchanged. On top of its base, each
+holds every role labelled for it, through the chain:
+
+```
+reader ──┬─> auditor ──┐
+         └─> user ─────┴─> administrator
+```
+
+A service labels its role once, at the lowest level that should hold it (for example
+`aggregate-to-reader` for a read-only role), and every role above picks it up.
+`administrator` and `auditor` set `flattenToOrganization`, so project scopes from below
+land at organization scope. `TestBuiltinRolesUnchangedByAggregation` pins that the chain
+adds nothing to the built-in roles until a service labels a role.
+
+Which roles may carry an `aggregate-to-*` label is the chart's
+`aggregation.allowedSources` list, enforced for every `Role` by the
+`role-aggregation.identity.unikorn-cloud.org` admission policy. The policy also refuses
+the label on protected roles and on roles with global, `identity:allocations` or
+credential (`.../accesskeys`) scopes, and refuses `spec.scopes` on an aggregating role.
+
 | Role | organization block | project block |
 | --- | --- | --- |
 | `administrator` | full CRUD across identity, region, storage, Kubernetes and compute, except read-only `identity:oauth2providers` | — |
@@ -186,7 +209,8 @@ administrator ─┬─ auditor ─── reader
 `user` and `auditor` are incomparable, and neither can grant `administrator`. This lattice
 is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from the parsed
 chart values for every ordered role pair, asserting each allowed edge and rejecting every
-non-edge.
+non-edge. It runs on effective scopes: the test computes aggregation over the chart's roles
+with `pkg/aggregation`, as the role controller does in a cluster.
 
 ## Actor Model
 

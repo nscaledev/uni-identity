@@ -66,6 +66,18 @@ projectController:
       cpu: 100m
       memory: 100Mi
 
+# Role controller specific configuration.  It writes the effective scopes of
+# aggregating roles; see pkg/controllers/role/README.md.
+roleController:
+  # Allows override of the image.
+  image:
+
+  # Allows resource limits to be set.
+  resources:
+    limits:
+      cpu: 100m
+      memory: 100Mi
+
 # Sets the DNS hosts, X.509 certificate subject alternative names and
 # oauth2 issuer etc.
 identity:
@@ -413,8 +425,9 @@ roles:
   # An administrator can do anything within an organization, except configure
   # its upstream identity providers: provider writes would let an organization
   # lock its own users out of login, so they stay with the platform operator.
-  administrator:
-    description: Organization administrator
+  administrator-base:
+    description: Organization administrator (hand-written scopes)
+    protected: true
     scopes:
       organization:
         identity:organizations: [read,update]
@@ -448,8 +461,9 @@ roles:
         compute:flavors: [read]
         compute:images: [read]
         compute:instances: [create,read,update,delete]
-  auditor:
-    description: Organization auditor
+  auditor-base:
+    description: Organization auditor (hand-written scopes)
+    protected: true
     scopes:
       organization:
         identity:organizations: [read]
@@ -485,8 +499,9 @@ roles:
         compute:instances: [read]
   # A user can view projects they are a member of and
   # provision clusters.
-  user:
-    description: Project user
+  user-base:
+    description: Project user (hand-written scopes)
+    protected: true
     scopes:
       organization:
         identity:quotas: [read]
@@ -517,8 +532,9 @@ roles:
         compute:instances: [create,read,update,delete]
   # A reader can view projects they are a member of and view
   # kubernetes clusters.
-  reader:
-    description: Project reader
+  reader-base:
+    description: Project reader (hand-written scopes)
+    protected: true
     scopes:
       organization:
         identity:quotas: [read]
@@ -547,10 +563,93 @@ roles:
         region:sshcertificateauthorities:v2: [read]
         kubernetes:clusters: [read]
         compute:instances: [read]
+  # The user-facing built-in roles aggregate: each holds its base role (via
+  # roleRefs) plus every role labelled for it.  A service opts a role in by
+  # labelling it once, at its lowest level, and the chain carries it up:
+  #
+  #   reader -> auditor and user;  auditor and user -> administrator
+  #
+  # The role IDs are unchanged, so every group that names them is too.
+  # See pkg/controllers/role/README.md.
+  administrator:
+    description: Organization administrator
+    aggregationRule:
+      roleRefs: [administrator-base]
+      flattenToOrganization: true
+  auditor:
+    description: Organization auditor
+    aggregateTo: [administrator]
+    aggregationRule:
+      roleRefs: [auditor-base]
+      flattenToOrganization: true
+  user:
+    description: Project user
+    aggregateTo: [administrator]
+    aggregationRule:
+      roleRefs: [user-base]
+  reader:
+    description: Project reader
+    aggregateTo: [auditor, user]
+    aggregationRule:
+      roleRefs: [reader-base]
 
 # Optional additional roles that can be injected alongside the defaults.
-# Shape matches the roles map below. Same names will raise an error.
+# Shape matches the roles map above. Same names will raise an error.
+# Besides description, protected and scopes, a role may set:
+#   labels:          extra labels on the Role
+#   aggregateTo:     names of aggregating roles to opt into, e.g. [reader];
+#                    each adds identity.unikorn-cloud.org/aggregate-to-<name>
+#   aggregationRule: makes the role aggregating (no scopes allowed then):
+#     roleRefs:              role names always included
+#     flattenToOrganization: copy source project scopes into organization
 additionalRoles: {}
+
+# Role aggregation.  A Role may carry an aggregate-to-* label only if its name
+# is on this list, it is not protected, and it has no global scopes, no
+# identity:allocations and no credential (.../accesskeys) scopes.  An
+# admission policy enforces this for every Role, whichever chart ships it.
+# Adding a name is a reviewed change: a labelled role widens every org admin.
+# NCP-0005 §4 warns a selector makes a role "whatever happens to be labelled";
+# this list makes it what we agreed to label.  See ID-550 and ID-556.
+aggregation:
+  allowedSources:
+  # Built-in chain.
+  - reader
+  - user
+  - auditor
+  # radar
+  - fleet-operator
+  # nks
+  - nks-organization-admin
+  - nks-organization-auditor
+  - nks-organization-kubernetes-api-reader
+  - nks-organization-kubernetes-api-writer
+  - nks-project-admin
+  - nks-project-auditor
+  - nks-project-kubernetes-api-reader
+  - nks-project-kubernetes-api-writer
+  # reservation
+  - reservation-capacity-manager
+  - reservation-capacity-reader
+  - reservation-placement-operator
+  - reservation-placement-reader
+  - reservation-placement-user
+  # envir
+  - environment-admin
+  - environment-app-admin
+  - environment-app-user-permissive
+  - environment-app-user-restrictive
+  - environment-deployer
+  - environment-viewer
+  - org-access-admin
+  - org-catalog-admin
+  - org-catalog-viewer
+  - project-byo-admin
+  - project-environment-admin
+  - project-product-admin
+  - project-viewer
+  - resource-pool-admin
+  - resource-pool-viewer
 
 # Quota metadata and defaults are defined here.  Quotas are extensible
 # so you can create 3rd party quota resources externally.
