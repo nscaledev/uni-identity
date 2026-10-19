@@ -22,6 +22,12 @@ The actual reconcile behaviour lives in the provisioners:
 - [project](../provisioners/project/README.md)
 - [oauth2client](../provisioners/oauth2client/README.md)
 
+The [role controller](./role/README.md) is the exception. Roles have no
+provisioning lifecycle and no finalizer: the controller only computes the
+status of aggregating roles. So it has its own small reconciler instead of the
+shared provisioner one, and it watches label changes as well as generation
+changes, because a label is how a role opts into aggregation.
+
 ## Pattern
 
 Each controller package in this repository follows the same pattern:

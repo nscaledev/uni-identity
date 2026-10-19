@@ -16,7 +16,8 @@ CONTROLLERS = \
   unikorn-identity \
   unikorn-organization-controller \
   unikorn-oauth2client-controller \
-  unikorn-project-controller
+  unikorn-project-controller \
+  unikorn-role-controller
 
 # Release will do cross compliation of all images for the 'all' target.
 # Note we aren't fucking about with docker here because that opens up a

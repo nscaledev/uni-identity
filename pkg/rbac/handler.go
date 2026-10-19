@@ -372,7 +372,7 @@ func allowGrantProjectScope(ctx context.Context, endpoint string, operation open
 // caller may only ever grant a role whose permissions they already hold at the grant's
 // scope or broader.
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
-	for _, endpoint := range role.Spec.Scopes.Global {
+	for _, endpoint := range role.EffectiveScopes().Global {
 		for _, operation := range endpoint.Operations {
 			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
 				return err
@@ -380,7 +380,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 		}
 	}
 
-	for _, endpoint := range role.Spec.Scopes.Organization {
+	for _, endpoint := range role.EffectiveScopes().Organization {
 		for _, operation := range endpoint.Operations {
 			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
@@ -388,7 +388,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 		}
 	}
 
-	for _, endpoint := range role.Spec.Scopes.Project {
+	for _, endpoint := range role.EffectiveScopes().Project {
 		for _, operation := range endpoint.Operations {
 			if err := allowGrantProjectScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err

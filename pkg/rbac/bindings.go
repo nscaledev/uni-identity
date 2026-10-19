@@ -267,9 +267,9 @@ func accumulateGlobalReadPermissions(acl *openapi.Acl, roleIDs []string, roles m
 			return fmt.Errorf("%w: role %s referenced by global role binding", errors.ErrConsistency, roleID)
 		}
 
-		readScopes := make([]unikornv1.RoleScope, 0, len(role.Spec.Scopes.Global))
+		readScopes := make([]unikornv1.RoleScope, 0, len(role.EffectiveScopes().Global))
 
-		for _, scope := range role.Spec.Scopes.Global {
+		for _, scope := range role.EffectiveScopes().Global {
 			if slices.Contains(scope.Operations, unikornv1.Read) {
 				readScopes = append(readScopes, unikornv1.RoleScope{Name: scope.Name, Operations: []unikornv1.Operation{unikornv1.Read}})
 			}

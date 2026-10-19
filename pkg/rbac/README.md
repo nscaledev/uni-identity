@@ -139,6 +139,21 @@ Identity is the rollout dependency for these Region APIs. Deploy the identity ro
 containing both scopes before enabling users to rely on VolumeClass listing or Volume lifecycle
 operations; otherwise Region authorization receives an ACL without the required endpoint grants.
 
+### Role aggregation
+
+A role with `spec.aggregationRule` is an aggregating role: it holds the scopes
+of the source roles it selects by label (`identity.unikorn-cloud.org/aggregate-to-<role>`)
+or names in `roleRefs`. The [role controller](../controllers/role/README.md)
+writes them to `status.effectiveScopes`. This is how an organization admin
+comes to hold, and so grant, an opted-in service role such as
+`fleet-operator`, while the grant rule below stays exactly as it is.
+
+Every reader of a role's scopes in this package (`AllowRole`, the ACL build,
+global role bindings) uses `Role.EffectiveScopes()`, never `spec.scopes`. It
+returns `spec.scopes` for a normal role and `status.effectiveScopes` for an
+aggregating role. An aggregating role the controller has not reconciled yet
+holds nothing, so it fails closed.
+
 ### Grant relationships
 
 A caller may grant a role only if they already hold every permission it contains, at the
@@ -468,6 +483,8 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
 - Protected roles are not part of normal user-facing role administration.
 - Role grantability is bounded by the caller's own effective permissions.
+- A role's scopes are read only through `Role.EffectiveScopes()`, so aggregated scopes are
+  enforced exactly like hand-written ones, by the ACL build and by `AllowRole` alike.
 - ACL intersection for impersonated system-account calls is deliberate least-privilege behaviour.
 - Service accounts are organization-bound and their scoped access must remain consistent with that
   binding.

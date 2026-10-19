@@ -1,0 +1,239 @@
+/*
+Copyright 2026 Nscale.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package role
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/tools/events"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+// EventReasonEffectiveScopesChanged is the Event reason emitted when an
+// aggregating role's effective scopes change.
+const EventReasonEffectiveScopesChanged = "EffectiveScopesChanged"
+
+// Reconciler writes the status of aggregating roles.
+type Reconciler struct {
+	client   client.Client
+	recorder events.EventRecorder
+}
+
+var _ reconcile.Reconciler = &Reconciler{}
+
+// Reconcile computes one role's status from a snapshot of every role in its
+// namespace.  It never writes spec, labels or annotations, and never adds a
+// finalizer: there is nothing to clean up when a role goes.
+func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
+	log := log.FromContext(ctx)
+
+	role := &unikornv1.Role{}
+
+	if err := r.client.Get(ctx, request.NamespacedName, role); err != nil {
+		if kerrors.IsNotFound(err) {
+			return reconcile.Result{}, nil
+		}
+
+		log.Error(err, "failed to get role")
+
+		return reconcile.Result{RequeueAfter: coreconstants.DefaultYieldTimeout}, nil
+	}
+
+	if !role.DeletionTimestamp.IsZero() {
+		return reconcile.Result{}, nil
+	}
+
+	status, err := r.desiredStatus(ctx, role)
+	if err != nil {
+		log.Error(err, "failed to compute role status")
+
+		return reconcile.Result{RequeueAfter: coreconstants.DefaultYieldTimeout}, nil
+	}
+
+	if equality.Semantic.DeepEqual(&role.Status, status) {
+		return reconcile.Result{}, nil
+	}
+
+	previous := role.Status.DeepCopy()
+
+	role.Status = *status
+
+	if err := r.client.Status().Update(ctx, role); err != nil {
+		// Conflicts and API errors are transient: retry at a fixed interval.
+		log.Info("failed to update role status, retrying", "error", err.Error())
+
+		return reconcile.Result{RequeueAfter: coreconstants.DefaultYieldTimeout}, nil
+	}
+
+	r.recordChanges(ctx, role, previous)
+
+	return reconcile.Result{}, nil
+}
+
+// desiredStatus returns what the role's status should be.  A role that is not
+// aggregating has no status: if it used to aggregate, the old status is
+// cleared so nobody reads stale scopes from it.
+func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*unikornv1.RoleStatus, error) {
+	if !role.IsAggregating() {
+		return &unikornv1.RoleStatus{}, nil
+	}
+
+	roles := &unikornv1.RoleList{}
+
+	if err := r.client.List(ctx, roles, client.InNamespace(role.Namespace)); err != nil {
+		return nil, err
+	}
+
+	snapshot := make(map[string]*unikornv1.Role, len(roles.Items))
+
+	for i := range roles.Items {
+		snapshot[roles.Items[i].Name] = &roles.Items[i]
+	}
+
+	// The list comes from the cache and may lag the get, so use the fresh copy.
+	snapshot[role.Name] = role
+
+	result, ok := aggregation.Compute(ctx, snapshot)[role.Name]
+	if !ok {
+		return nil, fmt.Errorf("%w: no aggregation result for role %s", errNoResult, role.Name)
+	}
+
+	if len(role.Spec.Scopes.Global)+len(role.Spec.Scopes.Organization)+len(role.Spec.Scopes.Project) > 0 {
+		log.FromContext(ctx).Info("aggregating role has spec.scopes, they are ignored: move them to a base role in roleRefs")
+	}
+
+	scopes := result.EffectiveScopes
+
+	status := &unikornv1.RoleStatus{
+		EffectiveScopes: &scopes,
+		AggregatedFrom:  result.AggregatedFrom,
+		Conditions:      slices.Clone(role.Status.Conditions),
+	}
+
+	unikornv1core.UpdateCondition(&status.Conditions, unikornv1core.ConditionAvailable, result.Available.Status, result.Available.Reason, result.Available.Message)
+	unikornv1core.UpdateCondition(&status.Conditions, unikornv1.RoleConditionGrantable, result.Grantable.Status, result.Grantable.Reason, result.Grantable.Message)
+
+	for _, skipped := range result.Skipped {
+		log.FromContext(ctx).Info("selector match not aggregated", "source", skipped)
+	}
+
+	return status, nil
+}
+
+// recordChanges emits an Event and a log line when the effective scopes
+// change, naming each source that was added, removed or changed with its old
+// and new hash.  The hashes let a reader see exactly which source moved.
+func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, previous *unikornv1.RoleStatus) {
+	if equality.Semantic.DeepEqual(previous.EffectiveScopes, role.Status.EffectiveScopes) {
+		return
+	}
+
+	log := log.FromContext(ctx)
+
+	oldScopes := unikornv1.RoleScopes{}
+	if previous.EffectiveScopes != nil {
+		oldScopes = *previous.EffectiveScopes
+	}
+
+	oldHash := aggregation.Hash(oldScopes)
+	newHash := aggregation.Hash(role.EffectiveScopes())
+
+	changes := sourceChanges(previous.AggregatedFrom, role.Status.AggregatedFrom)
+	if len(changes) == 0 {
+		changes = []sourceChange{{}}
+	}
+
+	for _, change := range changes {
+		message := fmt.Sprintf("effective scopes changed from %s to %s", oldHash, newHash)
+
+		if change.id != "" {
+			message += fmt.Sprintf(": source %s (%s) %s, scopes hash %s -> %s", change.name, change.id, change.kind, orNone(change.oldHash), orNone(change.newHash))
+		}
+
+		r.recorder.Eventf(role, nil, corev1.EventTypeNormal, EventReasonEffectiveScopesChanged, "Aggregate", "%s", message)
+
+		log.Info("effective scopes changed",
+			"oldHash", oldHash, "newHash", newHash,
+			"source", change.id, "sourceName", change.name, "change", change.kind,
+			"oldSourceHash", change.oldHash, "newSourceHash", change.newHash)
+	}
+}
+
+type sourceChange struct {
+	id      string
+	name    string
+	kind    string
+	oldHash string
+	newHash string
+}
+
+func sourceChanges(previous, current []unikornv1.RoleAggregationSource) []sourceChange {
+	byID := func(sources []unikornv1.RoleAggregationSource) map[string]unikornv1.RoleAggregationSource {
+		out := make(map[string]unikornv1.RoleAggregationSource, len(sources))
+
+		for _, s := range sources {
+			out[s.ID] = s
+		}
+
+		return out
+	}
+
+	oldSources := byID(previous)
+	newSources := byID(current)
+
+	var changes []sourceChange
+
+	for _, s := range current {
+		old, ok := oldSources[s.ID]
+
+		switch {
+		case !ok:
+			changes = append(changes, sourceChange{id: s.ID, name: s.Name, kind: "added", newHash: s.ScopesHash})
+		case old.ScopesHash != s.ScopesHash:
+			changes = append(changes, sourceChange{id: s.ID, name: s.Name, kind: "changed", oldHash: old.ScopesHash, newHash: s.ScopesHash})
+		}
+	}
+
+	for _, s := range previous {
+		if _, ok := newSources[s.ID]; !ok {
+			changes = append(changes, sourceChange{id: s.ID, name: s.Name, kind: "removed", oldHash: s.ScopesHash})
+		}
+	}
+
+	return changes
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+
+	return s
+}

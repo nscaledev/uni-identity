@@ -60,6 +60,9 @@ the generic `core` server stack with identity-specific trust logic.
 
 - [controllers](./controllers/README.md) and
   [controller metrics](./controllers/metrics/README.md)
+- [controllers/role](./controllers/role/README.md) and
+  [aggregation](./aggregation/README.md): role aggregation, which lets org
+  admins hold opted-in service role scopes
 - [provisioners/organization](./provisioners/organization/README.md)
 - [provisioners/project](./provisioners/project/README.md)
 - [provisioners/oauth2client](./provisioners/oauth2client/README.md)

@@ -200,7 +200,10 @@ type RoleList struct {
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:scope=Namespaced,categories=unikorn
+// +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="display name",type="string",JSONPath=".metadata.labels['unikorn-cloud\\.org/name']"
+// +kubebuilder:printcolumn:name="available",type="string",JSONPath=".status.conditions[?(@.type==\"Available\")].reason"
+// +kubebuilder:printcolumn:name="grantable",type="string",JSONPath=".status.conditions[?(@.type==\"Grantable\")].status"
 // +kubebuilder:printcolumn:name="age",type="date",JSONPath=".metadata.creationTimestamp"
 type Role struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -216,7 +219,32 @@ type RoleSpec struct {
 	// Protected means this is an unexported internal role.
 	Protected bool `json:"protected,omitempty"`
 	// Scopes are a list of uniquely named scopes for the role.
+	// An aggregating role (one with an aggregationRule) must leave this
+	// empty: all of its scopes come from its sources, and readers take a
+	// role's scopes from EffectiveScopes(), never from this field directly.
 	Scopes RoleScopes `json:"scopes,omitempty"`
+	// AggregationRule, when set, makes this an aggregating role.  The role
+	// controller collects the scopes of every source role into
+	// status.effectiveScopes.  See pkg/controllers/role/README.md.
+	AggregationRule *RoleAggregationRule `json:"aggregationRule,omitempty"`
+}
+
+// RoleAggregationRule selects the source roles whose scopes an aggregating
+// role holds.  Field names follow Kubernetes ClusterRole aggregation.
+type RoleAggregationRule struct {
+	// RoleSelectors select source roles by label in the role namespace,
+	// typically identity.unikorn-cloud.org/aggregate-to-<role>: "true".
+	// Protected roles and roles with global scopes are never selected.
+	RoleSelectors []metav1.LabelSelector `json:"roleSelectors,omitempty"`
+	// RoleRefs are role IDs that are always included.  They may name
+	// protected roles, e.g. the base role that holds this role's own
+	// hand-written scopes.
+	// +listType=set
+	RoleRefs []string `json:"roleRefs,omitempty"`
+	// FlattenToOrganization copies the project scopes of every source into
+	// the organization block, so the role can grant project roles across
+	// the whole organization, not only in projects linked to its group.
+	FlattenToOrganization bool `json:"flattenToOrganization,omitempty"`
 }
 
 type RoleScopes struct {
@@ -257,6 +285,26 @@ const (
 
 // RoleStatus defines any role status information.
 type RoleStatus struct {
+	// EffectiveScopes are the scopes an aggregating role holds after
+	// aggregation.  Written by the role controller only, never by Helm or Argo.
+	EffectiveScopes *RoleScopes `json:"effectiveScopes,omitempty"`
+	// AggregatedFrom lists each source role in use.
+	AggregatedFrom []RoleAggregationSource `json:"aggregatedFrom,omitempty"`
+	// Current service state of the resource.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// RoleAggregationSource records one source role of an aggregating role.
+type RoleAggregationSource struct {
+	// ID is the role ID of the source.
+	ID string `json:"id"`
+	// Name is the source role's display name.
+	Name string `json:"name,omitempty"`
+	// Description is the source role's description.
+	Description string `json:"description,omitempty"`
+	// ScopesHash is a hash of the scopes the source contributed, in the form
+	// sha256:<hex>.  It changes whenever those scopes change.
+	ScopesHash string `json:"scopesHash"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

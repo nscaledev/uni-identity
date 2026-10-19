@@ -1,0 +1,259 @@
+/*
+Copyright 2026 Nscale.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+//nolint:testpackage // The test drives the unexported reconciler and watch mapping directly.
+package role
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+const namespace = "unikorn-identity"
+
+func newRole(id string, labels map[string]string, spec unikornv1.RoleSpec) *unikornv1.Role {
+	all := map[string]string{coreconstants.NameLabel: id}
+
+	for k, v := range labels {
+		all[k] = v
+	}
+
+	return &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: id, Labels: all},
+		Spec:       spec,
+	}
+}
+
+func adminRole() *unikornv1.Role {
+	return newRole("administrator", nil, unikornv1.RoleSpec{
+		AggregationRule: &unikornv1.RoleAggregationRule{
+			RoleSelectors: []metav1.LabelSelector{
+				{MatchLabels: map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}},
+			},
+			FlattenToOrganization: true,
+		},
+	})
+}
+
+func fleetOperator() *unikornv1.Role {
+	return newRole("fleet-operator", map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}, unikornv1.RoleSpec{
+		Scopes: unikornv1.RoleScopes{
+			Organization: []unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		},
+	})
+}
+
+func setup(t *testing.T, objects ...client.Object) (*Reconciler, client.Client, *events.FakeRecorder) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	cli := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&unikornv1.Role{}).
+		WithObjects(objects...).
+		Build()
+
+	recorder := events.NewFakeRecorder(10)
+
+	return &Reconciler{client: cli, recorder: recorder}, cli, recorder
+}
+
+func reconcileRole(t *testing.T, r *Reconciler, name string) {
+	t.Helper()
+
+	result, err := r.Reconcile(t.Context(), reconcile.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}})
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+}
+
+func getRole(t *testing.T, cli client.Client, name string) *unikornv1.Role {
+	t.Helper()
+
+	role := &unikornv1.Role{}
+	require.NoError(t, cli.Get(t.Context(), types.NamespacedName{Namespace: namespace, Name: name}, role))
+
+	return role
+}
+
+func drain(recorder *events.FakeRecorder) []string {
+	var events []string
+
+	for {
+		select {
+		case e := <-recorder.Events:
+			events = append(events, e)
+		default:
+			return events
+		}
+	}
+}
+
+func TestReconcileWritesStatusAndRecordsChange(t *testing.T) {
+	t.Parallel()
+
+	r, cli, recorder := setup(t, adminRole(), fleetOperator())
+
+	reconcileRole(t, r, "administrator")
+
+	admin := getRole(t, cli, "administrator")
+
+	require.Equal(t, []unikornv1.RoleScope{
+		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
+	}, admin.EffectiveScopes().Organization)
+	require.Len(t, admin.Status.AggregatedFrom, 1)
+	require.Equal(t, "fleet-operator", admin.Status.AggregatedFrom[0].Name)
+
+	available, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1core.ConditionAvailable)
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionTrue, available.Status)
+
+	grantable, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1.RoleConditionGrantable)
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionTrue, grantable.Status)
+
+	events := drain(recorder)
+	require.Len(t, events, 1)
+	require.Contains(t, events[0], EventReasonEffectiveScopesChanged)
+	require.Contains(t, events[0], "fleet-operator")
+	require.Contains(t, events[0], "added")
+	require.Contains(t, events[0], admin.Status.AggregatedFrom[0].ScopesHash)
+
+	// The spec is never written.
+	require.Nil(t, admin.Spec.Scopes.Organization)
+}
+
+func TestReconcileIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	r, cli, recorder := setup(t, adminRole(), fleetOperator())
+
+	reconcileRole(t, r, "administrator")
+	drain(recorder)
+
+	before := getRole(t, cli, "administrator").ResourceVersion
+
+	reconcileRole(t, r, "administrator")
+
+	require.Equal(t, before, getRole(t, cli, "administrator").ResourceVersion, "no write when nothing changed")
+	require.Empty(t, drain(recorder))
+}
+
+func TestReconcileRecordsSourceScopeChange(t *testing.T) {
+	t.Parallel()
+
+	r, cli, recorder := setup(t, adminRole(), fleetOperator())
+
+	reconcileRole(t, r, "administrator")
+
+	oldHash := getRole(t, cli, "administrator").Status.AggregatedFrom[0].ScopesHash
+
+	drain(recorder)
+
+	fleet := getRole(t, cli, "fleet-operator")
+	fleet.Spec.Scopes.Organization[0].Operations = []unikornv1.Operation{unikornv1.Read, unikornv1.Update}
+	require.NoError(t, cli.Update(t.Context(), fleet))
+
+	reconcileRole(t, r, "administrator")
+
+	admin := getRole(t, cli, "administrator")
+	newHash := admin.Status.AggregatedFrom[0].ScopesHash
+	require.NotEqual(t, oldHash, newHash)
+
+	events := drain(recorder)
+	require.Len(t, events, 1)
+	require.Contains(t, events[0], "changed")
+	require.Contains(t, events[0], oldHash)
+	require.Contains(t, events[0], newHash)
+}
+
+func TestReconcileRemovedSourceShrinksAdmin(t *testing.T) {
+	t.Parallel()
+
+	r, cli, recorder := setup(t, adminRole(), fleetOperator())
+
+	reconcileRole(t, r, "administrator")
+	drain(recorder)
+
+	require.NoError(t, cli.Delete(t.Context(), fleetOperator()))
+
+	reconcileRole(t, r, "administrator")
+
+	admin := getRole(t, cli, "administrator")
+	require.Empty(t, admin.EffectiveScopes().Organization)
+	require.Empty(t, admin.Status.AggregatedFrom)
+
+	events := drain(recorder)
+	require.Len(t, events, 1)
+	require.Contains(t, events[0], "removed")
+}
+
+func TestReconcileClearsStatusWhenNoLongerAggregating(t *testing.T) {
+	t.Parallel()
+
+	stale := unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{{Name: "svc:stale", Operations: []unikornv1.Operation{unikornv1.Read}}}}
+
+	role := newRole("plain", nil, unikornv1.RoleSpec{})
+	role.Status.EffectiveScopes = &stale
+
+	r, cli, _ := setup(t, role)
+
+	reconcileRole(t, r, "plain")
+
+	require.Nil(t, getRole(t, cli, "plain").Status.EffectiveScopes)
+}
+
+func TestReconcileMissingRoleIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	r, _, _ := setup(t)
+
+	reconcileRole(t, r, "gone")
+}
+
+func TestWatchEnqueuesEveryAggregatingRole(t *testing.T) {
+	t.Parallel()
+
+	user := newRole("user", nil, unikornv1.RoleSpec{AggregationRule: &unikornv1.RoleAggregationRule{}})
+
+	_, cli, _ := setup(t, adminRole(), user, fleetOperator(), newRole("unrelated", nil, unikornv1.RoleSpec{}))
+
+	requests := aggregatingRoles(t.Context(), cli, fleetOperator())
+
+	names := make([]string, 0, len(requests))
+	for _, request := range requests {
+		names = append(names, request.Name)
+	}
+
+	require.ElementsMatch(t, []string{"fleet-operator", "administrator", "user"}, names)
+	require.NotContains(t, strings.Join(names, ","), "unrelated")
+}
