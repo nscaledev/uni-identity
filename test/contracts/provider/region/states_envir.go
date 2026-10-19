@@ -347,42 +347,50 @@ func (sm *StateManager) deleteRole(ctx context.Context, roleID string) error {
 	return nil
 }
 
-// HandleUserBearer seeds an active user whose session holds a federated access token, as login
-// leaves it, and hands that token to the verifier's request filter.
+// HandleUserBearer seeds an active member of the organization whose session holds a federated access
+// token, as login leaves it, and hands that token to the verifier's request filter.
 func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
 	p := unwrapPactParams(params)
 	orgID := getStringParam(p, "organizationID", defaultEnvirOrganizationID)
 	userID := getStringParam(p, "userID", "3f9b2c1d-4e5a-4b6c-8d7e-9f0a1b2c3d4e")
 	subject := getStringParam(p, "subject", "envir-user@example.com")
-	user := &unikornv1.User{ObjectMeta: metav1.ObjectMeta{Namespace: sm.namespace, Name: userID}}
 
 	if !setup {
 		envirAuth.set("", "", "")
 
-		if err := sm.client.Delete(ctx, user); err != nil && !kerrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete user %s: %w", userID, err)
-		}
-
-		namespace := sm.getOrganizationNamespace(ctx, orgID)
-		if err := sm.client.DeleteAllOf(ctx, &unikornv1.OrganizationUser{}, client.InNamespace(namespace)); err != nil && !kerrors.IsNotFound(err) {
-			return fmt.Errorf("failed to delete organization users in %s: %w", namespace, err)
-		}
-
-		return sm.cleanupOrganization(ctx, orgID)
+		return sm.cleanupUserBearer(ctx, orgID, userID)
 	}
 
 	if err := sm.setupOrganization(ctx, orgID); err != nil {
 		return err
 	}
 
+	token, err := sm.createUserSession(ctx, userID, subject, authenticator, issuer)
+	if err != nil {
+		return err
+	}
+
+	if err := sm.addOrganizationMember(ctx, orgID, userID); err != nil {
+		return err
+	}
+
+	envirAuth.set("", "", token)
+
+	return nil
+}
+
+// createUserSession creates an active user and records a session holding a federated token issued
+// for it. Issuing reads the user, so it must exist first; login records the token afterwards too.
+func (sm *StateManager) createUserSession(ctx context.Context, userID, subject string, authenticator *oauth2.Authenticator, issuer common.IssuerValue) (string, error) {
 	const clientID = "envir-contract"
 
-	// Issuing a federated token reads the user, so it must exist first; the session is recorded
-	// afterwards, as login records the token it issued.
-	user.Spec = unikornv1.UserSpec{Subject: subject, State: unikornv1.UserStateActive}
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{Namespace: sm.namespace, Name: userID},
+		Spec:       unikornv1.UserSpec{Subject: subject, State: unikornv1.UserStateActive},
+	}
 
 	if err := sm.client.Create(ctx, user); err != nil {
-		return fmt.Errorf("failed to create user %s: %w", userID, err)
+		return "", fmt.Errorf("failed to create user %s: %w", userID, err)
 	}
 
 	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
@@ -398,20 +406,24 @@ func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to issue user token: %w", err)
+		return "", fmt.Errorf("failed to issue user token: %w", err)
 	}
 
 	if err := sm.client.Get(ctx, client.ObjectKeyFromObject(user), user); err != nil {
-		return fmt.Errorf("failed to read user %s: %w", userID, err)
+		return "", fmt.Errorf("failed to read user %s: %w", userID, err)
 	}
 
 	user.Spec.Sessions = []unikornv1.UserSession{{ClientID: clientID, AccessToken: tokens.AccessToken}}
 
 	if err := sm.client.Update(ctx, user); err != nil {
-		return fmt.Errorf("failed to record session for user %s: %w", userID, err)
+		return "", fmt.Errorf("failed to record session for user %s: %w", userID, err)
 	}
 
-	// Membership makes the user one "in the organization": userinfo lists it in the user's orgIds.
+	return tokens.AccessToken, nil
+}
+
+// addOrganizationMember makes the user one "in the organization": userinfo lists it in orgIds.
+func (sm *StateManager) addOrganizationMember(ctx context.Context, orgID, userID string) error {
 	membership := &unikornv1.OrganizationUser{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: sm.getOrganizationNamespace(ctx, orgID),
@@ -428,9 +440,21 @@ func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params
 		return fmt.Errorf("failed to add user %s to organization %s: %w", userID, orgID, err)
 	}
 
-	envirAuth.set("", "", tokens.AccessToken)
-
 	return nil
+}
+
+func (sm *StateManager) cleanupUserBearer(ctx context.Context, orgID, userID string) error {
+	user := &unikornv1.User{ObjectMeta: metav1.ObjectMeta{Namespace: sm.namespace, Name: userID}}
+	if err := sm.client.Delete(ctx, user); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete user %s: %w", userID, err)
+	}
+
+	namespace := sm.getOrganizationNamespace(ctx, orgID)
+	if err := sm.client.DeleteAllOf(ctx, &unikornv1.OrganizationUser{}, client.InNamespace(namespace)); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete organization users in %s: %w", namespace, err)
+	}
+
+	return sm.cleanupOrganization(ctx, orgID)
 }
 
 // HandleSystemBearer hands the verifier a service token, as the client_credentials grant issues
