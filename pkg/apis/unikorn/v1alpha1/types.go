@@ -238,8 +238,9 @@ type RoleAggregationRule struct {
 	RoleSelectors []metav1.LabelSelector `json:"roleSelectors,omitempty"`
 	// RoleRefs are role IDs that are always included.  The only protected
 	// role they may name is this role's base role, whose display name is
-	// this role's display name plus "-base" and which holds this role's own
-	// hand-written scopes.  Any other protected ref gives nothing.
+	// this role's display name plus "-base", whose ID is the one the chart
+	// gives that name, and which holds this role's own hand-written scopes.
+	// Any other protected ref gives nothing.
 	// +listType=set
 	RoleRefs []string `json:"roleRefs,omitempty"`
 	// FlattenToOrganization copies the project scopes of every source into

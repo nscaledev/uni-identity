@@ -77,14 +77,23 @@ that it `roleRefs`.
   scopes in an organization role would hand out cross-organization authority.
 - **`roleRefs`:** always used. The only protected role a ref may name is the
   role's own base role: display name `<own display name>-base`, for example
-  `administrator` → `administrator-base`. Any other protected ref gives
-  nothing (`InvalidRoleRef`). Global scopes are still dropped.
+  `administrator` → `administrator-base`, and the ID the chart gives that
+  name (`ChartRoleID`, the same SHA-256 scheme as the chart's `resource.id`
+  helper). Any other protected ref gives nothing (`InvalidRoleRef`), so
+  copying the base role's name label onto another protected role does not
+  work. Global scopes are still dropped.
+- **Renaming an aggregating role locks it out of its base role**: the base
+  role's ID comes from the old name. Rename the base role and its ID too.
+- **The admission policy in the identity chart is the main guard** on
+  protected refs. The base-role check here is defence in depth only.
 - **A role used through `roleRefs`** is not also named as skipped when a
   selector matches it.
 - **A role never selects itself.**
 - **Selectors may only use `aggregate-to-*` match labels set to `"true"`.** An
   empty selector, a `matchExpressions` entry (such as `DoesNotExist`) or any
-  other label is refused, because it could select every role.
+  other label is refused, because it could select every role. A key that is
+  not a valid label key (such as a space, or a name part over 63 bytes) is
+  refused the same way.
 - **A role being deleted** (deletion timestamp set) no longer counts as a
   source.
 - **Protected scopes can still arrive in one hop:** a labelled aggregating
@@ -92,8 +101,8 @@ that it `roleRefs`.
   on. The chain (`reader`, `user`, `auditor` → their `*-base` roles) is
   exactly this shape. The admission policy (ID-555) is what stops anyone
   else doing it: it refuses a role that is both labelled and aggregating,
-  except the chain role IDs. The `-base` name rule above is a second guard:
-  a role can only pass on its own base role.
+  except the chain role IDs. The base-role rule above (name and ID) is a
+  second guard: a role can only pass on its own base role.
 - A source can itself be an aggregating role. Its effective scopes are used,
   which is how the chain works: `reader` → `auditor` and `user`; `auditor` and
   `user` → `administrator`.
@@ -102,13 +111,18 @@ that it `roleRefs`.
 
 A broken part of an aggregation fails closed, like a role binding that names
 a missing role. The computation never reads an aggregating role's status, so
-nobody who can write status can change what a role holds, and a source that
-goes away stops giving at once.
+a status someone else wrote is put right at the next reconcile, and a source
+that goes away stops giving at once.
+
+Holders get what `status.effectiveScopes` says, so write access to
+`roles/status` sets what they hold until that reconcile. Only the role
+controller's service account has it, through a namespaced `Role` in the
+identity chart. Nothing else may be given `roles/status` write.
 
 | Problem | Effective scopes | `Available` |
 | --- | --- | --- |
 | A `roleRef` names a missing or deleting role | that ref gives nothing | `False`, `MissingRoleRef` |
-| A `roleRef` names a protected role that is not `<name>-base` | that ref gives nothing | `False`, `InvalidRoleRef` |
+| A `roleRef` names a protected role that is not `<name>-base` with the chart's ID | that ref gives nothing | `False`, `InvalidRoleRef` |
 | A selector is not allowed | the selectors give nothing, only `roleRefs` are used | `False`, `InvalidSelector` |
 | The role is in a cycle | every role in the cycle holds what the sources outside the cycle give | `False`, `Cycle` |
 
@@ -127,6 +141,13 @@ goes away stops giving at once.
   that any role in it uses, merged with its own `flattenToOrganization`. No
   role's status is read, so a scope dropped outside the cycle is gone from
   every role in it at once.
+- **A cycle can hold less than the same roles without the cycle.** Each role
+  in it gets only the outside sources, merged with its own
+  `flattenToOrganization`. A role that would have taken a flattened source
+  through another role in the cycle now gets that source's project scopes at
+  project scope. This fails closed: fix the cycle.
+- **A role in a cycle still names its other problems.** The `Cycle` message
+  also lists missing and refused `roleRefs` and a bad selector, sorted.
 - **A role above a broken one** is not itself broken: it takes the broken
   role's computed scopes.
 - **`InvalidSelector` names every bad label**, sorted, so the message, and so

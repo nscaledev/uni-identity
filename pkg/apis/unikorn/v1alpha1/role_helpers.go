@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
 	"strings"
 
@@ -76,13 +78,41 @@ func (r *Role) DisplayName() string {
 	return r.Name
 }
 
+// ChartRoleID returns the ID the identity chart gives a role with this
+// display name: a version 4 style UUID made from the SHA-256 of the name.
+// It must match the chart's resource.id helper.
+func ChartRoleID(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	s := hex.EncodeToString(sum[:])
+
+	return "f" + s[1:8] + "-" + s[8:12] + "-4" + s[13:16] + "-8" + s[17:20] + "-" + s[20:32]
+}
+
+// BaseRoleName returns the display name of the only protected role this role
+// may name in roleRefs.
+func (r *Role) BaseRoleName() string {
+	return r.DisplayName() + BaseRoleSuffix
+}
+
 // MayRef tells whether an aggregating role may use source through roleRefs.
 // Any role that is not protected may be used.  A protected role may only be
-// used when it is this role's own base role, whose display name is this
-// role's display name plus "-base".  The admission policy is the main guard;
-// this stops any other aggregating role passing protected scopes on.
+// used when it is this role's own base role: its display name is this role's
+// display name plus "-base", and its ID is the one the chart gives that name.
+// Matching the ID stops another protected role being used by copying the
+// base role's name label onto it.  Renaming an aggregating role locks it out
+// of its base role.
+//
+// The admission policy in the identity chart is the main guard.  This is
+// defence in depth only: it stops any other aggregating role passing
+// protected scopes on if the policy is missing or wrong.
 func (r *Role) MayRef(source *Role) bool {
-	return !source.Spec.Protected || source.DisplayName() == r.DisplayName()+BaseRoleSuffix
+	if !source.Spec.Protected {
+		return true
+	}
+
+	base := r.BaseRoleName()
+
+	return source.Name == ChartRoleID(base) && source.DisplayName() == base
 }
 
 // IsAggregating tells whether the role takes its scopes from source roles.

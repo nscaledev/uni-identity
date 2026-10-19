@@ -65,6 +65,23 @@ func adminRole() *unikornv1.Role {
 	})
 }
 
+// adminBaseID is the ID the chart gives administrator-base.
+var adminBaseID = unikornv1.ChartRoleID("administrator-base") //nolint:gochecknoglobals
+
+// adminBase is the protected base role of administrator, with the ID and
+// name the chart gives it.
+func adminBase() *unikornv1.Role {
+	base := newRole(adminBaseID, nil, unikornv1.RoleSpec{
+		Protected: true,
+		Scopes: unikornv1.RoleScopes{
+			Organization: []unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		},
+	})
+	base.Labels[coreconstants.NameLabel] = "administrator-base"
+
+	return base
+}
+
 func fleetOperator() *unikornv1.Role {
 	return newRole("fleet-operator", map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}, unikornv1.RoleSpec{
 		Scopes: unikornv1.RoleScopes{
@@ -264,7 +281,7 @@ func TestReconcileWarnsOnceWhenStuck(t *testing.T) {
 	t.Parallel()
 
 	admin := adminRole()
-	admin.Spec.AggregationRule.RoleRefs = []string{"administrator-base"}
+	admin.Spec.AggregationRule.RoleRefs = []string{adminBaseID}
 
 	r, cli, recorder := setup(t, admin)
 
@@ -290,14 +307,9 @@ func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 	t.Parallel()
 
 	admin := adminRole()
-	admin.Spec.AggregationRule.RoleRefs = []string{"administrator-base"}
+	admin.Spec.AggregationRule.RoleRefs = []string{adminBaseID}
 
-	base := newRole("administrator-base", nil, unikornv1.RoleSpec{
-		Protected: true,
-		Scopes: unikornv1.RoleScopes{
-			Organization: []unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
-		},
-	})
+	base := adminBase()
 
 	r, cli, _ := setup(t, admin, base, fleetOperator())
 
@@ -349,6 +361,35 @@ func TestReconcileInvalidSelectorWritesOnce(t *testing.T) {
 	require.Empty(t, drain(recorder))
 }
 
+// TestReconcileInvalidLabelKeyWritesOnce checks aggregate-to-* selector keys
+// that are not valid label keys give the same message every time, so the
+// controller writes status once, not on every reconcile.
+func TestReconcileInvalidLabelKeyWritesOnce(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole()
+	admin.Spec.AggregationRule.RoleSelectors = []metav1.LabelSelector{{MatchLabels: map[string]string{
+		unikornv1.AggregateToLabel("a b"):                   "true",
+		unikornv1.AggregateToLabel("c d"):                   "true",
+		unikornv1.AggregateToLabel(strings.Repeat("x", 64)): "true",
+	}}}
+
+	r, cli, recorder := setup(t, admin)
+
+	reconcileRole(t, r, "administrator")
+
+	before := getRole(t, cli, "administrator").ResourceVersion
+
+	require.Len(t, drain(recorder), 1)
+
+	for range 30 {
+		reconcileRole(t, r, "administrator")
+	}
+
+	require.Equal(t, before, getRole(t, cli, "administrator").ResourceVersion, "status written again")
+	require.Empty(t, drain(recorder))
+}
+
 // TestReconcileFirstStatusComparesWithBootstrap checks the first status write
 // is compared with what holders held before it, the ACL build's bootstrap
 // scopes, so it records no change when there is none.
@@ -356,14 +397,9 @@ func TestReconcileFirstStatusComparesWithBootstrap(t *testing.T) {
 	t.Parallel()
 
 	admin := adminRole()
-	admin.Spec.AggregationRule.RoleRefs = []string{"administrator-base"}
+	admin.Spec.AggregationRule.RoleRefs = []string{adminBaseID}
 
-	base := newRole("administrator-base", nil, unikornv1.RoleSpec{
-		Protected: true,
-		Scopes: unikornv1.RoleScopes{
-			Organization: []unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
-		},
-	})
+	base := adminBase()
 
 	r, _, recorder := setup(t, admin, base)
 

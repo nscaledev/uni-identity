@@ -17,11 +17,13 @@ limitations under the License.
 package aggregation_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
@@ -65,8 +67,8 @@ func TestStatusTamperUnderMissingRefIsDropped(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
-		newRole("reader", aggregates(false, "reader-base", "typo"), recorded("typo", evilScopes())),
-		newRole("reader-base", protected(), org(scope("identity:groups", unikornv1.Read))),
+		newRole("reader", aggregates(false, baseID("reader"), "typo"), recorded("typo", evilScopes())),
+		baseRole("reader", org(scope("identity:groups", unikornv1.Read))),
 	)
 
 	for range 3 {
@@ -74,7 +76,7 @@ func TestStatusTamperUnderMissingRefIsDropped(t *testing.T) {
 	}
 
 	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles["reader"].EffectiveScopes().Organization)
-	require.Equal(t, []string{"reader-base"}, sourceIDs(&aggregation.Result{AggregatedFrom: roles["reader"].Status.AggregatedFrom}))
+	require.Equal(t, []string{baseID("reader")}, sourceIDs(&aggregation.Result{AggregatedFrom: roles["reader"].Status.AggregatedFrom}))
 }
 
 // TestDeletedRefStopsGiving checks a deleted roleRef stops giving its scopes
@@ -185,8 +187,8 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
-		newRole("administrator", aggregates(false, "administrator-base")),
-		newRole("administrator-base", protected(), org(scope("identity:groups", unikornv1.Read))),
+		newRole("administrator", aggregates(false, baseID("administrator"))),
+		baseRole("administrator", org(scope("identity:groups", unikornv1.Read))),
 		newRole("sneaky", aggregates(false, "system-account"), aggregateTo("administrator")),
 		newRole("system-account", protected(), org(scope("svc:internal", unikornv1.Delete))),
 	)
@@ -252,13 +254,80 @@ func TestRefMatchedBySelectorIsNotSkipped(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
-		newRole("administrator", aggregates(false, "administrator-base")),
-		newRole("administrator-base", protected(), aggregateTo("administrator"), org(scope("identity:groups", unikornv1.Read))),
+		newRole("administrator", aggregates(false, baseID("administrator"))),
+		baseRole("administrator", aggregateTo("administrator"), org(scope("identity:groups", unikornv1.Read))),
 	)
 
 	result := aggregation.Compute(t.Context(), roles)["administrator"]
 
 	require.Empty(t, result.Skipped)
 	require.NotContains(t, result.Available.Message, "skipped")
-	require.Equal(t, []string{"administrator-base"}, sourceIDs(result))
+	require.Equal(t, []string{baseID("administrator")}, sourceIDs(result))
+}
+
+// TestInvalidLabelKeyMessageIsStable checks aggregate-to-* selector keys that
+// are not valid label keys are all named, in order, every time.  Selector
+// parsing stops at the first bad key in map order, which is random.
+func TestInvalidLabelKeyMessageIsStable(t *testing.T) {
+	t.Parallel()
+
+	long := unikornv1.AggregateToLabel(strings.Repeat("x", 64))
+
+	admin := newRole("administrator")
+	admin.Spec.AggregationRule = &unikornv1.RoleAggregationRule{RoleSelectors: []metav1.LabelSelector{{MatchLabels: map[string]string{
+		unikornv1.AggregateToLabel("c d"): "true",
+		long:                              "true",
+		unikornv1.AggregateToLabel("a b"): "true",
+	}}}}
+
+	roles := catalogue(admin)
+
+	first := aggregation.Compute(t.Context(), roles)["administrator"].Available
+	require.Equal(t, unikornv1.RoleReasonInvalidSelector, first.Reason)
+	require.Contains(t, first.Message, unikornv1.AggregateToLabel("a b")+"=true, "+unikornv1.AggregateToLabel("c d")+"=true, "+long+"=true")
+
+	for range 200 {
+		require.Equal(t, first.Message, aggregation.Compute(t.Context(), roles)["administrator"].Available.Message)
+	}
+}
+
+// TestCycleMessageNamesOtherProblems checks a role in a cycle still reports
+// its missing and refused roleRefs and its bad selector.
+func TestCycleMessageNamesOtherProblems(t *testing.T) {
+	t.Parallel()
+
+	b := newRole("b", refsOnly("a"))
+	b.Spec.AggregationRule.RoleSelectors = []metav1.LabelSelector{{}}
+
+	roles := catalogue(
+		newRole("a", refsOnly("b", "typo-2", "system-account", "typo-1")),
+		b,
+		newRole("system-account", protected(), org(scope("svc:internal", unikornv1.Delete))),
+	)
+
+	results := aggregation.Compute(t.Context(), roles)
+
+	a := results["a"].Available
+	require.Equal(t, unikornv1.RoleReasonCycle, a.Reason)
+	require.Contains(t, a.Message, "missing roles, they give nothing: typo-1, typo-2")
+	require.Contains(t, a.Message, "not a-base, they give nothing: system-account")
+
+	require.Equal(t, unikornv1.RoleReasonCycle, results["b"].Available.Reason)
+	require.Contains(t, results["b"].Available.Message, aggregation.ErrInvalidSelector.Error())
+}
+
+// TestSpoofedBaseRefGivesNothing checks a protected role that copies the
+// base role's name label, but not its ID, gives nothing.
+func TestSpoofedBaseRefGivesNothing(t *testing.T) {
+	t.Parallel()
+
+	spoof := newRole("system-account", protected(), org(scope("svc:internal", unikornv1.Delete)))
+	spoof.Labels[coreconstants.NameLabel] = "administrator-base"
+
+	roles := catalogue(newRole("administrator", aggregates(false, "system-account")), spoof)
+
+	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	require.Empty(t, result.EffectiveScopes.Organization)
+	require.Equal(t, unikornv1.RoleReasonInvalidRoleRef, result.Available.Reason)
+	require.Empty(t, roles["administrator"].BootstrapScopes(roles).Organization)
 }

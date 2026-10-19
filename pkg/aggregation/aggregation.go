@@ -20,9 +20,12 @@ limitations under the License.
 // result, and tests use it to check the chart's role catalogue.
 //
 // It never reads an aggregating role's status or its own spec.scopes: the
-// result depends only on the specs of live roles, so nobody who can write
-// status can change what a role holds, and a source that goes away stops
-// contributing at once.
+// result depends only on the specs of live roles, so a status someone else
+// wrote is put right at the next reconcile, and a source that goes away stops
+// contributing at once.  Holders get whatever status says until then, so
+// write access to roles/status sets what they hold: only the role
+// controller's service account has it, through a namespaced Role in the
+// identity chart.
 package aggregation
 
 import (
@@ -44,6 +47,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // Placeholder IDs used to build a holder ACL for the grantable check.  The
@@ -250,18 +254,20 @@ func parseSelectors(in []metav1.LabelSelector) ([]labels.Selector, error) {
 			return nil, fmt.Errorf("%w: roleSelectors[%d] is empty and would select every role", ErrInvalidSelector, i)
 		}
 
-		// Map order is random, so sort, or the message, and so the status,
-		// would change on every reconcile.
+		// Map order is random, so check every label in sorted order, or the
+		// message, and so the status, would change on every reconcile.  This
+		// includes label syntax: LabelSelectorAsSelector stops at the first
+		// bad key it meets, in map order.
 		var bad []string
 
 		for _, key := range slices.Sorted(maps.Keys(selector.MatchLabels)) {
-			if value := selector.MatchLabels[key]; !strings.HasPrefix(key, unikornv1.AggregateToLabelPrefix) || value != "true" {
+			if value := selector.MatchLabels[key]; !validAggregateLabel(key, value) {
 				bad = append(bad, key+"="+value)
 			}
 		}
 
 		if len(bad) > 0 {
-			return nil, fmt.Errorf("%w: roleSelectors[%d] labels %s are not aggregate-to-* labels set to \"true\"", ErrInvalidSelector, i, strings.Join(bad, ", "))
+			return nil, fmt.Errorf("%w: roleSelectors[%d] labels %s are not valid aggregate-to-* labels set to \"true\"", ErrInvalidSelector, i, strings.Join(bad, ", "))
 		}
 
 		parsed, err := metav1.LabelSelectorAsSelector(selector)
@@ -273,6 +279,15 @@ func parseSelectors(in []metav1.LabelSelector) ([]labels.Selector, error) {
 	}
 
 	return out, nil
+}
+
+// validAggregateLabel tells whether a selector label is an aggregate-to-*
+// label set to "true" that is also a valid label.
+func validAggregateLabel(key, value string) bool {
+	return strings.HasPrefix(key, unikornv1.AggregateToLabelPrefix) &&
+		value == "true" &&
+		len(validation.IsQualifiedName(key)) == 0 &&
+		len(validation.IsValidLabelValue(value)) == 0
 }
 
 // findCycles records every aggregating role that is in a cycle, with the
@@ -438,7 +453,7 @@ func (c *computer) available(id string) Condition {
 		return Condition{
 			Status:  corev1.ConditionFalse,
 			Reason:  unikornv1.RoleReasonCycle,
-			Message: "role is part of an aggregation cycle (" + strings.Join(cycle, ", ") + "), each role in it holds only what the roles outside it give",
+			Message: "role is part of an aggregation cycle (" + strings.Join(cycle, ", ") + "), each role in it holds only what the roles outside it give" + c.otherProblems(id),
 		}
 	case p.invalid != "":
 		return Condition{
@@ -450,7 +465,7 @@ func (c *computer) available(id string) Condition {
 		return Condition{
 			Status:  corev1.ConditionFalse,
 			Reason:  unikornv1.RoleReasonInvalidRoleRef,
-			Message: "roleRefs name protected roles that are not " + c.roles[id].DisplayName() + unikornv1.BaseRoleSuffix + ", they give nothing: " + strings.Join(p.refused, ", "),
+			Message: "roleRefs name protected roles that are not " + c.roles[id].BaseRoleName() + ", they give nothing: " + strings.Join(p.refused, ", "),
 		}
 	case len(p.missing) > 0:
 		return Condition{
@@ -465,6 +480,28 @@ func (c *computer) available(id string) Condition {
 			Message: availableMessage(len(p.sources), p.skipped),
 		}
 	}
+}
+
+// otherProblems lists, sorted, what is also wrong with a role in a cycle,
+// which the Cycle reason would otherwise hide.
+func (c *computer) otherProblems(id string) string {
+	p := c.plans[id]
+
+	var out string
+
+	if p.invalid != "" {
+		out += "; " + p.invalid + ", selectors give nothing"
+	}
+
+	if len(p.refused) > 0 {
+		out += "; roleRefs name protected roles that are not " + c.roles[id].BaseRoleName() + ", they give nothing: " + strings.Join(slices.Sorted(slices.Values(p.refused)), ", ")
+	}
+
+	if len(p.missing) > 0 {
+		out += "; roleRefs name missing roles, they give nothing: " + strings.Join(slices.Sorted(slices.Values(p.missing)), ", ")
+	}
+
+	return out
 }
 
 func availableMessage(sources int, skipped []string) string {
