@@ -46,7 +46,9 @@ func New(client client.Client, namespace string) *Client {
 // convert returns one role as the API shows it.  aggregatedFrom lists only
 // sources the status records as used that are live and not protected:
 // protected sources are internal, as they are left out of the list, and a
-// source that is gone, or that someone wrote into status, is not shown.
+// source that is gone is not shown.  Entries are taken from status as
+// written, name and description included, so one written by anyone but the
+// role controller is shown if it names a live, non-protected role.
 func convert(in unikornv1.Role, grantable bool, listable map[string]bool) openapi.RoleRead {
 	out := openapi.RoleRead{
 		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),

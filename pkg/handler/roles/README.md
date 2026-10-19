@@ -76,10 +76,13 @@ Each role also reports what it permits:
   `unikornv1.BootstrapRoles` gives it (its own `spec.scopes` plus what its `roleRefs` hold), the
   same as the ACL build gives its holders, and is not grantable.
 - `aggregatedFrom` names each source role (ID, name, description) an aggregating role takes scopes
-  from. Only sources that exist, are not being deleted and are not protected are listed: protected
-  sources (for example `administrator-base`) are left out, as they are left out of the list, and a
-  source that is gone, or that someone wrote into status, is never shown. It is absent for a role
-  that does not aggregate or has no such sources.
+  from. Only entries that name a role that exists, is not being deleted and is not protected are
+  listed: protected sources (for example `administrator-base`) are left out, as they are left out of
+  the list, and a source that is gone is not shown. The list is read from status as written: an entry
+  someone wrote into status that names a live, non-protected role is shown, with the name and
+  description from status, even if that role is not really a source. Only the role controller may
+  write role status (see the [role controller](../../controllers/role/README.md)). It is absent for
+  a role that does not aggregate or has no such sources.
 
 The per-source `scopesHash` in the role status is not exposed. It is for the controller and the change
 record, not for customers.
