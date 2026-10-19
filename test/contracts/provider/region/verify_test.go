@@ -34,6 +34,7 @@ import (
 	. "github.com/onsi/gomega"    //nolint:revive
 	"github.com/pact-foundation/pact-go/v2/models"
 	"github.com/pact-foundation/pact-go/v2/provider"
+	"github.com/spf13/pflag"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
@@ -41,6 +42,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -67,6 +69,8 @@ var _ = Describe("Identity Provider Verification", func() {
 		cancel         context.CancelFunc
 		k8sClient      client.Client
 		stateManager   *StateManager
+		handlerOptions *handler.Options
+		authenticator  *oauth2.Authenticator
 		pactBrokerURL  string
 		brokerUsername string
 		brokerPassword string
@@ -115,7 +119,12 @@ var _ = Describe("Identity Provider Verification", func() {
 
 		serverURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
-		testServer = startTestServer(ctx, k8sClient, serverURL, fmt.Sprintf("127.0.0.1:%d", port))
+		handlerOptions = buildHandlerOptions(serverURL)
+
+		authenticator, err = SetupTokenIssuer(ctx, k8sClient, handlerOptions.Issuer)
+		Expect(err).NotTo(HaveOccurred())
+
+		testServer = startTestServer(ctx, k8sClient, handlerOptions, authenticator, fmt.Sprintf("127.0.0.1:%d", port))
 
 		Eventually(func() error {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
@@ -141,7 +150,7 @@ var _ = Describe("Identity Provider Verification", func() {
 	Describe("Verifying pacts from Pact Broker", func() {
 		It("should verify all consumer contracts", func() {
 			verifier := provider.NewVerifier()
-			stateHandlers := createStateHandlers(ctx, stateManager)
+			stateHandlers := createStateHandlers(ctx, stateManager, authenticator, handlerOptions.Issuer)
 
 			// Build base selectors for normal CI verification
 			selectors := []provider.Selector{
@@ -151,6 +160,10 @@ var _ = Describe("Identity Provider Verification", func() {
 				&provider.ConsumerVersionSelector{Consumer: "uni-kubernetes", MatchingBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "uni-region", MainBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "uni-region", MatchingBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MainBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MatchingBranch: true},
+				// Envir's recorded releases: the current one and the one before it.
+				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", DeployedOrReleased: true},
 			}
 
 			// Add explicit branch selector only for webhook-triggered verification
@@ -160,6 +173,7 @@ var _ = Describe("Identity Provider Verification", func() {
 					&provider.ConsumerVersionSelector{Consumer: "uni-compute", Branch: consumerBranch},
 					&provider.ConsumerVersionSelector{Consumer: "uni-kubernetes", Branch: consumerBranch},
 					&provider.ConsumerVersionSelector{Consumer: "uni-region", Branch: consumerBranch},
+					&provider.ConsumerVersionSelector{Consumer: "nscale-environments", Branch: consumerBranch},
 				)
 				fmt.Printf("Webhook mode: Including explicit branch selector for consumer branch '%s'\n", consumerBranch)
 			} else {
@@ -178,6 +192,7 @@ var _ = Describe("Identity Provider Verification", func() {
 				ConsumerVersionSelectors:   selectors,
 				EnablePending:              true,
 				StateHandlers:              stateHandlers,
+				RequestFilter:              substituteUserinfoBearer,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -193,13 +208,14 @@ var _ = Describe("Identity Provider Verification", func() {
 
 			verifier := provider.NewVerifier()
 
-			stateHandlers := createStateHandlers(ctx, stateManager)
+			stateHandlers := createStateHandlers(ctx, stateManager, authenticator, handlerOptions.Issuer)
 
 			err := verifier.VerifyProvider(testingT, provider.VerifyRequest{
 				ProviderBaseURL: serverURL,
 				Provider:        "uni-identity",
 				PactFiles:       []string{pactFile},
 				StateHandlers:   stateHandlers,
+				RequestFilter:   substituteUserinfoBearer,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -207,8 +223,26 @@ var _ = Describe("Identity Provider Verification", func() {
 	})
 })
 
-func createStateHandlers(ctx context.Context, stateManager *StateManager) models.StateHandlers {
+func createStateHandlers(ctx context.Context, stateManager *StateManager, authenticator *oauth2.Authenticator, issuer common.IssuerValue) models.StateHandlers {
+	automation := func(name string) models.StateHandler {
+		return func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleAutomationIdentity(ctx, name, setup, state.Parameters)
+		}
+	}
+
 	return models.StateHandlers{
+		StateCallerHasProjectAccess: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleCallerHasProjectAccess(ctx, setup, state.Parameters)
+		},
+		StateServiceAccountBearer: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleServiceAccountBearer(ctx, setup, state.Parameters, authenticator, issuer)
+		},
+		StateOrganizationNoProject: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleOrganizationWithoutProject(ctx, setup, state.Parameters)
+		},
+		StateNoAutomationIdentity:   automation(StateNoAutomationIdentity),
+		StateAutomationGroupOnly:    automation(StateAutomationGroupOnly),
+		StateAutomationAccountBound: automation(StateAutomationAccountBound),
 		"project exists": func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
 			return nil, stateManager.HandleProjectExists(ctx, setup, state.Parameters)
 		},
@@ -219,24 +253,43 @@ func createStateHandlers(ctx context.Context, stateManager *StateManager) models
 }
 
 // buildHandlerOptions creates handler options for the test server.
+// It parses the server's own flags so every tunable, such as the service account token
+// lifetime, takes its production default.
 func buildHandlerOptions(serverURL string) *handler.Options {
-	return &handler.Options{
-		Issuer:      common.IssuerValue{URL: serverURL},
-		CacheMaxAge: 0,
+	options := &handler.Options{}
+
+	flags := pflag.NewFlagSet("contract-test", pflag.PanicOnError)
+	options.AddFlags(flags)
+
+	if err := flags.Parse([]string{"--host", serverURL, "--cache-max-age", "0s"}); err != nil {
+		panic(fmt.Sprintf("failed to parse handler options: %v", err))
 	}
+
+	return options
+}
+
+// substituteUserinfoBearer replaces the pact's example bearer on userinfo with the token the
+// provider state issued, so the real authenticator verifies a token it issued.
+func substituteUserinfoBearer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, _, bearer := envirAuth.get(); bearer != "" && r.URL.Path == "/oauth2/v2/userinfo" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 // createHandlerInterface creates the handler interface with minimal dependencies for contract testing.
-func createHandlerInterface(k8sClient client.Client, serverURL string) openapi.ServerInterface {
-	handlerOptions := buildHandlerOptions(serverURL)
-
-	// Pass nil for JWT issuer, OAuth2, and RBAC - not used due to MockACLMiddleware providing all auth context
+func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Options, authenticator *oauth2.Authenticator) openapi.ServerInterface {
+	// The authenticator is real so service account creation and userinfo issue and verify real
+	// tokens; RBAC stays nil because MockACLMiddleware provides the authorization context.
 	handlerInterface, err := handler.New(
 		k8sClient,
 		k8sClient,
 		TestNamespace,
-		nil, // JWT issuer not used in contract tests
-		nil, // OAuth2 not used in contract tests
+		nil, // JWT issuer only serves JWKS, which no consumer reads
+		authenticator,
 		nil, // UserDatabase not used in contract tests
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
 		handlerOptions,
@@ -297,13 +350,13 @@ func startServerAsync(httpServer *http.Server) {
 // startTestServer creates and starts a test instance of the identity server.
 // Note: This is a simplified version for contract testing that uses MockACLMiddleware
 // to bypass RBAC checks, reducing setup complexity and potential failure points.
-func startTestServer(_ context.Context, k8sClient client.Client, serverURL, listenAddr string) *http.Server {
+func startTestServer(_ context.Context, k8sClient client.Client, handlerOptions *handler.Options, authenticator *oauth2.Authenticator, listenAddr string) *http.Server {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create schema: %v", err))
 	}
 
-	handlerInterface := createHandlerInterface(k8sClient, serverURL)
+	handlerInterface := createHandlerInterface(k8sClient, handlerOptions, authenticator)
 	router := buildRouter(schema)
 	chiServerOptions := buildChiServerOptions(router)
 

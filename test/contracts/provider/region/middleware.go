@@ -41,11 +41,20 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 				{Name: "identity:users", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
 				{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
 				{Name: "identity:roles", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
+				{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
 			}
 
 			// Extract organization ID from request path
 			// Pattern: /api/v1/organizations/{orgID}/...
 			orgID := extractOrganizationID(r.URL.Path)
+
+			// /api/v1/acl names no organization: grant the one, and its project, that the
+			// provider state says the caller may act in.
+			stateOrgID, stateProjectID, _ := envirAuth.get()
+			if orgID == "" {
+				orgID = stateOrgID
+			}
+
 			if orgID == "" {
 				// Fallback to a default org if extraction fails
 				orgID = "test-org"
@@ -57,6 +66,10 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 					Id:        orgID,
 					Endpoints: &endpoints,
 				},
+			}
+
+			if stateProjectID != "" && orgID == stateOrgID {
+				organizations[0].Projects = &openapi.AclProjectList{{Id: stateProjectID, Endpoints: endpoints}}
 			}
 
 			mockACL := &openapi.Acl{
