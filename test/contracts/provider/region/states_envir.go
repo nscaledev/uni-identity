@@ -23,6 +23,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -41,6 +42,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
+
+// errUnknownState reports a state name a handler doesn't seed, so a typo fails instead of passing empty.
+var errUnknownState = errors.New("unknown provider state")
 
 // Provider states named by the nscale-environments (Envir) consumer pact.
 const (
@@ -263,9 +267,11 @@ func (sm *StateManager) HandleAutomationIdentity(ctx context.Context, state stri
 		}
 
 		return sm.createGroup(ctx, p, []string{p.serviceAccountID})
+	case StateNoAutomationIdentity:
+		return nil
 	}
 
-	return nil
+	return fmt.Errorf("%w: %q is not an Envir automation state", errUnknownState, state)
 }
 
 // organizationScopedMeta names a resource the way uni-identity's create path does: the id is the
@@ -357,6 +363,11 @@ func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params
 			return fmt.Errorf("failed to delete user %s: %w", userID, err)
 		}
 
+		namespace := sm.getOrganizationNamespace(ctx, orgID)
+		if err := sm.client.DeleteAllOf(ctx, &unikornv1.OrganizationUser{}, client.InNamespace(namespace)); err != nil && !kerrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete organization users in %s: %w", namespace, err)
+		}
+
 		return sm.cleanupOrganization(ctx, orgID)
 	}
 
@@ -398,6 +409,23 @@ func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params
 
 	if err := sm.client.Update(ctx, user); err != nil {
 		return fmt.Errorf("failed to record session for user %s: %w", userID, err)
+	}
+
+	// Membership makes the user one "in the organization": userinfo lists it in the user's orgIds.
+	membership := &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: sm.getOrganizationNamespace(ctx, orgID),
+			Name:      userID,
+			Labels: map[string]string{
+				constants.OrganizationLabel: orgID,
+				constants.UserLabel:         userID,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{State: unikornv1.UserStateActive},
+	}
+
+	if err := sm.client.Create(ctx, membership); err != nil {
+		return fmt.Errorf("failed to add user %s to organization %s: %w", userID, orgID, err)
 	}
 
 	envirAuth.set("", "", tokens.AccessToken)
