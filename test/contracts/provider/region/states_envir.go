@@ -39,6 +39,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // Provider states named by the nscale-environments (Envir) consumer pact.
@@ -122,18 +123,15 @@ func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer commo
 		return nil, nil, err
 	}
 
-	signingKey := &unikornv1.SigningKey{
-		ObjectMeta: metav1.ObjectMeta{Namespace: TestNamespace, Name: jose.SigningKeyName},
-		Spec: unikornv1.SigningKeySpec{
-			PrivateKeys: []unikornv1.PrivateKey{{PEM: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})}},
-		},
-	}
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	signingKey := &unikornv1.SigningKey{ObjectMeta: metav1.ObjectMeta{Namespace: TestNamespace, Name: jose.SigningKeyName}}
 
-	if err := k8sClient.Delete(ctx, signingKey); err != nil && !kerrors.IsNotFound(err) {
-		return nil, nil, err
-	}
+	// Create or replace in place: deleting and recreating would race the asynchronous deletion.
+	if _, err := controllerutil.CreateOrUpdate(ctx, k8sClient, signingKey, func() error {
+		signingKey.Spec.PrivateKeys = []unikornv1.PrivateKey{{PEM: pemKey}}
 
-	if err := k8sClient.Create(ctx, signingKey); err != nil {
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 
