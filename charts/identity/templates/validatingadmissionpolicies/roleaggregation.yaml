@@ -9,14 +9,36 @@ A Role may carry an aggregate-to-* label only if:
   check can't be passed by copying a name label),
 - it is not protected,
 - it has no global scopes,
-- it has no identity:allocations and no credential (.../accesskeys) scopes.
+- it has no identity:* scopes and no credential (.../accesskeys) scopes
+  (identity scopes are trust and tenancy surfaces: providers, organizations,
+  users, allocations),
+- it is not itself aggregating, unless it is one of the chart's chain roles
+  (otherwise its roleRefs could pull in any role, past every rule above).
 
 An aggregating Role (one with spec.aggregationRule) must not set spec.scopes:
 all of its scopes come from its sources.
 */}}
 {{- $allowed := list }}
-{{- range .Values.aggregation.allowedSources }}
+{{- range ((default (dict) .Values.aggregation).allowedSources | default (list)) }}
 {{- $allowed = append $allowed (printf "'%s'" (include "resource.id" .)) }}
+{{- end }}
+{{- /*
+Roles this chart defines as aggregating.  They must keep their
+aggregationRule: a stale CRD prunes the field (and the chart has already
+removed their scopes), which would leave every holder with nothing.
+Of these, only the ones that are also labelled (the chain: reader, user,
+auditor) may be both a source and an aggregating role.
+*/}}
+{{- $roles := merge (dict) (default (dict) .Values.roles) (default (dict) .Values.additionalRoles) }}
+{{- $aggregating := list }}
+{{- $chain := list }}
+{{- range $name, $spec := $roles }}
+{{- if $spec.aggregationRule }}
+{{- $aggregating = append $aggregating (printf "'%s'" (include "resource.id" $name)) }}
+{{- if $spec.aggregateTo }}
+{{- $chain = append $chain (printf "'%s'" (include "resource.id" $name)) }}
+{{- end }}
+{{- end }}
 {{- end }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -52,9 +74,15 @@ spec:
   - expression: "!variables.labelled || size(variables.scopes.?global.orValue([])) == 0"
     message: A role with global scopes cannot carry an aggregate-to-* label
     reason: Forbidden
-  - expression: "!variables.labelled || !variables.scoped.exists(s, s.name == 'identity:allocations' || s.name.endsWith('/accesskeys'))"
-    message: A role with identity:allocations or credential (.../accesskeys) scopes cannot carry an aggregate-to-* label
+  - expression: "!variables.labelled || !variables.scoped.exists(s, s.name.startsWith('identity:') || s.name.endsWith('/accesskeys'))"
+    message: A role with identity:* or credential (.../accesskeys) scopes cannot carry an aggregate-to-* label
     reason: Forbidden
+  - expression: "!variables.labelled || !has(object.spec.aggregationRule) || object.metadata.name in [{{ join ", " $chain }}]"
+    message: A role with an aggregate-to-* label cannot also aggregate, except the built-in chain roles
+    reason: Forbidden
+  - expression: "!(object.metadata.name in [{{ join ", " $aggregating }}]) || has(object.spec.aggregationRule)"
+    message: This role is aggregating in the identity chart and must keep spec.aggregationRule; is the Role CRD up to date?
+    reason: Invalid
   - expression: "!has(object.spec.aggregationRule) || (size(variables.scopes.?global.orValue([])) == 0 && size(variables.scoped) == 0)"
     message: An aggregating role (spec.aggregationRule) must not set spec.scopes; move them to a base role in roleRefs
     reason: Invalid

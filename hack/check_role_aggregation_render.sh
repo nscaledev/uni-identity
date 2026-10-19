@@ -25,7 +25,8 @@ die() { echo "FAIL: $*" >&2; exit 1; }
 role_doc() { awk -v want="$2" 'BEGIN{RS="\n---\n"} /kind: Role\n/ && $0 ~ "unikorn-cloud.org/name: "want"\n" {print}' <<<"$1"; }
 
 # id_of <name> computes the role ID the chart derives from a name.
-id_of() { local s; s=$(printf %s "$1" | sha256sum | cut -c1-32); echo "f${s:1:7}-${s:8:4}-4${s:13:3}-8${s:17:3}-${s:20:12}"; }
+sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
+id_of() { local s; s=$(printf %s "$1" | sha256 | cut -c1-32); echo "f${s:1:7}-${s:8:4}-4${s:13:3}-8${s:17:3}-${s:20:12}"; }
 
 # must_fail <fragment> <helm args...> requires the expected message.
 must_fail() {
@@ -82,5 +83,16 @@ must_fail "names unknown role" --set-json 'additionalRoles={"x":{"aggregationRul
 must_fail "names itself" --set-json 'additionalRoles={"x":{"aggregationRule":{"roleRefs":["x"]}}}'
 must_fail "needs the role on aggregation.allowedSources" --set-json 'additionalRoles={"not-allowed":{"aggregateTo":["reader"],"scopes":{"organization":{"a:b":["read"]}}}}'
 must_fail "a protected role cannot opt into aggregation" --set-json 'additionalRoles={"fleet-operator":{"protected":true,"aggregateTo":["reader"]}}'
+
+must_fail "which is not an aggregating role" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["administrator-base"],"scopes":{"organization":{"radar:topology":["read"]}}}}'
+
+# A null aggregation block means an empty allow-list: a clear error, not a nil pointer.
+must_fail "aggregateTo needs the role on aggregation.allowedSources" --set aggregation=null
+
+# Base roles are applied before the roles that ref them.
+pos_base=$(grep -n "unikorn-cloud.org/name: administrator-base$" <<<"$out" | head -1 | cut -d: -f1)
+pos_admin=$(grep -n "unikorn-cloud.org/name: administrator$" <<<"$out" | head -1 | cut -d: -f1)
+[[ "$pos_base" -lt "$pos_admin" ]] || die "administrator-base is not rendered before administrator"
+grep -qF 'argocd.argoproj.io/sync-wave: "1"' <<<"$(role_doc "$out" administrator)" || die "administrator has no later sync wave"
 
 echo "role aggregation render checks passed"

@@ -605,9 +605,10 @@ roles:
 additionalRoles: {}
 
 # Role aggregation.  A Role may carry an aggregate-to-* label only if its name
-# is on this list, it is not protected, and it has no global scopes, no
-# identity:allocations and no credential (.../accesskeys) scopes.  An
-# admission policy enforces this for every Role, whichever chart ships it.
+# is on this list, it is not protected, it has no global scopes, no
+# identity:* scopes and no credential (.../accesskeys) scopes, and it does not
+# itself aggregate (except the reader/user/auditor chain).  An admission
+# policy enforces this for every Role, whichever chart ships it.
 # Adding a name is a reviewed change: a labelled role widens every org admin.
 # NCP-0005 §4 warns a selector makes a role "whatever happens to be labelled";
 # this list makes it what we agreed to label.  See ID-550 and ID-556.

@@ -125,8 +125,10 @@ adds nothing to the built-in roles until a service labels a role.
 Which roles may carry an `aggregate-to-*` label is the chart's
 `aggregation.allowedSources` list, enforced for every `Role` by the
 `role-aggregation.identity.unikorn-cloud.org` admission policy. The policy also refuses
-the label on protected roles and on roles with global, `identity:allocations` or
-credential (`.../accesskeys`) scopes, and refuses `spec.scopes` on an aggregating role.
+the label on protected roles, on roles with global, `identity:*` or credential
+(`.../accesskeys`) scopes, and on aggregating roles other than the chain (whose `roleRefs`
+could pull in anything). It refuses `spec.scopes` on an aggregating role, and refuses a
+chart-defined aggregating role that has lost its `aggregationRule` (a stale CRD prunes it).
 
 | Role | organization block | project block |
 | --- | --- | --- |

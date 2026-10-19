@@ -21,6 +21,10 @@ spec:
         {{- include "unikorn.core.flags" . | nindent 8 }}
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
         {{- include "unikorn.identity.otelEnv" . | nindent 8 }}
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         resources:
           {{- .Values.roleController.resources | toYaml | nindent 10 }}
         securityContext:

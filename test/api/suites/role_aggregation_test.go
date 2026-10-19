@@ -107,7 +107,9 @@ func kubeForAggregation() (kubeclient.Client, string) {
 	return kube, identityNamespace
 }
 
-var _ = Describe("Role Aggregation", func() {
+// Serial: the specs install a Role with the fixed fleet-operator ID, which
+// parallel processes would collide on.
+var _ = Describe("Role Aggregation", Serial, func() {
 	Context("When reading the built-in roles", func() {
 		Describe("Given the role controller has run", func() {
 			It("should report each built-in role's sources", func() {
@@ -147,6 +149,13 @@ var _ = Describe("Role Aggregation", func() {
 				// fleet-operator is on the chart's allow-list, and the policy
 				// checks the ID, so the fixture takes its real ID.
 				roleID = chartRoleID("fleet-operator")
+
+				// An environment deployed with k8s-deploy-unikorn already has
+				// the real fleet-operator role.  Never touch it.
+				existing := &unikornv1.Role{}
+				if err := kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: roleID}, existing); err == nil {
+					Skip("fleet-operator already exists here: these specs only run where they can own it")
+				}
 
 				role := &unikornv1.Role{
 					ObjectMeta: metav1.ObjectMeta{

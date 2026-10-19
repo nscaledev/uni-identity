@@ -7,7 +7,27 @@
 {{- end }}
 {{- $roles := merge (dict) $base }}
 {{- $roles = merge $roles $additional }}
+{{- $allowedSources := (default (dict) .Values.aggregation).allowedSources | default (list) }}
+{{- /*
+Two passes: roles that don't aggregate first, then aggregating roles, so a
+base role exists before the role that refs it.  Helm applies in this order;
+Argo CD applies by sync wave, so aggregating roles also carry a later wave.
+Without this, administrator (f194...) is applied before administrator-base
+(f43f...) and holds nothing until the base arrives.
+*/}}
+{{- $ordered := list }}
 {{- range $name, $spec := $roles }}
+{{- if not $spec.aggregationRule }}
+{{- $ordered = append $ordered $name }}
+{{- end }}
+{{- end }}
+{{- range $name, $spec := $roles }}
+{{- if $spec.aggregationRule }}
+{{- $ordered = append $ordered $name }}
+{{- end }}
+{{- end }}
+{{- range $name := $ordered }}
+{{- $spec := index $roles $name }}
 {{- /*
 Render-time guards for aggregation.  The admission policy and the role
 controller enforce the same rules at runtime; failing here catches a bad
@@ -26,12 +46,16 @@ values file before it reaches a cluster.
     {{- end }}
   {{- end }}
 {{- end }}
-{{- range $spec.aggregateTo }}
+{{- range $target := $spec.aggregateTo }}
   {{- if $spec.protected }}
     {{- fail (printf "role %q: a protected role cannot opt into aggregation" $name) }}
   {{- end }}
-  {{- if not (has $name $.Values.aggregation.allowedSources) }}
+  {{- if not (has $name $allowedSources) }}
     {{- fail (printf "role %q: aggregateTo needs the role on aggregation.allowedSources" $name) }}
+  {{- end }}
+  {{- $targetSpec := index $roles $target }}
+  {{- if not (and $targetSpec $targetSpec.aggregationRule) }}
+    {{- fail (printf "role %q: aggregateTo names %q, which is not an aggregating role" $name $target) }}
   {{- end }}
 {{- end }}
 ---
@@ -48,9 +72,14 @@ metadata:
     {{- range $spec.aggregateTo }}
     identity.unikorn-cloud.org/aggregate-to-{{ . }}: "true"
     {{- end }}
-  {{- if $spec.description }}
+  {{- if or $spec.description $spec.aggregationRule }}
   annotations:
-    unikorn-cloud.org/description: {{ $spec.description }}
+    {{- with $spec.description }}
+    unikorn-cloud.org/description: {{ . }}
+    {{- end }}
+    {{- if $spec.aggregationRule }}
+    argocd.argoproj.io/sync-wave: "1"
+    {{- end }}
   {{- end }}
 spec:
   {{- if $spec.protected }}
