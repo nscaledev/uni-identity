@@ -36,6 +36,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,6 +48,8 @@ import (
 const (
 	StateCallerHasProjectAccess = "the caller has access to a project in the organization"
 	StateServiceAccountBearer   = "the bearer belongs to a service account in the organization"
+	StateUserBearer             = "the bearer belongs to a user in the organization"
+	StateSystemBearer           = "the bearer belongs to a system client"
 	StateOrganizationNoProject  = "the organization exists without the project"
 	StateNoAutomationIdentity   = "the organization has no Envir automation identity"
 	StateAutomationGroupOnly    = "the Envir automation group exists without a service account"
@@ -111,15 +114,15 @@ func readAutomationParams(params map[string]any) automationParams {
 
 // SetupTokenIssuer installs a signing key and returns the JWT issuer and authenticator, so the
 // handlers that issue or verify tokens (service account creation, userinfo) run for real.
-func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer common.IssuerValue) (*oauth2.Authenticator, error) {
+func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer common.IssuerValue) (*jose.JWTIssuer, *oauth2.Authenticator, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	signingKey := &unikornv1.SigningKey{
@@ -130,17 +133,41 @@ func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer commo
 	}
 
 	if err := k8sClient.Delete(ctx, signingKey); err != nil && !kerrors.IsNotFound(err) {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := k8sClient.Create(ctx, signingKey); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	jwtIssuer := jose.NewJWTIssuer(k8sClient, TestNamespace, &jose.Options{})
 	options := &oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 16, CodeCacheSize: 16}
 
-	return oauth2.New(options, TestNamespace, issuer, k8sClient, k8sClient, jwtIssuer, nil, nil)
+	users := userdb.NewUserDatabase(k8sClient, TestNamespace)
+
+	authenticator, err := oauth2.New(options, TestNamespace, issuer, k8sClient, k8sClient, jwtIssuer, users, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return jwtIssuer, authenticator, nil
+}
+
+// cleanupEnvirOrganization removes the groups and service accounts an Envir state seeded or an
+// interaction created, then the organization. Each setup gets a fresh namespace, so this keeps
+// the cluster clean rather than avoiding collisions.
+func (sm *StateManager) cleanupEnvirOrganization(ctx context.Context, orgID string) error {
+	namespace := sm.getOrganizationNamespace(ctx, orgID)
+
+	if err := sm.client.DeleteAllOf(ctx, &unikornv1.ServiceAccount{}, client.InNamespace(namespace)); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete service accounts in %s: %w", namespace, err)
+	}
+
+	if err := sm.client.DeleteAllOf(ctx, &unikornv1.Group{}, client.InNamespace(namespace)); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("failed to delete groups in %s: %w", namespace, err)
+	}
+
+	return sm.cleanupOrganization(ctx, orgID)
 }
 
 func (sm *StateManager) HandleCallerHasProjectAccess(ctx context.Context, setup bool, params map[string]any) error {
@@ -171,7 +198,7 @@ func (sm *StateManager) HandleServiceAccountBearer(ctx context.Context, setup bo
 	if !setup {
 		envirAuth.set("", "", "")
 
-		return sm.cleanupOrganization(ctx, p.organizationID)
+		return sm.cleanupEnvirOrganization(ctx, p.organizationID)
 	}
 
 	if err := sm.setupOrganization(ctx, p.organizationID); err != nil {
@@ -221,7 +248,7 @@ func (sm *StateManager) HandleAutomationIdentity(ctx context.Context, state stri
 			return err
 		}
 
-		return sm.cleanupOrganization(ctx, p.organizationID)
+		return sm.cleanupEnvirOrganization(ctx, p.organizationID)
 	}
 
 	if err := sm.setupOrganization(ctx, p.organizationID); err != nil {
@@ -345,3 +372,92 @@ var envirClientCertificate = sync.OnceValue(func() string {
 
 	return url.QueryEscape(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})))
 })
+
+// HandleUserBearer seeds an active user whose session holds a federated access token, as login
+// leaves it, and hands that token to the verifier's request filter.
+func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
+	p := unwrapPactParams(params)
+	orgID := getStringParam(p, "organizationID", defaultEnvirOrganizationID)
+	userID := getStringParam(p, "userID", "3f9b2c1d-4e5a-4b6c-8d7e-9f0a1b2c3d4e")
+	subject := getStringParam(p, "subject", "envir-user@example.com")
+	user := &unikornv1.User{ObjectMeta: metav1.ObjectMeta{Namespace: sm.namespace, Name: userID}}
+
+	if !setup {
+		envirAuth.set("", "", "")
+
+		if err := sm.client.Delete(ctx, user); err != nil && !kerrors.IsNotFound(err) {
+			return fmt.Errorf("failed to delete user %s: %w", userID, err)
+		}
+
+		return sm.cleanupOrganization(ctx, orgID)
+	}
+
+	if err := sm.setupOrganization(ctx, orgID); err != nil {
+		return err
+	}
+
+	const clientID = "envir-contract"
+
+	// Issuing a federated token reads the user, so it must exist first; the session is recorded
+	// afterwards, as login records the token it issued.
+	user.Spec = unikornv1.UserSpec{Subject: subject, State: unikornv1.UserStateActive}
+
+	if err := sm.client.Create(ctx, user); err != nil {
+		return fmt.Errorf("failed to create user %s: %w", userID, err)
+	}
+
+	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
+		Issuer:   issuer.URL,
+		Audience: issuer.Hostname,
+		Subject:  subject,
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			ClientID: clientID,
+			UserID:   userID,
+			Provider: "contract-test",
+			Scope:    oauth2.NewScope("openid email"),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to issue user token: %w", err)
+	}
+
+	if err := sm.client.Get(ctx, client.ObjectKeyFromObject(user), user); err != nil {
+		return fmt.Errorf("failed to read user %s: %w", userID, err)
+	}
+
+	user.Spec.Sessions = []unikornv1.UserSession{{ClientID: clientID, AccessToken: tokens.AccessToken}}
+
+	if err := sm.client.Update(ctx, user); err != nil {
+		return fmt.Errorf("failed to record session for user %s: %w", userID, err)
+	}
+
+	envirAuth.set("", "", tokens.AccessToken)
+
+	return nil
+}
+
+// HandleSystemBearer hands the verifier a service token, as the client_credentials grant issues
+// one to a system client; it is verified by signature alone.
+func (sm *StateManager) HandleSystemBearer(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
+	if !setup {
+		envirAuth.set("", "", "")
+
+		return nil
+	}
+
+	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
+		Issuer:   issuer.URL,
+		Audience: issuer.Hostname,
+		Subject:  getStringParam(unwrapPactParams(params), "subject", "envir-resource-manager"),
+		Type:     oauth2.TokenTypeService,
+		Service:  &oauth2.ServiceClaims{X509Thumbprint: "contract-test"},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to issue system token: %w", err)
+	}
+
+	envirAuth.set("", "", tokens.AccessToken)
+
+	return nil
+}

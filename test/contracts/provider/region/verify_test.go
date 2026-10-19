@@ -42,6 +42,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
@@ -70,6 +71,7 @@ var _ = Describe("Identity Provider Verification", func() {
 		k8sClient      client.Client
 		stateManager   *StateManager
 		handlerOptions *handler.Options
+		jwtIssuer      *jose.JWTIssuer
 		authenticator  *oauth2.Authenticator
 		pactBrokerURL  string
 		brokerUsername string
@@ -121,10 +123,10 @@ var _ = Describe("Identity Provider Verification", func() {
 
 		handlerOptions = buildHandlerOptions(serverURL)
 
-		authenticator, err = SetupTokenIssuer(ctx, k8sClient, handlerOptions.Issuer)
+		jwtIssuer, authenticator, err = SetupTokenIssuer(ctx, k8sClient, handlerOptions.Issuer)
 		Expect(err).NotTo(HaveOccurred())
 
-		testServer = startTestServer(ctx, k8sClient, handlerOptions, authenticator, fmt.Sprintf("127.0.0.1:%d", port))
+		testServer = startTestServer(ctx, k8sClient, handlerOptions, jwtIssuer, authenticator, fmt.Sprintf("127.0.0.1:%d", port))
 
 		Eventually(func() error {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
@@ -237,6 +239,12 @@ func createStateHandlers(ctx context.Context, stateManager *StateManager, authen
 		StateServiceAccountBearer: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
 			return nil, stateManager.HandleServiceAccountBearer(ctx, setup, state.Parameters, authenticator, issuer)
 		},
+		StateUserBearer: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleUserBearer(ctx, setup, state.Parameters, authenticator, issuer)
+		},
+		StateSystemBearer: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandleSystemBearer(ctx, setup, state.Parameters, authenticator, issuer)
+		},
 		StateOrganizationNoProject: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
 			return nil, stateManager.HandleOrganizationWithoutProject(ctx, setup, state.Parameters)
 		},
@@ -288,14 +296,15 @@ func envirRequestFilter(next http.Handler) http.Handler {
 }
 
 // createHandlerInterface creates the handler interface with minimal dependencies for contract testing.
-func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Options, authenticator *oauth2.Authenticator) openapi.ServerInterface {
-	// The authenticator is real so service account creation and userinfo issue and verify real
-	// tokens; RBAC stays nil because MockACLMiddleware provides the authorization context.
+func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator) openapi.ServerInterface {
+	// The issuer and authenticator are real, so service account creation, the token endpoint,
+	// userinfo and JWKS run as in production; RBAC stays nil because MockACLMiddleware provides
+	// the authorization context.
 	handlerInterface, err := handler.New(
 		k8sClient,
 		k8sClient,
 		TestNamespace,
-		nil, // the handler's own issuer only serves /oauth2/v2/jwks, which no consumer reads; the authenticator has its own
+		jwtIssuer,
 		authenticator,
 		nil, // UserDatabase not used in contract tests
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
@@ -357,13 +366,13 @@ func startServerAsync(httpServer *http.Server) {
 // startTestServer creates and starts a test instance of the identity server.
 // Note: This is a simplified version for contract testing that uses MockACLMiddleware
 // to bypass RBAC checks, reducing setup complexity and potential failure points.
-func startTestServer(_ context.Context, k8sClient client.Client, handlerOptions *handler.Options, authenticator *oauth2.Authenticator, listenAddr string) *http.Server {
+func startTestServer(_ context.Context, k8sClient client.Client, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator, listenAddr string) *http.Server {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create schema: %v", err))
 	}
 
-	handlerInterface := createHandlerInterface(k8sClient, handlerOptions, authenticator)
+	handlerInterface := createHandlerInterface(k8sClient, handlerOptions, jwtIssuer, authenticator)
 	router := buildRouter(schema)
 	chiServerOptions := buildChiServerOptions(router)
 
