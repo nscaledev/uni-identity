@@ -192,7 +192,7 @@ var _ = Describe("Identity Provider Verification", func() {
 				ConsumerVersionSelectors:   selectors,
 				EnablePending:              true,
 				StateHandlers:              stateHandlers,
-				RequestFilter:              substituteUserinfoBearer,
+				RequestFilter:              envirRequestFilter,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -215,7 +215,7 @@ var _ = Describe("Identity Provider Verification", func() {
 				Provider:        "uni-identity",
 				PactFiles:       []string{pactFile},
 				StateHandlers:   stateHandlers,
-				RequestFilter:   substituteUserinfoBearer,
+				RequestFilter:   envirRequestFilter,
 			})
 
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
@@ -268,12 +268,19 @@ func buildHandlerOptions(serverURL string) *handler.Options {
 	return options
 }
 
-// substituteUserinfoBearer replaces the pact's example bearer on userinfo with the token the
-// provider state issued, so the real authenticator verifies a token it issued.
-func substituteUserinfoBearer(next http.Handler) http.Handler {
+// envirRequestFilter does what sits in front of uni-identity in production for Envir's requests:
+// it presents the token the provider state issued on userinfo, and on the token endpoint it adds the
+// client certificate headers the ingress forwards after verifying Envir's mTLS certificate.
+func envirRequestFilter(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, _, bearer := envirAuth.get(); bearer != "" && r.URL.Path == "/oauth2/v2/userinfo" {
-			r.Header.Set("Authorization", "Bearer "+bearer)
+		switch r.URL.Path {
+		case "/oauth2/v2/userinfo":
+			if _, _, bearer := envirAuth.get(); bearer != "" {
+				r.Header.Set("Authorization", "Bearer "+bearer)
+			}
+		case "/oauth2/v2/token":
+			r.Header.Set("Ssl-Client-Cert", envirClientCertificate())
+			r.Header.Set("Ssl-Client-Verify", "SUCCESS")
 		}
 
 		next.ServeHTTP(w, r)
