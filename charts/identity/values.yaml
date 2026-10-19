@@ -602,9 +602,12 @@ roles:
 
 # Optional additional roles that can be injected alongside the defaults.
 # Shape matches the roles map above. Same names will raise an error.
+# A role name must be a DNS-1123 label (lower case, digits and -, max 63).
 # Besides description, protected and scopes, a role may set:
 #   labels:          extra labels on the Role (not unikorn-cloud.org/name or
-#                    identity.unikorn-cloud.org/aggregate-to-*; use aggregateTo)
+#                    identity.unikorn-cloud.org/aggregate-to-*; use aggregateTo).
+#                    The built-in roles (administrator, auditor, user, reader)
+#                    must not set labels.
 #   aggregateTo:     names of aggregating roles to opt into, e.g. [reader];
 #                    each adds identity.unikorn-cloud.org/aggregate-to-<name>
 #   aggregationRule: makes the role aggregating (no scopes allowed then):
@@ -635,7 +638,8 @@ aggregation:
   # grants globally a tenant scope), and it does not itself aggregate
   # (except the reader/user/auditor chain).  An admission policy enforces
   # this for every Role, whichever chart ships it.  The render script checks
-  # this list is exactly the agreed set.
+  # the list in this file is exactly the agreed set; an environment's values
+  # may still extend it (by design), so review those overrides as well.
   # Adding a name is a reviewed change: a labelled role widens every org admin.
   # NCP-0005 §4 warns a selector makes a role "whatever happens to be labelled";
   # this list makes it what we agreed to label.  See ID-550 and ID-556.

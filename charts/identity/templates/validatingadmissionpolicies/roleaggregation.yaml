@@ -16,12 +16,16 @@ A Role may carry an aggregate-to-* label only if:
   role; a labelled role in values does not count as a tenant role for this
   chart's own global scopes, see unikorn.identity.platformOnlyScopes),
 - it is not itself aggregating, unless it is a chain role (reader, user,
-  auditor) whose rule selects only its own label and refs only its base role
-  (otherwise its roleRefs or selector could pull in any role).
+  auditor).
 
-The built-in roles are pinned to their fixed shape (unikorn.identity.chainShape):
-- a labelled built-in role carries exactly its aggregate-to-* labels (reader:
-  auditor and user; user and auditor: administrator; administrator: none),
+The built-in roles are pinned to their fixed shape (unikorn.identity.chainShape),
+labelled or not:
+- a labelled built-in role carries exactly its aggregate-to-* labels, each
+  "true" (reader: auditor and user; user and auditor: administrator;
+  administrator: none),
+- an aggregating built-in role refs only its base role and selects only its
+  own aggregate-to-<name>: "true" label (otherwise its roleRefs or selector
+  could pull in any role),
 - an aggregating built-in role has its fixed flattenToOrganization
   (administrator and auditor true, user and reader false).
 
@@ -34,7 +38,11 @@ all of its scopes come from its sources.
 {{- end }}
 {{- $chain := list }}
 {{- range (include "unikorn.identity.chainRoles" . | fromJsonArray) }}
-{{- $chain = append $chain (printf "'%s': {'ref': '%s', 'label': 'identity.unikorn-cloud.org/aggregate-to-%s'}" (include "resource.id" .) (include "resource.id" (printf "%s-base" .)) .) }}
+{{- $chain = append $chain (printf "'%s'" (include "resource.id" .)) }}
+{{- end }}
+{{- $builtin := list }}
+{{- range (include "unikorn.identity.builtinRoles" . | fromJsonArray) }}
+{{- $builtin = append $builtin (printf "'%s': {'ref': '%s', 'label': 'identity.unikorn-cloud.org/aggregate-to-%s'}" (include "resource.id" .) (include "resource.id" (printf "%s-base" .)) .) }}
 {{- end }}
 {{- $targets := list }}
 {{- $flatten := list }}
@@ -80,7 +88,9 @@ spec:
   - name: aggregating
     expression: "object.?spec.?aggregationRule.hasValue()"
   - name: chain
-    expression: "{ {{- join ", " $chain -}} }"
+    expression: "[{{ join ", " $chain }}]"
+  - name: builtin
+    expression: "{ {{- join ", " $builtin -}} }"
   - name: chainTargets
     expression: "{ {{- join ", " $targets -}} }"
   - name: chainFlatten
@@ -101,20 +111,22 @@ spec:
   - expression: "!variables.labelled || !variables.scoped.exists(s, s in [{{ join ", " $platformOnly }}])"
     message: A role with platform-only scopes (granted only globally by the identity chart) cannot carry an aggregate-to-* label
     reason: Forbidden
+  - expression: "!variables.labelled || !variables.aggregating || object.metadata.name in variables.chain"
+    message: A role with an aggregate-to-* label cannot also aggregate, except the built-in chain roles (reader, user, auditor)
+    reason: Forbidden
   - expression: >-
-      !variables.labelled || !variables.aggregating ||
-      (object.metadata.name in variables.chain &&
-      object.spec.aggregationRule.?roleRefs.orValue([]) == [variables.chain[object.metadata.name].ref] &&
+      !variables.aggregating || !(object.metadata.name in variables.builtin) ||
+      (object.spec.aggregationRule.?roleRefs.orValue([]) == [variables.builtin[object.metadata.name].ref] &&
       size(object.spec.aggregationRule.?roleSelectors.orValue([])) == 1 &&
-      object.spec.aggregationRule.roleSelectors[0].?matchLabels.orValue({}) == {variables.chain[object.metadata.name].label: 'true'} &&
+      object.spec.aggregationRule.roleSelectors[0].?matchLabels.orValue({}) == {variables.builtin[object.metadata.name].label: 'true'} &&
       size(object.spec.aggregationRule.roleSelectors[0].?matchExpressions.orValue([])) == 0)
-    message: A role with an aggregate-to-* label cannot also aggregate, except the built-in chain roles selecting their own label and refing only their base role
+    message: An aggregating built-in role must ref only its base role and select only its own aggregate-to-* label
     reason: Forbidden
   - expression: >-
       !variables.labelled || !(object.metadata.name in variables.chainTargets) ||
       (object.metadata.labels.filter(k, k.startsWith('identity.unikorn-cloud.org/aggregate-to-')).all(k, k in variables.chainTargets[object.metadata.name]) &&
-      variables.chainTargets[object.metadata.name].all(k, k in object.metadata.labels))
-    message: A built-in role must carry exactly its own aggregate-to-* labels (reader to auditor and user, user and auditor to administrator, administrator none)
+      variables.chainTargets[object.metadata.name].all(k, k in object.metadata.labels && object.metadata.labels[k] == 'true'))
+    message: A built-in role must carry exactly its own aggregate-to-* labels, each "true" (reader to auditor and user, user and auditor to administrator, administrator none)
     reason: Forbidden
   - expression: >-
       !variables.aggregating || !(object.metadata.name in variables.chainFlatten) ||

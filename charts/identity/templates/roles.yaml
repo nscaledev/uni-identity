@@ -70,6 +70,13 @@ With aggregation.builtinRoles off the built-in roles render plain, so their
 aggregateTo and aggregationRule are not checked.
 */}}
 {{- $checked := or $builtinAggregate (not (has $name $builtins)) }}
+{{- /* A name is written into labels and selectors, so it must be a DNS-1123 label. */}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $name) }}
+  {{- fail (printf "role %q: a role name must be a DNS-1123 label (lower case letters, digits and -, at most 63 characters)" $name) }}
+{{- end }}
+{{- if and (has $name $builtins) $spec.labels }}
+  {{- fail (printf "role %q: a built-in role must not set labels" $name) }}
+{{- end }}
 {{- range $key, $_ := $spec.labels }}
   {{- include "unikorn.identity.checkLabelKey" (dict "role" $name "key" $key) }}
   {{- if or (hasPrefix "identity.unikorn-cloud.org/aggregate-to-" $key) (eq $key "unikorn-cloud.org/name") }}
@@ -83,6 +90,9 @@ aggregateTo and aggregationRule are not checked.
   {{- end }}
   {{- if ne ($spec.aggregateTo | default (list) | uniq | sortAlpha | toJson) ($want.to | toJson) }}
     {{- fail (printf "role %q: a built-in role's aggregateTo must be exactly %v" $name $want.to) }}
+  {{- end }}
+  {{- if not (deepEqual $spec.aggregationRule.roleRefs (list (printf "%s-base" $name))) }}
+    {{- fail (printf "role %q: a built-in role must ref exactly %s-base" $name $name) }}
   {{- end }}
   {{- if ne (default false $spec.aggregationRule.flattenToOrganization) $want.flatten }}
     {{- fail (printf "role %q: a built-in role's flattenToOrganization must be %v" $name $want.flatten) }}
@@ -104,9 +114,6 @@ aggregateTo and aggregationRule are not checked.
   {{- if $spec.aggregateTo }}
     {{- if not (has $name $chain) }}
       {{- fail (printf "role %q: a role with aggregateTo cannot also aggregate, except the built-in chain roles" $name) }}
-    {{- end }}
-    {{- if not (deepEqual $spec.aggregationRule.roleRefs (list (printf "%s-base" $name))) }}
-      {{- fail (printf "role %q: a chain role must ref exactly %s-base" $name $name) }}
     {{- end }}
   {{- end }}
 {{- end }}
@@ -147,7 +154,7 @@ metadata:
   name: {{ include "resource.id" $name }}
   labels:
     {{- include "unikorn.labels" $ | nindent 4 }}
-    unikorn-cloud.org/name: {{ $name }}
+    unikorn-cloud.org/name: {{ $name | quote }}
     {{- range $key, $value := $spec.labels }}
     {{ $key | quote }}: {{ $value | quote }}
     {{- end }}
@@ -157,7 +164,7 @@ metadata:
   {{- if or $spec.description $spec.aggregationRule }}
   annotations:
     {{- with $spec.description }}
-    unikorn-cloud.org/description: {{ . }}
+    unikorn-cloud.org/description: {{ . | quote }}
     {{- end }}
     {{- if $spec.aggregationRule }}
     argocd.argoproj.io/sync-wave: "1"
@@ -187,21 +194,21 @@ spec:
     {{- with $global := $scopes.global }}
     global:
       {{- range $endpoint, $operations := $global }}
-        {{- printf "- name: %s" $endpoint | nindent 4 }}
+        {{- printf "- name: %s" ($endpoint | quote) | nindent 4 }}
         {{- printf "operations: [%v]" ($operations | join ", ") | nindent 6 }}
       {{- end }}
     {{- end }}
     {{- with $organization := $scopes.organization }}
     organization:
       {{- range $endpoint, $operations := $organization }}
-        {{- printf "- name: %s" $endpoint | nindent 4 }}
+        {{- printf "- name: %s" ($endpoint | quote) | nindent 4 }}
         {{- printf "operations: [%v]" ($operations | join ", ") | nindent 6 }}
       {{- end }}
     {{- end }}
     {{- with $project := $scopes.project }}
     project:
       {{- range $endpoint, $operations := $project }}
-        {{- printf "- name: %s" $endpoint | nindent 4 }}
+        {{- printf "- name: %s" ($endpoint | quote) | nindent 4 }}
         {{- printf "operations: [%v]" ($operations | join ", ") | nindent 6 }}
       {{- end }}
     {{- end }}

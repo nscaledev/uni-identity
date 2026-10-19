@@ -110,9 +110,10 @@ Tenant roles are the built-in base roles and the unprotected roles that are
 not built-in roles (those count through their base roles).  A scope is
 platform-only if:
 - this chart's roles (.Values.roles) grant it globally and no unlabelled
-  tenant role grants it in an organization or project block.  A labelled role
-  does not count here, so it cannot take a chart platform scope (such as
-  region:servers) off the list by holding it itself;
+  tenant role in .Values.roles grants it in an organization or project block.
+  A labelled role does not count here, so it cannot take a chart platform
+  scope (such as region:servers) off the list by holding it itself, and no
+  additionalRoles role counts either, so a decoy role can't take it off;
 - or only additionalRoles grant it globally and no tenant role, labelled or
   not, grants it in an organization or project block.  A service's labelled
   role does count here: it is how the service's own tenant scopes (held
@@ -130,7 +131,7 @@ platform-only if:
 {{- $chartGlobal := dict }}
 {{- $global := dict }}
 {{- $tenant := dict }}
-{{- $unlabelledTenant := dict }}
+{{- $chartTenantScopes := dict }}
 {{- range $name, $spec := $roles }}
 {{- $scopes := default (dict) $spec.scopes }}
 {{- range $scope, $ops := default (dict) $scopes.global }}
@@ -140,11 +141,11 @@ platform-only if:
 {{- end }}
 {{- end }}
 {{- if or (has $name $bases) (and (not $spec.protected) (not (has $name $builtins))) }}
-{{- $labelled := eq (include "unikorn.identity.labelled" $spec) "true" }}
+{{- $chartTenant := and (hasKey $chartRoles $name) (ne (include "unikorn.identity.labelled" $spec) "true") }}
 {{- range $scope, $ops := merge (dict) (default (dict) $scopes.organization) (default (dict) $scopes.project) }}
 {{- $_ := set $tenant $scope true }}
-{{- if not $labelled }}
-{{- $_ := set $unlabelledTenant $scope true }}
+{{- if $chartTenant }}
+{{- $_ := set $chartTenantScopes $scope true }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -152,7 +153,7 @@ platform-only if:
 {{- $out := list }}
 {{- range $scope, $_ := $global }}
 {{- if hasKey $chartGlobal $scope }}
-{{- if not (hasKey $unlabelledTenant $scope) }}
+{{- if not (hasKey $chartTenantScopes $scope) }}
 {{- $out = append $out $scope }}
 {{- end }}
 {{- else if not (hasKey $tenant $scope) }}
