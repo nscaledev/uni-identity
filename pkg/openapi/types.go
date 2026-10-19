@@ -669,6 +669,11 @@ type ResponseType string
 
 // RoleRead A role.
 type RoleRead struct {
+	// AggregatedFrom The source roles an aggregating role (for example the organization
+	// administrator) takes its scopes from. Absent for a role that does
+	// not aggregate.
+	AggregatedFrom *[]RoleSource `json:"aggregatedFrom,omitempty"`
+
 	// Grantable Whether the calling principal holds every permission in this role
 	// and may therefore grant it to groups. Roles with grantable set to
 	// false are returned so clients can resolve and display them — for
@@ -680,6 +685,35 @@ type RoleRead struct {
 
 	// Metadata Metadata required by all resource reads.
 	Metadata externalRef0.ResourceReadMetadata `json:"metadata"`
+
+	// Scopes What a role permits: the scopes it holds after aggregation. For an
+	// aggregating role this includes the scopes of every source role.
+	Scopes RoleScopes `json:"scopes"`
+}
+
+// RoleScopes What a role permits: the scopes it holds after aggregation. For an
+// aggregating role this includes the scopes of every source role.
+type RoleScopes struct {
+	// Global A list of access control scopes.
+	Global *AclEndpoints `json:"global,omitempty"`
+
+	// Organization A list of access control scopes.
+	Organization *AclEndpoints `json:"organization,omitempty"`
+
+	// Project A list of access control scopes.
+	Project *AclEndpoints `json:"project,omitempty"`
+}
+
+// RoleSource A role that an aggregating role takes scopes from.
+type RoleSource struct {
+	// Description The source role's description.
+	Description *string `json:"description,omitempty"`
+
+	// Id The source role's ID.
+	Id string `json:"id"`
+
+	// Name The source role's name.
+	Name string `json:"name"`
 }
 
 // Roles A list of roles.

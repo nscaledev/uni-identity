@@ -65,6 +65,21 @@ per-role, per-caller API value: `grantable` is exactly `rbac.AllowRole(ctx, role
 nil`. It gates what the caller may do with the role (grant it to a group), not
 whether the role appears in the list.
 
+### Scopes And Sources
+
+Each role also reports what it permits:
+
+- `scopes` is the role's effective scopes, from `Role.EffectiveScopes()`. For a normal role that is
+  `spec.scopes`. For an aggregating role (see the [role controller](../../controllers/role/README.md))
+  it is `status.effectiveScopes`, so `administrator` reports the service scopes it holds, not just
+  its description. An aggregating role the controller has not reconciled yet reports no scopes,
+  matching what the ACL build gives its holders.
+- `aggregatedFrom` names each source role (ID, name, description) an aggregating role takes scopes
+  from. It is absent for a role that does not aggregate.
+
+The per-source `scopesHash` in the role status is not exposed. It is for the controller and the change
+record, not for customers.
+
 ## Invariants
 
 - protected roles are never returned through this user-facing list path
@@ -73,6 +88,8 @@ whether the role appears in the list.
 - `grantable` reflects `rbac.AllowRole` for the supplied organization and does not imply the role can
   be hidden or shown differently — it only gates granting the role to a group
 - this package is read-only; it does not define or mutate the underlying role resources
+- `scopes` uses the same effective scopes that `grantable` and the ACL build use, so what a role
+  reports and what it enforces cannot disagree
 
 ## Caveats
 

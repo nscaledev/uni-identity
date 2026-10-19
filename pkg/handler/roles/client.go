@@ -47,9 +47,61 @@ func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
 	out := openapi.RoleRead{
 		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),
 		Grantable: grantable,
+		Scopes:    convertScopes(in.EffectiveScopes()),
+	}
+
+	if in.IsAggregating() && len(in.Status.AggregatedFrom) > 0 {
+		sources := make([]openapi.RoleSource, 0, len(in.Status.AggregatedFrom))
+
+		for _, source := range in.Status.AggregatedFrom {
+			s := openapi.RoleSource{
+				Id:   source.ID,
+				Name: source.Name,
+			}
+
+			if source.Description != "" {
+				s.Description = &source.Description
+			}
+
+			sources = append(sources, s)
+		}
+
+		out.AggregatedFrom = &sources
 	}
 
 	return out
+}
+
+// convertScopes returns what a role permits.  It takes the effective scopes,
+// so an aggregating role reports what it really holds, not just its
+// description.  The scopes hash is deliberately not exposed: it is for the
+// role controller and the change record, not for customers.
+func convertScopes(in unikornv1.RoleScopes) openapi.RoleScopes {
+	return openapi.RoleScopes{
+		Global:       convertEndpoints(in.Global),
+		Organization: convertEndpoints(in.Organization),
+		Project:      convertEndpoints(in.Project),
+	}
+}
+
+func convertEndpoints(in []unikornv1.RoleScope) *openapi.AclEndpoints {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := make(openapi.AclEndpoints, 0, len(in))
+
+	for _, scope := range in {
+		operations := make(openapi.AclOperations, 0, len(scope.Operations))
+
+		for _, operation := range scope.Operations {
+			operations = append(operations, openapi.AclOperation(operation))
+		}
+
+		out = append(out, openapi.AclEndpoint{Name: scope.Name, Operations: operations})
+	}
+
+	return &out
 }
 
 func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID) openapi.Roles {
