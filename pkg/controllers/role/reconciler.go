@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"unicode/utf8"
 
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
@@ -41,6 +42,10 @@ import (
 // EventReasonEffectiveScopesChanged is the Event reason emitted when an
 // aggregating role's effective scopes change.
 const EventReasonEffectiveScopesChanged = "EffectiveScopesChanged"
+
+// maxEventNote caps an Event note in bytes: events.k8s.io/v1 rejects notes
+// of 1 KiB or more.
+const maxEventNote = 1000
 
 // Reconciler writes the status of aggregating roles.
 type Reconciler struct {
@@ -215,7 +220,7 @@ func (r *Reconciler) recordConditionChanges(ctx context.Context, role *unikornv1
 			continue
 		}
 
-		r.recorder.Eventf(role, nil, corev1.EventTypeWarning, current.Reason, "Aggregate", "%s is False: %s", t, current.Message)
+		r.recorder.Eventf(role, nil, corev1.EventTypeWarning, current.Reason, "Aggregate", "%s", truncate(fmt.Sprintf("%s is False: %s", t, current.Message), maxEventNote))
 
 		log.FromContext(ctx).Info("role condition is false", "condition", t, "reason", current.Reason, "message", current.Message)
 	}
@@ -263,6 +268,24 @@ func sourceChanges(previous, current []unikornv1.RoleAggregationSource) []source
 	}
 
 	return changes
+}
+
+// truncate cuts s to at most limit bytes, on a rune boundary, ending in "…"
+// when anything was cut.
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+
+	const ellipsis = "…"
+
+	end := limit - len(ellipsis)
+
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+
+	return s[:end] + ellipsis
 }
 
 func orNone(s string) string {

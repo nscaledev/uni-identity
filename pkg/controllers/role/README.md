@@ -44,13 +44,16 @@ status:
       name: fleet-operator
       description: ...
       scopesHash: sha256:...
+      scopes: {...}             # what this source contributed, no global
   conditions:
     - type: Available           # Aggregated | MissingRoleRef | Cycle | InvalidSelector
     - type: Grantable           # Grantable | NotGrantable
 ```
 
 An aggregating role has no `spec.scopes`. If it has some, they are ignored and
-logged. Its own hand-written scopes live in a protected base role that it
+logged, except while the role is stuck (see below), so converting a role
+never empties it. The admission policy refuses `spec.scopes` on aggregating
+roles. Its own hand-written scopes live in a protected base role that it
 `roleRefs`.
 
 ## Scope rules
@@ -80,30 +83,44 @@ logged. Its own hand-written scopes live in a protected base role that it
   other label is refused, because it could select every role.
 - **A role being deleted** (deletion timestamp set) no longer counts as a
   source.
+- **Protected scopes can still arrive in one hop:** a labelled aggregating
+  role that `roleRefs` a protected role passes the protected role's scopes
+  on. The chain (`reader`, `user`, `auditor` → their `*-base` roles) is
+  exactly this shape. The admission policy (ID-555) is what stops anyone
+  else doing it: it refuses a role that is both labelled and aggregating,
+  except the chain role IDs.
 - A source can itself be an aggregating role. Its effective scopes are used,
   which is how the chain works: `reader` → `auditor` and `user`; `auditor` and
   `user` → `administrator`.
 
 ## Failure behaviour
 
-A bad aggregation must never empty an org's admin ACL.
+A bad aggregation must never empty an org's admin ACL, and must never keep a
+scope from a source that is gone.
 
 | Problem | Effective scopes | `Available` |
 | --- | --- | --- |
-| A `roleRef` names a missing role | last value kept | `False`, `MissingRoleRef` |
-| The role is in a cycle | last value kept (every role in the cycle) | `False`, `Cycle` |
-| A selector is not allowed | last value kept | `False`, `InvalidSelector` |
+| A `roleRef` names a missing role | that ref gives its last recorded scopes | `False`, `MissingRoleRef` |
+| The role is in a cycle | each source in the cycle gives its last effective scopes | `False`, `Cycle` |
+| A selector is not allowed | the roles it last selected that still exist | `False`, `InvalidSelector` |
 
-- **"Last value"** is the last status, without global scopes. Before the
-  controller has ever written status, it is the role's own `spec.scopes` plus
-  what its `roleRefs` hold, so adding an `aggregationRule` never takes
-  anything away, even with a bad ref.
+- **A stuck role is computed from what is known.** Every live source (ref or
+  selector match) gives its current scopes. Only the broken part falls back
+  to a last value. `aggregatedFrom` lists exactly the sources used.
+- **"Last recorded scopes"** are the `scopes` stored for that source in
+  `status.aggregatedFrom`. A missing ref with none recorded gives nothing.
+- **"Last effective scopes"** are the last status, without global scopes.
+  Before the controller has ever written status, they are the role's own
+  `spec.scopes` plus what its non-aggregating `roleRefs` hold.
+- **While stuck the role's own `spec.scopes` are kept too**, so adding an
+  `aggregationRule` never takes anything away, even with a bad ref. Once the
+  role is `Available` they are dropped.
 - **Cycles** are found with Tarjan's strongly connected components, so every
   role in a cycle is flagged, however it is reached.
 - **A role above a broken one** is not itself broken: it takes the broken
-  role's kept scopes.
+  role's effective scopes, or a cycle member's last ones.
 - **Turning False is loud:** a Warning Event and a log line, once per change of
-  reason or message.
+  reason or message. The Event note is cut to 1000 bytes.
 
 ## Before the first reconcile
 
@@ -118,10 +135,13 @@ controller writing its status:
   keep that.
 - **Nobody can grant it.** `rbac.AllowRole` refuses an aggregating role until
   `Role.AggregationReady()`: status written for the current generation
-  (`Available` carries `observedGeneration`) and `Available=True`. Otherwise a
-  caller holding nothing could grant a role that is about to hold far more.
-  A stuck role cannot be granted either, since its kept scopes may be empty;
-  its holders keep them.
+  (`Available` carries `observedGeneration`). Otherwise a caller holding
+  nothing could grant a role that is about to hold far more. This window is
+  the time to the first reconcile, normally seconds, and fails closed.
+- **A stuck role can be granted against its kept scopes**, which are exactly
+  what its holders hold, as long as they are not empty. So adding members to
+  an admin group keeps working while it is stuck. A stuck role with no kept
+  scopes cannot be granted.
 
 Global scopes are never read from status, whoever wrote it.
 
@@ -131,11 +151,9 @@ Global scopes are never read from status, whoever wrote it.
 aggregating role's effective scopes against every non-protected role its
 selectors match. It is `False`, naming each role it can't grant, if any fails.
 
-A matched role that is used is held, so it passes. The useful failures are:
-
-- a labelled role with global scopes, which is skipped and which no org admin
-  can ever grant
-- a stuck role (kept scopes) that can't grant a newly labelled role
+A matched role that is used is held, so it passes, unless it is in a cycle
+and gave its last scopes. The useful failure is a labelled role with global
+scopes, which is skipped and which no org admin can ever grant.
 
 The holder ACL puts project scopes in one linked project. A holder of a role
 without `flattenToOrganization` whose group has no linked project can grant
@@ -160,9 +178,10 @@ grantor); see ID-641.
   this release's roles. A create or delete, or an update that changes the
   generation, labels or annotations, enqueues every aggregating role in the
   namespace. Labels are watched as well as generation because a label is how
-  a role opts in, and labels do not bump the generation. Status-only updates
-  are ignored: the computation reads specs, labels and annotations, so the
-  controller does not wake itself.
+  a role opts in, and labels do not bump the generation. Status changes are
+  watched too: a stuck role reads its own and its cycle sources' last status,
+  and a status someone else wrote must be put right. The controller's own
+  writes wake it once and then compute to no change.
 - **Each reconcile** lists every role, computes the whole graph, and writes
   only the reconciled role's status, through the status subresource. Helm and
   Argo never own `status`, so nothing fights the controller.
@@ -178,9 +197,16 @@ grantor); see ID-641.
 
 ## Caveats
 
-- **Removing a source role shrinks admin at once.** For example, turning off
-  a chart that ships labelled roles removes their scopes from every org admin
-  at the next reconcile. Kubernetes behaves the same.
+- **Removing a selector source shrinks admin at once.** For example, turning
+  off a chart that ships labelled roles removes their scopes from every org
+  admin at the next reconcile. Kubernetes behaves the same. A removed or
+  deleted `roleRef` does not: it keeps its last recorded scopes
+  (`MissingRoleRef`) until the ref is fixed.
+- **A source that widens is not seen until the next reconcile.** Until then
+  `AggregationReady` still passes on the old, smaller status, so a caller
+  holding only the old set can grant the role. The window is the reconcile
+  latency, or as long as the controller is down. Same class as the unpinned
+  widening below.
 - **A scope change on a labelled role widens every org admin** at the next
   reconcile, with no approval step. The admission allow-list (chart) and the
   change record keep this visible. It closes when grants pin bundle versions

@@ -152,7 +152,8 @@ Every reader of a role's scopes in this package (`AllowRole`, the ACL build,
 global role bindings) uses `Role.EffectiveScopes()`, never `spec.scopes`. It
 returns `spec.scopes` for a normal role and `status.effectiveScopes` for an
 aggregating role. An aggregating role the controller has not reconciled yet
-holds nothing, so it fails closed.
+holds its own `spec.scopes` plus what its `roleRefs` hold (`BootstrapRoles`),
+and cannot be granted.
 
 ### Grant relationships
 

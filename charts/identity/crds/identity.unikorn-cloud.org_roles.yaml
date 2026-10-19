@@ -273,6 +273,101 @@ spec:
                     name:
                       description: Name is the source role's display name.
                       type: string
+                    scopes:
+                      description: |-
+                        Scopes are the organization and project scopes the source contributed,
+                        before any flattening.  A roleRef that goes missing keeps contributing
+                        these until it is fixed.
+                      properties:
+                        global:
+                          description: Global grants access to any resource anywhere.
+                          items:
+                            properties:
+                              name:
+                                description: |-
+                                  Name is a unique name that applies to the scope.  Individual APIs should
+                                  coordinate with one another to avoid clashes and privilege escallation.
+                                type: string
+                              operations:
+                                description: Operations defines a set of CRUD permissions
+                                  for the scope.
+                                items:
+                                  enum:
+                                  - create
+                                  - read
+                                  - update
+                                  - delete
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: set
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                        organization:
+                          description: |-
+                            Organization grants access to the user across the organization and
+                            implicitly any project in the organization.
+                          items:
+                            properties:
+                              name:
+                                description: |-
+                                  Name is a unique name that applies to the scope.  Individual APIs should
+                                  coordinate with one another to avoid clashes and privilege escallation.
+                                type: string
+                              operations:
+                                description: Operations defines a set of CRUD permissions
+                                  for the scope.
+                                items:
+                                  enum:
+                                  - create
+                                  - read
+                                  - update
+                                  - delete
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: set
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                        project:
+                          description: |-
+                            Project grants access to the user for projects linked to groups
+                            that contain them.
+                          items:
+                            properties:
+                              name:
+                                description: |-
+                                  Name is a unique name that applies to the scope.  Individual APIs should
+                                  coordinate with one another to avoid clashes and privilege escallation.
+                                type: string
+                              operations:
+                                description: Operations defines a set of CRUD permissions
+                                  for the scope.
+                                items:
+                                  enum:
+                                  - create
+                                  - read
+                                  - update
+                                  - delete
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: set
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                      type: object
                     scopesHash:
                       description: |-
                         ScopesHash is a hash of the scopes the source contributed, in the form

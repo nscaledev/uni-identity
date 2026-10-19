@@ -30,6 +30,8 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	controllermetrics "github.com/unikorn-cloud/identity/pkg/controllers/metrics"
 
+	"k8s.io/apimachinery/pkg/api/equality"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -80,9 +82,10 @@ func (*Factory) Reconciler(_ *options.Options, _ coremanager.ControllerOptions, 
 // to any role can change any aggregating role, through selectors, refs and
 // chains, so every change enqueues every aggregating role in the namespace.
 // Labels are watched as well as generation, because a label is how a role
-// opts in.  Status-only updates are ignored: the computation reads specs,
-// labels and annotations, so they can't change the result, and ignoring
-// them stops the controller waking itself.
+// opts in.  Status changes are watched too: a stuck role reads its own and
+// its cycle sources' last status, and a status someone else wrote must be
+// put right.  The controller's own writes wake it once and then compute to
+// no change.
 //
 // Only roles in the controller's own namespace (POD_NAMESPACE, set by the
 // chart) are watched, so a second identity release in the same cluster
@@ -95,24 +98,31 @@ func (*Factory) RegisterWatches(manager manager.Manager, controller controller.C
 		return aggregatingRoles(ctx, cli, role)
 	})
 
+	inNamespace := predicate.NewTypedPredicateFuncs(func(role *unikornv1.Role) bool {
+		return namespace == "" || role.Namespace == namespace
+	})
+
+	return controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Role{}, enqueue, roleChanged(), inNamespace))
+}
+
+// roleChanged passes creates, deletes and any update that changes the
+// generation, labels, annotations or status.
+func roleChanged() predicate.TypedPredicate[*unikornv1.Role] {
 	changed := predicate.Or[*unikornv1.Role](
 		predicate.TypedGenerationChangedPredicate[*unikornv1.Role]{},
 		predicate.TypedLabelChangedPredicate[*unikornv1.Role]{},
 		predicate.TypedAnnotationChangedPredicate[*unikornv1.Role]{},
 	)
 
-	// Create and delete always count.
-	filter := predicate.TypedFuncs[*unikornv1.Role]{
+	return predicate.TypedFuncs[*unikornv1.Role]{
 		UpdateFunc: func(e event.TypedUpdateEvent[*unikornv1.Role]) bool {
-			return changed.Update(e)
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return false
+			}
+
+			return changed.Update(e) || !equality.Semantic.DeepEqual(e.ObjectOld.Status, e.ObjectNew.Status)
 		},
 	}
-
-	inNamespace := predicate.NewTypedPredicateFuncs(func(role *unikornv1.Role) bool {
-		return namespace == "" || role.Namespace == namespace
-	})
-
-	return controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Role{}, enqueue, filter, inNamespace))
 }
 
 // aggregatingRoles returns a request for the changed role and for every

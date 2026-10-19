@@ -78,7 +78,8 @@ type plan struct {
 	labelled []string
 	// skipped notes each match that is not used.
 	skipped []string
-	// missing are roleRefs that name no live role.
+	// missing are roleRefs that name no live role.  Each keeps contributing
+	// the scopes last recorded for it in status, if any.
 	missing []string
 	// invalid is set when a selector is not allowed.
 	invalid string
@@ -150,17 +151,38 @@ func (c *computer) plan(id string) *plan {
 		switch {
 		case ref == id:
 		case !c.live(ref):
-			p.missing = append(p.missing, ref)
+			if !slices.Contains(p.missing, ref) {
+				p.missing = append(p.missing, ref)
+			}
 		case !slices.Contains(p.sources, ref):
 			p.sources = append(p.sources, ref)
 		}
 	}
 
+	c.planSelectors(id, p)
+
+	slices.Sort(p.sources)
+
+	return p
+}
+
+// planSelectors adds the selector matches of one aggregating role.
+func (c *computer) planSelectors(id string, p *plan) {
+	rule := c.roles[id].Spec.AggregationRule
+
 	selectors, err := parseSelectors(rule.RoleSelectors)
 	if err != nil {
 		p.invalid = err.Error()
 
-		return p
+		// The selectors can't be used, so keep the roles they last selected
+		// that still exist.
+		for _, source := range c.roles[id].Status.AggregatedFrom {
+			if source.ID != id && c.live(source.ID) && !slices.Contains(rule.RoleRefs, source.ID) {
+				c.addMatch(p, source.ID)
+			}
+		}
+
+		return
 	}
 
 	for _, candidate := range c.ids {
@@ -168,10 +190,6 @@ func (c *computer) plan(id string) *plan {
 			c.addMatch(p, candidate)
 		}
 	}
-
-	slices.Sort(p.sources)
-
-	return p
 }
 
 func matchesAny(selectors []labels.Selector, role *unikornv1.Role) bool {
@@ -317,43 +335,43 @@ func (t *tarjan) popComponent(root string) {
 	}
 }
 
-// scopesOf returns the scopes a source role holds.
+// scopesOf returns the scopes a source role holds.  A source in a cycle
+// can't be computed, so it gives its last effective scopes.
 func (c *computer) scopesOf(id string) unikornv1.RoleScopes {
-	if _, aggregating := c.plans[id]; aggregating {
-		return c.resolve(id)
+	if _, aggregating := c.plans[id]; !aggregating {
+		return c.roles[id].Spec.Scopes
 	}
 
-	return c.roles[id].Spec.Scopes
+	if c.inCycle[id] {
+		return c.lastScopes(id)
+	}
+
+	return c.resolve(id)
 }
 
-// lastScopes returns what an aggregating role should keep when it can't be
-// computed: its last status, without global scopes, or, before the controller
-// has ever written status, what its roleRefs hold, as the ACL build would
-// give it.
+// lastScopes returns an aggregating role's last status, without global
+// scopes, or, before the controller has ever written status, what the ACL
+// build would give it.
 func (c *computer) lastScopes(id string) unikornv1.RoleScopes {
 	role := c.roles[id]
 
-	if role.Status.EffectiveScopes != nil {
-		scopes := role.EffectiveScopes()
-
-		return *scopes.DeepCopy()
+	if role.Status.EffectiveScopes == nil {
+		return role.BootstrapScopes(c.roles)
 	}
 
-	bootstrap := map[string]*unikornv1.Role{id: role.DeepCopy()}
+	scopes := role.EffectiveScopes()
 
-	for _, ref := range role.Spec.AggregationRule.RoleRefs {
-		if source, ok := c.roles[ref]; ok {
-			bootstrap[ref] = source
-		}
-	}
-
-	unikornv1.BootstrapRoles(bootstrap)
-
-	return *bootstrap[id].Status.EffectiveScopes
+	return *scopes.DeepCopy()
 }
 
-// resolve computes one aggregating role.  Cycles are found up front, so a
-// role in a cycle never recurses into it, and every other path is acyclic.
+// resolve computes one aggregating role.  Cycles are found up front, and a
+// source in a cycle gives its last scopes rather than being computed, so
+// this never recurses into a cycle.
+//
+// A stuck role is computed from what is known: live sources give their
+// current scopes, a missing roleRef gives the scopes last recorded for it,
+// and the role's own spec.scopes are kept so converting a role never empties
+// it.
 func (c *computer) resolve(id string) unikornv1.RoleScopes {
 	if result, ok := c.results[id]; ok {
 		return result.EffectiveScopes
@@ -361,60 +379,84 @@ func (c *computer) resolve(id string) unikornv1.RoleScopes {
 
 	role := c.roles[id]
 	p := c.plans[id]
+	flatten := role.Spec.AggregationRule.FlattenToOrganization
 
-	result := &Result{Skipped: p.skipped}
+	result := &Result{
+		Skipped:   p.skipped,
+		Available: c.available(id),
+	}
 
-	// Store before recursing, so a cycle member another role reaches gets
-	// its kept scopes rather than a recomputation.
+	effective := unikornv1.RoleScopes{}
+
+	if result.Available.Status != corev1.ConditionTrue {
+		effective = unikornv1.MergeScopes(effective, role.Spec.Scopes, false)
+	}
+
+	for _, source := range p.sources {
+		contributed := unikornv1.MergeScopes(unikornv1.RoleScopes{}, c.scopesOf(source), false)
+
+		effective = unikornv1.MergeScopes(effective, contributed, flatten)
+
+		result.AggregatedFrom = append(result.AggregatedFrom, describe(c.roles[source], contributed))
+	}
+
+	for _, ref := range p.missing {
+		index := slices.IndexFunc(role.Status.AggregatedFrom, func(s unikornv1.RoleAggregationSource) bool {
+			return s.ID == ref && s.Scopes != nil
+		})
+
+		if index < 0 {
+			continue
+		}
+
+		recorded := role.Status.AggregatedFrom[index].DeepCopy()
+
+		effective = unikornv1.MergeScopes(effective, *recorded.Scopes, flatten)
+
+		result.AggregatedFrom = append(result.AggregatedFrom, *recorded)
+	}
+
+	slices.SortFunc(result.AggregatedFrom, func(a, b unikornv1.RoleAggregationSource) int {
+		return strings.Compare(a.ID, b.ID)
+	})
+
+	result.EffectiveScopes = effective
+
 	c.results[id] = result
+
+	return effective
+}
+
+// available returns the Available condition of one aggregating role.
+func (c *computer) available(id string) Condition {
+	p := c.plans[id]
 
 	switch {
 	case c.inCycle[id]:
-		result.EffectiveScopes = c.lastScopes(id)
-		result.Available = Condition{
+		return Condition{
 			Status:  corev1.ConditionFalse,
 			Reason:  unikornv1.RoleReasonCycle,
-			Message: "role is part of an aggregation cycle, keeping the last effective scopes",
+			Message: "role is part of an aggregation cycle, roles in the cycle give their last effective scopes",
 		}
 	case p.invalid != "":
-		result.EffectiveScopes = c.lastScopes(id)
-		result.Available = Condition{
+		return Condition{
 			Status:  corev1.ConditionFalse,
 			Reason:  unikornv1.RoleReasonInvalidSelector,
-			Message: p.invalid + ", keeping the last effective scopes",
+			Message: p.invalid + ", using the roles it last selected that still exist",
 		}
 	case len(p.missing) > 0:
-		result.EffectiveScopes = c.lastScopes(id)
-		result.Available = Condition{
+		return Condition{
 			Status:  corev1.ConditionFalse,
 			Reason:  unikornv1.RoleReasonMissingRoleRef,
-			Message: "roleRefs name missing roles, keeping the last effective scopes: " + strings.Join(p.missing, ", "),
+			Message: "roleRefs name missing roles, keeping their last recorded scopes: " + strings.Join(p.missing, ", "),
 		}
 	default:
-		effective := unikornv1.RoleScopes{}
-
-		for _, source := range p.sources {
-			scopes := c.scopesOf(source)
-
-			effective = unikornv1.MergeScopes(effective, scopes, role.Spec.AggregationRule.FlattenToOrganization)
-
-			result.AggregatedFrom = append(result.AggregatedFrom, describe(c.roles[source], scopes))
-		}
-
-		result.EffectiveScopes = effective
-		result.Available = Condition{
+		return Condition{
 			Status:  corev1.ConditionTrue,
 			Reason:  unikornv1.RoleReasonAggregated,
 			Message: availableMessage(len(p.sources), p.skipped),
 		}
 	}
-
-	if result.Available.Status != corev1.ConditionTrue {
-		// The sources listed must match the scopes held.
-		result.AggregatedFrom = slices.Clone(role.Status.AggregatedFrom)
-	}
-
-	return result.EffectiveScopes
 }
 
 func availableMessage(sources int, skipped []string) string {
@@ -435,12 +477,15 @@ func displayName(role *unikornv1.Role) string {
 	return role.Name
 }
 
-func describe(role *unikornv1.Role, scopes unikornv1.RoleScopes) unikornv1.RoleAggregationSource {
+// describe records one source and the scopes it contributed, which never
+// include global scopes.
+func describe(role *unikornv1.Role, contributed unikornv1.RoleScopes) unikornv1.RoleAggregationSource {
 	return unikornv1.RoleAggregationSource{
 		ID:          role.Name,
 		Name:        role.Labels[coreconstants.NameLabel],
 		Description: role.Annotations[coreconstants.DescriptionAnnotation],
-		ScopesHash:  Hash(scopes),
+		ScopesHash:  Hash(contributed),
+		Scopes:      &contributed,
 	}
 }
 
@@ -466,10 +511,10 @@ func Hash(scopes unikornv1.RoleScopes) string {
 
 // grantable checks the role can grant every non-protected role labelled for
 // it, using the same AllowRole check the API runs when an org admin grants a
-// role.  A labelled role that is in use is held, so it passes unless the role
-// is stuck on its last scopes.  The useful failures are a labelled role that
-// was skipped for having global scopes, which no org admin can ever grant,
-// and a stuck role that can't grant a newly labelled one.  The check runs
+// role.  A labelled role that is in use is held, so it passes unless it is in
+// a cycle and gave its last scopes.  The useful failure is a labelled role
+// that was skipped for having global scopes, which no org admin can ever
+// grant.  The check runs
 // over the real roles in each environment, so it sees roles from every chart
 // and per-environment config, which a chart unit test cannot.
 //

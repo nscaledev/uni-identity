@@ -90,11 +90,12 @@ func (r *Role) EffectiveScopes() RoleScopes {
 
 // AggregationReady tells whether a role's effective scopes can be trusted for
 // a grant check.  A role that does not aggregate always can.  An aggregating
-// role can once the controller has written status for its current generation
-// and that status is Available.  Before that, or while it is stuck (missing
-// ref, cycle, bad selector), its effective scopes may be empty or out of
-// date, so a grant check against them could let anyone hand out a role that
-// is about to hold far more.
+// role can once the controller has written status for its current generation,
+// and that status is either Available or stuck (missing ref, cycle, bad
+// selector) on scopes that are not empty: holders of a stuck role hold
+// exactly its kept scopes.  Before that its effective scopes are empty or out
+// of date, so a grant check against them could let anyone hand out a role
+// that is about to hold far more.
 func (r *Role) AggregationReady() bool {
 	if !r.IsAggregating() {
 		return true
@@ -105,14 +106,23 @@ func (r *Role) AggregationReady() bool {
 	}
 
 	condition := meta.FindStatusCondition(r.Status.Conditions, string(unikornv1core.ConditionAvailable))
+	if condition == nil || condition.ObservedGeneration != r.Generation {
+		return false
+	}
 
-	return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == r.Generation
+	if condition.Status == metav1.ConditionTrue {
+		return true
+	}
+
+	scopes := r.EffectiveScopes()
+
+	return len(scopes.Organization)+len(scopes.Project) > 0
 }
 
 // BootstrapRoles fills in the effective scopes of every aggregating role the
-// controller has not reconciled yet, in place, from its own spec.scopes and
-// the roles it names in roleRefs, never with global scopes.  roles is keyed by role ID.  It is for the ACL build only, on
-// roles it has just listed.
+// controller has not reconciled yet, in place, with BootstrapScopes.  roles is
+// keyed by role ID.  It is for the ACL build only, on roles it has just
+// listed.
 //
 // This keeps org admins working while a built-in role is converted to an
 // aggregating one: its hand-written scopes move to a base role it refs, so
@@ -126,22 +136,32 @@ func BootstrapRoles(roles map[string]*Role) {
 			continue
 		}
 
-		// Start from any scopes the role had before it aggregated, so adding
-		// an aggregationRule never takes anything away before the controller
-		// runs, even with a bad ref.
-		scopes := MergeScopes(RoleScopes{}, RoleScopes{Organization: role.Spec.Scopes.Organization, Project: role.Spec.Scopes.Project}, false)
-
-		for _, ref := range role.Spec.AggregationRule.RoleRefs {
-			source, ok := roles[ref]
-			if !ok || source.IsAggregating() || !source.DeletionTimestamp.IsZero() {
-				continue
-			}
-
-			scopes = MergeScopes(scopes, source.Spec.Scopes, role.Spec.AggregationRule.FlattenToOrganization)
-		}
+		scopes := role.BootstrapScopes(roles)
 
 		role.Status.EffectiveScopes = &scopes
 	}
+}
+
+// BootstrapScopes returns what an aggregating role holds before the
+// controller has written its status: its own spec.scopes plus what the
+// non-aggregating roles it names in roleRefs hold, never with global scopes.
+// roles is keyed by role ID and is only read.
+func (r *Role) BootstrapScopes(roles map[string]*Role) RoleScopes {
+	// Start from any scopes the role had before it aggregated, so adding an
+	// aggregationRule never takes anything away before the controller runs,
+	// even with a bad ref.
+	scopes := MergeScopes(RoleScopes{}, r.Spec.Scopes, false)
+
+	for _, ref := range r.Spec.AggregationRule.RoleRefs {
+		source, ok := roles[ref]
+		if !ok || source.IsAggregating() || !source.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		scopes = MergeScopes(scopes, source.Spec.Scopes, r.Spec.AggregationRule.FlattenToOrganization)
+	}
+
+	return scopes
 }
 
 // MergeScopes folds a source's scopes into an aggregating role's scopes.

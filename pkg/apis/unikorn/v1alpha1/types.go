@@ -305,6 +305,10 @@ type RoleAggregationSource struct {
 	// ScopesHash is a hash of the scopes the source contributed, in the form
 	// sha256:<hex>.  It changes whenever those scopes change.
 	ScopesHash string `json:"scopesHash"`
+	// Scopes are the organization and project scopes the source contributed,
+	// before any flattening.  A roleRef that goes missing keeps contributing
+	// these until it is fixed.
+	Scopes *RoleScopes `json:"scopes,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

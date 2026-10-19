@@ -18,6 +18,7 @@ limitations under the License.
 package role
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -34,6 +35,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -280,4 +282,75 @@ func TestReconcileWarnsOnceWhenStuck(t *testing.T) {
 	reconcileRole(t, r, "administrator")
 
 	require.Empty(t, drain(recorder), "a role that stays stuck does not warn again")
+}
+
+func TestReconcileDeletedRefKeepsRecordedScopes(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole()
+	admin.Spec.AggregationRule.RoleRefs = []string{"administrator-base"}
+
+	base := newRole("administrator-base", nil, unikornv1.RoleSpec{
+		Protected: true,
+		Scopes: unikornv1.RoleScopes{
+			Organization: []unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		},
+	})
+
+	r, cli, _ := setup(t, admin, base, fleetOperator())
+
+	reconcileRole(t, r, "administrator")
+
+	require.NoError(t, cli.Delete(t.Context(), base))
+	require.NoError(t, cli.Delete(t.Context(), fleetOperator()))
+
+	// Twice, so the second run reads the status the first one wrote.
+	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, "administrator")
+
+	admin = getRole(t, cli, "administrator")
+
+	require.Equal(t, base.Spec.Scopes.Organization, admin.EffectiveScopes().Organization)
+	require.Len(t, admin.Status.AggregatedFrom, 1)
+	require.Equal(t, "administrator-base", admin.Status.AggregatedFrom[0].ID)
+
+	available, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1core.ConditionAvailable)
+	require.NoError(t, err)
+	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, available.Reason)
+}
+
+func TestStuckWarningIsCapped(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole()
+
+	for i := range 100 {
+		admin.Spec.AggregationRule.RoleRefs = append(admin.Spec.AggregationRule.RoleRefs, fmt.Sprintf("missing-role-with-a-long-name-%03d", i))
+	}
+
+	r, _, recorder := setup(t, admin)
+
+	reconcileRole(t, r, "administrator")
+
+	events := drain(recorder)
+	require.Len(t, events, 1)
+
+	note := strings.TrimPrefix(events[0], "Warning "+unikornv1.RoleReasonMissingRoleRef+" ")
+	require.LessOrEqual(t, len(note), maxEventNote)
+	require.True(t, strings.HasSuffix(note, "…"))
+}
+
+func TestWatchPassesStatusChanges(t *testing.T) {
+	t.Parallel()
+
+	old := adminRole()
+	updated := old.DeepCopy()
+
+	require.False(t, roleChanged().Update(event.TypedUpdateEvent[*unikornv1.Role]{ObjectOld: old, ObjectNew: updated}))
+
+	updated.Status.EffectiveScopes = &unikornv1.RoleScopes{
+		Organization: []unikornv1.RoleScope{{Name: "svc:tampered", Operations: []unikornv1.Operation{unikornv1.Delete}}},
+	}
+
+	require.True(t, roleChanged().Update(event.TypedUpdateEvent[*unikornv1.Role]{ObjectOld: old, ObjectNew: updated}))
 }
