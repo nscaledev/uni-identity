@@ -232,10 +232,10 @@ func TestRemovingSourceShrinks(t *testing.T) {
 	require.Equal(t, corev1.ConditionTrue, result.Available.Status)
 }
 
-// TestMissingRoleRefKeepsRecordedScopes checks a missing roleRef keeps
-// giving the scopes last recorded for it, while live sources give their
+// TestMissingRoleRefGivesNothing checks a missing roleRef gives nothing,
+// whatever its last status recorded for it, while live sources give their
 // current scopes, including one labelled since the role got stuck.
-func TestMissingRoleRefKeepsRecordedScopes(t *testing.T) {
+func TestMissingRoleRefGivesNothing(t *testing.T) {
 	t.Parallel()
 
 	base := unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}}
@@ -247,11 +247,8 @@ func TestMissingRoleRefKeepsRecordedScopes(t *testing.T) {
 
 	result := aggregation.Compute(t.Context(), roles)["administrator"]
 
-	require.Equal(t, []unikornv1.RoleScope{
-		scope("identity:groups", unikornv1.Read),
-		scope("radar:topology", unikornv1.Read),
-	}, result.EffectiveScopes.Organization)
-	require.Equal(t, []string{"administrator-base", "fleet-operator"}, sourceIDs(result))
+	require.Equal(t, []unikornv1.RoleScope{scope("radar:topology", unikornv1.Read)}, result.EffectiveScopes.Organization)
+	require.Equal(t, []string{"fleet-operator"}, sourceIDs(result))
 	require.Equal(t, corev1.ConditionFalse, result.Available.Status)
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, result.Available.Reason)
 	require.Contains(t, result.Available.Message, "administrator-base")
@@ -289,29 +286,33 @@ func TestStuckRoleDropsRemovedScopes(t *testing.T) {
 	require.Equal(t, []string{"administrator-base", "fleet-operator"}, sourceIDs(result))
 }
 
-func TestCycleKeepsLastScopes(t *testing.T) {
+// TestCycleUsesOnlyOutsideSources checks every role in a cycle holds what
+// the sources outside the cycle give, never any role's last status.
+func TestCycleUsesOnlyOutsideSources(t *testing.T) {
 	t.Parallel()
 
 	lastA := unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("svc:a", unikornv1.Read)}}
 	lastB := unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("svc:b", unikornv1.Read)}}
+	outside := []unikornv1.RoleScope{scope("svc:x", unikornv1.Read)}
 
 	roles := catalogue(
-		newRole("a", aggregates(false, "b"), lastStatus(lastA)),
+		newRole("a", aggregates(false, "b", "x"), lastStatus(lastA)),
 		newRole("b", aggregates(false, "a"), lastStatus(lastB)),
+		newRole("x", org(outside...)),
 		newRole("above", aggregates(false, "a")),
 	)
 
 	results := aggregation.Compute(t.Context(), roles)
 
-	// Each role in the cycle takes the other's last scopes.
-	require.Equal(t, lastB, results["a"].EffectiveScopes)
-	require.Equal(t, lastA, results["b"].EffectiveScopes)
+	require.Equal(t, outside, results["a"].EffectiveScopes.Organization)
+	require.Equal(t, outside, results["b"].EffectiveScopes.Organization)
+	require.Equal(t, []string{"x"}, sourceIDs(results["b"]))
 	require.Equal(t, unikornv1.RoleReasonCycle, results["a"].Available.Reason)
 	require.Equal(t, unikornv1.RoleReasonCycle, results["b"].Available.Reason)
 
-	// A role above the cycle is not in it, and takes the kept scopes.
+	// A role above the cycle is not in it, and takes what the cycle holds.
 	require.Equal(t, corev1.ConditionTrue, results["above"].Available.Status)
-	require.Equal(t, lastA.Organization, results["above"].EffectiveScopes.Organization)
+	require.Equal(t, outside, results["above"].EffectiveScopes.Organization)
 }
 
 func TestSelfSelectionIgnored(t *testing.T) {
@@ -375,8 +376,8 @@ func TestLabelledRoleNeverChangesPublicAdministrator(t *testing.T) {
 	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, publicAdmin.EffectiveScopes().Organization)
 }
 
-// TestEmptySelectorRefused checks a refused selector uses the roles it last
-// selected that still exist, with their current scopes, and nothing new.
+// TestEmptySelectorRefused checks a refused selector gives nothing, not even
+// the roles its last status recorded.
 func TestEmptySelectorRefused(t *testing.T) {
 	t.Parallel()
 
@@ -397,8 +398,8 @@ func TestEmptySelectorRefused(t *testing.T) {
 
 	require.Equal(t, corev1.ConditionFalse, result.Available.Status)
 	require.Equal(t, unikornv1.RoleReasonInvalidSelector, result.Available.Reason)
-	require.Equal(t, []unikornv1.RoleScope{scope("svc:c", unikornv1.Read)}, result.EffectiveScopes.Organization)
-	require.Equal(t, []string{"fleet"}, sourceIDs(result))
+	require.Empty(t, result.EffectiveScopes.Organization)
+	require.Empty(t, result.AggregatedFrom)
 }
 
 func TestHashIsOrderIndependent(t *testing.T) {
@@ -450,25 +451,28 @@ func TestCycleThroughFinishedRole(t *testing.T) {
 	}
 }
 
-// TestBadRefOnConversionKeepsScopes checks that turning a role with
-// hand-written scopes into an aggregating one with a bad ref does not empty
-// it before the controller has ever written status.
-func TestBadRefOnConversionKeepsScopes(t *testing.T) {
+// TestBadRefOnConversionFailsClosed checks that turning a role with
+// hand-written scopes into an aggregating one with a bad ref keeps them only
+// until the controller first writes status, through the ACL build's
+// bootstrap.  The controller itself never uses them.
+func TestBadRefOnConversionFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
 		newRole("administrator", org(scope("identity:groups", unikornv1.Create)), refsOnly("typo")),
 	)
 
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create)}, roles["administrator"].BootstrapScopes(roles).Organization)
+
 	result := aggregation.Compute(t.Context(), roles)["administrator"]
 
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, result.Available.Reason)
-	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create)}, result.EffectiveScopes.Organization)
+	require.Empty(t, result.EffectiveScopes.Organization)
 }
 
 // TestGlobalScopesInStatusAreNeverKept checks global scopes someone wrote
-// into status are dropped, both when the controller keeps the last scopes
-// and when a reader asks for the effective scopes.
+// into status are dropped, both by the controller and when a reader asks for
+// the effective scopes.
 func TestGlobalScopesInStatusAreNeverKept(t *testing.T) {
 	t.Parallel()
 
@@ -547,16 +551,16 @@ func TestStaleGenerationIsNotGrantable(t *testing.T) {
 
 	require.True(t, role.AggregationReady())
 
-	// A stuck role (Available=False) with empty kept scopes is not grantable.
+	// A stuck role (Available=False) with empty scopes is not grantable.
 	role.Status.Conditions[0].Status = metav1.ConditionFalse
 
 	require.False(t, role.AggregationReady())
 }
 
-// TestStuckRoleWithKeptScopesIsGrantable checks a stuck role is grantable
-// against its kept scopes, which are what its holders hold, so adding members
-// to an admin group keeps working while it is stuck.
-func TestStuckRoleWithKeptScopesIsGrantable(t *testing.T) {
+// TestStuckRoleWithScopesIsGrantable checks a stuck role is grantable
+// against the scopes its working sources give, which are what its holders
+// hold, so adding members to an admin group keeps working while it is stuck.
+func TestStuckRoleWithScopesIsGrantable(t *testing.T) {
 	t.Parallel()
 
 	kept := unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}}

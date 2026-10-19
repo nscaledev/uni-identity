@@ -82,9 +82,8 @@ func (*Factory) Reconciler(_ *options.Options, _ coremanager.ControllerOptions, 
 // to any role can change any aggregating role, through selectors, refs and
 // chains, so every change enqueues every aggregating role in the namespace.
 // Labels are watched as well as generation, because a label is how a role
-// opts in.  Status changes are watched too: a stuck role reads its own and
-// its cycle sources' last status, and a status someone else wrote must be
-// put right.  The controller's own writes wake it once and then compute to
+// opts in.  Status changes are watched too: the computation never reads
+// status, but a status someone else wrote must be put right.  The controller's own writes wake it once and then compute to
 // no change.
 //
 // Only roles in the controller's own namespace (POD_NAMESPACE, set by the

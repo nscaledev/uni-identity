@@ -236,9 +236,10 @@ type RoleAggregationRule struct {
 	// typically identity.unikorn-cloud.org/aggregate-to-<role>: "true".
 	// Protected roles and roles with global scopes are never selected.
 	RoleSelectors []metav1.LabelSelector `json:"roleSelectors,omitempty"`
-	// RoleRefs are role IDs that are always included.  They may name
-	// protected roles, e.g. the base role that holds this role's own
-	// hand-written scopes.
+	// RoleRefs are role IDs that are always included.  The only protected
+	// role they may name is this role's base role, whose display name is
+	// this role's display name plus "-base" and which holds this role's own
+	// hand-written scopes.  Any other protected ref gives nothing.
 	// +listType=set
 	RoleRefs []string `json:"roleRefs,omitempty"`
 	// FlattenToOrganization copies the project scopes of every source into
@@ -306,8 +307,8 @@ type RoleAggregationSource struct {
 	// sha256:<hex>.  It changes whenever those scopes change.
 	ScopesHash string `json:"scopesHash"`
 	// Scopes are the organization and project scopes the source contributed,
-	// before any flattening.  A roleRef that goes missing keeps contributing
-	// these until it is fixed.
+	// before any flattening.  A record only: the controller never reads it
+	// back, so a source that goes away stops contributing at once.
 	Scopes *RoleScopes `json:"scopes,omitempty"`
 }
 

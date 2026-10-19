@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,14 +39,22 @@ const (
 	// RoleReasonAggregated means the role's effective scopes are up to date.
 	RoleReasonAggregated = "Aggregated"
 	// RoleReasonMissingRoleRef means a roleRef names a role that does not
-	// exist.  The last effective scopes are kept.
+	// exist or is being deleted.  That ref gives nothing.
 	RoleReasonMissingRoleRef = "MissingRoleRef"
-	// RoleReasonCycle means the role is part of an aggregation cycle.  The
-	// last effective scopes are kept.
+	// RoleReasonInvalidRoleRef means a roleRef names a protected role that is
+	// not this role's base role.  That ref gives nothing.
+	RoleReasonInvalidRoleRef = "InvalidRoleRef"
+	// RoleReasonCycle means the role is part of an aggregation cycle.  Each
+	// role in the cycle holds what the roles outside it give.
 	RoleReasonCycle = "Cycle"
 	// RoleReasonInvalidSelector means a role selector is not allowed.  The
-	// last effective scopes are kept.
+	// selectors give nothing, only roleRefs are used.
 	RoleReasonInvalidSelector = "InvalidSelector"
+
+	// BaseRoleSuffix ends the display name of the only protected role an
+	// aggregating role may name in roleRefs: administrator may ref
+	// administrator-base.
+	BaseRoleSuffix = "-base"
 	// RoleReasonGrantable means every labelled source is grantable.
 	RoleReasonGrantable = "Grantable"
 	// RoleReasonNotGrantable means at least one labelled source is not.
@@ -56,6 +65,24 @@ const (
 // the aggregating role with the given display name.
 func AggregateToLabel(name string) string {
 	return AggregateToLabelPrefix + name
+}
+
+// DisplayName returns the role's display name label, or its ID if it has none.
+func (r *Role) DisplayName() string {
+	if name, ok := r.Labels[coreconstants.NameLabel]; ok {
+		return name
+	}
+
+	return r.Name
+}
+
+// MayRef tells whether an aggregating role may use source through roleRefs.
+// Any role that is not protected may be used.  A protected role may only be
+// used when it is this role's own base role, whose display name is this
+// role's display name plus "-base".  The admission policy is the main guard;
+// this stops any other aggregating role passing protected scopes on.
+func (r *Role) MayRef(source *Role) bool {
+	return !source.Spec.Protected || source.DisplayName() == r.DisplayName()+BaseRoleSuffix
 }
 
 // IsAggregating tells whether the role takes its scopes from source roles.
@@ -92,8 +119,8 @@ func (r *Role) EffectiveScopes() RoleScopes {
 // a grant check.  A role that does not aggregate always can.  An aggregating
 // role can once the controller has written status for its current generation,
 // and that status is either Available or stuck (missing ref, cycle, bad
-// selector) on scopes that are not empty: holders of a stuck role hold
-// exactly its kept scopes.  Before that its effective scopes are empty or out
+// selector or ref) on scopes that are not empty: holders of a stuck role hold
+// exactly what its working sources give.  Before that its effective scopes are empty or out
 // of date, so a grant check against them could let anyone hand out a role
 // that is about to hold far more.
 func (r *Role) AggregationReady() bool {
@@ -145,7 +172,10 @@ func BootstrapRoles(roles map[string]*Role) {
 // BootstrapScopes returns what an aggregating role holds before the
 // controller has written its status: its own spec.scopes plus what the
 // non-aggregating roles it names in roleRefs hold, never with global scopes.
-// roles is keyed by role ID and is only read.
+// A protected ref that is not the role's base role gives nothing (see MayRef).
+// roles is keyed by role ID and is only read.  This is the only place an
+// aggregating role's own spec.scopes are ever used: the controller ignores
+// them.
 func (r *Role) BootstrapScopes(roles map[string]*Role) RoleScopes {
 	// Start from any scopes the role had before it aggregated, so adding an
 	// aggregationRule never takes anything away before the controller runs,
@@ -154,7 +184,7 @@ func (r *Role) BootstrapScopes(roles map[string]*Role) RoleScopes {
 
 	for _, ref := range r.Spec.AggregationRule.RoleRefs {
 		source, ok := roles[ref]
-		if !ok || source.IsAggregating() || !source.DeletionTimestamp.IsZero() {
+		if !ok || source.IsAggregating() || !source.DeletionTimestamp.IsZero() || !r.MayRef(source) {
 			continue
 		}
 

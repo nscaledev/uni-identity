@@ -85,7 +85,7 @@ func setup(t *testing.T, objects ...client.Object) (*Reconciler, client.Client, 
 		WithObjects(objects...).
 		Build()
 
-	recorder := events.NewFakeRecorder(10)
+	recorder := events.NewFakeRecorder(100)
 
 	return &Reconciler{client: cli, recorder: recorder}, cli, recorder
 }
@@ -284,7 +284,9 @@ func TestReconcileWarnsOnceWhenStuck(t *testing.T) {
 	require.Empty(t, drain(recorder), "a role that stays stuck does not warn again")
 }
 
-func TestReconcileDeletedRefKeepsRecordedScopes(t *testing.T) {
+// TestReconcileDeletedRefGivesNothing checks a deleted roleRef stops giving
+// its scopes at once, even after the controller has recorded them in status.
+func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 	t.Parallel()
 
 	admin := adminRole()
@@ -301,6 +303,8 @@ func TestReconcileDeletedRefKeepsRecordedScopes(t *testing.T) {
 
 	reconcileRole(t, r, "administrator")
 
+	require.Equal(t, base.Spec.Scopes.Organization, getRole(t, cli, "administrator").EffectiveScopes().Organization[:1])
+
 	require.NoError(t, cli.Delete(t.Context(), base))
 	require.NoError(t, cli.Delete(t.Context(), fleetOperator()))
 
@@ -310,13 +314,84 @@ func TestReconcileDeletedRefKeepsRecordedScopes(t *testing.T) {
 
 	admin = getRole(t, cli, "administrator")
 
-	require.Equal(t, base.Spec.Scopes.Organization, admin.EffectiveScopes().Organization)
-	require.Len(t, admin.Status.AggregatedFrom, 1)
-	require.Equal(t, "administrator-base", admin.Status.AggregatedFrom[0].ID)
+	require.Empty(t, admin.EffectiveScopes().Organization)
+	require.Empty(t, admin.Status.AggregatedFrom)
 
 	available, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1core.ConditionAvailable)
 	require.NoError(t, err)
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, available.Reason)
+}
+
+// TestReconcileInvalidSelectorWritesOnce checks a selector with several bad
+// labels gives the same message every time, so the controller writes status
+// and warns once, not on every reconcile.
+func TestReconcileInvalidSelectorWritesOnce(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole()
+	admin.Spec.AggregationRule.RoleSelectors = []metav1.LabelSelector{{MatchLabels: map[string]string{
+		"a": "1", "b": "2", "c": "3", "d": "4", "e": "5", "f": "6",
+	}}}
+
+	r, cli, recorder := setup(t, admin)
+
+	reconcileRole(t, r, "administrator")
+
+	before := getRole(t, cli, "administrator").ResourceVersion
+
+	require.Len(t, drain(recorder), 1)
+
+	for range 30 {
+		reconcileRole(t, r, "administrator")
+	}
+
+	require.Equal(t, before, getRole(t, cli, "administrator").ResourceVersion, "status written again")
+	require.Empty(t, drain(recorder))
+}
+
+// TestReconcileFirstStatusComparesWithBootstrap checks the first status write
+// is compared with what holders held before it, the ACL build's bootstrap
+// scopes, so it records no change when there is none.
+func TestReconcileFirstStatusComparesWithBootstrap(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole()
+	admin.Spec.AggregationRule.RoleRefs = []string{"administrator-base"}
+
+	base := newRole("administrator-base", nil, unikornv1.RoleSpec{
+		Protected: true,
+		Scopes: unikornv1.RoleScopes{
+			Organization: []unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		},
+	})
+
+	r, _, recorder := setup(t, admin, base)
+
+	reconcileRole(t, r, "administrator")
+
+	for _, e := range drain(recorder) {
+		require.NotContains(t, e, EventReasonEffectiveScopesChanged)
+	}
+}
+
+// TestReconcileChangeIgnoresGlobalScopesInStatus checks global scopes someone
+// wrote into status, which nobody reads, are no change.
+func TestReconcileChangeIgnoresGlobalScopesInStatus(t *testing.T) {
+	t.Parallel()
+
+	r, cli, recorder := setup(t, adminRole(), fleetOperator())
+
+	reconcileRole(t, r, "administrator")
+	drain(recorder)
+
+	admin := getRole(t, cli, "administrator")
+	admin.Status.EffectiveScopes.Global = []unikornv1.RoleScope{{Name: "svc:tampered", Operations: []unikornv1.Operation{unikornv1.Delete}}}
+	require.NoError(t, cli.Status().Update(t.Context(), admin))
+
+	reconcileRole(t, r, "administrator")
+
+	require.Nil(t, getRole(t, cli, "administrator").Status.EffectiveScopes.Global)
+	require.Empty(t, drain(recorder))
 }
 
 func TestStuckWarningIsCapped(t *testing.T) {
