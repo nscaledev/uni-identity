@@ -121,6 +121,17 @@ func TestListEmptyCatalogueMarshalsAsAnEmptyArray(t *testing.T) {
 	require.JSONEq(t, "[]", string(body))
 }
 
+// adminBase is the protected base role of administrator, with the ID and
+// name the chart gives it.
+func adminBase() *unikornv1.Role {
+	base := newRole(unikornv1.ChartRoleID("administrator-base"), true, []unikornv1.RoleScope{
+		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+	base.Labels["unikorn-cloud.org/name"] = "administrator-base"
+
+	return base
+}
+
 func adminRole(effective []unikornv1.RoleScope, sources ...unikornv1.RoleAggregationSource) *unikornv1.Role {
 	role := newRole("administrator", false, nil)
 	role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{FlattenToOrganization: true}
@@ -268,9 +279,7 @@ func TestListUnreconciledAggregatingRoleHoldsNothing(t *testing.T) {
 func TestListUnreconciledAggregatingRoleReportsBootstrapScopes(t *testing.T) {
 	t.Parallel()
 
-	base := newRole("administrator-base", true, []unikornv1.RoleScope{
-		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
-	})
+	base := adminBase()
 
 	admin := newRole("administrator", false, nil)
 	admin.Spec.AggregationRule = &unikornv1.RoleAggregationRule{RoleRefs: []string{base.Name}, FlattenToOrganization: true}
@@ -289,9 +298,7 @@ func TestListUnreconciledAggregatingRoleReportsBootstrapScopes(t *testing.T) {
 func TestListHidesProtectedSources(t *testing.T) {
 	t.Parallel()
 
-	base := newRole("administrator-base", true, []unikornv1.RoleScope{
-		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
-	})
+	base := adminBase()
 	base.Annotations = map[string]string{"unikorn-cloud.org/description": "internal: do not expose"}
 
 	fleet := newRole("fleet-operator", false, []unikornv1.RoleScope{
