@@ -95,14 +95,13 @@ The two CI rows run the suite with `aggregation.builtinRoles` on and off. The
 role aggregation specs skip when `administrator` is not aggregating, and one
 spec checks the built-in roles are plain. With it on, `install` waits (120 s)
 for the four built-in Roles to be `Available` before it prints the `.env`
-fragment, so fixtures don't race the role controller.
+fragment, so a stuck built-in role fails the install early.
 
 Before turning `aggregation.builtinRoles` on in an environment:
 
-- `unikorn-role-controller` must be Ready. It writes the built-in roles'
-  effective scopes; without it they hold nothing.
 - Alert on a Role with `Grantable` or `Available` False, and on the role
-  controller being down.
+  controller being down. The server works out what roles hold live; the
+  controller only reports it, so without it a stuck role goes unseen.
 
 ## Composability example
 

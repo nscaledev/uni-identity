@@ -120,7 +120,7 @@ reader ──┬─> auditor ──┐
 ```
 
 The role names, and so the role IDs every group stores, are the same either way. Turn it on
-only after a release with the new Role CRD, the role controller and a server that reads
+only after a release with the new Role CRD, the role controller and a server that computes
 effective scopes is fully rolled out: an old CRD drops `aggregationRule`, and an old server
 reads `spec.scopes`, and either leaves the built-in roles holding nothing. On a Helm upgrade
 the chart refuses to render with it on while the installed CRD lacks `aggregationRule`.
@@ -223,7 +223,7 @@ administrator ─┬─ auditor ─── reader
 is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from the parsed
 chart values for every ordered role pair, asserting each allowed edge and rejecting every
 non-edge. It runs on effective scopes: the test computes aggregation over the chart's roles
-with `pkg/aggregation`, as the role controller does in a cluster.
+with `pkg/aggregation`, as the identity server does live.
 
 ## Actor Model
 

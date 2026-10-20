@@ -66,8 +66,9 @@ projectController:
       cpu: 100m
       memory: 100Mi
 
-# Role controller specific configuration.  It writes the effective scopes of
-# aggregating roles; see pkg/controllers/role/README.md.
+# Role controller specific configuration.  It records the effective scopes of
+# aggregating roles in status, for people to read; the server works them out
+# live.  See pkg/controllers/role/README.md.
 roleController:
   # Allows override of the image.
   image:
@@ -620,14 +621,13 @@ aggregation:
   # Make administrator, auditor, user and reader aggregating roles.  Off, they
   # render as on a chart without aggregation (scopes inline, no labels).
   # Turn it on in a later sync than the release that ships the Role CRD, the
-  # role controller and the server that reads effective scopes, once that
+  # role controller and the server that computes effective scopes, once that
   # release is fully rolled out: an old CRD drops aggregationRule and an old
   # server reads spec.scopes, and either leaves every holder with nothing.
   # On a helm upgrade the chart checks the installed CRD and refuses to render.
-  # Turn it on only once unikorn-role-controller is Ready: the controller
-  # writes the effective scopes, so until it runs the built-in roles hold
-  # nothing.  Alert on a Role with Grantable or Available False, and on the
-  # controller being down, before turning it on.
+  # Alert on a Role with Grantable or Available False, and on
+  # unikorn-role-controller being down, before turning it on: the controller
+  # is what reports a stuck role.
   # Must be a bool: a string "false" fails the render.
   builtinRoles: false
 

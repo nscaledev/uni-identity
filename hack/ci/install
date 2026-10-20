@@ -163,9 +163,9 @@ for i in $(seq 1 60); do
 done
 
 # ── Wait for the built-in roles to aggregate ──────────────────────────────────
-# With aggregation.builtinRoles on, the built-in roles hold nothing until the
-# role controller has written their effective scopes, so fixtures and tests
-# created before that would race it.
+# With aggregation.builtinRoles on, check the role controller reports every
+# built-in role Available: a stuck role cannot be granted.  The server works
+# out what roles hold live, so fixtures do not depend on this.
 BUILTIN_AGGREGATE=$(helm get values "${RELEASE_NAME}" -n "${NAMESPACE}" --all -o json | jq -r '.aggregation.builtinRoles // false')
 if [[ "${BUILTIN_AGGREGATE}" == true ]]; then
   echo "==> Waiting for the built-in roles to be Available..." >&2
