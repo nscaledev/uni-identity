@@ -58,6 +58,18 @@ func newRole(id string, opts ...roleOption) *unikornv1.Role {
 	return role
 }
 
+// adminID is the ID the chart gives administrator.
+var adminID = unikornv1.ChartRoleID("administrator") //nolint:gochecknoglobals
+
+// chartRole makes a role with the ID the chart gives its display name, as an
+// aggregating role must have to use its base role.
+func chartRole(name string, opts ...roleOption) *unikornv1.Role {
+	role := newRole(name, opts...)
+	role.Name = unikornv1.ChartRoleID(name)
+
+	return role
+}
+
 // baseID is the ID the chart gives the base role of the named role.
 func baseID(name string) string {
 	return unikornv1.ChartRoleID(name + unikornv1.BaseRoleSuffix)
@@ -160,12 +172,12 @@ func TestBaseRefAndSelector(t *testing.T) {
 
 	roles := catalogue(
 		baseRole("administrator", org(scope("identity:groups", unikornv1.Create, unikornv1.Read))),
-		newRole("administrator", aggregates(true, baseID("administrator"))),
+		chartRole("administrator", aggregates(true, baseID("administrator"))),
 		newRole("fleet-operator", aggregateTo("administrator"), org(scope("radar:topology", unikornv1.Read))),
 		newRole("unlabelled", org(scope("radar:secret", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(roles)["administrator"]
+	result := aggregation.Compute(roles)[adminID]
 	require.NotNil(t, result)
 
 	require.Equal(t, []unikornv1.RoleScope{
@@ -272,11 +284,11 @@ func TestMissingRoleRefGivesNothing(t *testing.T) {
 	base := unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}}
 
 	roles := catalogue(
-		newRole("administrator", aggregates(true, baseID("administrator")), lastStatus(base), recorded(baseID("administrator"), base)),
+		chartRole("administrator", aggregates(true, baseID("administrator")), lastStatus(base), recorded(baseID("administrator"), base)),
 		newRole("fleet-operator", aggregateTo("administrator"), org(scope("radar:topology", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(roles)["administrator"]
+	result := aggregation.Compute(roles)[adminID]
 
 	require.Equal(t, []unikornv1.RoleScope{scope("radar:topology", unikornv1.Read)}, result.EffectiveScopes.Organization)
 	require.Equal(t, []string{"fleet-operator"}, sourceIDs(result))
@@ -298,7 +310,7 @@ func TestStuckRoleDropsRemovedScopes(t *testing.T) {
 	}}
 
 	roles := catalogue(
-		newRole("administrator", aggregates(true, baseID("administrator"), "typo"), lastStatus(last),
+		chartRole("administrator", aggregates(true, baseID("administrator"), "typo"), lastStatus(last),
 			recorded("fleet-operator", unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("svc:danger", unikornv1.Delete)}}),
 			recorded("old-service", unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("svc:deleted", unikornv1.Read)}}),
 		),
@@ -306,7 +318,7 @@ func TestStuckRoleDropsRemovedScopes(t *testing.T) {
 		newRole("fleet-operator", aggregateTo("administrator"), org(scope("svc:safe", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(roles)["administrator"]
+	result := aggregation.Compute(roles)[adminID]
 
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, result.Available.Reason)
 	require.Equal(t, []unikornv1.RoleScope{
@@ -380,10 +392,10 @@ func TestGlobalScopesFromRefsDropped(t *testing.T) {
 
 	roles := catalogue(
 		baseRole("administrator", global(scope("svc:everything", unikornv1.Delete)), org(scope("svc:org", unikornv1.Read))),
-		newRole("administrator", aggregates(true, baseID("administrator"))),
+		chartRole("administrator", aggregates(true, baseID("administrator"))),
 	)
 
-	result := aggregation.Compute(roles)["administrator"]
+	result := aggregation.Compute(roles)[adminID]
 
 	require.Empty(t, result.EffectiveScopes.Global)
 	require.Equal(t, []unikornv1.RoleScope{scope("svc:org", unikornv1.Read)}, result.EffectiveScopes.Organization)
@@ -595,11 +607,11 @@ func TestUnresolvedAggregatingRoleIsNotGrantable(t *testing.T) {
 
 	roles := catalogue(
 		baseRole("administrator", org(scope("identity:groups", unikornv1.Read))),
-		newRole("administrator", refsOnly(baseID("administrator")), org(scope("identity:groups", unikornv1.Read)),
+		chartRole("administrator", refsOnly(baseID("administrator")), org(scope("identity:groups", unikornv1.Read)),
 			availableStatus(unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}})),
 	)
 
-	admin := roles["administrator"]
+	admin := roles[adminID]
 	organizationID := ids.MustParseOrganizationID(testOrganizationID)
 	holder := holderACL(t, endpoint("identity:groups", openapi.Read))
 
@@ -623,11 +635,11 @@ func TestStatusConditionsAreNotTrusted(t *testing.T) {
 	roles := catalogue(
 		baseRole("administrator", org(scope("identity:groups", unikornv1.Read))),
 		newRole("stuck", refsOnly("typo"), availableStatus(unikornv1.RoleScopes{})),
-		newRole("working", refsOnly(baseID("working"))),
+		chartRole("working", refsOnly(baseID("working"))),
 		baseRole("working", org(scope("identity:groups", unikornv1.Read))),
 	)
 
-	roles["working"].Status.Conditions = []metav1.Condition{{
+	roles[unikornv1.ChartRoleID("working")].Status.Conditions = []metav1.Condition{{
 		Type:   string(unikornv1core.ConditionAvailable),
 		Status: metav1.ConditionFalse,
 		Reason: unikornv1.RoleReasonMissingRoleRef,
@@ -636,7 +648,7 @@ func TestStatusConditionsAreNotTrusted(t *testing.T) {
 	aggregation.Resolve(roles)
 
 	require.False(t, roles["stuck"].AggregationReady())
-	require.True(t, roles["working"].AggregationReady())
+	require.True(t, roles[unikornv1.ChartRoleID("working")].AggregationReady())
 }
 
 // TestStuckRoleIsNeverGrantable checks a stuck role cannot be granted, even
@@ -649,12 +661,12 @@ func TestStuckRoleIsNeverGrantable(t *testing.T) {
 
 	roles := catalogue(
 		baseRole("administrator", org(kept.Organization...)),
-		newRole("administrator", refsOnly(baseID("administrator"), "typo"), availableStatus(kept)),
+		chartRole("administrator", refsOnly(baseID("administrator"), "typo"), availableStatus(kept)),
 	)
 
 	aggregation.Resolve(roles)
 
-	admin := roles["administrator"]
+	admin := roles[adminID]
 	require.Equal(t, kept.Organization, admin.EffectiveScopes().Organization)
 	require.False(t, admin.AggregationReady())
 
@@ -708,12 +720,12 @@ func TestResolveGivesConvertedRoleItsBase(t *testing.T) {
 
 	roles := catalogue(
 		baseRole("administrator", org(scope("identity:groups", unikornv1.Create)), global(scope("svc:everything", unikornv1.Read))),
-		newRole("administrator", aggregates(true, baseID("administrator"))),
+		chartRole("administrator", aggregates(true, baseID("administrator"))),
 	)
 
 	aggregation.Resolve(roles)
 
-	admin := roles["administrator"]
+	admin := roles[adminID]
 	scopes := admin.EffectiveScopes()
 	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create)}, scopes.Organization)
 	require.Empty(t, scopes.Global)
@@ -798,10 +810,10 @@ func TestSourceHashIgnoresGlobalScopes(t *testing.T) {
 	compute := func(global ...unikornv1.RoleScope) *aggregation.Result {
 		roles := catalogue(
 			baseRole("administrator", org(scope("identity:groups", unikornv1.Read)), func(r *unikornv1.Role) { r.Spec.Scopes.Global = global }),
-			newRole("administrator", aggregates(true, baseID("administrator"))),
+			chartRole("administrator", aggregates(true, baseID("administrator"))),
 		)
 
-		return aggregation.Compute(roles)["administrator"]
+		return aggregation.Compute(roles)[adminID]
 	}
 
 	without := compute()

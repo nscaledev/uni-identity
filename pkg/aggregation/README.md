@@ -9,16 +9,23 @@ each), the `Available` condition, and the labelled roles the controller's
 status.
 
 `Resolve` runs `Compute` on a map of roles and sets each aggregating role's
-`Computed` field in place. `ResolveRole` does the same for one loaded role, by
-listing its namespace; a role that does not aggregate is left alone, with no
-list. `Computed` is never stored or sent.
+`Computed` field in place. A `Resolver` does the same for roles loaded one
+at a time in one request: it lists the namespace once, the first time an
+aggregating role needs it, and resolves each role's own copy against that
+list. A role that does not aggregate is left alone, with no list. On a list
+error the role holds nothing and is not ready, and the error is returned.
+`ResolveRole` is a one-role `Resolver`. `Computed` is never stored or sent.
+
+Each aggregating role's sources are gathered into one scope set and sorted
+once, so `Compute` is linear in the number of sources (`BenchmarkResolve`:
+300 roles, 5 aggregating).
 
 Callers:
 
 - the ACL build in [`pkg/rbac`](../rbac/README.md), which resolves every role
   it lists
-- the group and membership handlers, which resolve a role before
-  `rbac.AllowRole`
+- the group and membership handlers, which resolve the roles being granted
+  through one `Resolver` per request before `rbac.AllowRole`
 - the [role controller](../controllers/role/README.md), which writes the
   result to status as a record for people
 - tests that check the chart's role catalogue

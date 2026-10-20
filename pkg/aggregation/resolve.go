@@ -19,6 +19,7 @@ package aggregation
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
@@ -40,10 +41,10 @@ func Resolve(roles map[string]*unikornv1.Role) {
 			continue
 		}
 
-		// A role being deleted, so not computed, holds nothing.
+		// A role being deleted is not computed, so it holds nothing.
 		computed := &unikornv1.ComputedAggregation{}
 
-		if result, ok := results[id]; ok {
+		if result := results[id]; result != nil {
 			computed.Scopes = result.EffectiveScopes
 			computed.Available = result.Available.Status == corev1.ConditionTrue
 			computed.Sources = result.AggregatedFrom
@@ -56,24 +57,57 @@ func Resolve(roles map[string]*unikornv1.Role) {
 // ResolveRole resolves one role in place, for a caller that loaded just that
 // role.  A role that does not aggregate is left alone; for one that does,
 // every role in its namespace is listed, because any of them can be a source.
+// A caller resolving several roles uses a Resolver, which lists once.
 func ResolveRole(ctx context.Context, cli client.Client, role *unikornv1.Role) error {
+	return NewResolver(cli, role.Namespace).Resolve(ctx, role)
+}
+
+// Resolver resolves roles from one namespace for one request.  It lists the
+// namespace's roles the first time an aggregating role needs them, and uses
+// that list for every later role, so a request that checks several roles
+// lists once.  A role that does not aggregate never causes a list.  It is not
+// safe for use by more than one goroutine.
+type Resolver struct {
+	cli       client.Client
+	namespace string
+	roles     map[string]*unikornv1.Role
+}
+
+// NewResolver returns a Resolver for roles in namespace.
+func NewResolver(cli client.Client, namespace string) *Resolver {
+	return &Resolver{cli: cli, namespace: namespace}
+}
+
+// Resolve resolves one role in place.  A role that does not aggregate is left
+// alone.  For one that does, the caller's copy is resolved against the listed
+// roles.  If the roles cannot be listed the role is set to hold nothing and
+// not be ready, and the error is returned: it never keeps a Computed value it
+// had before.
+func (r *Resolver) Resolve(ctx context.Context, role *unikornv1.Role) error {
 	if !role.IsAggregating() {
 		return nil
 	}
 
-	list := &unikornv1.RoleList{}
+	if r.roles == nil {
+		list := &unikornv1.RoleList{}
 
-	if err := cli.List(ctx, list, client.InNamespace(role.Namespace)); err != nil {
-		return fmt.Errorf("listing roles to resolve role %s: %w", role.Name, err)
+		if err := r.cli.List(ctx, list, client.InNamespace(r.namespace)); err != nil {
+			role.Computed = &unikornv1.ComputedAggregation{}
+
+			return fmt.Errorf("listing roles to resolve role %s: %w", role.Name, err)
+		}
+
+		roles := make(map[string]*unikornv1.Role, len(list.Items))
+
+		for i := range list.Items {
+			roles[list.Items[i].Name] = &list.Items[i]
+		}
+
+		r.roles = roles
 	}
 
-	roles := make(map[string]*unikornv1.Role, len(list.Items))
-
-	for i := range list.Items {
-		roles[list.Items[i].Name] = &list.Items[i]
-	}
-
-	// Use the caller's copy of the role itself.
+	// Use the caller's copy of the role itself, without changing the list.
+	roles := maps.Clone(r.roles)
 	roles[role.Name] = role
 
 	Resolve(roles)

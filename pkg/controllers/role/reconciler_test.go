@@ -55,8 +55,13 @@ func newRole(id string, labels map[string]string, spec unikornv1.RoleSpec) *unik
 	}
 }
 
+// adminID is the ID the chart gives administrator.
+var adminID = unikornv1.ChartRoleID("administrator") //nolint:gochecknoglobals
+
+// adminRole is the aggregating administrator role, with the ID and name the
+// chart gives it.
 func adminRole() *unikornv1.Role {
-	return newRole("administrator", nil, unikornv1.RoleSpec{
+	admin := newRole(adminID, nil, unikornv1.RoleSpec{
 		AggregationRule: &unikornv1.RoleAggregationRule{
 			RoleSelectors: []metav1.LabelSelector{
 				{MatchLabels: map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}},
@@ -64,6 +69,9 @@ func adminRole() *unikornv1.Role {
 			FlattenToOrganization: true,
 		},
 	})
+	admin.Labels[coreconstants.NameLabel] = "administrator"
+
+	return admin
 }
 
 // adminBaseID is the ID the chart gives administrator-base.
@@ -143,9 +151,9 @@ func TestReconcileWritesStatusAndRecordsChange(t *testing.T) {
 
 	r, cli, recorder := setup(t, adminRole(), fleetOperator())
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	admin := getRole(t, cli, "administrator")
+	admin := getRole(t, cli, adminID)
 
 	require.Equal(t, []unikornv1.RoleScope{
 		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
@@ -177,14 +185,14 @@ func TestReconcileIsIdempotent(t *testing.T) {
 
 	r, cli, recorder := setup(t, adminRole(), fleetOperator())
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 	drain(recorder)
 
-	before := getRole(t, cli, "administrator").ResourceVersion
+	before := getRole(t, cli, adminID).ResourceVersion
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	require.Equal(t, before, getRole(t, cli, "administrator").ResourceVersion, "no write when nothing changed")
+	require.Equal(t, before, getRole(t, cli, adminID).ResourceVersion, "no write when nothing changed")
 	require.Empty(t, drain(recorder))
 }
 
@@ -193,9 +201,9 @@ func TestReconcileRecordsSourceScopeChange(t *testing.T) {
 
 	r, cli, recorder := setup(t, adminRole(), fleetOperator())
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	oldHash := getRole(t, cli, "administrator").Status.AggregatedFrom[0].ScopesHash
+	oldHash := getRole(t, cli, adminID).Status.AggregatedFrom[0].ScopesHash
 
 	drain(recorder)
 
@@ -203,9 +211,9 @@ func TestReconcileRecordsSourceScopeChange(t *testing.T) {
 	fleet.Spec.Scopes.Organization[0].Operations = []unikornv1.Operation{unikornv1.Read, unikornv1.Update}
 	require.NoError(t, cli.Update(t.Context(), fleet))
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	admin := getRole(t, cli, "administrator")
+	admin := getRole(t, cli, adminID)
 	newHash := admin.Status.AggregatedFrom[0].ScopesHash
 	require.NotEqual(t, oldHash, newHash)
 
@@ -221,14 +229,14 @@ func TestReconcileRemovedSourceShrinksAdmin(t *testing.T) {
 
 	r, cli, recorder := setup(t, adminRole(), fleetOperator())
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 	drain(recorder)
 
 	require.NoError(t, cli.Delete(t.Context(), fleetOperator()))
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	admin := getRole(t, cli, "administrator")
+	admin := getRole(t, cli, adminID)
 	require.NotNil(t, admin.Status.EffectiveScopes)
 	require.Empty(t, admin.Status.EffectiveScopes.Organization)
 	require.Empty(t, admin.Status.AggregatedFrom)
@@ -275,7 +283,7 @@ func TestWatchEnqueuesEveryAggregatingRole(t *testing.T) {
 		names = append(names, request.Name)
 	}
 
-	require.ElementsMatch(t, []string{"fleet-operator", "administrator", "user"}, names)
+	require.ElementsMatch(t, []string{"fleet-operator", adminID, "user"}, names)
 	require.NotContains(t, strings.Join(names, ","), "unrelated")
 }
 
@@ -287,18 +295,18 @@ func TestReconcileWarnsOnceWhenStuck(t *testing.T) {
 
 	r, cli, recorder := setup(t, admin)
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
 	events := drain(recorder)
 	require.Len(t, events, 1)
 	require.Contains(t, events[0], "Warning")
 	require.Contains(t, events[0], unikornv1.RoleReasonMissingRoleRef)
 
-	available, err := unikornv1core.GetCondition(getRole(t, cli, "administrator").Status.Conditions, unikornv1core.ConditionAvailable)
+	available, err := unikornv1core.GetCondition(getRole(t, cli, adminID).Status.Conditions, unikornv1core.ConditionAvailable)
 	require.NoError(t, err)
-	require.Equal(t, getRole(t, cli, "administrator").Generation, available.ObservedGeneration)
+	require.Equal(t, getRole(t, cli, adminID).Generation, available.ObservedGeneration)
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
 	require.Empty(t, drain(recorder), "a role that stays stuck does not warn again")
 }
@@ -315,18 +323,18 @@ func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 
 	r, cli, _ := setup(t, admin, base, fleetOperator())
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	require.Equal(t, base.Spec.Scopes.Organization, getRole(t, cli, "administrator").Status.EffectiveScopes.Organization[:1])
+	require.Equal(t, base.Spec.Scopes.Organization, getRole(t, cli, adminID).Status.EffectiveScopes.Organization[:1])
 
 	require.NoError(t, cli.Delete(t.Context(), base))
 	require.NoError(t, cli.Delete(t.Context(), fleetOperator()))
 
 	// Twice, so the second run reads the status the first one wrote.
-	reconcileRole(t, r, "administrator")
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
+	reconcileRole(t, r, adminID)
 
-	admin = getRole(t, cli, "administrator")
+	admin = getRole(t, cli, adminID)
 
 	require.NotNil(t, admin.Status.EffectiveScopes)
 	require.Empty(t, admin.Status.EffectiveScopes.Organization)
@@ -350,17 +358,17 @@ func TestReconcileInvalidSelectorWritesOnce(t *testing.T) {
 
 	r, cli, recorder := setup(t, admin)
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	before := getRole(t, cli, "administrator").ResourceVersion
+	before := getRole(t, cli, adminID).ResourceVersion
 
 	require.Len(t, drain(recorder), 1)
 
 	for range 30 {
-		reconcileRole(t, r, "administrator")
+		reconcileRole(t, r, adminID)
 	}
 
-	require.Equal(t, before, getRole(t, cli, "administrator").ResourceVersion, "status written again")
+	require.Equal(t, before, getRole(t, cli, adminID).ResourceVersion, "status written again")
 	require.Empty(t, drain(recorder))
 }
 
@@ -379,17 +387,17 @@ func TestReconcileInvalidLabelKeyWritesOnce(t *testing.T) {
 
 	r, cli, recorder := setup(t, admin)
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	before := getRole(t, cli, "administrator").ResourceVersion
+	before := getRole(t, cli, adminID).ResourceVersion
 
 	require.Len(t, drain(recorder), 1)
 
 	for range 30 {
-		reconcileRole(t, r, "administrator")
+		reconcileRole(t, r, adminID)
 	}
 
-	require.Equal(t, before, getRole(t, cli, "administrator").ResourceVersion, "status written again")
+	require.Equal(t, before, getRole(t, cli, adminID).ResourceVersion, "status written again")
 	require.Empty(t, drain(recorder))
 }
 
@@ -404,7 +412,7 @@ func TestReconcileFirstStatusRecordsEverySource(t *testing.T) {
 
 	r, _, recorder := setup(t, admin, adminBase(), fleetOperator())
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
 	events := drain(recorder)
 	require.Len(t, events, 2)
@@ -430,9 +438,9 @@ func TestReconcileWritesGrantableFalse(t *testing.T) {
 
 	r, cli, recorder := setup(t, adminRole(), global)
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	conditions := getRole(t, cli, "administrator").Status.Conditions
+	conditions := getRole(t, cli, adminID).Status.Conditions
 
 	available, err := unikornv1core.GetCondition(conditions, unikornv1core.ConditionAvailable)
 	require.NoError(t, err)
@@ -448,7 +456,7 @@ func TestReconcileWritesGrantableFalse(t *testing.T) {
 	require.Len(t, events, 1)
 	require.Contains(t, events[0], "Warning "+unikornv1.RoleReasonNotGrantable)
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 	require.Empty(t, drain(recorder))
 }
 
@@ -459,16 +467,16 @@ func TestReconcileChangeIgnoresGlobalScopesInStatus(t *testing.T) {
 
 	r, cli, recorder := setup(t, adminRole(), fleetOperator())
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 	drain(recorder)
 
-	admin := getRole(t, cli, "administrator")
+	admin := getRole(t, cli, adminID)
 	admin.Status.EffectiveScopes.Global = []unikornv1.RoleScope{{Name: "svc:tampered", Operations: []unikornv1.Operation{unikornv1.Delete}}}
 	require.NoError(t, cli.Status().Update(t.Context(), admin))
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
-	require.Nil(t, getRole(t, cli, "administrator").Status.EffectiveScopes.Global)
+	require.Nil(t, getRole(t, cli, adminID).Status.EffectiveScopes.Global)
 	require.Empty(t, drain(recorder))
 }
 
@@ -483,7 +491,7 @@ func TestStuckWarningIsCapped(t *testing.T) {
 
 	r, _, recorder := setup(t, admin)
 
-	reconcileRole(t, r, "administrator")
+	reconcileRole(t, r, adminID)
 
 	events := drain(recorder)
 	require.Len(t, events, 1)
@@ -506,4 +514,55 @@ func TestWatchPassesStatusChanges(t *testing.T) {
 	}
 
 	require.True(t, roleChanged().Update(event.TypedUpdateEvent[*unikornv1.Role]{ObjectOld: old, ObjectNew: updated}))
+}
+
+// TestReconcileDeletingRoleRecordsNothingHeld checks an aggregating role held
+// by a finalizer while it is deleted is recorded as holding nothing, not
+// Available and not grantable, as the server treats it, instead of keeping
+// its last Available record.
+func TestReconcileDeletingRoleRecordsNothingHeld(t *testing.T) {
+	t.Parallel()
+
+	admin := adminRole()
+	admin.Spec.AggregationRule.RoleRefs = []string{adminBaseID}
+	admin.Finalizers = []string{"test.unikorn-cloud.org/hold"}
+
+	r, cli, recorder := setup(t, admin, adminBase(), fleetOperator())
+
+	reconcileRole(t, r, adminID)
+
+	available, err := unikornv1core.GetCondition(getRole(t, cli, adminID).Status.Conditions, unikornv1core.ConditionAvailable)
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionTrue, available.Status)
+
+	drain(recorder)
+
+	require.NoError(t, cli.Delete(t.Context(), getRole(t, cli, adminID)))
+
+	reconcileRole(t, r, adminID)
+
+	deleting := getRole(t, cli, adminID)
+	require.False(t, deleting.DeletionTimestamp.IsZero())
+	require.NotNil(t, deleting.Status.EffectiveScopes)
+	require.Empty(t, deleting.Status.EffectiveScopes.Organization)
+	require.Empty(t, deleting.Status.EffectiveScopes.Project)
+	require.Empty(t, deleting.Status.AggregatedFrom)
+
+	for _, conditionType := range []unikornv1core.ConditionType{unikornv1core.ConditionAvailable, unikornv1.RoleConditionGrantable} {
+		condition, err := unikornv1core.GetCondition(deleting.Status.Conditions, conditionType)
+		require.NoError(t, err)
+		require.Equal(t, metav1.ConditionFalse, condition.Status, conditionType)
+		require.Equal(t, unikornv1.RoleReasonDeleting, condition.Reason, conditionType)
+		require.Equal(t, "role is being deleted, it holds nothing", condition.Message, conditionType)
+	}
+
+	events := drain(recorder)
+	require.Equal(t, 1, strings.Count(strings.Join(events, "\n"), "Warning "), events)
+
+	// Nothing changes on the next run.
+	before := deleting.ResourceVersion
+
+	reconcileRole(t, r, adminID)
+
+	require.Equal(t, before, getRole(t, cli, adminID).ResourceVersion)
 }

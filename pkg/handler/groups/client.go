@@ -394,6 +394,10 @@ func (c *Client) populateGroupPrincipals(ctx context.Context, organization *orga
 func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.OrganizationID, roleIDs, currentRoleIDs []string) ([]string, error) {
 	normalizedRoleIDs := deduplicateStrings(roleIDs)
 
+	// Lists roles at most once for the whole request, and only if a role
+	// being added aggregates.
+	resolver := aggregation.NewResolver(c.client, c.namespace)
+
 	// Validate roles exist.
 	for _, roleID := range normalizedRoleIDs {
 		var resource unikornv1.Role
@@ -410,11 +414,6 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 			return nil, errors.HTTPForbidden("requested role is protected")
 		}
 
-		// An aggregating role is checked on what it holds now.
-		if err := aggregation.ResolveRole(ctx, c.client, &resource); err != nil {
-			return nil, fmt.Errorf("%w: failed to resolve role", err)
-		}
-
 		// Only roles being ADDED are grant-checked.  Re-sending a group's
 		// existing role list (e.g. a rename, or dropping a member) must not
 		// fail on roles the caller could not grant; the escalation guard
@@ -424,6 +423,11 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 		// a new member, are gated separately in validateMemberAdditions.
 		if slices.Contains(currentRoleIDs, roleID) {
 			continue
+		}
+
+		// An aggregating role is checked on what it holds now.
+		if err := resolver.Resolve(ctx, &resource); err != nil {
+			return nil, fmt.Errorf("%w: failed to resolve role", err)
 		}
 
 		// Check that the user is allowed to grant the role, this closes a security

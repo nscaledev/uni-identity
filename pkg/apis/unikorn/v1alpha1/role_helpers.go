@@ -58,6 +58,12 @@ const (
 	RoleReasonGrantable = "Grantable"
 	// RoleReasonNotGrantable means at least one labelled source is not.
 	RoleReasonNotGrantable = "NotGrantable"
+	// RoleReasonNotAvailable means the role is stuck, so it cannot be
+	// granted, whatever its labelled sources are.
+	RoleReasonNotAvailable = "NotAvailable"
+	// RoleReasonDeleting means the role is being deleted.  It holds nothing
+	// and cannot be granted.
+	RoleReasonDeleting = "Deleting"
 )
 
 // AggregateToLabel returns the label a source role carries to be selected by
@@ -94,10 +100,12 @@ func (r *Role) BaseRoleName() string {
 // MayRef tells whether an aggregating role may use source through roleRefs.
 // Any role that is not protected may be used.  A protected role may only be
 // used when it is this role's own base role: its display name is this role's
-// display name plus "-base", and its ID is the one the chart gives that name.
-// Matching the ID stops another protected role being used by copying the
-// base role's name label onto it.  Renaming an aggregating role locks it out
-// of its base role.
+// display name plus "-base", its ID is the one the chart gives that name, and
+// this role's own ID is the one the chart gives its display name.  Matching
+// the source ID stops another protected role being used by copying the base
+// role's name label onto it.  Matching this role's ID stops a decoy role that
+// copies the aggregating role's name label claiming its base role.  Renaming
+// an aggregating role locks it out of its base role.
 //
 // The admission policy in the identity chart is the main guard.  This is
 // defence in depth only: it stops any other aggregating role passing
@@ -105,6 +113,10 @@ func (r *Role) BaseRoleName() string {
 func (r *Role) MayRef(source *Role) bool {
 	if !source.Spec.Protected {
 		return true
+	}
+
+	if r.Name != ChartRoleID(r.DisplayName()) {
+		return false
 	}
 
 	base := r.BaseRoleName()
@@ -177,21 +189,35 @@ func MergeScopes(into, source RoleScopes, flatten bool) RoleScopes {
 // UnionScopes returns the union of two scope lists, sorted by name, with the
 // operations for each name merged and sorted, or nil if both are empty.
 func UnionScopes(a, b []RoleScope) []RoleScope {
-	operations := map[string][]Operation{}
+	set := ScopeSet{}
 
-	for _, list := range [][]RoleScope{a, b} {
-		for _, scope := range list {
-			operations[scope.Name] = append(operations[scope.Name], scope.Operations...)
-		}
+	set.Add(a)
+	set.Add(b)
+
+	return set.List()
+}
+
+// ScopeSet gathers scopes from many lists, so a union of many lists is sorted
+// once, not once per list.
+type ScopeSet map[string][]Operation
+
+// Add adds a list of scopes to the set.
+func (s ScopeSet) Add(scopes []RoleScope) {
+	for _, scope := range scopes {
+		s[scope.Name] = append(s[scope.Name], scope.Operations...)
 	}
+}
 
-	if len(operations) == 0 {
+// List returns the scopes in the set, sorted by name, with the operations for
+// each name sorted and with no repeats, or nil if the set is empty.
+func (s ScopeSet) List() []RoleScope {
+	if len(s) == 0 {
 		return nil
 	}
 
-	out := make([]RoleScope, 0, len(operations))
+	out := make([]RoleScope, 0, len(s))
 
-	for name, ops := range operations {
+	for name, ops := range s {
 		ops = slices.Clone(ops)
 		slices.Sort(ops)
 

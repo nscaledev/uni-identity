@@ -157,7 +157,9 @@ they are now.
 
 `AllowRole` refuses an aggregating role unless it was resolved and is
 `Available` (`Role.AggregationReady()`): a stuck role is never grantable.
-Callers that load one role must call `aggregation.ResolveRole` first.
+Callers that load roles one at a time must resolve them first, through one
+`aggregation.Resolver` per request (or `aggregation.ResolveRole` for a single
+role).
 
 Status, which the [role controller](../controllers/role/README.md) writes, is
 a record for people and is never read here.

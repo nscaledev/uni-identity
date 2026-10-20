@@ -38,17 +38,29 @@ const (
 )
 
 // grantable checks the role can grant every non-protected role labelled for
-// it, using the same AllowRole check the API runs when an org admin grants a
-// role.  A labelled role that is in use is held, so it passes unless it is in
-// a cycle, where it holds what its cycle's outside sources give.  The useful
-// failure is a labelled role that was skipped for having global scopes, which
-// no org admin can ever grant.  The check runs over the real roles in each environment, so it sees roles from every chart
-// and per-environment config, which a chart unit test cannot.
+// it.  A role that is not Available is never grantable itself (see
+// Role.AggregationReady), so it is recorded as not grantable without the
+// check: the record never says Grantable on a role the server refuses.
+//
+// Otherwise it runs the same AllowRole check the API runs when an org admin
+// grants a role.  A labelled role that is in use is held, so it passes.  The
+// useful failure is a labelled plain role that was skipped for having global
+// scopes, which no org admin can ever grant.  The check runs over the real
+// roles in each environment, so it sees roles from every chart and
+// per-environment config, which a chart unit test cannot.
 //
 // The holder ACL puts project scopes in one linked project, as a group member
 // with a linked project gets them.  A holder of a non-flattening role whose
 // group has no linked project can grant less than this says.
 func grantable(ctx context.Context, result *aggregation.Result) aggregation.Condition {
+	if result.Available.Status != corev1.ConditionTrue {
+		return aggregation.Condition{
+			Status:  corev1.ConditionFalse,
+			Reason:  unikornv1.RoleReasonNotAvailable,
+			Message: "role is stuck, it cannot be granted",
+		}
+	}
+
 	ctx = rbac.NewContext(ctx, holderACL(result.EffectiveScopes))
 	organizationID := ids.MustParseOrganizationID(grantCheckOrganizationID)
 

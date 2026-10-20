@@ -73,11 +73,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{RequeueAfter: coreconstants.DefaultYieldTimeout}, nil
 	}
 
-	if !role.DeletionTimestamp.IsZero() {
+	// A plain role being deleted has no record to keep.
+	if !role.DeletionTimestamp.IsZero() && !role.IsAggregating() {
 		return reconcile.Result{}, nil
 	}
 
-	status, err := r.desiredStatus(ctx, role)
+	status, err := r.statusFor(ctx, role)
 	if err != nil {
 		log.Error(err, "failed to compute role status")
 
@@ -94,6 +95,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	role.Status = *status
 
 	if err := r.client.Status().Update(ctx, role); err != nil {
+		// A role that is gone needs no record.
+		if kerrors.IsNotFound(err) {
+			return reconcile.Result{}, nil
+		}
+
 		// Conflicts and API errors are transient: retry at a fixed interval.
 		log.Info("failed to update role status, retrying", "error", err.Error())
 
@@ -103,6 +109,38 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	r.recordChanges(ctx, role, previous, oldScopes)
 
 	return reconcile.Result{}, nil
+}
+
+// statusFor returns what the role's status should be, whether or not it is
+// being deleted.
+func (r *Reconciler) statusFor(ctx context.Context, role *unikornv1.Role) (*unikornv1.RoleStatus, error) {
+	if !role.DeletionTimestamp.IsZero() {
+		return deletingStatus(role), nil
+	}
+
+	return r.desiredStatus(ctx, role)
+}
+
+// deletingStatus returns the status of an aggregating role that is being
+// deleted, held by a finalizer.  The server gives it nothing (a role being
+// deleted is never computed), so the record says so: it holds nothing, is
+// not Available and cannot be granted.
+func deletingStatus(role *unikornv1.Role) *unikornv1.RoleStatus {
+	status := &unikornv1.RoleStatus{
+		EffectiveScopes: &unikornv1.RoleScopes{},
+		Conditions:      slices.Clone(role.Status.Conditions),
+	}
+
+	deleting := aggregation.Condition{
+		Status:  corev1.ConditionFalse,
+		Reason:  unikornv1.RoleReasonDeleting,
+		Message: "role is being deleted, it holds nothing",
+	}
+
+	setCondition(status, role.Generation, unikornv1core.ConditionAvailable, deleting)
+	setCondition(status, role.Generation, unikornv1.RoleConditionGrantable, deleting)
+
+	return status
 }
 
 // desiredStatus returns what the role's status should be.  Status is a
@@ -216,11 +254,16 @@ func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, pr
 // or Grantable turns False, or changes reason or message while False, so a
 // stuck role is loud.  A stuck role holds only what its working sources give,
 // so its admins may have just lost scopes, and the scope change record alone
-// would not say why.
+// would not say why.  Grantable False because Available is False is not
+// warned again: the Available warning already says why.
 func (r *Reconciler) recordConditionChanges(ctx context.Context, role *unikornv1.Role, previous *unikornv1.RoleStatus) {
 	for _, t := range []unikornv1core.ConditionType{unikornv1core.ConditionAvailable, unikornv1.RoleConditionGrantable} {
 		current := meta.FindStatusCondition(role.Status.Conditions, string(t))
 		if current == nil || current.Status != metav1.ConditionFalse {
+			continue
+		}
+
+		if followsAvailable(t, current) {
 			continue
 		}
 
@@ -233,6 +276,13 @@ func (r *Reconciler) recordConditionChanges(ctx context.Context, role *unikornv1
 
 		log.FromContext(ctx).Info("role condition is false", "condition", t, "reason", current.Reason, "message", current.Message)
 	}
+}
+
+// followsAvailable tells whether a condition is Grantable False only because
+// Available is False.
+func followsAvailable(t unikornv1core.ConditionType, condition *metav1.Condition) bool {
+	return t == unikornv1.RoleConditionGrantable &&
+		(condition.Reason == unikornv1.RoleReasonNotAvailable || condition.Reason == unikornv1.RoleReasonDeleting)
 }
 
 type sourceChange struct {

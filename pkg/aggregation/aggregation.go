@@ -209,9 +209,11 @@ func matchesAny(selectors []labels.Selector, role *unikornv1.Role) bool {
 }
 
 // addMatch records one selector match.  Protected roles are never used.
-// Roles with global scopes are not used either, but are still checked by
-// the grantable check, which then names them: no org admin can grant them.
-// A match that is already a source through roleRefs is not noted as skipped.
+// Plain roles with global scopes are not used either, but are still checked
+// by the grantable check, which then names them: no org admin can grant
+// them.  An aggregating role holds no global scopes, whatever its own
+// spec.scopes says, so it is judged on what it holds.  A match that is
+// already a source through roleRefs is not noted as skipped.
 func (c *computer) addMatch(p *plan, id string) {
 	role := c.roles[id]
 	byRef := slices.Contains(p.sources, id)
@@ -221,7 +223,7 @@ func (c *computer) addMatch(p *plan, id string) {
 		if !byRef {
 			p.skipped = append(p.skipped, role.DisplayName()+" (protected)")
 		}
-	case len(role.Spec.Scopes.Global) > 0:
+	case !role.IsAggregating() && len(role.Spec.Scopes.Global) > 0:
 		if !byRef {
 			p.skipped = append(p.skipped, role.DisplayName()+" (has global scopes)")
 		}
@@ -427,14 +429,30 @@ func (c *computer) resolve(id string) unikornv1.RoleScopes {
 		Available: c.available(id),
 	}
 
-	effective := unikornv1.RoleScopes{}
+	// Gather every source into one set per scope level and sort once at the
+	// end: merging source by source sorts the whole result again for each
+	// source, which is quadratic in the number of sources.  Global scopes
+	// are never gathered.
+	organization := unikornv1.ScopeSet{}
+	projects := unikornv1.ScopeSet{}
 
 	for _, source := range c.inputs(id) {
-		contributed := unikornv1.MergeScopes(unikornv1.RoleScopes{}, c.scopesOf(source), false)
+		contributed := contribution(c.scopesOf(source))
 
-		effective = unikornv1.MergeScopes(effective, contributed, flatten)
+		organization.Add(contributed.Organization)
+
+		if flatten {
+			organization.Add(contributed.Project)
+		} else {
+			projects.Add(contributed.Project)
+		}
 
 		result.AggregatedFrom = append(result.AggregatedFrom, describe(c.roles[source], contributed))
+	}
+
+	effective := unikornv1.RoleScopes{
+		Organization: organization.List(),
+		Project:      projects.List(),
 	}
 
 	result.EffectiveScopes = effective
@@ -442,6 +460,15 @@ func (c *computer) resolve(id string) unikornv1.RoleScopes {
 	c.results[id] = result
 
 	return effective
+}
+
+// contribution returns what a source gives: its organization and project
+// scopes, sorted and with no repeats.  Global scopes are never given.
+func contribution(scopes unikornv1.RoleScopes) unikornv1.RoleScopes {
+	return unikornv1.RoleScopes{
+		Organization: unikornv1.UnionScopes(nil, scopes.Organization),
+		Project:      unikornv1.UnionScopes(nil, scopes.Project),
+	}
 }
 
 // available returns the Available condition of one aggregating role.
@@ -548,8 +575,10 @@ func Hash(scopes unikornv1.RoleScopes) string {
 
 // labelledTargets returns each non-protected role labelled for an aggregating
 // role, with the scopes a grant of it would hand out, for the controller's
-// Grantable check.  A labelled role skipped for global scopes keeps them, so
-// the check names it: no org admin can ever grant it.
+// Grantable check.  A plain labelled role skipped for global scopes keeps
+// them, so the check names it: no org admin can ever grant it.  An
+// aggregating labelled role is checked on what it holds live, which never
+// includes global scopes, whatever its own spec.scopes says.
 func (c *computer) labelledTargets(labelled []string) []LabelledRole {
 	out := make([]LabelledRole, 0, len(labelled))
 
@@ -558,7 +587,6 @@ func (c *computer) labelledTargets(labelled []string) []LabelledRole {
 
 		if _, aggregating := c.plans[id]; aggregating {
 			scopes = c.results[id].EffectiveScopes
-			scopes.Global = c.roles[id].Spec.Scopes.Global
 		}
 
 		out = append(out, LabelledRole{ID: id, Name: c.roles[id].DisplayName(), Scopes: scopes})

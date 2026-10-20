@@ -70,7 +70,7 @@ func TestStatusTamperUnderMissingRefIsDropped(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
-		newRole("reader", aggregates(false, baseID("reader"), "typo"), recorded("typo", evilScopes())),
+		chartRole("reader", aggregates(false, baseID("reader"), "typo"), recorded("typo", evilScopes())),
 		baseRole("reader", org(scope("identity:groups", unikornv1.Read))),
 	)
 
@@ -78,8 +78,8 @@ func TestStatusTamperUnderMissingRefIsDropped(t *testing.T) {
 		writeBack(t, roles)
 	}
 
-	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles["reader"].EffectiveScopes().Organization)
-	require.Equal(t, []string{baseID("reader")}, sourceIDs(&aggregation.Result{AggregatedFrom: roles["reader"].Status.AggregatedFrom}))
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles[unikornv1.ChartRoleID("reader")].EffectiveScopes().Organization)
+	require.Equal(t, []string{baseID("reader")}, sourceIDs(&aggregation.Result{AggregatedFrom: roles[unikornv1.ChartRoleID("reader")].Status.AggregatedFrom}))
 }
 
 // TestDeletedRefStopsGiving checks a deleted roleRef stops giving its scopes
@@ -193,7 +193,7 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
-		newRole("administrator", aggregates(false, baseID("administrator"))),
+		chartRole("administrator", aggregates(false, baseID("administrator"))),
 		baseRole("administrator", org(scope("identity:groups", unikornv1.Read))),
 		newRole("sneaky", aggregates(false, "system-account"), aggregateTo("administrator")),
 		newRole("system-account", protected(), org(scope("svc:internal", unikornv1.Delete))),
@@ -201,8 +201,8 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 
 	results := aggregation.Compute(roles)
 
-	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, results["administrator"].EffectiveScopes.Organization)
-	require.Equal(t, corev1.ConditionTrue, results["administrator"].Available.Status)
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, results[adminID].EffectiveScopes.Organization)
+	require.Equal(t, corev1.ConditionTrue, results[adminID].Available.Status)
 
 	sneaky := results["sneaky"]
 	require.Empty(t, sneaky.EffectiveScopes.Organization)
@@ -215,8 +215,8 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 
 	require.Empty(t, roles["sneaky"].EffectiveScopes().Organization)
 	require.False(t, roles["sneaky"].AggregationReady())
-	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles["administrator"].EffectiveScopes().Organization)
-	require.True(t, roles["administrator"].AggregationReady())
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles[adminID].EffectiveScopes().Organization)
+	require.True(t, roles[adminID].AggregationReady())
 }
 
 // TestStuckRoleIgnoresSpecScopes checks an aggregating role's own
@@ -264,11 +264,11 @@ func TestRefMatchedBySelectorIsNotSkipped(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
-		newRole("administrator", aggregates(false, baseID("administrator"))),
+		chartRole("administrator", aggregates(false, baseID("administrator"))),
 		baseRole("administrator", aggregateTo("administrator"), org(scope("identity:groups", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(roles)["administrator"]
+	result := aggregation.Compute(roles)[adminID]
 
 	require.Empty(t, result.Skipped)
 	require.NotContains(t, result.Available.Message, "skipped")
@@ -343,4 +343,71 @@ func TestSpoofedBaseRefGivesNothing(t *testing.T) {
 	aggregation.Resolve(roles)
 	require.Empty(t, roles["administrator"].EffectiveScopes().Organization)
 	require.False(t, roles["administrator"].AggregationReady())
+}
+
+// TestDecoyCannotClaimBaseRole checks a role that copies the administrator's
+// name label, but not its ID, cannot use administrator-base, while the real
+// administrator still can.
+func TestDecoyCannotClaimBaseRole(t *testing.T) {
+	t.Parallel()
+
+	decoy := newRole("evil-id", aggregates(false, baseID("administrator")))
+	decoy.Labels[coreconstants.NameLabel] = "administrator"
+
+	roles := catalogue(
+		decoy,
+		chartRole("administrator", aggregates(false, baseID("administrator"))),
+		baseRole("administrator", org(scope("identity:groups", unikornv1.Read))),
+	)
+
+	aggregation.Resolve(roles)
+
+	require.Empty(t, roles["evil-id"].EffectiveScopes().Organization)
+	require.False(t, roles["evil-id"].AggregationReady())
+
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles[adminID].EffectiveScopes().Organization)
+	require.True(t, roles[adminID].AggregationReady())
+}
+
+// TestDeletingAggregatingRoleHoldsNothing checks an aggregating role held by
+// a finalizer while it is deleted holds nothing and is not ready, though its
+// sources are live.
+func TestDeletingAggregatingRoleHoldsNothing(t *testing.T) {
+	t.Parallel()
+
+	deleting := newRole("administrator", aggregates(true))
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+
+	roles := catalogue(
+		deleting,
+		newRole("fleet-operator", aggregateTo("administrator"), org(scope("radar:topology", unikornv1.Read))),
+	)
+
+	require.NotContains(t, aggregation.Compute(roles), "administrator")
+
+	aggregation.Resolve(roles)
+
+	require.NotNil(t, deleting.Computed)
+	require.Empty(t, deleting.EffectiveScopes().Organization)
+	require.Empty(t, deleting.EffectiveScopes().Project)
+	require.False(t, deleting.AggregationReady())
+}
+
+// TestAggregatingRoleSpecGlobalScopesIgnored checks an aggregating role's own
+// spec.scopes.global is never held.
+func TestAggregatingRoleSpecGlobalScopesIgnored(t *testing.T) {
+	t.Parallel()
+
+	roles := catalogue(
+		newRole("administrator", aggregates(true), global(scope("svc:everything", unikornv1.Delete))),
+		newRole("fleet-operator", aggregateTo("administrator"), org(scope("radar:topology", unikornv1.Read))),
+	)
+
+	aggregation.Resolve(roles)
+
+	admin := roles["administrator"]
+	require.True(t, admin.AggregationReady())
+	require.Empty(t, admin.EffectiveScopes().Global)
+	require.Equal(t, []unikornv1.RoleScope{scope("radar:topology", unikornv1.Read)}, admin.EffectiveScopes().Organization)
 }

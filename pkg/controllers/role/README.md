@@ -51,8 +51,8 @@ status:
       scopesHash: sha256:...
       scopes: {...}             # what this source contributed, no global; a record only, never read back
   conditions:
-    - type: Available           # Aggregated | MissingRoleRef | InvalidRoleRef | Cycle | InvalidSelector
-    - type: Grantable           # Grantable | NotGrantable
+    - type: Available           # Aggregated | MissingRoleRef | InvalidRoleRef | Cycle | InvalidSelector | Deleting
+    - type: Grantable           # Grantable | NotGrantable | NotAvailable | Deleting
 ```
 
 An aggregating role has no `spec.scopes`. If it has some, nothing uses them,
@@ -76,16 +76,21 @@ that it `roleRefs`.
 
 ## Which sources are used
 
-- **Selector matches:** protected roles and roles with global scopes are
-  skipped. Each skip is logged and named in the `Available` message. Global
-  scopes in an organization role would hand out cross-organization authority.
+- **Selector matches:** protected roles and plain roles with global scopes
+  are skipped. Each skip is logged and named in the `Available` message.
+  Global scopes in an organization role would hand out cross-organization
+  authority. A labelled aggregating role is judged on what it holds live,
+  which never has global scopes, so its own `spec.scopes.global` does not
+  skip it.
 - **`roleRefs`:** always used. The only protected role a ref may name is the
   role's own base role: display name `<own display name>-base`, for example
   `administrator` → `administrator-base`, and the ID the chart gives that
   name (`ChartRoleID`, the same SHA-256 scheme as the chart's `resource.id`
   helper). Any other protected ref gives nothing (`InvalidRoleRef`), so
   copying the base role's name label onto another protected role does not
-  work. Global scopes are still dropped.
+  work. The aggregating role's own ID must also be the one the chart gives
+  its display name, so a decoy role that copies the `administrator` name
+  label cannot claim `administrator-base`. Global scopes are still dropped.
 - **Renaming an aggregating role locks it out of its base role**: the base
   role's ID comes from the old name. Rename the base role and its ID too.
 - **The admission policy in the identity chart is the main guard** on
@@ -127,6 +132,12 @@ a namespaced `Role` in the identity chart, so the record stays honest.
 | A `roleRef` names a protected role that is not `<name>-base` with the chart's ID | that ref gives nothing | `False`, `InvalidRoleRef` |
 | A selector is not allowed | the selectors give nothing, only `roleRefs` are used | `False`, `InvalidSelector` |
 | The role is in a cycle | every role in the cycle holds what the sources outside the cycle give | `False`, `Cycle` |
+| The role is being deleted (held by a finalizer) | nothing | `False`, `Deleting` |
+
+Whenever `Available` is `False`, `Grantable` is `False` too: `NotAvailable`
+("role is stuck, it cannot be granted"), or `Deleting` for a role being
+deleted. The server never grants such a role, so the record never says it
+can. Only the `Available` change is warned.
 
 - **A stuck role is computed from its working sources.** Every live,
   allowed source gives its current scopes. `aggregatedFrom` lists exactly the
@@ -165,8 +176,14 @@ a namespaced `Role` in the identity chart, so the record stays honest.
   `aggregation.Resolve` on the roles it just listed, which runs `Compute` and
   sets `Role.Computed` on each aggregating role.
 - **Grant checks resolve the role they load.** The group and membership
-  handlers call `aggregation.ResolveRole` (one list of the namespace) before
-  `rbac.AllowRole`. A role that does not aggregate needs no list.
+  handlers resolve each role through one `aggregation.Resolver` per request
+  before `rbac.AllowRole`. It lists the namespace at most once per request,
+  the first time an aggregating role needs it. A role that does not
+  aggregate needs no list, and a role a group already has is not resolved,
+  as it is not grant-checked. A list error refuses the request.
+- **Resolving is linear in the number of sources.** Each source's scopes are
+  gathered into one set and sorted once. About 2.7 ms for 300 roles with 5
+  aggregating (`BenchmarkResolve`).
 - **There is no window before the first reconcile.** A role holds its sources
   from the moment it is applied. A converted built-in role holds its base role
   at once.
@@ -181,13 +198,16 @@ Global scopes are never held through aggregation.
 ## Grantable condition
 
 `Grantable` is computed by this controller (`grantable.go`) and is a report
-only. It runs the real grant check (`rbac.AllowRole`) from a holder of the
-aggregating role's effective scopes against every non-protected role its
-selectors match. It is `False`, naming each role it can't grant, if any fails.
+only. A role that is not `Available` is `False`, `NotAvailable`, with no
+check. Otherwise it runs the real grant check (`rbac.AllowRole`) from a
+holder of the aggregating role's effective scopes against every non-protected
+role its selectors match. It is `False`, `NotGrantable`, naming each role it
+can't grant, if any fails.
 
-A matched role that is used is held, so it passes, unless it is in a cycle,
-where it holds only what the cycle's outside sources give. The useful failure is a labelled role with global
-scopes, which is skipped and which no org admin can ever grant.
+A matched role that is used is held, so it passes. The useful failure is a
+labelled plain role with global scopes, which is skipped and which no org
+admin can ever grant. A labelled aggregating role is checked on what it holds
+live, which has no global scopes.
 
 The holder ACL puts project scopes in one linked project. A holder of a role
 without `flattenToOrganization` whose group has no linked project can grant
@@ -227,6 +247,10 @@ grantor); see ID-641.
   `DefaultYieldTimeout`.
 - **A role that stops aggregating** has its status cleared, so the record does
   not show old scopes.
+- **An aggregating role being deleted** but held by a finalizer is recorded
+  as holding nothing, `Available=False` and `Grantable=False`, both
+  `Deleting`, as the server gives it nothing. A role already gone is not an
+  error.
 - **Enforcement sees a change within one ACL cache TTL** (one minute), the
   same as any role change. Grant checks see it at once.
 

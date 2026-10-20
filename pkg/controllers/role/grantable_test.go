@@ -63,6 +63,15 @@ func aggregating(id string, flatten bool, refs ...string) *unikornv1.Role {
 	})
 }
 
+// chartAggregating is aggregating with the ID the chart gives the name, as
+// an aggregating role must have to use its base role.
+func chartAggregating(name string, flatten bool, refs ...string) *unikornv1.Role {
+	role := aggregating(name, flatten, refs...)
+	role.Name = unikornv1.ChartRoleID(name)
+
+	return role
+}
+
 func grantableFor(t *testing.T, roles ...*unikornv1.Role) map[string]aggregation.Condition {
 	t.Helper()
 
@@ -86,11 +95,11 @@ func grantableFor(t *testing.T, roles ...*unikornv1.Role) map[string]aggregation
 func TestGrantableBaseRefAndSelector(t *testing.T) {
 	t.Parallel()
 
-	results := grantableFor(t, adminBase(), aggregating("administrator", true, adminBaseID), fleetOperator())
+	results := grantableFor(t, adminBase(), chartAggregating("administrator", true, adminBaseID), fleetOperator())
 
-	require.Equal(t, corev1.ConditionTrue, results["administrator"].Status, results["administrator"].Message)
-	require.Equal(t, unikornv1.RoleReasonGrantable, results["administrator"].Reason)
-	require.Equal(t, "can grant all 1 labelled roles", results["administrator"].Message)
+	require.Equal(t, corev1.ConditionTrue, results[adminID].Status, results[adminID].Message)
+	require.Equal(t, unikornv1.RoleReasonGrantable, results[adminID].Reason)
+	require.Equal(t, "can grant all 1 labelled roles", results[adminID].Message)
 }
 
 // TestGrantableFlattenAndNot checks a flattening and a non-flattening role
@@ -138,15 +147,18 @@ func TestGrantableChain(t *testing.T) {
 	}
 }
 
-// TestGrantableWhileStuck checks a role stuck on a missing roleRef can still
-// grant the live roles labelled for it: Grantable is about the labels, and
-// the role itself is not grantable while stuck (see Role.AggregationReady).
-func TestGrantableWhileStuck(t *testing.T) {
+// TestNotGrantableWhileStuck checks a role stuck on a missing roleRef is
+// recorded as not grantable, even though it could grant every live role
+// labelled for it: the server never grants a stuck role (see
+// Role.AggregationReady), so the record must not say it can.
+func TestNotGrantableWhileStuck(t *testing.T) {
 	t.Parallel()
 
-	results := grantableFor(t, aggregating("administrator", true, adminBaseID), fleetOperator())
+	results := grantableFor(t, chartAggregating("administrator", true, adminBaseID), fleetOperator())
 
-	require.Equal(t, corev1.ConditionTrue, results["administrator"].Status, results["administrator"].Message)
+	require.Equal(t, corev1.ConditionFalse, results[adminID].Status)
+	require.Equal(t, unikornv1.RoleReasonNotAvailable, results[adminID].Reason)
+	require.Equal(t, "role is stuck, it cannot be granted", results[adminID].Message)
 }
 
 // TestGrantableNamesLabelledGlobalRole checks a role labelled for
@@ -164,4 +176,36 @@ func TestGrantableNamesLabelledGlobalRole(t *testing.T) {
 	require.Equal(t, corev1.ConditionFalse, results["administrator"].Status)
 	require.Equal(t, unikornv1.RoleReasonNotGrantable, results["administrator"].Reason)
 	require.Equal(t, "cannot grant: svc-global", results["administrator"].Message)
+}
+
+// TestGrantableUsesLiveScopesOfAggregatingLabelledRole checks an aggregating
+// role labelled for another one is judged on what it holds live, which has
+// no global scopes, not on its own spec.scopes.global: it is used as a
+// source, and Grantable does not name it.
+func TestGrantableUsesLiveScopesOfAggregatingLabelledRole(t *testing.T) {
+	t.Parallel()
+
+	user := aggregating("user", false)
+	user.Labels[unikornv1.AggregateToLabel("administrator")] = "true"
+	user.Spec.Scopes.Global = orgScopes("svc:everything").Organization
+
+	reader := labelledFor("reader", orgScopes("svc:things"), "user")
+
+	snapshot := map[string]*unikornv1.Role{}
+
+	for _, role := range []*unikornv1.Role{user, reader, aggregating("administrator", true)} {
+		snapshot[role.Name] = role
+	}
+
+	result := aggregation.Compute(snapshot)["administrator"]
+
+	require.Empty(t, result.Skipped)
+	require.Len(t, result.AggregatedFrom, 1)
+	require.Equal(t, "user", result.AggregatedFrom[0].ID)
+	require.Equal(t, orgScopes("svc:things").Organization, result.EffectiveScopes.Organization)
+	require.Len(t, result.Labelled, 1)
+	require.Empty(t, result.Labelled[0].Scopes.Global)
+
+	condition := grantable(t.Context(), result)
+	require.Equal(t, corev1.ConditionTrue, condition.Status, condition.Message)
 }

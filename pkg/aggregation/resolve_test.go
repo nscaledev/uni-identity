@@ -185,7 +185,53 @@ func TestResolveRoleListErrorFailsClosed(t *testing.T) {
 	role := newRole("administrator", aggregates(true))
 	cli := fakeClient(t, failList, role, newRole("source", aggregateTo("administrator"), org(scope("svc:a", unikornv1.Read))))
 
+	// A value left from an earlier resolve must not survive the error.
+	role.Computed = &unikornv1.ComputedAggregation{
+		Scopes:    unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("svc:a", unikornv1.Read)}},
+		Available: true,
+	}
+
 	require.ErrorIs(t, aggregation.ResolveRole(t.Context(), cli, role), errListed)
 	require.Empty(t, role.EffectiveScopes().Organization)
 	require.False(t, role.AggregationReady())
+}
+
+// TestResolverListsOnce checks a Resolver lists roles once for several
+// aggregating roles, never for a plain one, and resolves each the same as
+// ResolveRole does.
+func TestResolverListsOnce(t *testing.T) {
+	t.Parallel()
+
+	lists := 0
+
+	countList := interceptor.Funcs{
+		List: func(ctx context.Context, cli client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			lists++
+
+			return cli.List(ctx, list, opts...)
+		},
+	}
+
+	cli := fakeClient(t, countList,
+		newRole("administrator", aggregates(true)),
+		newRole("user", aggregates(false)),
+		newRole("source", aggregateTo("administrator", "user"), org(scope("svc:a", unikornv1.Read))),
+	)
+
+	resolver := aggregation.NewResolver(cli, testNamespace)
+
+	plain := &unikornv1.Role{}
+	require.NoError(t, cli.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: "source"}, plain))
+	require.NoError(t, resolver.Resolve(t.Context(), plain))
+	require.Zero(t, lists)
+
+	for _, name := range []string{"administrator", "user"} {
+		role := &unikornv1.Role{}
+		require.NoError(t, cli.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: name}, role))
+		require.NoError(t, resolver.Resolve(t.Context(), role))
+		require.True(t, role.AggregationReady())
+		require.Equal(t, []unikornv1.RoleScope{scope("svc:a", unikornv1.Read)}, role.EffectiveScopes().Organization)
+	}
+
+	require.Equal(t, 1, lists)
 }
