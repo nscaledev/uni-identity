@@ -23,6 +23,7 @@ import (
 	"slices"
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -43,16 +44,72 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func convert(in unikornv1.Role, grantable bool) openapi.RoleRead {
+// convert hides protected sources from aggregatedFrom, as they are hidden from the list.
+func convert(in unikornv1.Role, grantable bool, listable map[string]bool) openapi.RoleRead {
 	out := openapi.RoleRead{
 		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),
 		Grantable: grantable,
+		Scopes:    convertScopes(in.EffectiveScopes()),
+	}
+
+	if in.IsAggregating() && in.Computed != nil && len(in.Computed.Sources) > 0 {
+		sources := make([]openapi.RoleSource, 0, len(in.Computed.Sources))
+
+		for _, source := range in.Computed.Sources {
+			if !listable[source.ID] {
+				continue
+			}
+
+			s := openapi.RoleSource{
+				Id:   source.ID,
+				Name: source.Name,
+			}
+
+			if source.Description != "" {
+				s.Description = &source.Description
+			}
+
+			sources = append(sources, s)
+		}
+
+		if len(sources) > 0 {
+			out.AggregatedFrom = &sources
+		}
 	}
 
 	return out
 }
 
-func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID) openapi.Roles {
+// convertScopes leaves out the scopes hash: it is internal, not for customers.
+func convertScopes(in unikornv1.RoleScopes) openapi.RoleScopes {
+	return openapi.RoleScopes{
+		Global:       convertEndpoints(in.Global),
+		Organization: convertEndpoints(in.Organization),
+		Project:      convertEndpoints(in.Project),
+	}
+}
+
+func convertEndpoints(in []unikornv1.RoleScope) *openapi.AclEndpoints {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := make(openapi.AclEndpoints, 0, len(in))
+
+	for _, scope := range in {
+		operations := make(openapi.AclOperations, 0, len(scope.Operations))
+
+		for _, operation := range scope.Operations {
+			operations = append(operations, openapi.AclOperation(operation))
+		}
+
+		out = append(out, openapi.AclEndpoint{Name: scope.Name, Operations: operations})
+	}
+
+	return &out
+}
+
+func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.OrganizationID, listable map[string]bool) openapi.Roles {
 	// Allocated rather than declared nil: the schema types this response as a
 	// non-nullable array, and a nil slice marshals to null, which response
 	// validation rejects.
@@ -61,7 +118,7 @@ func convertList(ctx context.Context, in unikornv1.RoleList, organizationID ids.
 	for _, resource := range in.Items {
 		grantable := rbac.AllowRole(ctx, &resource, organizationID) == nil
 
-		out = append(out, convert(resource, grantable))
+		out = append(out, convert(resource, grantable, listable))
 	}
 
 	slices.SortFunc(out, func(a, b openapi.RoleRead) int {
@@ -78,6 +135,22 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return nil, err
 	}
 
+	// Resolving needs every role, protected base roles included.
+	all := make(map[string]*unikornv1.Role, len(result.Items))
+	listable := map[string]bool{}
+
+	for i := range result.Items {
+		role := &result.Items[i]
+
+		all[role.Name] = role
+
+		if !role.Spec.Protected && role.DeletionTimestamp.IsZero() {
+			listable[role.Name] = true
+		}
+	}
+
+	aggregation.Resolve(all)
+
 	// Protected roles are internal and never exposed.  Ungrantable roles ARE
 	// exposed (grantable: false), because a client has to be able to resolve
 	// every role ID a group carries in order to display it.  These are two
@@ -86,5 +159,5 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return role.Spec.Protected
 	})
 
-	return convertList(ctx, result, organizationID), nil
+	return convertList(ctx, result, organizationID, listable), nil
 }

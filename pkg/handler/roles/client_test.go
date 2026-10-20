@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/roles"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -118,4 +119,231 @@ func TestListEmptyCatalogueMarshalsAsAnEmptyArray(t *testing.T) {
 	body, err := json.Marshal(result)
 	require.NoError(t, err)
 	require.JSONEq(t, "[]", string(body))
+}
+
+func adminBase() *unikornv1.Role {
+	base := newRole(unikornv1.ChartRoleID("administrator-base"), true, []unikornv1.RoleScope{
+		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+	base.Labels["unikorn-cloud.org/name"] = "administrator-base"
+
+	return base
+}
+
+// adminRole has no status: no controller runs in these tests.
+func adminRole(refs ...string) *unikornv1.Role {
+	role := newRole(unikornv1.ChartRoleID("administrator"), false, nil)
+	role.Labels["unikorn-cloud.org/name"] = "administrator"
+	role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{
+		RoleSelectors: []metav1.LabelSelector{
+			{MatchLabels: map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}},
+		},
+		RoleRefs:              refs,
+		FlattenToOrganization: true,
+	}
+
+	return role
+}
+
+func fleetOperator() *unikornv1.Role {
+	fleet := newRole("fleet-id", false, []unikornv1.RoleScope{
+		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+	fleet.Labels["unikorn-cloud.org/name"] = "fleet-operator"
+	fleet.Labels[unikornv1.AggregateToLabel("administrator")] = "true"
+	fleet.Annotations = map[string]string{coreconstants.DescriptionAnnotation: "Fleet operator."}
+
+	return fleet
+}
+
+// withStatus writes a status by hand, as a stale or tampered one would be.
+func withStatus(role *unikornv1.Role, scopes []unikornv1.RoleScope, sources ...unikornv1.RoleAggregationSource) *unikornv1.Role {
+	role.Status.EffectiveScopes = &unikornv1.RoleScopes{Organization: scopes}
+	role.Status.AggregatedFrom = sources
+	role.Status.Conditions = []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue, ObservedGeneration: role.Generation}}
+
+	return role
+}
+
+func listAsAdmin(t *testing.T, objects ...*unikornv1.Role) map[string]openapi.RoleRead {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	builder := fake.NewClientBuilder().WithScheme(scheme)
+	for _, o := range objects {
+		builder = builder.WithObjects(o)
+	}
+
+	endpoints := openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+		{Name: "radar:topology", Operations: openapi.AclOperations{openapi.Read}},
+	}
+	organizations := openapi.AclOrganizationList{{Id: testOrganizationID, Endpoints: &endpoints}}
+	ctx := rbac.NewContext(t.Context(), &openapi.Acl{Organizations: &organizations})
+
+	result, err := roles.New(builder.Build(), namespace).List(ctx, ids.MustParseOrganizationID(testOrganizationID))
+	require.NoError(t, err)
+
+	byName := map[string]openapi.RoleRead{}
+	for _, r := range result {
+		byName[r.Metadata.Name] = r
+	}
+
+	return byName
+}
+
+func TestListShowsEffectiveScopesAndSources(t *testing.T) {
+	t.Parallel()
+
+	base := adminBase()
+
+	got := listAsAdmin(t, adminRole(base.Name), base, fleetOperator())["administrator"]
+
+	require.True(t, got.Grantable)
+	require.NotNil(t, got.Scopes.Organization)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+		{Name: "radar:topology", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+	require.Nil(t, got.Scopes.Global)
+	require.Nil(t, got.Scopes.Project)
+
+	require.NotNil(t, got.AggregatedFrom)
+	require.Equal(t, []openapi.RoleSource{
+		{Id: "fleet-id", Name: "fleet-operator", Description: ptr("Fleet operator.")},
+	}, *got.AggregatedFrom)
+
+	body, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), "sha256")
+}
+
+func TestListShowsPlainRoleScopes(t *testing.T) {
+	t.Parallel()
+
+	plain := newRole("fleet-operator", false, []unikornv1.RoleScope{
+		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+
+	got := listAsAdmin(t, plain)["fleet-operator"]
+
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "radar:topology", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+	require.Nil(t, got.AggregatedFrom)
+}
+
+func TestListFollowsChangedSources(t *testing.T) {
+	t.Parallel()
+
+	base := adminBase()
+	fleet := fleetOperator()
+
+	require.Len(t, *listAsAdmin(t, adminRole(base.Name), base, fleet)["administrator"].AggregatedFrom, 1)
+
+	delete(fleet.Labels, unikornv1.AggregateToLabel("administrator"))
+
+	stale := withStatus(adminRole(base.Name),
+		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
+	)
+
+	got := listAsAdmin(t, stale, base, fleet)["administrator"]
+	require.Nil(t, got.AggregatedFrom)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+}
+
+func TestListIgnoresStatus(t *testing.T) {
+	t.Parallel()
+
+	role := withStatus(adminRole(),
+		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
+	)
+
+	// fleet-id is live and not protected, but does not opt in.
+	fleet := fleetOperator()
+	delete(fleet.Labels, unikornv1.AggregateToLabel("administrator"))
+
+	got := listAsAdmin(t, role, fleet)["administrator"]
+
+	require.Nil(t, got.Scopes.Organization)
+	require.Nil(t, got.AggregatedFrom)
+}
+
+func TestListNewAggregatingRoleReportsLiveScopes(t *testing.T) {
+	t.Parallel()
+
+	base := adminBase()
+
+	got := listAsAdmin(t, base, adminRole(base.Name))["administrator"]
+
+	require.NotNil(t, got.Scopes.Organization)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+	require.True(t, got.Grantable)
+}
+
+func TestListStuckRoleIsNotGrantable(t *testing.T) {
+	t.Parallel()
+
+	base := adminBase()
+
+	got := listAsAdmin(t, base, withStatus(adminRole(base.Name, "typo"), nil))["administrator"]
+
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+	require.False(t, got.Grantable)
+}
+
+func TestListHidesProtectedSources(t *testing.T) {
+	t.Parallel()
+
+	base := adminBase()
+	base.Annotations = map[string]string{coreconstants.DescriptionAnnotation: "internal: do not expose"}
+
+	byName := listAsAdmin(t, base, fleetOperator(), adminRole(base.Name))
+	require.NotContains(t, byName, "administrator-base")
+
+	got := byName["administrator"]
+	require.NotNil(t, got.AggregatedFrom)
+	require.Equal(t, []openapi.RoleSource{{Id: "fleet-id", Name: "fleet-operator", Description: ptr("Fleet operator.")}}, *got.AggregatedFrom)
+
+	got = listAsAdmin(t, base, adminRole(base.Name))["administrator"]
+	require.NotNil(t, got.Scopes.Organization)
+	require.Nil(t, got.AggregatedFrom)
+}
+
+func TestListHidesSourcesThatAreGone(t *testing.T) {
+	t.Parallel()
+
+	base := adminBase()
+
+	deleting := fleetOperator()
+	deleting.Finalizers = []string{"test"}
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+
+	admin := withStatus(adminRole(base.Name),
+		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		unikornv1.RoleAggregationSource{ID: "gone-id", Name: "gone"},
+		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator"},
+	)
+
+	got := listAsAdmin(t, admin, base, deleting)["administrator"]
+
+	require.Nil(t, got.AggregatedFrom)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }

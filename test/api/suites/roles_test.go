@@ -94,6 +94,25 @@ var _ = Describe("Role Management", func() {
 			})
 		})
 
+		Describe("Given the built-in roles", func() {
+			It("should report what each built-in role permits", func() {
+				roles, err := client.ListRoles(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+
+				for _, role := range roles {
+					switch role.Metadata.Name {
+					case "administrator", "auditor", "user", "reader":
+						Expect(role.Scopes.Organization).NotTo(BeNil(),
+							"%s should report its organization scopes", role.Metadata.Name)
+						Expect(*role.Scopes.Organization).NotTo(BeEmpty(),
+							"%s should report its organization scopes", role.Metadata.Name)
+						Expect(role.Scopes.Global).To(BeNil(),
+							"%s is user-facing and must hold no global scopes", role.Metadata.Name)
+					}
+				}
+			})
+		})
+
 		Describe("Given invalid organization ID", func() {
 			It("should return error for non-existent organization", func() {
 				_, err := client.ListRoles(ctx, "invalid-org-id")

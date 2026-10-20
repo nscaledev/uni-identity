@@ -2051,6 +2051,7 @@ components:
       required:
       - metadata
       - grantable
+      - scopes
       properties:
         metadata:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/resourceReadMetadata'
@@ -2064,6 +2065,45 @@ components:
             group are exempt: re-sending one is accepted, and omitting one
             removes it, whether or not the caller could grant it.
           type: boolean
+        scopes:
+          $ref: '#/components/schemas/roleScopes'
+        aggregatedFrom:
+          description: |-
+            The source roles an aggregating role (for example the organization
+            administrator) takes its scopes from. Internal source roles are not
+            listed. Absent for a role that does not aggregate or has only
+            internal sources.
+          type: array
+          items:
+            $ref: '#/components/schemas/roleSource'
+    roleScopes:
+      description: |-
+        What a role permits: the scopes it holds after aggregation. For an
+        aggregating role this includes the scopes of every source role.
+      type: object
+      properties:
+        global:
+          $ref: '#/components/schemas/aclEndpoints'
+        organization:
+          $ref: '#/components/schemas/aclEndpoints'
+        project:
+          $ref: '#/components/schemas/aclEndpoints'
+    roleSource:
+      description: A role that an aggregating role takes scopes from.
+      type: object
+      required:
+      - id
+      - name
+      properties:
+        id:
+          description: The source role's ID.
+          type: string
+        name:
+          description: The source role's name.
+          type: string
+        description:
+          description: The source role's description.
+          type: string
     roles:
       description: A list of roles.
       type: array
@@ -2889,6 +2929,21 @@ components:
               provisioningStatus: provisioned
               healthStatus: healthy
             grantable: true
+            scopes:
+              organization:
+              - name: identity:groups
+                operations:
+                - create
+                - read
+                - update
+                - delete
+              - name: radar:topology
+                operations:
+                - read
+            aggregatedFrom:
+            - id: 3e5a7c9b-1d2f-4a6b-8c0e-2f4a6b8c0e1d
+              name: fleet-operator
+              description: Fleet operator.
     groupResponse:
       description: |-
         A group in the organization.
