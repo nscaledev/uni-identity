@@ -56,36 +56,37 @@ const (
 	StateNoAutomationIdentity   = "the organization has no Envir automation identity"
 	StateAutomationGroupOnly    = "the Envir automation group exists without a service account"
 	StateAutomationAccountBound = "the Envir automation service account is bound to its group"
+	StateExpiredBearer          = "the bearer's token has expired"
 	defaultEnvirOrganizationID  = "9a8c6370-4065-4d4a-9da0-7678df40cd9d"
 	defaultEnvirProjectID       = "e36c058a-8eba-4f5b-91f4-f6ffb983795c"
 	serviceAccountTokenLifetime = time.Hour
 )
 
-// envirAuth carries what the Envir states hand to the request path: the organization and project
-// the mock ACL must grant on /api/v1/acl, and the bearer the verifier substitutes on userinfo.
+// envirBearer is the token an Envir state issued; the request filter presents it in place of the
+// pact's example bearer on userinfo and /api/v1/acl, and its presence routes /api/v1/acl through
+// production authentication and RBAC rather than the mock ACL. Each state sets it on setup and
+// clears it on teardown; verification is serial (-p 1), so one value is enough.
 //
 //nolint:gochecknoglobals
-var envirAuth = &envirAuthState{}
+var envirBearer = &bearerState{}
 
-type envirAuthState struct {
-	lock           sync.Mutex
-	organizationID string
-	projectID      string
-	bearer         string
+type bearerState struct {
+	lock  sync.Mutex
+	token string
 }
 
-func (s *envirAuthState) set(organizationID, projectID, bearer string) {
+func (s *bearerState) set(token string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	s.organizationID, s.projectID, s.bearer = organizationID, projectID, bearer
+	s.token = token
 }
 
-func (s *envirAuthState) get() (string, string, string) {
+func (s *bearerState) get() string {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	return s.organizationID, s.projectID, s.bearer
+	return s.token
 }
 
 // automationParams are the ids, name and owner tag of the identity Envir provisions.
@@ -152,9 +153,18 @@ func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer commo
 	return jwtIssuer, authenticator, nil
 }
 
+// setupEnvirOrganization clears whatever an earlier run of the state left behind, including after a
+// skipped teardown, then creates the organization afresh, so setup never depends on order or history.
+func (sm *StateManager) setupEnvirOrganization(ctx context.Context, orgID string) error {
+	if err := sm.cleanupEnvirOrganization(ctx, orgID); err != nil {
+		return err
+	}
+
+	return sm.setupOrganization(ctx, orgID)
+}
+
 // cleanupEnvirOrganization removes the groups and service accounts an Envir state seeded or an
-// interaction created, then the organization. Each setup gets a fresh namespace, so this keeps
-// the cluster clean rather than avoiding collisions.
+// interaction created, then the organization.
 func (sm *StateManager) cleanupEnvirOrganization(ctx context.Context, orgID string) error {
 	namespace := sm.getOrganizationNamespace(ctx, orgID)
 
@@ -169,24 +179,100 @@ func (sm *StateManager) cleanupEnvirOrganization(ctx context.Context, orgID stri
 	return sm.cleanupOrganization(ctx, orgID)
 }
 
-func (sm *StateManager) HandleCallerHasProjectAccess(ctx context.Context, setup bool, params map[string]any) error {
-	p := unwrapPactParams(params)
-	orgID := getStringParam(p, "organizationID", defaultEnvirOrganizationID)
-	projectID := getStringParam(p, "projectID", defaultEnvirProjectID)
+// aclRoleScopes is what the ACL state's role grants: something in the organization and in the
+// project, so both carry endpoints in the caller's ACL.
+//
+//nolint:gochecknoglobals
+var aclRoleScopes = unikornv1.RoleScopes{
+	Organization: []unikornv1.RoleScope{{Name: "identity:projects", Operations: []unikornv1.Operation{unikornv1.Read}}},
+	Project:      []unikornv1.RoleScope{{Name: "identity:serviceaccounts", Operations: []unikornv1.Operation{unikornv1.Read}}},
+}
+
+// HandleCallerHasProjectAccess seeds a caller whose ACL production RBAC computes: a service account
+// holding a real token, in a group whose role grants organization and project scopes, with the
+// group linked to the project. /api/v1/acl then runs real authentication and RBAC for that bearer.
+func (sm *StateManager) HandleCallerHasProjectAccess(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
+	p := readAutomationParams(params)
+	projectID := getStringParam(unwrapPactParams(params), "projectID", defaultEnvirProjectID)
 
 	if !setup {
-		envirAuth.set("", "", "")
+		envirBearer.set("")
 
-		return sm.cleanupOrganization(ctx, orgID)
+		if err := sm.deleteRole(ctx, p.roleID); err != nil {
+			return err
+		}
+
+		return sm.cleanupEnvirOrganization(ctx, p.organizationID)
 	}
 
-	if err := sm.setupOrganization(ctx, orgID); err != nil {
+	if err := sm.setupEnvirOrganization(ctx, p.organizationID); err != nil {
 		return err
 	}
 
-	envirAuth.set(orgID, projectID, "")
+	if err := sm.setupProject(ctx, p.organizationID, projectID); err != nil {
+		return err
+	}
 
-	return sm.setupProject(ctx, orgID, projectID)
+	if err := sm.createRole(ctx, p.roleID, aclRoleScopes); err != nil {
+		return err
+	}
+
+	token, err := sm.createServiceAccountWithToken(ctx, p, authenticator, issuer, serviceAccountTokenLifetime)
+	if err != nil {
+		return err
+	}
+
+	if err := sm.createGroup(ctx, p, []string{p.serviceAccountID}); err != nil {
+		return err
+	}
+
+	if err := sm.linkGroupToProject(ctx, p.organizationID, projectID, p.groupID); err != nil {
+		return err
+	}
+
+	envirBearer.set(token)
+
+	return nil
+}
+
+func (sm *StateManager) linkGroupToProject(ctx context.Context, orgID, projectID, groupID string) error {
+	project := &unikornv1.Project{}
+	if err := sm.client.Get(ctx, client.ObjectKey{Namespace: sm.getOrganizationNamespace(ctx, orgID), Name: projectID}, project); err != nil {
+		return fmt.Errorf("failed to read project %s: %w", projectID, err)
+	}
+
+	project.Spec.GroupIDs = []string{groupID}
+
+	if err := sm.client.Update(ctx, project); err != nil {
+		return fmt.Errorf("failed to link group %s to project %s: %w", groupID, projectID, err)
+	}
+
+	return nil
+}
+
+// HandleExpiredBearer seeds the service account as HandleServiceAccountBearer does, but its token,
+// signed by the real issuer, expired an hour ago, so userinfo rejects it as it rejects any expired token.
+func (sm *StateManager) HandleExpiredBearer(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
+	p := readAutomationParams(params)
+
+	if !setup {
+		envirBearer.set("")
+
+		return sm.cleanupEnvirOrganization(ctx, p.organizationID)
+	}
+
+	if err := sm.setupEnvirOrganization(ctx, p.organizationID); err != nil {
+		return err
+	}
+
+	token, err := sm.createServiceAccountWithToken(ctx, p, authenticator, issuer, -time.Hour)
+	if err != nil {
+		return err
+	}
+
+	envirBearer.set(token)
+
+	return nil
 }
 
 // HandleServiceAccountBearer creates a service account holding a token issued the way service
@@ -195,17 +281,28 @@ func (sm *StateManager) HandleServiceAccountBearer(ctx context.Context, setup bo
 	p := readAutomationParams(params)
 
 	if !setup {
-		envirAuth.set("", "", "")
+		envirBearer.set("")
 
 		return sm.cleanupEnvirOrganization(ctx, p.organizationID)
 	}
 
-	if err := sm.setupOrganization(ctx, p.organizationID); err != nil {
+	if err := sm.setupEnvirOrganization(ctx, p.organizationID); err != nil {
 		return err
 	}
 
-	lifetime := serviceAccountTokenLifetime
+	token, err := sm.createServiceAccountWithToken(ctx, p, authenticator, issuer, serviceAccountTokenLifetime)
+	if err != nil {
+		return err
+	}
 
+	envirBearer.set(token)
+
+	return nil
+}
+
+// createServiceAccountWithToken creates the service account holding a token issued the way service
+// account creation issues one, and returns the token. A negative lifetime issues an expired token.
+func (sm *StateManager) createServiceAccountWithToken(ctx context.Context, p automationParams, authenticator *oauth2.Authenticator, issuer common.IssuerValue, lifetime time.Duration) (string, error) {
 	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
 		Issuer:         issuer.URL,
 		Audience:       issuer.Hostname,
@@ -215,26 +312,24 @@ func (sm *StateManager) HandleServiceAccountBearer(ctx context.Context, setup bo
 		Duration:       &lifetime,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to issue service account token: %w", err)
+		return "", fmt.Errorf("failed to issue service account token: %w", err)
 	}
 
 	if err := sm.createServiceAccount(ctx, p, tokens.AccessToken, tokens.Expiry); err != nil {
-		return err
+		return "", err
 	}
 
-	envirAuth.set("", "", tokens.AccessToken)
-
-	return nil
+	return tokens.AccessToken, nil
 }
 
 func (sm *StateManager) HandleOrganizationWithoutProject(ctx context.Context, setup bool, params map[string]any) error {
 	orgID := getStringParam(unwrapPactParams(params), "organizationID", defaultEnvirOrganizationID)
 
 	if !setup {
-		return sm.cleanupOrganization(ctx, orgID)
+		return sm.cleanupEnvirOrganization(ctx, orgID)
 	}
 
-	return sm.setupOrganization(ctx, orgID)
+	return sm.setupEnvirOrganization(ctx, orgID)
 }
 
 // HandleAutomationIdentity seeds the organization and the role Envir's automation group holds,
@@ -250,11 +345,11 @@ func (sm *StateManager) HandleAutomationIdentity(ctx context.Context, state stri
 		return sm.cleanupEnvirOrganization(ctx, p.organizationID)
 	}
 
-	if err := sm.setupOrganization(ctx, p.organizationID); err != nil {
+	if err := sm.setupEnvirOrganization(ctx, p.organizationID); err != nil {
 		return err
 	}
 
-	if err := sm.createRole(ctx, p.roleID); err != nil {
+	if err := sm.createRole(ctx, p.roleID, unikornv1.RoleScopes{}); err != nil {
 		return err
 	}
 
@@ -321,17 +416,17 @@ func (sm *StateManager) createGroup(ctx context.Context, p automationParams, ser
 	return nil
 }
 
-// createRole seeds an unprotected role with no scopes, so any caller may grant it.
-func (sm *StateManager) createRole(ctx context.Context, roleID string) error {
-	role := &unikornv1.Role{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: sm.namespace,
-			Name:      roleID,
-			Labels:    map[string]string{constants.NameLabel: "envir-automation"},
-		},
-	}
+// createRole seeds an unprotected role, so any caller may grant it, with exactly the given scopes;
+// a role an earlier run left behind is overwritten rather than reused as it was.
+func (sm *StateManager) createRole(ctx context.Context, roleID string, scopes unikornv1.RoleScopes) error {
+	role := &unikornv1.Role{ObjectMeta: metav1.ObjectMeta{Namespace: sm.namespace, Name: roleID}}
 
-	if err := sm.client.Create(ctx, role); err != nil && !kerrors.IsAlreadyExists(err) {
+	if _, err := controllerutil.CreateOrUpdate(ctx, sm.client, role, func() error {
+		role.Labels = map[string]string{constants.NameLabel: "envir-automation"}
+		role.Spec = unikornv1.RoleSpec{Scopes: scopes}
+
+		return nil
+	}); err != nil {
 		return fmt.Errorf("failed to create role %s: %w", roleID, err)
 	}
 
@@ -356,9 +451,14 @@ func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params
 	subject := getStringParam(p, "subject", "envir-user@example.com")
 
 	if !setup {
-		envirAuth.set("", "", "")
+		envirBearer.set("")
 
 		return sm.cleanupUserBearer(ctx, orgID, userID)
+	}
+
+	// The user lives in the shared namespace, not the organization's, so clear it explicitly.
+	if err := sm.cleanupUserBearer(ctx, orgID, userID); err != nil {
+		return err
 	}
 
 	if err := sm.setupOrganization(ctx, orgID); err != nil {
@@ -374,7 +474,7 @@ func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params
 		return err
 	}
 
-	envirAuth.set("", "", token)
+	envirBearer.set(token)
 
 	return nil
 }
@@ -454,14 +554,14 @@ func (sm *StateManager) cleanupUserBearer(ctx context.Context, orgID, userID str
 		return fmt.Errorf("failed to delete organization users in %s: %w", namespace, err)
 	}
 
-	return sm.cleanupOrganization(ctx, orgID)
+	return sm.cleanupEnvirOrganization(ctx, orgID)
 }
 
 // HandleSystemBearer hands the verifier a service token, as the client_credentials grant issues
 // one to a system client; it is verified by signature alone.
 func (sm *StateManager) HandleSystemBearer(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
 	if !setup {
-		envirAuth.set("", "", "")
+		envirBearer.set("")
 
 		return nil
 	}
@@ -477,7 +577,7 @@ func (sm *StateManager) HandleSystemBearer(ctx context.Context, setup bool, para
 		return fmt.Errorf("failed to issue system token: %w", err)
 	}
 
-	envirAuth.set("", "", tokens.AccessToken)
+	envirBearer.set(tokens.AccessToken)
 
 	return nil
 }
