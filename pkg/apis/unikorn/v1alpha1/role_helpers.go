@@ -199,6 +199,7 @@ func UnionScopes(a, b []RoleScope) []RoleScope {
 
 // ScopeSet gathers scopes from many lists, so a union of many lists is sorted
 // once, not once per list.
+// +k8s:deepcopy-gen=false
 type ScopeSet map[string][]Operation
 
 // Add adds a list of scopes to the set.
