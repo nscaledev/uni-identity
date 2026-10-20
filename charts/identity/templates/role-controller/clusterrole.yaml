@@ -5,8 +5,7 @@ metadata:
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 rules:
-# Read every role.  Status writes are granted in the release namespace only,
-# see role.yaml.
+# Read every role; status writes are in role.yaml, release namespace only.
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:

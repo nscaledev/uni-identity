@@ -85,13 +85,7 @@ func loadChartValues(t *testing.T) chartValues {
 	return values
 }
 
-// chartRoleResources builds the Role resources charts/identity/templates/roles.yaml
-// renders with aggregation.builtinRoles on, keyed by role ID (the template derives each ID
-// from the name with resource.id, which unikornv1.ChartRoleID mirrors): aggregateTo
-// becomes aggregate-to-* labels, and an aggregationRule selects aggregate-to-<its name>
-// and refs the IDs of its roleRefs.
-// With it off, each built-in role renders its base role's scopes inline, which
-// TestBuiltinRolesUnchangedByAggregation shows is the same set.
+// chartRoleResources mirrors roles.yaml with aggregation.builtinRoles on, keyed by role ID.
 func chartRoleResources(t *testing.T) map[string]*unikornv1.Role {
 	t.Helper()
 
@@ -132,11 +126,7 @@ func chartRoleIDs(names []string) []string {
 	return ids
 }
 
-// loadChartRoles returns the chart's roles with the scopes each one really holds: an
-// aggregating role's scopes are computed by pkg/aggregation exactly as the identity
-// server computes them live, so every test below runs on effective scopes.  Every
-// aggregating role must be Available, and must be able to grant every role labelled for
-// it, as the role controller's Grantable condition checks.
+// loadChartRoles computes aggregating roles as the server does; each must be Available and grantable.
 func loadChartRoles(t *testing.T) map[string]chartRole {
 	t.Helper()
 
@@ -539,10 +529,6 @@ func TestAdministratorCannotWriteOAuth2Providers(t *testing.T) {
 	require.Equal(t, []string{"read"}, role.Scopes.Organization["identity:oauth2providers"])
 }
 
-// TestBuiltinRolesUnchangedByAggregation asserts that turning the built-in roles into
-// aggregating roles changes nothing until a service labels a role: each one holds exactly
-// the hand-written scopes now kept in its base role.  The chain (reader into auditor and
-// user, those into administrator) only adds scopes the higher role already has.
 func TestBuiltinRolesUnchangedByAggregation(t *testing.T) {
 	t.Parallel()
 

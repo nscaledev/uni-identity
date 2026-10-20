@@ -45,9 +45,7 @@ env:
 {{- end }}
 
 {{/*
-Role aggregation.  The built-in roles aggregation.builtinRoles switches, and
-the chain roles among them that are also sources.  Fixed here, not taken from
-values, so a values change cannot widen the chain.
+Built-in and chain roles, fixed here so a values change cannot widen the chain.
 */}}
 {{- define "unikorn.identity.builtinRoles" -}}
 {{- list "administrator" "auditor" "user" "reader" | toJson }}
@@ -58,9 +56,7 @@ values, so a values change cannot widen the chain.
 {{- end }}
 
 {{/*
-The fixed shape of each built-in role with aggregation.builtinRoles on: the
-aggregating roles it feeds (its aggregateTo) and its flattenToOrganization.
-The render guards and the admission policy both pin the built-in roles to it.
+The fixed shape of each built-in role with aggregation.builtinRoles on, pinned by the render and the policy.
 */}}
 {{- define "unikorn.identity.chainShape" -}}
 {{- dict
@@ -72,10 +68,7 @@ The render guards and the admission policy both pin the built-in roles to it.
 {{- end }}
 
 {{/*
-unikorn.identity.checkLabelKey fails the render unless .key is a valid
-Kubernetes label key: an optional DNS subdomain prefix (at most 253
-characters) and "/", then a name of at most 63 characters.  A key is written
-into the Role manifest, so an invalid one could inject YAML.
+unikorn.identity.checkLabelKey fails unless .key is a valid label key, as it is written into the manifest.
 */}}
 {{- define "unikorn.identity.checkLabelKey" -}}
 {{- $parts := splitList "/" .key }}
@@ -91,8 +84,7 @@ into the Role manifest, so an invalid one could inject YAML.
 {{- end }}
 
 {{/*
-unikorn.identity.labelled is "true" if a role in values carries an
-aggregate-to-* label, by aggregateTo or by labels.
+"true" if a role in values carries an aggregate-to-* label.
 */}}
 {{- define "unikorn.identity.labelled" -}}
 {{- $labelled := not (empty .aggregateTo) }}
@@ -105,20 +97,9 @@ aggregate-to-* label, by aggregateTo or by labels.
 {{- end }}
 
 {{/*
-Scope names only platform roles hold.  A labelled role may hold none of them.
-Tenant roles are the built-in base roles and the unprotected roles that are
-not built-in roles (those count through their base roles).  A scope is
-platform-only if:
-- this chart's roles (.Values.roles) grant it globally and no unlabelled
-  tenant role in .Values.roles grants it in an organization or project block.
-  A labelled role does not count here, so it cannot take a chart platform
-  scope (such as region:servers) off the list by holding it itself, and no
-  additionalRoles role counts either, so a decoy role can't take it off;
-- or only additionalRoles grant it globally and no tenant role, labelled or
-  not, grants it in an organization or project block.  A service's labelled
-  role does count here: it is how the service's own tenant scopes (held
-  globally by its platform role, such as radar-global-operator) reach org
-  admins.
+Scopes only platform roles hold; a labelled role may hold none of them.
+A labelled or additionalRoles role cannot take a chart platform scope off the list.
+A service labelled role counts only for scopes that additionalRoles alone hold globally.
 */}}
 {{- define "unikorn.identity.platformOnlyScopes" -}}
 {{- $chartRoles := default (dict) .Values.roles }}

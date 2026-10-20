@@ -3,7 +3,6 @@
 server:
   runtimeSchemaValidation: false
 
-# Built-in roles plain, as in production until the flip, so one CI row runs
-# the suite against them.  test-values.yaml turns it on for the other row.
+# Built-in roles plain, as in production, for one CI row.
 aggregation:
   builtinRoles: false

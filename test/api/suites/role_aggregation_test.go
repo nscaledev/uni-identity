@@ -42,9 +42,7 @@ import (
 	kubeclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// chartRoleID derives a role ID from its name exactly as the chart's
-// resource.id helper does, so a fixture can take the ID of a role on the
-// aggregation allow-list.
+// chartRoleID mirrors the chart's resource.id helper.
 func chartRoleID(name string) string {
 	sum := sha256.Sum256([]byte(name))
 	s := hex.EncodeToString(sum[:])
@@ -89,8 +87,7 @@ func sourceNames(role *identityopenapi.RoleRead) []string {
 	return names
 }
 
-// kubeForAggregation returns a cluster client and the identity namespace, or
-// skips on an HTTP-API-only run.
+// kubeForAggregation skips on an HTTP-API-only run.
 func kubeForAggregation() (kubeclient.Client, string) {
 	GinkgoHelper()
 
@@ -111,8 +108,6 @@ func builtinRoleNames() []string {
 	return []string{"administrator", "auditor", "user", "reader"}
 }
 
-// builtinsAggregating reports whether aggregation.builtinRoles is on: the
-// chart renders administrator with spec.aggregationRule only then.
 func builtinsAggregating(kube kubeclient.Client, identityNamespace string) bool {
 	GinkgoHelper()
 
@@ -122,8 +117,6 @@ func builtinsAggregating(kube kubeclient.Client, identityNamespace string) bool 
 	return admin.Spec.AggregationRule != nil
 }
 
-// kubeForAggregatingBuiltins is kubeForAggregation, also skipping when the
-// built-in roles are plain (aggregation.builtinRoles off).
 func kubeForAggregatingBuiltins() (kubeclient.Client, string) {
 	GinkgoHelper()
 
@@ -135,8 +128,6 @@ func kubeForAggregatingBuiltins() (kubeclient.Client, string) {
 	return kube, identityNamespace
 }
 
-// expectAvailable checks a role's Available condition is True for its
-// current generation.
 func expectAvailable(g Gomega, role *unikornv1.Role) {
 	available, err := unikornv1core.GetCondition(role.Status.Conditions, unikornv1core.ConditionAvailable)
 	g.Expect(err).NotTo(HaveOccurred(), "%s has no Available condition", role.Name)
@@ -144,8 +135,7 @@ func expectAvailable(g Gomega, role *unikornv1.Role) {
 	g.Expect(available.ObservedGeneration).To(Equal(role.Generation), "Available should be for the current generation")
 }
 
-// Serial: the specs install a Role with the fixed fleet-operator ID, which
-// parallel processes would collide on.
+// Serial: the specs share the fixed fleet-operator ID.
 var _ = Describe("Role Aggregation", Serial, func() {
 	Context("When reading the built-in roles", func() {
 		Describe("Given the role controller has run", func() {
@@ -153,8 +143,7 @@ var _ = Describe("Role Aggregation", Serial, func() {
 				kube, identityNamespace := kubeForAggregatingBuiltins()
 
 				Eventually(func(g Gomega) {
-					// Every built-in role, reader included, has been
-					// reconciled: an empty source list alone proves nothing.
+					// An empty source list alone proves nothing.
 					for _, name := range builtinRoleNames() {
 						role := &unikornv1.Role{}
 						g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID(name)}, role)).To(Succeed())
@@ -165,8 +154,7 @@ var _ = Describe("Role Aggregation", Serial, func() {
 					roles, err := client.ListRoles(ctx, config.OrgID)
 					g.Expect(err).NotTo(HaveOccurred())
 
-					// Protected base roles are sources too, but the API never
-					// lists them.
+					// The API never lists protected base roles.
 					admin := roleByName(roles, "administrator")
 					g.Expect(admin).NotTo(BeNil())
 					g.Expect(sourceNames(admin)).To(ContainElements("auditor", "user"))
@@ -233,12 +221,10 @@ var _ = Describe("Role Aggregation", Serial, func() {
 			BeforeEach(func() {
 				kube, identityNamespace = kubeForAggregatingBuiltins()
 
-				// fleet-operator is on the chart's allow-list, and the policy
-				// checks the ID, so the fixture takes its real ID.
+				// The policy checks the ID, so the fixture takes fleet-operator's real ID.
 				roleID = chartRoleID("fleet-operator")
 
-				// An environment deployed with k8s-deploy-unikorn already has
-				// the real fleet-operator role.  Never touch it.
+				// Never touch a real fleet-operator role that is already deployed.
 				existing := &unikornv1.Role{}
 				if err := kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: roleID}, existing); err == nil {
 					Skip("fleet-operator already exists here: these specs only run where they can own it")
@@ -262,9 +248,7 @@ var _ = Describe("Role Aggregation", Serial, func() {
 								Name:       "radar:topology",
 								Operations: []unikornv1.Operation{unikornv1.Read},
 							}},
-							// administrator and auditor flatten this to
-							// organization scope; user and reader keep it at
-							// project scope.
+							// administrator and auditor flatten this; user and reader do not.
 							Project: []unikornv1.RoleScope{{
 								Name:       "radar:fleetprojects",
 								Operations: []unikornv1.Operation{unikornv1.Read},
@@ -312,8 +296,7 @@ var _ = Describe("Role Aggregation", Serial, func() {
 			})
 
 			It("should let an org admin with no other role create a group with it", func() {
-				// The admin's ACL is cached for up to a minute, so retry until
-				// the aggregated scope reaches it.
+				// The admin's ACL is cached for up to a minute.
 				var group *identityopenapi.GroupRead
 
 				Eventually(func() error {

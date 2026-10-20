@@ -13,20 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Render assertions for role aggregation (roles.yaml and the
-# role-aggregation admission policy).  `make lint` runs this script.
+# Render assertions for role aggregation.  `make lint` runs this script.
 set -euo pipefail
 
 CHART=${CHART:-charts/identity}
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
-# role_doc <render> <name> prints the Role manifest whose name label is <name>.
-# The name label is quoted (B-3), so the match is on the quoted form.
+# role_doc <render> <name> prints the Role manifest with that (quoted) name label.
 role_doc() { awk -v want="$2" 'BEGIN{RS="\n---\n"} /kind: Role\n/ && $0 ~ "unikorn-cloud.org/name: \""want"\"\n" {print}' <<<"$1"; }
 
-# must_role_doc <render> <name> is role_doc, failing if there is no such Role,
-# so a negative grep on it can't pass on an empty document.
+# must_role_doc is role_doc, failing if there is no such Role.
 must_role_doc() {
 	local doc
 	doc=$(role_doc "$1" "$2")
@@ -62,8 +59,7 @@ must_fail() {
 default=$(helm template test "$CHART")
 aggregating=$(helm template test "$CHART" --set aggregation.builtinRoles=true)
 
-# Default (aggregation.builtinRoles off): the built-in roles render as they did
-# before aggregation, holding exactly their base role's scopes.
+# Default (aggregation.builtinRoles off): the built-in roles hold exactly their base role's scopes.
 for name in administrator auditor user reader; do
 	doc=$(must_role_doc "$default" "$name") || exit 1
 	base=$(must_role_doc "$default" "$name-base") || exit 1
@@ -127,8 +123,7 @@ pos_admin=$(grep -m1 -n "unikorn-cloud.org/name: \"administrator\"$" <<<"$aggreg
 [[ "$pos_base" -lt "$pos_admin" ]] || die "administrator-base is not rendered before administrator"
 grep -qF 'argocd.argoproj.io/sync-wave: "1"' <<<"$(role_doc "$aggregating" administrator)" || die "administrator has no later sync wave"
 
-# The admission policy is release scoped, binds the release namespace only,
-# and its allow-list holds IDs, not names.
+# The admission policy is release scoped and its allow-list holds IDs, not names.
 for render in "$default" "$aggregating"; do
 	grep -qF "name: test-role-aggregation.identity.unikorn-cloud.org" <<<"$render" || die "the role aggregation policy is not named for the release"
 	grep -qF "kubernetes.io/metadata.name: default" <<<"$render" || die "the role aggregation policy binding is not limited to the release namespace"
@@ -173,8 +168,7 @@ must_fail "a built-in role must ref exactly reader-base" --set aggregation.built
 must_fail "labels must not set \"identity.unikorn-cloud.org/aggregate-to-administrator\"" --set-json 'additionalRoles={"x":{"labels":{"identity.unikorn-cloud.org/aggregate-to-administrator":"true"},"scopes":{"organization":{"a:b":["read"]}}}}'
 must_fail "labels must not set \"unikorn-cloud.org/name\"" --set-json 'additionalRoles={"x":{"labels":{"unikorn-cloud.org/name":"administrator"},"scopes":{"organization":{"a:b":["read"]}}}}'
 
-# A labelled role can't hold a platform-only scope, and holding one in values
-# does not take it off the list.
+# A labelled role can't hold a platform-only scope.
 must_fail "platform-only scope \"region:servers\"" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"organization":{"region:servers":["create"]}}}}'
 must_fail "platform-only scope \"region:identities\"" --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"project":{"region:identities":["create"]}}}}'
 
@@ -207,20 +201,17 @@ must_fail "a role name must be a DNS-1123 label" --set-json 'additionalRoles={"b
 # A null allow-list is an empty one: a clear error, not a nil pointer.
 must_fail "aggregateTo needs the role on aggregation.allowedSources" --set aggregation.allowedSources=null --set-json 'additionalRoles={"fleet-operator":{"aggregateTo":["reader"],"scopes":{"organization":{"radar:topology":["read"]}}}}'
 
-# Every built-in role refs exactly its base role, administrator included
-# (it carries no label, so the chain-role check never covered it).
+# Every built-in role refs exactly its base role, administrator included.
 must_fail "\"administrator\": a built-in role must ref exactly administrator-base" "${on[@]}" --set-json 'roles.administrator.aggregationRule={"roleRefs":["administrator-base","platform-administrator"],"flattenToOrganization":true}'
 must_fail "\"user\": a built-in role must ref exactly user-base" "${on[@]}" --set-json 'roles.user.aggregationRule={"roleRefs":["platform-administrator"]}'
 
-# The policy pins every aggregating built-in role, administrator included, to
-# its base ref and its own selector, and chain label values to "true".
+# The policy pins each aggregating built-in role's base ref, selector and chain labels.
 pin="'$(id_of administrator)': {'ref': '$(id_of administrator-base)', 'label': 'identity.unikorn-cloud.org/aggregate-to-administrator'}"
 grep -qF "$pin" <<<"$default" || die "the policy does not pin administrator's roleRefs and selector"
 grep -qxF "      !variables.aggregating || !(object.metadata.name in variables.builtin) ||" <<<"$default" || die "the policy does not pin unlabelled built-in roles"
 grep -qF "object.metadata.labels[k] == 'true'" <<<"$default" || die "the policy does not pin chain label values to \"true\""
 
-# A decoy additionalRoles role holding a chart platform scope in an
-# organization block does not take it off the platform-only list.
+# A decoy role holding a platform scope does not take it off the platform-only list.
 decoy='"decoy":{"scopes":{"organization":{"region:servers":["read"]}}}'
 must_fail "platform-only scope \"region:servers\"" --set-json "additionalRoles={$decoy,\"fleet-operator\":{\"aggregateTo\":[\"reader\"],\"scopes\":{\"organization\":{\"region:servers\":[\"create\"]}}}}"
 # A labelled role in this chart's own roles does not take it off the list either.

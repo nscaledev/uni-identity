@@ -19,9 +19,8 @@
 {{- $builtins := include "unikorn.identity.builtinRoles" . | fromJsonArray }}
 {{- $chain := include "unikorn.identity.chainRoles" . | fromJsonArray }}
 {{- /*
-An old Role CRD prunes spec.aggregationRule, and the built-in roles would hold
-nothing.  lookup is empty under helm template and Argo CD, so this only runs
-on a real helm install or upgrade.
+An old Role CRD prunes spec.aggregationRule, leaving the built-in roles with nothing.
+lookup is empty under helm template and Argo CD, so this runs on helm install and upgrade only.
 */}}
 {{- if $builtinAggregate }}
 {{- with lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "roles.identity.unikorn-cloud.org" }}
@@ -33,8 +32,7 @@ on a real helm install or upgrade.
 {{- end }}
 {{- end }}
 {{- /*
-With aggregation.builtinRoles off, a built-in role is a plain role holding its
-base role's scopes.
+With aggregation.builtinRoles off, a built-in role holds its base role's scopes inline.
 */}}
 {{- $plain := dict }}
 {{- range $name := $builtins }}
@@ -44,11 +42,8 @@ base role's scopes.
 {{- end }}
 {{- end }}
 {{- /*
-Two passes: roles that don't aggregate first, then aggregating roles, so a
-base role exists before the role that refs it.  Helm applies in this order;
-Argo CD applies by sync wave, so aggregating roles also carry a later wave.
-Without this, administrator (f194...) is applied before administrator-base
-(f43f...) and holds nothing until the base arrives.
+Non-aggregating roles first, so a base role exists before the role that refs it.
+Argo CD orders by sync wave instead, so aggregating roles get a later wave.
 */}}
 {{- $ordered := list }}
 {{- range $name, $spec := $roles }}
@@ -64,10 +59,7 @@ Without this, administrator (f194...) is applied before administrator-base
 {{- range $name := $ordered }}
 {{- $spec := index $roles $name }}
 {{- /*
-Render-time guards for aggregation.  They mirror the admission policy and the
-role controller, so a bad values file fails here, before it reaches a cluster.
-With aggregation.builtinRoles off the built-in roles render plain, so their
-aggregateTo and aggregationRule are not checked.
+Render guards mirror the admission policy, so a bad values file fails before it reaches a cluster.
 */}}
 {{- $checked := or $builtinAggregate (not (has $name $builtins)) }}
 {{- /* A name is written into labels and selectors, so it must be a DNS-1123 label. */}}

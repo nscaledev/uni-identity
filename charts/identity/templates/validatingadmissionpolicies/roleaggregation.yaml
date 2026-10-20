@@ -1,36 +1,7 @@
 {{- /*
-Role aggregation guard.  An aggregate-to-* label on a Role widens every org
-admin at the next reconcile, with nobody approving it, so the label is a quiet
-escalation path (CNPRE-521, CNPRE-712).  This policy applies to every Role in
-the release namespace, whichever chart ships it.
-
-A Role may carry an aggregate-to-* label only if:
-- its ID is on aggregation.allowedSources (names, turned into IDs here, so the
-  check can't be passed by copying a name label),
-- it is not protected,
-- it has no global scopes,
-- it has no identity:* scopes and no credential (.../accesskeys) scopes
-  (identity scopes are trust and tenancy surfaces: providers, organizations,
-  users, allocations),
-- it has no platform-only scopes (granted globally and held by no tenant
-  role; a labelled role in values does not count as a tenant role for this
-  chart's own global scopes, see unikorn.identity.platformOnlyScopes),
-- it is not itself aggregating, unless it is a chain role (reader, user,
-  auditor).
-
-The built-in roles are pinned to their fixed shape (unikorn.identity.chainShape),
-labelled or not:
-- a labelled built-in role carries exactly its aggregate-to-* labels, each
-  "true" (reader: auditor and user; user and auditor: administrator;
-  administrator: none),
-- an aggregating built-in role refs only its base role and selects only its
-  own aggregate-to-<name>: "true" label (otherwise its roleRefs or selector
-  could pull in any role),
-- an aggregating built-in role has its fixed flattenToOrganization
-  (administrator and auditor true, user and reader false).
-
-An aggregating Role (one with spec.aggregationRule) must not set spec.scopes:
-all of its scopes come from its sources.
+Role aggregation guard: an aggregate-to-* label widens every org admin with nobody
+approving it (CNPRE-521, CNPRE-712). Applies to every Role in the release namespace,
+whichever chart ships it; the rules are in pkg/controllers/role/README.md.
 */}}
 {{- $allowed := list }}
 {{- range ((default (dict) .Values.aggregation).allowedSources | default (list)) }}
