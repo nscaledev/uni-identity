@@ -1,3 +1,5 @@
+//go:build integration
+
 /*
 Copyright 2026 Nscale.
 
@@ -29,6 +31,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/test/api"
 )
 
 // EnvirACLMiddleware serves /api/v1/acl for Envir's states with production authentication and RBAC,
@@ -40,7 +43,7 @@ func EnvirACLMiddleware(authorizer *local.Authorizer) func(http.Handler) http.Ha
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/api/v1/acl" || envirBearer.get() == "" {
+			if r.URL.Path != api.NewEndpoints().GetGlobalACL() || envirBearer.get() == "" {
 				next.ServeHTTP(w, r)
 				return
 			}

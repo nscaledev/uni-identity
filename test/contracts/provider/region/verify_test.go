@@ -56,6 +56,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/test/api"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -310,13 +311,15 @@ func buildHandlerOptions(serverURL string) *handler.Options {
 // certificate. The token endpoint looks up no registered client: production trusts the ingress's
 // verification and takes the subject from the certificate's common name.
 func envirRequestFilter(next http.Handler) http.Handler {
+	endpoints := api.NewEndpoints()
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/oauth2/v2/userinfo", "/api/v1/acl":
+		case endpoints.GetUserinfo(), endpoints.GetGlobalACL():
 			if bearer := envirBearer.get(); bearer != "" {
 				r.Header.Set("Authorization", "Bearer "+bearer)
 			}
-		case "/oauth2/v2/token":
+		case endpoints.Token():
 			r.Header.Set("Ssl-Client-Cert", envirClientCertificate())
 			r.Header.Set("Ssl-Client-Verify", "SUCCESS")
 		}
