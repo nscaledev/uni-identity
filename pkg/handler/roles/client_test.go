@@ -132,11 +132,12 @@ func adminBase() *unikornv1.Role {
 	return base
 }
 
-// adminRole is administrator as the chart ships it: it refs its base role
-// and selects roles labelled for it.  It has no status: no controller runs
-// in these tests.
+// adminRole is administrator as the chart ships it, with the chart's ID: it
+// refs its base role and selects roles labelled for it.  It has no status: no
+// controller runs in these tests.
 func adminRole(refs ...string) *unikornv1.Role {
-	role := newRole("administrator", false, nil)
+	role := newRole(unikornv1.ChartRoleID("administrator"), false, nil)
+	role.Labels["unikorn-cloud.org/name"] = "administrator"
 	role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{
 		RoleSelectors: []metav1.LabelSelector{
 			{MatchLabels: map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}},
