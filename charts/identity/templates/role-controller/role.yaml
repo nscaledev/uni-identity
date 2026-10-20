@@ -1,0 +1,34 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-role-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+rules:
+# Controller prerequisites.
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - update
+# Status of aggregating roles (my job), never spec, labels or annotations.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - roles/status
+  verbs:
+  - update
+  - patch
+# Change record Events; leader election uses the core API.
+- apiGroups:
+  - events.k8s.io
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update

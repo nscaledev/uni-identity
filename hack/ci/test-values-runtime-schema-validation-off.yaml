@@ -2,3 +2,7 @@
 # hack/ci/install applies this file after test-values.yaml.
 server:
   runtimeSchemaValidation: false
+
+# Built-in roles plain, as in production, for one CI row.
+aggregation:
+  builtinRoles: false

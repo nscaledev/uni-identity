@@ -47,8 +47,8 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | File | Purpose |
 |------|---------|
 | `kind-config.yaml` | KinD cluster config (ingress-ready node label) |
-| `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
-| `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
+| `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account and turns on `aggregation.builtinRoles` |
+| `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off and `aggregation.builtinRoles` off, as in production |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally
@@ -88,6 +88,20 @@ To run in production mode, with response-body validation off:
 ```sh
 make integration-test INTEGRATION_EXTRA_VALUES=hack/ci/test-values-runtime-schema-validation-off.yaml
 ```
+
+## Role aggregation
+
+The two CI rows run the suite with `aggregation.builtinRoles` on and off. The
+role aggregation specs skip when `administrator` is not aggregating, and one
+spec checks the built-in roles are plain. With it on, `install` waits (120 s)
+for the four built-in Roles to be `Available` before it prints the `.env`
+fragment, so a stuck built-in role fails the install early.
+
+Before turning `aggregation.builtinRoles` on in an environment:
+
+- Alert on a Role with `Grantable` or `Available` False, and on the role
+  controller being down. The server works out what roles hold live; the
+  controller only reports it, so without it a stuck role goes unseen.
 
 ## Composability example
 

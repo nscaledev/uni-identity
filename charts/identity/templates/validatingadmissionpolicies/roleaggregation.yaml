@@ -1,0 +1,124 @@
+{{- /*
+Role aggregation guard: an aggregate-to-* label widens every org admin with nobody
+approving it (CNPRE-521, CNPRE-712). Applies to every Role in the release namespace,
+whichever chart ships it; the rules are in pkg/controllers/role/README.md.
+*/}}
+{{- $allowed := list }}
+{{- range ((default (dict) .Values.aggregation).allowedSources | default (list)) }}
+{{- $allowed = append $allowed (printf "'%s'" (include "resource.id" .)) }}
+{{- end }}
+{{- $chain := list }}
+{{- range (include "unikorn.identity.chainRoles" . | fromJsonArray) }}
+{{- $chain = append $chain (printf "'%s'" (include "resource.id" .)) }}
+{{- end }}
+{{- $builtin := list }}
+{{- range (include "unikorn.identity.builtinRoles" . | fromJsonArray) }}
+{{- $builtin = append $builtin (printf "'%s': {'ref': '%s', 'label': 'identity.unikorn-cloud.org/aggregate-to-%s'}" (include "resource.id" .) (include "resource.id" (printf "%s-base" .)) .) }}
+{{- end }}
+{{- $targets := list }}
+{{- $flatten := list }}
+{{- range $role, $want := (include "unikorn.identity.chainShape" . | fromJson) }}
+{{- $labels := list }}
+{{- range $want.to }}
+{{- $labels = append $labels (printf "'identity.unikorn-cloud.org/aggregate-to-%s'" .) }}
+{{- end }}
+{{- $targets = append $targets (printf "'%s': [%s]" (include "resource.id" $role) (join ", " $labels)) }}
+{{- $flatten = append $flatten (printf "'%s': %t" (include "resource.id" $role) $want.flatten) }}
+{{- end }}
+{{- $platformOnly := list }}
+{{- range (include "unikorn.identity.platformOnlyScopes" . | fromJsonArray) }}
+{{- $platformOnly = append $platformOnly (printf "'%s'" .) }}
+{{- end }}
+{{- $name := printf "%s-role-aggregation.identity.unikorn-cloud.org" .Release.Name }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - identity.unikorn-cloud.org
+      apiVersions:
+      - '*'
+      resources:
+      - roles
+      operations:
+      - CREATE
+      - UPDATE
+  variables:
+  - name: labelled
+    expression: "object.metadata.?labels.orValue({}).exists(k, k.startsWith('identity.unikorn-cloud.org/aggregate-to-'))"
+  - name: global
+    expression: "object.?spec.?scopes.?global.orValue([])"
+  - name: scoped
+    expression: "object.?spec.?scopes.?organization.orValue([]).map(s, s.name) + object.?spec.?scopes.?project.orValue([]).map(s, s.name)"
+  - name: aggregating
+    expression: "object.?spec.?aggregationRule.hasValue()"
+  - name: chain
+    expression: "[{{ join ", " $chain }}]"
+  - name: builtin
+    expression: "{ {{- join ", " $builtin -}} }"
+  - name: chainTargets
+    expression: "{ {{- join ", " $targets -}} }"
+  - name: chainFlatten
+    expression: "{ {{- join ", " $flatten -}} }"
+  validations:
+  - expression: "!variables.labelled || object.metadata.name in [{{ join ", " $allowed }}]"
+    messageExpression: "'role ' + object.metadata.name + ' carries an aggregate-to-* label but is not on the identity chart aggregation.allowedSources list'"
+    reason: Forbidden
+  - expression: "!variables.labelled || !object.?spec.?protected.orValue(false)"
+    message: A protected role cannot carry an aggregate-to-* label
+    reason: Forbidden
+  - expression: "!variables.labelled || size(variables.global) == 0"
+    message: A role with global scopes cannot carry an aggregate-to-* label
+    reason: Forbidden
+  - expression: "!variables.labelled || !variables.scoped.exists(s, s.startsWith('identity:') || s.endsWith('/accesskeys'))"
+    message: A role with identity:* or credential (.../accesskeys) scopes cannot carry an aggregate-to-* label
+    reason: Forbidden
+  - expression: "!variables.labelled || !variables.scoped.exists(s, s in [{{ join ", " $platformOnly }}])"
+    message: A role with platform-only scopes (granted only globally by the identity chart) cannot carry an aggregate-to-* label
+    reason: Forbidden
+  - expression: "!variables.labelled || !variables.aggregating || object.metadata.name in variables.chain"
+    message: A role with an aggregate-to-* label cannot also aggregate, except the built-in chain roles (reader, user, auditor)
+    reason: Forbidden
+  - expression: >-
+      !variables.aggregating || !(object.metadata.name in variables.builtin) ||
+      (object.spec.aggregationRule.?roleRefs.orValue([]) == [variables.builtin[object.metadata.name].ref] &&
+      size(object.spec.aggregationRule.?roleSelectors.orValue([])) == 1 &&
+      object.spec.aggregationRule.roleSelectors[0].?matchLabels.orValue({}) == {variables.builtin[object.metadata.name].label: 'true'} &&
+      size(object.spec.aggregationRule.roleSelectors[0].?matchExpressions.orValue([])) == 0)
+    message: An aggregating built-in role must ref only its base role and select only its own aggregate-to-* label
+    reason: Forbidden
+  - expression: >-
+      !variables.labelled || !(object.metadata.name in variables.chainTargets) ||
+      (object.metadata.labels.filter(k, k.startsWith('identity.unikorn-cloud.org/aggregate-to-')).all(k, k in variables.chainTargets[object.metadata.name]) &&
+      variables.chainTargets[object.metadata.name].all(k, k in object.metadata.labels && object.metadata.labels[k] == 'true'))
+    message: A built-in role must carry exactly its own aggregate-to-* labels, each "true" (reader to auditor and user, user and auditor to administrator, administrator none)
+    reason: Forbidden
+  - expression: >-
+      !variables.aggregating || !(object.metadata.name in variables.chainFlatten) ||
+      object.spec.aggregationRule.?flattenToOrganization.orValue(false) == variables.chainFlatten[object.metadata.name]
+    message: A built-in role must keep its flattenToOrganization (administrator and auditor true, user and reader false)
+    reason: Forbidden
+  - expression: "!variables.aggregating || (size(variables.global) == 0 && size(variables.scoped) == 0)"
+    message: An aggregating role (spec.aggregationRule) must not set spec.scopes; move them to a base role in roleRefs
+    reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+spec:
+  policyName: {{ $name }}
+  validationActions:
+  - Deny
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ .Release.Namespace }}

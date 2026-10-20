@@ -105,6 +105,42 @@ deployment time.
 These carry `organization` and/or `project` scope blocks and are the roles an
 administrator grants to groups.
 
+The hand-written scopes of `administrator`, `auditor`, `user` and `reader`, shown below, live in protected base roles (`administrator-base`,
+`auditor-base`, `user-base`, `reader-base`). The chart value `aggregation.builtinRoles`
+picks how the four render:
+
+- off (the default): each is a plain role holding its base role's scopes, exactly as before
+  aggregation.
+- on: each is an aggregating role (see [Role aggregation](#role-aggregation)) that names its
+  base in `roleRefs` and also holds every role labelled for it, through the chain:
+
+```
+reader ──┬─> auditor ──┐
+         └─> user ─────┴─> administrator
+```
+
+The role names, and so the role IDs every group stores, are the same either way. Turn it on
+only after a release with the new Role CRD, the role controller and a server that computes
+effective scopes is fully rolled out: an old CRD drops `aggregationRule`, and an old server
+reads `spec.scopes`, and either leaves the built-in roles holding nothing. On a Helm upgrade
+the chart refuses to render with it on while the installed CRD lacks `aggregationRule`.
+
+A service labels its role once, at the lowest level that should hold it (for example
+`aggregate-to-reader` for a read-only role), and every role above picks it up.
+`administrator` and `auditor` set `flattenToOrganization`, so project scopes from below
+land at organization scope. `TestBuiltinRolesUnchangedByAggregation` pins that the chain
+adds nothing to the built-in roles until a service labels a role.
+
+Which roles may carry an `aggregate-to-*` label is the chart's
+`aggregation.allowedSources` list, enforced for every `Role` in the release namespace by the
+`<release>-role-aggregation.identity.unikorn-cloud.org` admission policy. The policy also
+refuses the label on protected roles, on roles with global, `identity:*`, credential
+(`.../accesskeys`) or platform-only scopes (scopes the chart's roles grant only globally),
+and on aggregating roles other than the chain. A chain role (`reader`, `user`, `auditor`)
+may aggregate only with a rule that selects its own `aggregate-to-*` label and refs exactly
+its base role; anything else could pull in any role. The policy refuses `spec.scopes` on an
+aggregating role. The chart's render checks the same rules for roles defined in values.
+
 | Role | organization block | project block |
 | --- | --- | --- |
 | `administrator` | full CRUD across identity, region, storage, Kubernetes and compute, except read-only `identity:oauth2providers` | — |
@@ -186,7 +222,8 @@ administrator ─┬─ auditor ─── reader
 `user` and `auditor` are incomparable, and neither can grant `administrator`. This lattice
 is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from the parsed
 chart values for every ordered role pair, asserting each allowed edge and rejecting every
-non-edge.
+non-edge. It runs on effective scopes: the test computes aggregation over the chart's roles
+with `pkg/aggregation`, as the identity server does live.
 
 ## Actor Model
 

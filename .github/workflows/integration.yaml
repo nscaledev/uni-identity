@@ -18,10 +18,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - label: response validation on
+        - label: response validation on, role aggregation on
           slug: validation-on
           extraValues: ''
-        - label: response validation off
+        - label: response validation off, role aggregation off
           slug: validation-off
           extraValues: hack/ci/test-values-runtime-schema-validation-off.yaml
     steps:

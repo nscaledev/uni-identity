@@ -24,10 +24,15 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/yaml"
 )
@@ -55,13 +60,18 @@ type chartRole struct {
 		Organization endpointOperations `json:"organization"`
 		Project      endpointOperations `json:"project"`
 	} `json:"scopes"`
+	AggregateTo     []string `json:"aggregateTo"`
+	AggregationRule *struct {
+		RoleRefs              []string `json:"roleRefs"`
+		FlattenToOrganization bool     `json:"flattenToOrganization"`
+	} `json:"aggregationRule"`
 }
 
 type chartValues struct {
 	Roles map[string]chartRole `json:"roles"`
 }
 
-func loadChartRoles(t *testing.T) map[string]chartRole {
+func loadChartValues(t *testing.T) chartValues {
 	t.Helper()
 
 	raw, err := os.ReadFile(filepath.Clean(chartValuesPath))
@@ -72,7 +82,100 @@ func loadChartRoles(t *testing.T) map[string]chartRole {
 	require.NoError(t, yaml.Unmarshal(raw, &values))
 	require.NotEmpty(t, values.Roles)
 
-	return values.Roles
+	return values
+}
+
+// chartRoleResources mirrors roles.yaml with aggregation.builtinRoles on, keyed by role ID.
+func chartRoleResources(t *testing.T) map[string]*unikornv1.Role {
+	t.Helper()
+
+	out := map[string]*unikornv1.Role{}
+
+	for name, in := range loadChartValues(t).Roles {
+		role := asRole(in)
+		role.Name = unikornv1.ChartRoleID(name)
+		role.Labels = map[string]string{coreconstants.NameLabel: name}
+
+		for _, target := range in.AggregateTo {
+			role.Labels[unikornv1.AggregateToLabel(target)] = "true"
+		}
+
+		if in.AggregationRule != nil {
+			role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel(name): "true"}},
+				},
+				RoleRefs:              chartRoleIDs(in.AggregationRule.RoleRefs),
+				FlattenToOrganization: in.AggregationRule.FlattenToOrganization,
+			}
+		}
+
+		out[role.Name] = role
+	}
+
+	return out
+}
+
+func chartRoleIDs(names []string) []string {
+	ids := make([]string, len(names))
+
+	for i, name := range names {
+		ids[i] = unikornv1.ChartRoleID(name)
+	}
+
+	return ids
+}
+
+// loadChartRoles computes aggregating roles as the server does; each must be Available and grantable.
+func loadChartRoles(t *testing.T) map[string]chartRole {
+	t.Helper()
+
+	roles := loadChartValues(t).Roles
+	results := aggregation.Compute(chartRoleResources(t))
+	org := ids.MustParseOrganizationID(organizationID)
+
+	names := make(map[string]string, len(roles))
+	for name := range roles {
+		names[unikornv1.ChartRoleID(name)] = name
+	}
+
+	for id, result := range results {
+		name := names[id]
+
+		require.Equalf(t, corev1.ConditionTrue, result.Available.Status, "%s: %s", name, result.Available.Message)
+
+		role := roles[name]
+		role.Scopes.Global = nil
+		role.Scopes.Organization = fromRoleScopes(result.EffectiveScopes.Organization)
+		role.Scopes.Project = fromRoleScopes(result.EffectiveScopes.Project)
+		roles[name] = role
+
+		ctx := rbac.NewContext(t.Context(), aclForHolder(role))
+
+		for _, labelled := range result.Labelled {
+			target := &unikornv1.Role{Spec: unikornv1.RoleSpec{Scopes: labelled.Scopes}}
+
+			require.NoErrorf(t, rbac.AllowRole(ctx, target, org), "%s cannot grant %s, labelled for it", name, labelled.Name)
+		}
+	}
+
+	return roles
+}
+
+func fromRoleScopes(in []unikornv1.RoleScope) endpointOperations {
+	if len(in) == 0 {
+		return nil
+	}
+
+	out := endpointOperations{}
+
+	for _, scope := range in {
+		for _, operation := range scope.Operations {
+			out[scope.Name] = append(out[scope.Name], string(operation))
+		}
+	}
+
+	return out
 }
 
 func toRoleScopes(in endpointOperations) []unikornv1.RoleScope {
@@ -424,4 +527,21 @@ func TestAdministratorCannotWriteOAuth2Providers(t *testing.T) {
 	require.True(t, ok, "built-in role \"administrator\" is missing")
 
 	require.Equal(t, []string{"read"}, role.Scopes.Organization["identity:oauth2providers"])
+}
+
+func TestBuiltinRolesUnchangedByAggregation(t *testing.T) {
+	t.Parallel()
+
+	roles := loadChartRoles(t)
+
+	for _, name := range []string{"administrator", "auditor", "user", "reader"} {
+		base, ok := roles[name+"-base"]
+		require.Truef(t, ok, "%s-base is missing", name)
+		require.True(t, base.Protected, "%s-base must be protected", name)
+
+		require.Equalf(t,
+			aggregation.Hash(asRole(base).Spec.Scopes),
+			aggregation.Hash(asRole(roles[name]).Spec.Scopes),
+			"%s must hold exactly its base role's scopes until a service role is labelled", name)
+	}
 }

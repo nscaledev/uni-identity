@@ -1,0 +1,441 @@
+//go:build integration
+// +build integration
+
+/*
+Copyright 2026 Nscale.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+//nolint:revive,testpackage // dot imports and package naming standard for Ginkgo
+package suites
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+
+	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
+	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/test/api"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	kubeclient "sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// chartRoleID mirrors the chart's resource.id helper.
+func chartRoleID(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	s := hex.EncodeToString(sum[:])
+
+	return fmt.Sprintf("f%s-%s-4%s-8%s-%s", s[1:8], s[8:12], s[13:16], s[17:20], s[20:32])
+}
+
+func roleByName(roles identityopenapi.Roles, name string) *identityopenapi.RoleRead {
+	for i := range roles {
+		if roles[i].Metadata.Name == name {
+			return &roles[i]
+		}
+	}
+
+	return nil
+}
+
+func holdsEndpoint(endpoints *identityopenapi.AclEndpoints, name string) bool {
+	if endpoints == nil {
+		return false
+	}
+
+	for _, endpoint := range *endpoints {
+		if endpoint.Name == name {
+			return true
+		}
+	}
+
+	return false
+}
+
+func sourceNames(role *identityopenapi.RoleRead) []string {
+	if role.AggregatedFrom == nil {
+		return nil
+	}
+
+	names := make([]string, 0, len(*role.AggregatedFrom))
+	for _, source := range *role.AggregatedFrom {
+		names = append(names, source.Name)
+	}
+
+	return names
+}
+
+// kubeForAggregation skips on an HTTP-API-only run.
+func kubeForAggregation() (kubeclient.Client, string) {
+	GinkgoHelper()
+
+	kube, err := api.NewKubernetesClient()
+	if errors.Is(err, api.ErrNoKubeconfig) {
+		Skip("no kubeconfig: role aggregation specs need cluster access")
+	}
+
+	Expect(err).NotTo(HaveOccurred())
+
+	identityNamespace, _, err := api.OrganizationNamespaces(ctx, kube, config.OrgID)
+	Expect(err).NotTo(HaveOccurred())
+
+	return kube, identityNamespace
+}
+
+func builtinRoleNames() []string {
+	return []string{"administrator", "auditor", "user", "reader"}
+}
+
+func builtinsAggregating(kube kubeclient.Client, identityNamespace string) bool {
+	GinkgoHelper()
+
+	admin := &unikornv1.Role{}
+	Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID("administrator")}, admin)).To(Succeed())
+
+	return admin.Spec.AggregationRule != nil
+}
+
+func kubeForAggregatingBuiltins() (kubeclient.Client, string) {
+	GinkgoHelper()
+
+	kube, identityNamespace := kubeForAggregation()
+	if !builtinsAggregating(kube, identityNamespace) {
+		Skip("aggregation.builtinRoles is off: the built-in roles do not aggregate")
+	}
+
+	return kube, identityNamespace
+}
+
+func expectAvailable(g Gomega, role *unikornv1.Role) {
+	available, err := unikornv1core.GetCondition(role.Status.Conditions, unikornv1core.ConditionAvailable)
+	g.Expect(err).NotTo(HaveOccurred(), "%s has no Available condition", role.Name)
+	g.Expect(available.Status).To(Equal(metav1.ConditionTrue), available.Message)
+	g.Expect(available.ObservedGeneration).To(Equal(role.Generation), "Available should be for the current generation")
+}
+
+// Serial: the specs share the fixed fleet-operator ID.
+var _ = Describe("Role Aggregation", Serial, func() {
+	Context("When reading the built-in roles", func() {
+		Describe("Given the role controller has run", func() {
+			It("should report each built-in role's sources", func() {
+				kube, identityNamespace := kubeForAggregatingBuiltins()
+
+				Eventually(func(g Gomega) {
+					// An empty source list alone proves nothing.
+					for _, name := range builtinRoleNames() {
+						role := &unikornv1.Role{}
+						g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID(name)}, role)).To(Succeed())
+						g.Expect(role.Status.EffectiveScopes).NotTo(BeNil(), "%s has no effective scopes", name)
+						expectAvailable(g, role)
+					}
+
+					roles, err := client.ListRoles(ctx, config.OrgID)
+					g.Expect(err).NotTo(HaveOccurred())
+
+					// The API never lists protected base roles.
+					admin := roleByName(roles, "administrator")
+					g.Expect(admin).NotTo(BeNil())
+					g.Expect(sourceNames(admin)).To(ContainElements("auditor", "user"))
+					g.Expect(sourceNames(admin)).NotTo(ContainElement("administrator-base"))
+
+					for _, name := range []string{"auditor", "user"} {
+						role := roleByName(roles, name)
+						g.Expect(role).NotTo(BeNil())
+						g.Expect(sourceNames(role)).To(ContainElement("reader"), "%s should aggregate reader", name)
+					}
+
+					reader := roleByName(roles, "reader")
+					g.Expect(reader).NotTo(BeNil())
+					g.Expect(sourceNames(reader)).NotTo(ContainElement("reader-base"))
+
+					// public-administrator only exists in some environments.
+					public := roleByName(roles, "public-administrator")
+					if public != nil {
+						g.Expect(public.AggregatedFrom).To(BeNil(), "public-administrator never aggregates")
+					}
+				}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
+			})
+		})
+	})
+
+	Context("When aggregation.builtinRoles is off", func() {
+		Describe("Given the chart renders the built-in roles plain", func() {
+			It("should give each built-in role its own scopes and no aggregation", func() {
+				kube, identityNamespace := kubeForAggregation()
+				if builtinsAggregating(kube, identityNamespace) {
+					Skip("aggregation.builtinRoles is on")
+				}
+
+				for _, name := range builtinRoleNames() {
+					role := &unikornv1.Role{}
+					Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID(name)}, role)).To(Succeed())
+					Expect(role.Spec.AggregationRule).To(BeNil(), "%s should not aggregate", name)
+					Expect(role.Spec.Protected).To(BeFalse(), "%s should not be protected", name)
+					Expect(role.Spec.Scopes.Organization).NotTo(BeEmpty(), "%s should hold its scopes inline", name)
+
+					for key := range role.Labels {
+						Expect(key).NotTo(HavePrefix(unikornv1.AggregateToLabelPrefix), "%s should carry no aggregate-to-* label", name)
+					}
+				}
+
+				roles, err := client.ListRoles(ctx, config.OrgID)
+				Expect(err).NotTo(HaveOccurred())
+
+				admin := roleByName(roles, "administrator")
+				Expect(admin).NotTo(BeNil())
+				Expect(holdsEndpoint(admin.Scopes.Organization, "identity:groups")).To(BeTrue(), "administrator should hold its inline scopes")
+			})
+		})
+	})
+
+	Context("When a service labels a role for aggregation", func() {
+		Describe("Given an allow-listed role labelled aggregate-to-reader", func() {
+			var (
+				roleID            string
+				kube              kubeclient.Client
+				identityNamespace string
+			)
+
+			BeforeEach(func() {
+				kube, identityNamespace = kubeForAggregatingBuiltins()
+
+				// The policy checks the ID, so the fixture takes fleet-operator's real ID.
+				roleID = chartRoleID("fleet-operator")
+
+				// Never touch a real fleet-operator role that is already deployed.
+				existing := &unikornv1.Role{}
+				if err := kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: roleID}, existing); err == nil {
+					Skip("fleet-operator already exists here: these specs only run where they can own it")
+				}
+
+				role := &unikornv1.Role{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      roleID,
+						Namespace: identityNamespace,
+						Labels: map[string]string{
+							coreconstants.NameLabel:              "fleet-operator",
+							unikornv1.AggregateToLabel("reader"): "true",
+						},
+						Annotations: map[string]string{
+							coreconstants.DescriptionAnnotation: "Fleet operator",
+						},
+					},
+					Spec: unikornv1.RoleSpec{
+						Scopes: unikornv1.RoleScopes{
+							Organization: []unikornv1.RoleScope{{
+								Name:       "radar:topology",
+								Operations: []unikornv1.Operation{unikornv1.Read},
+							}},
+							// administrator and auditor flatten this; user and reader do not.
+							Project: []unikornv1.RoleScope{{
+								Name:       "radar:fleetprojects",
+								Operations: []unikornv1.Operation{unikornv1.Read},
+							}},
+						},
+					},
+				}
+
+				cleanup, err := api.InstallFixture(ctx, kube, role)
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(cleanup)
+			})
+
+			It("should give every built-in role up the chain the role's scopes", func() {
+				Eventually(func(g Gomega) {
+					roles, err := client.ListRoles(ctx, config.OrgID)
+					g.Expect(err).NotTo(HaveOccurred())
+
+					for _, name := range []string{"reader", "user", "auditor", "administrator"} {
+						role := roleByName(roles, name)
+						g.Expect(role).NotTo(BeNil())
+
+						held := holdsEndpoint(role.Scopes.Organization, "radar:topology") ||
+							holdsEndpoint(role.Scopes.Project, "radar:topology")
+						g.Expect(held).To(BeTrue(), "%s should hold radar:topology", name)
+					}
+
+					for _, name := range []string{"reader", "user"} {
+						role := roleByName(roles, name)
+						g.Expect(holdsEndpoint(role.Scopes.Project, "radar:fleetprojects")).To(BeTrue(), "%s should hold radar:fleetprojects at project scope", name)
+						g.Expect(holdsEndpoint(role.Scopes.Organization, "radar:fleetprojects")).To(BeFalse(), "%s should not flatten radar:fleetprojects", name)
+					}
+
+					for _, name := range []string{"auditor", "administrator"} {
+						role := roleByName(roles, name)
+						g.Expect(holdsEndpoint(role.Scopes.Organization, "radar:fleetprojects")).To(BeTrue(), "%s should flatten radar:fleetprojects to organization scope", name)
+						g.Expect(holdsEndpoint(role.Scopes.Project, "radar:fleetprojects")).To(BeFalse(), "%s should not hold radar:fleetprojects at project scope", name)
+					}
+
+					reader := roleByName(roles, "reader")
+					g.Expect(reader.AggregatedFrom).NotTo(BeNil())
+					g.Expect(*reader.AggregatedFrom).NotTo(BeEmpty())
+					g.Expect(sourceNames(reader)).To(ContainElement("fleet-operator"))
+				}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
+			})
+
+			It("should let an org admin with no other role create a group with it", func() {
+				// The admin's ACL is cached for up to a minute.
+				var group *identityopenapi.GroupRead
+
+				Eventually(func() error {
+					var err error
+
+					payload := api.NewGroupPayload().
+						WithName("fleet-group-" + uuid.NewString()[:8]).
+						WithRoleIDs([]string{roleID}).
+						Build()
+
+					group, err = adminClient.CreateGroup(ctx, config.OrgID, payload)
+
+					return err
+				}).WithTimeout(3*time.Minute).WithPolling(5*time.Second).Should(Succeed(),
+					"an org admin must be able to grant a labelled role")
+
+				DeferCleanup(func() {
+					Expect(adminClient.DeleteGroup(ctx, config.OrgID, group.Metadata.Id)).To(Succeed())
+				})
+
+				Expect(group.Spec.RoleIDs).To(ContainElement(roleID))
+			})
+
+			It("should report the administrator as able to grant every labelled role", func() {
+				Eventually(func(g Gomega) {
+					reader := &unikornv1.Role{}
+					g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID("reader")}, reader)).To(Succeed())
+
+					sources := make([]string, 0, len(reader.Status.AggregatedFrom))
+					for _, source := range reader.Status.AggregatedFrom {
+						sources = append(sources, source.ID)
+					}
+
+					g.Expect(sources).To(ContainElement(roleID), "reader should aggregate fleet-operator")
+
+					admin := &unikornv1.Role{}
+					g.Expect(kube.Get(ctx, kubeclient.ObjectKey{Namespace: identityNamespace, Name: chartRoleID("administrator")}, admin)).To(Succeed())
+					g.Expect(admin.Status.EffectiveScopes).NotTo(BeNil())
+
+					held := map[string]bool{}
+					for _, scope := range admin.Status.EffectiveScopes.Organization {
+						held[scope.Name] = true
+					}
+
+					g.Expect(held).To(HaveKey("radar:topology"), "administrator should hold radar:topology")
+					g.Expect(held).To(HaveKey("radar:fleetprojects"), "administrator should hold the project scope radar:fleetprojects at organization scope")
+
+					for _, scope := range admin.Status.EffectiveScopes.Project {
+						g.Expect(scope.Name).NotTo(Equal("radar:fleetprojects"), "administrator flattens, so radar:fleetprojects should not stay at project scope")
+					}
+
+					grantable, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1.RoleConditionGrantable)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(grantable.Status).To(Equal(metav1.ConditionTrue), grantable.Message)
+
+					expectAvailable(g, admin)
+				}).WithTimeout(2 * time.Minute).WithPolling(2 * time.Second).Should(Succeed())
+			})
+		})
+	})
+
+	Context("When a role breaks the aggregation rules", func() {
+		Describe("Given the role-aggregation admission policy", func() {
+			var (
+				kube              kubeclient.Client
+				identityNamespace string
+			)
+
+			BeforeEach(func() {
+				kube, identityNamespace = kubeForAggregation()
+			})
+
+			labelled := func(id string, spec unikornv1.RoleSpec) *unikornv1.Role {
+				return &unikornv1.Role{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      id,
+						Namespace: identityNamespace,
+						Labels: map[string]string{
+							coreconstants.NameLabel:              "aggregation-policy-fixture",
+							unikornv1.AggregateToLabel("reader"): "true",
+						},
+					},
+					Spec: spec,
+				}
+			}
+
+			orgScope := func(name string) unikornv1.RoleScopes {
+				return unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{{Name: name, Operations: []unikornv1.Operation{unikornv1.Read}}}}
+			}
+
+			expectRefused := func(role *unikornv1.Role, fragment string) {
+				GinkgoHelper()
+
+				err := kube.Create(ctx, role)
+				if err == nil {
+					DeferCleanup(func() { _ = kube.Delete(ctx, role) })
+				}
+
+				Expect(err).To(HaveOccurred(), "the admission policy should refuse this role")
+				Expect(err.Error()).To(ContainSubstring(fragment))
+			}
+
+			It("should refuse the label on a role that is not on the allow-list", func() {
+				expectRefused(labelled(uuid.NewString(), unikornv1.RoleSpec{Scopes: orgScope("radar:topology")}), "allowedSources")
+			})
+
+			It("should refuse the label on a protected role", func() {
+				expectRefused(labelled(chartRoleID("fleet-operator"), unikornv1.RoleSpec{Protected: true, Scopes: orgScope("radar:topology")}), "protected")
+			})
+
+			It("should refuse the label on a role with global scopes", func() {
+				expectRefused(labelled(chartRoleID("fleet-operator"), unikornv1.RoleSpec{
+					Scopes: unikornv1.RoleScopes{Global: []unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}}},
+				}), "global scopes")
+			})
+
+			It("should refuse the label on a role with identity:allocations", func() {
+				expectRefused(labelled(chartRoleID("fleet-operator"), unikornv1.RoleSpec{Scopes: orgScope("identity:allocations")}), "identity:*")
+			})
+
+			It("should refuse the label on a role with credential scopes", func() {
+				expectRefused(labelled(chartRoleID("fleet-operator"), unikornv1.RoleSpec{Scopes: orgScope("storage:objectstorageendpoints/accesskeys")}), "accesskeys")
+			})
+
+			It("should refuse an aggregating role that also sets scopes", func() {
+				role := &unikornv1.Role{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      uuid.NewString(),
+						Namespace: identityNamespace,
+						Labels:    map[string]string{coreconstants.NameLabel: "aggregation-policy-fixture"},
+					},
+					Spec: unikornv1.RoleSpec{
+						AggregationRule: &unikornv1.RoleAggregationRule{RoleRefs: []string{chartRoleID("reader-base")}},
+						Scopes:          orgScope("radar:topology"),
+					},
+				}
+
+				expectRefused(role, "must not set spec.scopes")
+			})
+		})
+	})
+})

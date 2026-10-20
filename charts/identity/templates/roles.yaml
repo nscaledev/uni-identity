@@ -7,7 +7,138 @@
 {{- end }}
 {{- $roles := merge (dict) $base }}
 {{- $roles = merge $roles $additional }}
+{{- $aggregation := default (dict) .Values.aggregation }}
+{{- $allowedSources := $aggregation.allowedSources | default (list) }}
+{{- $builtinAggregate := $aggregation.builtinRoles }}
+{{- /* A string "false" is truthy in a template, so it would turn aggregation on. */}}
+{{- if not (kindIs "bool" $builtinAggregate) }}
+{{- fail (printf "aggregation.builtinRoles must be true or false, not %q" (toString $builtinAggregate)) }}
+{{- end }}
+{{- $platformOnly := include "unikorn.identity.platformOnlyScopes" . | fromJsonArray }}
+{{- $shape := include "unikorn.identity.chainShape" . | fromJson }}
+{{- $builtins := include "unikorn.identity.builtinRoles" . | fromJsonArray }}
+{{- $chain := include "unikorn.identity.chainRoles" . | fromJsonArray }}
+{{- /*
+An old Role CRD prunes spec.aggregationRule, leaving the built-in roles with nothing.
+lookup is empty under helm template and Argo CD, so this runs on helm install and upgrade only.
+*/}}
+{{- if $builtinAggregate }}
+{{- with lookup "apiextensions.k8s.io/v1" "CustomResourceDefinition" "" "roles.identity.unikorn-cloud.org" }}
+{{- range .spec.versions }}
+{{- if and (eq .name "v1alpha1") (not (dig "schema" "openAPIV3Schema" "properties" "spec" "properties" "aggregationRule" "" .)) }}
+{{- fail "aggregation.builtinRoles needs the Role CRD with spec.aggregationRule: apply charts/identity/crds first (helm upgrade does not update CRDs)" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /*
+With aggregation.builtinRoles off, a built-in role holds its base role's scopes inline.
+*/}}
+{{- $plain := dict }}
+{{- range $name := $builtins }}
+{{- $spec := index $roles $name }}
+{{- if and $spec (not $builtinAggregate) }}
+{{- $_ := set $plain $name (dict "description" $spec.description "scopes" (index $roles (printf "%s-base" $name)).scopes) }}
+{{- end }}
+{{- end }}
+{{- /*
+Non-aggregating roles first, so a base role exists before the role that refs it.
+Argo CD orders by sync wave instead, so aggregating roles get a later wave.
+*/}}
+{{- $ordered := list }}
 {{- range $name, $spec := $roles }}
+{{- if or (not $spec.aggregationRule) (hasKey $plain $name) }}
+{{- $ordered = append $ordered $name }}
+{{- end }}
+{{- end }}
+{{- range $name, $spec := $roles }}
+{{- if and $spec.aggregationRule (not (hasKey $plain $name)) }}
+{{- $ordered = append $ordered $name }}
+{{- end }}
+{{- end }}
+{{- range $name := $ordered }}
+{{- $spec := index $roles $name }}
+{{- /*
+Render guards mirror the admission policy, so a bad values file fails before it reaches a cluster.
+*/}}
+{{- $checked := or $builtinAggregate (not (has $name $builtins)) }}
+{{- /* A name is written into labels and selectors, so it must be a DNS-1123 label. */}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" $name) }}
+  {{- fail (printf "role %q: a role name must be a DNS-1123 label (lower case letters, digits and -, at most 63 characters)" $name) }}
+{{- end }}
+{{- if and (has $name $builtins) $spec.labels }}
+  {{- fail (printf "role %q: a built-in role must not set labels" $name) }}
+{{- end }}
+{{- range $key, $_ := $spec.labels }}
+  {{- include "unikorn.identity.checkLabelKey" (dict "role" $name "key" $key) }}
+  {{- if or (hasPrefix "identity.unikorn-cloud.org/aggregate-to-" $key) (eq $key "unikorn-cloud.org/name") }}
+    {{- fail (printf "role %q: labels must not set %q, use aggregateTo for aggregation" $name $key) }}
+  {{- end }}
+{{- end }}
+{{- if and $checked (has $name $builtins) }}
+  {{- $want := index $shape $name }}
+  {{- if not $spec.aggregationRule }}
+    {{- fail (printf "role %q: with aggregation.builtinRoles on, a built-in role must set aggregationRule" $name) }}
+  {{- end }}
+  {{- if ne ($spec.aggregateTo | default (list) | uniq | sortAlpha | toJson) ($want.to | toJson) }}
+    {{- fail (printf "role %q: a built-in role's aggregateTo must be exactly %v" $name $want.to) }}
+  {{- end }}
+  {{- if not (deepEqual $spec.aggregationRule.roleRefs (list (printf "%s-base" $name))) }}
+    {{- fail (printf "role %q: a built-in role must ref exactly %s-base" $name $name) }}
+  {{- end }}
+  {{- if ne (default false $spec.aggregationRule.flattenToOrganization) $want.flatten }}
+    {{- fail (printf "role %q: a built-in role's flattenToOrganization must be %v" $name $want.flatten) }}
+  {{- end }}
+{{- end }}
+{{- if and $checked $spec.aggregationRule }}
+  {{- include "unikorn.identity.checkLabelKey" (dict "role" $name "key" (printf "identity.unikorn-cloud.org/aggregate-to-%s" $name)) }}
+  {{- if $spec.scopes }}
+    {{- fail (printf "role %q: an aggregating role must not set scopes, move them to a base role in aggregationRule.roleRefs" $name) }}
+  {{- end }}
+  {{- range $spec.aggregationRule.roleRefs }}
+    {{- if not (hasKey $roles .) }}
+      {{- fail (printf "role %q: aggregationRule.roleRefs names unknown role %q" $name .) }}
+    {{- end }}
+    {{- if eq . $name }}
+      {{- fail (printf "role %q: aggregationRule.roleRefs names itself" $name) }}
+    {{- end }}
+  {{- end }}
+  {{- if $spec.aggregateTo }}
+    {{- if not (has $name $chain) }}
+      {{- fail (printf "role %q: a role with aggregateTo cannot also aggregate, except the built-in chain roles" $name) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if and $checked $spec.aggregateTo }}
+  {{- if $spec.protected }}
+    {{- fail (printf "role %q: a protected role cannot opt into aggregation" $name) }}
+  {{- end }}
+  {{- if not (has $name $allowedSources) }}
+    {{- fail (printf "role %q: aggregateTo needs the role on aggregation.allowedSources" $name) }}
+  {{- end }}
+  {{- $scopes := default (dict) $spec.scopes }}
+  {{- if $scopes.global }}
+    {{- fail (printf "role %q: a role with global scopes cannot opt into aggregation" $name) }}
+  {{- end }}
+  {{- range $scope, $_ := merge (dict) (default (dict) $scopes.organization) (default (dict) $scopes.project) }}
+    {{- if or (hasPrefix "identity:" $scope) (hasSuffix "/accesskeys" $scope) }}
+      {{- fail (printf "role %q: a role with identity:* or credential (.../accesskeys) scope %q cannot opt into aggregation" $name $scope) }}
+    {{- end }}
+    {{- if has $scope $platformOnly }}
+      {{- fail (printf "role %q: a role with platform-only scope %q (granted only globally) cannot opt into aggregation" $name $scope) }}
+    {{- end }}
+  {{- end }}
+  {{- range $target := $spec.aggregateTo }}
+    {{- include "unikorn.identity.checkLabelKey" (dict "role" $name "key" (printf "identity.unikorn-cloud.org/aggregate-to-%s" $target)) }}
+    {{- $targetSpec := index $roles $target }}
+    {{- if not (and $targetSpec $targetSpec.aggregationRule) }}
+      {{- fail (printf "role %q: aggregateTo names %q, which is not an aggregating role" $name $target) }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if hasKey $plain $name }}
+{{- $spec = index $plain $name }}
+{{- end }}
 ---
 apiVersion: identity.unikorn-cloud.org/v1alpha1
 kind: Role
@@ -15,35 +146,61 @@ metadata:
   name: {{ include "resource.id" $name }}
   labels:
     {{- include "unikorn.labels" $ | nindent 4 }}
-    unikorn-cloud.org/name: {{ $name }}
-  {{- if $spec.description }}
+    unikorn-cloud.org/name: {{ $name | quote }}
+    {{- range $key, $value := $spec.labels }}
+    {{ $key | quote }}: {{ $value | quote }}
+    {{- end }}
+    {{- range $spec.aggregateTo | default (list) | uniq }}
+    identity.unikorn-cloud.org/aggregate-to-{{ . }}: "true"
+    {{- end }}
+  {{- if or $spec.description $spec.aggregationRule }}
   annotations:
-    unikorn-cloud.org/description: {{ $spec.description }}
+    {{- with $spec.description }}
+    unikorn-cloud.org/description: {{ . | quote }}
+    {{- end }}
+    {{- if $spec.aggregationRule }}
+    argocd.argoproj.io/sync-wave: "1"
+    {{- end }}
   {{- end }}
 spec:
   {{- if $spec.protected }}
   protected: true
+  {{- end }}
+  {{- with $rule := $spec.aggregationRule }}
+  aggregationRule:
+    roleSelectors:
+    - matchLabels:
+        identity.unikorn-cloud.org/aggregate-to-{{ $name }}: "true"
+    {{- with $rule.roleRefs }}
+    roleRefs:
+      {{- range . }}
+    - {{ include "resource.id" . }}
+      {{- end }}
+    {{- end }}
+    {{- if $rule.flattenToOrganization }}
+    flattenToOrganization: true
+    {{- end }}
   {{- end }}
   {{- with $scopes := $spec.scopes }}
   scopes:
     {{- with $global := $scopes.global }}
     global:
       {{- range $endpoint, $operations := $global }}
-        {{- printf "- name: %s" $endpoint | nindent 4 }}
+        {{- printf "- name: %s" ($endpoint | quote) | nindent 4 }}
         {{- printf "operations: [%v]" ($operations | join ", ") | nindent 6 }}
       {{- end }}
     {{- end }}
     {{- with $organization := $scopes.organization }}
     organization:
       {{- range $endpoint, $operations := $organization }}
-        {{- printf "- name: %s" $endpoint | nindent 4 }}
+        {{- printf "- name: %s" ($endpoint | quote) | nindent 4 }}
         {{- printf "operations: [%v]" ($operations | join ", ") | nindent 6 }}
       {{- end }}
     {{- end }}
     {{- with $project := $scopes.project }}
     project:
       {{- range $endpoint, $operations := $project }}
-        {{- printf "- name: %s" $endpoint | nindent 4 }}
+        {{- printf "- name: %s" ($endpoint | quote) | nindent 4 }}
         {{- printf "operations: [%v]" ($operations | join ", ") | nindent 6 }}
       {{- end }}
     {{- end }}

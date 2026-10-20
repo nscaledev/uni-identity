@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-role-controller
+  labels:
+    {{- include "unikorn.labels" . | nindent 4 }}
+rules:
+# Read every role; status writes are in role.yaml, release namespace only.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - roles
+  verbs:
+  - list
+  - get
+  - watch

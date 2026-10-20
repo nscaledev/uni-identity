@@ -23,3 +23,7 @@ globalRoleBindings:
 - issuer: uni
   subject: ci-platform-reader@nscale.test
   roles: [platform-reader]
+
+# Aggregating built-in roles, so the role aggregation suite runs on them.
+aggregation:
+  builtinRoles: true
