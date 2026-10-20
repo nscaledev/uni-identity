@@ -19,6 +19,7 @@ limitations under the License.
 package region_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -28,6 +29,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -174,6 +176,7 @@ var _ = Describe("Identity Provider Verification", func() {
 				&provider.ConsumerVersionSelector{Consumer: "uni-kubernetes", MatchingBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "uni-region", MainBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "uni-region", MatchingBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MainBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MatchingBranch: true},
 			}
 
@@ -211,19 +214,18 @@ var _ = Describe("Identity Provider Verification", func() {
 			err := verifier.VerifyProvider(testingT, request(selectors, true))
 			Expect(err).NotTo(HaveOccurred(), "Provider verification should succeed")
 
-			// Envir's main and supported releases are verified without pending, so a failing interaction
-			// fails this build: under pending, a consumer that has never verified green on main stays
-			// pending, and the build passes however its interactions fail. Envir's can-i-deploy gates
-			// Envir's main on this result, and this provider merges before Envir publishes the pact, so
-			// main always verifies it. With no Envir pact on main yet, there is nothing to verify.
+			// Envir's released versions are verified without pending, so breaking one fails this build:
+			// under pending, a pact that has never verified green stays pending, and the build passes
+			// however its interactions fail. Envir's main stays pending above: its can-i-deploy runs after
+			// Envir's CI, from workflow_run, and gates no Envir merge, so a main pact this provider can't
+			// serve yet would otherwise fail every build here. The selector matches whatever Envir has
+			// recorded as released and still supported; until Envir records releases it matches nothing.
 			strict := []provider.Selector{
-				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MainBranch: true},
-				// Envir's releases still supported in the broker: N, N-1 and N-2.
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", DeployedOrReleased: true},
 			}
 
 			err = provider.NewVerifier().VerifyProvider(testingT, request(strict, false))
-			Expect(err).NotTo(HaveOccurred(), "Envir's main and supported releases must verify")
+			Expect(err).NotTo(HaveOccurred(), "Envir's supported releases must verify")
 		})
 	})
 
@@ -305,27 +307,55 @@ func buildHandlerOptions(serverURL string) *handler.Options {
 	return options
 }
 
+// envirExampleBearer is the bearer Envir's pact sends on userinfo and the ACL; it is never a token.
+const envirExampleBearer = "Bearer user-access-token" //nolint:gosec // the pact's placeholder, not a credential
+
 // envirRequestFilter does what sits in front of uni-identity in production for Envir's requests:
-// it presents the token the provider state issued on userinfo and the ACL, and on the token endpoint
-// it adds the client certificate headers the ingress forwards after verifying Envir's mTLS
-// certificate. The token endpoint looks up no registered client: production trusts the ingress's
-// verification and takes the subject from the certificate's common name.
+// it presents the token the provider state issued on userinfo and the ACL, and on a
+// client_credentials grant it adds the client certificate headers the ingress forwards after
+// verifying Envir's mTLS certificate. The token endpoint looks up no registered client: production
+// trusts the ingress's verification and takes the subject from the certificate's common name.
 func envirRequestFilter(next http.Handler) http.Handler {
 	endpoints := api.NewEndpoints()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case endpoints.GetUserinfo(), endpoints.GetGlobalACL():
-			if bearer := envirBearer.get(); bearer != "" {
+			bearer := envirBearer.get()
+			if bearer == "" && r.Header.Get("Authorization") == envirExampleBearer {
+				// No Envir state issued a token, so the state didn't run; fail rather than let the
+				// example bearer's rejection stand in for the interaction's real outcome.
+				http.Error(w, "no Envir provider state issued a bearer", http.StatusInternalServerError)
+
+				return
+			}
+
+			if bearer != "" {
 				r.Header.Set("Authorization", "Bearer "+bearer)
 			}
 		case endpoints.Token():
-			r.Header.Set("Ssl-Client-Cert", envirClientCertificate())
-			r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+			if isClientCredentialsGrant(r) {
+				r.Header.Set("Ssl-Client-Cert", envirClientCertificate())
+				r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+			}
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isClientCredentialsGrant reads the form body and puts it back for the handler.
+func isClientCredentialsGrant(r *http.Request) bool {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	form, err := url.ParseQuery(string(body))
+
+	return err == nil && form.Get("grant_type") == "client_credentials"
 }
 
 // createHandlerInterface creates the handler interface with minimal dependencies for contract testing.

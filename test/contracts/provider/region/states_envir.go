@@ -30,6 +30,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-jose/go-jose/v4/jwt"
+
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -45,8 +47,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-// errUnknownState reports a state name a handler doesn't seed, so a typo fails instead of passing empty.
-var errUnknownState = errors.New("unknown provider state")
+var (
+	// errUnknownState reports a state name a handler doesn't seed, so a typo fails instead of passing empty.
+	errUnknownState = errors.New("unknown provider state")
+	// errUnexpectedToken reports a seeded token that production verification doesn't treat as intended.
+	errUnexpectedToken = errors.New("unexpected token verification result")
+)
 
 // Provider states named by the nscale-environments (Envir) consumer pact.
 const (
@@ -190,12 +196,14 @@ var aclRoleScopes = unikornv1.RoleScopes{
 	Project:      []unikornv1.RoleScope{{Name: "identity:serviceaccounts", Operations: []unikornv1.Operation{unikornv1.Read}}},
 }
 
-// HandleCallerHasProjectAccess seeds a caller whose ACL production RBAC computes: a service account
-// holding a real token, in a group whose role grants organization and project scopes, with the
-// group linked to the project. /api/v1/acl then runs real authentication and RBAC for that bearer.
+// HandleCallerHasProjectAccess seeds the caller Envir reads the ACL for, an end user, whose ACL
+// production RBAC computes: an organization member with a real session token, in a group whose role
+// grants organization and project scopes, with the group linked to the project. /api/v1/acl then
+// runs real authentication and RBAC, through the user path, for that bearer.
 func (sm *StateManager) HandleCallerHasProjectAccess(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
 	p := readAutomationParams(params)
 	projectID := getStringParam(unwrapPactParams(params), "projectID", defaultEnvirProjectID)
+	user := readUserParams(params)
 
 	if !setup {
 		envirBearer.set("")
@@ -204,27 +212,23 @@ func (sm *StateManager) HandleCallerHasProjectAccess(ctx context.Context, setup 
 			return err
 		}
 
-		return sm.cleanupEnvirOrganization(ctx, p.organizationID)
+		return sm.cleanupUserBearer(ctx, p.organizationID, user.id)
 	}
 
-	if err := sm.setupEnvirOrganization(ctx, p.organizationID); err != nil {
+	if err := sm.setupACLOrganization(ctx, p, projectID, user.id); err != nil {
 		return err
 	}
 
-	if err := sm.setupProject(ctx, p.organizationID, projectID); err != nil {
-		return err
-	}
-
-	if err := sm.createRole(ctx, p.roleID, aclRoleScopes); err != nil {
-		return err
-	}
-
-	token, err := sm.createServiceAccountWithToken(ctx, p, authenticator, issuer, serviceAccountTokenLifetime)
+	token, err := sm.createUserSession(ctx, user.id, user.subject, authenticator, issuer)
 	if err != nil {
 		return err
 	}
 
-	if err := sm.createGroup(ctx, p, []string{p.serviceAccountID}); err != nil {
+	if err := sm.addOrganizationMember(ctx, p.organizationID, user.id); err != nil {
+		return err
+	}
+
+	if err := sm.createGroup(ctx, p, nil, unikornv1.GroupSubject{ID: user.subject}); err != nil {
 		return err
 	}
 
@@ -235,6 +239,24 @@ func (sm *StateManager) HandleCallerHasProjectAccess(ctx context.Context, setup 
 	envirBearer.set(token)
 
 	return nil
+}
+
+// setupACLOrganization clears what an earlier run left, then seeds the organization, the project and
+// the role the ACL caller's group holds.
+func (sm *StateManager) setupACLOrganization(ctx context.Context, p automationParams, projectID, userID string) error {
+	if err := sm.cleanupUserBearer(ctx, p.organizationID, userID); err != nil {
+		return err
+	}
+
+	if err := sm.setupOrganization(ctx, p.organizationID); err != nil {
+		return err
+	}
+
+	if err := sm.setupProject(ctx, p.organizationID, projectID); err != nil {
+		return err
+	}
+
+	return sm.createRole(ctx, p.roleID, aclRoleScopes)
 }
 
 func (sm *StateManager) linkGroupToProject(ctx context.Context, orgID, projectID, groupID string) error {
@@ -270,6 +292,11 @@ func (sm *StateManager) HandleExpiredBearer(ctx context.Context, setup bool, par
 	token, err := sm.createServiceAccountWithToken(ctx, p, authenticator, issuer, -time.Hour)
 	if err != nil {
 		return err
+	}
+
+	// Prove the token fails on expiry alone, so the interaction's 401 can't come from anything else.
+	if _, err := authenticator.Verify(ctx, &oauth2.VerifyInfo{Issuer: issuer.URL, Audience: issuer.Hostname, Token: token}); !errors.Is(err, jwt.ErrExpired) {
+		return fmt.Errorf("%w: the expired bearer must fail on expiry, got %w", errUnexpectedToken, err)
 	}
 
 	envirBearer.set(token)
@@ -401,13 +428,14 @@ func (sm *StateManager) createServiceAccount(ctx context.Context, p automationPa
 	return nil
 }
 
-func (sm *StateManager) createGroup(ctx context.Context, p automationParams, serviceAccountIDs []string) error {
+func (sm *StateManager) createGroup(ctx context.Context, p automationParams, serviceAccountIDs []string, subjects ...unikornv1.GroupSubject) error {
 	group := &unikornv1.Group{
 		ObjectMeta: sm.organizationScopedMeta(ctx, p.organizationID, p.groupID, p.name),
 		Spec: unikornv1.GroupSpec{
 			Tags:              unikornv1core.TagList{p.tag},
 			RoleIDs:           []string{p.roleID},
 			ServiceAccountIDs: serviceAccountIDs,
+			Subjects:          subjects,
 		},
 	}
 
@@ -447,10 +475,9 @@ func (sm *StateManager) deleteRole(ctx context.Context, roleID string) error {
 // HandleUserBearer seeds an active member of the organization whose session holds a federated access
 // token, as login leaves it, and hands that token to the verifier's request filter.
 func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params map[string]any, authenticator *oauth2.Authenticator, issuer common.IssuerValue) error {
-	p := unwrapPactParams(params)
-	orgID := getStringParam(p, "organizationID", defaultEnvirOrganizationID)
-	userID := getStringParam(p, "userID", "3f9b2c1d-4e5a-4b6c-8d7e-9f0a1b2c3d4e")
-	subject := getStringParam(p, "subject", "envir-user@example.com")
+	orgID := getStringParam(unwrapPactParams(params), "organizationID", defaultEnvirOrganizationID)
+	user := readUserParams(params)
+	userID, subject := user.id, user.subject
 
 	if !setup {
 		envirBearer.set("")
@@ -481,8 +508,23 @@ func (sm *StateManager) HandleUserBearer(ctx context.Context, setup bool, params
 	return nil
 }
 
-// createUserSession creates an active user and records a session holding a federated token issued
-// for it. Issuing reads the user, so it must exist first; login records the token afterwards too.
+// userParams name the end user a state seeds.
+type userParams struct {
+	id      string
+	subject string
+}
+
+func readUserParams(params map[string]any) userParams {
+	p := unwrapPactParams(params)
+
+	return userParams{
+		id:      getStringParam(p, "userID", "3f9b2c1d-4e5a-4b6c-8d7e-9f0a1b2c3d4e"),
+		subject: getStringParam(p, "subject", "envir-user@example.com"),
+	}
+}
+
+// createUserSession creates an active user and issues it a federated token; issuing records the
+// session on the user, as login does, so the user must exist first.
 func (sm *StateManager) createUserSession(ctx context.Context, userID, subject string, authenticator *oauth2.Authenticator, issuer common.IssuerValue) (string, error) {
 	const clientID = "envir-contract"
 
@@ -509,16 +551,6 @@ func (sm *StateManager) createUserSession(ctx context.Context, userID, subject s
 	})
 	if err != nil {
 		return "", fmt.Errorf("failed to issue user token: %w", err)
-	}
-
-	if err := sm.client.Get(ctx, client.ObjectKeyFromObject(user), user); err != nil {
-		return "", fmt.Errorf("failed to read user %s: %w", userID, err)
-	}
-
-	user.Spec.Sessions = []unikornv1.UserSession{{ClientID: clientID, AccessToken: tokens.AccessToken}}
-
-	if err := sm.client.Update(ctx, user); err != nil {
-		return "", fmt.Errorf("failed to record session for user %s: %w", userID, err)
 	}
 
 	return tokens.AccessToken, nil
