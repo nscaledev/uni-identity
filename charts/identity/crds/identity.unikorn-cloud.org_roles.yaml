@@ -64,9 +64,10 @@ spec:
             properties:
               aggregationRule:
                 description: |-
-                  AggregationRule, when set, makes this an aggregating role.  The role
-                  controller collects the scopes of every source role into
-                  status.effectiveScopes.  See pkg/controllers/role/README.md.
+                  AggregationRule, when set, makes this an aggregating role: it holds the
+                  scopes of every source role, worked out live on every decision.  The
+                  role controller records the result in status for people to read.  See
+                  pkg/controllers/role/README.md.
                 properties:
                   flattenToOrganization:
                     description: |-
@@ -278,8 +279,7 @@ spec:
                     scopes:
                       description: |-
                         Scopes are the organization and project scopes the source contributed,
-                        before any flattening.  A record only: the controller never reads it
-                        back, so a source that goes away stops contributing at once.
+                        before any flattening.  A record only: nothing reads it back.
                       properties:
                         global:
                           description: Global grants access to any resource anywhere.
@@ -439,8 +439,10 @@ spec:
                 type: array
               effectiveScopes:
                 description: |-
-                  EffectiveScopes are the scopes an aggregating role holds after
-                  aggregation.  Written by the role controller only, never by Helm or Argo.
+                  EffectiveScopes record the scopes an aggregating role holds after
+                  aggregation, for people to read.  Written by the role controller only,
+                  never by Helm or Argo, and never read by the identity server, which
+                  works the same answer out live.
                 properties:
                   global:
                     description: Global grants access to any resource anywhere.

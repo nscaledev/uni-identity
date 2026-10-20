@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/core/pkg/constants"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -212,4 +213,55 @@ func TestAllowGroupMembershipAdditionAllowsRolelessGroup(t *testing.T) {
 
 	// A group with no roles confers nothing, so membership in it is not a grant.
 	require.NoError(t, common.AllowGroupMembershipAddition(ctx, cli, membershipNamespace, organizationID, membershipGroup()))
+}
+
+// TestAllowGroupMembershipAdditionChecksLiveAggregation checks an aggregating
+// role is grant-checked on what its sources give now.  Its status is stale,
+// recording nothing from before the source was labelled, and Available, so a
+// check on status would let a caller holding nothing through.
+func TestAllowGroupMembershipAdditionChecksLiveAggregation(t *testing.T) {
+	t.Parallel()
+
+	aggregate := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "aggregate-id",
+			Namespace: membershipNamespace,
+			Labels:    map[string]string{constants.NameLabel: "aggregate"},
+		},
+		Spec: unikornv1.RoleSpec{
+			AggregationRule: &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel("aggregate-id"): "true"}},
+				},
+			},
+		},
+		Status: unikornv1.RoleStatus{
+			EffectiveScopes: &unikornv1.RoleScopes{},
+			Conditions: []metav1.Condition{
+				{Type: string(unikornv1core.ConditionAvailable), Status: metav1.ConditionTrue, Reason: unikornv1.RoleReasonAggregated},
+			},
+		},
+	}
+
+	source := membershipRole()
+	source.Labels[unikornv1.AggregateToLabel("aggregate-id")] = "true"
+
+	cli := membershipClient(t, aggregate, source)
+
+	organizationID, err := ids.ParseOrganizationID(membershipOrganizationID)
+	require.NoError(t, err)
+
+	nobody := membershipACL(openapi.AclEndpoints{
+		{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	err = common.AllowGroupMembershipAddition(nobody, cli, membershipNamespace, organizationID, membershipGroup("aggregate-id"))
+	require.Error(t, err)
+	require.True(t, servererrors.IsForbidden(err))
+
+	holder := membershipACL(openapi.AclEndpoints{
+		{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+	})
+
+	require.NoError(t, common.AllowGroupMembershipAddition(holder, cli, membershipNamespace, organizationID, membershipGroup("aggregate-id")))
 }

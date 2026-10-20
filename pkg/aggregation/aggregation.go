@@ -15,21 +15,20 @@ limitations under the License.
 */
 
 // Package aggregation computes the effective scopes of aggregating roles.
-// It is pure: it reads a snapshot of every role and returns what each
-// aggregating role's status should be.  The role controller writes the
-// result, and tests use it to check the chart's role catalogue.
+//
+// Compute is pure: it reads a snapshot of every role and returns what each
+// aggregating role holds.  Resolve and ResolveRole run it for the identity
+// server, which enforces only on that live result (Role.Computed).  The role
+// controller writes the same result to status as a record for people, and
+// tests use it to check the chart's role catalogue.
 //
 // It never reads an aggregating role's status or its own spec.scopes: the
 // result depends only on the specs of live roles, so a status someone else
-// wrote is put right at the next reconcile, and a source that goes away stops
-// contributing at once.  Holders get whatever status says until then, so
-// write access to roles/status sets what they hold: only the role
-// controller's service account has it, through a namespaced Role in the
-// identity chart.
+// wrote changes nothing, and a source that changes is seen at the next
+// resolve.
 package aggregation
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -40,21 +39,11 @@ import (
 
 	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
-	"github.com/unikorn-cloud/identity/pkg/ids"
-	"github.com/unikorn-cloud/identity/pkg/openapi"
-	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
-)
-
-// Placeholder IDs used to build a holder ACL for the grantable check.  The
-// check only compares scopes, so any valid IDs will do.
-const (
-	grantCheckOrganizationID = "00000000-0000-0000-0000-000000000001"
-	grantCheckProjectID      = "00000000-0000-0000-0000-000000000002"
 )
 
 // Condition is the desired state of one status condition.
@@ -72,10 +61,21 @@ type Result struct {
 	AggregatedFrom []unikornv1.RoleAggregationSource
 	// Available is the Available condition.
 	Available Condition
-	// Grantable is the Grantable condition.
-	Grantable Condition
+	// Labelled are the non-protected roles the selectors match, used or
+	// not, for the controller's Grantable check.
+	Labelled []LabelledRole
 	// Skipped lists label matches that were not used, with the reason.
 	Skipped []string
+}
+
+// LabelledRole is a role labelled for an aggregating role.
+type LabelledRole struct {
+	// ID is the role ID.
+	ID string
+	// Name is the role's display name.
+	Name string
+	// Scopes are what a grant of the role hands out.
+	Scopes unikornv1.RoleScopes
 }
 
 // plan is what one aggregating role is built from, before any scopes are
@@ -109,7 +109,7 @@ type computer struct {
 // Compute returns the desired status of every aggregating role in roles,
 // keyed by role ID.  roles is keyed by role ID and must hold every role in
 // the namespace.
-func Compute(ctx context.Context, roles map[string]*unikornv1.Role) map[string]*Result {
+func Compute(roles map[string]*unikornv1.Role) map[string]*Result {
 	c := &computer{
 		roles:   roles,
 		plans:   map[string]*plan{},
@@ -139,7 +139,7 @@ func Compute(ctx context.Context, roles map[string]*unikornv1.Role) map[string]*
 
 	for _, id := range c.ids {
 		if result, ok := c.results[id]; ok {
-			result.Grantable = c.grantable(ctx, result, c.plans[id].labelled)
+			result.Labelled = c.labelledTargets(c.plans[id].labelled)
 		}
 	}
 
@@ -546,22 +546,12 @@ func Hash(scopes unikornv1.RoleScopes) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// grantable checks the role can grant every non-protected role labelled for
-// it, using the same AllowRole check the API runs when an org admin grants a
-// role.  A labelled role that is in use is held, so it passes unless it is in
-// a cycle, where it holds what its cycle's outside sources give.  The useful
-// failure is a labelled role that was skipped for having global scopes, which
-// no org admin can ever grant.  The check runs over the real roles in each environment, so it sees roles from every chart
-// and per-environment config, which a chart unit test cannot.
-//
-// The holder ACL puts project scopes in one linked project, as a group member
-// with a linked project gets them.  A holder of a non-flattening role whose
-// group has no linked project can grant less than this says.
-func (c *computer) grantable(ctx context.Context, result *Result, labelled []string) Condition {
-	ctx = rbac.NewContext(ctx, holderACL(result.EffectiveScopes))
-	organizationID := ids.MustParseOrganizationID(grantCheckOrganizationID)
-
-	var refused []string
+// labelledTargets returns each non-protected role labelled for an aggregating
+// role, with the scopes a grant of it would hand out, for the controller's
+// Grantable check.  A labelled role skipped for global scopes keeps them, so
+// the check names it: no org admin can ever grant it.
+func (c *computer) labelledTargets(labelled []string) []LabelledRole {
+	out := make([]LabelledRole, 0, len(labelled))
 
 	for _, id := range labelled {
 		scopes := c.roles[id].Spec.Scopes
@@ -571,63 +561,8 @@ func (c *computer) grantable(ctx context.Context, result *Result, labelled []str
 			scopes.Global = c.roles[id].Spec.Scopes.Global
 		}
 
-		target := &unikornv1.Role{Spec: unikornv1.RoleSpec{Scopes: scopes}}
-
-		if err := rbac.AllowRole(ctx, target, organizationID); err != nil {
-			refused = append(refused, c.roles[id].DisplayName())
-		}
+		out = append(out, LabelledRole{ID: id, Name: c.roles[id].DisplayName(), Scopes: scopes})
 	}
 
-	if len(refused) > 0 {
-		return Condition{
-			Status:  corev1.ConditionFalse,
-			Reason:  unikornv1.RoleReasonNotGrantable,
-			Message: "cannot grant: " + strings.Join(refused, ", "),
-		}
-	}
-
-	return Condition{
-		Status:  corev1.ConditionTrue,
-		Reason:  unikornv1.RoleReasonGrantable,
-		Message: fmt.Sprintf("can grant all %d labelled roles", len(labelled)),
-	}
-}
-
-// holderACL builds the ACL a principal holding exactly these scopes gets in
-// one organization: the organization block at organization scope and the
-// project block in one project, as pkg/rbac builds it for group members.
-func holderACL(scopes unikornv1.RoleScopes) *openapi.Acl {
-	organization := openapi.AclOrganization{Id: grantCheckOrganizationID}
-
-	if endpoints := toACLEndpoints(scopes.Organization); len(endpoints) > 0 {
-		organization.Endpoints = &endpoints
-	}
-
-	if endpoints := toACLEndpoints(scopes.Project); len(endpoints) > 0 {
-		projects := openapi.AclProjectList{
-			{Id: grantCheckProjectID, Endpoints: endpoints},
-		}
-
-		organization.Projects = &projects
-	}
-
-	organizations := openapi.AclOrganizationList{organization}
-
-	return &openapi.Acl{Organizations: &organizations}
-}
-
-func toACLEndpoints(scopes []unikornv1.RoleScope) openapi.AclEndpoints {
-	endpoints := make(openapi.AclEndpoints, 0, len(scopes))
-
-	for _, scope := range scopes {
-		operations := make(openapi.AclOperations, len(scope.Operations))
-
-		for i, operation := range scope.Operations {
-			operations[i] = openapi.AclOperation(operation)
-		}
-
-		endpoints = append(endpoints, openapi.AclEndpoint{Name: scope.Name, Operations: operations})
-	}
-
-	return endpoints
+	return out
 }

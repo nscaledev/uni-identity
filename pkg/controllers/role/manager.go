@@ -83,8 +83,8 @@ func (*Factory) Reconciler(_ *options.Options, _ coremanager.ControllerOptions, 
 // chains, so every change enqueues every aggregating role in the namespace.
 // Labels are watched as well as generation, because a label is how a role
 // opts in.  Status changes are watched too: the computation never reads
-// status, but a status someone else wrote must be put right.  The controller's own writes wake it once and then compute to
-// no change.
+// status, but a record someone else wrote must be put right.  The
+// controller's own writes wake it once and then compute to no change.
 //
 // Only roles in the controller's own namespace (POD_NAMESPACE, set by the
 // chart) are watched, so a second identity release in the same cluster

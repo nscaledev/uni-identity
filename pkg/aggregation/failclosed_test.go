@@ -37,11 +37,12 @@ import (
 // and a source that goes away stops giving at once.
 
 // writeBack runs Compute and writes every result to status, as the
-// controller does.
+// controller does, then resolves the roles as the identity server does, so
+// EffectiveScopes is what holders hold.
 func writeBack(t *testing.T, roles map[string]*unikornv1.Role) {
 	t.Helper()
 
-	for id, r := range aggregation.Compute(t.Context(), roles) {
+	for id, r := range aggregation.Compute(roles) {
 		scopes := r.EffectiveScopes
 		roles[id].Status.EffectiveScopes = &scopes
 		roles[id].Status.AggregatedFrom = r.AggregatedFrom
@@ -53,6 +54,8 @@ func writeBack(t *testing.T, roles map[string]*unikornv1.Role) {
 			ObservedGeneration: roles[id].Generation,
 		})
 	}
+
+	aggregation.Resolve(roles)
 }
 
 func evilScopes() unikornv1.RoleScopes {
@@ -130,12 +133,15 @@ func TestCycleDoesNotSustainTamperedStatus(t *testing.T) {
 
 	// One role per reconcile, as the controller does.
 	for _, id := range []string{"a", "b"} {
-		scopes := aggregation.Compute(t.Context(), roles)[id].EffectiveScopes
+		scopes := aggregation.Compute(roles)[id].EffectiveScopes
 		roles[id].Status.EffectiveScopes = &scopes
 	}
 
+	aggregation.Resolve(roles)
+
 	for _, id := range []string{"a", "b"} {
 		require.Emptyf(t, roles[id].EffectiveScopes().Organization, "%s kept scopes", id)
+		require.Emptyf(t, roles[id].Status.EffectiveScopes.Organization, "%s recorded scopes", id)
 	}
 }
 
@@ -155,7 +161,7 @@ func TestCycleDropsScopeAtOnce(t *testing.T) {
 
 	roles["c"].Spec.Scopes.Organization = []unikornv1.RoleScope{scope("svc:keep", unikornv1.Read)}
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	for _, id := range []string{"a", "b"} {
 		require.Equalf(t, []unikornv1.RoleScope{scope("svc:keep", unikornv1.Read)}, results[id].EffectiveScopes.Organization, "%s", id)
@@ -193,7 +199,7 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 		newRole("system-account", protected(), org(scope("svc:internal", unikornv1.Delete))),
 	)
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, results["administrator"].EffectiveScopes.Organization)
 	require.Equal(t, corev1.ConditionTrue, results["administrator"].Available.Status)
@@ -204,9 +210,13 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 	require.Equal(t, unikornv1.RoleReasonInvalidRoleRef, sneaky.Available.Reason)
 	require.Contains(t, sneaky.Available.Message, "system-account")
 
-	// The ACL build's bootstrap follows the same rule.
-	require.Empty(t, roles["sneaky"].BootstrapScopes(roles).Organization)
-	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles["administrator"].BootstrapScopes(roles).Organization)
+	// What holders hold follows the same rule.
+	aggregation.Resolve(roles)
+
+	require.Empty(t, roles["sneaky"].EffectiveScopes().Organization)
+	require.False(t, roles["sneaky"].AggregationReady())
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, roles["administrator"].EffectiveScopes().Organization)
+	require.True(t, roles["administrator"].AggregationReady())
 }
 
 // TestStuckRoleIgnoresSpecScopes checks an aggregating role's own
@@ -240,11 +250,11 @@ func TestInvalidSelectorMessageIsStable(t *testing.T) {
 
 	roles := catalogue(admin)
 
-	first := aggregation.Compute(t.Context(), roles)["administrator"].Available.Message
+	first := aggregation.Compute(roles)["administrator"].Available.Message
 	require.Contains(t, first, "a=1, b=2, c=3, d=4, e=5")
 
 	for range 200 {
-		require.Equal(t, first, aggregation.Compute(t.Context(), roles)["administrator"].Available.Message)
+		require.Equal(t, first, aggregation.Compute(roles)["administrator"].Available.Message)
 	}
 }
 
@@ -258,7 +268,7 @@ func TestRefMatchedBySelectorIsNotSkipped(t *testing.T) {
 		baseRole("administrator", aggregateTo("administrator"), org(scope("identity:groups", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Empty(t, result.Skipped)
 	require.NotContains(t, result.Available.Message, "skipped")
@@ -282,12 +292,12 @@ func TestInvalidLabelKeyMessageIsStable(t *testing.T) {
 
 	roles := catalogue(admin)
 
-	first := aggregation.Compute(t.Context(), roles)["administrator"].Available
+	first := aggregation.Compute(roles)["administrator"].Available
 	require.Equal(t, unikornv1.RoleReasonInvalidSelector, first.Reason)
 	require.Contains(t, first.Message, unikornv1.AggregateToLabel("a b")+"=true, "+unikornv1.AggregateToLabel("c d")+"=true, "+long+"=true")
 
 	for range 200 {
-		require.Equal(t, first.Message, aggregation.Compute(t.Context(), roles)["administrator"].Available.Message)
+		require.Equal(t, first.Message, aggregation.Compute(roles)["administrator"].Available.Message)
 	}
 }
 
@@ -305,7 +315,7 @@ func TestCycleMessageNamesOtherProblems(t *testing.T) {
 		newRole("system-account", protected(), org(scope("svc:internal", unikornv1.Delete))),
 	)
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	a := results["a"].Available
 	require.Equal(t, unikornv1.RoleReasonCycle, a.Reason)
@@ -326,8 +336,11 @@ func TestSpoofedBaseRefGivesNothing(t *testing.T) {
 
 	roles := catalogue(newRole("administrator", aggregates(false, "system-account")), spoof)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 	require.Empty(t, result.EffectiveScopes.Organization)
 	require.Equal(t, unikornv1.RoleReasonInvalidRoleRef, result.Available.Reason)
-	require.Empty(t, roles["administrator"].BootstrapScopes(roles).Organization)
+
+	aggregation.Resolve(roles)
+	require.Empty(t, roles["administrator"].EffectiveScopes().Organization)
+	require.False(t, roles["administrator"].AggregationReady())
 }

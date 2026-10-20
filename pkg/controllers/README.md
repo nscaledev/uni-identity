@@ -23,8 +23,10 @@ The actual reconcile behaviour lives in the provisioners:
 - [oauth2client](../provisioners/oauth2client/README.md)
 
 The [role controller](./role/README.md) is the exception. Roles have no
-provisioning lifecycle and no finalizer: the controller only computes the
-status of aggregating roles. So it has its own small reconciler instead of the
+provisioning lifecycle and no finalizer: the controller only records the
+status of aggregating roles, for people to read. The identity server works
+out what they hold live and never reads that status. So it has its own small
+reconciler instead of the
 shared provisioner one, and it watches label changes as well as generation
 changes, because a label is how a role opts into aggregation.
 

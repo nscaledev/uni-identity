@@ -22,6 +22,7 @@ import (
 	"slices"
 
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -81,6 +82,11 @@ func AllowGroupMembershipAddition(ctx context.Context, cli client.Client, namesp
 			}
 
 			return fmt.Errorf("%w: failed to validate group membership addition", err)
+		}
+
+		// An aggregating role is checked on what it holds now.
+		if err := aggregation.ResolveRole(ctx, cli, &resource); err != nil {
+			return fmt.Errorf("%w: failed to resolve role", err)
 		}
 
 		if err := rbac.AllowRole(ctx, &resource, organizationID); err != nil {

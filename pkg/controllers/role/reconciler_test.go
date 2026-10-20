@@ -19,6 +19,7 @@ package role
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -148,7 +149,7 @@ func TestReconcileWritesStatusAndRecordsChange(t *testing.T) {
 
 	require.Equal(t, []unikornv1.RoleScope{
 		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
-	}, admin.EffectiveScopes().Organization)
+	}, admin.Status.EffectiveScopes.Organization)
 	require.Len(t, admin.Status.AggregatedFrom, 1)
 	require.Equal(t, "fleet-operator", admin.Status.AggregatedFrom[0].Name)
 
@@ -228,7 +229,8 @@ func TestReconcileRemovedSourceShrinksAdmin(t *testing.T) {
 	reconcileRole(t, r, "administrator")
 
 	admin := getRole(t, cli, "administrator")
-	require.Empty(t, admin.EffectiveScopes().Organization)
+	require.NotNil(t, admin.Status.EffectiveScopes)
+	require.Empty(t, admin.Status.EffectiveScopes.Organization)
 	require.Empty(t, admin.Status.AggregatedFrom)
 
 	events := drain(recorder)
@@ -301,8 +303,8 @@ func TestReconcileWarnsOnceWhenStuck(t *testing.T) {
 	require.Empty(t, drain(recorder), "a role that stays stuck does not warn again")
 }
 
-// TestReconcileDeletedRefGivesNothing checks a deleted roleRef stops giving
-// its scopes at once, even after the controller has recorded them in status.
+// TestReconcileDeletedRefGivesNothing checks a deleted roleRef drops out of
+// the record, even after the controller has recorded it in status.
 func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 	t.Parallel()
 
@@ -315,7 +317,7 @@ func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 
 	reconcileRole(t, r, "administrator")
 
-	require.Equal(t, base.Spec.Scopes.Organization, getRole(t, cli, "administrator").EffectiveScopes().Organization[:1])
+	require.Equal(t, base.Spec.Scopes.Organization, getRole(t, cli, "administrator").Status.EffectiveScopes.Organization[:1])
 
 	require.NoError(t, cli.Delete(t.Context(), base))
 	require.NoError(t, cli.Delete(t.Context(), fleetOperator()))
@@ -326,7 +328,8 @@ func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 
 	admin = getRole(t, cli, "administrator")
 
-	require.Empty(t, admin.EffectiveScopes().Organization)
+	require.NotNil(t, admin.Status.EffectiveScopes)
+	require.Empty(t, admin.Status.EffectiveScopes.Organization)
 	require.Empty(t, admin.Status.AggregatedFrom)
 
 	available, err := unikornv1core.GetCondition(admin.Status.Conditions, unikornv1core.ConditionAvailable)
@@ -390,24 +393,63 @@ func TestReconcileInvalidLabelKeyWritesOnce(t *testing.T) {
 	require.Empty(t, drain(recorder))
 }
 
-// TestReconcileFirstStatusComparesWithBootstrap checks the first status write
-// is compared with what holders held before it, the ACL build's bootstrap
-// scopes, so it records no change when there is none.
-func TestReconcileFirstStatusComparesWithBootstrap(t *testing.T) {
+// TestReconcileFirstStatusRecordsEverySource checks the first status write
+// is compared with no record, so it names every source, the base role
+// included, as added.
+func TestReconcileFirstStatusRecordsEverySource(t *testing.T) {
 	t.Parallel()
 
 	admin := adminRole()
 	admin.Spec.AggregationRule.RoleRefs = []string{adminBaseID}
 
-	base := adminBase()
-
-	r, _, recorder := setup(t, admin, base)
+	r, _, recorder := setup(t, admin, adminBase(), fleetOperator())
 
 	reconcileRole(t, r, "administrator")
 
-	for _, e := range drain(recorder) {
-		require.NotContains(t, e, EventReasonEffectiveScopesChanged)
+	events := drain(recorder)
+	require.Len(t, events, 2)
+
+	for _, id := range []string{adminBaseID, "fleet-operator"} {
+		require.True(t, slices.ContainsFunc(events, func(e string) bool {
+			return strings.Contains(e, EventReasonEffectiveScopesChanged) && strings.Contains(e, id) && strings.Contains(e, "added")
+		}), "no added event for %s: %v", id, events)
 	}
+}
+
+// TestReconcileWritesGrantableFalse checks the controller records Grantable
+// False, naming the role, when a role labelled for it has global scopes, and
+// warns once.
+func TestReconcileWritesGrantableFalse(t *testing.T) {
+	t.Parallel()
+
+	global := newRole("svc-global", map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}, unikornv1.RoleSpec{
+		Scopes: unikornv1.RoleScopes{
+			Global: []unikornv1.RoleScope{{Name: "svc:everything", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		},
+	})
+
+	r, cli, recorder := setup(t, adminRole(), global)
+
+	reconcileRole(t, r, "administrator")
+
+	conditions := getRole(t, cli, "administrator").Status.Conditions
+
+	available, err := unikornv1core.GetCondition(conditions, unikornv1core.ConditionAvailable)
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionTrue, available.Status)
+
+	grantable, err := unikornv1core.GetCondition(conditions, unikornv1.RoleConditionGrantable)
+	require.NoError(t, err)
+	require.Equal(t, metav1.ConditionFalse, grantable.Status)
+	require.Equal(t, unikornv1.RoleReasonNotGrantable, grantable.Reason)
+	require.Contains(t, grantable.Message, "svc-global")
+
+	events := drain(recorder)
+	require.Len(t, events, 1)
+	require.Contains(t, events[0], "Warning "+unikornv1.RoleReasonNotGrantable)
+
+	reconcileRole(t, r, "administrator")
+	require.Empty(t, drain(recorder))
 }
 
 // TestReconcileChangeIgnoresGlobalScopesInStatus checks global scopes someone

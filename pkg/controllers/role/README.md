@@ -6,25 +6,30 @@ The role controller lets an organization admin hold, and so grant, service
 roles such as `fleet-operator`, without changing the grant rule.
 
 A service role opts in with a label. An aggregating role (for example
-`administrator`) selects those labels. This controller collects the scopes of
-every source role into the aggregating role's `status.effectiveScopes`. The
-grant rule (`rbac.AllowRole`: you may grant only what you hold) then passes on
-its own.
+`administrator`) selects those labels and holds the scopes of every source
+role. The grant rule (`rbac.AllowRole`: you may grant only what you hold) then
+passes on its own.
+
+**The identity server works out what an aggregating role holds live**, on
+every ACL build and grant check (`aggregation.Resolve`). It never reads
+status. **This controller is a reporter:** it writes the same result to
+status, with conditions and Events, so people can see it with `kubectl`.
 
 This is the model Kubernetes uses for `ClusterRole` aggregation
 (`aggregate-to-admin`, `aggregate-to-edit`, `aggregate-to-view`). Design and
 sign-off: ID-368 (Phase B) and ID-550.
 
 The computation lives in [`pkg/aggregation`](../../aggregation/README.md). This
-package only runs it and writes the result.
+package only runs it and records the result.
 
 ## Terms
 
 - **Source role:** a role with an `identity.unikorn-cloud.org/aggregate-to-<role>: "true"` label.
 - **Aggregating role:** a role with `spec.aggregationRule`.
 - **Effective scopes:** what a role holds. `Role.EffectiveScopes()` returns
-  `spec.scopes` for a normal role and `status.effectiveScopes` for an
-  aggregating role. Every reader of a role's scopes uses it.
+  `spec.scopes` for a normal role. For an aggregating role it returns the live
+  result in `Role.Computed`, or nothing if the role was not resolved. Every
+  reader of a role's scopes uses it.
 
 ## Shape
 
@@ -38,7 +43,7 @@ spec:
       - <administrator-base role ID>
     flattenToOrganization: true # copy source project scopes into organization
 status:
-  effectiveScopes: {...}        # written by this controller only
+  effectiveScopes: {...}        # written by this controller only; a record, never enforced
   aggregatedFrom:
     - id: <role ID>
       name: fleet-operator
@@ -50,9 +55,8 @@ status:
     - type: Grantable           # Grantable | NotGrantable
 ```
 
-An aggregating role has no `spec.scopes`. If it has some, the controller
-ignores them and logs it. The only reader is the ACL build before the first
-reconcile (see below). The admission policy refuses `spec.scopes` on
+An aggregating role has no `spec.scopes`. If it has some, nothing uses them,
+and the controller logs it. The admission policy refuses `spec.scopes` on
 aggregating roles. Its own hand-written scopes live in a protected base role
 that it `roleRefs`.
 
@@ -111,13 +115,11 @@ that it `roleRefs`.
 
 A broken part of an aggregation fails closed, like a role binding that names
 a missing role. The computation never reads an aggregating role's status, so
-a status someone else wrote is put right at the next reconcile, and a source
-that goes away stops giving at once.
+a status someone else wrote, or an old one, changes nothing anybody holds or
+can grant. The next reconcile puts the record right.
 
-Holders get what `status.effectiveScopes` says, so write access to
-`roles/status` sets what they hold until that reconcile. Only the role
-controller's service account has it, through a namespaced `Role` in the
-identity chart. Nothing else may be given `roles/status` write.
+Only the role controller's service account may write `roles/status`, through
+a namespaced `Role` in the identity chart, so the record stays honest.
 
 | Problem | Effective scopes | `Available` |
 | --- | --- | --- |
@@ -129,12 +131,14 @@ identity chart. Nothing else may be given `roles/status` write.
 - **A stuck role is computed from its working sources.** Every live,
   allowed source gives its current scopes. `aggregatedFrom` lists exactly the
   sources used.
+- **A stuck role is never grantable**, whatever it holds
+  (`Role.AggregationReady()`). Adding members to a group that has it is
+  refused too, until the role is fixed.
 - **Admins of a stuck role can lose scopes at once.** A typo in a base ref
   empties that part of every holder's ACL until it is fixed. The chart render
   guard catches typos in chart refs. The Warning Event and the condition say
   which ref is wrong.
-- **The role's own `spec.scopes` are never used by the controller**, stuck
-  or not.
+- **The role's own `spec.scopes` are never used**, stuck or not.
 - **Cycles** are found with Tarjan's strongly connected components, so every
   role in a cycle is flagged, however it is reached. Each role in the cycle
   holds the union of the current scopes of every source outside the cycle
@@ -155,33 +159,29 @@ identity chart. Nothing else may be given `roles/status` write.
 - **Turning False is loud:** a Warning Event and a log line, once per change of
   reason or message. The Event note is cut to 1000 bytes.
 
-## Before the first reconcile
+## Live resolution
 
-Two rules cover the time between a role becoming aggregating and the
-controller writing its status:
+- **The ACL build resolves every role it lists.** `pkg/rbac` calls
+  `aggregation.Resolve` on the roles it just listed, which runs `Compute` and
+  sets `Role.Computed` on each aggregating role.
+- **Grant checks resolve the role they load.** The group and membership
+  handlers call `aggregation.ResolveRole` (one list of the namespace) before
+  `rbac.AllowRole`. A role that does not aggregate needs no list.
+- **There is no window before the first reconcile.** A role holds its sources
+  from the moment it is applied. A converted built-in role holds its base role
+  at once.
+- **An aggregating role that was not resolved holds nothing and cannot be
+  granted**, so a code path that forgets to resolve fails closed.
+- **A role is grantable only when it is resolved and `Available`.** A grant
+  check always uses the role's current scopes, so a caller holding only an
+  older, smaller set is refused.
 
-- **Holders keep working.** The ACL build (`unikornv1.BootstrapRoles`, called
-  from `pkg/rbac`) gives the role its own `spec.scopes` plus what its
-  non-aggregating `roleRefs` hold (`BootstrapScopes`, same protected-ref
-  rule as above). For a converted built-in role that is its base role, which
-  holds exactly its old hand-written scopes. Without this, every org admin
-  would hold nothing until the reconcile, and the one-minute ACL cache would
-  keep that.
-- **Nobody can grant it.** `rbac.AllowRole` refuses an aggregating role until
-  `Role.AggregationReady()`: status written for the current generation
-  (`Available` carries `observedGeneration`). Otherwise a caller holding
-  nothing could grant a role that is about to hold far more. This window is
-  the time to the first reconcile, normally seconds, and fails closed.
-- **A stuck role can be granted against its computed scopes**, which are
-  exactly what its holders hold, as long as they are not empty. So adding
-  members to an admin group keeps working while it is stuck. A stuck role
-  with no scopes cannot be granted.
-
-Global scopes are never read from status, whoever wrote it.
+Global scopes are never held through aggregation.
 
 ## Grantable condition
 
-`Grantable` runs the real grant check (`rbac.AllowRole`) from a holder of the
+`Grantable` is computed by this controller (`grantable.go`) and is a report
+only. It runs the real grant check (`rbac.AllowRole`) from a holder of the
 aggregating role's effective scopes against every non-protected role its
 selectors match. It is `False`, naming each role it can't grant, if any fails.
 
@@ -213,9 +213,9 @@ grantor); see ID-641.
   generation, labels or annotations, enqueues every aggregating role in the
   namespace. Labels are watched as well as generation because a label is how
   a role opts in, and labels do not bump the generation. Status changes are
-  watched too: the computation never reads status, but a status someone else
-  wrote must be put right. The controller's own
-  writes wake it once and then compute to no change.
+  watched too: the computation never reads status, but a record someone else
+  wrote must be put right. The controller's own writes wake it once and then
+  compute to no change.
 - **Each reconcile** lists every role, computes the whole graph, and writes
   only the reconciled role's status, through the status subresource. Helm and
   Argo never own `status`, so nothing fights the controller.
@@ -225,27 +225,22 @@ grantor); see ID-641.
   is why it does not use the shared provisioner reconciler. Errors (list
   failures, status write conflicts) retry at the fixed
   `DefaultYieldTimeout`.
-- **A role that stops aggregating** has its status cleared, so nothing reads
-  stale scopes from it.
-- **Readers see changes within one ACL cache TTL**, not at once.
+- **A role that stops aggregating** has its status cleared, so the record does
+  not show old scopes.
+- **Enforcement sees a change within one ACL cache TTL** (one minute), the
+  same as any role change. Grant checks see it at once.
 
 ## Caveats
 
 - **Removing a source shrinks admin at once.** For example, turning off a
   chart that ships labelled roles removes their scopes from every org admin
-  at the next reconcile. Kubernetes behaves the same. A deleted `roleRef`
+  at the next ACL build. Kubernetes behaves the same. A deleted `roleRef`
   does too (`MissingRoleRef`).
-- **Status goes stale while the controller is down, with no bound.** Readers
-  use `status.effectiveScopes` as written. A source that widens or narrows is
-  not seen until the next reconcile, and `AggregationReady` checks only the
-  role's own generation, so it still passes on the old status. A caller
-  holding only the old set can grant the role, and holders keep scopes a
-  source has dropped. The window is the reconcile latency while the
-  controller runs, and unbounded while it is down. **The controller must be
-  alerted on** (not running, or reconcile errors) before rollout. Same class
-  as the unpinned widening below.
+- **If the controller is down, only the record stops.** Status, conditions
+  and Events go out of date. What roles hold, and who can grant them, does
+  not change.
 - **A scope change on a labelled role widens every org admin** at the next
-  reconcile, with no approval step. The admission allow-list (chart) and the
+  ACL build, with no approval step. The admission allow-list (chart) and the
   change record keep this visible. It closes when grants pin bundle versions
   (NCP-0002 §15.15).
 - **The project → organization fold gives admins organization-wide use**, not
@@ -254,9 +249,9 @@ grantor); see ID-641.
 
 ## Rollout
 
-- **Alert on the controller before turning aggregation on.** While it is
-  down, status is not updated and the stale window above has no bound. Alert
-  when it is not running or its reconciles keep failing.
+- **Alert on the controller.** While it is down, status, the `Grantable`
+  warning and the change record are out of date. Alert when it is not running
+  or its reconciles keep failing.
 - **Check every aggregating role is `Available=True` after the apply.** A
-  wrong `roleRef` fails closed: its holders lose that ref's scopes until it is
-  fixed.
+  wrong `roleRef` fails closed: its holders lose that ref's scopes, and the
+  role cannot be granted, until it is fixed.

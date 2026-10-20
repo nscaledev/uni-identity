@@ -143,17 +143,24 @@ operations; otherwise Region authorization receives an ACL without the required 
 
 A role with `spec.aggregationRule` is an aggregating role: it holds the scopes
 of the source roles it selects by label (`identity.unikorn-cloud.org/aggregate-to-<role>`)
-or names in `roleRefs`. The [role controller](../controllers/role/README.md)
-writes them to `status.effectiveScopes`. This is how an organization admin
-comes to hold, and so grant, an opted-in service role such as
-`fleet-operator`, while the grant rule below stays exactly as it is.
+or names in `roleRefs`. This is how an organization admin comes to hold, and
+so grant, an opted-in service role such as `fleet-operator`, while the grant
+rule below stays exactly as it is.
 
 Every reader of a role's scopes in this package (`AllowRole`, the ACL build,
-global role bindings) uses `Role.EffectiveScopes()`, never `spec.scopes`. It
-returns `spec.scopes` for a normal role and `status.effectiveScopes` for an
-aggregating role. An aggregating role the controller has not reconciled yet
-holds its own `spec.scopes` plus what its `roleRefs` hold (`BootstrapRoles`),
-and cannot be granted.
+global role bindings) uses `Role.EffectiveScopes()`, never `spec.scopes` or
+status. It returns `spec.scopes` for a normal role. For an aggregating role it
+returns what [`aggregation.Resolve`](../aggregation/README.md) worked out live
+from the roles just listed, and nothing if the role was not resolved.
+`getRoles` resolves every role it lists, so each ACL build uses the sources as
+they are now.
+
+`AllowRole` refuses an aggregating role unless it was resolved and is
+`Available` (`Role.AggregationReady()`): a stuck role is never grantable.
+Callers that load one role must call `aggregation.ResolveRole` first.
+
+Status, which the [role controller](../controllers/role/README.md) writes, is
+a record for people and is never read here.
 
 ### Grant relationships
 

@@ -372,13 +372,12 @@ func allowGrantProjectScope(ctx context.Context, endpoint string, operation open
 // caller may only ever grant a role whose permissions they already hold at the grant's
 // scope or broader.
 //
-// An aggregating role is only grantable once the role controller has written
-// its status for the current generation (Role.AggregationReady).  Before that
-// its effective scopes are empty or stale, so the check would pass for anyone
-// while the role is about to hold far more.
+// An aggregating role is only grantable once it has been resolved live and is
+// Available (Role.AggregationReady).  An unresolved one holds nothing, so the
+// check would pass for anyone, and a stuck one is broken until fixed.
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
 	if !role.AggregationReady() {
-		return errors.HTTPForbidden(fmt.Sprintf("role %s is an aggregating role whose scopes are not yet computed, so it cannot be granted yet", role.Name))
+		return errors.HTTPForbidden(fmt.Sprintf("role %s is an aggregating role that is not resolved or not available, so it cannot be granted", role.Name))
 	}
 
 	return allowScopes(ctx, role.EffectiveScopes(), organizationID)

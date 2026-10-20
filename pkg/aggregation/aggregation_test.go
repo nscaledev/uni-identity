@@ -17,10 +17,12 @@ limitations under the License.
 package aggregation_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -133,6 +135,16 @@ func catalogue(roles ...*unikornv1.Role) map[string]*unikornv1.Role {
 	return out
 }
 
+func labelledIDs(result *aggregation.Result) []string {
+	out := make([]string, 0, len(result.Labelled))
+
+	for _, l := range result.Labelled {
+		out = append(out, l.ID)
+	}
+
+	return out
+}
+
 func sourceIDs(result *aggregation.Result) []string {
 	out := make([]string, 0, len(result.AggregatedFrom))
 
@@ -153,7 +165,7 @@ func TestBaseRefAndSelector(t *testing.T) {
 		newRole("unlabelled", org(scope("radar:secret", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 	require.NotNil(t, result)
 
 	require.Equal(t, []unikornv1.RoleScope{
@@ -170,7 +182,10 @@ func TestBaseRefAndSelector(t *testing.T) {
 
 	require.Equal(t, corev1.ConditionTrue, result.Available.Status)
 	require.Equal(t, unikornv1.RoleReasonAggregated, result.Available.Reason)
-	require.Equal(t, corev1.ConditionTrue, result.Grantable.Status)
+
+	// Only the non-protected selector match goes to the controller's
+	// Grantable check.
+	require.Equal(t, []string{"fleet-operator"}, labelledIDs(result))
 }
 
 func TestFlattenToOrganization(t *testing.T) {
@@ -187,7 +202,7 @@ func TestFlattenToOrganization(t *testing.T) {
 		newRole("user", aggregates(false)),
 	)
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	// Flattened: the mutating project scope lands at organization scope, so
 	// it applies across the whole organization.
@@ -201,9 +216,6 @@ func TestFlattenToOrganization(t *testing.T) {
 	user := results["user"].EffectiveScopes
 	require.Equal(t, []unikornv1.RoleScope{scope("svc:things", unikornv1.Read)}, user.Organization)
 	require.Equal(t, []unikornv1.RoleScope{scope("svc:things", unikornv1.Create, unikornv1.Delete)}, user.Project)
-
-	require.Equal(t, corev1.ConditionTrue, results["administrator"].Grantable.Status)
-	require.Equal(t, corev1.ConditionTrue, results["user"].Grantable.Status)
 }
 
 func TestChain(t *testing.T) {
@@ -218,7 +230,7 @@ func TestChain(t *testing.T) {
 		newRole("fleet-reader", aggregateTo("reader"), project(scope("radar:topology", unikornv1.Read))),
 	)
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	want := []unikornv1.RoleScope{scope("radar:topology", unikornv1.Read)}
 
@@ -229,7 +241,6 @@ func TestChain(t *testing.T) {
 
 	for name, result := range results {
 		require.Equalf(t, corev1.ConditionTrue, result.Available.Status, "%s: %s", name, result.Available.Message)
-		require.Equalf(t, corev1.ConditionTrue, result.Grantable.Status, "%s: %s", name, result.Grantable.Message)
 	}
 }
 
@@ -239,11 +250,17 @@ func TestRemovingSourceShrinks(t *testing.T) {
 	admin := newRole("administrator", aggregates(true),
 		lastStatus(unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("radar:topology", unikornv1.Read)}}))
 
-	result := aggregation.Compute(t.Context(), catalogue(admin))["administrator"]
+	roles := catalogue(admin)
+
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Empty(t, result.EffectiveScopes.Organization)
 	require.Empty(t, result.AggregatedFrom)
 	require.Equal(t, corev1.ConditionTrue, result.Available.Status)
+
+	// Holders lose the scope at once, whatever status still says.
+	aggregation.Resolve(roles)
+	require.Empty(t, admin.EffectiveScopes().Organization)
 }
 
 // TestMissingRoleRefGivesNothing checks a missing roleRef gives nothing,
@@ -259,14 +276,13 @@ func TestMissingRoleRefGivesNothing(t *testing.T) {
 		newRole("fleet-operator", aggregateTo("administrator"), org(scope("radar:topology", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Equal(t, []unikornv1.RoleScope{scope("radar:topology", unikornv1.Read)}, result.EffectiveScopes.Organization)
 	require.Equal(t, []string{"fleet-operator"}, sourceIDs(result))
 	require.Equal(t, corev1.ConditionFalse, result.Available.Status)
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, result.Available.Reason)
 	require.Contains(t, result.Available.Message, baseID("administrator"))
-	require.Equal(t, corev1.ConditionTrue, result.Grantable.Status)
 }
 
 // TestStuckRoleDropsRemovedScopes checks a role stuck on a missing roleRef
@@ -290,7 +306,7 @@ func TestStuckRoleDropsRemovedScopes(t *testing.T) {
 		newRole("fleet-operator", aggregateTo("administrator"), org(scope("svc:safe", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, result.Available.Reason)
 	require.Equal(t, []unikornv1.RoleScope{
@@ -316,7 +332,7 @@ func TestCycleUsesOnlyOutsideSources(t *testing.T) {
 		newRole("above", aggregates(false, "a")),
 	)
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	require.Equal(t, outside, results["a"].EffectiveScopes.Organization)
 	require.Equal(t, outside, results["b"].EffectiveScopes.Organization)
@@ -336,7 +352,7 @@ func TestSelfSelectionIgnored(t *testing.T) {
 		newRole("administrator", aggregates(true), aggregateTo("administrator")),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Equal(t, corev1.ConditionTrue, result.Available.Status)
 	require.Empty(t, result.AggregatedFrom)
@@ -351,7 +367,7 @@ func TestProtectedAndGlobalNeverSelected(t *testing.T) {
 		newRole("global-thing", aggregateTo("administrator"), global(scope("svc:everything", unikornv1.Delete))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Empty(t, result.EffectiveScopes.Organization)
 	require.Empty(t, result.EffectiveScopes.Global)
@@ -367,7 +383,7 @@ func TestGlobalScopesFromRefsDropped(t *testing.T) {
 		newRole("administrator", aggregates(true, baseID("administrator"))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Empty(t, result.EffectiveScopes.Global)
 	require.Equal(t, []unikornv1.RoleScope{scope("svc:org", unikornv1.Read)}, result.EffectiveScopes.Organization)
@@ -384,7 +400,7 @@ func TestLabelledRoleNeverChangesPublicAdministrator(t *testing.T) {
 		newRole("administrator", aggregates(true)),
 	)
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	require.NotContains(t, results, "public-administrator")
 	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, publicAdmin.EffectiveScopes().Organization)
@@ -408,7 +424,7 @@ func TestEmptySelectorRefused(t *testing.T) {
 		newRole("anything", org(scope("svc:b", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Equal(t, corev1.ConditionFalse, result.Available.Status)
 	require.Equal(t, unikornv1.RoleReasonInvalidSelector, result.Available.Reason)
@@ -458,7 +474,7 @@ func TestCycleThroughFinishedRole(t *testing.T) {
 		newRole("c", refsOnly("b")),
 	)
 
-	results := aggregation.Compute(t.Context(), roles)
+	results := aggregation.Compute(roles)
 
 	for _, id := range []string{"a", "b", "c"} {
 		require.Equalf(t, unikornv1.RoleReasonCycle, results[id].Available.Reason, "%s should be in the cycle", id)
@@ -466,9 +482,9 @@ func TestCycleThroughFinishedRole(t *testing.T) {
 }
 
 // TestBadRefOnConversionFailsClosed checks that turning a role with
-// hand-written scopes into an aggregating one with a bad ref keeps them only
-// until the controller first writes status, through the ACL build's
-// bootstrap.  The controller itself never uses them.
+// hand-written scopes into an aggregating one with a bad ref never keeps
+// them: an aggregating role's own spec.scopes are never held, and the stuck
+// role cannot be granted.
 func TestBadRefOnConversionFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -476,12 +492,15 @@ func TestBadRefOnConversionFailsClosed(t *testing.T) {
 		newRole("administrator", org(scope("identity:groups", unikornv1.Create)), refsOnly("typo")),
 	)
 
-	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create)}, roles["administrator"].BootstrapScopes(roles).Organization)
-
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, result.Available.Reason)
 	require.Empty(t, result.EffectiveScopes.Organization)
+
+	aggregation.Resolve(roles)
+
+	require.Empty(t, roles["administrator"].EffectiveScopes().Organization)
+	require.False(t, roles["administrator"].AggregationReady())
 }
 
 // TestGlobalScopesInStatusAreNeverKept checks global scopes someone wrote
@@ -494,8 +513,11 @@ func TestGlobalScopesInStatusAreNeverKept(t *testing.T) {
 
 	roles := catalogue(newRole("a", refsOnly("missing"), tampered))
 
-	require.Empty(t, aggregation.Compute(t.Context(), roles)["a"].EffectiveScopes.Global)
+	require.Empty(t, aggregation.Compute(roles)["a"].EffectiveScopes.Global)
 	require.Empty(t, newRole("a", refsOnly("x"), tampered).EffectiveScopes().Global)
+
+	aggregation.Resolve(roles)
+	require.Empty(t, roles["a"].EffectiveScopes().Global)
 }
 
 // TestMatchExpressionSelectorRefused checks a selector that could match
@@ -514,7 +536,7 @@ func TestMatchExpressionSelectorRefused(t *testing.T) {
 		}}},
 	}
 
-	result := aggregation.Compute(t.Context(), roles)["agg"]
+	result := aggregation.Compute(roles)["agg"]
 
 	require.Equal(t, unikornv1.RoleReasonInvalidSelector, result.Available.Reason)
 	require.Empty(t, result.AggregatedFrom)
@@ -533,81 +555,122 @@ func TestNonAggregateLabelSelectorRefused(t *testing.T) {
 
 	roles := catalogue(admin, newRole("fleet-operator", org(scope("radar:topology", unikornv1.Read))))
 
-	require.Equal(t, unikornv1.RoleReasonInvalidSelector, aggregation.Compute(t.Context(), roles)["administrator"].Available.Reason)
+	require.Equal(t, unikornv1.RoleReasonInvalidSelector, aggregation.Compute(roles)["administrator"].Available.Reason)
 }
 
-// TestUnreconciledAggregatingRoleIsNotGrantable checks a caller with no
-// scopes cannot grant an aggregating role the controller has not
-// reconciled, which would otherwise pass because it holds nothing yet.
-func TestUnreconciledAggregatingRoleIsNotGrantable(t *testing.T) {
+// holderACL builds a context for a caller holding these organization
+// endpoints in the test organization.
+func holderACL(t *testing.T, endpoints ...openapi.AclEndpoint) context.Context {
+	t.Helper()
+
+	organizations := openapi.AclOrganizationList{{Id: testOrganizationID, Endpoints: &endpoints}}
+
+	return rbac.NewContext(t.Context(), &openapi.Acl{Organizations: &organizations})
+}
+
+func endpoint(name string, ops ...openapi.AclOperation) openapi.AclEndpoint {
+	return openapi.AclEndpoint{Name: name, Operations: ops}
+}
+
+// availableStatus writes a status the way the controller does for a role
+// that is Available, recording these scopes.
+func availableStatus(scopes unikornv1.RoleScopes) roleOption {
+	return func(r *unikornv1.Role) {
+		r.Status.EffectiveScopes = &scopes
+		r.Status.Conditions = []metav1.Condition{{
+			Type:               string(unikornv1core.ConditionAvailable),
+			Status:             metav1.ConditionTrue,
+			Reason:             unikornv1.RoleReasonAggregated,
+			ObservedGeneration: r.Generation,
+		}}
+	}
+}
+
+// TestUnresolvedAggregatingRoleIsNotGrantable checks an aggregating role that
+// was not resolved holds nothing and cannot be granted, even by a caller who
+// holds everything its sources give, so a code path that forgets to resolve
+// fails closed.
+func TestUnresolvedAggregatingRoleIsNotGrantable(t *testing.T) {
 	t.Parallel()
 
-	organizations := openapi.AclOrganizationList{{Id: testOrganizationID}}
-	ctx := rbac.NewContext(t.Context(), &openapi.Acl{Organizations: &organizations})
+	roles := catalogue(
+		baseRole("administrator", org(scope("identity:groups", unikornv1.Read))),
+		newRole("administrator", refsOnly(baseID("administrator")), org(scope("identity:groups", unikornv1.Read)),
+			availableStatus(unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}})),
+	)
 
-	err := rbac.AllowRole(ctx, newRole("administrator", refsOnly(baseID("administrator"))), ids.MustParseOrganizationID(testOrganizationID))
-	require.Error(t, err)
+	admin := roles["administrator"]
+	organizationID := ids.MustParseOrganizationID(testOrganizationID)
+	holder := holderACL(t, endpoint("identity:groups", openapi.Read))
+
+	require.Empty(t, admin.EffectiveScopes().Organization)
+	require.False(t, admin.AggregationReady())
+	require.Error(t, rbac.AllowRole(holder, admin, organizationID))
+
+	aggregation.Resolve(roles)
+
+	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}, admin.EffectiveScopes().Organization)
+	require.NoError(t, rbac.AllowRole(holder, admin, organizationID))
 }
 
-// TestStaleGenerationIsNotGrantable checks a role whose aggregationRule
-// changed since the controller last wrote status cannot be granted until it
-// catches up.
-func TestStaleGenerationIsNotGrantable(t *testing.T) {
+// TestStatusConditionsAreNotTrusted checks status never decides whether a
+// role can be granted: an Available status on a role that is stuck now does
+// not make it grantable, and a stuck status on a role that works now does
+// not stop it.
+func TestStatusConditionsAreNotTrusted(t *testing.T) {
 	t.Parallel()
 
-	role := newRole("administrator", refsOnly(baseID("administrator")), lastStatus(unikornv1.RoleScopes{}))
-	role.Generation = 2
-	role.Status.Conditions = []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue, ObservedGeneration: 1}}
+	roles := catalogue(
+		baseRole("administrator", org(scope("identity:groups", unikornv1.Read))),
+		newRole("stuck", refsOnly("typo"), availableStatus(unikornv1.RoleScopes{})),
+		newRole("working", refsOnly(baseID("working"))),
+		baseRole("working", org(scope("identity:groups", unikornv1.Read))),
+	)
 
-	require.False(t, role.AggregationReady())
+	roles["working"].Status.Conditions = []metav1.Condition{{
+		Type:   string(unikornv1core.ConditionAvailable),
+		Status: metav1.ConditionFalse,
+		Reason: unikornv1.RoleReasonMissingRoleRef,
+	}}
 
-	role.Status.Conditions[0].ObservedGeneration = 2
+	aggregation.Resolve(roles)
 
-	require.True(t, role.AggregationReady())
-
-	// A stuck role (Available=False) with empty scopes is not grantable.
-	role.Status.Conditions[0].Status = metav1.ConditionFalse
-
-	require.False(t, role.AggregationReady())
+	require.False(t, roles["stuck"].AggregationReady())
+	require.True(t, roles["working"].AggregationReady())
 }
 
-// TestStuckRoleWithScopesIsGrantable checks a stuck role is grantable
-// against the scopes its working sources give, which are what its holders
-// hold, so adding members to an admin group keeps working while it is stuck.
-func TestStuckRoleWithScopesIsGrantable(t *testing.T) {
+// TestStuckRoleIsNeverGrantable checks a stuck role cannot be granted, even
+// though its holders hold what its working sources give and the caller holds
+// all of that.
+func TestStuckRoleIsNeverGrantable(t *testing.T) {
 	t.Parallel()
 
 	kept := unikornv1.RoleScopes{Organization: []unikornv1.RoleScope{scope("identity:groups", unikornv1.Read)}}
 
-	role := newRole("administrator", refsOnly("typo"), lastStatus(kept))
-	role.Status.Conditions = []metav1.Condition{{Type: "Available", Status: metav1.ConditionFalse, Reason: unikornv1.RoleReasonMissingRoleRef}}
+	roles := catalogue(
+		baseRole("administrator", org(kept.Organization...)),
+		newRole("administrator", refsOnly(baseID("administrator"), "typo"), availableStatus(kept)),
+	)
 
-	require.True(t, role.AggregationReady())
+	aggregation.Resolve(roles)
 
-	acl := func(endpoints ...openapi.AclEndpoint) *openapi.Acl {
-		organizations := openapi.AclOrganizationList{{Id: testOrganizationID, Endpoints: &endpoints}}
+	admin := roles["administrator"]
+	require.Equal(t, kept.Organization, admin.EffectiveScopes().Organization)
+	require.False(t, admin.AggregationReady())
 
-		return &openapi.Acl{Organizations: &organizations}
-	}
+	everything := holderACL(t,
+		endpoint("identity:groups", openapi.Create, openapi.Read, openapi.Update, openapi.Delete),
+		endpoint("identity:organizations", openapi.Create, openapi.Read, openapi.Update, openapi.Delete),
+	)
 
-	organizationID := ids.MustParseOrganizationID(testOrganizationID)
-
-	holder := rbac.NewContext(t.Context(), acl(openapi.AclEndpoint{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}}))
-	require.NoError(t, rbac.AllowRole(holder, role, organizationID))
-
-	nobody := rbac.NewContext(t.Context(), acl())
-	require.Error(t, rbac.AllowRole(nobody, role, organizationID))
-
-	// A status from an older generation is still not trusted.
-	role.Generation = 2
-
-	require.False(t, role.AggregationReady())
+	require.Error(t, rbac.AllowRole(everything, admin, ids.MustParseOrganizationID(testOrganizationID)))
 }
 
-// TestLabelledGlobalRoleIsNotGrantable checks a role labelled for
-// aggregation that has global scopes is skipped, and Grantable names it,
-// because no org admin can ever grant it.
-func TestLabelledGlobalRoleIsNotGrantable(t *testing.T) {
+// TestLabelledGlobalRoleKeepsGlobalScopes checks a role labelled for
+// aggregation that has global scopes is skipped, but handed to the
+// controller's Grantable check with its global scopes, so it can be named:
+// no org admin can ever grant it.
+func TestLabelledGlobalRoleKeepsGlobalScopes(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
@@ -615,11 +678,12 @@ func TestLabelledGlobalRoleIsNotGrantable(t *testing.T) {
 		newRole("svc-global", aggregateTo("administrator"), global(scope("svc:everything", unikornv1.Read))),
 	)
 
-	result := aggregation.Compute(t.Context(), roles)["administrator"]
+	result := aggregation.Compute(roles)["administrator"]
 
 	require.Equal(t, corev1.ConditionTrue, result.Available.Status)
-	require.Equal(t, corev1.ConditionFalse, result.Grantable.Status)
-	require.Contains(t, result.Grantable.Message, "svc-global")
+	require.Empty(t, result.EffectiveScopes.Global)
+	require.Equal(t, []string{"svc-global"}, labelledIDs(result))
+	require.Equal(t, []unikornv1.RoleScope{scope("svc:everything", unikornv1.Read)}, result.Labelled[0].Scopes.Global)
 }
 
 // TestDeletingSourceIsNotUsed checks a source held by a finalizer while it is
@@ -631,14 +695,15 @@ func TestDeletingSourceIsNotUsed(t *testing.T) {
 	now := metav1.Now()
 	deleting.DeletionTimestamp = &now
 
-	result := aggregation.Compute(t.Context(), catalogue(newRole("administrator", aggregates(true)), deleting))["administrator"]
+	result := aggregation.Compute(catalogue(newRole("administrator", aggregates(true)), deleting))["administrator"]
 
 	require.Empty(t, result.EffectiveScopes.Organization)
 }
 
-// TestBootstrapRolesKeepsAdminsWorking checks that before the controller has
-// run, the ACL build gives a converted role what its base role holds.
-func TestBootstrapRolesKeepsAdminsWorking(t *testing.T) {
+// TestResolveGivesConvertedRoleItsBase checks a built-in role converted to
+// an aggregating one holds what its base role holds, without global scopes,
+// as soon as it is resolved: nothing waits for the controller.
+func TestResolveGivesConvertedRoleItsBase(t *testing.T) {
 	t.Parallel()
 
 	roles := catalogue(
@@ -646,11 +711,14 @@ func TestBootstrapRolesKeepsAdminsWorking(t *testing.T) {
 		newRole("administrator", aggregates(true, baseID("administrator"))),
 	)
 
-	unikornv1.BootstrapRoles(roles)
+	aggregation.Resolve(roles)
 
-	scopes := roles["administrator"].EffectiveScopes()
+	admin := roles["administrator"]
+	scopes := admin.EffectiveScopes()
 	require.Equal(t, []unikornv1.RoleScope{scope("identity:groups", unikornv1.Create)}, scopes.Organization)
 	require.Empty(t, scopes.Global)
+	require.True(t, admin.AggregationReady())
+	require.Nil(t, admin.Status.EffectiveScopes, "Resolve never writes status")
 }
 
 // TestComputeDoesNotMutateInput checks Compute never writes to the roles it is
@@ -665,7 +733,7 @@ func TestComputeDoesNotMutateInput(t *testing.T) {
 			newRole("pb", org(scope("svc:pb", unikornv1.Read))),
 		)
 
-		return aggregation.Compute(t.Context(), roles)["m"].EffectiveScopes, roles
+		return aggregation.Compute(roles)["m"].EffectiveScopes, roles
 	}
 
 	before, roles := run("a")
@@ -673,6 +741,7 @@ func TestComputeDoesNotMutateInput(t *testing.T) {
 
 	for id, role := range roles {
 		require.Nilf(t, role.Status.EffectiveScopes, "%s was written by Compute", id)
+		require.Nilf(t, role.Computed, "%s was resolved by Compute", id)
 	}
 
 	require.Equal(t, before, after)
@@ -696,7 +765,7 @@ func TestStuckRoleRefsStuckRole(t *testing.T) {
 			newRole("z", refsOnly("base", "typo-z")),
 		)
 
-		results := aggregation.Compute(t.Context(), roles)
+		results := aggregation.Compute(roles)
 
 		require.Equal(t, want, results["z"].EffectiveScopes.Organization)
 		require.Equal(t, want, results["a"].EffectiveScopes.Organization)
@@ -712,7 +781,7 @@ func TestStuckRoleRefsStuckRole(t *testing.T) {
 			newRole("z", refsOnly("a", "base")),
 		)
 
-		results := aggregation.Compute(t.Context(), roles)
+		results := aggregation.Compute(roles)
 
 		require.Equal(t, want, results["z"].EffectiveScopes.Organization)
 		require.Equal(t, want, results["a"].EffectiveScopes.Organization)
@@ -732,7 +801,7 @@ func TestSourceHashIgnoresGlobalScopes(t *testing.T) {
 			newRole("administrator", aggregates(true, baseID("administrator"))),
 		)
 
-		return aggregation.Compute(t.Context(), roles)["administrator"]
+		return aggregation.Compute(roles)["administrator"]
 	}
 
 	without := compute()

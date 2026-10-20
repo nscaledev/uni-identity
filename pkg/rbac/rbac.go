@@ -29,6 +29,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
@@ -319,9 +320,9 @@ func (r *RBAC) getRoles(ctx context.Context) (map[string]*unikornv1.Role, error)
 		out[result.Items[i].Name] = &result.Items[i]
 	}
 
-	// Aggregating roles the role controller has not reconciled yet hold what
-	// their roleRefs hold, so admins keep working while a role is converted.
-	unikornv1.BootstrapRoles(out)
+	// Work out what every aggregating role holds now, from the roles just
+	// listed.  Status written by the role controller is never trusted here.
+	aggregation.Resolve(out)
 
 	return out, nil
 }

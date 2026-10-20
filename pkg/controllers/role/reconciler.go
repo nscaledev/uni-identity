@@ -77,7 +77,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, nil
 	}
 
-	status, snapshot, err := r.desiredStatus(ctx, role)
+	status, err := r.desiredStatus(ctx, role)
 	if err != nil {
 		log.Error(err, "failed to compute role status")
 
@@ -89,7 +89,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 
 	previous := role.Status.DeepCopy()
-	oldScopes := previousScopes(role, snapshot)
+	oldScopes := recordedScopes(&role.Status)
 
 	role.Status = *status
 
@@ -105,19 +105,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	return reconcile.Result{}, nil
 }
 
-// desiredStatus returns what the role's status should be, and the snapshot of
-// roles it was computed from (nil for a role that is not aggregating).  A
-// role that is not aggregating has no status: if it used to aggregate, the
-// old status is cleared so nobody reads stale scopes from it.
-func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*unikornv1.RoleStatus, map[string]*unikornv1.Role, error) {
+// desiredStatus returns what the role's status should be.  Status is a
+// record for people: the identity server never reads it, it works the same
+// answer out live.  A role that is not aggregating has no status: if it used
+// to aggregate, the old record is cleared.
+func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*unikornv1.RoleStatus, error) {
 	if !role.IsAggregating() {
-		return &unikornv1.RoleStatus{}, nil, nil
+		return &unikornv1.RoleStatus{}, nil
 	}
 
 	roles := &unikornv1.RoleList{}
 
 	if err := r.client.List(ctx, roles, client.InNamespace(role.Namespace)); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	snapshot := make(map[string]*unikornv1.Role, len(roles.Items))
@@ -129,9 +129,9 @@ func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*
 	// Use the copy this reconcile was asked about, in case the list differs.
 	snapshot[role.Name] = role
 
-	result, ok := aggregation.Compute(ctx, snapshot)[role.Name]
+	result, ok := aggregation.Compute(snapshot)[role.Name]
 	if !ok {
-		return nil, nil, fmt.Errorf("%w: no aggregation result for role %s", errNoResult, role.Name)
+		return nil, fmt.Errorf("%w: no aggregation result for role %s", errNoResult, role.Name)
 	}
 
 	scopes := result.EffectiveScopes
@@ -142,28 +142,22 @@ func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*
 		Conditions:      slices.Clone(role.Status.Conditions),
 	}
 
-	// ObservedGeneration tells grant checks the status matches the current
-	// aggregationRule (see Role.AggregationReady).
 	setCondition(status, role.Generation, unikornv1core.ConditionAvailable, result.Available)
-	setCondition(status, role.Generation, unikornv1.RoleConditionGrantable, result.Grantable)
+	setCondition(status, role.Generation, unikornv1.RoleConditionGrantable, grantable(ctx, result))
 
-	return status, snapshot, nil
+	return status, nil
 }
 
-// previousScopes returns what the role held before this reconcile, read the
-// way readers read it: without global scopes, and with the ACL build's
-// bootstrap scopes when the controller had not written status yet.
-func previousScopes(role *unikornv1.Role, snapshot map[string]*unikornv1.Role) unikornv1.RoleScopes {
-	switch {
-	case role.Status.EffectiveScopes != nil:
-		return unikornv1.RoleScopes{
-			Organization: role.Status.EffectiveScopes.Organization,
-			Project:      role.Status.EffectiveScopes.Project,
-		}
-	case role.IsAggregating():
-		return role.BootstrapScopes(snapshot)
-	default:
-		return role.Spec.Scopes
+// recordedScopes returns the scopes a status records, without global scopes,
+// for the change record.
+func recordedScopes(status *unikornv1.RoleStatus) unikornv1.RoleScopes {
+	if status.EffectiveScopes == nil {
+		return unikornv1.RoleScopes{}
+	}
+
+	return unikornv1.RoleScopes{
+		Organization: status.EffectiveScopes.Organization,
+		Project:      status.EffectiveScopes.Project,
 	}
 }
 
@@ -186,11 +180,11 @@ func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, pr
 	r.recordConditionChanges(ctx, role, previous)
 
 	if len(role.Spec.Scopes.Global)+len(role.Spec.Scopes.Organization)+len(role.Spec.Scopes.Project) > 0 {
-		log.Info("aggregating role has spec.scopes, they are only used before the first reconcile: move them to a base role in roleRefs")
+		log.Info("aggregating role has spec.scopes, they are ignored: move them to a base role in roleRefs")
 	}
 
 	oldHash := aggregation.Hash(oldScopes)
-	newHash := aggregation.Hash(role.EffectiveScopes())
+	newHash := aggregation.Hash(recordedScopes(&role.Status))
 
 	// Compare by hash, so going from no status to empty scopes is no change.
 	if oldHash == newHash {

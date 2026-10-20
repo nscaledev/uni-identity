@@ -130,3 +130,49 @@ func TestValidateRoleIDsProtectedAndMissing(t *testing.T) {
 	_, err = c.validateRoleIDs(ctx, orgID, []string{"nope"}, nil)
 	require.Error(t, err)
 }
+
+// TestValidateRoleIDsChecksLiveAggregation checks an aggregating role is
+// grant-checked on what its sources give now, not on its stale status.
+func TestValidateRoleIDsChecksLiveAggregation(t *testing.T) {
+	t.Parallel()
+
+	aggregate := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "aggregate-id",
+			Namespace: testNamespace,
+			Labels:    map[string]string{"unikorn-cloud.org/name": "aggregate"},
+		},
+		Spec: unikornv1.RoleSpec{
+			AggregationRule: &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel("aggregate-id"): "true"}},
+				},
+			},
+		},
+		Status: unikornv1.RoleStatus{
+			EffectiveScopes: &unikornv1.RoleScopes{},
+			Conditions: []metav1.Condition{
+				{Type: "Available", Status: metav1.ConditionTrue, Reason: unikornv1.RoleReasonAggregated},
+			},
+		},
+	}
+
+	radar := testRole("radar-id", "radar", false, "radar:things")
+	radar.Labels[unikornv1.AggregateToLabel("aggregate-id")] = "true"
+
+	c := testClient(t, aggregate, radar)
+
+	orgID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	nobody := testACL(openapi.AclEndpoints{{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}}})
+
+	_, err = c.validateRoleIDs(nobody, orgID, []string{"aggregate-id"}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "aggregate")
+
+	holder := testACL(openapi.AclEndpoints{{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}}})
+
+	_, err = c.validateRoleIDs(holder, orgID, []string{"aggregate-id"}, nil)
+	require.NoError(t, err)
+}

@@ -27,6 +27,7 @@ import (
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -407,6 +408,11 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 
 		if resource.Spec.Protected {
 			return nil, errors.HTTPForbidden("requested role is protected")
+		}
+
+		// An aggregating role is checked on what it holds now.
+		if err := aggregation.ResolveRole(ctx, c.client, &resource); err != nil {
+			return nil, fmt.Errorf("%w: failed to resolve role", err)
 		}
 
 		// Only roles being ADDED are grant-checked.  Re-sending a group's
