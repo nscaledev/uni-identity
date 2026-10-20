@@ -27,8 +27,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TestChartRoleIDMatchesChart pins ChartRoleID to IDs the identity chart
-// renders.
 func TestChartRoleIDMatchesChart(t *testing.T) {
 	t.Parallel()
 
@@ -48,8 +46,6 @@ func role(id, name string, protected bool) *unikornv1.Role {
 	}
 }
 
-// TestMayRefOwnBase checks an aggregating role may use its own base role,
-// with the chart's ID and name, and any role that is not protected.
 func TestMayRefOwnBase(t *testing.T) {
 	t.Parallel()
 
@@ -59,8 +55,6 @@ func TestMayRefOwnBase(t *testing.T) {
 	require.True(t, admin.MayRef(role("f0000000-0000-4000-8000-000000000001", "anything", false)))
 }
 
-// TestMayRefRefusesSpoofedBase checks a protected role that copies the base
-// role's name label, but has another ID, is refused.
 func TestMayRefRefusesSpoofedBase(t *testing.T) {
 	t.Parallel()
 
@@ -69,12 +63,9 @@ func TestMayRefRefusesSpoofedBase(t *testing.T) {
 	require.False(t, admin.MayRef(role(unikornv1.ChartRoleID("system-account"), "administrator-base", true)))
 	require.False(t, admin.MayRef(role("f0000000-0000-4000-8000-000000000001", "administrator-base", true)))
 
-	// The right ID with another name is refused too.
 	require.False(t, admin.MayRef(role(unikornv1.ChartRoleID("administrator-base"), "system-account", true)))
 }
 
-// TestMayRefRenameLocksOut checks renaming an aggregating role locks it out
-// of its base role: the base role's ID comes from the old name.
 func TestMayRefRenameLocksOut(t *testing.T) {
 	t.Parallel()
 

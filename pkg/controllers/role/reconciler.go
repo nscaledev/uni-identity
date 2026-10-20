@@ -39,12 +39,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// EventReasonEffectiveScopesChanged is the Event reason emitted when an
-// aggregating role's effective scopes change.
+// EventReasonEffectiveScopesChanged is the Event reason for a change in effective scopes.
 const EventReasonEffectiveScopesChanged = "EffectiveScopesChanged"
 
-// maxEventNote caps an Event note in bytes: events.k8s.io/v1 rejects notes
-// of 1 KiB or more.
+// maxEventNote is below the 1 KiB limit on events.k8s.io/v1 notes.
 const maxEventNote = 1000
 
 // Reconciler writes the status of aggregating roles.
@@ -55,9 +53,7 @@ type Reconciler struct {
 
 var _ reconcile.Reconciler = &Reconciler{}
 
-// Reconcile computes one role's status from a snapshot of every role in its
-// namespace.  It never writes spec, labels or annotations, and never adds a
-// finalizer: there is nothing to clean up when a role goes.
+// Reconcile writes status only; there is no finalizer, as nothing needs cleaning up.
 func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 
@@ -73,7 +69,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{RequeueAfter: coreconstants.DefaultYieldTimeout}, nil
 	}
 
-	// A plain role being deleted has no record to keep.
 	if !role.DeletionTimestamp.IsZero() && !role.IsAggregating() {
 		return reconcile.Result{}, nil
 	}
@@ -95,12 +90,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	role.Status = *status
 
 	if err := r.client.Status().Update(ctx, role); err != nil {
-		// A role that is gone needs no record.
 		if kerrors.IsNotFound(err) {
 			return reconcile.Result{}, nil
 		}
 
-		// Conflicts and API errors are transient: retry at a fixed interval.
 		log.Info("failed to update role status, retrying", "error", err.Error())
 
 		return reconcile.Result{RequeueAfter: coreconstants.DefaultYieldTimeout}, nil
@@ -111,8 +104,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	return reconcile.Result{}, nil
 }
 
-// statusFor returns what the role's status should be, whether or not it is
-// being deleted.
 func (r *Reconciler) statusFor(ctx context.Context, role *unikornv1.Role) (*unikornv1.RoleStatus, error) {
 	if !role.DeletionTimestamp.IsZero() {
 		return deletingStatus(role), nil
@@ -121,10 +112,7 @@ func (r *Reconciler) statusFor(ctx context.Context, role *unikornv1.Role) (*unik
 	return r.desiredStatus(ctx, role)
 }
 
-// deletingStatus returns the status of an aggregating role that is being
-// deleted, held by a finalizer.  The server gives it nothing (a role being
-// deleted is never computed), so the record says so: it holds nothing, is
-// not Available and cannot be granted.
+// deletingStatus: a role being deleted is never computed, so the record says it holds nothing.
 func deletingStatus(role *unikornv1.Role) *unikornv1.RoleStatus {
 	status := &unikornv1.RoleStatus{
 		EffectiveScopes: &unikornv1.RoleScopes{},
@@ -143,10 +131,7 @@ func deletingStatus(role *unikornv1.Role) *unikornv1.RoleStatus {
 	return status
 }
 
-// desiredStatus returns what the role's status should be.  Status is a
-// record for people: the identity server never reads it, it works the same
-// answer out live.  A role that is not aggregating has no status: if it used
-// to aggregate, the old record is cleared.
+// desiredStatus is a record for people; the server never reads it. A role that stopped aggregating is cleared.
 func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*unikornv1.RoleStatus, error) {
 	if !role.IsAggregating() {
 		return &unikornv1.RoleStatus{}, nil
@@ -164,7 +149,6 @@ func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*
 		snapshot[roles.Items[i].Name] = &roles.Items[i]
 	}
 
-	// Use the copy this reconcile was asked about, in case the list differs.
 	snapshot[role.Name] = role
 
 	result, ok := aggregation.Compute(snapshot)[role.Name]
@@ -186,8 +170,6 @@ func (r *Reconciler) desiredStatus(ctx context.Context, role *unikornv1.Role) (*
 	return status, nil
 }
 
-// recordedScopes returns the scopes a status records, without global scopes,
-// for the change record.
 func recordedScopes(status *unikornv1.RoleStatus) unikornv1.RoleScopes {
 	if status.EffectiveScopes == nil {
 		return unikornv1.RoleScopes{}
@@ -209,9 +191,6 @@ func setCondition(status *unikornv1.RoleStatus, generation int64, t unikornv1cor
 	})
 }
 
-// recordChanges emits an Event and a log line when the effective scopes
-// change, naming each source that was added, removed or changed with its old
-// and new hash.  The hashes let a reader see exactly which source moved.
 func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, previous *unikornv1.RoleStatus, oldScopes unikornv1.RoleScopes) {
 	log := log.FromContext(ctx)
 
@@ -224,7 +203,7 @@ func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, pr
 	oldHash := aggregation.Hash(oldScopes)
 	newHash := aggregation.Hash(recordedScopes(&role.Status))
 
-	// Compare by hash, so going from no status to empty scopes is no change.
+	// By hash, so going from no status to empty scopes is no change.
 	if oldHash == newHash {
 		return
 	}
@@ -250,12 +229,7 @@ func (r *Reconciler) recordChanges(ctx context.Context, role *unikornv1.Role, pr
 	}
 }
 
-// recordConditionChanges emits a Warning Event and a log line when Available
-// or Grantable turns False, or changes reason or message while False, so a
-// stuck role is loud.  A stuck role holds only what its working sources give,
-// so its admins may have just lost scopes, and the scope change record alone
-// would not say why.  Grantable False because Available is False is not
-// warned again: the Available warning already says why.
+// recordConditionChanges warns when a role gets stuck, since its admins may just have lost scopes.
 func (r *Reconciler) recordConditionChanges(ctx context.Context, role *unikornv1.Role, previous *unikornv1.RoleStatus) {
 	for _, t := range []unikornv1core.ConditionType{unikornv1core.ConditionAvailable, unikornv1.RoleConditionGrantable} {
 		current := meta.FindStatusCondition(role.Status.Conditions, string(t))
@@ -278,8 +252,6 @@ func (r *Reconciler) recordConditionChanges(ctx context.Context, role *unikornv1
 	}
 }
 
-// followsAvailable tells whether a condition is Grantable False only because
-// Available is False.
 func followsAvailable(t unikornv1core.ConditionType, condition *metav1.Condition) bool {
 	return t == unikornv1.RoleConditionGrantable &&
 		(condition.Reason == unikornv1.RoleReasonNotAvailable || condition.Reason == unikornv1.RoleReasonDeleting)
@@ -329,8 +301,6 @@ func sourceChanges(previous, current []unikornv1.RoleAggregationSource) []source
 	return changes
 }
 
-// truncate cuts s to at most limit bytes, on a rune boundary, ending in "…"
-// when anything was cut.
 func truncate(s string, limit int) string {
 	if len(s) <= limit {
 		return s

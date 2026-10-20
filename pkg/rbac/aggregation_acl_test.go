@@ -52,10 +52,6 @@ func organizationEndpointNames(acl *openapi.Acl) []string {
 	return names
 }
 
-// TestACLUsesLiveAggregation checks the ACL build works out what an
-// aggregating role holds from its sources, never from status, and that a
-// source dropping a scope takes it away at the next build.  No role
-// controller runs here, so status is never put right.
 func TestACLUsesLiveAggregation(t *testing.T) {
 	t.Parallel()
 
@@ -77,8 +73,7 @@ func TestACLUsesLiveAggregation(t *testing.T) {
 		},
 	}
 
-	// The status claims org:manage and Available: whoever wrote it, nothing
-	// reads it.
+	// Status claims org:manage and Available; nothing reads it.
 	aggregate := &unikornv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: testNamespace,
@@ -125,7 +120,6 @@ func TestACLUsesLiveAggregation(t *testing.T) {
 
 	require.ElementsMatch(t, []string{"org:read", "project:read"}, organizationEndpointNames(getACLForUser(t, f.rbac, userDaveSubject)))
 
-	// Narrow the source.  The next ACL build drops the scope.
 	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Namespace: testNamespace, Name: roleSourceID}, source))
 
 	source.Spec.Scopes.Organization = source.Spec.Scopes.Organization[:1]

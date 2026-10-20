@@ -55,11 +55,8 @@ func newRole(id string, labels map[string]string, spec unikornv1.RoleSpec) *unik
 	}
 }
 
-// adminID is the ID the chart gives administrator.
 var adminID = unikornv1.ChartRoleID("administrator") //nolint:gochecknoglobals
 
-// adminRole is the aggregating administrator role, with the ID and name the
-// chart gives it.
 func adminRole() *unikornv1.Role {
 	admin := newRole(adminID, nil, unikornv1.RoleSpec{
 		AggregationRule: &unikornv1.RoleAggregationRule{
@@ -74,11 +71,8 @@ func adminRole() *unikornv1.Role {
 	return admin
 }
 
-// adminBaseID is the ID the chart gives administrator-base.
 var adminBaseID = unikornv1.ChartRoleID("administrator-base") //nolint:gochecknoglobals
 
-// adminBase is the protected base role of administrator, with the ID and
-// name the chart gives it.
 func adminBase() *unikornv1.Role {
 	base := newRole(adminBaseID, nil, unikornv1.RoleSpec{
 		Protected: true,
@@ -176,7 +170,6 @@ func TestReconcileWritesStatusAndRecordsChange(t *testing.T) {
 	require.Contains(t, events[0], "added")
 	require.Contains(t, events[0], admin.Status.AggregatedFrom[0].ScopesHash)
 
-	// The spec is never written.
 	require.Nil(t, admin.Spec.Scopes.Organization)
 }
 
@@ -311,8 +304,6 @@ func TestReconcileWarnsOnceWhenStuck(t *testing.T) {
 	require.Empty(t, drain(recorder), "a role that stays stuck does not warn again")
 }
 
-// TestReconcileDeletedRefGivesNothing checks a deleted roleRef drops out of
-// the record, even after the controller has recorded it in status.
 func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 	t.Parallel()
 
@@ -345,9 +336,6 @@ func TestReconcileDeletedRefGivesNothing(t *testing.T) {
 	require.Equal(t, unikornv1.RoleReasonMissingRoleRef, available.Reason)
 }
 
-// TestReconcileInvalidSelectorWritesOnce checks a selector with several bad
-// labels gives the same message every time, so the controller writes status
-// and warns once, not on every reconcile.
 func TestReconcileInvalidSelectorWritesOnce(t *testing.T) {
 	t.Parallel()
 
@@ -372,9 +360,6 @@ func TestReconcileInvalidSelectorWritesOnce(t *testing.T) {
 	require.Empty(t, drain(recorder))
 }
 
-// TestReconcileInvalidLabelKeyWritesOnce checks aggregate-to-* selector keys
-// that are not valid label keys give the same message every time, so the
-// controller writes status once, not on every reconcile.
 func TestReconcileInvalidLabelKeyWritesOnce(t *testing.T) {
 	t.Parallel()
 
@@ -401,9 +386,6 @@ func TestReconcileInvalidLabelKeyWritesOnce(t *testing.T) {
 	require.Empty(t, drain(recorder))
 }
 
-// TestReconcileFirstStatusRecordsEverySource checks the first status write
-// is compared with no record, so it names every source, the base role
-// included, as added.
 func TestReconcileFirstStatusRecordsEverySource(t *testing.T) {
 	t.Parallel()
 
@@ -424,9 +406,6 @@ func TestReconcileFirstStatusRecordsEverySource(t *testing.T) {
 	}
 }
 
-// TestReconcileWritesGrantableFalse checks the controller records Grantable
-// False, naming the role, when a role labelled for it has global scopes, and
-// warns once.
 func TestReconcileWritesGrantableFalse(t *testing.T) {
 	t.Parallel()
 
@@ -460,8 +439,6 @@ func TestReconcileWritesGrantableFalse(t *testing.T) {
 	require.Empty(t, drain(recorder))
 }
 
-// TestReconcileChangeIgnoresGlobalScopesInStatus checks global scopes someone
-// wrote into status, which nobody reads, are no change.
 func TestReconcileChangeIgnoresGlobalScopesInStatus(t *testing.T) {
 	t.Parallel()
 
@@ -516,10 +493,6 @@ func TestWatchPassesStatusChanges(t *testing.T) {
 	require.True(t, roleChanged().Update(event.TypedUpdateEvent[*unikornv1.Role]{ObjectOld: old, ObjectNew: updated}))
 }
 
-// TestReconcileDeletingRoleRecordsNothingHeld checks an aggregating role held
-// by a finalizer while it is deleted is recorded as holding nothing, not
-// Available and not grantable, as the server treats it, instead of keeping
-// its last Available record.
 func TestReconcileDeletingRoleRecordsNothingHeld(t *testing.T) {
 	t.Parallel()
 
@@ -559,7 +532,6 @@ func TestReconcileDeletingRoleRecordsNothingHeld(t *testing.T) {
 	events := drain(recorder)
 	require.Equal(t, 1, strings.Count(strings.Join(events, "\n"), "Warning "), events)
 
-	// Nothing changes on the next run.
 	before := deleting.ResourceVersion
 
 	reconcileRole(t, r, adminID)

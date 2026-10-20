@@ -210,22 +210,16 @@ type Role struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Spec              RoleSpec   `json:"spec"`
 	Status            RoleStatus `json:"status,omitempty"`
-	// Computed is what an aggregating role holds, worked out live from the
-	// current roles by aggregation.Resolve.  It is never stored or sent:
-	// every decision about an aggregating role uses this, and an aggregating
-	// role without it holds nothing and cannot be granted.
+	// Computed is the live aggregation result, never stored or sent; without it an aggregating role holds nothing.
 	Computed *ComputedAggregation `json:"-"`
 }
 
 // ComputedAggregation is the live result of aggregating one role.
 type ComputedAggregation struct {
-	// Scopes are the scopes the role holds.
 	Scopes RoleScopes
-	// Available is false when the role is stuck (missing ref, cycle, bad
-	// selector or ref).  A stuck role is never grantable.
+	// Available is false when the role is stuck; a stuck role is never grantable.
 	Available bool
-	// Sources are the source roles used, sorted by ID.
-	Sources []RoleAggregationSource
+	Sources   []RoleAggregationSource
 }
 
 // RoleSpec defines the role's requested state.
@@ -235,34 +229,20 @@ type RoleSpec struct {
 	// Protected means this is an unexported internal role.
 	Protected bool `json:"protected,omitempty"`
 	// Scopes are a list of uniquely named scopes for the role.
-	// An aggregating role (one with an aggregationRule) must leave this
-	// empty: all of its scopes come from its sources, and readers take a
-	// role's scopes from EffectiveScopes(), never from this field directly.
+	// An aggregating role must leave this empty; readers use EffectiveScopes().
 	Scopes RoleScopes `json:"scopes,omitempty"`
-	// AggregationRule, when set, makes this an aggregating role: it holds the
-	// scopes of every source role, worked out live on every decision.  The
-	// role controller records the result in status for people to read.  See
-	// pkg/controllers/role/README.md.
+	// AggregationRule makes this an aggregating role, see pkg/controllers/role/README.md.
 	AggregationRule *RoleAggregationRule `json:"aggregationRule,omitempty"`
 }
 
-// RoleAggregationRule selects the source roles whose scopes an aggregating
-// role holds.  Field names follow Kubernetes ClusterRole aggregation.
+// RoleAggregationRule selects the source roles of an aggregating role, like ClusterRole aggregation.
 type RoleAggregationRule struct {
-	// RoleSelectors select source roles by label in the role namespace,
-	// typically identity.unikorn-cloud.org/aggregate-to-<role>: "true".
-	// Protected roles and roles with global scopes are never selected.
+	// RoleSelectors select source roles by aggregate-to-<role> label; protected and global-scope roles are never used.
 	RoleSelectors []metav1.LabelSelector `json:"roleSelectors,omitempty"`
-	// RoleRefs are role IDs that are always included.  The only protected
-	// role they may name is this role's base role, whose display name is
-	// this role's display name plus "-base", whose ID is the one the chart
-	// gives that name, and which holds this role's own hand-written scopes.
-	// Any other protected ref gives nothing.
+	// RoleRefs are role IDs always included; the only protected role allowed is this role's own base role.
 	// +listType=set
 	RoleRefs []string `json:"roleRefs,omitempty"`
-	// FlattenToOrganization copies the project scopes of every source into
-	// the organization block, so the role can grant project roles across
-	// the whole organization, not only in projects linked to its group.
+	// FlattenToOrganization moves source project scopes to organization scope.
 	FlattenToOrganization bool `json:"flattenToOrganization,omitempty"`
 }
 
@@ -304,10 +284,7 @@ const (
 
 // RoleStatus defines any role status information.
 type RoleStatus struct {
-	// EffectiveScopes record the scopes an aggregating role holds after
-	// aggregation, for people to read.  Written by the role controller only,
-	// never by Helm or Argo, and never read by the identity server, which
-	// works the same answer out live.
+	// EffectiveScopes is a record for people, written by the role controller; the server never reads it.
 	EffectiveScopes *RoleScopes `json:"effectiveScopes,omitempty"`
 	// AggregatedFrom lists each source role in use.
 	AggregatedFrom []RoleAggregationSource `json:"aggregatedFrom,omitempty"`
@@ -317,17 +294,15 @@ type RoleStatus struct {
 
 // RoleAggregationSource records one source role of an aggregating role.
 type RoleAggregationSource struct {
-	// ID is the role ID of the source.
+	// ID is the source role ID.
 	ID string `json:"id"`
 	// Name is the source role's display name.
 	Name string `json:"name,omitempty"`
 	// Description is the source role's description.
 	Description string `json:"description,omitempty"`
-	// ScopesHash is a hash of the scopes the source contributed, in the form
-	// sha256:<hex>.  It changes whenever those scopes change.
+	// ScopesHash is a sha256:<hex> hash of the scopes the source contributed.
 	ScopesHash string `json:"scopesHash"`
-	// Scopes are the organization and project scopes the source contributed,
-	// before any flattening.  A record only: nothing reads it back.
+	// Scopes are what the source contributed, before flattening; a record only.
 	Scopes *RoleScopes `json:"scopes,omitempty"`
 }
 

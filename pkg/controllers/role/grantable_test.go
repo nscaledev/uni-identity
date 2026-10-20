@@ -39,7 +39,6 @@ func orgScopes(names ...string) unikornv1.RoleScopes {
 	return scopes
 }
 
-// labelledFor makes a role labelled for the named aggregating roles.
 func labelledFor(id string, scopes unikornv1.RoleScopes, names ...string) *unikornv1.Role {
 	labels := map[string]string{}
 
@@ -50,7 +49,6 @@ func labelledFor(id string, scopes unikornv1.RoleScopes, names ...string) *uniko
 	return newRole(id, labels, unikornv1.RoleSpec{Scopes: scopes})
 }
 
-// aggregating makes a role that selects aggregate-to-<id> and refs refs.
 func aggregating(id string, flatten bool, refs ...string) *unikornv1.Role {
 	return newRole(id, nil, unikornv1.RoleSpec{
 		AggregationRule: &unikornv1.RoleAggregationRule{
@@ -63,8 +61,7 @@ func aggregating(id string, flatten bool, refs ...string) *unikornv1.Role {
 	})
 }
 
-// chartAggregating is aggregating with the ID the chart gives the name, as
-// an aggregating role must have to use its base role.
+// chartAggregating uses the chart ID, which an aggregating role needs to use its base role.
 func chartAggregating(name string, flatten bool, refs ...string) *unikornv1.Role {
 	role := aggregating(name, flatten, refs...)
 	role.Name = unikornv1.ChartRoleID(name)
@@ -90,8 +87,6 @@ func grantableFor(t *testing.T, roles ...*unikornv1.Role) map[string]aggregation
 	return out
 }
 
-// TestGrantableBaseRefAndSelector checks a role can grant the role labelled
-// for it, alongside its protected base role.
 func TestGrantableBaseRefAndSelector(t *testing.T) {
 	t.Parallel()
 
@@ -102,8 +97,6 @@ func TestGrantableBaseRefAndSelector(t *testing.T) {
 	require.Equal(t, "can grant all 1 labelled roles", results[adminID].Message)
 }
 
-// TestGrantableFlattenAndNot checks a flattening and a non-flattening role
-// can both grant a role with project scopes labelled for them.
 func TestGrantableFlattenAndNot(t *testing.T) {
 	t.Parallel()
 
@@ -119,8 +112,6 @@ func TestGrantableFlattenAndNot(t *testing.T) {
 	}
 }
 
-// TestGrantableChain checks every role in a chain can grant what is labelled
-// for it, aggregating roles included.
 func TestGrantableChain(t *testing.T) {
 	t.Parallel()
 
@@ -147,10 +138,6 @@ func TestGrantableChain(t *testing.T) {
 	}
 }
 
-// TestNotGrantableWhileStuck checks a role stuck on a missing roleRef is
-// recorded as not grantable, even though it could grant every live role
-// labelled for it: the server never grants a stuck role (see
-// Role.AggregationReady), so the record must not say it can.
 func TestNotGrantableWhileStuck(t *testing.T) {
 	t.Parallel()
 
@@ -161,9 +148,6 @@ func TestNotGrantableWhileStuck(t *testing.T) {
 	require.Equal(t, "role is stuck, it cannot be granted", results[adminID].Message)
 }
 
-// TestGrantableNamesLabelledGlobalRole checks a role labelled for
-// aggregation that has global scopes makes Grantable False, naming it,
-// because no org admin can ever grant it.
 func TestGrantableNamesLabelledGlobalRole(t *testing.T) {
 	t.Parallel()
 
@@ -178,10 +162,6 @@ func TestGrantableNamesLabelledGlobalRole(t *testing.T) {
 	require.Equal(t, "cannot grant: svc-global", results["administrator"].Message)
 }
 
-// TestGrantableUsesLiveScopesOfAggregatingLabelledRole checks an aggregating
-// role labelled for another one is judged on what it holds live, which has
-// no global scopes, not on its own spec.scopes.global: it is used as a
-// source, and Grantable does not name it.
 func TestGrantableUsesLiveScopesOfAggregatingLabelledRole(t *testing.T) {
 	t.Parallel()
 

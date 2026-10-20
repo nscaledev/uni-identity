@@ -135,8 +135,6 @@ func TestValidateRoleIDsProtectedAndMissing(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestValidateRoleIDsChecksLiveAggregation checks an aggregating role is
-// grant-checked on what its sources give now, not on its stale status.
 func TestValidateRoleIDsChecksLiveAggregation(t *testing.T) {
 	t.Parallel()
 
@@ -183,8 +181,6 @@ func TestValidateRoleIDsChecksLiveAggregation(t *testing.T) {
 
 var errListFailed = errors.New("list failed")
 
-// countingClient is testClient with a count of role lists, and a list error
-// if fail is set.
 func countingClient(t *testing.T, fail bool, roles ...*unikornv1.Role) (*Client, *atomic.Int32) {
 	t.Helper()
 
@@ -212,7 +208,6 @@ func countingClient(t *testing.T, fail bool, roles ...*unikornv1.Role) (*Client,
 	return New(builder.Build(), testNamespace, common.IssuerValue{}), lists
 }
 
-// aggregatingRole makes an aggregating role that selects aggregate-to-<id>.
 func aggregatingRole(id string) *unikornv1.Role {
 	return &unikornv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -230,8 +225,6 @@ func aggregatingRole(id string) *unikornv1.Role {
 	}
 }
 
-// TestValidateRoleIDsListsOncePerRequest checks roles are listed at most once
-// per request, and only when a role being added aggregates.
 func TestValidateRoleIDsListsOncePerRequest(t *testing.T) {
 	t.Parallel()
 
@@ -255,22 +248,19 @@ func TestValidateRoleIDsListsOncePerRequest(t *testing.T) {
 		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
 	})
 
-	// Several aggregating roles added at once: one list.
 	c, lists := countingClient(t, false, roles()...)
 
 	_, err = c.validateRoleIDs(holder, orgID, []string{"agg-a", "agg-b", "agg-c", "basic-id"}, nil)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), lists.Load())
 
-	// Plain roles only: no list.
 	c, lists = countingClient(t, false, roles()...)
 
 	_, err = c.validateRoleIDs(holder, orgID, []string{"radar-id", "basic-id"}, nil)
 	require.NoError(t, err)
 	require.Zero(t, lists.Load())
 
-	// Adding a plain role to a group that already has an aggregating role:
-	// the existing role is not resolved, so no list.
+	// The existing aggregating role is not resolved, so no list.
 	c, lists = countingClient(t, false, roles()...)
 
 	_, err = c.validateRoleIDs(holder, orgID, []string{"agg-a", "basic-id"}, []string{"agg-a"})
@@ -278,8 +268,6 @@ func TestValidateRoleIDsListsOncePerRequest(t *testing.T) {
 	require.Zero(t, lists.Load())
 }
 
-// TestValidateRoleIDsListErrorFailsClosed checks a role list error refuses
-// the request rather than letting an unresolved aggregating role through.
 func TestValidateRoleIDsListErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 

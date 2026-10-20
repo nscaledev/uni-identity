@@ -394,8 +394,6 @@ func (c *Client) populateGroupPrincipals(ctx context.Context, organization *orga
 func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.OrganizationID, roleIDs, currentRoleIDs []string) ([]string, error) {
 	normalizedRoleIDs := deduplicateStrings(roleIDs)
 
-	// Lists roles at most once for the whole request, and only if a role
-	// being added aggregates.
 	resolver := aggregation.NewResolver(c.client, c.namespace)
 
 	// Validate roles exist.
@@ -425,7 +423,6 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 			continue
 		}
 
-		// An aggregating role is checked on what it holds now.
 		if err := resolver.Resolve(ctx, &resource); err != nil {
 			return nil, fmt.Errorf("%w: failed to resolve role", err)
 		}

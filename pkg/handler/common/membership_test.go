@@ -218,10 +218,6 @@ func TestAllowGroupMembershipAdditionAllowsRolelessGroup(t *testing.T) {
 	require.NoError(t, common.AllowGroupMembershipAddition(ctx, cli, membershipNamespace, organizationID, membershipGroup()))
 }
 
-// TestAllowGroupMembershipAdditionChecksLiveAggregation checks an aggregating
-// role is grant-checked on what its sources give now.  Its status is stale,
-// recording nothing from before the source was labelled, and Available, so a
-// check on status would let a caller holding nothing through.
 func TestAllowGroupMembershipAdditionChecksLiveAggregation(t *testing.T) {
 	t.Parallel()
 
@@ -271,8 +267,6 @@ func TestAllowGroupMembershipAdditionChecksLiveAggregation(t *testing.T) {
 
 var errMembershipList = errors.New("list failed")
 
-// countingMembershipClient is membershipClient with a count of role lists,
-// and a list error if fail is set.
 func countingMembershipClient(t *testing.T, fail bool, roles ...*unikornv1.Role) (client.Client, *atomic.Int32) {
 	t.Helper()
 
@@ -300,8 +294,6 @@ func countingMembershipClient(t *testing.T, fail bool, roles ...*unikornv1.Role)
 	return builder.Build(), lists
 }
 
-// membershipAggregatingRole makes an aggregating role that selects
-// aggregate-to-<id>.
 func membershipAggregatingRole(id string) *unikornv1.Role {
 	return &unikornv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -319,8 +311,6 @@ func membershipAggregatingRole(id string) *unikornv1.Role {
 	}
 }
 
-// TestAllowGroupMembershipAdditionListsOnce checks roles are listed at most
-// once per call, and not at all for a group with only plain roles.
 func TestAllowGroupMembershipAdditionListsOnce(t *testing.T) {
 	t.Parallel()
 
@@ -351,9 +341,6 @@ func TestAllowGroupMembershipAdditionListsOnce(t *testing.T) {
 	require.Zero(t, lists.Load())
 }
 
-// TestAllowGroupMembershipAdditionListErrorFailsClosed checks a role list
-// error refuses the addition rather than letting an unresolved aggregating
-// role through.
 func TestAllowGroupMembershipAdditionListErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 

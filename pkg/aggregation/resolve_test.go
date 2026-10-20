@@ -37,9 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-// These tests check enforcement runs on what roles hold now: no controller
-// runs here, and status is only ever stale or tampered.
-
 const testNamespace = "identity"
 
 var errListed = errors.New("listed roles")
@@ -60,8 +57,6 @@ func fakeClient(t *testing.T, funcs interceptor.Funcs, roles ...*unikornv1.Role)
 	return builder.Build()
 }
 
-// loadAdministrator gets the administrator role and resolves it, as the
-// grant handlers do.
 func loadAdministrator(t *testing.T, cli client.Client) *unikornv1.Role {
 	t.Helper()
 
@@ -72,10 +67,6 @@ func loadAdministrator(t *testing.T, cli client.Client) *unikornv1.Role {
 	return role
 }
 
-// TestStaleStatusIsIgnored checks a status that says a role holds less than
-// its sources give now, and is Available, changes nothing: the role holds
-// what its sources give, and a caller holding only what status says cannot
-// grant it.
 func TestStaleStatusIsIgnored(t *testing.T) {
 	t.Parallel()
 
@@ -99,8 +90,6 @@ func TestStaleStatusIsIgnored(t *testing.T) {
 	require.NoError(t, rbac.AllowRole(holderACL(t, endpoint("svc:a", openapi.Read), endpoint("svc:b", openapi.Delete)), admin, organizationID))
 }
 
-// TestTamperedStatusIsIgnored checks a status someone wrote by hand, naming
-// scopes and a source the role does not have, gives nothing.
 func TestTamperedStatusIsIgnored(t *testing.T) {
 	t.Parallel()
 
@@ -116,8 +105,6 @@ func TestTamperedStatusIsIgnored(t *testing.T) {
 	require.Equal(t, []string{"source"}, sourceIDs(&aggregation.Result{AggregatedFrom: admin.Computed.Sources}))
 }
 
-// TestSourceNarrowingIsEnforcedAtOnce checks a scope a source drops is gone
-// from the aggregating role at the next resolve, with no controller.
 func TestSourceNarrowingIsEnforcedAtOnce(t *testing.T) {
 	t.Parallel()
 
@@ -132,9 +119,6 @@ func TestSourceNarrowingIsEnforcedAtOnce(t *testing.T) {
 	require.Equal(t, []unikornv1.RoleScope{scope("svc:a", unikornv1.Read)}, loadAdministrator(t, cli).EffectiveScopes().Organization)
 }
 
-// TestSourceWideningIsCheckedAtOnce checks a scope a source adds is part of
-// the grant check at the next resolve, with no controller: a caller who held
-// everything before cannot grant the role once it holds more.
 func TestSourceWideningIsCheckedAtOnce(t *testing.T) {
 	t.Parallel()
 
@@ -152,8 +136,6 @@ func TestSourceWideningIsCheckedAtOnce(t *testing.T) {
 	require.Error(t, rbac.AllowRole(caller, loadAdministrator(t, cli), organizationID))
 }
 
-// TestResolveRoleSkipsPlainRole checks ResolveRole does not list roles for
-// a role that does not aggregate.
 func TestResolveRoleSkipsPlainRole(t *testing.T) {
 	t.Parallel()
 
@@ -171,8 +153,6 @@ func TestResolveRoleSkipsPlainRole(t *testing.T) {
 	require.Equal(t, role.Spec.Scopes, role.EffectiveScopes())
 }
 
-// TestResolveRoleListErrorFailsClosed checks an aggregating role that could
-// not be resolved holds nothing and cannot be granted.
 func TestResolveRoleListErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -196,9 +176,6 @@ func TestResolveRoleListErrorFailsClosed(t *testing.T) {
 	require.False(t, role.AggregationReady())
 }
 
-// TestResolverListsOnce checks a Resolver lists roles once for several
-// aggregating roles, never for a plain one, and resolves each the same as
-// ResolveRole does.
 func TestResolverListsOnce(t *testing.T) {
 	t.Parallel()
 

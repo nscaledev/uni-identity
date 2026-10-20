@@ -68,9 +68,7 @@ func (*Factory) Initialize(_ context.Context, manager manager.Manager, _ *option
 	return manager.Add(reporter)
 }
 
-// Reconciler returns a new reconciler instance.  Roles have no provisioning
-// lifecycle and no finalizer, so this does not use the shared provisioner
-// reconciler: it only computes status.
+// Reconciler returns a new reconciler instance.  Roles have no provisioning lifecycle, so this skips the shared provisioner.
 func (*Factory) Reconciler(_ *options.Options, _ coremanager.ControllerOptions, manager manager.Manager) reconcile.Reconciler {
 	return &Reconciler{
 		client:   manager.GetClient(),
@@ -78,17 +76,8 @@ func (*Factory) Reconciler(_ *options.Options, _ coremanager.ControllerOptions, 
 	}
 }
 
-// RegisterWatches adds any watches that would trigger a reconcile.  A change
-// to any role can change any aggregating role, through selectors, refs and
-// chains, so every change enqueues every aggregating role in the namespace.
-// Labels are watched as well as generation, because a label is how a role
-// opts in.  Status changes are watched too: the computation never reads
-// status, but a record someone else wrote must be put right.  The
-// controller's own writes wake it once and then compute to no change.
-//
-// Only roles in the controller's own namespace (POD_NAMESPACE, set by the
-// chart) are watched, so a second identity release in the same cluster
-// never writes status on this release's roles.
+// RegisterWatches enqueues every aggregating role on any role change, as selectors, refs and chains reach anywhere.
+// Only the own namespace is watched, so a second release in the cluster never writes these roles' status.
 func (*Factory) RegisterWatches(manager manager.Manager, controller controller.Controller) error {
 	cli := manager.GetClient()
 	namespace := os.Getenv("POD_NAMESPACE")
@@ -104,8 +93,6 @@ func (*Factory) RegisterWatches(manager manager.Manager, controller controller.C
 	return controller.Watch(source.Kind(manager.GetCache(), &unikornv1.Role{}, enqueue, roleChanged(), inNamespace))
 }
 
-// roleChanged passes creates, deletes and any update that changes the
-// generation, labels, annotations or status.
 func roleChanged() predicate.TypedPredicate[*unikornv1.Role] {
 	changed := predicate.Or[*unikornv1.Role](
 		predicate.TypedGenerationChangedPredicate[*unikornv1.Role]{},
@@ -124,8 +111,6 @@ func roleChanged() predicate.TypedPredicate[*unikornv1.Role] {
 	}
 }
 
-// aggregatingRoles returns a request for the changed role and for every
-// aggregating role in its namespace.
 func aggregatingRoles(ctx context.Context, cli client.Client, changed *unikornv1.Role) []reconcile.Request {
 	requests := []reconcile.Request{
 		{NamespacedName: client.ObjectKeyFromObject(changed)},

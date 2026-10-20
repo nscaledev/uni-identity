@@ -24,9 +24,7 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 )
 
-// BenchmarkResolve resolves a namespace the size of a real one: 300 roles,
-// 5 of them aggregating, each plain role labelled for one aggregating role,
-// with 10 scopes of 4 operations each.
+// BenchmarkResolve uses a namespace the size of a real one: 300 roles, 5 of them aggregating.
 func BenchmarkResolve(b *testing.B) {
 	const (
 		plain       = 295

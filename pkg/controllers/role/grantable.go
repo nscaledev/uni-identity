@@ -30,28 +30,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// Placeholder IDs used to build a holder ACL for the grantable check.  The
-// check only compares scopes, so any valid IDs will do.
+// Placeholder IDs: the check only compares scopes.
 const (
 	grantCheckOrganizationID = "00000000-0000-0000-0000-000000000001"
 	grantCheckProjectID      = "00000000-0000-0000-0000-000000000002"
 )
 
-// grantable checks the role can grant every non-protected role labelled for
-// it.  A role that is not Available is never grantable itself (see
-// Role.AggregationReady), so it is recorded as not grantable without the
-// check: the record never says Grantable on a role the server refuses.
-//
-// Otherwise it runs the same AllowRole check the API runs when an org admin
-// grants a role.  A labelled role that is in use is held, so it passes.  The
-// useful failure is a labelled plain role that was skipped for having global
-// scopes, which no org admin can ever grant.  The check runs over the real
-// roles in each environment, so it sees roles from every chart and
-// per-environment config, which a chart unit test cannot.
-//
-// The holder ACL puts project scopes in one linked project, as a group member
-// with a linked project gets them.  A holder of a non-flattening role whose
-// group has no linked project can grant less than this says.
+// grantable runs the same AllowRole check as the API, over each non-protected role labelled for this one.
+// A role that is not Available is recorded as not grantable without the check, as the server refuses it.
 func grantable(ctx context.Context, result *aggregation.Result) aggregation.Condition {
 	if result.Available.Status != corev1.ConditionTrue {
 		return aggregation.Condition{
@@ -89,9 +75,7 @@ func grantable(ctx context.Context, result *aggregation.Result) aggregation.Cond
 	}
 }
 
-// holderACL builds the ACL a principal holding exactly these scopes gets in
-// one organization: the organization block at organization scope and the
-// project block in one project, as pkg/rbac builds it for group members.
+// holderACL puts project scopes in one linked project, as pkg/rbac does for group members.
 func holderACL(scopes unikornv1.RoleScopes) *openapi.Acl {
 	organization := openapi.AclOrganization{Id: grantCheckOrganizationID}
 

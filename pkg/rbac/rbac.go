@@ -320,8 +320,7 @@ func (r *RBAC) getRoles(ctx context.Context) (map[string]*unikornv1.Role, error)
 		out[result.Items[i].Name] = &result.Items[i]
 	}
 
-	// Work out what every aggregating role holds now, from the roles just
-	// listed.  Status written by the role controller is never trusted here.
+	// Never trust status written by the role controller.
 	aggregation.Resolve(out)
 
 	return out, nil

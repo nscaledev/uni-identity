@@ -14,18 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package aggregation computes the effective scopes of aggregating roles.
-//
-// Compute is pure: it reads a snapshot of every role and returns what each
-// aggregating role holds.  Resolve and ResolveRole run it for the identity
-// server, which enforces only on that live result (Role.Computed).  The role
-// controller writes the same result to status as a record for people, and
-// tests use it to check the chart's role catalogue.
-//
-// It never reads an aggregating role's status or its own spec.scopes: the
-// result depends only on the specs of live roles, so a status someone else
-// wrote changes nothing, and a source that changes is seen at the next
-// resolve.
+// Package aggregation computes aggregating roles' scopes from live role specs, never from status.
 package aggregation
 
 import (
@@ -55,46 +44,30 @@ type Condition struct {
 
 // Result is the desired status of one aggregating role.
 type Result struct {
-	// EffectiveScopes are the scopes the role holds.
 	EffectiveScopes unikornv1.RoleScopes
-	// AggregatedFrom lists each source in use, sorted by ID.
-	AggregatedFrom []unikornv1.RoleAggregationSource
-	// Available is the Available condition.
-	Available Condition
-	// Labelled are the non-protected roles the selectors match, used or
-	// not, for the controller's Grantable check.
+	AggregatedFrom  []unikornv1.RoleAggregationSource
+	Available       Condition
+	// Labelled are the matched non-protected roles, used or not, for the Grantable check.
 	Labelled []LabelledRole
-	// Skipped lists label matches that were not used, with the reason.
-	Skipped []string
+	Skipped  []string
 }
 
 // LabelledRole is a role labelled for an aggregating role.
 type LabelledRole struct {
-	// ID is the role ID.
-	ID string
-	// Name is the role's display name.
-	Name string
-	// Scopes are what a grant of the role hands out.
+	ID     string
+	Name   string
 	Scopes unikornv1.RoleScopes
 }
 
-// plan is what one aggregating role is built from, before any scopes are
-// resolved.
 type plan struct {
-	// sources are the role IDs used, refs and selector matches, sorted.
 	sources []string
-	// labelled are non-protected roles the selectors match, used or not.
-	// The grantable check runs over these.
+	// labelled are the matched non-protected roles, used or not.
 	labelled []string
-	// skipped notes each match that is not used.
-	skipped []string
-	// missing are roleRefs that name no live role.  They give nothing.
+	skipped  []string
+	// missing are roleRefs that name no live role.
 	missing []string
-	// refused are roleRefs that name a protected role that is not this
-	// role's base role.  They give nothing.
+	// refused are roleRefs to a protected role other than the base role.
 	refused []string
-	// invalid is set when a selector is not allowed.  The selectors then give
-	// nothing.
 	invalid string
 }
 
@@ -106,9 +79,7 @@ type computer struct {
 	results map[string]*Result
 }
 
-// Compute returns the desired status of every aggregating role in roles,
-// keyed by role ID.  roles is keyed by role ID and must hold every role in
-// the namespace.
+// Compute returns the result of every aggregating role; roles must hold every role in the namespace.
 func Compute(roles map[string]*unikornv1.Role) map[string]*Result {
 	c := &computer{
 		roles:   roles,
@@ -146,15 +117,12 @@ func Compute(roles map[string]*unikornv1.Role) map[string]*Result {
 	return c.results
 }
 
-// live tells whether a role exists and is not being deleted.  A role being
-// deleted no longer counts as a source.
 func (c *computer) live(id string) bool {
 	role, ok := c.roles[id]
 
 	return ok && role.DeletionTimestamp.IsZero()
 }
 
-// plan works out the sources of one aggregating role.
 func (c *computer) plan(id string) *plan {
 	role := c.roles[id]
 
@@ -183,13 +151,11 @@ func (c *computer) plan(id string) *plan {
 	return p
 }
 
-// planSelectors adds the selector matches of one aggregating role.
 func (c *computer) planSelectors(id string, p *plan) {
 	rule := c.roles[id].Spec.AggregationRule
 
 	selectors, err := parseSelectors(rule.RoleSelectors)
 	if err != nil {
-		// The selectors can't be used, so they give nothing.
 		p.invalid = err.Error()
 
 		return
@@ -208,12 +174,7 @@ func matchesAny(selectors []labels.Selector, role *unikornv1.Role) bool {
 	})
 }
 
-// addMatch records one selector match.  Protected roles are never used.
-// Plain roles with global scopes are not used either, but are still checked
-// by the grantable check, which then names them: no org admin can grant
-// them.  An aggregating role holds no global scopes, whatever its own
-// spec.scopes says, so it is judged on what it holds.  A match that is
-// already a source through roleRefs is not noted as skipped.
+// Plain roles with global scopes are not used but stay labelled, so the Grantable check names them.
 func (c *computer) addMatch(p *plan, id string) {
 	role := c.roles[id]
 	byRef := slices.Contains(p.sources, id)
@@ -238,10 +199,7 @@ func (c *computer) addMatch(p *plan, id string) {
 	}
 }
 
-// parseSelectors accepts only selectors made of aggregate-to-* match labels
-// set to "true".  Anything looser, an empty selector or a match expression
-// such as DoesNotExist, can select every role in the namespace, which would
-// be a silent escalation.
+// parseSelectors allows only aggregate-to-* match labels set to "true": anything looser can select every role.
 func parseSelectors(in []metav1.LabelSelector) ([]labels.Selector, error) {
 	out := make([]labels.Selector, 0, len(in))
 
@@ -256,10 +214,7 @@ func parseSelectors(in []metav1.LabelSelector) ([]labels.Selector, error) {
 			return nil, fmt.Errorf("%w: roleSelectors[%d] is empty and would select every role", ErrInvalidSelector, i)
 		}
 
-		// Map order is random, so check every label in sorted order, or the
-		// message, and so the status, would change on every reconcile.  This
-		// includes label syntax: LabelSelectorAsSelector stops at the first
-		// bad key it meets, in map order.
+		// Sorted, so the status message does not change between reconciles.
 		var bad []string
 
 		for _, key := range slices.Sorted(maps.Keys(selector.MatchLabels)) {
@@ -283,8 +238,6 @@ func parseSelectors(in []metav1.LabelSelector) ([]labels.Selector, error) {
 	return out, nil
 }
 
-// validAggregateLabel tells whether a selector label is an aggregate-to-*
-// label set to "true" that is also a valid label.
 func validAggregateLabel(key, value string) bool {
 	return strings.HasPrefix(key, unikornv1.AggregateToLabelPrefix) &&
 		value == "true" &&
@@ -292,11 +245,7 @@ func validAggregateLabel(key, value string) bool {
 		len(validation.IsValidLabelValue(value)) == 0
 }
 
-// findCycles records every aggregating role that is in a cycle, with the
-// roles in its cycle, using
-// Tarjan's strongly connected components.  A role is in a cycle when its
-// component has more than one role: a role never depends on itself, as a
-// self-ref and self-selection are ignored.
+// findCycles uses Tarjan's SCCs: a component with more than one role is a cycle.
 func (c *computer) findCycles() {
 	t := &tarjan{
 		c:       c,
@@ -350,8 +299,6 @@ func (t *tarjan) visit(id string) {
 	}
 }
 
-// popComponent pops one strongly connected component off the stack and
-// records it against each of its roles if it has more than one.
 func (t *tarjan) popComponent(root string) {
 	var component []string
 
@@ -376,8 +323,6 @@ func (t *tarjan) popComponent(root string) {
 	}
 }
 
-// scopesOf returns the scopes a source role holds right now: spec.scopes for
-// a role that does not aggregate, and the computed scopes for one that does.
 func (c *computer) scopesOf(id string) unikornv1.RoleScopes {
 	if _, aggregating := c.plans[id]; !aggregating {
 		return c.roles[id].Spec.Scopes
@@ -386,11 +331,7 @@ func (c *computer) scopesOf(id string) unikornv1.RoleScopes {
 	return c.resolve(id)
 }
 
-// inputs returns the sources one aggregating role is computed from.  A role
-// in a cycle can't be computed from the other roles in its cycle, so every
-// role in it is computed from the same sources: every source outside the
-// cycle that any role in it uses.  Those sources never depend on the cycle,
-// or they would be in it, so this never recurses into a cycle.
+// inputs: every role in a cycle uses the sources outside the cycle, so this never recurses into it.
 func (c *computer) inputs(id string) []string {
 	cycle, ok := c.cycles[id]
 	if !ok {
@@ -412,10 +353,7 @@ func (c *computer) inputs(id string) []string {
 	return sources
 }
 
-// resolve computes one aggregating role from the current scopes of its live,
-// allowed sources.  A broken part (missing or refused ref, bad selector,
-// cycle) gives nothing: like a plain role whose role binding names a missing
-// role, it fails closed.
+// resolve fails closed: a missing or refused ref, bad selector or cycle gives nothing.
 func (c *computer) resolve(id string) unikornv1.RoleScopes {
 	if result, ok := c.results[id]; ok {
 		return result.EffectiveScopes
@@ -429,10 +367,7 @@ func (c *computer) resolve(id string) unikornv1.RoleScopes {
 		Available: c.available(id),
 	}
 
-	// Gather every source into one set per scope level and sort once at the
-	// end: merging source by source sorts the whole result again for each
-	// source, which is quadratic in the number of sources.  Global scopes
-	// are never gathered.
+	// One set per level, sorted once: merging per source is quadratic.
 	organization := unikornv1.ScopeSet{}
 	projects := unikornv1.ScopeSet{}
 
@@ -462,8 +397,6 @@ func (c *computer) resolve(id string) unikornv1.RoleScopes {
 	return effective
 }
 
-// contribution returns what a source gives: its organization and project
-// scopes, sorted and with no repeats.  Global scopes are never given.
 func contribution(scopes unikornv1.RoleScopes) unikornv1.RoleScopes {
 	return unikornv1.RoleScopes{
 		Organization: unikornv1.UnionScopes(nil, scopes.Organization),
@@ -471,7 +404,6 @@ func contribution(scopes unikornv1.RoleScopes) unikornv1.RoleScopes {
 	}
 }
 
-// available returns the Available condition of one aggregating role.
 func (c *computer) available(id string) Condition {
 	p := c.plans[id]
 
@@ -509,8 +441,7 @@ func (c *computer) available(id string) Condition {
 	}
 }
 
-// otherProblems lists, sorted, what is also wrong with a role in a cycle,
-// which the Cycle reason would otherwise hide.
+// otherProblems lists what the Cycle reason would otherwise hide.
 func (c *computer) otherProblems(id string) string {
 	p := c.plans[id]
 
@@ -541,8 +472,6 @@ func availableMessage(sources int, skipped []string) string {
 	return message
 }
 
-// describe records one source and the scopes it contributed, which never
-// include global scopes.
 func describe(role *unikornv1.Role, contributed unikornv1.RoleScopes) unikornv1.RoleAggregationSource {
 	return unikornv1.RoleAggregationSource{
 		ID:          role.Name,
@@ -553,8 +482,7 @@ func describe(role *unikornv1.Role, contributed unikornv1.RoleScopes) unikornv1.
 	}
 }
 
-// Hash returns a stable hash of a set of scopes: the same scopes always give
-// the same hash, whatever order they are listed in.
+// Hash returns a hash of scopes that does not depend on their order.
 func Hash(scopes unikornv1.RoleScopes) string {
 	canonical := unikornv1.RoleScopes{
 		Global:       unikornv1.UnionScopes(nil, scopes.Global),
@@ -573,12 +501,7 @@ func Hash(scopes unikornv1.RoleScopes) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// labelledTargets returns each non-protected role labelled for an aggregating
-// role, with the scopes a grant of it would hand out, for the controller's
-// Grantable check.  A plain labelled role skipped for global scopes keeps
-// them, so the check names it: no org admin can ever grant it.  An
-// aggregating labelled role is checked on what it holds live, which never
-// includes global scopes, whatever its own spec.scopes says.
+// labelledTargets checks an aggregating role on what it holds live, never its own spec.scopes.
 func (c *computer) labelledTargets(labelled []string) []LabelledRole {
 	out := make([]LabelledRole, 0, len(labelled))
 

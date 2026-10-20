@@ -32,13 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// These tests check the computation never takes scopes from an aggregating
-// role's status: whoever can write status can't change what a role holds,
-// and a source that goes away stops giving at once.
-
-// writeBack runs Compute and writes every result to status, as the
-// controller does, then resolves the roles as the identity server does, so
-// EffectiveScopes is what holders hold.
+// writeBack writes every result to status as the controller does, then resolves as the server does.
 func writeBack(t *testing.T, roles map[string]*unikornv1.Role) {
 	t.Helper()
 
@@ -64,8 +58,6 @@ func evilScopes() unikornv1.RoleScopes {
 	}}
 }
 
-// TestStatusTamperUnderMissingRefIsDropped checks scopes written into status
-// under a missing roleRef are never held or recorded again.
 func TestStatusTamperUnderMissingRefIsDropped(t *testing.T) {
 	t.Parallel()
 
@@ -82,8 +74,6 @@ func TestStatusTamperUnderMissingRefIsDropped(t *testing.T) {
 	require.Equal(t, []string{baseID("reader")}, sourceIDs(&aggregation.Result{AggregatedFrom: roles[unikornv1.ChartRoleID("reader")].Status.AggregatedFrom}))
 }
 
-// TestDeletedRefStopsGiving checks a deleted roleRef stops giving its scopes
-// at the next compute.
 func TestDeletedRefStopsGiving(t *testing.T) {
 	t.Parallel()
 
@@ -105,9 +95,6 @@ func TestDeletedRefStopsGiving(t *testing.T) {
 	require.Empty(t, roles["admin"].Status.AggregatedFrom)
 }
 
-// TestCycleDoesNotSustainTamperedStatus checks a cycle neither keeps scopes
-// someone wrote into a member's status nor a scope its outside source
-// dropped, whether the whole graph or one role at a time is written.
 func TestCycleDoesNotSustainTamperedStatus(t *testing.T) {
 	t.Parallel()
 
@@ -145,8 +132,6 @@ func TestCycleDoesNotSustainTamperedStatus(t *testing.T) {
 	}
 }
 
-// TestCycleDropsScopeAtOnce checks a scope an outside source drops is gone
-// from every role in the cycle after one compute.
 func TestCycleDropsScopeAtOnce(t *testing.T) {
 	t.Parallel()
 
@@ -169,8 +154,6 @@ func TestCycleDropsScopeAtOnce(t *testing.T) {
 	}
 }
 
-// TestInvalidSelectorIgnoresStatus checks a refused selector does not use
-// roles named in status, even live ones that never opted in.
 func TestInvalidSelectorIgnoresStatus(t *testing.T) {
 	t.Parallel()
 
@@ -186,9 +169,6 @@ func TestInvalidSelectorIgnoresStatus(t *testing.T) {
 	require.Empty(t, roles["reader"].Status.AggregatedFrom)
 }
 
-// TestProtectedRefOnlyForOwnBase checks an aggregating role may only use a
-// protected role through roleRefs when it is its own base role, so another
-// labelled aggregating role can't pass protected scopes on.
 func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 	t.Parallel()
 
@@ -210,7 +190,6 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 	require.Equal(t, unikornv1.RoleReasonInvalidRoleRef, sneaky.Available.Reason)
 	require.Contains(t, sneaky.Available.Message, "system-account")
 
-	// What holders hold follows the same rule.
 	aggregation.Resolve(roles)
 
 	require.Empty(t, roles["sneaky"].EffectiveScopes().Organization)
@@ -219,8 +198,6 @@ func TestProtectedRefOnlyForOwnBase(t *testing.T) {
 	require.True(t, roles[adminID].AggregationReady())
 }
 
-// TestStuckRoleIgnoresSpecScopes checks an aggregating role's own
-// spec.scopes are never held once the controller computes it, stuck or not.
 func TestStuckRoleIgnoresSpecScopes(t *testing.T) {
 	t.Parallel()
 
@@ -238,8 +215,6 @@ func TestStuckRoleIgnoresSpecScopes(t *testing.T) {
 	require.Equal(t, []unikornv1.RoleScope{scope("svc:a", unikornv1.Read)}, roles["admin"].EffectiveScopes().Organization)
 }
 
-// TestInvalidSelectorMessageIsStable checks a selector with several bad
-// labels gives the same message every time, naming them all in order.
 func TestInvalidSelectorMessageIsStable(t *testing.T) {
 	t.Parallel()
 
@@ -258,8 +233,6 @@ func TestInvalidSelectorMessageIsStable(t *testing.T) {
 	}
 }
 
-// TestRefMatchedBySelectorIsNotSkipped checks a role used through roleRefs
-// is not also reported as skipped when a selector matches it.
 func TestRefMatchedBySelectorIsNotSkipped(t *testing.T) {
 	t.Parallel()
 
@@ -275,9 +248,6 @@ func TestRefMatchedBySelectorIsNotSkipped(t *testing.T) {
 	require.Equal(t, []string{baseID("administrator")}, sourceIDs(result))
 }
 
-// TestInvalidLabelKeyMessageIsStable checks aggregate-to-* selector keys that
-// are not valid label keys are all named, in order, every time.  Selector
-// parsing stops at the first bad key in map order, which is random.
 func TestInvalidLabelKeyMessageIsStable(t *testing.T) {
 	t.Parallel()
 
@@ -301,8 +271,6 @@ func TestInvalidLabelKeyMessageIsStable(t *testing.T) {
 	}
 }
 
-// TestCycleMessageNamesOtherProblems checks a role in a cycle still reports
-// its missing and refused roleRefs and its bad selector.
 func TestCycleMessageNamesOtherProblems(t *testing.T) {
 	t.Parallel()
 
@@ -326,8 +294,6 @@ func TestCycleMessageNamesOtherProblems(t *testing.T) {
 	require.Contains(t, results["b"].Available.Message, aggregation.ErrInvalidSelector.Error())
 }
 
-// TestSpoofedBaseRefGivesNothing checks a protected role that copies the
-// base role's name label, but not its ID, gives nothing.
 func TestSpoofedBaseRefGivesNothing(t *testing.T) {
 	t.Parallel()
 
@@ -345,9 +311,6 @@ func TestSpoofedBaseRefGivesNothing(t *testing.T) {
 	require.False(t, roles["administrator"].AggregationReady())
 }
 
-// TestDecoyCannotClaimBaseRole checks a role that copies the administrator's
-// name label, but not its ID, cannot use administrator-base, while the real
-// administrator still can.
 func TestDecoyCannotClaimBaseRole(t *testing.T) {
 	t.Parallel()
 
@@ -369,9 +332,6 @@ func TestDecoyCannotClaimBaseRole(t *testing.T) {
 	require.True(t, roles[adminID].AggregationReady())
 }
 
-// TestDeletingAggregatingRoleHoldsNothing checks an aggregating role held by
-// a finalizer while it is deleted holds nothing and is not ready, though its
-// sources are live.
 func TestDeletingAggregatingRoleHoldsNothing(t *testing.T) {
 	t.Parallel()
 
@@ -394,8 +354,6 @@ func TestDeletingAggregatingRoleHoldsNothing(t *testing.T) {
 	require.False(t, deleting.AggregationReady())
 }
 
-// TestAggregatingRoleSpecGlobalScopesIgnored checks an aggregating role's own
-// spec.scopes.global is never held.
 func TestAggregatingRoleSpecGlobalScopesIgnored(t *testing.T) {
 	t.Parallel()
 
