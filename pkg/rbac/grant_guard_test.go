@@ -133,13 +133,16 @@ func chartRoleIDs(names []string) []string {
 }
 
 // loadChartRoles returns the chart's roles with the scopes each one really holds: an
-// aggregating role's scopes are computed by pkg/aggregation exactly as the role
-// controller computes them in a cluster, so every test below runs on effective scopes.
+// aggregating role's scopes are computed by pkg/aggregation exactly as the identity
+// server computes them live, so every test below runs on effective scopes.  Every
+// aggregating role must be Available, and must be able to grant every role labelled for
+// it, as the role controller's Grantable condition checks.
 func loadChartRoles(t *testing.T) map[string]chartRole {
 	t.Helper()
 
 	roles := loadChartValues(t).Roles
-	results := aggregation.Compute(t.Context(), chartRoleResources(t))
+	results := aggregation.Compute(chartRoleResources(t))
+	org := ids.MustParseOrganizationID(organizationID)
 
 	names := make(map[string]string, len(roles))
 	for name := range roles {
@@ -150,13 +153,20 @@ func loadChartRoles(t *testing.T) map[string]chartRole {
 		name := names[id]
 
 		require.Equalf(t, corev1.ConditionTrue, result.Available.Status, "%s: %s", name, result.Available.Message)
-		require.Equalf(t, corev1.ConditionTrue, result.Grantable.Status, "%s: %s", name, result.Grantable.Message)
 
 		role := roles[name]
 		role.Scopes.Global = nil
 		role.Scopes.Organization = fromRoleScopes(result.EffectiveScopes.Organization)
 		role.Scopes.Project = fromRoleScopes(result.EffectiveScopes.Project)
 		roles[name] = role
+
+		ctx := rbac.NewContext(t.Context(), aclForHolder(role))
+
+		for _, labelled := range result.Labelled {
+			target := &unikornv1.Role{Spec: unikornv1.RoleSpec{Scopes: labelled.Scopes}}
+
+			require.NoErrorf(t, rbac.AllowRole(ctx, target, org), "%s cannot grant %s, labelled for it", name, labelled.Name)
+		}
 	}
 
 	return roles
