@@ -187,13 +187,13 @@ func (sm *StateManager) cleanupEnvirOrganization(ctx context.Context, orgID stri
 	return sm.cleanupOrganization(ctx, orgID)
 }
 
-// aclRoleScopes is what the ACL state's role grants: something in the organization and in the
-// project, so both carry endpoints in the caller's ACL.
+// aclRoleScopes is what the ACL state's role grants: read on the endpoints Envir authorizes
+// organization and project reads against, so RBAC must carry them into the caller's ACL by value.
 //
 //nolint:gochecknoglobals
 var aclRoleScopes = unikornv1.RoleScopes{
-	Organization: []unikornv1.RoleScope{{Name: "identity:projects", Operations: []unikornv1.Operation{unikornv1.Read}}},
-	Project:      []unikornv1.RoleScope{{Name: "identity:serviceaccounts", Operations: []unikornv1.Operation{unikornv1.Read}}},
+	Organization: []unikornv1.RoleScope{{Name: "envir:organization", Operations: []unikornv1.Operation{unikornv1.Read}}},
+	Project:      []unikornv1.RoleScope{{Name: "envir:project", Operations: []unikornv1.Operation{unikornv1.Read}}},
 }
 
 // HandleCallerHasProjectAccess seeds the caller Envir reads the ACL for, an end user, whose ACL
