@@ -44,10 +44,7 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-// convert returns one role as the API shows it.  aggregatedFrom lists the
-// sources the live aggregation used that are live and not protected:
-// protected sources are internal, as they are left out of the list.  Status
-// is never read.
+// convert hides protected sources from aggregatedFrom, as they are hidden from the list.
 func convert(in unikornv1.Role, grantable bool, listable map[string]bool) openapi.RoleRead {
 	out := openapi.RoleRead{
 		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),
@@ -83,10 +80,7 @@ func convert(in unikornv1.Role, grantable bool, listable map[string]bool) openap
 	return out
 }
 
-// convertScopes returns what a role permits.  It takes the effective scopes,
-// so an aggregating role reports what it really holds, not just its
-// description.  The scopes hash is deliberately not exposed: it is for the
-// role controller and the change record, not for customers.
+// convertScopes leaves out the scopes hash: it is internal, not for customers.
 func convertScopes(in unikornv1.RoleScopes) openapi.RoleScopes {
 	return openapi.RoleScopes{
 		Global:       convertEndpoints(in.Global),
@@ -141,8 +135,7 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return nil, err
 	}
 
-	// Aggregating roles report what they hold now, worked out the way the
-	// ACL build does.  This needs every role, protected base roles included.
+	// Resolving needs every role, protected base roles included.
 	all := make(map[string]*unikornv1.Role, len(result.Items))
 	listable := map[string]bool{}
 

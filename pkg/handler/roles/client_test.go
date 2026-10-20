@@ -121,8 +121,6 @@ func TestListEmptyCatalogueMarshalsAsAnEmptyArray(t *testing.T) {
 	require.JSONEq(t, "[]", string(body))
 }
 
-// adminBase is the protected base role of administrator, with the ID and
-// name the chart gives it.
 func adminBase() *unikornv1.Role {
 	base := newRole(unikornv1.ChartRoleID("administrator-base"), true, []unikornv1.RoleScope{
 		{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
@@ -132,9 +130,7 @@ func adminBase() *unikornv1.Role {
 	return base
 }
 
-// adminRole is administrator as the chart ships it, with the chart's ID: it
-// refs its base role and selects roles labelled for it.  It has no status: no
-// controller runs in these tests.
+// adminRole has no status: no controller runs in these tests.
 func adminRole(refs ...string) *unikornv1.Role {
 	role := newRole(unikornv1.ChartRoleID("administrator"), false, nil)
 	role.Labels["unikorn-cloud.org/name"] = "administrator"
@@ -149,7 +145,6 @@ func adminRole(refs ...string) *unikornv1.Role {
 	return role
 }
 
-// fleetOperator is a service role labelled for administrator.
 func fleetOperator() *unikornv1.Role {
 	fleet := newRole("fleet-id", false, []unikornv1.RoleScope{
 		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
@@ -199,9 +194,6 @@ func listAsAdmin(t *testing.T, objects ...*unikornv1.Role) map[string]openapi.Ro
 	return byName
 }
 
-// TestListShowsEffectiveScopesAndSources checks an aggregating role reports
-// what it really holds, and where it came from, rather than only its
-// description.
 func TestListShowsEffectiveScopesAndSources(t *testing.T) {
 	t.Parallel()
 
@@ -223,14 +215,11 @@ func TestListShowsEffectiveScopesAndSources(t *testing.T) {
 		{Id: "fleet-id", Name: "fleet-operator", Description: ptr("Fleet operator.")},
 	}, *got.AggregatedFrom)
 
-	// The scopes hash is internal and never reaches the API.
 	body, err := json.Marshal(got)
 	require.NoError(t, err)
 	require.NotContains(t, string(body), "sha256")
 }
 
-// TestListShowsPlainRoleScopes checks a role with no aggregationRule returns
-// its spec scopes and no sources.
 func TestListShowsPlainRoleScopes(t *testing.T) {
 	t.Parallel()
 
@@ -246,9 +235,6 @@ func TestListShowsPlainRoleScopes(t *testing.T) {
 	require.Nil(t, got.AggregatedFrom)
 }
 
-// TestListFollowsChangedSources checks the API reports the sources as they
-// are now, with no controller: after a source stops opting in, its scopes
-// and its entry go, though status still names it.
 func TestListFollowsChangedSources(t *testing.T) {
 	t.Parallel()
 
@@ -271,8 +257,6 @@ func TestListFollowsChangedSources(t *testing.T) {
 	}, *got.Scopes.Organization)
 }
 
-// TestListIgnoresStatus checks scopes and sources written into status, by
-// anyone, are never reported: a role with no sources holds nothing.
 func TestListIgnoresStatus(t *testing.T) {
 	t.Parallel()
 
@@ -291,9 +275,6 @@ func TestListIgnoresStatus(t *testing.T) {
 	require.Nil(t, got.AggregatedFrom)
 }
 
-// TestListNewAggregatingRoleReportsLiveScopes checks an aggregating role the
-// controller has never seen reports what its sources give, and can be
-// granted by a caller who holds that.
 func TestListNewAggregatingRoleReportsLiveScopes(t *testing.T) {
 	t.Parallel()
 
@@ -308,9 +289,6 @@ func TestListNewAggregatingRoleReportsLiveScopes(t *testing.T) {
 	require.True(t, got.Grantable)
 }
 
-// TestListStuckRoleIsNotGrantable checks a stuck aggregating role reports
-// what its working sources give, and is not grantable even by a caller who
-// holds all of it.
 func TestListStuckRoleIsNotGrantable(t *testing.T) {
 	t.Parallel()
 
@@ -324,8 +302,6 @@ func TestListStuckRoleIsNotGrantable(t *testing.T) {
 	require.False(t, got.Grantable)
 }
 
-// TestListHidesProtectedSources checks a protected source role is left out
-// of aggregatedFrom, as it is left out of the list.
 func TestListHidesProtectedSources(t *testing.T) {
 	t.Parallel()
 
@@ -339,15 +315,11 @@ func TestListHidesProtectedSources(t *testing.T) {
 	require.NotNil(t, got.AggregatedFrom)
 	require.Equal(t, []openapi.RoleSource{{Id: "fleet-id", Name: "fleet-operator", Description: ptr("Fleet operator.")}}, *got.AggregatedFrom)
 
-	// Only protected sources: nothing to show, though the base is used.
 	got = listAsAdmin(t, base, adminRole(base.Name))["administrator"]
 	require.NotNil(t, got.Scopes.Organization)
 	require.Nil(t, got.AggregatedFrom)
 }
 
-// TestListHidesSourcesThatAreGone checks aggregatedFrom never shows a source
-// that no longer exists or is being deleted, even when status still names
-// it.
 func TestListHidesSourcesThatAreGone(t *testing.T) {
 	t.Parallel()
 
