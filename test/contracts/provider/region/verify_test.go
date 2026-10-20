@@ -173,7 +173,7 @@ var _ = Describe("Identity Provider Verification", func() {
 				&provider.ConsumerVersionSelector{Consumer: "uni-region", MatchingBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MainBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MatchingBranch: true},
-				// Envir's recorded releases: the current one and the one before it.
+				// Envir's releases still supported in the broker: N, N-1 and N-2.
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", DeployedOrReleased: true},
 			}
 
