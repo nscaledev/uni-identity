@@ -22,7 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/unikorn-cloud/identity/pkg/aggregation"
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/roles"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -132,12 +132,38 @@ func adminBase() *unikornv1.Role {
 	return base
 }
 
-func adminRole(effective []unikornv1.RoleScope, sources ...unikornv1.RoleAggregationSource) *unikornv1.Role {
+// adminRole is administrator as the chart ships it: it refs its base role
+// and selects roles labelled for it.  It has no status: no controller runs
+// in these tests.
+func adminRole(refs ...string) *unikornv1.Role {
 	role := newRole("administrator", false, nil)
-	role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{FlattenToOrganization: true}
-	role.Status.EffectiveScopes = &unikornv1.RoleScopes{Organization: effective}
+	role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{
+		RoleSelectors: []metav1.LabelSelector{
+			{MatchLabels: map[string]string{unikornv1.AggregateToLabel("administrator"): "true"}},
+		},
+		RoleRefs:              refs,
+		FlattenToOrganization: true,
+	}
+
+	return role
+}
+
+// fleetOperator is a service role labelled for administrator.
+func fleetOperator() *unikornv1.Role {
+	fleet := newRole("fleet-id", false, []unikornv1.RoleScope{
+		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
+	})
+	fleet.Labels["unikorn-cloud.org/name"] = "fleet-operator"
+	fleet.Labels[unikornv1.AggregateToLabel("administrator")] = "true"
+	fleet.Annotations = map[string]string{coreconstants.DescriptionAnnotation: "Fleet operator."}
+
+	return fleet
+}
+
+// withStatus writes a status by hand, as a stale or tampered one would be.
+func withStatus(role *unikornv1.Role, scopes []unikornv1.RoleScope, sources ...unikornv1.RoleAggregationSource) *unikornv1.Role {
+	role.Status.EffectiveScopes = &unikornv1.RoleScopes{Organization: scopes}
 	role.Status.AggregatedFrom = sources
-	// Reconciled for the current generation, so it is ready to be granted.
 	role.Status.Conditions = []metav1.Condition{{Type: "Available", Status: metav1.ConditionTrue, ObservedGeneration: role.Generation}}
 
 	return role
@@ -178,22 +204,10 @@ func listAsAdmin(t *testing.T, objects ...*unikornv1.Role) map[string]openapi.Ro
 func TestListShowsEffectiveScopesAndSources(t *testing.T) {
 	t.Parallel()
 
-	admin := adminRole(
-		[]unikornv1.RoleScope{
-			{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}},
-			{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
-		},
-		unikornv1.RoleAggregationSource{ID: "base-id", Name: "administrator-base", Description: "Organization administrator.", ScopesHash: "sha256:aa"},
-		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
-	)
+	base := adminBase()
 
-	base := newRole("base-id", false, nil)
-	base.Labels["unikorn-cloud.org/name"] = "administrator-base"
-	fleet := newRole("fleet-id", false, nil)
+	got := listAsAdmin(t, adminRole(base.Name), base, fleetOperator())["administrator"]
 
-	byName := listAsAdmin(t, admin, base, fleet)
-
-	got := byName["administrator"]
 	require.True(t, got.Grantable)
 	require.NotNil(t, got.Scopes.Organization)
 	require.Equal(t, openapi.AclEndpoints{
@@ -205,8 +219,7 @@ func TestListShowsEffectiveScopesAndSources(t *testing.T) {
 
 	require.NotNil(t, got.AggregatedFrom)
 	require.Equal(t, []openapi.RoleSource{
-		{Id: "base-id", Name: "administrator-base", Description: ptr("Organization administrator.")},
-		{Id: "fleet-id", Name: "fleet-operator"},
+		{Id: "fleet-id", Name: "fleet-operator", Description: ptr("Fleet operator.")},
 	}, *got.AggregatedFrom)
 
 	// The scopes hash is internal and never reaches the API.
@@ -232,61 +245,78 @@ func TestListShowsPlainRoleScopes(t *testing.T) {
 	require.Nil(t, got.AggregatedFrom)
 }
 
-// TestListFollowsChangedSources checks the API reports the status as the
-// controller last wrote it: after a source is removed, its scopes and its
-// entry go.
+// TestListFollowsChangedSources checks the API reports the sources as they
+// are now, with no controller: after a source stops opting in, its scopes
+// and its entry go, though status still names it.
 func TestListFollowsChangedSources(t *testing.T) {
 	t.Parallel()
 
-	before := adminRole(
+	base := adminBase()
+	fleet := fleetOperator()
+
+	require.Len(t, *listAsAdmin(t, adminRole(base.Name), base, fleet)["administrator"].AggregatedFrom, 1)
+
+	delete(fleet.Labels, unikornv1.AggregateToLabel("administrator"))
+
+	stale := withStatus(adminRole(base.Name),
 		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
 		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
 	)
-	base := newRole("base-id", false, nil)
-	fleet := newRole("fleet-id", false, nil)
 
-	require.Len(t, *listAsAdmin(t, before, base, fleet)["administrator"].AggregatedFrom, 1)
-
-	after := adminRole(
-		[]unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
-		unikornv1.RoleAggregationSource{ID: "base-id", Name: "administrator-base", ScopesHash: "sha256:aa"},
-	)
-
-	got := listAsAdmin(t, after, base, fleet)["administrator"]
-	require.Equal(t, []openapi.RoleSource{{Id: "base-id", Name: "administrator-base"}}, *got.AggregatedFrom)
-	require.Equal(t, "identity:groups", (*got.Scopes.Organization)[0].Name)
-	require.Len(t, *got.Scopes.Organization, 1)
+	got := listAsAdmin(t, stale, base, fleet)["administrator"]
+	require.Nil(t, got.AggregatedFrom)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
 }
 
-// TestListUnreconciledAggregatingRoleHoldsNothing checks an aggregating role
-// the controller has not reconciled yet reports no scopes, matching what the
-// ACL build gives its holders.
-func TestListUnreconciledAggregatingRoleHoldsNothing(t *testing.T) {
+// TestListIgnoresStatus checks scopes and sources written into status, by
+// anyone, are never reported: a role with no sources holds nothing.
+func TestListIgnoresStatus(t *testing.T) {
 	t.Parallel()
 
-	role := newRole("administrator", false, nil)
-	role.Spec.AggregationRule = &unikornv1.RoleAggregationRule{}
+	role := withStatus(adminRole(),
+		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator", ScopesHash: "sha256:bb"},
+	)
 
-	got := listAsAdmin(t, role)["administrator"]
+	// fleet-id is live and not protected, but does not opt in.
+	fleet := fleetOperator()
+	delete(fleet.Labels, unikornv1.AggregateToLabel("administrator"))
+
+	got := listAsAdmin(t, role, fleet)["administrator"]
 
 	require.Nil(t, got.Scopes.Organization)
 	require.Nil(t, got.AggregatedFrom)
 }
 
-// TestListUnreconciledAggregatingRoleReportsBootstrapScopes checks an
-// aggregating role the controller has not reconciled yet reports what its
-// roleRefs hold, as the ACL build gives its holders, and is not grantable.
-func TestListUnreconciledAggregatingRoleReportsBootstrapScopes(t *testing.T) {
+// TestListNewAggregatingRoleReportsLiveScopes checks an aggregating role the
+// controller has never seen reports what its sources give, and can be
+// granted by a caller who holds that.
+func TestListNewAggregatingRoleReportsLiveScopes(t *testing.T) {
 	t.Parallel()
 
 	base := adminBase()
 
-	admin := newRole("administrator", false, nil)
-	admin.Spec.AggregationRule = &unikornv1.RoleAggregationRule{RoleRefs: []string{base.Name}, FlattenToOrganization: true}
-
-	got := listAsAdmin(t, base, admin)["administrator"]
+	got := listAsAdmin(t, base, adminRole(base.Name))["administrator"]
 
 	require.NotNil(t, got.Scopes.Organization)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
+	require.True(t, got.Grantable)
+}
+
+// TestListStuckRoleIsNotGrantable checks a stuck aggregating role reports
+// what its working sources give, and is not grantable even by a caller who
+// holds all of it.
+func TestListStuckRoleIsNotGrantable(t *testing.T) {
+	t.Parallel()
+
+	base := adminBase()
+
+	got := listAsAdmin(t, base, withStatus(adminRole(base.Name, "typo"), nil))["administrator"]
+
 	require.Equal(t, openapi.AclEndpoints{
 		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
 	}, *got.Scopes.Organization)
@@ -299,53 +329,46 @@ func TestListHidesProtectedSources(t *testing.T) {
 	t.Parallel()
 
 	base := adminBase()
-	base.Annotations = map[string]string{"unikorn-cloud.org/description": "internal: do not expose"}
+	base.Annotations = map[string]string{coreconstants.DescriptionAnnotation: "internal: do not expose"}
 
-	fleet := newRole("fleet-operator", false, []unikornv1.RoleScope{
-		{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}},
-	})
-
-	admin := newRole("administrator", false, nil)
-	admin.Spec.AggregationRule = &unikornv1.RoleAggregationRule{RoleRefs: []string{base.Name, fleet.Name}, FlattenToOrganization: true}
-
-	res := aggregation.Compute(t.Context(), map[string]*unikornv1.Role{base.Name: base, fleet.Name: fleet, admin.Name: admin})[admin.Name]
-	require.Len(t, res.AggregatedFrom, 2)
-
-	byName := listAsAdmin(t, base, fleet, adminRole(res.EffectiveScopes.Organization, res.AggregatedFrom...))
+	byName := listAsAdmin(t, base, fleetOperator(), adminRole(base.Name))
 	require.NotContains(t, byName, "administrator-base")
 
 	got := byName["administrator"]
 	require.NotNil(t, got.AggregatedFrom)
-	require.Equal(t, []openapi.RoleSource{{Id: "fleet-operator", Name: "fleet-operator"}}, *got.AggregatedFrom)
+	require.Equal(t, []openapi.RoleSource{{Id: "fleet-id", Name: "fleet-operator", Description: ptr("Fleet operator.")}}, *got.AggregatedFrom)
 
-	// Only protected sources: nothing to show.
-	require.Equal(t, base.Name, res.AggregatedFrom[0].ID)
-
-	byName = listAsAdmin(t, base, fleet, adminRole(res.EffectiveScopes.Organization, res.AggregatedFrom[0]))
-	require.Nil(t, byName["administrator"].AggregatedFrom)
+	// Only protected sources: nothing to show, though the base is used.
+	got = listAsAdmin(t, base, adminRole(base.Name))["administrator"]
+	require.NotNil(t, got.Scopes.Organization)
+	require.Nil(t, got.AggregatedFrom)
 }
 
 // TestListHidesSourcesThatAreGone checks aggregatedFrom never shows a source
-// that no longer exists, even when status still names it, protected or not.
+// that no longer exists or is being deleted, even when status still names
+// it.
 func TestListHidesSourcesThatAreGone(t *testing.T) {
 	t.Parallel()
 
-	admin := adminRole(
-		[]unikornv1.RoleScope{{Name: "identity:groups", Operations: []unikornv1.Operation{unikornv1.Read}}},
-		unikornv1.RoleAggregationSource{ID: "base-id", Name: "administrator-base"},
-		unikornv1.RoleAggregationSource{ID: "gone-id", Name: "gone"},
-	)
+	base := adminBase()
 
-	require.Nil(t, listAsAdmin(t, admin)["administrator"].AggregatedFrom)
-
-	deleting := newRole("fleet-id", false, nil)
+	deleting := fleetOperator()
 	deleting.Finalizers = []string{"test"}
 	now := metav1.Now()
 	deleting.DeletionTimestamp = &now
 
-	admin = adminRole(nil, unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator"})
+	admin := withStatus(adminRole(base.Name),
+		[]unikornv1.RoleScope{{Name: "radar:topology", Operations: []unikornv1.Operation{unikornv1.Read}}},
+		unikornv1.RoleAggregationSource{ID: "gone-id", Name: "gone"},
+		unikornv1.RoleAggregationSource{ID: "fleet-id", Name: "fleet-operator"},
+	)
 
-	require.Nil(t, listAsAdmin(t, admin, deleting)["administrator"].AggregatedFrom)
+	got := listAsAdmin(t, admin, base, deleting)["administrator"]
+
+	require.Nil(t, got.AggregatedFrom)
+	require.Equal(t, openapi.AclEndpoints{
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	}, *got.Scopes.Organization)
 }
 
 func ptr[T any](v T) *T {

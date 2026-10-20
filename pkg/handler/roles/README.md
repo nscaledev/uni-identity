@@ -71,18 +71,14 @@ Each role also reports what it permits:
 
 - `scopes` is the role's effective scopes, from `Role.EffectiveScopes()`. For a normal role that is
   `spec.scopes`. For an aggregating role (see the [role controller](../../controllers/role/README.md))
-  it is `status.effectiveScopes`, so `administrator` reports the service scopes it holds, not just
-  its description. An aggregating role the controller has not reconciled yet reports what
-  `unikornv1.BootstrapRoles` gives it (its own `spec.scopes` plus what its `roleRefs` hold), the
-  same as the ACL build gives its holders, and is not grantable.
-- `aggregatedFrom` names each source role (ID, name, description) an aggregating role takes scopes
-  from. Only entries that name a role that exists, is not being deleted and is not protected are
-  listed: protected sources (for example `administrator-base`) are left out, as they are left out of
-  the list, and a source that is gone is not shown. The list is read from status as written: an entry
-  someone wrote into status that names a live, non-protected role is shown, with the name and
-  description from status, even if that role is not really a source. Only the role controller may
-  write role status (see the [role controller](../../controllers/role/README.md)). It is absent for
-  a role that does not aggregate or has no such sources.
+  it is what `aggregation.Resolve` works out live from the roles just listed, the same way the ACL
+  build does, so `administrator` reports the service scopes it holds now, not just its description.
+  Status is never read. A stuck aggregating role reports what its working sources give and is not
+  grantable.
+- `aggregatedFrom` names each source role (ID, name, description) the live aggregation used. Only
+  sources that exist, are not being deleted and are not protected are listed: protected sources (for
+  example `administrator-base`) are left out, as they are left out of the list. It is absent for a
+  role that does not aggregate or has no such sources.
 
 The per-source `scopesHash` in the role status is not exposed. It is for the controller and the change
 record, not for customers.

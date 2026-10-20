@@ -23,6 +23,7 @@ import (
 	"slices"
 
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -43,12 +44,10 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-// convert returns one role as the API shows it.  aggregatedFrom lists only
-// sources the status records as used that are live and not protected:
-// protected sources are internal, as they are left out of the list, and a
-// source that is gone is not shown.  Entries are taken from status as
-// written, name and description included, so one written by anyone but the
-// role controller is shown if it names a live, non-protected role.
+// convert returns one role as the API shows it.  aggregatedFrom lists the
+// sources the live aggregation used that are live and not protected:
+// protected sources are internal, as they are left out of the list.  Status
+// is never read.
 func convert(in unikornv1.Role, grantable bool, listable map[string]bool) openapi.RoleRead {
 	out := openapi.RoleRead{
 		Metadata:  conversion.ResourceReadMetadata(&in, in.Spec.Tags),
@@ -56,10 +55,10 @@ func convert(in unikornv1.Role, grantable bool, listable map[string]bool) openap
 		Scopes:    convertScopes(in.EffectiveScopes()),
 	}
 
-	if in.IsAggregating() && len(in.Status.AggregatedFrom) > 0 {
-		sources := make([]openapi.RoleSource, 0, len(in.Status.AggregatedFrom))
+	if in.IsAggregating() && in.Computed != nil && len(in.Computed.Sources) > 0 {
+		sources := make([]openapi.RoleSource, 0, len(in.Computed.Sources))
 
-		for _, source := range in.Status.AggregatedFrom {
+		for _, source := range in.Computed.Sources {
 			if !listable[source.ID] {
 				continue
 			}
@@ -142,9 +141,8 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		return nil, err
 	}
 
-	// An aggregating role the controller has not reconciled yet reports what
-	// the ACL build gives its holders.  This needs every role, protected
-	// base roles included.
+	// Aggregating roles report what they hold now, worked out the way the
+	// ACL build does.  This needs every role, protected base roles included.
 	all := make(map[string]*unikornv1.Role, len(result.Items))
 	listable := map[string]bool{}
 
@@ -158,7 +156,7 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 		}
 	}
 
-	unikornv1.BootstrapRoles(all)
+	aggregation.Resolve(all)
 
 	// Protected roles are internal and never exposed.  Ungrantable roles ARE
 	// exposed (grantable: false), because a client has to be able to resolve
