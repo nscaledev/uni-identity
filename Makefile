@@ -305,7 +305,8 @@ GIT_BRANCH ?= $(BRANCH)
 # `kind get kubeconfig` fails when that cluster doesn't exist, so a missing cluster stops the run.
 CONTRACTS_KIND_CLUSTER ?= contract-testing
 CONTRACTS_KUBECONFIG = $(CURDIR)/.kind-$(CONTRACTS_KIND_CLUSTER).kubeconfig
-CONTRACTS_KIND_KUBECONFIG = kind get kubeconfig --name $(CONTRACTS_KIND_CLUSTER) > "$(CONTRACTS_KUBECONFIG)"
+# The kubeconfig grants admin on that cluster, so only its owner can read it, including one an earlier run wrote.
+CONTRACTS_KIND_KUBECONFIG = (umask 077 && kind get kubeconfig --name $(CONTRACTS_KIND_CLUSTER) > "$(CONTRACTS_KUBECONFIG)" && chmod 600 "$(CONTRACTS_KUBECONFIG)")
 
 # Run provider contract verification tests
 .PHONY: test-contracts-provider
