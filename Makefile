@@ -300,6 +300,13 @@ PROVIDER_VERSION ?= $(REVISION)
 BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 GIT_BRANCH ?= $(BRANCH)
 
+# Provider state handlers create and delete resources in the test namespace, so developer runs target only a
+# kind cluster of their own (named as in CI), through its own kubeconfig, never the ambient context.
+# `kind get kubeconfig` fails when that cluster doesn't exist, so a missing cluster stops the run.
+CONTRACTS_KIND_CLUSTER ?= contract-testing
+CONTRACTS_KUBECONFIG = $(CURDIR)/.kind-$(CONTRACTS_KIND_CLUSTER).kubeconfig
+CONTRACTS_KIND_KUBECONFIG = kind get kubeconfig --name $(CONTRACTS_KIND_CLUSTER) > "$(CONTRACTS_KUBECONFIG)"
+
 # Run provider contract verification tests
 .PHONY: test-contracts-provider
 test-contracts-provider:
@@ -307,9 +314,10 @@ test-contracts-provider:
 	@echo "Provider Version: $(PROVIDER_VERSION)"
 	@echo "Provider Branch: $(GIT_BRANCH)"
 	@echo "Publishing results to Pact Broker: $(PACT_BROKER_URL)"
+	$(CONTRACTS_KIND_KUBECONFIG)
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
-	KUBECONFIG="$(HOME)/.kube/config" \
+	KUBECONFIG="$(CONTRACTS_KUBECONFIG)" \
 	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
@@ -323,9 +331,10 @@ test-contracts-provider:
 .PHONY: test-contracts-provider-verbose
 test-contracts-provider-verbose:
 	@echo "Running provider contract verification with verbose output..."
+	$(CONTRACTS_KIND_KUBECONFIG)
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
-	KUBECONFIG="$(HOME)/.kube/config" \
+	KUBECONFIG="$(CONTRACTS_KUBECONFIG)" \
 	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
@@ -344,14 +353,15 @@ test-contracts-provider-local:
 		echo "Usage: make test-contracts-provider-local PACT_FILE=/path/to/pact.json"; \
 		exit 1; \
 	fi
+	$(CONTRACTS_KIND_KUBECONFIG)
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
-	KUBECONFIG="$(HOME)/.kube/config" \
+	KUBECONFIG="$(CONTRACTS_KUBECONFIG)" \
 	PACT_FILE="$(PACT_FILE)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
 	GIT_BRANCH="$(GIT_BRANCH)" \
 	GOFLAGS="$(PACT_GOFLAGS)" \
-	go test ./test/contracts/provider/... -v -count=1 -p 1
+	go test ./test/contracts/provider/... -v -count=1 -p 1 -args -ginkgo.focus="local files"
 
 # Run provider verification and publish results to Pact Broker (works on both macOS and Linux)
 # Sets CI=true which triggers auto-publishing to Pact Broker
