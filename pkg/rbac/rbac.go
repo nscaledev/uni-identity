@@ -29,6 +29,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
@@ -319,6 +320,9 @@ func (r *RBAC) getRoles(ctx context.Context) (map[string]*unikornv1.Role, error)
 		out[result.Items[i].Name] = &result.Items[i]
 	}
 
+	// Never trust status written by the role controller.
+	aggregation.Resolve(out)
+
 	return out, nil
 }
 
@@ -437,7 +441,7 @@ func accumulateGlobalPermissions(acl *openapi.Acl, roleIDs []string, roles map[s
 			return fmt.Errorf("%w: role %s referenced by global role binding", errors.ErrConsistency, roleID)
 		}
 
-		acl.Global = addScopesToEndpointList(acl.Global, role.Spec.Scopes.Global)
+		acl.Global = addScopesToEndpointList(acl.Global, role.EffectiveScopes().Global)
 	}
 
 	return nil
@@ -455,7 +459,7 @@ func accumulateOrganizationPermissions(groups map[string]*unikornv1.Group, roles
 				return nil, fmt.Errorf("%w: role %s referenced by group %s does not exist", errors.ErrConsistency, roleID, groupID)
 			}
 
-			endpoints = addScopesToEndpointList(endpoints, role.Spec.Scopes.Organization)
+			endpoints = addScopesToEndpointList(endpoints, role.EffectiveScopes().Organization)
 		}
 	}
 
@@ -480,7 +484,7 @@ func accumulateProjectPermissions(groups map[string]*unikornv1.Group, roles map[
 				return nil, fmt.Errorf("%w: role %s referenced by group %s does not exist", errors.ErrConsistency, roleID, groupID)
 			}
 
-			endpoints = addScopesToEndpointList(endpoints, role.Spec.Scopes.Project)
+			endpoints = addScopesToEndpointList(endpoints, role.EffectiveScopes().Project)
 		}
 	}
 

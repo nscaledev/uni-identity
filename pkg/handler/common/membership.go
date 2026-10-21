@@ -22,6 +22,7 @@ import (
 	"slices"
 
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
@@ -72,6 +73,8 @@ func ValidateGroupsExist(groupIDs []string, groups *unikornv1.GroupList) error {
 // removal and towards more on an addition, so only the removal side is safe
 // to skip.
 func AllowGroupMembershipAddition(ctx context.Context, cli client.Client, namespace string, organizationID ids.OrganizationID, group *unikornv1.Group) error {
+	resolver := aggregation.NewResolver(cli, namespace)
+
 	for _, roleID := range group.Spec.RoleIDs {
 		var resource unikornv1.Role
 
@@ -81,6 +84,10 @@ func AllowGroupMembershipAddition(ctx context.Context, cli client.Client, namesp
 			}
 
 			return fmt.Errorf("%w: failed to validate group membership addition", err)
+		}
+
+		if err := resolver.Resolve(ctx, &resource); err != nil {
+			return fmt.Errorf("%w: failed to resolve role", err)
 		}
 
 		if err := rbac.AllowRole(ctx, &resource, organizationID); err != nil {

@@ -18,10 +18,13 @@ package common_test
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/core/pkg/constants"
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -35,6 +38,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const (
@@ -212,4 +216,139 @@ func TestAllowGroupMembershipAdditionAllowsRolelessGroup(t *testing.T) {
 
 	// A group with no roles confers nothing, so membership in it is not a grant.
 	require.NoError(t, common.AllowGroupMembershipAddition(ctx, cli, membershipNamespace, organizationID, membershipGroup()))
+}
+
+func TestAllowGroupMembershipAdditionChecksLiveAggregation(t *testing.T) {
+	t.Parallel()
+
+	aggregate := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "aggregate-id",
+			Namespace: membershipNamespace,
+			Labels:    map[string]string{constants.NameLabel: "aggregate"},
+		},
+		Spec: unikornv1.RoleSpec{
+			AggregationRule: &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel("aggregate-id"): "true"}},
+				},
+			},
+		},
+		Status: unikornv1.RoleStatus{
+			EffectiveScopes: &unikornv1.RoleScopes{},
+			Conditions: []metav1.Condition{
+				{Type: string(unikornv1core.ConditionAvailable), Status: metav1.ConditionTrue, Reason: unikornv1.RoleReasonAggregated},
+			},
+		},
+	}
+
+	source := membershipRole()
+	source.Labels[unikornv1.AggregateToLabel("aggregate-id")] = "true"
+
+	cli := membershipClient(t, aggregate, source)
+
+	organizationID, err := ids.ParseOrganizationID(membershipOrganizationID)
+	require.NoError(t, err)
+
+	nobody := membershipACL(openapi.AclEndpoints{
+		{Name: "identity:users", Operations: openapi.AclOperations{openapi.Update}},
+	})
+
+	err = common.AllowGroupMembershipAddition(nobody, cli, membershipNamespace, organizationID, membershipGroup("aggregate-id"))
+	require.Error(t, err)
+	require.True(t, servererrors.IsForbidden(err))
+
+	holder := membershipACL(openapi.AclEndpoints{
+		{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+	})
+
+	require.NoError(t, common.AllowGroupMembershipAddition(holder, cli, membershipNamespace, organizationID, membershipGroup("aggregate-id")))
+}
+
+var errMembershipList = errors.New("list failed")
+
+func countingMembershipClient(t *testing.T, fail bool, roles ...*unikornv1.Role) (client.Client, *atomic.Int32) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	lists := &atomic.Int32{}
+
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, cli client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			lists.Add(1)
+
+			if fail {
+				return errMembershipList
+			}
+
+			return cli.List(ctx, list, opts...)
+		},
+	})
+
+	for _, role := range roles {
+		builder = builder.WithObjects(role)
+	}
+
+	return builder.Build(), lists
+}
+
+func membershipAggregatingRole(id string) *unikornv1.Role {
+	return &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      id,
+			Namespace: membershipNamespace,
+			Labels:    map[string]string{constants.NameLabel: id},
+		},
+		Spec: unikornv1.RoleSpec{
+			AggregationRule: &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel(id): "true"}},
+				},
+			},
+		},
+	}
+}
+
+func TestAllowGroupMembershipAdditionListsOnce(t *testing.T) {
+	t.Parallel()
+
+	roles := func() []*unikornv1.Role {
+		source := membershipRole()
+		source.Labels[unikornv1.AggregateToLabel("agg-a")] = "true"
+		source.Labels[unikornv1.AggregateToLabel("agg-b")] = "true"
+		source.Labels[unikornv1.AggregateToLabel("agg-c")] = "true"
+
+		return []*unikornv1.Role{source, membershipAggregatingRole("agg-a"), membershipAggregatingRole("agg-b"), membershipAggregatingRole("agg-c")}
+	}
+
+	organizationID, err := ids.ParseOrganizationID(membershipOrganizationID)
+	require.NoError(t, err)
+
+	holder := membershipACL(openapi.AclEndpoints{
+		{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+	})
+
+	cli, lists := countingMembershipClient(t, false, roles()...)
+
+	require.NoError(t, common.AllowGroupMembershipAddition(holder, cli, membershipNamespace, organizationID, membershipGroup("agg-a", "agg-b", "agg-c", membershipRoleID)))
+	require.Equal(t, int32(1), lists.Load())
+
+	cli, lists = countingMembershipClient(t, false, roles()...)
+
+	require.NoError(t, common.AllowGroupMembershipAddition(holder, cli, membershipNamespace, organizationID, membershipGroup(membershipRoleID)))
+	require.Zero(t, lists.Load())
+}
+
+func TestAllowGroupMembershipAdditionListErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	cli, _ := countingMembershipClient(t, true, membershipAggregatingRole("agg-a"))
+
+	organizationID, err := ids.ParseOrganizationID(membershipOrganizationID)
+	require.NoError(t, err)
+
+	err = common.AllowGroupMembershipAddition(membershipACL(openapi.AclEndpoints{}), cli, membershipNamespace, organizationID, membershipGroup("agg-a"))
+	require.ErrorIs(t, err, errMembershipList)
 }

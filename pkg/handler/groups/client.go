@@ -27,6 +27,7 @@ import (
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/aggregation"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
@@ -393,6 +394,8 @@ func (c *Client) populateGroupPrincipals(ctx context.Context, organization *orga
 func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.OrganizationID, roleIDs, currentRoleIDs []string) ([]string, error) {
 	normalizedRoleIDs := deduplicateStrings(roleIDs)
 
+	resolver := aggregation.NewResolver(c.client, c.namespace)
+
 	// Validate roles exist.
 	for _, roleID := range normalizedRoleIDs {
 		var resource unikornv1.Role
@@ -418,6 +421,10 @@ func (c *Client) validateRoleIDs(ctx context.Context, organizationID ids.Organiz
 		// a new member, are gated separately in validateMemberAdditions.
 		if slices.Contains(currentRoleIDs, roleID) {
 			continue
+		}
+
+		if err := resolver.Resolve(ctx, &resource); err != nil {
+			return nil, fmt.Errorf("%w: failed to resolve role", err)
 		}
 
 		// Check that the user is allowed to grant the role, this closes a security

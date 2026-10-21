@@ -18,6 +18,8 @@ package groups
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -31,7 +33,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const (
@@ -129,4 +133,149 @@ func TestValidateRoleIDsProtectedAndMissing(t *testing.T) {
 	// Unknown role IDs are refused with a clear error.
 	_, err = c.validateRoleIDs(ctx, orgID, []string{"nope"}, nil)
 	require.Error(t, err)
+}
+
+func TestValidateRoleIDsChecksLiveAggregation(t *testing.T) {
+	t.Parallel()
+
+	aggregate := &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "aggregate-id",
+			Namespace: testNamespace,
+			Labels:    map[string]string{"unikorn-cloud.org/name": "aggregate"},
+		},
+		Spec: unikornv1.RoleSpec{
+			AggregationRule: &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel("aggregate-id"): "true"}},
+				},
+			},
+		},
+		Status: unikornv1.RoleStatus{
+			EffectiveScopes: &unikornv1.RoleScopes{},
+			Conditions: []metav1.Condition{
+				{Type: "Available", Status: metav1.ConditionTrue, Reason: unikornv1.RoleReasonAggregated},
+			},
+		},
+	}
+
+	radar := testRole("radar-id", "radar", false, "radar:things")
+	radar.Labels[unikornv1.AggregateToLabel("aggregate-id")] = "true"
+
+	c := testClient(t, aggregate, radar)
+
+	orgID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	nobody := testACL(openapi.AclEndpoints{{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}}})
+
+	_, err = c.validateRoleIDs(nobody, orgID, []string{"aggregate-id"}, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "aggregate")
+
+	holder := testACL(openapi.AclEndpoints{{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}}})
+
+	_, err = c.validateRoleIDs(holder, orgID, []string{"aggregate-id"}, nil)
+	require.NoError(t, err)
+}
+
+var errListFailed = errors.New("list failed")
+
+func countingClient(t *testing.T, fail bool, roles ...*unikornv1.Role) (*Client, *atomic.Int32) {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	lists := &atomic.Int32{}
+
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, cli client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			lists.Add(1)
+
+			if fail {
+				return errListFailed
+			}
+
+			return cli.List(ctx, list, opts...)
+		},
+	})
+
+	for _, role := range roles {
+		builder = builder.WithObjects(role)
+	}
+
+	return New(builder.Build(), testNamespace, common.IssuerValue{}), lists
+}
+
+func aggregatingRole(id string) *unikornv1.Role {
+	return &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      id,
+			Namespace: testNamespace,
+			Labels:    map[string]string{"unikorn-cloud.org/name": id},
+		},
+		Spec: unikornv1.RoleSpec{
+			AggregationRule: &unikornv1.RoleAggregationRule{
+				RoleSelectors: []metav1.LabelSelector{
+					{MatchLabels: map[string]string{unikornv1.AggregateToLabel(id): "true"}},
+				},
+			},
+		},
+	}
+}
+
+func TestValidateRoleIDsListsOncePerRequest(t *testing.T) {
+	t.Parallel()
+
+	radar := testRole("radar-id", "radar", false, "radar:things")
+	radar.Labels[unikornv1.AggregateToLabel("agg-a")] = "true"
+	radar.Labels[unikornv1.AggregateToLabel("agg-b")] = "true"
+	radar.Labels[unikornv1.AggregateToLabel("agg-c")] = "true"
+
+	roles := func() []*unikornv1.Role {
+		return []*unikornv1.Role{
+			aggregatingRole("agg-a"), aggregatingRole("agg-b"), aggregatingRole("agg-c"),
+			radar.DeepCopy(), testRole("basic-id", "basic", false, "identity:groups"),
+		}
+	}
+
+	orgID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	holder := testACL(openapi.AclEndpoints{
+		{Name: "radar:things", Operations: openapi.AclOperations{openapi.Read}},
+		{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Read}},
+	})
+
+	c, lists := countingClient(t, false, roles()...)
+
+	_, err = c.validateRoleIDs(holder, orgID, []string{"agg-a", "agg-b", "agg-c", "basic-id"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), lists.Load())
+
+	c, lists = countingClient(t, false, roles()...)
+
+	_, err = c.validateRoleIDs(holder, orgID, []string{"radar-id", "basic-id"}, nil)
+	require.NoError(t, err)
+	require.Zero(t, lists.Load())
+
+	// The existing aggregating role is not resolved, so no list.
+	c, lists = countingClient(t, false, roles()...)
+
+	_, err = c.validateRoleIDs(holder, orgID, []string{"agg-a", "basic-id"}, []string{"agg-a"})
+	require.NoError(t, err)
+	require.Zero(t, lists.Load())
+}
+
+func TestValidateRoleIDsListErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	c, _ := countingClient(t, true, aggregatingRole("agg-a"))
+
+	orgID, err := ids.ParseOrganizationID(testOrganizationID)
+	require.NoError(t, err)
+
+	_, err = c.validateRoleIDs(testACL(openapi.AclEndpoints{}), orgID, []string{"agg-a"}, nil)
+	require.ErrorIs(t, err, errListFailed)
 }

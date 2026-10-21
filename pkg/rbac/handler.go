@@ -371,8 +371,18 @@ func allowGrantProjectScope(ctx context.Context, endpoint string, operation open
 // The project case is why granting is subset-preserving rather than escalation-prone: a
 // caller may only ever grant a role whose permissions they already hold at the grant's
 // scope or broader.
+//
+// An unresolved aggregating role holds nothing, so it must be ready before the check means anything.
 func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.OrganizationID) error {
-	for _, endpoint := range role.Spec.Scopes.Global {
+	if !role.AggregationReady() {
+		return errors.HTTPForbidden(fmt.Sprintf("role %s is an aggregating role that is not resolved or not available, so it cannot be granted", role.Name))
+	}
+
+	return allowScopes(ctx, role.EffectiveScopes(), organizationID)
+}
+
+func allowScopes(ctx context.Context, scopes unikornv1.RoleScopes, organizationID ids.OrganizationID) error {
+	for _, endpoint := range scopes.Global {
 		for _, operation := range endpoint.Operations {
 			if err := AllowGlobalScope(ctx, endpoint.Name, convertOperation(operation)); err != nil {
 				return err
@@ -380,7 +390,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 		}
 	}
 
-	for _, endpoint := range role.Spec.Scopes.Organization {
+	for _, endpoint := range scopes.Organization {
 		for _, operation := range endpoint.Operations {
 			if err := AllowOrganizationScopeID(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
@@ -388,7 +398,7 @@ func AllowRole(ctx context.Context, role *unikornv1.Role, organizationID ids.Org
 		}
 	}
 
-	for _, endpoint := range role.Spec.Scopes.Project {
+	for _, endpoint := range scopes.Project {
 		for _, operation := range endpoint.Operations {
 			if err := allowGrantProjectScope(ctx, endpoint.Name, convertOperation(operation), organizationID); err != nil {
 				return err
