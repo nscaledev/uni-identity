@@ -1,3 +1,5 @@
+//go:build integration
+
 /*
 Copyright 2026 Nscale.
 
@@ -20,11 +22,53 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
+
+	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/test/api"
 )
+
+// EnvirACLMiddleware serves /api/v1/acl for Envir's states with production authentication and RBAC,
+// in place of the mock ACL: the bearer the state issued is validated and the caller's ACL computed
+// from the groups, roles and projects it seeded. Other consumers' states set no Envir bearer, so
+// their requests keep the mock ACL.
+func EnvirACLMiddleware(authorizer *local.Authorizer) func(http.Handler) http.Handler {
+	scheme := &openapi3.SecurityScheme{Type: "oauth2"}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != api.NewEndpoints().GetGlobalACL() || envirBearer.get() == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			info, err := authorizer.Authorize(&openapi3filter.AuthenticationInput{
+				SecurityScheme:         scheme,
+				RequestValidationInput: &openapi3filter.RequestValidationInput{Request: r},
+			})
+			if err != nil {
+				errors.HandleError(w, r, err)
+				return
+			}
+
+			ctx := authorization.NewContext(r.Context(), info)
+
+			acl, err := authorizer.GetACL(ctx, "")
+			if err != nil {
+				errors.HandleError(w, r, err)
+				return
+			}
+
+			next.ServeHTTP(w, r.WithContext(rbac.NewContext(ctx, acl)))
+		})
+	}
+}
 
 // MockACLMiddleware injects a mock ACL into the request context for contract testing.
 // This allows the handler to bypass RBAC checks without requiring real authentication.
@@ -41,6 +85,7 @@ func MockACLMiddleware(_ []string) func(http.Handler) http.Handler {
 				{Name: "identity:users", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
 				{Name: "identity:groups", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
 				{Name: "identity:roles", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
+				{Name: "identity:serviceaccounts", Operations: openapi.AclOperations{openapi.Create, openapi.Read, openapi.Update, openapi.Delete}},
 			}
 
 			// Extract organization ID from request path
