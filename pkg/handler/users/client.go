@@ -589,6 +589,12 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, errors.OAuth2InvalidRequest("subject address invalid")
 	}
 
+	// The fold below changes only A to Z.  Refuse a subject that a full
+	// lower-casing would change in any other way.
+	if !unikornv1.LowersOnlyASCII(request.Spec.Subject) {
+		return nil, errors.OAuth2InvalidRequest("subject address has a non-ASCII capital letter")
+	}
+
 	// Fold the subject, so that a new global record stores the canonical form.
 	// The lookups accept either case, so an existing record in another case is
 	// reused.

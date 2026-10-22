@@ -55,6 +55,14 @@ no record matches, the new record stores the subject in canonical form. If the s
 two or more records and matches none exactly, `Create` fails with a consistency error before it
 writes a record.
 
+`Create` also refuses a subject whose `strings.ToLower` form differs from its A to Z fold, such as
+one with KELVIN SIGN (U+212A), through
+[`LowersOnlyASCII`](../../apis/unikorn/v1alpha1/README.md#subject-matching). The fold above
+changes only A to Z. Other systems can lower-case an address with full Unicode rules, and such a
+subject would not keep its identity there. A lower-case non-ASCII letter is accepted. Group subject
+entries are not checked, because identity compares them in the A to Z form. The refusal comes
+before any record is read or written.
+
 Group subject entries compare in canonical form on both sides. As a result, a membership read and
 a removal find an entry that is stored in another case. The entries that this client writes carry
 the canonical form of the stored subject, so an entry is canonical even when its record is not.
@@ -143,9 +151,11 @@ clients.
 - a requested group that does not exist in the organization is an error, not a silently dropped
   part of the write
 - create and update answer a missing group, and create answers a subject that is not a bare email
-  address, with HTTP 400; both operations declare 400 in the OpenAPI schema. A display name or
-  angle brackets are refused, because a sign-in claim carries the bare address and never matches
-  such a record
+  address or whose lower case differs from its A to Z fold, with HTTP 400; both operations declare
+  400 in the OpenAPI schema. A display name or angle brackets are refused, because a sign-in claim
+  carries the bare address and never matches such a record. A subject whose lower case differs from
+  its A to Z fold is refused, because other systems can lower-case an address with full Unicode
+  rules and the subject would not keep its identity there
 - adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
   could grant every role the group carries; removals and user deletion are not gated
 - a principal present in either membership representation is already a member, so completing the
