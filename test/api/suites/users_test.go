@@ -156,7 +156,7 @@ var _ = Describe("User Management", func() {
 					"Group should reflect the user added via user creation")
 			})
 
-			It("should reuse the organization user when creating the same subject twice", func() {
+			It("should retain existing groups when creating the same subject twice", func() {
 				_, firstGroupID := api.CreateGroupWithCleanup(client, ctx, config,
 					api.NewGroupPayload().Build())
 				_, secondGroupID := api.CreateGroupWithCleanup(client, ctx, config,
@@ -199,16 +199,13 @@ var _ = Describe("User Management", func() {
 				Expect(found).NotTo(BeNil(), "Reused user should be in list")
 				Expect(found.Spec.Subject).To(Equal(firstPayload.Spec.Subject))
 				Expect(found.Spec.State).To(Equal(identityopenapi.Suspended))
-				Expect(found.Spec.GroupIDs).To(ContainElement(secondGroupID),
-					"Repeated create should reconcile group membership from the latest request")
-				Expect(found.Spec.GroupIDs).NotTo(ContainElement(firstGroupID),
-					"Repeated create should remove groups omitted from the latest request")
+				Expect(found.Spec.GroupIDs).To(ConsistOf(firstGroupID, secondGroupID),
+					"Repeated create should retain existing groups and add requested groups")
 
 				firstGroup, err := client.GetGroup(ctx, config.OrgID, firstGroupID)
 				Expect(err).NotTo(HaveOccurred())
-				if firstGroup.Spec.UserIDs != nil {
-					Expect(*firstGroup.Spec.UserIDs).NotTo(ContainElement(firstUserID))
-				}
+				Expect(firstGroup.Spec.UserIDs).NotTo(BeNil())
+				Expect(*firstGroup.Spec.UserIDs).To(ContainElement(firstUserID))
 
 				secondGroup, err := client.GetGroup(ctx, config.OrgID, secondGroupID)
 				Expect(err).NotTo(HaveOccurred())
