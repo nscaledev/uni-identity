@@ -31,6 +31,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	fakeclientset "k8s.io/client-go/kubernetes/fake"
+	coordinationv1client "k8s.io/client-go/kubernetes/typed/coordination/v1"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -242,4 +245,51 @@ func TestJWEIssue(t *testing.T) {
 
 	require.Error(t, issuer.DecodeJWEToken(ctx, token1, &decodedClaims, jose.TokenTypeAccessToken))
 	require.NoError(t, issuer.DecodeJWEToken(ctx, token2, &decodedClaims, jose.TokenTypeAccessToken))
+}
+
+// trackingCoordinationClientGetter serves Leases from an object tracker, so a
+// test can read the lease back.
+type trackingCoordinationClientGetter struct {
+	clientset *fakeclientset.Clientset
+}
+
+func (g *trackingCoordinationClientGetter) Client() (coordinationv1client.CoordinationV1Interface, error) {
+	return g.clientset.CoordinationV1(), nil
+}
+
+// TestLeaseReleasedOnShutdown checks that a stopping replica hands the JOSE
+// lease over instead of leaving it to expire.
+func TestLeaseReleasedOnShutdown(t *testing.T) {
+	t.Parallel()
+
+	client := fake.NewClientBuilder().WithScheme(getScheme(t)).Build()
+	josetesting.RotateCertificate(t, client)
+
+	options := &jose.Options{
+		IssuerSecretName: josetesting.KeySecretName,
+		RotationPeriod:   time.Hour,
+	}
+
+	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, options)
+	clientset := fakeclientset.NewClientset()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	require.NoError(t, issuer.Run(ctx, &trackingCoordinationClientGetter{clientset: clientset}))
+
+	holder := func() string {
+		lease, err := clientset.CoordinationV1().Leases(josetesting.Namespace).Get(t.Context(), "unikorn-identity-jose-tls", metav1.GetOptions{})
+		if err != nil || lease.Spec.HolderIdentity == nil {
+			return ""
+		}
+
+		return *lease.Spec.HolderIdentity
+	}
+
+	require.Eventually(t, func() bool { return holder() != "" }, 5*time.Second, 10*time.Millisecond, "the replica acquires the lease")
+
+	cancel()
+
+	require.Eventually(t, func() bool { return holder() == "" }, 5*time.Second, 10*time.Millisecond, "a stopping replica releases the lease")
 }

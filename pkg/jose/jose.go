@@ -183,6 +183,9 @@ func (i *JWTIssuer) Run(ctx context.Context, coordinationClientGetter Coordinati
 		LeaseDuration: 15 * time.Second,
 		RenewDeadline: 10 * time.Second,
 		RetryPeriod:   2 * time.Second,
+		// A stopping leader hands the lease over at once, so key rotation does
+		// not pause for a lease duration on every rollout.
+		ReleaseOnCancel: true,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: i.StartLeading,
 			OnStoppedLeading: i.StopLeading,
