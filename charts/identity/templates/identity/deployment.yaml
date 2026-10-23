@@ -215,10 +215,22 @@ spec:
         ports:
         - name: http
           containerPort: 6080
+        # Kept out of the Service, so the ingress cannot reach the probe.
+        - name: health
+          containerPort: 6081
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
         resources:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
           readOnlyRootFilesystem: true
       serviceAccountName: {{ .Release.Name }}-server
+      # Covers the server's shutdown delay and drain, see pkg/server/shutdown.go.
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
