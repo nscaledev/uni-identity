@@ -21,9 +21,13 @@ IDENTITY_BASE_URL=https://identity-<suffix>.<ingress-ip>.nip.io
 IDENTITY_NAMESPACE=unikorn-identity-<suffix>
 IDENTITY_RELEASE=identity-<suffix>
 IDENTITY_CA_CERT=/path/to/hack/ci/ca-bundle.pem
+ACL_CACHE_TIMEOUT=5s
 ```
 
 Redirect to a file (`> test/.env.install`) and source it before running fixtures.
+`ACL_CACHE_TIMEOUT` is read from the deployed server's `--acl-cache-timeout` flag
+(set in `test-values.yaml`) and is omitted if the flag isn't set; `make
+integration-fixtures` copies it into `test/.env`.
 
 ### `fixtures` stdout
 

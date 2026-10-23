@@ -164,6 +164,11 @@ done
 
 echo "==> Identity installed successfully." >&2
 
+# ── Read the server's ACL cache timeout, for specs that wait it out ──────────
+ACL_CACHE_TIMEOUT=$(kubectl get deployment "${RELEASE_NAME}-server" -n "${NAMESPACE}" \
+  -o jsonpath='{.spec.template.spec.containers[*].args}' \
+  | grep -o -- '--acl-cache-timeout=[^",]*' | cut -d= -f2 || true)
+
 # ── Output .env fragment to stdout ───────────────────────────────────────────
 cat <<EOF
 IDENTITY_BASE_URL=https://${INGRESS_HOST}
@@ -172,3 +177,7 @@ IDENTITY_NAMESPACE=${NAMESPACE}
 IDENTITY_RELEASE=${RELEASE_NAME}
 IDENTITY_CA_CERT=${SCRIPT_DIR}/ca-bundle.pem
 EOF
+
+if [[ -n "${ACL_CACHE_TIMEOUT}" ]]; then
+  echo "ACL_CACHE_TIMEOUT=${ACL_CACHE_TIMEOUT}"
+fi
