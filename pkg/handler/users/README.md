@@ -162,6 +162,13 @@ and `Create` refuses them before writing. Lookups by subject rely on this check 
 repeating it. New writes use deterministic
 names, so Kubernetes conflict handling makes concurrent creates converge on the same records.
 
+That convergence needs every writer to use deterministic names. While a rollout replaces a pod
+that still writes random names, two creates for the same new subject or membership, one on each
+pod, leave a legacy record beside the deterministic one. Lookups then return the deterministic
+record, and `Create` for that subject fails with a consistency error until the random-named record
+is deleted. `hack/identity-duplicate-records-check.py` lists such duplicates, for Users,
+OrganizationUsers and Quotas, and is meant to run after a rollout.
+
 ## Caveats
 
 - The package is more stateful than most handler clients because create, update, and delete can

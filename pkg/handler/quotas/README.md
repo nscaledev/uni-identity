@@ -71,7 +71,10 @@ reporting and dashboard problem.
   anything
 
 A single legacy random-named quota is adopted for compatibility. Multiple labeled quota objects
-are a consistency error; a concurrent first write converges through the fixed name.
+are a consistency error; a concurrent first write converges through the fixed name. During a
+rollout an old pod still writes random names, so a first write on each pod at once leaves two
+quotas, and every quota read and write for that organization fails until the random-named one is
+deleted. `hack/identity-duplicate-records-check.py` lists such duplicates after a rollout.
 
 ## Caveats
 
