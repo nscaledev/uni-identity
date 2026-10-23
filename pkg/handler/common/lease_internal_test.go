@@ -18,6 +18,8 @@ package common
 
 import (
 	"context"
+	goerrors "errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,6 +39,8 @@ import (
 )
 
 const leaseTestNamespace = "identity"
+
+var errRead = goerrors.New("read failed")
 
 func leaseTestClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
@@ -245,5 +249,68 @@ func TestOrganizationLease(t *testing.T) {
 		require.True(t, ok)
 		require.LessOrEqual(t, deadline.Sub(start), OrganizationLeaseTakeoverBudget)
 		require.Positive(t, organizationLeaseDuration-organizationLeaseMargin, "the holder has a critical section")
+	})
+}
+
+func TestOrganizationLeaseError(t *testing.T) {
+	t.Parallel()
+
+	organizationA := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+
+	fakeClient := leaseTestClient(t)
+	lease, lockedContext, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA)
+	require.NoError(t, err)
+
+	require.Equal(t, errRead, lease.Error(lockedContext, errRead), "a failure before the deadline is reported as it is")
+
+	require.NoError(t, lease.Release(context.WithoutCancel(t.Context())))
+
+	err = lease.Error(lockedContext, errRead)
+	require.True(t, servererrors.IsConflict(err))
+	require.ErrorIs(t, err, errRead)
+}
+
+func TestWithOrganizationLease(t *testing.T) {
+	t.Parallel()
+
+	organizationA := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+
+	t.Run("runs the critical section under the lease and releases it", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+
+		result, err := WithOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA, func(ctx context.Context, _ *OrganizationLease) (string, error) {
+			leases := &coordinationv1.LeaseList{}
+			require.NoError(t, fakeClient.List(ctx, leases))
+			require.Len(t, leases.Items, 1)
+
+			_, bounded := ctx.Deadline()
+			require.True(t, bounded)
+
+			return "written", nil
+		})
+		require.NoError(t, err)
+		require.Equal(t, "written", result)
+
+		leases := &coordinationv1.LeaseList{}
+		require.NoError(t, fakeClient.List(t.Context(), leases))
+		require.Empty(t, leases.Items)
+	})
+
+	t.Run("reports a critical-section deadline as a retryable conflict", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		t.Cleanup(cancel)
+
+		_, err := WithOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA, func(ctx context.Context, _ *OrganizationLease) (struct{}, error) {
+			<-ctx.Done()
+
+			return struct{}{}, fmt.Errorf("list quotas: %w", ctx.Err())
+		})
+		require.True(t, servererrors.IsConflict(err))
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 }

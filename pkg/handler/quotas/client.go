@@ -184,37 +184,36 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 
 // write checks and stores the quota while holding the organization Lease, which is
 // released before the response is rendered.
-//
-//nolint:cyclop // First-time creation and update share the Lease and consistency checks.
 func (c *Client) write(ctx context.Context, organizationID ids.OrganizationID, organization *organizations.Meta, request *openapi.QuotasWrite) (*unikornv1.Quota, error) {
+	return common.WithOrganizationLease(ctx, c.client, c.namespace, organizationID, func(ctx context.Context, lease *common.OrganizationLease) (*unikornv1.Quota, error) {
+		return c.writeLocked(ctx, lease, organizationID, organization, request)
+	})
+}
+
+// writeLocked reads, checks and stores the quota under the organization Lease.
+func (c *Client) writeLocked(ctx context.Context, lease *common.OrganizationLease, organizationID ids.OrganizationID, organization *organizations.Meta, request *openapi.QuotasWrite) (*unikornv1.Quota, error) {
 	commonClient := common.New(c.client)
 
-	lease, lockedContext, err := common.AcquireOrganizationLease(ctx, c.client, c.namespace, organizationID)
-	if err != nil {
-		return nil, err
-	}
-	defer common.ReleaseOrganizationLease(ctx, lease)
-
-	current, virtual, err := commonClient.GetQuota(lockedContext, organizationID)
+	current, virtual, err := commonClient.GetQuota(ctx, organizationID)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
 
-	required, err := generate(lockedContext, organization, request)
+	required, err := generate(ctx, organization, request)
 	if err != nil {
 		return nil, err
 	}
 
 	if virtual {
-		if err := commonClient.CheckQuotaConsistency(lockedContext, organizationID, required, nil); err != nil {
+		if err := commonClient.CheckQuotaConsistency(ctx, organizationID, required, nil); err != nil {
 			return nil, err
 		}
 
-		if err := lease.Check(lockedContext); err != nil {
+		if err := lease.Check(ctx); err != nil {
 			return nil, err
 		}
 
-		return c.create(lockedContext, organizationID, commonClient, required)
+		return c.create(ctx, organizationID, commonClient, required)
 	}
 
 	updated := current.DeepCopy()
@@ -222,15 +221,15 @@ func (c *Client) write(ctx context.Context, organizationID ids.OrganizationID, o
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := commonClient.CheckQuotaConsistency(lockedContext, organizationID, updated, nil); err != nil {
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
 		return nil, err
 	}
 
-	if err := lease.Check(lockedContext); err != nil {
+	if err := lease.Check(ctx); err != nil {
 		return nil, err
 	}
 
-	if err := c.client.Patch(lockedContext, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		if kerrors.IsConflict(err) {
 			return nil, errors.HTTPConflict().WithError(err)
 		}
