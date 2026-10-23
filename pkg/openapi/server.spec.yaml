@@ -36,6 +36,21 @@ paths:
       responses:
         '200':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/openidProtectedResourceResponse'
+  /readyz:
+    description: |-
+      Readiness of this server replica.
+    get:
+      x-no-security-requirements: true
+      x-hidden: true
+      description: |-
+        Reports whether this replica can serve requests: it is not shutting down,
+        its read cache has synced, and it can read the token signing key. Meant
+        for the Kubernetes readiness probe.
+      responses:
+        '200':
+          $ref: '#/components/responses/readinessResponse'
+        '503':
+          $ref: '#/components/responses/notReadyResponse'
   /api/version:
     description: Service build version information.
     get:
@@ -1785,6 +1800,18 @@ components:
         updated_at:
           description: Then the user's profile was last updated.
           type: string
+    readiness:
+      description: Whether this replica can serve requests.
+      type: object
+      required:
+      - ready
+      properties:
+        ready:
+          description: True when the replica can serve requests.
+          type: boolean
+        reason:
+          description: The condition that failed, when the replica is not ready.
+          type: string
     jsonWebKeySet:
       description: |-
         JSON web key set. This data type is defined by an external 3rd party standards
@@ -2743,6 +2770,23 @@ components:
             aud: https://identity.acme.com
             exp: 1311281970
             iat: 1311280970
+    readinessResponse:
+      description: The replica can serve requests.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/readiness'
+          example:
+            ready: true
+    notReadyResponse:
+      description: The replica cannot serve requests yet, or is shutting down.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/readiness'
+          example:
+            ready: false
+            reason: server is shutting down
     jwksResponse:
       description: |-
         A JSON web key set. This is a set of named public keys that are referenced by JSON

@@ -280,6 +280,9 @@ type ClientInterface interface {
 
 	// GetOidcCallback request
 	GetOidcCallback(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetReadyz request
+	GetReadyz(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 func (c *Client) GetWellKnownOpenidConfiguration(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -1112,6 +1115,18 @@ func (c *Client) PostOauth2V2UserinfoWithFormdataBody(ctx context.Context, body 
 
 func (c *Client) GetOidcCallback(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetOidcCallbackRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetReadyz(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetReadyzRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -3204,6 +3219,33 @@ func NewGetOidcCallbackRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetReadyzRequest generates requests for GetReadyz
+func NewGetReadyzRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/readyz")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -3437,6 +3479,9 @@ type ClientWithResponsesInterface interface {
 
 	// GetOidcCallbackWithResponse request
 	GetOidcCallbackWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetOidcCallbackResponse, error)
+
+	// GetReadyzWithResponse request
+	GetReadyzWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetReadyzResponse, error)
 }
 
 type GetWellKnownOpenidConfigurationResponse struct {
@@ -4725,6 +4770,29 @@ func (r GetOidcCallbackResponse) StatusCode() int {
 	return 0
 }
 
+type GetReadyzResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ReadinessResponse
+	JSON503      *NotReadyResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetReadyzResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetReadyzResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 // GetWellKnownOpenidConfigurationWithResponse request returning *GetWellKnownOpenidConfigurationResponse
 func (c *ClientWithResponses) GetWellKnownOpenidConfigurationWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetWellKnownOpenidConfigurationResponse, error) {
 	rsp, err := c.GetWellKnownOpenidConfiguration(ctx, reqEditors...)
@@ -5334,6 +5402,15 @@ func (c *ClientWithResponses) GetOidcCallbackWithResponse(ctx context.Context, r
 		return nil, err
 	}
 	return ParseGetOidcCallbackResponse(rsp)
+}
+
+// GetReadyzWithResponse request returning *GetReadyzResponse
+func (c *ClientWithResponses) GetReadyzWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetReadyzResponse, error) {
+	rsp, err := c.GetReadyz(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetReadyzResponse(rsp)
 }
 
 // ParseGetWellKnownOpenidConfigurationResponse parses an HTTP response from a GetWellKnownOpenidConfigurationWithResponse call
@@ -7795,6 +7872,39 @@ func ParseGetOidcCallbackResponse(rsp *http.Response) (*GetOidcCallbackResponse,
 			return nil, err
 		}
 		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetReadyzResponse parses an HTTP response from a GetReadyzWithResponse call
+func ParseGetReadyzResponse(rsp *http.Response) (*GetReadyzResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetReadyzResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ReadinessResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest NotReadyResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
 
 	}
 

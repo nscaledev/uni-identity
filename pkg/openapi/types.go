@@ -646,6 +646,15 @@ type QuotasWrite struct {
 	Quotas QuotaWriteList `json:"quotas"`
 }
 
+// Readiness Whether this replica can serve requests.
+type Readiness struct {
+	// Ready True when the replica can serve requests.
+	Ready bool `json:"ready"`
+
+	// Reason The condition that failed, when the replica is not ready.
+	Reason *string `json:"reason,omitempty"`
+}
+
 // ResourceAllocation A single quota but taking into account dynamic allocation.
 type ResourceAllocation struct {
 	// Committed The amount of that resource always in use.
@@ -1009,6 +1018,9 @@ type GroupsResponse = Groups
 // committee. Consult the relevant documentation for further details.
 type JwksResponse = JsonWebKeySet
 
+// NotReadyResponse Whether this replica can serve requests.
+type NotReadyResponse = Readiness
+
 // Oauth2BadRequestResponse Generic error message, compatible with oauth2.
 type Oauth2BadRequestResponse = Oauth2Error
 
@@ -1041,6 +1053,9 @@ type ProjectsResponse = Projects
 
 // QuotasResponse A list of quotas.
 type QuotasResponse = QuotasRead
+
+// ReadinessResponse Whether this replica can serve requests.
+type ReadinessResponse = Readiness
 
 // RolesResponse A list of roles.
 type RolesResponse = Roles

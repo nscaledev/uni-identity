@@ -51,6 +51,7 @@ import (
 
 	"k8s.io/utils/ptr"
 
+	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -78,11 +79,14 @@ type Handler struct {
 	// userdb has the user database
 	userdb *userdb.UserDatabase
 
+	// readiness says whether this replica can serve requests.
+	readiness *readiness.Checker
+
 	// options allows behaviour to be defined on the CLI.
 	options *Options
 }
 
-func New(client client.Client, readCache client.Reader, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, options *Options) (*Handler, error) {
+func New(client client.Client, readCache client.Reader, namespace string, issuer *jose.JWTIssuer, oauth2 *oauth2.Authenticator, userdb *userdb.UserDatabase, rbac *rbac.RBAC, readiness *readiness.Checker, options *Options) (*Handler, error) {
 	h := &Handler{
 		client:    client,
 		readCache: readCache,
@@ -91,6 +95,7 @@ func New(client client.Client, readCache client.Reader, namespace string, issuer
 		oauth2:    oauth2,
 		rbac:      rbac,
 		userdb:    userdb,
+		readiness: readiness,
 		options:   options,
 	}
 
@@ -137,6 +142,20 @@ func (h *Handler) setUncacheable(w http.ResponseWriter) {
 
 func (h *Handler) setUncacheableNoStore(w http.ResponseWriter) {
 	w.Header().Add("Cache-Control", "no-store")
+}
+
+// GetReadyz reports whether this replica can serve requests. It is
+// unauthenticated so the kubelet can probe it.
+func (h *Handler) GetReadyz(w http.ResponseWriter, r *http.Request) {
+	h.setUncacheableNoStore(w)
+
+	if err := h.readiness.Check(r.Context()); err != nil {
+		util.WriteJSONResponse(w, r, http.StatusServiceUnavailable, &openapi.Readiness{Ready: false, Reason: ptr.To(err.Error())})
+
+		return
+	}
+
+	util.WriteJSONResponse(w, r, http.StatusOK, &openapi.Readiness{Ready: true})
 }
 
 func (h *Handler) GetWellKnownOpenidConfiguration(w http.ResponseWriter, r *http.Request) {

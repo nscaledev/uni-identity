@@ -266,4 +266,9 @@ watched=$(yq -r '
 [[ "$(server_verbs leases)" == "create,delete,get,update" ]] || die "expected only create, delete, get and update on leases for the server"
 [[ -z "$(server_verbs configmaps)" ]] || die "expected no configmaps permission for the server"
 
+# The server reports readiness on /readyz, so a rollout only sends traffic to a
+# replica once it can read the signing key.
+deployment=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c 'path: /readyz' <<<"$deployment") -eq 1 ]] || die "expected a readiness probe on /readyz for the identity server"
+
 echo "chart render checks OK"
