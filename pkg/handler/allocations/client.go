@@ -21,7 +21,6 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
-	"sync"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
@@ -52,9 +51,6 @@ type Client struct {
 
 type SyncClient struct {
 	*Client
-	// mutex is for serialising allocation decisions; this is supplied
-	// when constructing the client, so it can be centralised.
-	mutex *sync.Mutex
 }
 
 func New(client client.Client, namespace string) *Client {
@@ -64,10 +60,9 @@ func New(client client.Client, namespace string) *Client {
 	}
 }
 
-func NewSync(client client.Client, namespace string, mutex *sync.Mutex) *SyncClient {
+func NewSync(client client.Client, namespace string) *SyncClient {
 	return &SyncClient{
 		Client: New(client, namespace),
-		mutex:  mutex,
 	}
 }
 
@@ -167,11 +162,23 @@ func (c *SyncClient) Create(ctx context.Context, organizationID ids.Organization
 		return nil, err
 	}
 
-	// Lock around deciding if we can do this allocation
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	created, err := common.WithOrganizationLease(ctx, c.client, c.namespace, organizationID, func(ctx context.Context, lease *common.OrganizationLease) (*unikornv1.Allocation, error) {
+		return c.createLocked(ctx, lease, organizationID, resource)
+	})
+	if err != nil {
+		return nil, err
+	}
 
+	return convert(created), nil
+}
+
+// createLocked admits and stores the allocation under the organization Lease.
+func (c *SyncClient) createLocked(ctx context.Context, lease *common.OrganizationLease, organizationID ids.OrganizationID, resource *unikornv1.Allocation) (*unikornv1.Allocation, error) {
 	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
+		return nil, err
+	}
+
+	if err := lease.Check(ctx); err != nil {
 		return nil, err
 	}
 
@@ -179,7 +186,7 @@ func (c *SyncClient) Create(ctx context.Context, organizationID ids.Organization
 		return nil, fmt.Errorf("%w: failed to create allocation", err)
 	}
 
-	return convert(resource), nil
+	return resource, nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string) (*openapi.AllocationRead, error) {
@@ -221,18 +228,26 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 }
 
 func (c *SyncClient) Update(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string, request *openapi.AllocationWrite) (*openapi.AllocationRead, error) {
-	common := common.New(c.client)
+	commonClient := common.New(c.client)
 
-	namespace, err := common.ProjectNamespace(ctx, organizationID, projectID)
+	namespace, err := commonClient.ProjectNamespace(ctx, organizationID, projectID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Lock around deciding if we can do this allocation.
-	// Taking the lock here means that each operation will get the most recent revision and
-	// succeed at patching. Otherwise, first concurrent update here wins and the rest fail.
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	updated, err := common.WithOrganizationLease(ctx, c.client, c.namespace, organizationID, func(ctx context.Context, lease *common.OrganizationLease) (*unikornv1.Allocation, error) {
+		return c.updateLocked(ctx, lease, namespace, organizationID, projectID, allocationID, request)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return convert(updated), nil
+}
+
+// updateLocked re-admits and stores the allocation under the organization Lease.
+func (c *SyncClient) updateLocked(ctx context.Context, lease *common.OrganizationLease, namespace *corev1.Namespace, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string, request *openapi.AllocationWrite) (*unikornv1.Allocation, error) {
+	commonClient := common.New(c.client)
 
 	current, err := c.get(ctx, namespace.Name, allocationID)
 	if err != nil {
@@ -253,7 +268,11 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
+		return nil, err
+	}
+
+	if err := lease.Check(ctx); err != nil {
 		return nil, err
 	}
 
@@ -265,5 +284,5 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 		return nil, fmt.Errorf("%w: failed to patch allocation", err)
 	}
 
-	return convert(updated), nil
+	return updated, nil
 }

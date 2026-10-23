@@ -17,8 +17,11 @@ limitations under the License.
 package quotas
 
 import (
+	"context"
+	goerrors "errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -30,6 +33,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,6 +41,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+var errLeaseDelete = goerrors.New("lease delete failed")
+
+type releaseFailureClient struct {
+	client.Client
+}
+
+func (c releaseFailureClient) Delete(ctx context.Context, object client.Object, options ...client.DeleteOption) error {
+	if _, ok := object.(*coordinationv1.Lease); ok {
+		return errLeaseDelete
+	}
+
+	return c.Client.Delete(ctx, object, options...)
+}
 
 func qty(s string) *resource.Quantity {
 	v := resource.MustParse(s)
@@ -51,9 +69,9 @@ func metaObj(name, def string) unikornv1.QuotaMetadata {
 	}
 }
 
-func allocationObj(kind, committed, reserved string) unikornv1.Allocation {
+func allocationObj(committed, reserved string) unikornv1.Allocation {
 	return unikornv1.Allocation{
-		Spec: unikornv1.AllocationSpec{Allocations: []unikornv1.ResourceAllocation{{Kind: kind, Committed: qty(committed), Reserved: qty(reserved)}}},
+		Spec: unikornv1.AllocationSpec{Allocations: []unikornv1.ResourceAllocation{{Kind: "gpus", Committed: qty(committed), Reserved: qty(reserved)}}},
 	}
 }
 
@@ -61,6 +79,7 @@ func TestUpdateRendersRequestListAndGetNormalises(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
 	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
@@ -112,6 +131,170 @@ func TestUpdateRendersRequestListAndGetNormalises(t *testing.T) {
 	require.Equal(t, 1, readAfterPatch.Quotas[0].Quantity)
 	require.Equal(t, "gpus", readAfterPatch.Quotas[1].Kind)
 	require.Equal(t, 6, readAfterPatch.Quotas[1].Quantity)
+
+	var leases coordinationv1.LeaseList
+
+	require.NoError(t, c.client.List(ctx, &leases))
+	require.Empty(t, leases.Items, "quota updates release their organization Lease")
+}
+
+func TestUpdateRejectsFirstQuotaBelowLiveAllocations(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	allocation := allocationObj("3", "0")
+	allocation.ObjectMeta = metav1.ObjectMeta{
+		Name:      "allocation",
+		Namespace: "project-a",
+		Labels:    map[string]string{constants.OrganizationLabel: organizationID.String()},
+	}
+
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus, &allocation).Build()
+
+	_, err := New(k8s, "identity").Update(fixtures.HandlerContextFixture(t.Context(), 0), organizationID, &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}}})
+	require.True(t, servererrors.IsForbidden(err), "first quota creation cannot undercut current allocation")
+
+	var quotas unikornv1.QuotaList
+
+	require.NoError(t, k8s.List(t.Context(), &quotas))
+	require.Empty(t, quotas.Items, "the rejected quota is not stored")
+
+	var leases coordinationv1.LeaseList
+
+	require.NoError(t, k8s.List(t.Context(), &leases))
+	require.Empty(t, leases.Items, "the rejected quota releases its organization Lease")
+}
+
+func TestUpdateSucceedsWhenLeaseReleaseFails(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus).Build()
+
+	result, err := New(releaseFailureClient{Client: k8s}, "identity").Update(fixtures.HandlerContextFixture(t.Context(), 0), organizationID, &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}}})
+	require.NoError(t, err)
+	require.Equal(t, 2, result.Quotas[0].Quantity)
+}
+
+// deadlineQuotaListClient fails a Quota list once the context has ended, as the
+// API server does for a request that outlives its deadline.
+type deadlineQuotaListClient struct {
+	client.Client
+}
+
+func (c deadlineQuotaListClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if _, ok := list.(*unikornv1.QuotaList); ok {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
+
+	return c.Client.List(ctx, list, options...)
+}
+
+// TestUpdateReportsDeadlineDuringReadAsConflict checks that a quota read that
+// runs past the critical-section deadline is a retryable 409, not a 400.
+func TestUpdateReportsDeadlineDuringReadAsConflict(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus).Build()
+
+	ctx, cancel := context.WithTimeout(fixtures.HandlerContextFixture(t.Context(), 0), 20*time.Millisecond)
+	t.Cleanup(cancel)
+
+	_, err := New(deadlineQuotaListClient{Client: k8s}, "identity").Update(ctx, organizationID, &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}}})
+	require.Error(t, err)
+	require.True(t, servererrors.IsConflict(err))
+	require.False(t, servererrors.IsBadRequest(err))
+
+	leases := &coordinationv1.LeaseList{}
+	require.NoError(t, k8s.List(context.WithoutCancel(ctx), leases))
+	require.Empty(t, leases.Items, "the failed update releases its organization Lease")
+}
+
+// metadataListObserver records, for each QuotaMetadata list, whether an
+// organization Lease existed and whether the context carried a deadline.
+type metadataListObserver struct {
+	client.Client
+
+	leaseHeld   []bool
+	hasDeadline []bool
+}
+
+func (c *metadataListObserver) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if _, ok := list.(*unikornv1.QuotaMetadataList); ok {
+		var leases coordinationv1.LeaseList
+		if err := c.Client.List(ctx, &leases); err != nil {
+			return err
+		}
+
+		_, deadline := ctx.Deadline()
+		c.hasDeadline = append(c.hasDeadline, deadline)
+		c.leaseHeld = append(c.leaseHeld, len(leases.Items) > 0)
+	}
+
+	return c.Client.List(ctx, list, options...)
+}
+
+// TestUpdateRendersAfterReleasingLease checks that a committed quota is
+// rendered with the request context after the Lease is gone, so the Lease
+// deadline cannot fail a response for state already written.
+func TestUpdateRendersAfterReleasingLease(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	observer := &metadataListObserver{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus).Build()}
+	c := New(observer, "identity")
+	ctx := fixtures.HandlerContextFixture(t.Context(), 0)
+
+	// The first update creates the quota and the second patches it.
+	for _, quantity := range []int{2, 3} {
+		observer.leaseHeld, observer.hasDeadline = nil, nil
+
+		result, err := c.Update(ctx, organizationID, &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: quantity}}})
+		require.NoError(t, err)
+		require.Equal(t, quantity, result.Quotas[0].Quantity)
+		require.NotEmpty(t, observer.leaseHeld)
+		require.False(t, observer.leaseHeld[len(observer.leaseHeld)-1], "rendering runs after the Lease is released")
+		require.False(t, observer.hasDeadline[len(observer.hasDeadline)-1], "rendering uses the request context")
+	}
 }
 
 // TestGetRendersStoredAndVirtualQuotas pins the kinds, usage and metadata
@@ -128,10 +311,11 @@ func TestGetRendersStoredAndVirtualQuotas(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "quota", Namespace: "org-a", Labels: labels},
 		Spec:       unikornv1.QuotaSpec{Quotas: []unikornv1.ResourceQuota{{Kind: "gpus", Quantity: qty("8")}}},
 	}
-	used := allocationObj("gpus", "3", "1")
+	used := allocationObj("3", "1")
 	used.ObjectMeta = metav1.ObjectMeta{Name: "alloc", Namespace: "org-a", Labels: labels}
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
 	organizationID, err := ids.ParseOrganizationID(orgA)
@@ -161,6 +345,7 @@ func TestUpdateRejectsUnknownKindBeforeWriting(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
 	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
@@ -189,6 +374,7 @@ func TestUpdateAdoptsOneLegacyQuota(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
 	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
@@ -221,6 +407,7 @@ func TestUpdateRejectsMultipleLegacyQuotas(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
 	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
@@ -245,6 +432,7 @@ func TestUpdateConcurrentCreatesOneQuota(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
 	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")

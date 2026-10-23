@@ -179,6 +179,14 @@ Examples include:
 So a recurring responsibility of the handler layer is manual cross-resource consistency
 maintenance.
 
+Allocation admission and quota updates are a shared critical section. They use a per-organization
+Lease in the identity namespace, with a three-second duration and a one-second write margin. A
+request that cannot acquire the Lease before its context ends receives HTTP 409 and can retry, as
+does a holder whose read or write fails after its bounded context ends; the server's request
+deadline makes that 409 arrive before the write timeout.
+The service deletes a held Lease after either path completes; after a crash, a contender waits one
+full unchanged Lease duration before takeover. The read/check/write path uses the direct client.
+
 ## Shared Caveat: Atomicity
 
 This layer is built on Kubernetes objects, not an ACID database.
