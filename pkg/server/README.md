@@ -111,8 +111,17 @@ At a high level, `GetServer()` does the following:
 7. construct the top-level handler implementation
 8. attach everything through the generated OpenAPI router and return `http.Server`
 
-The command process publishes build metadata for its lifetime and reports ready
-only while it owns the bound HTTP listener.
+The command process publishes build metadata for its lifetime. It serves readiness on
+`/readyz`, unauthenticated, for the kubelet: a replica is ready when it is not shutting down, its
+read cache has synced, and it can read the primary token signing key. The key is cluster-wide
+state written by the JOSE leader, so on a fresh install every replica stays not ready until the
+first leader has written it. Leadership itself, external OIDC providers and the audit collector
+do not gate readiness.
+
+On SIGTERM the process reports not ready, keeps serving for `--shutdown-delay` so endpoint
+removal reaches every node, then stops the background work, which releases the JOSE lease, and
+drains in-flight requests for up to `--shutdown-drain`. The pod's termination grace period must
+cover both.
 
 This makes the trust pipeline an application-level invariant rather than a handler-by-handler
 convention.
@@ -130,8 +139,9 @@ convention.
   list includes. Revocation-sensitive token and membership state is always read directly
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
-- API readiness reflects ownership of the bound HTTP listener, not construction
-  of the handler graph
+- API readiness means this replica can serve a request end to end: listener bound, read cache
+  synced and signing key readable. The `unikorn_server_ready` metric reports listener ownership
+  only
 
 ## Caveats
 

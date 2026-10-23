@@ -71,6 +71,24 @@ func (c *APIClient) GetListOrganizationsPath() string {
 }
 
 // GetVersion gets the deployed identity service version.
+// GetReadiness reads the replica's readiness report.
+func (c *APIClient) GetReadiness(ctx context.Context) (*identityopenapi.Readiness, error) {
+	path := c.endpoints.Readyz()
+
+	//nolint:bodyclose // DoRequest handles response body closing internally
+	_, respBody, err := c.DoRequest(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("getting readiness: %w", err)
+	}
+
+	var readiness identityopenapi.Readiness
+	if err := json.Unmarshal(respBody, &readiness); err != nil {
+		return nil, fmt.Errorf("unmarshaling readiness: %w", err)
+	}
+
+	return &readiness, nil
+}
+
 func (c *APIClient) GetVersion(ctx context.Context) (*coreapi.ServiceVersionRead, error) {
 	path := c.endpoints.Version()
 

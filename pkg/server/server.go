@@ -50,6 +50,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
+	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -88,6 +89,9 @@ type Server struct {
 	// AuditOptions optionally ship audit records to an external collector,
 	// in addition to the structured log, which is always emitted.
 	AuditOptions *audit.Options
+
+	// ShutdownOptions control how a replica leaves service.
+	ShutdownOptions ShutdownOptions
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -105,6 +109,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	}
 
 	s.AuditOptions.AddFlags(flags)
+	s.ShutdownOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
@@ -148,7 +153,10 @@ func (s *Server) newRouter(schema *helpers.Schema) (*chi.Mux, error) {
 	return router, nil
 }
 
-func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http.Server, error) {
+// GetServer assembles the HTTP server. Background work it starts, such as the
+// JOSE leader election, stops when ctx ends. The readiness checker gains the
+// conditions the handler graph adds, and is served on /readyz.
+func (s *Server) GetServer(ctx context.Context, client client.Client, readCache client.Reader, ready *readiness.Checker) (*http.Server, error) {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
@@ -161,9 +169,11 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 
 	// Setup authn/authz
 	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
-	if err := issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{}); err != nil {
+	if err := issuer.Run(ctx, &jose.InClusterCoordinationClientGetter{}); err != nil {
 		return nil, err
 	}
+
+	ready.Require(readiness.SigningKeyAvailable(issuer))
 
 	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
 
@@ -235,7 +245,7 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 		},
 	}
 
-	handlerInterface, err := handler.New(client, readCache, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, readCache, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, ready, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}

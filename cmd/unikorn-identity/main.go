@@ -26,7 +26,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
@@ -41,6 +40,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 
+	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -93,7 +93,9 @@ func start() {
 		return
 	}
 
-	server, err := s.GetServer(client, readCache)
+	ready := readiness.New(readiness.CacheSynced(readCache))
+
+	server, err := s.GetServer(ctx, client, readCache, ready)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 
@@ -123,14 +125,7 @@ func start() {
 	go func() {
 		<-stop
 
-		// Cancel anything hanging off the root context.
-		cancel()
-
-		// Shutdown the server, Kubernetes gives us 30 seconds before a SIGKILL.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(ctx); err != nil {
+		if err := s.ShutdownOptions.Stop(ready, cancel, server); err != nil {
 			logger.Error(err, "server shutdown error")
 		}
 	}()
@@ -146,7 +141,7 @@ func start() {
 	}
 }
 
-func newKubernetesClients(ctx context.Context, namespace string) (ctrlclient.Client, ctrlclient.Reader, error) {
+func newKubernetesClients(ctx context.Context, namespace string) (ctrlclient.Client, cache.Cache, error) {
 	clientConfig, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, nil, err

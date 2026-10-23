@@ -140,6 +140,11 @@ func (e *Endpoints) Version() string {
 	return "/api/version"
 }
 
+// Readyz returns the unauthenticated readiness endpoint the kubelet probes.
+func (e *Endpoints) Readyz() string {
+	return "/readyz"
+}
+
 // ListGlobalOauth2Providers returns the endpoint for listing platform-level OAuth2 providers.
 func (e *Endpoints) ListGlobalOauth2Providers() string {
 	return "/api/v1/oauth2providers"

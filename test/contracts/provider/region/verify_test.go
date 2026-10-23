@@ -371,6 +371,7 @@ func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Opt
 		authenticator,
 		nil, // UserDatabase not used in contract tests
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
+		nil, // readiness is not probed in contract tests
 		handlerOptions,
 	)
 	if err != nil {
