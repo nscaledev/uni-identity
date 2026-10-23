@@ -133,6 +133,8 @@ clients.
 
 - global identity and organization membership are distinct layers and must not be collapsed into a
   single resource model
+- global users use a deterministic name derived from their immutable subject; organization users
+  use one derived from their organization and global user
 - an organization must have at most one `OrganizationUser` membership for a given global `User`
 - repeated create requests reuse the existing `OrganizationUser` without mutating its state; callers
   must use update to intentionally change organization-local state
@@ -153,6 +155,19 @@ clients.
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
 - the API-managed path only allows bare email-address subjects for normal user creation
+
+Legacy random-named records remain readable while there is exactly one matching record. Multiple
+records for one subject, legacy or deterministic, or for one membership are a consistency error,
+and `Create` refuses them before writing. Lookups by subject rely on this check rather than
+repeating it. New writes use deterministic
+names, so Kubernetes conflict handling makes concurrent creates converge on the same records.
+
+That convergence needs every writer to use deterministic names. While a rollout replaces a pod
+that still writes random names, two creates for the same new subject or membership, one on each
+pod, leave a legacy record beside the deterministic one. Lookups then return the deterministic
+record, and `Create` for that subject fails with a consistency error until the random-named record
+is deleted. `hack/identity-duplicate-records-check.py` lists such duplicates, for Users,
+OrganizationUsers and Quotas, and is meant to run after a rollout.
 
 ## Caveats
 
