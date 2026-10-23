@@ -21,6 +21,7 @@ import (
 	goerrors "errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -191,6 +192,52 @@ func TestUpdateSucceedsWhenLeaseReleaseFails(t *testing.T) {
 	result, err := New(releaseFailureClient{Client: k8s}, "identity").Update(fixtures.HandlerContextFixture(t.Context(), 0), organizationID, &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}}})
 	require.NoError(t, err)
 	require.Equal(t, 2, result.Quotas[0].Quantity)
+}
+
+// deadlineQuotaListClient fails a Quota list once the context has ended, as the
+// API server does for a request that outlives its deadline.
+type deadlineQuotaListClient struct {
+	client.Client
+}
+
+func (c deadlineQuotaListClient) List(ctx context.Context, list client.ObjectList, options ...client.ListOption) error {
+	if _, ok := list.(*unikornv1.QuotaList); ok {
+		<-ctx.Done()
+
+		return ctx.Err()
+	}
+
+	return c.Client.List(ctx, list, options...)
+}
+
+// TestUpdateReportsDeadlineDuringReadAsConflict checks that a quota read that
+// runs past the critical-section deadline is a retryable 409, not a 400.
+func TestUpdateReportsDeadlineDuringReadAsConflict(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
+	require.NoError(t, unikornv1.AddToScheme(scheme))
+
+	organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "identity", Name: organizationID.String()},
+		Status:     unikornv1.OrganizationStatus{Namespace: "org-a"},
+	}
+	gpus := metaObj("gpus", "1")
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, &gpus).Build()
+
+	ctx, cancel := context.WithTimeout(fixtures.HandlerContextFixture(t.Context(), 0), 20*time.Millisecond)
+	t.Cleanup(cancel)
+
+	_, err := New(deadlineQuotaListClient{Client: k8s}, "identity").Update(ctx, organizationID, &openapi.QuotasWrite{Quotas: openapi.QuotaWriteList{{Kind: "gpus", Quantity: 2}}})
+	require.Error(t, err)
+	require.True(t, servererrors.IsConflict(err))
+	require.False(t, servererrors.IsBadRequest(err))
+
+	leases := &coordinationv1.LeaseList{}
+	require.NoError(t, k8s.List(context.WithoutCancel(ctx), leases))
+	require.Empty(t, leases.Items, "the failed update releases its organization Lease")
 }
 
 // metadataListObserver records, for each QuotaMetadata list, whether an

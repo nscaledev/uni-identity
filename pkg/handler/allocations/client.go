@@ -162,25 +162,31 @@ func (c *SyncClient) Create(ctx context.Context, organizationID ids.Organization
 		return nil, err
 	}
 
-	lease, lockedContext, err := common.AcquireOrganizationLease(ctx, c.client, c.namespace, organizationID)
+	created, err := common.WithOrganizationLease(ctx, c.client, c.namespace, organizationID, func(ctx context.Context, lease *common.OrganizationLease) (*unikornv1.Allocation, error) {
+		return c.createLocked(ctx, lease, organizationID, resource)
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer common.ReleaseOrganizationLease(ctx, lease)
 
-	if err := common.New(c.client).CheckQuotaConsistency(lockedContext, organizationID, nil, resource); err != nil {
+	return convert(created), nil
+}
+
+// createLocked admits and stores the allocation under the organization Lease.
+func (c *SyncClient) createLocked(ctx context.Context, lease *common.OrganizationLease, organizationID ids.OrganizationID, resource *unikornv1.Allocation) (*unikornv1.Allocation, error) {
+	if err := common.New(c.client).CheckQuotaConsistency(ctx, organizationID, nil, resource); err != nil {
 		return nil, err
 	}
 
-	if err := lease.Check(lockedContext); err != nil {
+	if err := lease.Check(ctx); err != nil {
 		return nil, err
 	}
 
-	if err := c.client.Create(lockedContext, resource); err != nil {
+	if err := c.client.Create(ctx, resource); err != nil {
 		return nil, fmt.Errorf("%w: failed to create allocation", err)
 	}
 
-	return convert(resource), nil
+	return resource, nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string) (*openapi.AllocationRead, error) {
@@ -229,18 +235,26 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 		return nil, err
 	}
 
-	lease, lockedContext, err := common.AcquireOrganizationLease(ctx, c.client, c.namespace, organizationID)
-	if err != nil {
-		return nil, err
-	}
-	defer common.ReleaseOrganizationLease(ctx, lease)
-
-	current, err := c.get(lockedContext, namespace.Name, allocationID)
+	updated, err := common.WithOrganizationLease(ctx, c.client, c.namespace, organizationID, func(ctx context.Context, lease *common.OrganizationLease) (*unikornv1.Allocation, error) {
+		return c.updateLocked(ctx, lease, namespace, organizationID, projectID, allocationID, request)
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	required, err := generate(lockedContext, namespace, organizationID, projectID, request)
+	return convert(updated), nil
+}
+
+// updateLocked re-admits and stores the allocation under the organization Lease.
+func (c *SyncClient) updateLocked(ctx context.Context, lease *common.OrganizationLease, namespace *corev1.Namespace, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string, request *openapi.AllocationWrite) (*unikornv1.Allocation, error) {
+	commonClient := common.New(c.client)
+
+	current, err := c.get(ctx, namespace.Name, allocationID)
+	if err != nil {
+		return nil, err
+	}
+
+	required, err := generate(ctx, namespace, organizationID, projectID, request)
 	if err != nil {
 		return nil, err
 	}
@@ -254,15 +268,15 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := commonClient.CheckQuotaConsistency(lockedContext, organizationID, nil, updated); err != nil {
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, nil, updated); err != nil {
 		return nil, err
 	}
 
-	if err := lease.Check(lockedContext); err != nil {
+	if err := lease.Check(ctx); err != nil {
 		return nil, err
 	}
 
-	if err := c.client.Patch(lockedContext, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		if kerrors.IsConflict(err) {
 			return nil, errors.HTTPConflict().WithError(err)
 		}
@@ -270,5 +284,5 @@ func (c *SyncClient) Update(ctx context.Context, organizationID ids.Organization
 		return nil, fmt.Errorf("%w: failed to patch allocation", err)
 	}
 
-	return convert(updated), nil
+	return updated, nil
 }

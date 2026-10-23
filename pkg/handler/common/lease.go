@@ -219,6 +219,17 @@ func (l *OrganizationLease) Check(ctx context.Context) error {
 	return nil
 }
 
+// Error reports a failure inside the critical section. One that coincides with the
+// critical-section deadline is the same retryable conflict as waiting too long for
+// the Lease, whatever the call that noticed it returned.
+func (l *OrganizationLease) Error(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return leaseConflict(fmt.Errorf("%w: %w: %w", ErrLeaseDeadline, ctxErr, err))
+	}
+
+	return err
+}
+
 // Release deletes the Lease only if it has not been taken over.
 func (l *OrganizationLease) Release(ctx context.Context) error {
 	l.cancel()
@@ -245,4 +256,23 @@ func ReleaseOrganizationLease(ctx context.Context, lease *OrganizationLease) {
 	if err := lease.Release(releaseContext); err != nil {
 		log.FromContext(ctx).Error(err, "unable to release organization allocation lease")
 	}
+}
+
+// WithOrganizationLease runs fn under the organization Lease with the bounded context,
+// releases the Lease, and reports a failure after the deadline as a retryable conflict.
+func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namespace string, organizationID ids.OrganizationID, fn func(ctx context.Context, lease *OrganizationLease) (T, error), options ...LeaseOption) (T, error) {
+	var zero T
+
+	lease, lockedContext, err := AcquireOrganizationLease(ctx, cli, namespace, organizationID, options...)
+	if err != nil {
+		return zero, err
+	}
+	defer ReleaseOrganizationLease(ctx, lease)
+
+	result, err := fn(lockedContext, lease)
+	if err != nil {
+		return zero, lease.Error(lockedContext, err)
+	}
+
+	return result, nil
 }

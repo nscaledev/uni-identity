@@ -29,7 +29,8 @@ The Lease lasts three seconds, and the holder stops writing one second before it
 holder is deleted on either success or failure; a crashed holder delays only that organization
 until the first contender has observed its unchanged Lease for a full duration.
 
-Contenders receive a retryable HTTP 409 when their request context expires. The server's request
+Contenders receive a retryable HTTP 409 when their request context expires. A holder whose read or
+write fails once its bounded context has ended receives the same 409. The server's request
 deadline (eight seconds by default, see [`pkg/server`](../../server/README.md)) leaves room for a
 takeover and the critical section after it, and ends early enough for Lease cleanup and the 409 or
 success response to be written before the write timeout.
