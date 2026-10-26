@@ -107,7 +107,7 @@ jobs:
         name: Release ${{ github.ref_name }}
         tag_name: ${{ github.ref_name }}
     - name: Publish OpenAPI spec
-      uses: nscaledev/openapi/.github/actions/publish-spec@3c79a8b4cd3863a152456c1c2c729b245a79a1af # main
+      uses: nscaledev/openapi/.github/actions/publish-spec@cef6c5ce2f7ce21c7eae5be37c2761e31d0711d8 # main
       with:
         service: identity
         spec-path: pkg/openapi/server.spec.yaml
