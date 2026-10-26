@@ -54,8 +54,8 @@ The `core` middleware stack is applied directly to the raw router in this order:
 1. request deadline
 2. OpenTelemetry
 3. logging
-4. route resolver
-5. RED metrics
+4. RED metrics
+5. route resolver
 6. CORS
 
 The reasons matter:
@@ -70,8 +70,9 @@ The reasons matter:
 - Logging must run early so even requests that fail before deep routing or service-specific
   middleware still get captured, and so those logs can include the trace context established
   earlier.
+- RED metrics wrap route resolution so unmatched requests are recorded. The resolver supplies
+  matched requests' stable OpenAPI paths, never resource IDs.
 - Route resolution must happen before middleware that depends on OpenAPI operation/schema metadata.
-- RED metrics run after route resolution so labels contain stable OpenAPI paths, never resource IDs.
 - CORS comes after route resolution because its schema-driven `OPTIONS` behaviour depends on the
   resolved route information.
 
