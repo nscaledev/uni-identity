@@ -32,6 +32,10 @@ import (
 // collide with a real OIDC issuer in a trust decision.
 const UNISentinel = "uni"
 
+// Service names this service in its traces and in the service label on its
+// scraped metrics. It is the same for every binary in the service.
+const Service = "unikorn-identity"
+
 var (
 	// Application is the application name.
 	//nolint:gochecknoglobals

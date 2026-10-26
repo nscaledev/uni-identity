@@ -218,6 +218,8 @@ spec:
         # Kept out of the Service, so the ingress cannot reach the probe.
         - name: health
           containerPort: 6081
+        - name: prometheus
+          containerPort: 8080
         readinessProbe:
           httpGet:
             path: /readyz

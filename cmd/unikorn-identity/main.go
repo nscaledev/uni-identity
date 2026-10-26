@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os/signal"
 	"syscall"
@@ -30,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel"
 
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
+	coreoptions "github.com/unikorn-cloud/core/pkg/options"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/readiness"
@@ -78,8 +80,8 @@ func start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := s.SetupOpenTelemetry(ctx); err != nil {
-		logger.Error(err, "failed to setup OpenTelemetry")
+	if err := setupTelemetry(ctx, &s.CoreOptions); err != nil {
+		logger.Error(err, "failed to setup telemetry")
 
 		return
 	}
@@ -107,6 +109,12 @@ func start() {
 		return
 	}
 	defer closeServerMetrics(metrics, logger)
+
+	go func() {
+		if err := s.CoreOptions.ServeMetrics(ctx, ":8080"); err != nil {
+			logger.Error(err, "metrics server error")
+		}
+	}()
 
 	listener, err := net.Listen("tcp", apiServer.Addr)
 	if err != nil {
@@ -140,6 +148,20 @@ func start() {
 	if err := server.Serve(serve, apiServer, ready, cancel, sigterm.Done()); err != nil {
 		logger.Error(err, "server error")
 	}
+}
+
+// setupTelemetry runs before GetServer creates any instruments, because they are
+// bound to the meter provider current when they are created.
+func setupTelemetry(ctx context.Context, o *coreoptions.CoreOptions) error {
+	if err := o.SetupTracing(ctx, constants.Service); err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+
+	if err := o.SetupMetrics(constants.Service); err != nil {
+		return fmt.Errorf("setup metrics: %w", err)
+	}
+
+	return nil
 }
 
 func newKubernetesClients(ctx context.Context, namespace string) (ctrlclient.Client, ctrlclient.Reader, error) {

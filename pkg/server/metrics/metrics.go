@@ -31,7 +31,7 @@ import (
 // Build info keeps the per-service prefix, following the Prometheus
 // convention for build_info families. Readiness uses a platform-generic name
 // so one query can aggregate it across services; the emitting service is
-// identified by the OTLP resource (service.name), not the metric name.
+// identified by the service label core adds, not the metric name.
 const (
 	buildInfoName = "unikorn_identity_server_build_info"
 	readyName     = "unikorn_server_ready"

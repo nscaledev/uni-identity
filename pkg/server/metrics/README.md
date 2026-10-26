@@ -9,5 +9,5 @@ owns its bound HTTP listener. The command creates the listener before starting
 `Serve`, so a server that cannot bind never reports ready.
 
 The readiness gauge name is platform-generic so one query can aggregate it
-across services; the emitting service is identified by the OTLP resource
-(`service.name`), which the deployment sets via `OTEL_SERVICE_NAME`.
+across services; the emitting service is identified by the `service` label
+that core's `SetupMetrics` adds to every scraped series.
