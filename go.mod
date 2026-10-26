@@ -17,7 +17,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spjmurray/go-util v0.1.3
 	github.com/stretchr/testify v1.12.1
-	github.com/unikorn-cloud/core v1.19.3
+	github.com/unikorn-cloud/core v1.21.0
 	github.com/yaronf/httpsign v0.5.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/metric v1.45.0
@@ -30,6 +30,11 @@ require (
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
 	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/yaml v1.6.0
+)
+
+require (
+	github.com/prometheus/otlptranslator v1.0.0 // indirect
+	go.opentelemetry.io/otel/exporters/prometheus v0.65.0 // indirect
 )
 
 require (
