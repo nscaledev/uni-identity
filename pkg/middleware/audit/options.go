@@ -31,6 +31,11 @@ const (
 	// the README's rotation section.
 	SigningKeySecretID = "id"
 
+	// TokenSecretKey is the key in the token secret holding the bearer token
+	// the collector admits us by.  The collector holds a copy, so this
+	// authenticates but cannot attest: that is what the signature is for.
+	TokenSecretKey = "token"
+
 	// SigningKeySecretKey is the key in the signing secret holding the PEM
 	// encoded PKCS#8 Ed25519 private key.
 	SigningKeySecretKey = "key"
@@ -55,6 +60,11 @@ type Options struct {
 	signingKeyNamespace string
 	signingKeyName      string
 
+	// tokenNamespace and tokenName locate the bearer token, when the collector
+	// requires one.  Empty means no token is sent.
+	tokenNamespace string
+	tokenName      string
+
 	// timeout bounds a single delivery.
 	timeout time.Duration
 }
@@ -73,6 +83,8 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 
 	f.StringVar(&o.signingKeyNamespace, "audit-signing-key-secret-namespace", "", "Audit signing key secret namespace.")
 	f.StringVar(&o.signingKeyName, "audit-signing-key-secret-name", "", "Audit signing key secret name, holding the Ed25519 private key and its key id.")
+	f.StringVar(&o.tokenNamespace, "audit-token-secret-namespace", "", "Audit collector bearer token secret namespace.")
+	f.StringVar(&o.tokenName, "audit-token-secret-name", "", "Audit collector bearer token secret name. Omit if the collector does not require a token.")
 	f.DurationVar(&o.timeout, "audit-timeout", defaultTimeout, "How long to allow for a single audit record delivery.")
 }
 
