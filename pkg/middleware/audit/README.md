@@ -98,13 +98,38 @@ it, because each covers something the others cannot:
   worth more than one we maintain. The tests verify with that library's verifier rather than with
   our own arithmetic, so a mistake cannot agree with itself.
 - **A nonce and timestamp** in the signature parameters let the collector reject replays.
+- **A bearer token**, when the collector requires one, gates admission at its edge.
+
+The token is not redundant with the signature, and neither substitutes for the other. The
+collector's edge can compute an HMAC but cannot verify an asymmetric signature, so the token is the
+only thing that can refuse a request at the door; without it anyone reaching the endpoint could post
+arbitrary volume and it would all be stored until a downstream pass noticed. The signature is
+checked later, away from the request path, and is the only thing that attests to who produced a
+body, which a shared secret cannot do because the collector holds a copy of it.
+
+The token is covered by the signature. It is a credential rather than a description of the record,
+which is an argument for leaving it out, but not a good one: the collector looks the token up per
+path, so an unsigned credential lets a captured body and signature be re-posted under a different
+token, into a different stream, still verifying as ours. Covering it binds the two. RFC 9421 section
+7.2.1 asks for as much of the message as possible to be signed and names only components that
+intermediaries rewrite — `Via`, `Forwarded` — as the exceptions; section 3.2.1 uses `Authorization`
+itself as its example of a field an application requires to be signed.
+
+The consequence is an ordering constraint: the header is attached before signing, not after. A test
+tampers with the credential on a captured request and asserts verification fails.
+
+It is sent as `Authorization: Bearer`, which the collector accepts interchangeably with its own
+`X-Streams-Token`; RFC 6648 deprecates `X-` prefixes and RFC 6750 standardises this one.
+
+The covered set therefore differs between a deployment with a token and one without, which is
+exactly what `Signature-Input` exists to declare.
 
 The digest and signature are applied in a `http.RoundTripper` rather than in `Emit`, so the digest
 covers exactly the bytes that go on the wire. Re-serialising JSON to compute a digest is how a
 signature that should match stops matching, because key order and whitespace are not stable across
 encoders.
 
-### Signing key rotation
+### Credential rotation
 
 The key id lives inside the signing secret alongside the key, never in configuration, and the sink
 re-reads that secret on every delivery rather than caching it.
@@ -116,6 +141,8 @@ verifies asynchronously, so it surfaces later as a failed verification against r
 
 For the same reason the signing key is not a cert-manager `Certificate`. There is no X.509 involved,
 and an in-place renewal would replace the key while leaving the id untouched.
+
+The token is re-read per delivery on the same basis, so rotating it is also a write to one secret.
 
 ## Where a record comes from
 
@@ -165,6 +192,19 @@ creation, so a failed rotation would be reported as a create.
   the client was given. Rebuilding from the sender makes the derived components agree with the
   signature by construction, and the test then passes whatever they were — which is how the empty
   `@path` reached a release.
+- The bearer token MUST be attached before the request is signed, and MUST be covered by the
+  signature. Attaching it afterwards still sends a valid request, so only a test that tampers with
+  the credential and expects verification to fail catches the mistake.
+- The sink MUST NOT follow redirects. Credentials are attached per hop by the `RoundTripper`, so
+  `net/http`'s own rule of stripping `Authorization` across hosts does not apply: each hop would be
+  freshly signed and freshly credentialed, handing the token to wherever the collector pointed us.
+- Either half of a credential's namespace/name pair MUST be treated as a credential the operator
+  intended. The chart emits each flag independently, so a half-configured one is reachable from
+  values, and ignoring it starts a service that is refused every record for the life of the pod.
+- A credential MUST be trimmed before it is checked for emptiness, not after. A secret holding only
+  a newline otherwise passes, and is then sent as an empty token or an empty `keyid`.
+- A configured token that cannot be read MUST fail startup. A collector that requires one refuses
+  every record without it, so continuing would produce a service that delivers nothing.
 - The signing key and its key id MUST be read together from one secret, and MUST NOT be cached, or
   rotation needs a restart and the two can drift.
 - Audit logging depends on trusted authorization context already being present.
