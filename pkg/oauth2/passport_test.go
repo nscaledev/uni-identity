@@ -39,6 +39,7 @@ import (
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -1065,6 +1066,125 @@ func TestExchangeGroupRoleBindingGrantsOrganizationScope(t *testing.T) {
 	assert.Equal(t, orgID, claims.OrgID)
 }
 
+// exchangeGroupedToken exchanges an external token that carries tokenGroups.
+// Each of bindingGroups gets a group binding under bindingIssuer, or under the
+// token's own issuer when bindingIssuer is empty.
+func exchangeGroupedToken(t *testing.T, bindingIssuer string, bindingGroups, tokenGroups []string) (string, *oauth2.PassportClaims) {
+	t.Helper()
+
+	issuer := newAuth0TestIssuer(t)
+
+	const (
+		audience = "https://grouped.example.com"
+		email    = "staff@example.com"
+	)
+
+	if bindingIssuer == "" {
+		bindingIssuer = issuer.issuer()
+	}
+
+	var bindings rbac.GlobalGroupRoleBindingsValue
+
+	for _, group := range bindingGroups {
+		bindings = append(bindings, rbac.GroupRoleBinding{Issuer: bindingIssuer, Group: group, RoleIDs: []string{"org-reader"}})
+	}
+
+	env := setupPassportTestEnvWithOAuth2Options(t, &rbac.Options{
+		GlobalGroupRoleBindings: bindings,
+	}, &oauth2.Options{
+		AccessTokenDuration:     accessTokenDuration,
+		RefreshTokenDuration:    refreshTokenDuration,
+		TokenLeewayDuration:     accessTokenDuration,
+		TokenVerificationLeeway: 0,
+		TokenCacheSize:          1024,
+		CodeCacheSize:           1024,
+	}, &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "grouped-provider",
+		},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer: issuer.issuer(),
+			BearerTrust: &unikornv1.BearerTrustSpec{
+				Audience:              audience,
+				AllowExternalIdentity: true,
+				GroupsClaim:           groupClaimURI,
+			},
+		},
+	}, &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org-reader",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	})
+
+	token := issuer.tokenWithGroups(t, audience, email, time.Now().Add(45*time.Second), tokenGroups)
+
+	result, err := env.authenticator.TokenExchange(nil, exchangeRequest(t, token, nil))
+	require.NoError(t, err)
+
+	return result.AccessToken, parsePassport(t, env, result.AccessToken)
+}
+
+func TestExchangePassportCarriesOnlyBoundGroups(t *testing.T) {
+	t.Parallel()
+
+	_, claims := exchangeGroupedToken(t, "", []string{"SRE"}, []string{"Other", "SRE", "Unused"})
+
+	assert.Equal(t, []string{"SRE"}, claims.Groups)
+}
+
+func TestExchangePassportOmitsGroupsWithoutBinding(t *testing.T) {
+	t.Parallel()
+
+	passport, claims := exchangeGroupedToken(t, "", nil, []string{"SRE", "Other"})
+
+	assert.Nil(t, claims.Groups)
+	assert.NotContains(t, decodedPassportClaimMap(t, passport), "groups")
+}
+
+func TestExchangePassportOmitsGroupsBoundForAnotherIssuer(t *testing.T) {
+	t.Parallel()
+
+	_, claims := exchangeGroupedToken(t, "https://other.example.com/", []string{"SRE"}, []string{"SRE"})
+
+	assert.Nil(t, claims.Groups)
+}
+
+func TestExchangePassportGroupsAreSortedAndDeduplicated(t *testing.T) {
+	t.Parallel()
+
+	bound := []string{"b-group", "a-group", "b-group"}
+
+	_, first := exchangeGroupedToken(t, "", bound, []string{"b-group", "x", "a-group", "b-group"})
+	_, second := exchangeGroupedToken(t, "", bound, []string{"a-group", "b-group", "a-group"})
+
+	want := []string{"a-group", "b-group"}
+
+	assert.Equal(t, want, first.Groups)
+	assert.Equal(t, want, second.Groups)
+}
+
+func decodedPassportClaimMap(t *testing.T, passport string) map[string]any {
+	t.Helper()
+
+	parsed, err := gojose.ParseSigned(passport, []gojose.SignatureAlgorithm{gojose.ES512})
+	require.NoError(t, err)
+
+	var claims map[string]any
+
+	require.NoError(t, json.Unmarshal(parsed.UnsafePayloadWithoutVerification(), &claims))
+
+	return claims
+}
+
 func TestExchangeServiceAccount(t *testing.T) {
 	t.Parallel()
 
@@ -1852,6 +1972,88 @@ func TestExchangePassportSetsSrcIssForUNI(t *testing.T) {
 	if claims.SrcIss != oauth2.PassportSourceUNI {
 		t.Fatalf("SrcIss = %q, want %q", claims.SrcIss, oauth2.PassportSourceUNI)
 	}
+
+	assert.Nil(t, claims.Groups, "a UNI-local passport carries no groups claim")
+}
+
+// TestExchangePassportSrcIssIsTheMatchedIssuer pins that a passport's src_iss is
+// the issuer that the exchange matched bindings against, and not a value that
+// comes from the OAuth2Provider name. A consumer decides from src_iss, so a
+// provider named like the UNI sentinel must not give its external tokens the
+// UNI-issuer bindings that the bearer path does not give them.
+func TestExchangePassportSrcIssIsTheMatchedIssuer(t *testing.T) {
+	t.Parallel()
+
+	issuer := newAuth0TestIssuer(t)
+
+	const (
+		audience = "https://named-uni.example.com"
+		email    = "staff@example.com"
+	)
+
+	rbacOptions := &rbac.Options{
+		GlobalRoleBindings: rbac.GlobalRoleBindingsValue{
+			{Issuer: oauth2.PassportSourceUNI, Subject: email, RoleIDs: []string{"org-reader"}},
+		},
+	}
+
+	env := setupPassportTestEnvWithOAuth2Options(t, rbacOptions, &oauth2.Options{
+		AccessTokenDuration:     accessTokenDuration,
+		RefreshTokenDuration:    refreshTokenDuration,
+		TokenLeewayDuration:     accessTokenDuration,
+		TokenVerificationLeeway: 0,
+		TokenCacheSize:          1024,
+		CodeCacheSize:           1024,
+	}, &unikornv1.OAuth2Provider{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      oauth2.PassportSourceUNI,
+		},
+		Spec: unikornv1.OAuth2ProviderSpec{
+			Issuer: issuer.issuer(),
+			BearerTrust: &unikornv1.BearerTrustSpec{
+				Audience:              audience,
+				AllowExternalIdentity: true,
+			},
+		},
+	}, &unikornv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "org-reader",
+		},
+		Spec: unikornv1.RoleSpec{
+			Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{
+					{Name: "org:read", Operations: []unikornv1.Operation{unikornv1.Read}},
+				},
+			},
+		},
+	})
+
+	token := issuer.token(t, audience, email, time.Now().Add(45*time.Second))
+
+	result, err := env.authenticator.TokenExchange(nil, exchangeRequest(t, token, nil))
+	require.NoError(t, err)
+
+	claims := parsePassport(t, env, result.AccessToken)
+
+	assert.Equal(t, oauth2.PassportSourceUNI, claims.Source, "the provider name stays the audit label")
+	assert.Equal(t, issuer.issuer(), claims.SrcIss, "src_iss is the external issuer, not the provider name")
+
+	ctx := authorization.NewContext(t.Context(), &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub: claims.Subject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{
+				Acctype: claims.Acctype,
+				OrgIds:  claims.OrgIDs,
+			},
+		},
+		SrcIss: claims.SrcIss,
+	})
+
+	acl, err := rbac.New(env.client, josetesting.Namespace, rbacOptions).GetACL(ctx, "")
+	require.NoError(t, err)
+	assert.Nil(t, acl.Global, "a UNI-issuer binding must not bind a passport from an external issuer")
 }
 
 // TestGetUserinfoFromBearerRoutesAuth0JWS verifies that a compact-JWS bearer

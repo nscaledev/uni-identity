@@ -170,6 +170,8 @@ var _ = Describe("Passport Token Exchange", func() {
 				Expect(claims.Actor).To(BeNil(), "act claim must be omitted when subject is the acting party")
 				Expect(decodePassportClaimMap(result.AccessToken)).NotTo(HaveKey("acl"),
 					"Passport must not embed ACLs; authorization stays on the remote authorizer path")
+				Expect(decodePassportClaimMap(result.AccessToken)).NotTo(HaveKey("groups"),
+					"A UNI-local passport carries no groups claim")
 
 				GinkgoWriter.Printf("Passport exchanged successfully, expires_in: %d\n", result.ExpiresIn)
 			})
