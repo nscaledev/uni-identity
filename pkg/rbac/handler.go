@@ -326,9 +326,9 @@ func AllowProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 }
 
 // checkProjectScopeCreate is the non-recording form.  It has three separate
-// success paths, which is why the recording MUST stay in the gate above: a
-// return added here later would otherwise be one more unaudited way to create a
-// resource.
+// success paths, which is why the recording MUST stay in the gates, this one
+// and AllowProjectScopeCreateOn: a return added here later would otherwise be
+// one more unaudited way to create a resource.
 func checkProjectScopeCreate(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
 	// If the project is explicitly present in the ACL it was fetched from storage
 	// when the ACL was built, so it must exist.

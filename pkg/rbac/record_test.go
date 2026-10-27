@@ -35,8 +35,14 @@ import (
 func recordingContext(t *testing.T) (context.Context, *authz.Recorder) {
 	t.Helper()
 
+	return recordingContextWith(t, aclFixture())
+}
+
+func recordingContextWith(t *testing.T, acl *openapi.Acl) (context.Context, *authz.Recorder) {
+	t.Helper()
+
 	recorder := &authz.Recorder{}
-	ctx := authz.NewContext(rbac.NewContext(t.Context(), aclFixture()), recorder)
+	ctx := authz.NewContext(rbac.NewContext(t.Context(), acl), recorder)
 
 	return ctx, recorder
 }
