@@ -110,6 +110,14 @@ to change. They record the scope, which is the part that matters most, but canno
 an action, and their decisions count as preconditions. A consumer can therefore tell a migrated
 call site from an unmigrated one, rather than being silently given a worse record.
 
+`AllowProjectScopeCreateOn` and `AllowProjectScopeCreateReaderOn` are the explicit forms of the
+create gates. Despite the name, those gates guard a project named by untrusted input, such as a v2
+request body, rather than the act of creating: when access comes from an organisation grant they
+confirm the project exists first. What the request does is the target's to say. A global grant
+skips that confirmation, so a record can name a project that does not exist. The Reader form takes
+only the scope from the resource it is given, which is usually a parent, so that resource's
+identifier does not belong in the target.
+
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 

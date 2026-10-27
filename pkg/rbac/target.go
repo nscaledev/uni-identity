@@ -21,6 +21,7 @@ import (
 
 	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/ids"
+	"github.com/unikorn-cloud/identity/pkg/openapi"
 )
 
 // The On family states what the check is about rather than leaving it to be
@@ -79,4 +80,30 @@ func AllowProjectScopeReaderOn(ctx context.Context, target authz.Target, scope i
 	}
 
 	return AllowProjectScopeOn(ctx, target, organizationID, projectID)
+}
+
+// AllowProjectScopeCreateOn is AllowProjectScopeOn for a project named by
+// untrusted input, such as a v2 request body, and verifies that the project
+// exists when access comes from an organization grant.  It guards the project,
+// not the action: the target states what the request does.
+func AllowProjectScopeCreateOn(ctx context.Context, client openapi.ClientWithResponsesInterface, target authz.Target, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	scope := authz.Scope{
+		OrganizationID: organizationID,
+		ProjectID:      projectID,
+	}
+
+	return record(ctx, target, scope,
+		checkProjectScopeCreate(ctx, client, target.Endpoint, target.Operation.Access, organizationID.String(), projectID.String()))
+}
+
+// AllowProjectScopeCreateReaderOn is the variant for callers holding a resource
+// that reports the scope, typically a parent of the one being created.  Only
+// its scope is used, so its identifier MUST NOT be put in the target.
+func AllowProjectScopeCreateReaderOn(ctx context.Context, client openapi.ClientWithResponsesInterface, target authz.Target, scope ids.ProjectScopeReader) error {
+	organizationID, projectID, err := scope.OrganizationAndProjectID()
+	if err != nil {
+		return err
+	}
+
+	return AllowProjectScopeCreateOn(ctx, client, target, organizationID, projectID)
 }
