@@ -52,6 +52,8 @@ const (
 	signingSecretNamespace = "unikorn"
 	// The name of a Secret, not a credential.
 	signingSecretName = "audit-signing-key" //nolint:gosec
+	// The name of a Secret, not a credential.
+	tokenSecretName = "audit-token"
 )
 
 // captured is one request the collector received, as it arrived on the wire.
@@ -124,9 +126,27 @@ func mustSigningSecret(t *testing.T, keyID string) (*corev1.Secret, ed25519.Publ
 	}, public
 }
 
+// mustTokenSecret builds the secret the collector's bearer token arrives in.
+func mustTokenSecret(token string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: signingSecretNamespace, Name: tokenSecretName},
+		// A trailing newline is what writing a secret from a file gives you, and
+		// must not reach the header.
+		Data: map[string][]byte{audit.TokenSecretKey: []byte(token + "\n")},
+	}
+}
+
 // newSink wires a sink at a running collector, trusting its certificate via the
 // CA secret exactly as a deployment would.
 func newSink(t *testing.T, server *httptest.Server, objects ...crclient.Object) (audit.Sink, crclient.Client) {
+	t.Helper()
+
+	return newSinkWithFlags(t, server, nil, objects...)
+}
+
+// newSinkWithFlags is newSink with extra flags, for configuration that is not
+// present on every deployment.
+func newSinkWithFlags(t *testing.T, server *httptest.Server, extra []string, objects ...crclient.Object) (audit.Sink, crclient.Client) {
 	t.Helper()
 
 	scheme, err := coreclient.NewScheme()
@@ -150,14 +170,14 @@ func newSink(t *testing.T, server *httptest.Server, objects ...crclient.Object) 
 
 	options := audit.NewOptions()
 	flags := pflagSetForOptions(t, options)
-	require.NoError(t, flags.Parse([]string{
+	require.NoError(t, flags.Parse(append([]string{
 		"--audit-host=" + server.URL,
 		"--audit-ca-secret-namespace=unikorn",
 		"--audit-ca-secret-name=collector-ca",
 		"--audit-signing-key-secret-namespace=unikorn",
 		"--audit-signing-key-secret-name=audit-signing-key",
 		"--audit-timeout=2s",
-	}))
+	}, extra...)))
 
 	sink, err := audit.NewHTTPSink(t.Context(), client, options)
 	require.NoError(t, err)
@@ -225,6 +245,321 @@ func TestHTTPSinkSignsTheRequestPerRFC9421(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, httpsign.VerifyRequest("sig1", *verifier, asCollectorSees(t, request)))
+}
+
+// The collector admits on the token and attests on the signature, so a record
+// carries both.
+func TestHTTPSinkSendsTheBearerToken(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	defer server.Close()
+
+	secret, public := mustSigningSecret(t, "nscale-audit-1")
+
+	sink, _ := newSinkWithFlags(t, server, []string{
+		"--audit-token-secret-namespace=" + signingSecretNamespace,
+		"--audit-token-secret-name=" + tokenSecretName,
+	}, secret, mustTokenSecret("s3cret-token"))
+
+	sink.Emit(t.Context(), testRecord())
+
+	requests := received.all()
+	require.Len(t, requests, 1)
+
+	require.Equal(t, "Bearer s3cret-token", requests[0].headers.Get("Authorization"))
+
+	// The credential is covered, so a captured body and signature cannot be
+	// replayed under a different token into a different stream.
+	require.Contains(t, requests[0].headers.Get("Signature-Input"), `"authorization"`)
+
+	// And it verifies as the collector will, over the components we declared.
+	verifier, err := httpsign.NewEd25519Verifier(public, httpsign.NewVerifyConfig(),
+		httpsign.Headers(append(signedComponentsForTest(), "authorization")...))
+	require.NoError(t, err)
+
+	require.NoError(t, httpsign.VerifyRequest("sig1", *verifier, asCollectorSees(t, requests[0])))
+}
+
+// Swapping the credential after signing must break verification; that is the
+// whole reason for covering it.
+func TestHTTPSinkSignatureBindsTheToken(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	defer server.Close()
+
+	secret, public := mustSigningSecret(t, "nscale-audit-1")
+
+	sink, _ := newSinkWithFlags(t, server, []string{
+		"--audit-token-secret-namespace=" + signingSecretNamespace,
+		"--audit-token-secret-name=" + tokenSecretName,
+	}, secret, mustTokenSecret("s3cret-token"))
+
+	sink.Emit(t.Context(), testRecord())
+
+	requests := received.all()
+	require.Len(t, requests, 1)
+
+	tampered := asCollectorSees(t, requests[0])
+	tampered.Header.Set("Authorization", "Bearer someone-elses-token")
+
+	verifier, err := httpsign.NewEd25519Verifier(public, httpsign.NewVerifyConfig(),
+		httpsign.Headers(append(signedComponentsForTest(), "authorization")...))
+	require.NoError(t, err)
+
+	require.Error(t, httpsign.VerifyRequest("sig1", *verifier, tampered))
+}
+
+// A collector that wants no token must not receive an empty one.
+func TestHTTPSinkSendsNoTokenWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	defer server.Close()
+
+	secret, _ := mustSigningSecret(t, "nscale-audit-1")
+
+	sink, _ := newSink(t, server, secret)
+	sink.Emit(t.Context(), testRecord())
+
+	requests := received.all()
+	require.Len(t, requests, 1)
+	require.Empty(t, requests[0].headers.Get("Authorization"))
+}
+
+// Rotation is an atomic write of the secret and must take effect without a
+// restart, exactly as for the signing key.
+func TestHTTPSinkPicksUpARotatedToken(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	defer server.Close()
+
+	secret, _ := mustSigningSecret(t, "nscale-audit-1")
+
+	sink, client := newSinkWithFlags(t, server, []string{
+		"--audit-token-secret-namespace=" + signingSecretNamespace,
+		"--audit-token-secret-name=" + tokenSecretName,
+	}, secret, mustTokenSecret("first-token"))
+
+	sink.Emit(t.Context(), testRecord())
+
+	rotated := mustTokenSecret("second-token")
+
+	current := &corev1.Secret{}
+	require.NoError(t, client.Get(t.Context(), crclient.ObjectKeyFromObject(rotated), current))
+
+	current.Data = rotated.Data
+	require.NoError(t, client.Update(t.Context(), current))
+
+	sink.Emit(t.Context(), testRecord())
+
+	requests := received.all()
+	require.Len(t, requests, 2)
+	require.Equal(t, "Bearer first-token", requests[0].headers.Get("Authorization"))
+	require.Equal(t, "Bearer second-token", requests[1].headers.Get("Authorization"))
+}
+
+// A collector that requires a token refuses every record without one, so an
+// unreadable token must stop the process rather than produce a service that
+// delivers nothing.
+func TestNewHTTPSinkFailsWhenTheTokenIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	defer server.Close()
+
+	secret, _ := mustSigningSecret(t, "nscale-audit-1")
+
+	scheme, err := coreclient.NewScheme()
+	require.NoError(t, err)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+	options := audit.NewOptions()
+	flags := pflagSetForOptions(t, options)
+	require.NoError(t, flags.Parse([]string{
+		"--audit-host=" + server.URL,
+		"--audit-signing-key-secret-namespace=" + signingSecretNamespace,
+		"--audit-signing-key-secret-name=" + signingSecretName,
+		"--audit-token-secret-namespace=" + signingSecretNamespace,
+		"--audit-token-secret-name=missing",
+	}))
+
+	_, err = audit.NewHTTPSink(t.Context(), client, options)
+	require.Error(t, err)
+}
+
+// A trailing newline survives most ways of writing a secret. In the key id it
+// is not cosmetic: it reaches Signature-Input as keyid, and before it was
+// trimmed every delivery failed silently.
+func TestCredentialsTolerateATrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	defer server.Close()
+
+	secret, _ := mustSigningSecret(t, "nscale-audit-1\n")
+
+	sink, _ := newSinkWithFlags(t, server, []string{
+		"--audit-token-secret-namespace=" + signingSecretNamespace,
+		"--audit-token-secret-name=" + tokenSecretName,
+	}, secret, mustTokenSecret("s3cret-token"))
+
+	sink.Emit(t.Context(), testRecord())
+
+	requests := received.all()
+	require.Len(t, requests, 1, "a trailing newline must not stop delivery")
+
+	require.Contains(t, requests[0].headers.Get("Signature-Input"), `keyid="nscale-audit-1"`)
+	require.Equal(t, "Bearer s3cret-token", requests[0].headers.Get("Authorization"))
+}
+
+// The credentials are attached per hop by the RoundTripper, so net/http's rule
+// of stripping Authorization across a redirect does not protect them.  A
+// collector that answers with a 30x must not be able to collect our token.
+func TestHTTPSinkDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+
+	var elsewhere []string
+
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		elsewhere = append(elsewhere, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	defer target.Close()
+
+	redirector := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/elsewhere", http.StatusTemporaryRedirect)
+	}))
+
+	defer redirector.Close()
+
+	secret, _ := mustSigningSecret(t, "nscale-audit-1")
+
+	sink, _ := newSinkWithFlags(t, redirector, []string{
+		"--audit-token-secret-namespace=" + signingSecretNamespace,
+		"--audit-token-secret-name=" + tokenSecretName,
+	}, secret, mustTokenSecret("s3cret-token"))
+
+	require.NotPanics(t, func() {
+		sink.Emit(t.Context(), testRecord())
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Empty(t, elsewhere, "the credential must not be handed to a redirect target")
+}
+
+// A token configured with only one of its two halves is still a token the
+// operator asked for.  Treating it as absent starts a service that is refused
+// every record for the life of the pod.
+func TestNewHTTPSinkFailsWhenTheTokenIsHalfConfigured(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	defer server.Close()
+
+	secret, _ := mustSigningSecret(t, "nscale-audit-1")
+
+	scheme, err := coreclient.NewScheme()
+	require.NoError(t, err)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+	options := audit.NewOptions()
+	flags := pflagSetForOptions(t, options)
+	require.NoError(t, flags.Parse([]string{
+		"--audit-host=" + server.URL,
+		"--audit-signing-key-secret-namespace=" + signingSecretNamespace,
+		"--audit-signing-key-secret-name=" + signingSecretName,
+		// The chart emits each flag independently, so this is reachable.
+		"--audit-token-secret-name=" + tokenSecretName,
+	}))
+
+	_, err = audit.NewHTTPSink(t.Context(), client, options)
+	require.Error(t, err)
+}
+
+// A credential that is only whitespace is not a credential.  Trimming after the
+// emptiness check would let it through and send an empty one on every request.
+func TestNewHTTPSinkRejectsWhitespaceOnlyCredentials(t *testing.T) {
+	t.Parallel()
+
+	received := &collector{}
+	server := httptest.NewTLSServer(received)
+
+	// Cleanup rather than defer: the subtests run in parallel, so a deferred
+	// close would fire before they do.
+	t.Cleanup(server.Close)
+
+	t.Run("token", func(t *testing.T) {
+		t.Parallel()
+
+		secret, _ := mustSigningSecret(t, "nscale-audit-1")
+
+		scheme, err := coreclient.NewScheme()
+		require.NoError(t, err)
+
+		client := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(secret, mustTokenSecret(" \n\t")).Build()
+
+		options := audit.NewOptions()
+		flags := pflagSetForOptions(t, options)
+		require.NoError(t, flags.Parse([]string{
+			"--audit-host=" + server.URL,
+			"--audit-signing-key-secret-namespace=" + signingSecretNamespace,
+			"--audit-signing-key-secret-name=" + signingSecretName,
+			"--audit-token-secret-namespace=" + signingSecretNamespace,
+			"--audit-token-secret-name=" + tokenSecretName,
+		}))
+
+		_, err = audit.NewHTTPSink(t.Context(), client, options)
+		require.Error(t, err)
+	})
+
+	t.Run("key id", func(t *testing.T) {
+		t.Parallel()
+
+		secret, _ := mustSigningSecret(t, " \n")
+
+		scheme, err := coreclient.NewScheme()
+		require.NoError(t, err)
+
+		client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+		options := audit.NewOptions()
+		flags := pflagSetForOptions(t, options)
+		require.NoError(t, flags.Parse([]string{
+			"--audit-host=" + server.URL,
+			"--audit-signing-key-secret-namespace=" + signingSecretNamespace,
+			"--audit-signing-key-secret-name=" + signingSecretName,
+		}))
+
+		_, err = audit.NewHTTPSink(t.Context(), client, options)
+		require.Error(t, err)
+	})
 }
 
 // Every request must carry a fresh nonce, or the collector records a replay.
