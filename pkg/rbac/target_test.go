@@ -17,14 +17,17 @@ limitations under the License.
 package rbac_test
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
 
@@ -135,8 +138,9 @@ func TestDeprecatedGatesRecordNoObjectAndNoPrimary(t *testing.T) {
 		"an unmigrated call site yields no primary, which a consumer can report as a defect")
 }
 
-// A create is authorized before the resource exists, so it names no object.
-func TestExplicitCreateHasNoObject(t *testing.T) {
+// A target that names no object records none, as a create's does, because the
+// resource does not exist when it is authorized.
+func TestTargetWithoutObjectRecordsNone(t *testing.T) {
 	t.Parallel()
 
 	ctx, recorder := recordingContext(t)
@@ -149,4 +153,105 @@ func TestExplicitCreateHasNoObject(t *testing.T) {
 
 	require.NoError(t, rbac.AllowOrganizationScopeOn(ctx, target, ids.MustParseOrganizationID(organizationID)))
 	require.Equal(t, uuid.Nil, recorder.Decisions()[0].ObjectID)
+}
+
+// createACL grants create on resourceType1 at organization scope, so the
+// project named by the caller has to be confirmed to exist.
+func createACL() *openapi.Acl {
+	return &openapi.Acl{
+		Organizations: &openapi.AclOrganizationList{
+			{
+				Id: organizationID,
+				Endpoints: &openapi.AclEndpoints{
+					{
+						Name:       resourceType1,
+						Operations: openapi.AclOperations{openapi.Create},
+					},
+				},
+			},
+		},
+	}
+}
+
+func projectLookup(t *testing.T, status int) *openapiMock.MockClientWithResponsesInterface {
+	t.Helper()
+
+	client := openapiMock.NewMockClientWithResponsesInterface(gomock.NewController(t))
+	client.EXPECT().
+		GetApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(gomock.Any(), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)).
+		Return(&openapi.GetApiV1OrganizationsOrganizationIDProjectsProjectIDResponse{
+			HTTPResponse: &http.Response{StatusCode: status},
+		}, nil)
+
+	return client
+}
+
+// The create gate guards a project named by untrusted input, not the action.
+// The caller states what the request does, and that is what is recorded.
+func TestExplicitCreateRecordsTheCallersTarget(t *testing.T) {
+	t.Parallel()
+
+	ctx, recorder := recordingContextWith(t, createACL())
+
+	target := authz.Target{
+		Endpoint:  resourceType1,
+		Operation: authz.Action(openapi.Create, "import"),
+		Kind:      authz.Primary,
+	}
+
+	require.NoError(t, rbac.AllowProjectScopeCreateOn(ctx, projectLookup(t, http.StatusOK), target,
+		ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID)))
+
+	decisions := recorder.Decisions()
+	require.Len(t, decisions, 1)
+
+	decision := decisions[0]
+	require.Equal(t, target, decision.Target)
+	require.Equal(t, ids.MustParseOrganizationID(organizationID), decision.Scope.OrganizationID)
+	require.Equal(t, ids.MustParseProjectID(projectID), decision.Scope.ProjectID)
+	require.True(t, decision.Allowed)
+}
+
+// The reader form records the scope the resource it is handed reports, and
+// checks nothing when that resource cannot report one.
+func TestExplicitCreateReaderRecordsItsScope(t *testing.T) {
+	t.Parallel()
+
+	target := authz.Target{
+		Endpoint:  resourceType1,
+		Operation: authz.Create,
+		Kind:      authz.Primary,
+	}
+
+	t.Run("scope reported", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, recorder := recordingContextWith(t, createACL())
+
+		scope := scopeStub{
+			orgID:  ids.MustParseOrganizationID(organizationID),
+			projID: ids.MustParseProjectID(projectID),
+		}
+
+		require.NoError(t, rbac.AllowProjectScopeCreateReaderOn(ctx, projectLookup(t, http.StatusOK), target, scope))
+
+		decisions := recorder.Decisions()
+		require.Len(t, decisions, 1)
+		require.Equal(t, target, decisions[0].Target)
+		require.Equal(t, scope.orgID, decisions[0].Scope.OrganizationID)
+		require.Equal(t, scope.projID, decisions[0].Scope.ProjectID)
+	})
+
+	t.Run("scope unreadable", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, recorder := recordingContextWith(t, createACL())
+
+		// No expectations, so any call to the identity API fails the test.
+		client := openapiMock.NewMockClientWithResponsesInterface(gomock.NewController(t))
+
+		err := rbac.AllowProjectScopeCreateReaderOn(ctx, client, target, scopeStub{err: errScope})
+		require.ErrorIs(t, err, errScope)
+		require.Empty(t, recorder.Decisions())
+	})
 }

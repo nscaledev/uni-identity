@@ -18,6 +18,7 @@ limitations under the License.
 package rbac_test
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	openapiMock "github.com/unikorn-cloud/identity/pkg/openapi/mock"
@@ -1183,6 +1185,15 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 		{
 			Name:           "Reject: wrong organization, no API call made",
 			ACL:            aclWithOrgScope,
+			OrganizationID: organizationID1,
+			ProjectID:      projectID,
+			Resource:       resourceType1,
+			Operation:      openapi.Create,
+			ErrorChecker:   coreerrors.IsForbidden,
+		},
+		{
+			Name:           "Reject: malformed organization, no API call made",
+			ACL:            aclWithOrgScope,
 			OrganizationID: "wibble",
 			ProjectID:      projectID,
 			Resource:       resourceType1,
@@ -1191,31 +1202,72 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 		},
 	}
 
+	// Every row runs through the gate and its explicit form, which must
+	// authorize identically, project existence check included.
+	gates := map[string]createGate{
+		"gate":     rbac.AllowProjectScopeCreate,
+		"explicit": allowProjectScopeCreateOn,
+	}
+
 	for i := range tests {
 		test := &tests[i]
 
-		t.Run(test.Name, func(t *testing.T) {
-			t.Parallel()
+		for gateName, gate := range gates {
+			t.Run(gateName+"/"+test.Name, func(t *testing.T) {
+				t.Parallel()
 
-			ctrl := gomock.NewController(t)
+				ctrl := gomock.NewController(t)
 
-			mockClient := openapiMock.NewMockClientWithResponsesInterface(ctrl)
+				mockClient := openapiMock.NewMockClientWithResponsesInterface(ctrl)
 
-			if test.SetupMock != nil {
-				test.SetupMock(mockClient)
-			}
+				if test.SetupMock != nil {
+					test.SetupMock(mockClient)
+				}
 
-			ctx := rbac.NewContext(t.Context(), test.ACL)
+				ctx, recorder := recordingContextWith(t, test.ACL)
 
-			err := rbac.AllowProjectScopeCreate(ctx, mockClient, test.Resource, test.Operation, test.OrganizationID, test.ProjectID)
-			if test.ErrorChecker != nil {
-				require.Error(t, err)
-				require.True(t, test.ErrorChecker(err))
-			} else {
-				require.NoError(t, err)
-			}
-		})
+				err := gate(ctx, mockClient, test.Resource, test.Operation, test.OrganizationID, test.ProjectID)
+				if errors.Is(err, errUnrepresentable) {
+					t.Skip("typed identifiers cannot carry a malformed one")
+				}
+
+				// Every success path records exactly once, and a refusal never.
+				if test.ErrorChecker != nil {
+					require.Error(t, err)
+					require.True(t, test.ErrorChecker(err))
+					require.Empty(t, recorder.Decisions())
+				} else {
+					require.NoError(t, err)
+					require.Len(t, recorder.Decisions(), 1)
+				}
+			})
+		}
 	}
+}
+
+type createGate func(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error
+
+var errUnrepresentable = errors.New("identifier cannot be represented")
+
+// allowProjectScopeCreateOn adapts the explicit form to the gate's signature.
+func allowProjectScopeCreateOn(ctx context.Context, client openapi.ClientWithResponsesInterface, endpoint string, operation openapi.AclOperation, organizationID, projectID string) error {
+	orgID, err := ids.ParseOrganizationID(organizationID)
+	if err != nil {
+		return errUnrepresentable
+	}
+
+	projID, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return errUnrepresentable
+	}
+
+	target := authz.Target{
+		Endpoint:  endpoint,
+		Operation: authz.Operation{Access: operation, Action: "whatever"},
+		Kind:      authz.Primary,
+	}
+
+	return rbac.AllowProjectScopeCreateOn(ctx, client, target, orgID, projID)
 }
 
 // TestOrganizationAndProjectSelectionWithOrganizationAndProjectQueryMultiple tests multiple
