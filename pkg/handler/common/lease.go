@@ -118,11 +118,18 @@ func leaseConflict(err error) error {
 	return errors.HTTPConflict().WithError(err)
 }
 
-// acquireError reports an API failure caused by the request deadline as the same
-// retryable conflict as waiting too long.
-func acquireError(ctx context.Context, action string, err error) error {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return leaseConflict(fmt.Errorf("organization is busy: %w", ctxErr))
+// isContextError reports whether a call failed because its context ended, however
+// it was wrapped on the way back.
+func isContextError(err error) bool {
+	return goerrors.Is(err, context.DeadlineExceeded) || goerrors.Is(err, context.Canceled)
+}
+
+// acquireError reports an API call cut off by the request deadline as the same
+// retryable conflict as waiting too long. Any other failure keeps its cause, even
+// if the deadline has also passed.
+func acquireError(action string, err error) error {
+	if isContextError(err) {
+		return leaseConflict(fmt.Errorf("organization is busy: %w", err))
 	}
 
 	return fmt.Errorf("%s organization lease: %w", action, err)
@@ -155,7 +162,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 		if err := cli.Create(ctx, lease); err == nil {
 			return newOrganizationLease(ctx, cli, lease, now, config.margin)
 		} else if !kerrors.IsAlreadyExists(err) {
-			return nil, nil, acquireError(ctx, "create", err)
+			return nil, nil, acquireError("create", err)
 		}
 
 		if err := cli.Get(ctx, client.ObjectKeyFromObject(lease), lease); err != nil {
@@ -163,7 +170,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 				continue
 			}
 
-			return nil, nil, acquireError(ctx, "get", err)
+			return nil, nil, acquireError("get", err)
 		}
 
 		// Time the observation after Get returns, so a slow Create or Get cannot
@@ -182,7 +189,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			if err := cli.Update(ctx, lease); err == nil {
 				return newOrganizationLease(ctx, cli, lease, observed, config.margin)
 			} else if !kerrors.IsConflict(err) {
-				return nil, nil, acquireError(ctx, "take over", err)
+				return nil, nil, acquireError("take over", err)
 			}
 		}
 
@@ -219,12 +226,13 @@ func (l *OrganizationLease) Check(ctx context.Context) error {
 	return nil
 }
 
-// Error reports a failure inside the critical section. One that coincides with the
+// Error reports a failure inside the critical section. A call cut off by the
 // critical-section deadline is the same retryable conflict as waiting too long for
-// the Lease, whatever the call that noticed it returned.
-func (l *OrganizationLease) Error(ctx context.Context, err error) error {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return leaseConflict(fmt.Errorf("%w: %w: %w", ErrLeaseDeadline, ctxErr, err))
+// the Lease, whatever status the caller wrapped it in. Any other failure, such as a
+// rejected request, is reported as it is.
+func (l *OrganizationLease) Error(err error) error {
+	if isContextError(err) {
+		return leaseConflict(fmt.Errorf("%w: %w", ErrLeaseDeadline, err))
 	}
 
 	return err
@@ -259,7 +267,7 @@ func ReleaseOrganizationLease(ctx context.Context, lease *OrganizationLease) {
 }
 
 // WithOrganizationLease runs fn under the organization Lease with the bounded context,
-// releases the Lease, and reports a failure after the deadline as a retryable conflict.
+// releases the Lease, and reports a call cut off by the deadline as a retryable conflict.
 func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namespace string, organizationID ids.OrganizationID, fn func(ctx context.Context, lease *OrganizationLease) (T, error), options ...LeaseOption) (T, error) {
 	var zero T
 
@@ -271,7 +279,7 @@ func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namesp
 
 	result, err := fn(lockedContext, lease)
 	if err != nil {
-		return zero, lease.Error(lockedContext, err)
+		return zero, lease.Error(err)
 	}
 
 	return result, nil

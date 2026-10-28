@@ -29,6 +29,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/ids"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
@@ -99,22 +100,6 @@ func TestOrganizationLease(t *testing.T) {
 		require.NoError(t, lease.Release(context.WithoutCancel(t.Context())))
 	})
 
-	t.Run("reports contention as a retryable conflict", func(t *testing.T) {
-		t.Parallel()
-
-		client := leaseTestClient(t, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}})
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
-		t.Cleanup(cancel)
-
-		lease, _, err := AcquireOrganizationLease(ctx, client, leaseTestNamespace, organizationA,
-			withLeaseRetry(time.Millisecond),
-			withLeaseClock(func() time.Time { return now }),
-		)
-		require.Nil(t, lease)
-		require.Error(t, err)
-		require.True(t, servererrors.IsConflict(err))
-	})
-
 	t.Run("rejects writes after the holder deadline", func(t *testing.T) {
 		t.Parallel()
 
@@ -154,23 +139,6 @@ func TestOrganizationLease(t *testing.T) {
 
 		stored := &coordinationv1.Lease{}
 		require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKey{Namespace: leaseTestNamespace, Name: "unikorn-identity-allocation-a1111111-1111-4111-8111-111111111111"}, stored))
-	})
-
-	t.Run("reports an API call cut off by the request deadline as a conflict", func(t *testing.T) {
-		t.Parallel()
-
-		ctx, cancel := context.WithCancel(t.Context())
-		fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(ctx context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
-				cancel()
-
-				return ctx.Err()
-			},
-		}).Build()
-
-		lease, _, err := AcquireOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA)
-		require.Nil(t, lease)
-		require.True(t, servererrors.IsConflict(err))
 	})
 
 	t.Run("times the unchanged duration from completed observations", func(t *testing.T) {
@@ -252,22 +220,79 @@ func TestOrganizationLease(t *testing.T) {
 	})
 }
 
-func TestOrganizationLeaseError(t *testing.T) {
+func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 	t.Parallel()
 
 	organizationA := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	now := time.Now().UTC()
 
-	fakeClient := leaseTestClient(t)
-	lease, lockedContext, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA)
-	require.NoError(t, err)
+	t.Run("reports contention as a retryable conflict", func(t *testing.T) {
+		t.Parallel()
 
-	require.Equal(t, errRead, lease.Error(lockedContext, errRead), "a failure before the deadline is reported as it is")
+		client := leaseTestClient(t, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}})
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+		t.Cleanup(cancel)
 
-	require.NoError(t, lease.Release(context.WithoutCancel(t.Context())))
+		lease, _, err := AcquireOrganizationLease(ctx, client, leaseTestNamespace, organizationA,
+			withLeaseRetry(time.Millisecond),
+			withLeaseClock(func() time.Time { return now }),
+		)
+		require.Nil(t, lease)
+		require.Error(t, err)
+		require.True(t, servererrors.IsConflict(err))
+	})
 
-	err = lease.Error(lockedContext, errRead)
+	t.Run("reports an API call cut off by the request deadline as a conflict", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+				cancel()
+
+				return ctx.Err()
+			},
+		}).Build()
+
+		lease, _, err := AcquireOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA)
+		require.Nil(t, lease)
+		require.True(t, servererrors.IsConflict(err))
+	})
+
+	t.Run("keeps the cause of an API failure that coincides with the deadline", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+		t.Cleanup(cancel)
+
+		forbidden := kerrors.NewForbidden(coordinationv1.Resource("leases"), "", errRead)
+		fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+				cancel()
+
+				return forbidden
+			},
+		}).Build()
+
+		lease, _, err := AcquireOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA)
+		require.Nil(t, lease)
+		require.ErrorIs(t, err, forbidden)
+		require.False(t, servererrors.IsConflict(err))
+	})
+}
+
+func TestOrganizationLeaseError(t *testing.T) {
+	t.Parallel()
+
+	lease := &OrganizationLease{}
+
+	require.Equal(t, errRead, lease.Error(errRead), "a failure unrelated to the deadline is reported as it is")
+
+	// A handler wraps the read it was cut off in as a 400; the cut-off still wins.
+	err := lease.Error(servererrors.OAuth2InvalidRequest("unable to read quota").WithError(fmt.Errorf("list quotas: %w", context.DeadlineExceeded)))
 	require.True(t, servererrors.IsConflict(err))
-	require.ErrorIs(t, err, errRead)
+	require.False(t, servererrors.IsBadRequest(err))
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestWithOrganizationLease(t *testing.T) {
@@ -312,5 +337,22 @@ func TestWithOrganizationLease(t *testing.T) {
 		})
 		require.True(t, servererrors.IsConflict(err))
 		require.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("reports a rejection reached after the deadline as a rejection", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		t.Cleanup(cancel)
+
+		forbidden := servererrors.HTTPForbidden("over quota")
+
+		_, err := WithOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA, func(ctx context.Context, _ *OrganizationLease) (struct{}, error) {
+			<-ctx.Done()
+
+			return struct{}{}, forbidden
+		})
+		require.Same(t, forbidden, err)
 	})
 }
