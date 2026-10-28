@@ -63,7 +63,7 @@ func TestOrganizationLease(t *testing.T) {
 		t.Parallel()
 
 		client := leaseTestClient(t)
-		options := []LeaseOption{WithLeaseDuration(4 * time.Second), withLeaseMargin(time.Second), withLeaseClock(func() time.Time { return now })}
+		options := []LeaseOption{withLeaseDuration(4 * time.Second), withLeaseMargin(time.Second), withLeaseClock(func() time.Time { return now })}
 
 		first, firstContext, err := AcquireOrganizationLease(t.Context(), client, leaseTestNamespace, organizationA, options...)
 		require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestOrganizationLease(t *testing.T) {
 		}
 
 		lease, _, err := AcquireOrganizationLease(t.Context(), client, leaseTestNamespace, organizationA,
-			WithLeaseDuration(time.Second),
+			withLeaseDuration(time.Second),
 			withLeaseMargin(100*time.Millisecond),
 			withLeaseRetry(time.Millisecond),
 			withLeaseClock(clock),
@@ -178,7 +178,7 @@ func TestOrganizationLease(t *testing.T) {
 		}).WithObjects(&coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}}).Build()
 
 		lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA,
-			WithLeaseDuration(duration),
+			withLeaseDuration(duration),
 			withLeaseMargin(100*time.Millisecond),
 			// Only the synthetic clock needs to advance between attempts.
 			withLeaseRetry(0),
@@ -257,6 +257,25 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 		lease, _, err := AcquireOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA)
 		require.Nil(t, lease)
 		require.True(t, servererrors.IsConflict(err))
+	})
+
+	t.Run("rejects options without a critical section before writing a lease", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+
+		for _, options := range [][]LeaseOption{
+			{withLeaseDuration(500 * time.Millisecond)},
+			{withLeaseDuration(time.Second), withLeaseMargin(time.Second)},
+		} {
+			lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA, options...)
+			require.Nil(t, lease)
+			require.ErrorIs(t, err, ErrLeaseMargin)
+		}
+
+		leases := &coordinationv1.LeaseList{}
+		require.NoError(t, fakeClient.List(t.Context(), leases))
+		require.Empty(t, leases.Items)
 	})
 
 	t.Run("keeps the cause of an API failure that coincides with the deadline", func(t *testing.T) {

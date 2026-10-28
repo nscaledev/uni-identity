@@ -52,7 +52,7 @@ const (
 
 var (
 	ErrLeaseDeadline = goerrors.New("organization allocation lease deadline passed")
-	ErrLeaseMargin   = goerrors.New("organization lease margin leaves no critical section")
+	ErrLeaseMargin   = goerrors.New("organization lease duration and margin leave no critical section")
 )
 
 type leaseOptions struct {
@@ -64,7 +64,7 @@ type leaseOptions struct {
 
 type LeaseOption func(*leaseOptions)
 
-func WithLeaseDuration(duration time.Duration) LeaseOption {
+func withLeaseDuration(duration time.Duration) LeaseOption {
 	return func(options *leaseOptions) {
 		options.duration = duration
 	}
@@ -99,7 +99,9 @@ func organizationLeaseName(organizationID ids.OrganizationID) string {
 	return "unikorn-identity-allocation-" + organizationID.String()
 }
 
-func organizationLeaseOptions(options []LeaseOption) *leaseOptions {
+// organizationLeaseOptions applies the options and rejects a duration and margin
+// that leave no critical section, before any Lease is written.
+func organizationLeaseOptions(options []LeaseOption) (*leaseOptions, error) {
 	result := &leaseOptions{
 		duration: organizationLeaseDuration,
 		margin:   organizationLeaseMargin,
@@ -111,7 +113,22 @@ func organizationLeaseOptions(options []LeaseOption) *leaseOptions {
 		option(result)
 	}
 
-	return result
+	// The Lease stores whole seconds, so contenders must wait the stored duration.
+	result.duration = result.duration.Truncate(time.Second)
+
+	if result.duration < time.Second || result.margin >= result.duration {
+		return nil, ErrLeaseMargin
+	}
+
+	return result, nil
+}
+
+// hold marks the Lease as held by identity from now.
+func (o *leaseOptions) hold(lease *coordinationv1.Lease, identity string, now time.Time) {
+	lease.Spec.HolderIdentity = ptr.To(identity)
+	lease.Spec.LeaseDurationSeconds = ptr.To(int32(o.duration / time.Second)) //nolint:gosec // durations are validated by organizationLeaseOptions.
+	lease.Spec.AcquireTime = &metav1.MicroTime{Time: now}
+	lease.Spec.RenewTime = &metav1.MicroTime{Time: now}
 }
 
 func leaseConflict(err error) error {
@@ -140,7 +157,11 @@ func acquireError(action string, err error) error {
 //
 //nolint:cyclop,wsl // Lease creation and takeover share the retry loop.
 func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace string, organizationID ids.OrganizationID, options ...LeaseOption) (*OrganizationLease, context.Context, error) {
-	config := organizationLeaseOptions(options)
+	config, err := organizationLeaseOptions(options)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	name := organizationLeaseName(organizationID)
 	identity := uuid.NewString()
 
@@ -149,18 +170,11 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 
 	for {
 		now := config.now()
-		lease := &coordinationv1.Lease{
-			ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-			Spec: coordinationv1.LeaseSpec{
-				HolderIdentity:       ptr.To(identity),
-				LeaseDurationSeconds: ptr.To(int32(config.duration / time.Second)), //nolint:gosec // durations are bounded by configuration.
-				AcquireTime:          &metav1.MicroTime{Time: now},
-				RenewTime:            &metav1.MicroTime{Time: now},
-			},
-		}
+		lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
+		config.hold(lease, identity, now)
 
 		if err := cli.Create(ctx, lease); err == nil {
-			return newOrganizationLease(ctx, cli, lease, now, config.margin)
+			return newOrganizationLease(ctx, cli, lease, now, config)
 		} else if !kerrors.IsAlreadyExists(err) {
 			return nil, nil, acquireError("create", err)
 		}
@@ -181,13 +195,10 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			observedResourceVersion = lease.ResourceVersion
 			observedAt = observed
 		} else if observed.Sub(observedAt) >= config.duration {
-			lease.Spec.HolderIdentity = ptr.To(identity)
-			lease.Spec.LeaseDurationSeconds = ptr.To(int32(config.duration / time.Second)) //nolint:gosec // durations are bounded by configuration.
-			lease.Spec.AcquireTime = &metav1.MicroTime{Time: observed}
-			lease.Spec.RenewTime = &metav1.MicroTime{Time: observed}
+			config.hold(lease, identity, observed)
 
 			if err := cli.Update(ctx, lease); err == nil {
-				return newOrganizationLease(ctx, cli, lease, observed, config.margin)
+				return newOrganizationLease(ctx, cli, lease, observed, config)
 			} else if !kerrors.IsConflict(err) {
 				return nil, nil, acquireError("take over", err)
 			}
@@ -206,13 +217,8 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 	}
 }
 
-func newOrganizationLease(ctx context.Context, cli client.Client, lease *coordinationv1.Lease, acquiredAt time.Time, margin time.Duration) (*OrganizationLease, context.Context, error) {
-	until := acquiredAt.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second).Add(-margin)
-	if !until.After(acquiredAt) {
-		return nil, nil, ErrLeaseMargin
-	}
-
-	lockedContext, cancel := context.WithDeadline(ctx, until)
+func newOrganizationLease(ctx context.Context, cli client.Client, lease *coordinationv1.Lease, acquiredAt time.Time, config *leaseOptions) (*OrganizationLease, context.Context, error) {
+	lockedContext, cancel := context.WithDeadline(ctx, acquiredAt.Add(config.duration-config.margin))
 
 	return &OrganizationLease{client: cli, lease: lease.DeepCopy(), cancel: cancel}, lockedContext, nil
 }
