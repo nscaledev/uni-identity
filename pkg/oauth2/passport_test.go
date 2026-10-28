@@ -41,6 +41,7 @@ import (
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
+	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
@@ -83,7 +84,6 @@ func setupPassportTestEnvWithOptions(t *testing.T, rbacOptions *rbac.Options, to
 		TokenLeewayDuration:     accessTokenDuration,
 		TokenVerificationLeeway: tokenVerificationLeeway,
 		TokenCacheSize:          1024,
-		CodeCacheSize:           1024,
 	}, objects...)
 }
 
@@ -102,7 +102,6 @@ func setupAuth0PassportTestEnv(t *testing.T, auth0Issuer *auth0TestIssuer) *pass
 		TokenLeewayDuration:     accessTokenDuration,
 		TokenVerificationLeeway: 0,
 		TokenCacheSize:          1024,
-		CodeCacheSize:           1024,
 		Auth0ExchangeIssuer:     auth0Issuer.issuer(),
 		Auth0ExchangeAudience:   auth0TestAudience,
 	}, &unikornv1.Organization{
@@ -175,6 +174,97 @@ func setupPassportTestEnvWithOAuth2Options(t *testing.T, rbacOptions *rbac.Optio
 		jwtIssuer:     jwtIssuer,
 		client:        cli,
 	}
+}
+
+// TestSilentAuthorizationCodeExchangesOnceAcrossReplicas issues a code on one
+// replica, exchanges it on another through the token endpoint, then presents it
+// again: the replay must be refused and the session it opened revoked.
+func TestSilentAuthorizationCodeExchangesOnceAcrossReplicas(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID     = "silent-client"
+		clientSecret = "silent-secret"
+		redirectURI  = "https://client.example.com/callback"
+	)
+
+	query := url.Values{
+		"client_id":     {clientID},
+		"redirect_uri":  {redirectURI},
+		"response_type": {"code"},
+		"prompt":        {"none"},
+	}
+	lastAuthentication := metav1.NewTime(time.Now())
+	env := setupPassportTestEnv(t,
+		&unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{Namespace: josetesting.Namespace, Name: "silent-user"},
+			Spec: unikornv1.UserSpec{
+				Subject: "silent@example.com",
+				State:   unikornv1.UserStateActive,
+				Sessions: []unikornv1.UserSession{{
+					ClientID: clientID, AuthorizationCodeID: "previous-code", AccessToken: "previous-access", LastAuthentication: &lastAuthentication,
+				}},
+			},
+		},
+		&unikornv1.OAuth2Client{
+			ObjectMeta: metav1.ObjectMeta{Namespace: josetesting.Namespace, Name: clientID},
+			Spec:       unikornv1.OAuth2ClientSpec{RedirectURI: redirectURI},
+			Status:     unikornv1.OAuth2ClientStatus{Secret: clientSecret},
+		},
+	)
+
+	cookieCode, err := env.jwtIssuer.EncodeJWEToken(t.Context(), &oauth2.Code{
+		ID: "previous-code", UserID: "silent-user", ClientQuery: query.Encode(),
+		IDToken: &oidc.IDToken{Email: oidc.Email{Email: "silent@example.com"}},
+	}, jose.TokenTypeAuthorizationCode)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "https://test.com/oauth2/v2/authorization?"+query.Encode(), nil)
+	req.AddCookie(&http.Cookie{Name: oauth2.SessionCookie, Value: cookieCode})
+
+	recorder := httptest.NewRecorder()
+	env.authenticator.Authorization(recorder, req)
+
+	response := recorder.Result()
+	require.Equal(t, http.StatusFound, response.StatusCode)
+	location, err := url.Parse(response.Header.Get("Location"))
+	require.NoError(t, err)
+
+	issuedCode := location.Query().Get("code")
+	require.NotEmpty(t, issuedCode)
+
+	second, err := oauth2.New(&oauth2.Options{
+		AccessTokenDuration: accessTokenDuration, RefreshTokenDuration: refreshTokenDuration,
+		TokenLeewayDuration: accessTokenDuration, TokenCacheSize: 1024,
+	}, josetesting.Namespace, handlercommon.IssuerValue{URL: "https://test.com", Hostname: "test.com"},
+		env.client, env.client, env.jwtIssuer, userdb.NewUserDatabase(env.client, josetesting.Namespace), rbac.New(env.client, josetesting.Namespace, &rbac.Options{}))
+	require.NoError(t, err)
+
+	exchange := func() *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "https://test.com/oauth2/v2/token", strings.NewReader(url.Values{
+			"grant_type": {"authorization_code"}, "code": {issuedCode}, "redirect_uri": {redirectURI},
+		}.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.SetBasicAuth(clientID, clientSecret)
+
+		return r
+	}
+
+	tokens, err := second.Token(nil, exchange())
+	require.NoError(t, err)
+	assert.NotEmpty(t, tokens.AccessToken)
+
+	_, err = env.authenticator.Token(nil, exchange())
+	require.Error(t, err, "an authorization code is single use")
+
+	var oauthErr *oauth2errors.Error
+
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, openapi.InvalidGrant, oauthErr.Code())
+
+	user := &unikornv1.User{}
+	require.NoError(t, env.client.Get(t.Context(), client.ObjectKey{Namespace: josetesting.Namespace, Name: "silent-user"}, user))
+	assert.Empty(t, user.Spec.Sessions, "a replayed code revokes the session it opened")
 }
 
 type auth0TestIssuer struct {
@@ -1019,7 +1109,6 @@ func TestExchangeGroupRoleBindingGrantsOrganizationScope(t *testing.T) {
 		TokenLeewayDuration:     accessTokenDuration,
 		TokenVerificationLeeway: 0,
 		TokenCacheSize:          1024,
-		CodeCacheSize:           1024,
 	}, &unikornv1.OAuth2Provider{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: josetesting.Namespace,

@@ -58,6 +58,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 	"github.com/unikorn-cloud/identity/test/api"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -178,6 +179,8 @@ var _ = Describe("Identity Provider Verification", func() {
 				&provider.ConsumerVersionSelector{Consumer: "uni-region", MatchingBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MainBranch: true},
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", MatchingBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "ai-gateway", MainBranch: true},
+				&provider.ConsumerVersionSelector{Consumer: "ai-gateway", MatchingBranch: true},
 			}
 
 			// Add explicit branch selector only for webhook-triggered verification
@@ -188,6 +191,7 @@ var _ = Describe("Identity Provider Verification", func() {
 					&provider.ConsumerVersionSelector{Consumer: "uni-kubernetes", Branch: consumerBranch},
 					&provider.ConsumerVersionSelector{Consumer: "uni-region", Branch: consumerBranch},
 					&provider.ConsumerVersionSelector{Consumer: "nscale-environments", Branch: consumerBranch},
+					&provider.ConsumerVersionSelector{Consumer: "ai-gateway", Branch: consumerBranch},
 				)
 				fmt.Printf("Webhook mode: Including explicit branch selector for consumer branch '%s'\n", consumerBranch)
 			} else {
@@ -277,6 +281,9 @@ func createStateHandlers(ctx context.Context, stateManager *StateManager, authen
 		StateSystemBearer: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
 			return nil, stateManager.HandleSystemBearer(ctx, setup, state.Parameters, authenticator, issuer)
 		},
+		StatePublicCloudOrgUser: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			return nil, stateManager.HandlePublicCloudOrgUser(ctx, setup, state.Parameters, authenticator, issuer)
+		},
 		StateExpiredBearer: func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
 			return nil, stateManager.HandleExpiredBearer(ctx, setup, state.Parameters, authenticator, issuer)
 		},
@@ -311,11 +318,12 @@ func buildHandlerOptions(serverURL string) *handler.Options {
 	return options
 }
 
-// envirExampleBearer is the bearer Envir's pact sends on userinfo and the ACL; it is never a token.
+// envirExampleBearer is the bearer Envir's and ai-gateway's pacts send on userinfo, the ACL and the
+// organization list; it is never a token.
 const envirExampleBearer = "Bearer user-access-token" //nolint:gosec // the pact's placeholder, not a credential
 
 // envirRequestFilter does what sits in front of uni-identity in production for Envir's requests:
-// it presents the token the provider state issued on userinfo and the ACL, and on a
+// it presents the token the provider state issued on userinfo, the ACL and the organization list, and on a
 // client_credentials grant it adds the client certificate headers the ingress forwards after
 // verifying Envir's mTLS certificate. The token endpoint looks up no registered client: production
 // trusts the ingress's verification and takes the subject from the certificate's common name.
@@ -324,7 +332,7 @@ func envirRequestFilter(next http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case endpoints.GetUserinfo(), endpoints.GetGlobalACL():
+		case endpoints.GetUserinfo(), endpoints.GetGlobalACL(), endpoints.ListOrganizations():
 			bearer := envirBearer.get()
 			if bearer == "" && r.Header.Get("Authorization") == envirExampleBearer {
 				// No Envir state issued a token, so the state didn't run; fail rather than let the
@@ -373,7 +381,8 @@ func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Opt
 		TestNamespace,
 		jwtIssuer,
 		authenticator,
-		nil, // UserDatabase not used in contract tests
+		// ai-gateway's organization list finds the caller's user here.
+		userdb.NewUserDatabase(k8sClient, TestNamespace),
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
 		handlerOptions,
 	)
