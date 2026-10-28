@@ -34,16 +34,21 @@ import (
 	"github.com/unikorn-cloud/identity/test/api"
 )
 
-// EnvirACLMiddleware serves /api/v1/acl for Envir's states with production authentication and RBAC,
-// in place of the mock ACL: the bearer the state issued is validated and the caller's ACL computed
-// from the groups, roles and projects it seeded. Other consumers' states set no Envir bearer, so
+// EnvirACLMiddleware serves /api/v1/acl for Envir's states, and /api/v1/organizations for ai-gateway's,
+// with production authentication and RBAC in place of the mock ACL: the bearer the state issued is
+// validated and the caller's ACL computed from the groups, roles and projects it seeded. Other consumers' states set no Envir bearer, so
 // their requests keep the mock ACL.
 func EnvirACLMiddleware(authorizer *local.Authorizer) func(http.Handler) http.Handler {
 	scheme := &openapi3.SecurityScheme{Type: "oauth2"}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != api.NewEndpoints().GetGlobalACL() || envirBearer.get() == "" {
+			endpoints := api.NewEndpoints()
+			// ai-gateway's organization list resolves the caller's user from the authenticated token,
+			// so it runs through production authentication like the ACL.
+			authenticated := r.URL.Path == endpoints.GetGlobalACL() || r.URL.Path == endpoints.ListOrganizations()
+
+			if !authenticated || envirBearer.get() == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
