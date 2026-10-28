@@ -1231,14 +1231,24 @@ func TestAllowProjectScopeCreate(t *testing.T) {
 					t.Skip("typed identifiers cannot carry a malformed one")
 				}
 
-				// Every success path records exactly once, and a refusal never.
+				// Every path records at most once, and only a success is
+				// recorded as allowed.  A refusal is kept only when the
+				// gate stated the request's own target.
+				decisions := recorder.Decisions()
+				require.LessOrEqual(t, len(decisions), 1)
+
 				if test.ErrorChecker != nil {
 					require.Error(t, err)
 					require.True(t, test.ErrorChecker(err))
-					require.Empty(t, recorder.Decisions())
+
+					for _, decision := range decisions {
+						require.False(t, decision.Allowed)
+						require.Equal(t, authz.Primary, decision.Kind)
+					}
 				} else {
 					require.NoError(t, err)
-					require.Len(t, recorder.Decisions(), 1)
+					require.Len(t, decisions, 1)
+					require.True(t, decisions[0].Allowed)
 				}
 			})
 		}

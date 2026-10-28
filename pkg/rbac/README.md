@@ -90,8 +90,10 @@ Two rules keep that record honest:
 - **Predicates record nothing**, for the reasons above. A list of forty visible resources must not
   leave forty decisions behind.
 
-Only allowed decisions are recorded today. Recording refusals has to wait until every service
-distinguishes a gate from a predicate, because a predicate refusing is routine filtering.
+Every gate records its outcome, refusals included, and the recorder keeps a refusal only for the
+request's own decision. A gate used as a list filter is a precondition, so its refusals are dropped
+and ordinary listing never looks like an attack. Filters should still use the predicates, which
+record nothing at all. See [`pkg/authz`](../authz/README.md).
 
 ### Stating the target explicitly
 

@@ -162,16 +162,46 @@ The decision supplies the scope, the resource type, the resource identifier and 
 exception remains: a create is authorised before the resource exists, so its identifier is still
 read from the response body.
 
-A request may make several decisions. Only those the handler marked as describing the request
-itself become records; the checks it had to pass first, such as proving the caller may grant each
-role they are adding to a group, are not separate events. A request acting on several resources
-produces one record each.
+Every authenticated mutation produces exactly one record, whatever the outcome, and the status
+says whether it happened. The record is built from the request decision, the one decision that
+describes the request (see [`pkg/authz`](../../authz/README.md)); the checks it had to pass first,
+such as proving the caller may grant each role they are adding to a group, are not separate events,
+and appear as grants only when the request succeeded.
 
-A mutation that authorised something but never said what it was doing cannot be described. That is
-reported as an `audit gap`, because silence is the failure this exists to prevent. The gap names the
-endpoints that were checked and deliberately claims no operation: the HTTP method is the obvious
-thing to reach for and it would be a lie, since a POST to an action sub-resource reads as a
-creation, so a failed rotation would be reported as a create.
+| Outcome | Verb, resource | Scope | Status |
+|---|---|---|---|
+| allowed | from the decision | from the check | 2xx |
+| allowed, failed later | from the decision | from the check | the error |
+| refused by its own check | from the decision | from the check | 403 |
+| failed before its check (not found, dependency refused) | from the declaration | absent | the error |
+| rejected before any handler (validation, ACL lookup) | absent | absent | the error |
+
+A request nothing described still gets a record, with the caller, the outcome and what the server
+matched it to, and no operation: the HTTP method is the obvious thing to reach for and it would be
+a lie, since a POST to an action sub-resource reads as a creation, so a failed rotation would be
+reported as a create. Unknown parts are absent rather than empty, so unknown never reads as blank.
+
+Every record carries `request`: the method, the route template the server matched from its own
+schema, and the trace ID that joins the record to the error the caller was given and to the
+server's logs. The route is never the path the caller sent; that is the caller's text, can be any
+length, and can carry another tenant's identifiers.
+
+A request that succeeded without its own check ever running is a handler that failed to describe
+itself, and is reported as an `audit defect`, as is a check naming something other than what the
+handler declared.
+
+### Running outermost
+
+The validator authenticates before it validates parameters and body, and stores the caller in a
+holder this middleware puts in the context, so audit learns who made a request even when it runs
+outside the validator and the validator rejects it. Run inside the validator, audit never sees
+those rejections. The holder is optional: audit falls back to the caller in the request context, so
+a service changes nothing until it moves audit outermost. An unauthenticated request has nobody to
+hold to account and is not recorded.
+
+A service moves audit outermost by listing it after the validator in its generated router's
+middleware list, which wraps in list order. Identity itself has not moved yet, so in identity a
+request the validator rejects is still not recorded.
 
 ## Invariants
 
@@ -214,16 +244,21 @@ creation, so a failed rotation would be reported as a create.
   create, which is the one fact a decision cannot carry because the resource does not exist when it
   is authorised. An earlier version read the route instead, which recorded nothing for a path not
   ending in an identifier and named a sub-resource rather than the thing being changed.
-- An authenticated mutation that cannot be described MUST be reported, whether or not anything was
-  checked. Gates record only on success, so a refused mutation leaves no decision at all, and
-  requiring one would discard every denial — the event an auditor most wants, dropped by the
-  feature built to stop exactly that.
+- An authenticated mutation MUST produce exactly one record, whether or not anything was checked or
+  allowed. A denial is the event an auditor most wants, and a retried check is still one request.
+- Reads get no recorder, so a list filtering out what the caller may not see costs nothing.
 - The log record shape is intended to be stable enough for downstream audit processing.
 
 ## Caveats
 
-- Global or unscoped calls may be intentionally skipped when the package cannot derive meaningful
-  accountability context.
+- Unauthenticated calls are skipped: there is no caller to hold to account.
+- A refused create records the scope the caller named, which nothing confirmed. Organisation-scoped
+  tokens will make a cross-organisation request fail authentication instead.
+- A path parameter that fails to parse is rejected by the generated router before any middleware
+  runs, and is not recorded.
+- A service still using the older gates for its own operations, which record only preconditions,
+  gets records with no verb or scope, and an `audit defect` on every success, until it migrates to
+  the explicit form.
 - The package depends on route shape and response structure matching the expected API patterns.
 - If upstream middleware fails to populate authorization or route context correctly, audit quality
   degrades silently.

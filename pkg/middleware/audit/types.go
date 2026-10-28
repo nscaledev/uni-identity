@@ -100,12 +100,15 @@ type Record struct {
 	Timestamp time.Time  `json:"timestamp"`
 	Component *Component `json:"component"`
 	Actor     *Actor     `json:"actor"`
-	Operation *Operation `json:"operation"`
+	// Operation, Scope and Resource are absent rather than empty when nothing
+	// stated them, as for a request rejected before any handler ran, so that
+	// unknown never reads as blank.
+	Operation *Operation `json:"operation,omitempty"`
 	// Scope is the organisation and project the operation affected, taken from
 	// the authorization decision.  It was a map of whatever the URL happened to
 	// carry, which v2 APIs do not carry at all.
-	Scope    *Scope    `json:"scope"`
-	Resource *Resource `json:"resource"`
+	Scope    *Scope    `json:"scope,omitempty"`
+	Resource *Resource `json:"resource,omitempty"`
 	Result   *Result   `json:"result"`
 	// Client is nil when the request carried no User-Agent, so an absent
 	// client is not reported as an empty one.
@@ -114,4 +117,17 @@ type Record struct {
 	Source *Source `json:"source,omitempty"`
 	// Grants are the permissions relied on to allow the operation.
 	Grants []Grant `json:"grants,omitempty"`
+	// Request is what the server matched the request to.
+	Request *Request `json:"request,omitempty"`
+}
+
+// Request is what the server matched the request to.  The route is the
+// template from the server's own schema, never the path the caller sent: that
+// is text the caller chose, can be any length, and can carry another tenant's
+// identifiers.  The trace ID joins the record to the error the caller was
+// given and to the server's logs.
+type Request struct {
+	Method  string `json:"method"`
+	Route   string `json:"route,omitempty"`
+	TraceID string `json:"traceId,omitempty"`
 }

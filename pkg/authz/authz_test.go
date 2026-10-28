@@ -129,6 +129,7 @@ func TestDecisionCanRepresentARefusal(t *testing.T) {
 	recorder := &authz.Recorder{}
 
 	decision := testDecision("identity:groups")
+	decision.Kind = authz.Primary
 	decision.Allowed = false
 	recorder.Record(decision)
 

@@ -59,22 +59,19 @@ func operationAllowedByEndpoints(endpoints openapi.AclEndpoints, endpoint string
 // record notes an allowed decision so that later middleware can describe the
 // request without recovering scope from its URL, which v2 APIs do not carry.
 //
-// Only allowed decisions are recorded.  Other services still use the gates as
-// predicates, and a predicate refusing is a resource being filtered out of a
-// list rather than a refused request; recording those would bury the real
-// refusals.  See the README's gates and predicates section.
+// Refusals are recorded too, and the recorder keeps only the request's own:
+// a gate used as a list filter is a precondition, so its refusals are dropped.
+// See the README's gates and predicates section.
 //
 // It wraps the result so that a gate records exactly where it returns, and
 // only the public gates call it: the internal cascade uses the check functions
 // so that one question does not leave three decisions behind.
 func record(ctx context.Context, target authz.Target, scope authz.Scope, err error) error {
-	if err == nil {
-		authz.Record(ctx, authz.Decision{
-			Target:  target,
-			Scope:   scope,
-			Allowed: true,
-		})
-	}
+	authz.Record(ctx, authz.Decision{
+		Target:  target,
+		Scope:   scope,
+		Allowed: err == nil,
+	})
 
 	return err
 }

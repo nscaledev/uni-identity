@@ -445,6 +445,11 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 
 		authInfo.info = info
 
+		// Authentication runs before parameters and body are validated, so an
+		// outer audit middleware learns who made a request that then fails
+		// validation.
+		authorization.Hold(ctx, info)
+
 		// Add the principal to the context, the ACL call will use the internal
 		// identity client, and that requires a principal to be present.
 		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo)
