@@ -19,7 +19,8 @@ Identity has a limited **producer** surface, so the starting point matters:
   `unikorn_identity_bearer_tokens_unroutable{surface,reason}`
   (`pkg/oauth2/oauth2.go:174`, incremented in `pkg/oauth2/passport.go:262,272,279`)
   and `unikorn_identity_auth0_jwks_refreshes_throttled`
-  (`pkg/oauth2/auth0/throttled_transport.go:72`).
+  (`pkg/oauth2/auth0/throttled_transport.go:72`), plus the organization Lease
+  instruments in `pkg/handler/common/lease.go` listed in the producer inventory.
 - **HTTP RED middleware records the API surface.** The server middleware chain
   emits request count, duration, and in-flight metrics after OpenAPI route
   resolution. Labels use the templated route, method, and status class, never
@@ -74,6 +75,26 @@ All export is OTLP/HTTP push, gated on `--otlp-endpoint`, plain-HTTP
   `pkg/oauth2/oauth2.go:174`, set in `pkg/oauth2/passport.go:262,272,279`.
 - `unikorn_identity_auth0_jwks_refreshes_throttled` — `Int64Counter`, unit
   `{fetch}`, no labels. `pkg/oauth2/auth0/throttled_transport.go:72,96`.
+- Organization Lease instruments (`pkg/handler/common/lease.go`), which serialize
+  allocation and quota writes per organization across replicas. Each has one
+  bounded `result` label and no per-organization label.
+  - `unikorn_identity_organization_lease_acquisitions{result}` — `Int64Counter`,
+    unit `{acquisition}`; `result` ∈ {`created`, `taken_over`, `timed_out`,
+    `error`}. `taken_over` means the previous holder crashed or overran its Lease;
+    `timed_out` is a contender that gave up (an HTTP 409) and is the wedge as
+    callers see it.
+  - `unikorn_identity_organization_lease_wait_seconds` — `Float64Histogram`, unit
+    `s`, no labels: time waited by acquisitions that succeeded.
+  - `unikorn_identity_organization_lease_sections{result}` — `Int64Counter`, unit
+    `{section}`; `result` ∈ {`ok`, `overdue`, `failed`}. `overdue` means the holder
+    ran past its write deadline and abandoned the write.
+  - `unikorn_identity_organization_lease_releases{result}` — `Int64Counter`, unit
+    `{release}`; `result` ∈ {`released`, `lost`, `failed`}. `lost` means another
+    replica had already taken the Lease over; `failed` means the Lease was left to
+    expire, wedging the organization for up to one Lease duration.
+  A sustained `taken_over`, `lost`, `overdue` or release `failed` rate points at
+  holders that cannot finish within the Lease; a rising `timed_out` rate with none
+  of those points at contention.
 
 **controller-runtime built-ins (the three controllers only, via OTLP bridge)** —
 the default controller registry remains active and is bridged to OTLP.

@@ -20,11 +20,16 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -55,11 +60,82 @@ var (
 	ErrLeaseMargin   = goerrors.New("organization lease duration and margin leave no critical section")
 )
 
+// Lease metric names, with the outcomes recorded in their result label.
+const (
+	leaseAcquisitionsName = "unikorn_identity_organization_lease_acquisitions"
+	leaseWaitName         = "unikorn_identity_organization_lease_wait_seconds"
+	leaseSectionsName     = "unikorn_identity_organization_lease_sections"
+	leaseReleasesName     = "unikorn_identity_organization_lease_releases"
+
+	leaseResultCreated   = "created"
+	leaseResultTakenOver = "taken_over"
+	leaseResultTimedOut  = "timed_out"
+	leaseResultError     = "error"
+	leaseResultOK        = "ok"
+	leaseResultOverdue   = "overdue"
+	leaseResultFailed    = "failed"
+	leaseResultReleased  = "released"
+	leaseResultLost      = "lost"
+)
+
+// leaseMetrics surfaces the Lease failures that wedge an organization: holders
+// that crash or overrun, contenders that give up, and Leases left behind.
+type leaseMetrics struct {
+	acquisitions metric.Int64Counter
+	wait         metric.Float64Histogram
+	sections     metric.Int64Counter
+	releases     metric.Int64Counter
+}
+
+func newLeaseMetrics(meter metric.Meter) *leaseMetrics {
+	// The errors only report an invalid instrument configuration; the names,
+	// descriptions and units are static, and the API returns usable no-op
+	// instruments regardless, so there is nothing actionable to handle.
+	acquisitions, _ := meter.Int64Counter(leaseAcquisitionsName,
+		metric.WithDescription("Organization Lease acquisitions by outcome. A takeover means the previous holder crashed or overran its Lease."),
+		metric.WithUnit("{acquisition}"))
+	wait, _ := meter.Float64Histogram(leaseWaitName,
+		metric.WithDescription("Time spent waiting to acquire an organization Lease, for acquisitions that succeeded."),
+		metric.WithUnit("s"))
+	sections, _ := meter.Int64Counter(leaseSectionsName,
+		metric.WithDescription("Critical sections run under an organization Lease by outcome. Overdue means the holder ran past its write deadline and abandoned its write."),
+		metric.WithUnit("{section}"))
+	releases, _ := meter.Int64Counter(leaseReleasesName,
+		metric.WithDescription("Organization Lease releases by outcome. Lost means another replica had already taken the Lease over; failed means the Lease was left to expire."),
+		metric.WithUnit("{release}"))
+
+	return &leaseMetrics{acquisitions: acquisitions, wait: wait, sections: sections, releases: releases}
+}
+
+func leaseResult(result string) metric.MeasurementOption {
+	return metric.WithAttributes(attribute.String("result", result))
+}
+
+func (m *leaseMetrics) acquired(ctx context.Context, result string, waited time.Duration) {
+	m.acquisitions.Add(ctx, 1, leaseResult(result))
+	m.wait.Record(ctx, waited.Seconds())
+}
+
+//nolint:gochecknoglobals // The default instruments are created once on the application meter.
+var (
+	defaultLeaseMetricsOnce sync.Once
+	defaultLeaseMetrics     *leaseMetrics
+)
+
+func leaseMetricsDefault() *leaseMetrics {
+	defaultLeaseMetricsOnce.Do(func() {
+		defaultLeaseMetrics = newLeaseMetrics(otel.Meter(constants.Application))
+	})
+
+	return defaultLeaseMetrics
+}
+
 type leaseOptions struct {
 	duration time.Duration
 	margin   time.Duration
 	retry    time.Duration
 	now      func() time.Time
+	metrics  *leaseMetrics
 }
 
 type LeaseOption func(*leaseOptions)
@@ -88,11 +164,18 @@ func withLeaseClock(now func() time.Time) LeaseOption {
 	}
 }
 
+func withLeaseMeter(meter metric.Meter) LeaseOption {
+	return func(options *leaseOptions) {
+		options.metrics = newLeaseMetrics(meter)
+	}
+}
+
 // OrganizationLease serializes quota and allocation decisions for one organization.
 type OrganizationLease struct {
-	client client.Client
-	lease  *coordinationv1.Lease
-	cancel context.CancelFunc
+	client  client.Client
+	lease   *coordinationv1.Lease
+	cancel  context.CancelFunc
+	metrics *leaseMetrics
 }
 
 func organizationLeaseName(organizationID ids.OrganizationID) string {
@@ -111,6 +194,10 @@ func organizationLeaseOptions(options []LeaseOption) (*leaseOptions, error) {
 
 	for _, option := range options {
 		option(result)
+	}
+
+	if result.metrics == nil {
+		result.metrics = leaseMetricsDefault()
 	}
 
 	// The Lease stores whole seconds, so contenders must wait the stored duration.
@@ -144,10 +231,14 @@ func isContextError(err error) bool {
 // acquireError reports an API call cut off by the request deadline as the same
 // retryable conflict as waiting too long. Any other failure keeps its cause, even
 // if the deadline has also passed.
-func acquireError(action string, err error) error {
+func acquireError(ctx context.Context, config *leaseOptions, action string, err error) error {
 	if isContextError(err) {
+		config.metrics.acquisitions.Add(ctx, 1, leaseResult(leaseResultTimedOut))
+
 		return leaseConflict(fmt.Errorf("organization is busy: %w", err))
 	}
+
+	config.metrics.acquisitions.Add(ctx, 1, leaseResult(leaseResultError))
 
 	return fmt.Errorf("%s organization lease: %w", action, err)
 }
@@ -166,17 +257,23 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 	identity := uuid.NewString()
 
 	var observedResourceVersion string
-	var observedAt time.Time
+	var observedAt, start time.Time
 
 	for {
 		now := config.now()
+		if start.IsZero() {
+			start = now
+		}
+
 		lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
 		config.hold(lease, identity, now)
 
 		if err := cli.Create(ctx, lease); err == nil {
+			config.metrics.acquired(ctx, leaseResultCreated, now.Sub(start))
+
 			return newOrganizationLease(ctx, cli, lease, now, config)
 		} else if !kerrors.IsAlreadyExists(err) {
-			return nil, nil, acquireError("create", err)
+			return nil, nil, acquireError(ctx, config, "create", err)
 		}
 
 		if err := cli.Get(ctx, client.ObjectKeyFromObject(lease), lease); err != nil {
@@ -184,7 +281,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 				continue
 			}
 
-			return nil, nil, acquireError("get", err)
+			return nil, nil, acquireError(ctx, config, "get", err)
 		}
 
 		// Time the observation after Get returns, so a slow Create or Get cannot
@@ -198,9 +295,11 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			config.hold(lease, identity, observed)
 
 			if err := cli.Update(ctx, lease); err == nil {
+				config.metrics.acquired(ctx, leaseResultTakenOver, observed.Sub(start))
+
 				return newOrganizationLease(ctx, cli, lease, observed, config)
 			} else if !kerrors.IsConflict(err) {
-				return nil, nil, acquireError("take over", err)
+				return nil, nil, acquireError(ctx, config, "take over", err)
 			}
 		}
 
@@ -211,6 +310,8 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 				<-timer.C
 			}
 
+			config.metrics.acquisitions.Add(ctx, 1, leaseResult(leaseResultTimedOut))
+
 			return nil, nil, leaseConflict(fmt.Errorf("organization is busy: %w", ctx.Err()))
 		case <-timer.C:
 		}
@@ -220,7 +321,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 func newOrganizationLease(ctx context.Context, cli client.Client, lease *coordinationv1.Lease, acquiredAt time.Time, config *leaseOptions) (*OrganizationLease, context.Context, error) {
 	lockedContext, cancel := context.WithDeadline(ctx, acquiredAt.Add(config.duration-config.margin))
 
-	return &OrganizationLease{client: cli, lease: lease.DeepCopy(), cancel: cancel}, lockedContext, nil
+	return &OrganizationLease{client: cli, lease: lease.DeepCopy(), cancel: cancel, metrics: config.metrics}, lockedContext, nil
 }
 
 // Check rejects a write once the holder's critical-section deadline has passed.
@@ -236,10 +337,14 @@ func (l *OrganizationLease) Check(ctx context.Context) error {
 // critical-section deadline is the same retryable conflict as waiting too long for
 // the Lease, whatever status the caller wrapped it in. Any other failure, such as a
 // rejected request, is reported as it is.
-func (l *OrganizationLease) Error(err error) error {
+func (l *OrganizationLease) Error(ctx context.Context, err error) error {
 	if isContextError(err) {
+		l.metrics.sections.Add(ctx, 1, leaseResult(leaseResultOverdue))
+
 		return leaseConflict(fmt.Errorf("%w: %w", ErrLeaseDeadline, err))
 	}
+
+	l.metrics.sections.Add(ctx, 1, leaseResult(leaseResultFailed))
 
 	return err
 }
@@ -252,12 +357,18 @@ func (l *OrganizationLease) Release(ctx context.Context) error {
 
 	err := l.client.Delete(ctx, l.lease, client.Preconditions{ResourceVersion: &resourceVersion})
 	if kerrors.IsNotFound(err) || kerrors.IsConflict(err) {
+		l.metrics.releases.Add(ctx, 1, leaseResult(leaseResultLost))
+
 		return nil
 	}
 
 	if err != nil {
+		l.metrics.releases.Add(ctx, 1, leaseResult(leaseResultFailed))
+
 		return fmt.Errorf("release organization lease: %w", err)
 	}
+
+	l.metrics.releases.Add(ctx, 1, leaseResult(leaseResultReleased))
 
 	return nil
 }
@@ -285,8 +396,10 @@ func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namesp
 
 	result, err := fn(lockedContext, lease)
 	if err != nil {
-		return zero, lease.Error(err)
+		return zero, lease.Error(ctx, err)
 	}
+
+	lease.metrics.sections.Add(ctx, 1, leaseResult(leaseResultOK))
 
 	return result, nil
 }

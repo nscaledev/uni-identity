@@ -40,6 +40,10 @@ Different organizations use different Leases and do not wait for each other. The
 bounded context immediately before writing, although an API-server write sent before that deadline
 can still be committed after the Lease expires.
 
+Each acquisition, critical section and release is counted by outcome on the application meter, so
+takeovers, abandoned writes, contenders that give up and Leases left behind are visible without
+logs. The instruments are listed in [`docs/observability.md`](../../../docs/observability.md).
+
 This is a clear example of the handler layer implementing application-level accounting discipline
 on top of Kubernetes storage.
 

@@ -186,6 +186,8 @@ does a holder whose read or write is cut off by its bounded context; any other f
 own status. The server's request deadline makes that 409 arrive before the write timeout.
 The service deletes a held Lease after either path completes; after a crash, a contender waits one
 full unchanged Lease duration before takeover. The read/check/write path uses the direct client.
+Lease acquisitions, critical sections and releases are counted by outcome; see
+[`docs/observability.md`](../../docs/observability.md).
 
 ## Shared Caveat: Atomicity
 

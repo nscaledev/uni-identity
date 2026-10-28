@@ -24,6 +24,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	servererrors "github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -303,12 +307,12 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 func TestOrganizationLeaseError(t *testing.T) {
 	t.Parallel()
 
-	lease := &OrganizationLease{}
+	lease := &OrganizationLease{metrics: newLeaseMetrics(noop.NewMeterProvider().Meter("test"))}
 
-	require.Equal(t, errRead, lease.Error(errRead), "a failure unrelated to the deadline is reported as it is")
+	require.Equal(t, errRead, lease.Error(t.Context(), errRead), "a failure unrelated to the deadline is reported as it is")
 
 	// A handler wraps the read it was cut off in as a 400; the cut-off still wins.
-	err := lease.Error(servererrors.OAuth2InvalidRequest("unable to read quota").WithError(fmt.Errorf("list quotas: %w", context.DeadlineExceeded)))
+	err := lease.Error(t.Context(), servererrors.OAuth2InvalidRequest("unable to read quota").WithError(fmt.Errorf("list quotas: %w", context.DeadlineExceeded)))
 	require.True(t, servererrors.IsConflict(err))
 	require.False(t, servererrors.IsBadRequest(err))
 	require.ErrorIs(t, err, context.DeadlineExceeded)
@@ -373,5 +377,176 @@ func TestWithOrganizationLease(t *testing.T) {
 			return struct{}{}, forbidden
 		})
 		require.Same(t, forbidden, err)
+	})
+}
+
+// leaseCounter returns the value of the named counter for one result label.
+func leaseCounter(t *testing.T, reader *sdkmetric.ManualReader, name, result string) int64 {
+	t.Helper()
+
+	var collected metricdata.ResourceMetrics
+
+	require.NoError(t, reader.Collect(t.Context(), &collected))
+
+	for _, scope := range collected.ScopeMetrics {
+		for _, found := range scope.Metrics {
+			if found.Name != name {
+				continue
+			}
+
+			sum, ok := found.Data.(metricdata.Sum[int64])
+			require.True(t, ok)
+
+			for _, point := range sum.DataPoints {
+				if value, ok := point.Attributes.Value(attribute.Key("result")); ok && value.AsString() == result {
+					return point.Value
+				}
+			}
+		}
+	}
+
+	return 0
+}
+
+func leaseWaitCount(t *testing.T, reader *sdkmetric.ManualReader) uint64 {
+	t.Helper()
+
+	var collected metricdata.ResourceMetrics
+
+	require.NoError(t, reader.Collect(t.Context(), &collected))
+
+	for _, scope := range collected.ScopeMetrics {
+		for _, found := range scope.Metrics {
+			if found.Name != leaseWaitName {
+				continue
+			}
+
+			histogram, ok := found.Data.(metricdata.Histogram[float64])
+			require.True(t, ok)
+			require.Len(t, histogram.DataPoints, 1)
+
+			return histogram.DataPoints[0].Count
+		}
+	}
+
+	return 0
+}
+
+// TestOrganizationLeaseMetrics checks that each way a Lease can wedge an
+// organization, or recover from one, is counted under its own result.
+func TestOrganizationLeaseMetrics(t *testing.T) {
+	t.Parallel()
+
+	organizationA := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+	now := time.Now().UTC()
+	held := func() *coordinationv1.Lease {
+		return &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}}
+	}
+	meter := func(t *testing.T) (*sdkmetric.ManualReader, LeaseOption) {
+		t.Helper()
+
+		reader := sdkmetric.NewManualReader()
+
+		return reader, withLeaseMeter(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"))
+	}
+
+	t.Run("counts a created lease, its section and its release", func(t *testing.T) {
+		t.Parallel()
+
+		reader, option := meter(t)
+
+		_, err := WithOrganizationLease(t.Context(), leaseTestClient(t), leaseTestNamespace, organizationA, func(context.Context, *OrganizationLease) (struct{}, error) {
+			return struct{}{}, nil
+		}, option)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseAcquisitionsName, leaseResultCreated))
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseSectionsName, leaseResultOK))
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultReleased))
+		require.Equal(t, uint64(1), leaseWaitCount(t, reader))
+	})
+
+	t.Run("counts a takeover of a stale lease", func(t *testing.T) {
+		t.Parallel()
+
+		reader, option := meter(t)
+		calls := 0
+		clock := func() time.Time {
+			calls++
+			if calls < 3 {
+				return now
+			}
+
+			return now.Add(time.Second)
+		}
+
+		lease, _, err := AcquireOrganizationLease(t.Context(), leaseTestClient(t, held()), leaseTestNamespace, organizationA,
+			withLeaseDuration(time.Second), withLeaseMargin(100*time.Millisecond), withLeaseRetry(time.Millisecond), withLeaseClock(clock), option)
+		require.NoError(t, err)
+		require.NoError(t, lease.Release(context.WithoutCancel(t.Context())))
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseAcquisitionsName, leaseResultTakenOver))
+		require.Equal(t, int64(0), leaseCounter(t, reader, leaseAcquisitionsName, leaseResultCreated))
+	})
+
+	t.Run("counts a contender that gives up", func(t *testing.T) {
+		t.Parallel()
+
+		reader, option := meter(t)
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+		t.Cleanup(cancel)
+
+		_, _, err := AcquireOrganizationLease(ctx, leaseTestClient(t, held()), leaseTestNamespace, organizationA, withLeaseRetry(time.Millisecond), option)
+		require.True(t, servererrors.IsConflict(err))
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseAcquisitionsName, leaseResultTimedOut))
+		require.Equal(t, uint64(0), leaseWaitCount(t, reader))
+	})
+
+	t.Run("counts an overdue section", func(t *testing.T) {
+		t.Parallel()
+
+		reader, option := meter(t)
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		t.Cleanup(cancel)
+
+		_, err := WithOrganizationLease(ctx, leaseTestClient(t), leaseTestNamespace, organizationA, func(ctx context.Context, _ *OrganizationLease) (struct{}, error) {
+			<-ctx.Done()
+
+			return struct{}{}, ctx.Err()
+		}, option)
+		require.True(t, servererrors.IsConflict(err))
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseSectionsName, leaseResultOverdue))
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultReleased))
+	})
+
+	t.Run("counts a release that found the lease taken over", func(t *testing.T) {
+		t.Parallel()
+
+		reader, option := meter(t)
+		fakeClient := leaseTestClient(t)
+
+		lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA, option)
+		require.NoError(t, err)
+
+		current := held()
+		require.NoError(t, fakeClient.Get(t.Context(), client.ObjectKeyFromObject(current), current))
+		current.Spec.HolderIdentity = ptr.To("other")
+		require.NoError(t, fakeClient.Update(t.Context(), current))
+		require.NoError(t, lease.Release(context.WithoutCancel(t.Context())))
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultLost))
+	})
+
+	t.Run("counts a release that left the lease behind", func(t *testing.T) {
+		t.Parallel()
+
+		reader, option := meter(t)
+		fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				return errRead
+			},
+		}).Build()
+
+		lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA, option)
+		require.NoError(t, err)
+		require.ErrorIs(t, lease.Release(context.WithoutCancel(t.Context())), errRead)
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultFailed))
 	})
 }
