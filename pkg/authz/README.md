@@ -29,8 +29,26 @@ the request context.
 One request commonly produces several. Updating a group checks that the caller may update groups,
 and then, for each role being added, that the caller may grant that role. Those are not separate
 events — the second kind are preconditions of the first, and are the evidence for why it was
-permitted. The recorder keeps them in the order they were made and leaves interpretation to the
-consumer.
+permitted.
+
+So a request has exactly one decision describing it, the request decision, and any number of
+allowed preconditions. One record per request, whatever the outcome, is what an auditor needs;
+`Request()` returns that decision and how much is known about it:
+
+- **Declared**: the handler stated the request with `Declare` before anything could fail, and its
+  own check never ran, as when the object was not found or a dependency was refused. The record
+  still says what was attempted, with no scope, because none was checked.
+- **Checked**: the request's own check ran, allowed or refused.
+
+The first statement of what the request is, a declaration or its own check, names the target.
+Later checks of it, such as the same check run again on a conflict retry, add only the scope and
+the outcome, and fill fields the declaration left empty: a create's check names no object, and must
+not erase one that was declared. A later check naming a different endpoint or action does not
+relabel the request; it is reported through `Defects()`, because the handler declared one thing and
+checked another.
+
+A handler that fetches before it can check, because the scope lives on the object, declares first.
+One that checks first needs no declaration.
 
 ## Target
 
@@ -48,8 +66,8 @@ rather than reusing whichever check happened to be nearest.
 `Kind` separates the operation a request is from the checks it had to pass first. `Subordinate` is
 the zero value deliberately: a decision whose kind was never stated must not be mistaken for the
 request's own operation, because that would silently relabel a precondition as the event. A
-mutating request that records no primary decision is a defect, and reporting that loudly is better
-than emitting a wrong record quietly.
+request that succeeds without its own check ever running is a defect, and reporting that loudly is
+better than emitting a wrong record quietly.
 
 ## Invariants
 
@@ -62,16 +80,16 @@ than emitting a wrong record quietly.
   tests and internal paths that never see the audit middleware, and a recording concern must never
   make those fail.
 - `Decisions` returns a copy. A consumer describing the record must not be able to alter it.
-- The recorder is append-only for the life of a request and safe to use concurrently, because
-  per-item checks during a list may run in parallel.
+- The recorder keeps decisions in the order they were first made and is safe to use
+  concurrently, because a handler may make checks from several goroutines.
+- Only the request decision keeps a refusal. A refused precondition is never read, and keeping it
+  would turn routine list filtering into noise, so a gate used as a list filter costs nothing.
 
 ## Caveats
 
-- Only allowed decisions are recorded today. Refusals are representable, so the type will not have
-  to change, but recording them has to wait until every service distinguishes a gate from a
-  predicate. A predicate refusing is a resource filtered out of a list, which is routine; reporting
-  it as a refusal would bury real refusals and make ordinary listing look like an attack. See the
-  gates and predicates section of [`pkg/rbac`](../rbac/README.md).
+- A request is assumed to have one subject. Nothing in identity, compute or region acts on several
+  resources in one request today; one that does would need the recorder to hold more than one
+  request decision.
 - A decision made through one of the gates that predate the explicit form names no object and no
   action, and counts as a precondition rather than the request's own operation. Migrating the call
   site is what fills those in.

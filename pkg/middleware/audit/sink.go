@@ -53,13 +53,26 @@ func (r *Record) logValues() []any {
 		"timestamp", r.Timestamp,
 		"component", r.Component,
 		"actor", r.Actor,
-		"operation", r.Operation,
-		"scope", r.Scope,
-		"resource", r.Resource,
 		"result", r.Result,
 	}
 
 	// Omitted rather than logged as empty, matching the wire format.
+	if r.Operation != nil {
+		values = append(values, "operation", r.Operation)
+	}
+
+	if r.Scope != nil {
+		values = append(values, "scope", r.Scope)
+	}
+
+	if r.Resource != nil {
+		values = append(values, "resource", r.Resource)
+	}
+
+	if r.Request != nil {
+		values = append(values, "request", r.Request)
+	}
+
 	if r.Client != nil {
 		values = append(values, "client", r.Client)
 	}

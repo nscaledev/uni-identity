@@ -26,10 +26,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getkin/kin-openapi/routers"
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
@@ -55,9 +58,11 @@ type recorder struct {
 	entries []entry
 }
 
-func (r *recorder) Init(logr.RuntimeInfo)          {}
-func (r *recorder) Enabled(int) bool               { return true }
-func (r *recorder) Error(error, string, ...any)    {}
+func (r *recorder) Init(logr.RuntimeInfo) {}
+func (r *recorder) Enabled(int) bool      { return true }
+func (r *recorder) Error(_ error, message string, keysAndValues ...any) {
+	r.Info(0, message, keysAndValues...)
+}
 func (r *recorder) WithValues(...any) logr.LogSink { return r }
 func (r *recorder) WithName(string) logr.LogSink   { return r }
 
@@ -117,6 +122,30 @@ func exercise(t *testing.T, method, path string, status int, body string, decisi
 	}))
 
 	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	return rec
+}
+
+// exerciseFunc is exercise with a handler that does whatever it is given, for
+// requests that declare rather than only record.
+func exerciseFunc(t *testing.T, method string, status int, handle func(context.Context)) *recorder {
+	t.Helper()
+
+	rec := &recorder{}
+
+	request := httptest.NewRequest(method, "https://identity.example.com/anything", strings.NewReader("{}"))
+
+	ctx := log.IntoContext(request.Context(), logr.New(rec))
+	ctx = authorization.NewContext(ctx, &authorization.Info{
+		Userinfo: &openapi.Userinfo{Sub: "someone@example.com"},
+	})
+
+	handler := audit.New("identity", "v1.2.3").Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handle(r.Context())
+		w.WriteHeader(status)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), request.WithContext(ctx))
 
 	return rec
 }
@@ -196,16 +225,93 @@ func TestCreateTakesItsIdentifierFromTheResponse(t *testing.T) {
 	require.Equal(t, &audit.Resource{Type: "groups", ID: testObjectID}, values["resource"])
 }
 
-// One record per thing acted on, so a request touching several resources does
-// not collapse into a single line that names one of them.
-func TestOneRecordPerPrimaryDecision(t *testing.T) {
+// One record per request.  A check made again, as on a conflict retry, is the
+// same request, and a check on something other than what the request is does
+// not relabel it but is reported as a defect.
+func TestOneRecordPerRequest(t *testing.T) {
 	t.Parallel()
 
 	rec := exercise(t, http.MethodDelete, "https://identity.example.com/anything", http.StatusNoContent, "",
 		primary("identity:groups", authz.Delete, uuid.MustParse(testObjectID)),
-		primary("identity:groups", authz.Delete, uuid.MustParse(testProjectID)))
+		primary("identity:groups", authz.Delete, uuid.MustParse(testObjectID)))
 
-	require.Len(t, rec.withMessage("audit"), 2)
+	require.Len(t, rec.withMessage("audit"), 1)
+	require.Empty(t, rec.withMessage("audit defect"))
+
+	rec = exercise(t, http.MethodDelete, "https://identity.example.com/anything", http.StatusNoContent, "",
+		primary("identity:groups", authz.Delete, uuid.MustParse(testObjectID)),
+		primary("identity:roles", authz.Delete, uuid.MustParse(testObjectID)))
+
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1)
+	resource, ok := audits[0].values["resource"].(*audit.Resource)
+	require.True(t, ok)
+	require.Equal(t, "groups", resource.Type)
+	require.Len(t, rec.withMessage("audit defect"), 1)
+}
+
+// A refusal of the request's own check is recorded in full, scope included,
+// and relies on no grants.
+func TestRefusalIsRecorded(t *testing.T) {
+	t.Parallel()
+
+	refused := primary("identity:groups", authz.Delete, uuid.MustParse(testObjectID))
+	refused.Allowed = false
+
+	precondition := authz.Decision{
+		Target:  authz.Target{Endpoint: "identity:roles", Operation: authz.Read},
+		Allowed: true,
+	}
+
+	rec := exercise(t, http.MethodDelete, "https://identity.example.com/anything", http.StatusForbidden, "",
+		precondition, refused)
+
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1)
+
+	values := audits[0].values
+	require.Equal(t, &audit.Operation{Verb: "delete"}, values["operation"])
+	require.Equal(t, &audit.Resource{Type: "groups", ID: testObjectID}, values["resource"])
+	require.Equal(t, &audit.Scope{OrganizationID: testOrganizationID, ProjectID: testProjectID}, values["scope"])
+	require.Equal(t, &audit.Result{Status: http.StatusForbidden}, values["result"])
+	require.Nil(t, values["grants"])
+}
+
+// A request that fails before its own check, such as on a missing object, is
+// still recorded from its declaration, with no scope because none was checked.
+func TestDeclaredRequestIsRecordedWhenItFailsFirst(t *testing.T) {
+	t.Parallel()
+
+	rec := exerciseFunc(t, http.MethodDelete, http.StatusNotFound, func(ctx context.Context) {
+		authz.Declare(ctx, authz.Target{
+			Endpoint:  "identity:groups",
+			Operation: authz.Delete,
+			ObjectID:  uuid.MustParse(testObjectID),
+		})
+	})
+
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1)
+
+	values := audits[0].values
+	require.Equal(t, &audit.Operation{Verb: "delete"}, values["operation"])
+	require.Equal(t, &audit.Resource{Type: "groups", ID: testObjectID}, values["resource"])
+	require.NotContains(t, values, "scope")
+	require.Equal(t, &audit.Result{Status: http.StatusNotFound}, values["result"])
+	require.Empty(t, rec.withMessage("audit defect"))
+}
+
+// A declaration that nothing checked, on a request that succeeded, means the
+// handler checked something other than what it declared.
+func TestUncheckedDeclarationThatSucceedsIsADefect(t *testing.T) {
+	t.Parallel()
+
+	rec := exerciseFunc(t, http.MethodDelete, http.StatusNoContent, func(ctx context.Context) {
+		authz.Declare(ctx, authz.Target{Endpoint: "identity:groups", Operation: authz.Delete})
+	})
+
+	require.Len(t, rec.withMessage("audit"), 1)
+	require.Len(t, rec.withMessage("audit defect"), 1)
 }
 
 // Checks a request had to pass are not the request.  Granting a role while
@@ -224,73 +330,46 @@ func TestPreconditionsDoNotProduceRecords(t *testing.T) {
 	require.Len(t, rec.withMessage("audit"), 1)
 }
 
-// A mutation that authorized something but never said what it was doing is a
-// defect.  Silence is what we are trying to stop, so it is reported.
-// A refused mutation records no decision at all, because gates record only on
-// success.  It still MUST leave a trace: a denied privilege escalation is the
-// event an auditor most wants, and dropping it is the silent gap this package
-// exists to close, pointed the wrong way.
-func TestRefusedMutationIsStillReported(t *testing.T) {
+// A request nothing described, such as one refused before its handler ran,
+// is still recorded with everything known, and nothing invented.  A denied
+// privilege escalation is the event an auditor most wants.
+func TestUndescribedRequestIsStillRecorded(t *testing.T) {
 	t.Parallel()
 
-	// No decisions, which is exactly what a refusal leaves behind.
 	rec := exercise(t, http.MethodDelete, "https://identity.example.com/anything", http.StatusForbidden, "")
 
-	require.Empty(t, rec.withMessage("audit"))
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1, "a refused mutation must not vanish")
 
-	gaps := rec.withMessage("audit gap")
-	require.Len(t, gaps, 1, "a refused mutation must not vanish")
-
-	result, ok := gaps[0].values["result"].(*audit.Result)
-	require.True(t, ok)
-	require.Equal(t, http.StatusForbidden, result.Status)
-
-	// Without the actor a refusal says somebody was denied, but not who, which
-	// is the only part an auditor can act on.
-	actor, ok := gaps[0].values["actor"].(*audit.Actor)
-	require.True(t, ok)
-	require.Equal(t, "someone@example.com", actor.Subject)
-
-	require.Contains(t, gaps[0].values["reason"], "refused")
-}
-
-// A handler that authorized something and then failed to say what it was doing
-// is a different defect from a refusal, and says so, because the fixes differ.
-func TestGapDistinguishesARefusalFromAMissingTarget(t *testing.T) {
-	t.Parallel()
-
-	precondition := authz.Decision{
-		Target:  authz.Target{Endpoint: "identity:groups", Operation: authz.Update},
-		Allowed: true,
-	}
-
-	rec := exercise(t, http.MethodPut, "https://identity.example.com/anything", http.StatusOK, "", precondition)
-
-	gaps := rec.withMessage("audit gap")
-	require.Len(t, gaps, 1)
-	require.NotContains(t, gaps[0].values["reason"], "refused")
-}
-
-func TestMutationWithoutAPrimaryIsReported(t *testing.T) {
-	t.Parallel()
-
-	precondition := authz.Decision{
-		Target:  authz.Target{Endpoint: "identity:groups", Operation: authz.Update},
-		Allowed: true,
-	}
-
-	rec := exercise(t, http.MethodPut, "https://identity.example.com/anything", http.StatusOK, "", precondition)
-
-	require.Empty(t, rec.withMessage("audit"))
-
-	gaps := rec.withMessage("audit gap")
-	require.Len(t, gaps, 1)
+	values := audits[0].values
+	require.Equal(t, &audit.Actor{Subject: "someone@example.com"}, values["actor"])
+	require.Equal(t, &audit.Result{Status: http.StatusForbidden}, values["result"])
+	require.Equal(t, &audit.Request{Method: http.MethodDelete}, values["request"])
 
 	// It must not guess the operation from the HTTP method.  A POST to an
-	// action sub-resource reads as a creation, so a failed rotation would be
+	// action sub-resource reads as a creation, so a refused rotation would be
 	// reported as a create, which is worse than saying nothing.
-	require.NotContains(t, gaps[0].values, "operation")
-	require.Equal(t, []string{"identity:groups"}, gaps[0].values["endpoints"])
+	require.NotContains(t, values, "operation")
+	require.NotContains(t, values, "resource")
+	require.NotContains(t, values, "scope")
+	require.Empty(t, rec.withMessage("audit defect"), "a refusal is the system working")
+}
+
+// A request that succeeded without its own check is a handler that failed to
+// describe itself.  It is still recorded, and reported as a defect.
+func TestUndescribedSuccessIsADefect(t *testing.T) {
+	t.Parallel()
+
+	precondition := authz.Decision{
+		Target:  authz.Target{Endpoint: "identity:groups", Operation: authz.Update},
+		Allowed: true,
+	}
+
+	rec := exercise(t, http.MethodPut, "https://identity.example.com/anything", http.StatusOK, "", precondition)
+
+	require.Len(t, rec.withMessage("audit"), 1)
+	require.Len(t, rec.withMessage("audit defect"), 1)
+	require.NotContains(t, rec.withMessage("audit")[0].values, "operation")
 }
 
 func TestGetRequestsAreNotAudited(t *testing.T) {
@@ -300,7 +379,7 @@ func TestGetRequestsAreNotAudited(t *testing.T) {
 		primary("identity:groups", authz.Read, uuid.MustParse(testObjectID)))
 
 	require.Empty(t, rec.withMessage("audit"))
-	require.Empty(t, rec.withMessage("audit gap"), "a read is not a gap")
+	require.Empty(t, rec.withMessage("audit defect"), "a read is not a defect")
 }
 
 func TestUnauthenticatedRequestsAreNotAudited(t *testing.T) {
@@ -691,4 +770,101 @@ func TestStatedNameOverridesTheResponse(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "simon.murray@nscale.com", resource.Name)
 	require.Equal(t, testObjectID, resource.ID, "the identifier still comes from the response")
+}
+
+// Run outermost, audit still learns who made a request that authentication
+// accepted and something inside then rejected, because authentication holds
+// the caller where audit can read it.
+func TestOutermostAuditLearnsTheCallerFromTheHolder(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorder{}
+
+	request := httptest.NewRequest(http.MethodDelete, "https://identity.example.com/anything", strings.NewReader("{}"))
+	request = request.WithContext(log.IntoContext(request.Context(), logr.New(rec)))
+
+	// Stands in for the validator: it authenticates, holds the caller, and
+	// rejects the request before any handler runs.
+	validator := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authorization.Hold(r.Context(), &authorization.Info{
+				Userinfo: &openapi.Userinfo{Sub: "someone@example.com"},
+			})
+
+			w.WriteHeader(http.StatusBadRequest)
+		})
+	}
+
+	handler := audit.New("identity", "v1.2.3").Middleware(validator(http.NotFoundHandler()))
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1)
+	require.Equal(t, &audit.Actor{Subject: "someone@example.com"}, audits[0].values["actor"])
+	require.Equal(t, &audit.Result{Status: http.StatusBadRequest}, audits[0].values["result"])
+}
+
+// The record says what the server matched the request to, from its own
+// schema, and the trace that joins it to the response and the logs.  The path
+// the caller sent is never used: it is the caller's text.
+func TestRecordCarriesTheMatchedRouteNotThePath(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorder{}
+
+	request := httptest.NewRequest(http.MethodPost, "https://identity.example.com/api/v2/things/"+testObjectID+"/start", strings.NewReader("{}"))
+
+	traceID := trace.TraceID{0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x10}
+
+	ctx := log.IntoContext(request.Context(), logr.New(rec))
+	ctx = authorization.NewContext(ctx, &authorization.Info{Userinfo: &openapi.Userinfo{Sub: "someone@example.com"}})
+	ctx = context.WithValue(ctx, routeresolver.RouteInfoKey, &routeresolver.RouteInfo{
+		Route: &routers.Route{Path: "/api/v2/things/{thingID}/start", Method: http.MethodPost},
+	})
+	ctx = trace.ContextWithSpanContext(ctx, trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: traceID,
+		SpanID:  trace.SpanID{0x01},
+	}))
+
+	handler := audit.New("identity", "v1.2.3").Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), request.WithContext(ctx))
+
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1)
+	require.Equal(t, &audit.Request{
+		Method:  http.MethodPost,
+		Route:   "/api/v2/things/{thingID}/start",
+		TraceID: traceID.String(),
+	}, audits[0].values["request"])
+}
+
+// A handler that crashes still made an attempt.  The record is written, and the
+// panic carries on to whatever recovers it upstream.
+func TestPanicIsRecordedAndPropagated(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorder{}
+
+	request := httptest.NewRequest(http.MethodDelete, "https://identity.example.com/anything", strings.NewReader("{}"))
+
+	ctx := log.IntoContext(request.Context(), logr.New(rec))
+	ctx = authorization.NewContext(ctx, &authorization.Info{Userinfo: &openapi.Userinfo{Sub: "someone@example.com"}})
+
+	handler := audit.New("identity", "v1.2.3").Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		authz.Record(r.Context(), primary("identity:groups", authz.Delete, uuid.MustParse(testObjectID)))
+
+		panic("handler crashed")
+	}))
+
+	require.PanicsWithValue(t, "handler crashed", func() {
+		handler.ServeHTTP(httptest.NewRecorder(), request.WithContext(ctx))
+	})
+
+	audits := rec.withMessage("audit")
+	require.Len(t, audits, 1)
+	require.Equal(t, &audit.Operation{Verb: "delete"}, audits[0].values["operation"])
+	require.Equal(t, &audit.Result{Status: http.StatusInternalServerError}, audits[0].values["result"])
 }

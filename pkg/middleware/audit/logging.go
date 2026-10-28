@@ -26,9 +26,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/middleware"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 
@@ -76,7 +78,7 @@ func resourceType(endpoint string) string {
 // read later, inside the client.  Operations that return no body, notably
 // deletes, yield neither.
 func described(capture *middleware.Capture) (string, string) {
-	if capture.Body() == nil {
+	if capture == nil || capture.Body() == nil {
 		return "", ""
 	}
 
@@ -173,43 +175,19 @@ func grants(decisions []authz.Decision) []Grant {
 }
 
 // scope describes the tenancy affected, omitting what the decision did not name.
+// scope is nil when nothing was checked, so an unknown scope is absent rather
+// than empty.
 func scope(decision authz.Decision) *Scope {
-	out := &Scope{}
+	if !decision.Scope.Organization() {
+		return nil
+	}
 
-	if decision.Scope.Organization() {
-		out.OrganizationID = decision.Scope.OrganizationID.String()
+	out := &Scope{
+		OrganizationID: decision.Scope.OrganizationID.String(),
 	}
 
 	if decision.Scope.Project() {
 		out.ProjectID = decision.Scope.ProjectID.String()
-	}
-
-	return out
-}
-
-// checkedEndpoints names what the request did authorize against, which is the
-// only thing known about an operation that never described itself.
-// gapReason separates a request that was turned away from one the handler
-// failed to describe.  They need different fixes: the first is the system
-// working and is recorded so a denial leaves a trace, the second is a missing
-// call site.
-func gapReason(decisions []authz.Decision, status int) string {
-	if len(decisions) == 0 {
-		if status >= http.StatusBadRequest {
-			return "the request was refused or failed before any authorization decision was recorded"
-		}
-
-		return "the handler made no authorization decision"
-	}
-
-	return "no authorization decision described the request"
-}
-
-func checkedEndpoints(decisions []authz.Decision) []string {
-	out := make([]string, 0, len(decisions))
-
-	for _, decision := range decisions {
-		out = append(out, decision.Endpoint)
 	}
 
 	return out
@@ -228,99 +206,171 @@ func getClient(r *http.Request) *Client {
 	}
 }
 
-// ServeHTTP implements the http.Handler interface.
+// matched is what the server matched the request to: the method, the route
+// template from its own schema, and the trace that joins the record to the
+// response and the logs.  Never the raw path.
+func matched(r *http.Request) *Request {
+	out := &Request{
+		Method: r.Method,
+	}
+
+	if info, err := routeresolver.FromContext(r.Context()); err == nil && info.Route != nil {
+		out.Route = info.Route.Path
+	}
+
+	if span := trace.SpanContextFromContext(r.Context()); span.HasTraceID() {
+		out.TraceID = span.TraceID().String()
+	}
+
+	return out
+}
+
+// caller is who made the request.  Outside authentication only the holder has
+// it; inside, the context does, which is the order services used before audit
+// could run outermost.
+func caller(r *http.Request, holder *authorization.Holder) *authorization.Info {
+	if info := holder.Info(); info != nil {
+		return info
+	}
+
+	info, err := authorization.FromContext(r.Context())
+	if err != nil {
+		return nil
+	}
+
+	return info
+}
+
+// serve runs the handler and returns the status it answered with.  A panic is
+// reported rather than allowed to skip the record, because a request that
+// crashed is still one that was attempted; it counts as a 500.
+func serve(w http.ResponseWriter, r *http.Request, next http.Handler) (*middleware.Capture, int, any) {
+	var (
+		capture   *middleware.Capture
+		recovered any
+	)
+
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+
+		capture = middleware.CaptureResponse(w, r, next)
+	}()
+
+	if capture == nil {
+		return nil, http.StatusInternalServerError, recovered
+	}
+
+	return capture, capture.StatusCode(), recovered
+}
+
+// handle audits one request.  See Middleware.
 func (l *Logger) handle(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	// Users and auditors care about things coming, going and changing, who did
+	// those things and when?  Certainly not periodic polling that is par for the
+	// course.  Reads get no recorder at all, so a list filtering out what the
+	// caller may not see costs nothing.
+	if r.Method == http.MethodGet {
+		next.ServeHTTP(w, r)
+
+		return
+	}
+
 	// The recorder has to be in place before the handler runs, because the
-	// decisions are made during it.
+	// decisions are made during it.  So does the holder, which is how the
+	// caller reaches this middleware when it runs outside authentication.
 	recorder := &authz.Recorder{}
+
+	ctx, holder := authorization.NewHolderContext(authz.NewContext(r.Context(), recorder))
 
 	// The recorder has to reach the handler, but r itself is left alone so that
 	// everything read afterwards comes from the request as it arrived.
-	capture := middleware.CaptureResponse(w, r.WithContext(authz.NewContext(r.Context(), recorder)), next)
-
-	// Users and auditors care about things coming, going and changing, who did
-	// those things and when?  Certainly not periodic polling that is par for the
-	// course. Failures of reads may be indicative of someone trying to do
-	// something they shouldn't via the API (or indeed a bug in a UI leeting them
-	// attempt something they are forbidden to do).
-	if r.Method == http.MethodGet {
-		return
+	capture, status, recovered := serve(w, r.WithContext(ctx), next)
+	if recovered != nil {
+		// The record is written before the panic carries on, so whatever
+		// recovers it upstream answers the caller, and the audit log still
+		// says what was attempted.
+		defer panic(recovered)
 	}
 
 	// If there is not accountibility e.g. a global call, it's not worth logging.
-	info, err := authorization.FromContext(r.Context())
-	if err != nil {
+	info := caller(r, holder)
+	if info == nil {
 		return
 	}
 
-	decisions := recorder.Decisions()
+	record := l.record(r, info, recorder, capture, status)
 
-	primaries := authz.Primaries(decisions)
-	if len(primaries) == 0 {
-		// An authenticated mutation reached a handler and nothing described it.
-		// Silence is the failure this exists to stop, so it is reported whether
-		// or not anything was checked.  A refusal records no decision at all --
-		// gates record only on success -- so guarding this on having decisions
-		// would discard every denied mutation, which is the event an auditor
-		// most wants to see.
-		//
-		// Deliberately no operation.  The HTTP method is the obvious thing to
-		// reach for and it would be a lie: a POST to an action sub-resource
-		// reads as a creation, so a refused rotation would be reported as a
-		// create.  Naming the endpoints actually checked says what is known,
-		// and no more.
-		log.FromContext(r.Context()).Info("audit gap",
-			"actor", &Actor{
-				Subject: info.Userinfo.Sub,
-			},
-			"endpoints", checkedEndpoints(decisions),
-			"result", &Result{Status: capture.StatusCode()},
-			"reason", gapReason(decisions, capture.StatusCode()))
+	// The response is already written by the time we get here, because the
+	// capture writes through, so a sink costs the client nothing.  See the
+	// README's delivery section.
+	//
+	// Delivery MUST NOT inherit the request's cancellation.  net/http cancels
+	// that context when the client closes the connection, and since the
+	// response has already been written, a caller that reads it and exits --
+	// any CLI -- would cancel the POST in flight and lose the record everywhere
+	// but stdout.  The per-delivery timeout still bounds it, and the context's
+	// values are kept so logging stays correlated.
+	ctx = context.WithoutCancel(r.Context())
 
-		return
+	for _, sink := range l.sinks {
+		emit(ctx, sink, record)
+	}
+}
+
+// record builds the one record for a request, whatever the outcome: the status
+// says whether it happened.  A request rejected before any handler described
+// it, such as by schema validation, still gets one, with whatever is known and
+// nothing invented: no verb from the HTTP method, as a POST to an action
+// sub-resource is not a creation.  Grants are why it was allowed, so a request
+// that did not succeed has none.  Handler mistakes found on the way are
+// reported as defects.
+func (l *Logger) record(r *http.Request, info *authorization.Info, recorder *authz.Recorder, capture *middleware.Capture, status int) *Record {
+	logger := log.FromContext(r.Context())
+
+	for _, defect := range recorder.Defects() {
+		logger.Error(nil, "audit defect", "defect", defect)
 	}
 
-	// One record per thing acted on, so a request touching several resources
-	// does not collapse into one line naming only the first.
-	for _, decision := range primaries {
-		record := &Record{
-			Timestamp: time.Now().UTC(),
-			Component: &Component{
-				Name:    l.application,
-				Version: l.version,
-			},
-			Actor: &Actor{
-				Subject: info.Userinfo.Sub,
-			},
-			Operation: &Operation{
-				Verb: decision.Operation.Action,
-			},
-			Scope:    scope(decision),
-			Resource: resource(capture, decision),
-			Result: &Result{
-				Status: capture.StatusCode(),
-			},
-			Client: getClient(r),
-			Source: source(r),
-			Grants: grants(decisions),
-		}
+	request, state := recorder.Request()
 
-		// The response is already written by the time we get here, because the
-		// capture writes through, so a sink costs the client nothing.  See the
-		// README's delivery section.
-		//
-		// Delivery MUST NOT inherit the request's cancellation.  net/http
-		// cancels that context when the client closes the connection, and since
-		// the response has already been written, a caller that reads it and
-		// exits -- any CLI -- would cancel the POST in flight and lose the
-		// record everywhere but stdout.  The per-delivery timeout still bounds
-		// it, and the context's values are kept so logging stays correlated.
-		ctx := context.WithoutCancel(r.Context())
-
-		for _, sink := range l.sinks {
-			emit(ctx, sink, record)
-		}
+	if state != authz.Checked && status < http.StatusBadRequest {
+		logger.Error(nil, "audit defect", "defect", "request succeeded without its own authorization check",
+			"endpoint", request.Endpoint, "status", status)
 	}
+
+	record := &Record{
+		Timestamp: time.Now().UTC(),
+		Component: &Component{
+			Name:    l.application,
+			Version: l.version,
+		},
+		Actor: &Actor{
+			Subject: info.Userinfo.Sub,
+		},
+		Result: &Result{
+			Status: status,
+		},
+		Client:  getClient(r),
+		Source:  source(r),
+		Request: matched(r),
+	}
+
+	if state != authz.NotDescribed {
+		if request.Operation.Action != "" {
+			record.Operation = &Operation{Verb: request.Operation.Action}
+		}
+
+		record.Scope = scope(request)
+		record.Resource = resource(capture, request)
+	}
+
+	if status < http.StatusBadRequest {
+		record.Grants = grants(recorder.Decisions())
+	}
+
+	return record
 }
 
 func (l *Logger) Middleware(next http.Handler) http.Handler {

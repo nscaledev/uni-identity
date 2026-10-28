@@ -110,8 +110,8 @@ type Target struct {
 // resource whose name is not its metadata.name, such as a user named by its
 // subject, is only known once it has been read.
 //
-// It does nothing where no decision describes the request, and names the most
-// recent one where several do.
+// It does nothing until the request is declared or checked, so a name known
+// earlier is supplied in the declaration.
 func Name(ctx context.Context, name string) {
 	if recorder, ok := FromContext(ctx); ok {
 		recorder.Name(name)
