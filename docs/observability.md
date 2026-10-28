@@ -89,12 +89,15 @@ All export is OTLP/HTTP push, gated on `--otlp-endpoint`, plain-HTTP
     `{section}`; `result` ∈ {`ok`, `overdue`, `failed`}. `overdue` means the holder
     ran past its write deadline and abandoned the write.
   - `unikorn_identity_organization_lease_releases{result}` — `Int64Counter`, unit
-    `{release}`; `result` ∈ {`released`, `lost`, `failed`}. `lost` means another
-    replica had already taken the Lease over; `failed` means the Lease was left to
-    expire, wedging the organization for up to one Lease duration.
-  A sustained `taken_over`, `lost`, `overdue` or release `failed` rate points at
-  holders that cannot finish within the Lease; a rising `timed_out` rate with none
-  of those points at contention.
+    `{release}`; `result` ∈ {`released`, `lost`, `abandoned`, `failed`}. `lost`
+    means another replica had already taken the Lease over; `abandoned` means a
+    write was cut off in flight and the Lease was left to expire on purpose, so the
+    API server can finish before the next holder reads; `failed` means the delete
+    failed and the Lease was left to expire. Either of the last two wedges the
+    organization for up to one Lease duration.
+  A sustained `taken_over`, `lost`, `overdue`, `abandoned` or release `failed` rate
+  points at holders that cannot finish within the Lease; a rising `timed_out` rate
+  with none of those points at contention.
 
 **controller-runtime built-ins (the three controllers only, via OTLP bridge)** —
 the default controller registry remains active and is bridged to OTLP.

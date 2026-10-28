@@ -362,6 +362,48 @@ func TestWithOrganizationLease(t *testing.T) {
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 	})
 
+	t.Run("leaves the lease to expire when the write itself was cut off", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+		reader := sdkmetric.NewManualReader()
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		t.Cleanup(cancel)
+
+		_, err := WithOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA, func(ctx context.Context, lease *OrganizationLease) (struct{}, error) {
+			require.NoError(t, lease.Check(ctx))
+
+			// The API server may still commit a write the client gave up on.
+			<-ctx.Done()
+
+			return struct{}{}, fmt.Errorf("create allocation: %w", ctx.Err())
+		}, withLeaseMeter(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")))
+		require.True(t, servererrors.IsConflict(err))
+
+		leases := &coordinationv1.LeaseList{}
+		require.NoError(t, fakeClient.List(t.Context(), leases))
+		require.Len(t, leases.Items, 1, "contenders must wait out the Lease, not read straight away")
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultAbandoned))
+		require.Equal(t, int64(0), leaseCounter(t, reader, leaseReleasesName, leaseResultReleased))
+	})
+
+	t.Run("releases the lease when a write fails for another reason", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+
+		_, err := WithOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA, func(ctx context.Context, lease *OrganizationLease) (struct{}, error) {
+			require.NoError(t, lease.Check(ctx))
+
+			return struct{}{}, errRead
+		})
+		require.ErrorIs(t, err, errRead)
+
+		leases := &coordinationv1.LeaseList{}
+		require.NoError(t, fakeClient.List(t.Context(), leases))
+		require.Empty(t, leases.Items)
+	})
+
 	t.Run("reports a rejection reached after the deadline as a rejection", func(t *testing.T) {
 		t.Parallel()
 

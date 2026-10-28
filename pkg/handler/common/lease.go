@@ -76,6 +76,7 @@ const (
 	leaseResultFailed    = "failed"
 	leaseResultReleased  = "released"
 	leaseResultLost      = "lost"
+	leaseResultAbandoned = "abandoned"
 )
 
 // leaseMetrics surfaces the Lease failures that wedge an organization: holders
@@ -101,7 +102,7 @@ func newLeaseMetrics(meter metric.Meter) *leaseMetrics {
 		metric.WithDescription("Critical sections run under an organization Lease by outcome. Overdue means the holder ran past its write deadline and abandoned its write."),
 		metric.WithUnit("{section}"))
 	releases, _ := meter.Int64Counter(leaseReleasesName,
-		metric.WithDescription("Organization Lease releases by outcome. Lost means another replica had already taken the Lease over; failed means the Lease was left to expire."),
+		metric.WithDescription("Organization Lease releases by outcome. Lost means another replica had already taken the Lease over; abandoned means a cut-off write left it to expire on purpose; failed means a delete failed and left it to expire."),
 		metric.WithUnit("{release}"))
 
 	return &leaseMetrics{acquisitions: acquisitions, wait: wait, sections: sections, releases: releases}
@@ -176,6 +177,8 @@ type OrganizationLease struct {
 	lease   *coordinationv1.Lease
 	cancel  context.CancelFunc
 	metrics *leaseMetrics
+	// writing is set once the holder has passed Check, so a write may be in flight.
+	writing bool
 }
 
 func organizationLeaseName(organizationID ids.OrganizationID) string {
@@ -324,11 +327,14 @@ func newOrganizationLease(ctx context.Context, cli client.Client, lease *coordin
 	return &OrganizationLease{client: cli, lease: lease.DeepCopy(), cancel: cancel, metrics: config.metrics}, lockedContext, nil
 }
 
-// Check rejects a write once the holder's critical-section deadline has passed.
+// Check rejects a write once the holder's critical-section deadline has passed,
+// and otherwise records that a write may now be in flight.
 func (l *OrganizationLease) Check(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return leaseConflict(fmt.Errorf("%w: %w", ErrLeaseDeadline, err))
 	}
+
+	l.writing = true
 
 	return nil
 }
@@ -373,6 +379,15 @@ func (l *OrganizationLease) Release(ctx context.Context) error {
 	return nil
 }
 
+// abandon leaves the Lease to expire. A write that was sent and then cut off by
+// the deadline may still be committed by the API server, so contenders must wait
+// out a full Lease duration rather than read straight after a release.
+func (l *OrganizationLease) abandon(ctx context.Context) {
+	l.cancel()
+	l.metrics.releases.Add(ctx, 1, leaseResult(leaseResultAbandoned))
+	log.FromContext(ctx).Info("leaving organization allocation lease to expire after a cut-off write", "lease", l.lease.Name)
+}
+
 // ReleaseOrganizationLease keeps cleanup bounded after the request has ended.
 func ReleaseOrganizationLease(ctx context.Context, lease *OrganizationLease) {
 	releaseContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), OrganizationLeaseReleaseTimeout)
@@ -383,8 +398,10 @@ func ReleaseOrganizationLease(ctx context.Context, lease *OrganizationLease) {
 	}
 }
 
-// WithOrganizationLease runs fn under the organization Lease with the bounded context,
-// releases the Lease, and reports a call cut off by the deadline as a retryable conflict.
+// WithOrganizationLease runs fn under the organization Lease with the bounded context
+// and reports a call cut off by the deadline as a retryable conflict. It releases the
+// Lease afterwards, unless the cut-off call may have been the write itself, in which
+// case the Lease is left to expire.
 func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namespace string, organizationID ids.OrganizationID, fn func(ctx context.Context, lease *OrganizationLease) (T, error), options ...LeaseOption) (T, error) {
 	var zero T
 
@@ -392,10 +409,21 @@ func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namesp
 	if err != nil {
 		return zero, err
 	}
-	defer ReleaseOrganizationLease(ctx, lease)
+
+	writeCutOff := false
+
+	defer func() {
+		if writeCutOff {
+			lease.abandon(ctx)
+		} else {
+			ReleaseOrganizationLease(ctx, lease)
+		}
+	}()
 
 	result, err := fn(lockedContext, lease)
 	if err != nil {
+		writeCutOff = lease.writing && isContextError(err)
+
 		return zero, lease.Error(ctx, err)
 	}
 

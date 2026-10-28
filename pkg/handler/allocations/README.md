@@ -26,12 +26,16 @@ actual project-scoped object.
 
 Allocation create/update and quota update operations hold a per-organization Kubernetes Lease.
 The Lease lasts three seconds, and the holder stops writing one second before its expiry. The
-holder is deleted on either success or failure; a crashed holder delays only that organization
-until the first contender has observed its unchanged Lease for a full duration.
+Lease is deleted on success, and on failure unless a write was cut off in flight; a crashed or
+cut-off holder delays only that organization until the first contender has observed its unchanged
+Lease for a full duration.
 
 Contenders receive a retryable HTTP 409 when their request context expires. A holder whose read or
 write is cut off by its bounded context receives the same 409; any other failure, such as a rejected
-request, keeps its own status. The server's request
+request, keeps its own status. A write that was sent and then cut off may still be committed by the
+API server, so the holder leaves its Lease to expire instead of releasing it, and contenders wait
+out a full Lease duration before they read. A caller that retries a cut-off create may therefore
+find the first allocation was made after all. The server's request
 deadline (eight seconds by default, see [`pkg/server`](../../server/README.md)) leaves room for a
 takeover and the critical section after it, and ends early enough for Lease cleanup and the 409 or
 success response to be written before the write timeout.
