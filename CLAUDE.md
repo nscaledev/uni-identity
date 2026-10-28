@@ -71,3 +71,20 @@ repository, not optional commentary.
   leaving stale guidance behind.
 - Treat the top-level `README.md` and `pkg/README.md` as landing pages that should remain
   technically accurate for new starters, external observers, and AI coding assistants.
+
+## Consumer Contracts
+
+uni-identity is a Pact provider for nscale-environments (Envir), uni-region, uni-kubernetes and uni-compute. Its
+verification is in `test/contracts/provider/region/`.
+
+- A change to a handler, the OpenAPI spec or a response field keeps every consumer contract passing. The
+  `ProviderContractVerification` job checks it on each pull request; locally,
+  `make test-contracts-provider-local PACT_FILE=...` verifies a consumer's pact file on a throwaway
+  `contract-testing` kind cluster.
+- A failure on a released Envir version (N, N-1 or N-2) means the change breaks an Envir release that is still
+  supported. Make the change backward compatible (expand, migrate, contract) instead of changing or skipping the
+  check.
+- A consumer's new provider state needs a handler in `test/contracts/provider/`, named exactly as in the pact.
+- Never edit a consumer's pact: the consumer generates it.
+- The `skip-contract-tests` label is for emergencies only (see the README's escape hatch): an outage such as the Pact
+  broker being down, or a hotfix that can't wait for the contract update. Remove it once the contract is updated.

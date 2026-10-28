@@ -55,6 +55,69 @@ ACL construction and handler enforcement both follow that structure. Global perm
 organization and project checks, organization permissions can satisfy some project checks, and
 project permissions remain the narrowest scope.
 
+### Gates and predicates
+
+The same check is asked for two different purposes, and the package exposes each separately.
+
+- The `Allow*` family is a **gate**. It returns an error, and that error becomes the caller's
+  refusal. Use it when the answer decides whether the request proceeds.
+- The `Permits*` family is a **predicate**. It returns a boolean and is defined in terms of the
+  matching gate, so the two cannot drift. Use it when filtering candidates out of a list.
+
+The distinction is not stylistic. A gate refusing is a refused request: the principal asked for
+something and was told no, which is a reportable security event. A predicate refusing is a resource
+being left out of a list because it was never that principal's to see, which is access control
+working normally and happens on every list. Reporting the second as a refusal would bury real
+refusals and tell a monitoring system an attack was under way every time somebody listed a shared
+organization.
+
+Using a gate's `error` as a boolean, as `AllowX(...) == nil`, loses that distinction at exactly the
+point it matters, and is why the predicates exist.
+
+### Recorded decisions
+
+A gate records what it authorised, so that later middleware can say which organisation and project
+an operation affected. That fact cannot be recovered from the URL: v2 APIs address resources by ID
+alone and resolve tenancy from the resource's labels, so only the component that performed the
+check knows it. See [`pkg/authz`](../authz/README.md).
+
+Two rules keep that record honest:
+
+- **Only the public gates record.** Each gate is a thin wrapper over an unexported `check`
+  function, and every internal path uses `check`. A project check that falls back through
+  organisation and global scope is one question, not three, and recording each step would bury the
+  real decision. The same applies to `AllowRole`, which walks every permission a role confers.
+- **Predicates record nothing**, for the reasons above. A list of forty visible resources must not
+  leave forty decisions behind.
+
+Only allowed decisions are recorded today. Recording refusals has to wait until every service
+distinguishes a gate from a predicate, because a predicate refusing is routine filtering.
+
+### Stating the target explicitly
+
+The `On` family takes a target: the resource type, the resource itself, the access required, the
+action performed, and whether this is the operation the request is or a precondition of it. None of
+that is reliably recoverable from the request afterwards.
+
+- v2 APIs carry no organisation or project in the path.
+- An action sub-resource, such as starting an instance, is a `POST` exactly like creating one, so
+  the method says nothing about what happened.
+- A path ending in a sub-resource, such as a reference on a network, names the sub-resource rather
+  than the thing being changed.
+
+The older gates remain and keep working, so adopting this is incremental and no other service has
+to change. They record the scope, which is the part that matters most, but cannot name an object or
+an action, and their decisions count as preconditions. A consumer can therefore tell a migrated
+call site from an unmigrated one, rather than being silently given a worse record.
+
+`AllowProjectScopeCreateOn` and `AllowProjectScopeCreateReaderOn` are the explicit forms of the
+create gates. Despite the name, those gates guard a project named by untrusted input, such as a v2
+request body, rather than the act of creating: when access comes from an organisation grant they
+confirm the project exists first. What the request does is the target's to say. A global grant
+skips that confirmation, so a record can name a project that does not exist. The Reader form takes
+only the scope from the resource it is given, which is usually a parent, so that resource's
+identifier does not belong in the target.
+
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 
@@ -466,6 +529,19 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
+- Filtering a list uses the `Permits*` predicates, never an `Allow*` gate compared against `nil`.
+  A gate's refusal is a reportable event; a predicate's is routine.
+- A predicate and its gate MUST share one `check*` function, and the predicate MUST call that
+  check, never the gate. Sharing the check is what stops them drifting: computed separately, a
+  principal can be shown a resource in a list that they are then refused, or the reverse. Calling
+  the gate would also drift them in the other direction — the gate records, so a predicate
+  wrapping it leaves a decision behind for every candidate it filters, which is the fan-out this
+  split exists to stop. "Defined in terms of its gate" is not enough, and reads as satisfied by
+  the very thing that breaks it: `PermitsRole` called `AllowRole` and recorded a grant for every
+  role in a list.
+- Every exported gate MUST have a `check*` form, including gates with several success paths.
+  Recording belongs in the gate, so a success path added to the check later cannot become another
+  unaudited way to perform the operation.
 - Protected roles are not part of normal user-facing role administration.
 - Role grantability is bounded by the caller's own effective permissions.
 - ACL intersection for impersonated system-account calls is deliberate least-privilege behaviour.

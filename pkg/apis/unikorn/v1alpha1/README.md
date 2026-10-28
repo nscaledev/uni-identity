@@ -90,6 +90,15 @@ case. Other letters keep their case, because Unicode case mapping joins distinct
 bare address keeps its case, because a service user created with `kubectl-unikorn` can be case
 sensitive.
 
+`LowersOnlyASCII` states the rule that goes with this fold. It reports whether `strings.ToLower`
+changes no rune of a subject other than A to Z. Other systems can lower-case an address with full
+Unicode rules. A subject whose lower case differs from its A to Z fold would then not keep its
+identity there. The user API refuses such a subject when it creates a User, so it no longer
+writes a `User.spec.subject` that holds one. A record written before the refusal can still hold
+one. A lower-case non-ASCII letter is not refused. The result follows the Unicode tables of the Go
+toolchain. Group subject entries are not checked, because identity compares them in the A to Z
+form.
+
 The identity writers store a subject in canonical form: user `Create`, the group subject entries
 that [`pkg/handler/users`](../../../handler/users/README.md) and
 [`pkg/handler/groups`](../../../handler/groups/README.md) write, and the email claim that

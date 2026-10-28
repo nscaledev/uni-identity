@@ -55,6 +55,14 @@ no record matches, the new record stores the subject in canonical form. If the s
 two or more records and matches none exactly, `Create` fails with a consistency error before it
 writes a record.
 
+`Create` also refuses a subject whose `strings.ToLower` form differs from its A to Z fold, such as
+one with KELVIN SIGN (U+212A), through
+[`LowersOnlyASCII`](../../apis/unikorn/v1alpha1/README.md#subject-matching). The fold above
+changes only A to Z. Other systems can lower-case an address with full Unicode rules, and such a
+subject would not keep its identity there. A lower-case non-ASCII letter is accepted. Group subject
+entries are not checked, because identity compares them in the A to Z form. The refusal comes
+before any record is read or written.
+
 Group subject entries compare in canonical form on both sides. As a result, a membership read and
 a removal find an entry that is stored in another case. The entries that this client writes carry
 the canonical form of the stored subject, so an entry is canonical even when its record is not.
@@ -133,6 +141,8 @@ clients.
 
 - global identity and organization membership are distinct layers and must not be collapsed into a
   single resource model
+- global users use a deterministic name derived from their immutable subject; organization users
+  use one derived from their organization and global user
 - an organization must have at most one `OrganizationUser` membership for a given global `User`
 - repeated create requests reuse the existing `OrganizationUser` without mutating its state; callers
   must use update to intentionally change organization-local state
@@ -141,9 +151,11 @@ clients.
 - a requested group that does not exist in the organization is an error, not a silently dropped
   part of the write
 - create and update answer a missing group, and create answers a subject that is not a bare email
-  address, with HTTP 400; both operations declare 400 in the OpenAPI schema. A display name or
-  angle brackets are refused, because a sign-in claim carries the bare address and never matches
-  such a record
+  address or whose lower case differs from its A to Z fold, with HTTP 400; both operations declare
+  400 in the OpenAPI schema. A display name or angle brackets are refused, because a sign-in claim
+  carries the bare address and never matches such a record. A subject whose lower case differs from
+  its A to Z fold is refused, because other systems can lower-case an address with full Unicode
+  rules and the subject would not keep its identity there
 - adding a user to a group is a grant of that group's roles, so it is allowed only where the caller
   could grant every role the group carries; removals and user deletion are not gated
 - a principal present in either membership representation is already a member, so completing the
@@ -153,6 +165,19 @@ clients.
 - user read responses are assembled from global user state, organization membership state, and
   group membership state together
 - the API-managed path only allows bare email-address subjects for normal user creation
+
+Legacy random-named records remain readable while there is exactly one matching record. Multiple
+records for one subject, legacy or deterministic, or for one membership are a consistency error,
+and `Create` refuses them before writing. Lookups by subject rely on this check rather than
+repeating it. New writes use deterministic
+names, so Kubernetes conflict handling makes concurrent creates converge on the same records.
+
+That convergence needs every writer to use deterministic names. While a rollout replaces a pod
+that still writes random names, two creates for the same new subject or membership, one on each
+pod, leave a legacy record beside the deterministic one. Lookups then return the deterministic
+record, and `Create` for that subject fails with a consistency error until the random-named record
+is deleted. `hack/identity-duplicate-records-check.py` lists such duplicates, for Users,
+OrganizationUsers and Quotas, and is meant to run after a rollout.
 
 ## Caveats
 
