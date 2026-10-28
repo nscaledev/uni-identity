@@ -1,6 +1,11 @@
 name: Pact Provider Verification
 
-# Triggered by webhook when consumer publishes new pacts
+# Triggered when a consumer publishes a pact that needs verifying. With client_payload.provider_version
+# set, it verifies that deployed provider commit instead of main, as Pact's
+# contract_requiring_verification_published flow does for each deployed provider version
+# (https://docs.pact.io/pact_broker/webhooks#the-contract-requiring-verification-published-event), so
+# can-i-deploy --to-environment staging|production has a result for the provider that environment runs.
+# Without it, the run verifies main as before.
 on:
   repository_dispatch:
     types: [pact_verification]
@@ -22,8 +27,23 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        # Checkout the provider branch/version specified by the webhook
-        ref: ${{ github.event.client_payload.provider_branch || 'main' }}
+        # Checkout the provider branch/version specified by the webhook. A deployed provider_version is
+        # validated and checked out by the next step, from main's own copy of the script.
+        ref: ${{ github.event.client_payload.provider_version != '' && 'main' || github.event.client_payload.provider_branch || 'main' }}
+        fetch-depth: ${{ github.event.client_payload.provider_version != '' && 0 || 1 }}
+
+    # Only a full commit already on origin/main is accepted, so the payload can't point the run at any
+    # other ref. The old commit then runs its own provider state handlers: a pact that needs a state
+    # added since fails here, and that failure is the correct "can't deploy" answer for that version.
+    - name: Check out the deployed provider version
+      id: deployed
+      if: ${{ github.event.client_payload.provider_version != '' }}
+      env:
+        REQUESTED: ${{ github.event.client_payload.provider_version }}
+      run: |
+        version="$(hack/pact/provider-version.sh "$REQUESTED")"
+        git checkout --quiet --detach "$version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
 
     - name: Setup Go
       uses: actions/setup-go@v6
@@ -59,6 +79,7 @@ jobs:
 
     - name: Get Deployed Provider Version
       id: get_version
+      if: ${{ github.event.client_payload.provider_version == '' }}
       run: |
         OUTPUT=$(docker run --rm \
           --network host \
@@ -87,11 +108,15 @@ jobs:
         PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
         PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
         PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
-        PROVIDER_VERSION: ${{ steps.get_version.outputs.version }}
+        PROVIDER_VERSION: ${{ steps.deployed.outputs.version || steps.get_version.outputs.version }}
         CONSUMER_BRANCH: ${{ github.event.client_payload.consumer_branch }}
+        DEPLOYED_VERSION: ${{ steps.deployed.outputs.version }}
         CGO_LDFLAGS: "-L/usr/local/lib"
         LD_LIBRARY_PATH: "/usr/local/lib"
-      run: make test-contracts-provider-ci
+      run: |
+        # A deployed version is a main commit checked out detached, so name its branch explicitly.
+        if [ -n "$DEPLOYED_VERSION" ]; then export GIT_BRANCH=main; fi
+        make test-contracts-provider-ci
 
     - name: Report verification status
       if: always()
