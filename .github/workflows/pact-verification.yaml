@@ -30,7 +30,9 @@ jobs:
         # Checkout the provider branch/version specified by the webhook. A deployed provider_version is
         # validated and checked out by the next step, from main's own copy of the script.
         ref: ${{ github.event.client_payload.provider_version != '' && 'main' || github.event.client_payload.provider_branch || 'main' }}
-        fetch-depth: ${{ github.event.client_payload.provider_version != '' && 0 || 1 }}
+        # '0' as a string: a numeric 0 is falsy in an expression, so `&& 0 || 1` always gave 1 and the
+        # checkout lacked the history the ancestry check needs.
+        fetch-depth: ${{ github.event.client_payload.provider_version != '' && '0' || '1' }}
 
     # Only a full commit already on origin/main is accepted, so the payload can't point the run at any
     # other ref. The old commit then runs its own provider state handlers: a pact that needs a state
