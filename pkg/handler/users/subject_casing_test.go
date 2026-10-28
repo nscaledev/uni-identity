@@ -25,6 +25,8 @@ import (
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/handler/users"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
@@ -269,4 +271,106 @@ func TestClient_CreateRefusesASubjectThatIsNotABareAddress(t *testing.T) {
 			assert.Len(t, globalUsers.Items, 1, "a refused create must not add a record")
 		})
 	}
+}
+
+// TestClient_CreateRefusesASubjectWithANonASCIICapital pins that the create path
+// refuses an address whose Unicode lower case differs from its A to Z fold.
+// Identity folds only A to Z.  Other systems can lower-case an address with
+// full Unicode rules, and such a subject would not keep its identity there.
+// The caller gets an error and no record exists.
+func TestClient_CreateRefusesASubjectWithANonASCIICapital(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct{ name, subject string }{
+		{name: "KELVIN SIGN", subject: "\u212aelly@example.com"},
+		{name: "non-ASCII capital", subject: "\u00c9lodie@example.fr"},
+		{name: "dotted capital I", subject: "\u0130nci@example.com"},
+		{name: "KELVIN SIGN in the domain", subject: "kelly@\u212aample.com"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fixture := newUserTestFixture(t)
+			ctx := newContext(t)
+
+			_, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+				Spec: openapi.UserSpec{Subject: tt.subject, State: openapi.Active},
+			})
+			require.True(t, errors.IsBadRequest(err), "got %v", err)
+
+			globalUsers := &unikornv1.UserList{}
+			require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+			assert.Empty(t, globalUsers.Items, "a refused create must not add a global record")
+
+			members := &unikornv1.OrganizationUserList{}
+			require.NoError(t, fixture.client.List(ctx, members, &client.ListOptions{Namespace: testOrgNS}))
+			assert.Empty(t, members.Items, "a refused create must not add a membership")
+		})
+	}
+}
+
+// TestClient_CreateAcceptsALowerCaseNonASCIISubject pins the edge of the refusal.
+// A lower-case non-ASCII letter is the same under full Unicode lower-casing and
+// under the A to Z fold, so the create must go ahead.
+func TestClient_CreateAcceptsALowerCaseNonASCIISubject(t *testing.T) {
+	t.Parallel()
+
+	const subject = "\u00e9lodie@example.fr"
+
+	fixture := newUserTestFixture(t)
+	ctx := newContext(t)
+
+	created, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+		Spec: openapi.UserSpec{Subject: subject, State: openapi.Active},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, subject, created.Spec.Subject)
+
+	globalUsers := &unikornv1.UserList{}
+	require.NoError(t, fixture.client.List(ctx, globalUsers, &client.ListOptions{Namespace: testNamespace}))
+	require.Len(t, globalUsers.Items, 1)
+	assert.Equal(t, subject, globalUsers.Items[0].Spec.Subject)
+}
+
+// TestClient_CreateRefusesAnExistingSubjectWithANonASCIICapital pins that the
+// refusal also applies when a global record for the subject already exists.  The
+// create must not reuse that record, so the caller gets the same error as for a
+// new subject and no membership is added.
+func TestClient_CreateRefusesAnExistingSubjectWithANonASCIICapital(t *testing.T) {
+	t.Parallel()
+
+	const subject = "\u00c9lodie@example.com"
+
+	fixture := newUserTestFixtureWithObjects(t, []client.Object{
+		newGlobalUser("user-elodie", subject),
+	}, interceptor.Funcs{})
+	ctx := newContext(t)
+
+	_, err := fixture.usersClient.Create(ctx, ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+		Spec: openapi.UserSpec{Subject: subject, State: openapi.Active},
+	})
+	require.True(t, errors.IsBadRequest(err), "got %v", err)
+
+	members := &unikornv1.OrganizationUserList{}
+	require.NoError(t, fixture.client.List(ctx, members, &client.ListOptions{Namespace: testOrgNS}))
+	assert.Empty(t, members.Items, "a refused create must not add a membership to an existing record")
+}
+
+// TestClient_CreateRefusesANonASCIICapitalBeforeAnyCall pins the order in Create.
+// The refusal depends on the subject alone, so it must come before every call to
+// the Kubernetes client, including the lookup of the organization.  The client
+// here is nil, so any call to it panics and fails the test.
+func TestClient_CreateRefusesANonASCIICapitalBeforeAnyCall(t *testing.T) {
+	t.Parallel()
+
+	usersClient := users.New(nil, testNamespace, handlercommon.IssuerValue{})
+
+	var err error
+
+	require.NotPanics(t, func() {
+		_, err = usersClient.Create(newContext(t), ids.MustParseOrganizationID(testOrgID), &openapi.UserWrite{
+			Spec: openapi.UserSpec{Subject: "\u212aelly@example.com", State: openapi.Active},
+		})
+	}, "the refusal must come before any call to the Kubernetes client")
+	require.True(t, errors.IsBadRequest(err), "got %v", err)
 }

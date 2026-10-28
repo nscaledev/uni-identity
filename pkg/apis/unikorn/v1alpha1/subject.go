@@ -64,6 +64,17 @@ func IsBareAddress(s string) bool {
 	return err == nil && address.Name == "" && address.Address == s
 }
 
+// LowersOnlyASCII reports whether strings.ToLower changes no rune of subject
+// other than A to Z.  The result follows the Unicode tables of the Go
+// toolchain.
+//
+// NormalizeSubject folds only A to Z.  Other systems can lower-case an address
+// with full Unicode rules.  A subject whose lower case differs from its A to Z
+// fold would then not keep its identity there, so the user API refuses it.
+func LowersOnlyASCII(subject string) bool {
+	return strings.ToLower(subject) == foldASCII(subject)
+}
+
 // foldASCII lower-cases the ASCII letters of s and leaves every other rune as
 // it is.
 func foldASCII(s string) string {
