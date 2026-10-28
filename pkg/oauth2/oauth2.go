@@ -95,10 +95,6 @@ type Options struct {
 	// memory use while live revocation checks still run for every request.
 	TokenCacheSize int
 
-	// CodeCacheSize has no effect: authorization codes are stored on the User
-	// record. The flag stays registered so existing deployments keep starting.
-	CodeCacheSize int
-
 	// ValidatorCacheSize controls how many per-provider auth0.Validator instances
 	// are kept in the LRU cache. Each entry holds a built validator keyed by
 	// provider name + spec fingerprint.
@@ -119,12 +115,15 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.TokenVerificationLeeway, "token-verification-leeway", 0, "How much leeway to permit for verification of token validity.")
 	f.DurationVar(&o.TokenLeewayDuration, "token-leeway", time.Minute, "How long to remove from the provider token expiry to account for network and processing latency.")
 	f.IntVar(&o.TokenCacheSize, "token-cache-size", 8192, "How many token cache entries to allow.")
-	f.IntVar(&o.CodeCacheSize, "code-cache-size", 8192, "How many code cache entries to allow.")
+	// Authorization codes live on the User record now; the flag stays parseable
+	// until deployments stop passing it.
+	_ = f.Int("code-cache-size", 8192, "How many code cache entries to allow.")
 	f.IntVar(&o.ValidatorCacheSize, "validator-cache-size", 64, "How many per-provider validator cache entries to allow.")
 	f.StringVar(&o.Auth0ExchangeIssuer, "auth0-exchange-issuer", "", "Auth0 tenant issuer accepted for passport token exchange.")
 	f.StringVar(&o.Auth0ExchangeAudience, "auth0-exchange-audience", "", "Auth0 API audience accepted for passport token exchange.")
 	_ = f.MarkDeprecated("auth0-exchange-issuer", "configure an OAuth2Provider with a bearerTrust block instead")
 	_ = f.MarkDeprecated("auth0-exchange-audience", "configure an OAuth2Provider with a bearerTrust block instead")
+	_ = f.MarkDeprecated("code-cache-size", "ignored, authorization codes are now stored on the User record")
 }
 
 // Authenticator provides Keystone authentication functionality.

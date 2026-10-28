@@ -377,7 +377,6 @@ func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, 
 		AccessTokenDuration:  time.Hour,
 		RefreshTokenDuration: time.Hour,
 		TokenCacheSize:       8192,
-		CodeCacheSize:        8192,
 	}, namespace, issuer, k8s, k8s, jwtIssuer, nil, nil)
 
 	if err != nil {
