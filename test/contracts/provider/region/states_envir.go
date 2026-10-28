@@ -149,7 +149,7 @@ func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer commo
 	}
 
 	jwtIssuer := jose.NewJWTIssuer(k8sClient, TestNamespace, &jose.Options{})
-	options := &oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 16, CodeCacheSize: 16}
+	options := &oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 16}
 
 	users := userdb.NewUserDatabase(k8sClient, TestNamespace)
 
