@@ -27,6 +27,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	coreclient "github.com/unikorn-cloud/core/pkg/testing/client"
 	identityopenapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/test/api"
@@ -140,6 +141,25 @@ var _ = Describe("Organization Discovery", func() {
 				Expect(err).To(HaveOccurred())
 				Expect(errors.Is(err, coreclient.ErrUnexpectedStatusCode)).To(BeTrue())
 				GinkgoWriter.Printf("Expected error for invalid organization ID: %v\n", err)
+			})
+		})
+
+		Describe("Given a well-formed ID that names no organization", func() {
+			It("returns 404 with the not_found error", func(ctx SpecContext) {
+				if config.PlatformAdminToken == "" {
+					Skip("PLATFORM_ADMIN_AUTH_TOKEN is required")
+				}
+
+				// The platform administrator can read any organization, so the
+				// request gets past the organization check to the lookup.
+				cfg := *config
+				cfg.AuthToken = config.PlatformAdminToken
+
+				resp, err := api.NewAPIClientWithConfig(&cfg).GetOrganizationWithResponse(ctx, "00000000-0000-4000-8000-000000000000")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode()).To(Equal(http.StatusNotFound))
+				Expect(resp.JSON404).NotTo(BeNil())
+				Expect(resp.JSON404.Error).To(Equal(coreopenapi.NotFound))
 			})
 		})
 	})

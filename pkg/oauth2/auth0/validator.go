@@ -64,6 +64,7 @@ var (
 	ErrInvalidToken      = errors.New("invalid auth0 token")
 	ErrEmailUnverified   = errors.New("auth0 email is not verified")
 	ErrMissingEmail      = errors.New("auth0 email is missing")
+	ErrEmailWhiteSpace   = errors.New("auth0 email has white space at the start or end")
 	ErrInvalidAuthzClaim = errors.New("invalid auth0 authz claim")
 )
 
@@ -211,11 +212,18 @@ func NewValidator(options Options) (*Validator, error) {
 // validateEmail checks the email claim is present and, unless
 // SkipEmailVerification is set, that the address is verified.
 //
+// A claim with white space at the start or end is refused, not trimmed (see
+// unikornv1.HasSurroundingSpace).
+//
 // The claim folds to the canonical subject form, which lower-cases only A to
 // Z.  The result is the lookup key and the passport subject.  A Unicode fold
 // maps KELVIN SIGN to k, so a lookalike claim took another user's record and
 // authority.
 func (v *Validator) validateEmail(claims *tokenClaims) (string, error) {
+	if unikornv1.HasSurroundingSpace(claims.Email) {
+		return "", ErrEmailWhiteSpace
+	}
+
 	email := unikornv1.NormalizeSubject(claims.Email)
 	if email == "" {
 		return "", ErrMissingEmail

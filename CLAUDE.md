@@ -74,7 +74,7 @@ repository, not optional commentary.
 
 ## Consumer Contracts
 
-uni-identity is a Pact provider for nscale-environments (Envir), uni-region, uni-kubernetes and uni-compute. Its
+uni-identity is a Pact provider for nscale-environments (Envir), ai-gateway, uni-region, uni-kubernetes and uni-compute. Its
 verification is in `test/contracts/provider/region/`.
 
 - A change to a handler, the OpenAPI spec or a response field keeps every consumer contract passing. The

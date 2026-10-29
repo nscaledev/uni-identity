@@ -456,7 +456,7 @@ func TestValidateFoldsOnlyASCIILettersOfTheEmail(t *testing.T) {
 		email string
 		want  string
 	}{
-		{name: "ASCII letters fold", email: " JW@Example.com ", want: "jw@example.com"},
+		{name: "ASCII letters fold", email: "JW@Example.com", want: "jw@example.com"},
 		{name: "a lookalike keeps its form", email: "\u212aim@Example.com", want: "\u212aim@example.com"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -467,6 +467,39 @@ func TestValidateFoldsOnlyASCIILettersOfTheEmail(t *testing.T) {
 			}))
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, user.Email)
+		})
+	}
+}
+
+// TestValidateRefusesAnEmailWithSurroundingSpace pins the refusal of an email
+// claim with white space at the start or end.  Trimmed, the claim would name
+// the record of the plain address.
+func TestValidateRefusesAnEmailWithSurroundingSpace(t *testing.T) {
+	t.Parallel()
+
+	issuer := newValidatorTestIssuer(t)
+
+	validator := newTestValidator(t, auth0.Options{
+		Issuer:   issuer.issuer(),
+		Audience: validatorTestAudience,
+	})
+
+	for _, tt := range []struct{ name, email string }{
+		{name: "leading ASCII space", email: " user@example.com"},
+		{name: "trailing ASCII space", email: "user@example.com "},
+		{name: "leading NO-BREAK SPACE", email: "\u00a0user@example.com"},
+		{name: "trailing NEXT LINE", email: "user@example.com\u0085"},
+		{name: "leading LINE SEPARATOR", email: "\u2028user@example.com"},
+		{name: "leading IDEOGRAPHIC SPACE", email: "\u3000user@example.com"},
+		{name: "trailing IDEOGRAPHIC SPACE", email: "user@example.com\u3000"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := validator.Validate(t.Context(), issuer.token(t, func(claims *testTokenClaims) {
+				claims.Email = tt.email
+			}))
+			require.ErrorIs(t, err, auth0.ErrEmailWhiteSpace)
 		})
 	}
 }
