@@ -40,25 +40,37 @@ jobs:
         # checkout lacked the history the ancestry check needs.
         fetch-depth: ${{ github.event.client_payload.provider_version != '' && '0' || '1' }}
 
-    # Only a full commit already on origin/main is accepted, so the payload can't point the run at any
+    # Only a full commit already on origin/main is checked out, so the payload can't point the run at any
     # other ref. The old commit then runs its own provider state handlers: a pact that needs a state
     # added since fails here, and that failure is the correct "can't deploy" answer for that version.
+    # A malformed value fails the job. A full SHA that isn't on main is skipped and the job succeeds:
+    # development records the latest PR head, which a squash merge leaves off main, and that head was
+    # already verified in its own PR run. Every later step is gated on skip.
     - name: Check out the deployed provider version
       id: deployed
       if: ${{ github.event.client_payload.provider_version != '' }}
       env:
         REQUESTED: ${{ github.event.client_payload.provider_version }}
       run: |
-        version="$(hack/pact/provider-version.sh "$REQUESTED")"
+        rc=0
+        version="$(hack/pact/provider-version.sh "$REQUESTED")" || rc=$?
+        if [ "$rc" = 2 ]; then
+          echo "::notice::Skipping provider_version $REQUESTED: it isn't a commit on main, so it is a pre-squash PR head, already verified in its own PR run."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        [ "$rc" = 0 ] || exit "$rc"
         git checkout --quiet --detach "$version"
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
     - name: Setup Go
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       uses: actions/setup-go@v6
       with:
         go-version-file: go.mod
 
     - name: Install Pact FFI Library
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       run: |
         ARCH=$(uname -m)
         if [ "$ARCH" = "x86_64" ]; then
@@ -76,11 +88,13 @@ jobs:
         sudo ldconfig
 
     - name: Setup kind cluster
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       uses: helm/kind-action@v1
       with:
         cluster_name: contract-testing
 
     - name: Install CRDs
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       run: |
         make charts/identity/crds
         kubectl apply -f charts/identity/crds/
@@ -112,6 +126,7 @@ jobs:
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
     - name: Run Provider Contract Verification
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       env:
         PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
         PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
@@ -133,7 +148,7 @@ jobs:
         make test-contracts-provider-ci
 
     - name: Report verification status
-      if: always()
+      if: ${{ always() && steps.deployed.outputs.skip != 'true' }}
       run: |
         if [ "${{ job.status }}" == "success" ]; then
           echo "Provider verification passed - contracts are compatible"
