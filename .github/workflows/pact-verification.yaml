@@ -116,8 +116,13 @@ jobs:
         CGO_LDFLAGS: "-L/usr/local/lib"
         LD_LIBRARY_PATH: "/usr/local/lib"
       run: |
-        # A deployed version is a main commit checked out detached, so name its branch explicitly.
-        if [ -n "$DEPLOYED_VERSION" ]; then export GIT_BRANCH=main; fi
+        # A deployed version publishes its result with no provider branch, so it attaches only to that
+        # commit, which is all can-i-deploy --to-environment reads. Naming a branch would make the broker
+        # move that branch's head to this older commit
+        # (https://github.com/pact-foundation/pact_broker/blob/master/lib/pact_broker/versions/branch_version_repository.rb),
+        # and consumers' can-i-merge would check against it until the next merge. GIT_BRANCH is exported
+        # empty rather than unset, because the Makefile fills an undefined one from the detached checkout.
+        if [ -n "$DEPLOYED_VERSION" ]; then export GIT_BRANCH=; fi
         make test-contracts-provider-ci
 
     - name: Report verification status
