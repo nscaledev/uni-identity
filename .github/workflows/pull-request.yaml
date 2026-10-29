@@ -6,7 +6,6 @@ on:
     - synchronize
     - reopened
     - ready_for_review
-    - labeled
 permissions:
   contents: write
 jobs:
@@ -63,9 +62,26 @@ jobs:
       uses: codecov/codecov-action@v5
       env:
         CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-  ProviderContractVerification:
+  # Reads labels live rather than from the event payload, which a re-run
+  # reuses, so that the skip-contract-tests label applies on re-run.
+  ContractGate:
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-contract-tests') }}
+    permissions:
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.labels.outputs.skip }}
+    steps:
+    - id: labels
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        skip=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }} \
+          --jq 'any(.labels[]; .name == "skip-contract-tests")')
+        echo "skip=$skip" >> "$GITHUB_OUTPUT"
+  ProviderContractVerification:
+    needs: ContractGate
+    runs-on: ubuntu-latest
+    if: needs.ContractGate.outputs.skip != 'true'
     steps:
     - name: Checkout
       uses: actions/checkout@v4
