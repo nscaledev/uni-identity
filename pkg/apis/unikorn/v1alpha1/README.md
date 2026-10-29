@@ -99,6 +99,15 @@ one. A lower-case non-ASCII letter is not refused. The result follows the Unicod
 toolchain. Group subject entries are not checked, because identity compares them in the A to Z
 form.
 
+`HasSurroundingSpace` reports whether a subject starts or ends with white space, as
+`strings.TrimSpace` defines it. `NormalizeSubject` removes that white space, but other systems can
+keep it, so a padded subject would not keep its identity there. A sign-in claim that carries it is
+refused, not trimmed: the email claim of a bearer-trusted token in
+[`pkg/oauth2/auth0`](../../../oauth2/README.md) and of the id_token at the interactive callback in
+[`pkg/oauth2`](../../../oauth2/README.md). A subject that an administrator writes, such as user
+create input or a group subject entry, is still trimmed, because the stored form is the plain
+address.
+
 The identity writers store a subject in canonical form: user `Create`, the group subject entries
 that [`pkg/handler/users`](../../../handler/users/README.md) and
 [`pkg/handler/groups`](../../../handler/groups/README.md) write, and the email claim that

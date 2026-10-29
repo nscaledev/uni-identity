@@ -62,6 +62,8 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
 - Confidential clients are checked against the `secret` key of the client's credentials Secret
   (see [`pkg/provisioners/oauth2client`](../provisioners/oauth2client/README.md)). The deprecated
   `OAuth2Client` status secret is only used when that Secret does not exist yet.
+- `Callback` refuses an id_token whose email claim starts or ends with white space, instead of
+  trimming it. See [`HasSurroundingSpace`](../apis/unikorn/v1alpha1/README.md#subject-matching).
 - `Callback` folds the email claim of the id_token to canonical form before it resolves the user.
   The authorization code and the session cookie store the folded claim, so every token minted from
   them carries the canonical subject. Silent reauthentication folds the claim of a cookie that an
@@ -200,8 +202,8 @@ token is rejected with `401 Unauthorized`.
 
 **`externalUserinfo`** then validates the token (signature, iss, aud, temporal claims, email,
 optional authz-claim), looks up UNI organization membership by email, and builds the userinfo and
-source-claims pair. UNI membership is always authoritative; claimed `orgIds` from the external
-token are discarded.
+source-claims pair. An email claim that starts or ends with white space is refused, not trimmed.
+UNI membership is always authoritative; claimed `orgIds` from the external token are discarded.
 
 **The `src_iss` claim.** The resulting `DispatchResult` carries both a `Source` (coarse provider
 audit label, e.g. the `OAuth2Provider` name) and a `SrcIss` (the issuer URL verbatim, or the

@@ -884,6 +884,8 @@ func normalizeIDTokenSubject(idToken *oidc.IDToken) {
 // authorization back to us.  We then exchange the code for an ID token, and
 // refresh token.  Remember, as far as the client is concerned we're still doing
 // the code grant, so return errors in the redirect query.
+//
+//nolint:cyclop
 func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
@@ -938,6 +940,13 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	_, idToken, err := providers.New(provider.Spec.Type).CodeExchange(r.Context(), a.client, parameters)
 	if err != nil {
 		redirector.raise(ErrorServerError, "code exchange failed: "+err.Error())
+		return
+	}
+
+	// A claim with white space at the start or end is refused, not trimmed
+	// (see unikornv1.HasSurroundingSpace).
+	if unikornv1.HasSurroundingSpace(idToken.Email.Email) {
+		redirector.raise(ErrorAccessDenied, "email has white space at the start or end")
 		return
 	}
 
