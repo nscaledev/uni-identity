@@ -116,13 +116,14 @@ jobs:
         CGO_LDFLAGS: "-L/usr/local/lib"
         LD_LIBRARY_PATH: "/usr/local/lib"
       run: |
-        # A deployed version publishes its result with no provider branch, so it attaches only to that
-        # commit, which is all can-i-deploy --to-environment reads. Naming a branch would make the broker
-        # move that branch's head to this older commit
+        # A deployed version publishes on its own `deployed` branch, not main: the broker moves the head of
+        # whatever branch a version is added to
         # (https://github.com/pact-foundation/pact_broker/blob/master/lib/pact_broker/versions/branch_version_repository.rb),
-        # and consumers' can-i-merge would check against it until the next merge. GIT_BRANCH is exported
-        # empty rather than unset, because the Makefile fills an undefined one from the detached checkout.
-        if [ -n "$DEPLOYED_VERSION" ]; then export GIT_BRANCH=; fi
+        # so main's head would become this older commit and consumers' can-i-merge would check against it
+        # until the next merge. It can't be empty either: the pacts-for-verification request with pending
+        # on and no tags rejects a blank branch
+        # (https://github.com/pact-foundation/pact_broker/blob/master/lib/pact_broker/api/contracts/pacts_for_verification_json_query_schema.rb).
+        if [ -n "$DEPLOYED_VERSION" ]; then export GIT_BRANCH=deployed; fi
         make test-contracts-provider-ci
 
     - name: Report verification status
