@@ -278,6 +278,46 @@ func newCasingIdentityProvider(t *testing.T, clientID, email string) string {
 func TestCallbackFoldsAMixedCaseClaim(t *testing.T) {
 	t.Parallel()
 
+	location, issuer := callbackWithClaim(t, casingLegacy)
+	require.True(t, location.Query().Has("code"), "the login must succeed, got %q", location.String())
+
+	code := &Code{}
+	require.NoError(t, issuer.DecodeJWEToken(t.Context(), location.Query().Get("code"), code, jose.TokenTypeAuthorizationCode))
+
+	require.NotNil(t, code.IDToken)
+	assert.Equal(t, casingFolded, code.IDToken.Email.Email)
+}
+
+// TestCallbackRefusesAClaimWithSurroundingSpace pins the interactive login for
+// a claim with white space at the start or end.  Trimmed, the claim would name
+// the record of the plain address, so the login is refused instead.
+func TestCallbackRefusesAClaimWithSurroundingSpace(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct{ name, email string }{
+		{name: "leading ASCII space", email: " " + casingFolded},
+		{name: "leading NO-BREAK SPACE", email: "\u00a0" + casingFolded},
+		{name: "trailing NEXT LINE", email: casingFolded + "\u0085"},
+		{name: "leading LINE SEPARATOR", email: "\u2028" + casingFolded},
+		{name: "leading IDEOGRAPHIC SPACE", email: "\u3000" + casingFolded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			location, _ := callbackWithClaim(t, tt.email)
+
+			require.False(t, location.Query().Has("code"), "the login must fail")
+			assert.Equal(t, string(ErrorAccessDenied), location.Query().Get("error"))
+			assert.Equal(t, "email has white space at the start or end", location.Query().Get("error_description"))
+		})
+	}
+}
+
+// callbackWithClaim runs an interactive login in which the IdP gives email,
+// and returns the redirect to the client and the issuer of its code.
+func callbackWithClaim(t *testing.T, email string) (*url.URL, *jose.JWTIssuer) {
+	t.Helper()
+
 	const (
 		providerName = "casing-provider"
 		idpClientID  = "casing-idp-client"
@@ -289,7 +329,7 @@ func TestCallbackFoldsAMixedCaseClaim(t *testing.T) {
 	require.NoError(t, cli.Create(ctx, &unikornv1.OAuth2Provider{
 		ObjectMeta: metav1.ObjectMeta{Namespace: josetesting.Namespace, Name: providerName},
 		Spec: unikornv1.OAuth2ProviderSpec{
-			Issuer:       newCasingIdentityProvider(t, idpClientID, casingLegacy),
+			Issuer:       newCasingIdentityProvider(t, idpClientID, email),
 			ClientID:     idpClientID,
 			ClientSecret: "casing-idp-secret",
 		},
@@ -313,11 +353,6 @@ func TestCallbackFoldsAMixedCaseClaim(t *testing.T) {
 
 	location, err := url.Parse(w.Header().Get("Location"))
 	require.NoError(t, err)
-	require.True(t, location.Query().Has("code"), "the login must succeed, got %q", location.String())
 
-	code := &Code{}
-	require.NoError(t, issuer.DecodeJWEToken(ctx, location.Query().Get("code"), code, jose.TokenTypeAuthorizationCode))
-
-	require.NotNil(t, code.IDToken)
-	assert.Equal(t, casingFolded, code.IDToken.Email.Email)
+	return location, issuer
 }

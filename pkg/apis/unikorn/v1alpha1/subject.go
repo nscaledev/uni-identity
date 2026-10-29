@@ -75,6 +75,16 @@ func LowersOnlyASCII(subject string) bool {
 	return strings.ToLower(subject) == foldASCII(subject)
 }
 
+// HasSurroundingSpace reports whether subject starts or ends with white space,
+// as strings.TrimSpace defines it.
+//
+// NormalizeSubject removes that white space.  Other systems can keep it, so a
+// padded subject would not keep its identity there.  A sign-in claim that
+// carries it is refused, not trimmed.
+func HasSurroundingSpace(subject string) bool {
+	return strings.TrimSpace(subject) != subject
+}
+
 // foldASCII lower-cases the ASCII letters of s and leaves every other rune as
 // it is.
 func foldASCII(s string) string {

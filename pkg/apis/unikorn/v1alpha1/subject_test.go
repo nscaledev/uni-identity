@@ -127,6 +127,37 @@ func TestLowersOnlyASCII(t *testing.T) {
 	}
 }
 
+// TestHasSurroundingSpace pins the white space that NormalizeSubject removes
+// from a subject.  A sign-in claim with any of it is refused, because trimmed,
+// the claim would name the record of the plain address.
+func TestHasSurroundingSpace(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name, subject string
+		want          bool
+	}{
+		{name: "leading ASCII space", subject: " kelly@example.com", want: true},
+		{name: "trailing ASCII space", subject: "kelly@example.com ", want: true},
+		{name: "leading NO-BREAK SPACE", subject: "\u00a0kelly@example.com", want: true},
+		{name: "trailing NEXT LINE", subject: "kelly@example.com\u0085", want: true},
+		{name: "leading LINE SEPARATOR", subject: "\u2028kelly@example.com", want: true},
+		{name: "leading IDEOGRAPHIC SPACE", subject: "\u3000kelly@example.com", want: true},
+		{name: "trailing IDEOGRAPHIC SPACE", subject: "kelly@example.com\u3000", want: true},
+		{name: "white space only", subject: " ", want: true},
+		{name: "plain address", subject: "kelly@example.com", want: false},
+		{name: "quoted inner space", subject: "\"kelly smith\"@example.com", want: false},
+		{name: "empty", subject: "", want: false},
+		{name: "ZERO WIDTH SPACE, which is not white space", subject: "\u200bkelly@example.com", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, unikornv1.HasSurroundingSpace(tt.subject))
+		})
+	}
+}
+
 func users(subjects ...string) []unikornv1.User {
 	out := make([]unikornv1.User, len(subjects))
 	for i, subject := range subjects {
