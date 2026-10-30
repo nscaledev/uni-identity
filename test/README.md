@@ -69,6 +69,8 @@ Optional variables for richer coverage:
 - `TEST_PLATFORM_READER_ROLE_ID` — Role CRD ID of `platform-reader`, resolved by the fixtures from
   the cluster (protected roles are invisible via the API); the non-grantability test skips without
   it.
+- `ACL_CACHE_TIMEOUT` — the server's `--acl-cache-timeout` (default `1m`). Specs that revoke a
+  permission wait this long afterwards, so no replica is still serving a cached ACL that allows it.
 
 Notes:
 
