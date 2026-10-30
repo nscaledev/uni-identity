@@ -120,33 +120,26 @@ jobs:
   RecordDevelopment:
     needs: ContractDeployment
     runs-on: ubuntu-latest
-    concurrency:
-      group: contract-deployment-development
-      cancel-in-progress: false
+    # No concurrency group: GitHub keeps one pending job per group, so an older merge finishing
+    # later would replace, and cancel, the newest commit's pending recording. Each run instead
+    # records only while its commit is main's tip, checked just before recording.
     steps:
-    - name: Check this commit is still main's tip
-      id: tip
+    - name: Pull the Pact CLI
+      run: docker pull pactfoundation/pact-cli:latest
+    - name: Record Deployment if this commit is still main's tip
       env:
         GH_TOKEN: ${{ github.token }}
         REPOSITORY: ${{ github.repository }}
         SHA: ${{ github.sha }}
+        PACT_BROKER_BASE_URL: ${{ vars.PACT_BROKER_URL_DEV }}
+        PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
+        PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
       run: |
         tip="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)"
-        if [ "$tip" = "$SHA" ]; then
-          echo "record=true" >> "$GITHUB_OUTPUT"
-        else
+        if [ "$tip" != "$SHA" ]; then
           echo "::notice title=Development not recorded::main has moved on to $tip, whose own merge run records it"
+          exit 0
         fi
-    - name: Record Deployment
-      if: ${{ steps.tip.outputs.record == 'true' }}
-      run: |
-        docker run --rm \
-          --network host \
+        docker run --rm --network host -e PACT_BROKER_BASE_URL -e PACT_BROKER_USERNAME -e PACT_BROKER_PASSWORD \
           pactfoundation/pact-cli:latest \
-          pact-broker record-deployment \
-          --pacticipant="uni-identity" \
-          --version="${{ github.sha }}" \
-          --environment="development" \
-          --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
-          --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
-          --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}"
+          pact-broker record-deployment --pacticipant="uni-identity" --version="$SHA" --environment="development"
