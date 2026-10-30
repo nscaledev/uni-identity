@@ -1,0 +1,20 @@
+# Placeholder fixture for an out-of-repo service exposing open-vocabulary
+# endpoints (example:*); the generator must pass them through opaquely.
+# The metadata.name is a fixed placeholder UUID.
+apiVersion: identity.unikorn-cloud.org/v1alpha1
+kind: Role
+metadata:
+  name: 00000000-0000-0000-0000-000000000101
+  labels:
+    unikorn-cloud.org/name: example-operator
+spec:
+  scopes:
+    organization:
+      - name: example:widgets
+        operations: [create, read]
+      - name: example:gadgets
+        operations: [read]
+      - name: example:gizmos
+        operations: [read]
+      - name: example:sprockets
+        operations: [read]
