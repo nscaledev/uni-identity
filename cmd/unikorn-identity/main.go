@@ -22,11 +22,8 @@ import (
 	"context"
 	"errors"
 	"net"
-	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
@@ -35,6 +32,7 @@ import (
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"github.com/unikorn-cloud/identity/pkg/server"
 	servermetrics "github.com/unikorn-cloud/identity/pkg/server/metrics"
 
@@ -93,7 +91,9 @@ func start() {
 		return
 	}
 
-	server, err := s.GetServer(client, readCache)
+	ready := readiness.New()
+
+	apiServer, err := s.GetServer(ctx, client, readCache, ready)
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 
@@ -108,41 +108,37 @@ func start() {
 	}
 	defer closeServerMetrics(metrics, logger)
 
-	listener, err := net.Listen("tcp", server.Addr)
+	listener, err := net.Listen("tcp", apiServer.Addr)
 	if err != nil {
 		logger.Error(err, "failed to bind server listener")
 
 		return
 	}
 
-	// Register a signal handler to trigger a graceful shutdown.
-	stop := make(chan os.Signal, 1)
+	healthServer := server.NewHealthServer(ready)
 
-	signal.Notify(stop, syscall.SIGTERM)
+	healthListener, err := net.Listen("tcp", healthServer.Addr)
+	if err != nil {
+		logger.Error(err, "failed to bind health listener")
 
+		return
+	}
+
+	// The health server answers until the process exits, so the probe
+	// keeps failing while the API server drains.
 	go func() {
-		<-stop
-
-		// Cancel anything hanging off the root context.
-		cancel()
-
-		// Shutdown the server, Kubernetes gives us 30 seconds before a SIGKILL.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(ctx); err != nil {
-			logger.Error(err, "server shutdown error")
+		if err := healthServer.Serve(healthListener); err != nil {
+			logger.Error(err, "health server error")
 		}
 	}()
 
-	if err := metrics.Serve(server, listener); err != nil {
-		if errors.Is(err, http.ErrServerClosed) {
-			return
-		}
+	sigterm, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	defer stopSignals()
 
-		logger.Error(err, "unexpected server error")
+	serve := func() error { return metrics.Serve(apiServer, listener) }
 
-		return
+	if err := server.Serve(serve, apiServer, ready, cancel, sigterm.Done()); err != nil {
+		logger.Error(err, "server error")
 	}
 }
 

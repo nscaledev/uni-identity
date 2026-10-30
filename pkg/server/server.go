@@ -48,6 +48,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -148,7 +149,10 @@ func (s *Server) newRouter(schema *helpers.Schema) (*chi.Mux, error) {
 	return router, nil
 }
 
-func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http.Server, error) {
+// GetServer assembles the HTTP server. Background work it starts, such as the
+// JOSE leader election, stops when ctx ends. The readiness checker gains the
+// conditions the handler graph adds.
+func (s *Server) GetServer(ctx context.Context, client client.Client, readCache client.Reader, ready *readiness.Checker) (*http.Server, error) {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
@@ -161,9 +165,11 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 
 	// Setup authn/authz
 	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
-	if err := issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{}); err != nil {
+	if err := issuer.Run(ctx, &jose.InClusterCoordinationClientGetter{}); err != nil {
 		return nil, err
 	}
+
+	ready.Require(readiness.SigningKeyAvailable(issuer))
 
 	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
 
@@ -196,18 +202,18 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 	// still runs with a nil map, so the subject-binding advisory keeps working.
 	// Validate treats nil differently from an empty-but-successful map, so it
 	// never reads a failed fetch as "no dead bindings".
-	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)
+	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(ctx, client, s.CoreOptions.Namespace)
 
 	if issuersErr != nil {
-		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", issuersErr)
+		log.FromContext(ctx).Info("rbac options advisory check skipped: provider list unavailable", "error", issuersErr)
 	} else {
-		groupsClaimByIssuer, claimsErr := oauth2.GroupsClaimByIssuer(context.TODO())
+		groupsClaimByIssuer, claimsErr := oauth2.GroupsClaimByIssuer(ctx)
 		if claimsErr != nil {
-			log.FromContext(context.TODO()).Info("group role binding advisory check skipped: groups claim map unavailable", "error", claimsErr)
+			log.FromContext(ctx).Info("group role binding advisory check skipped: groups claim map unavailable", "error", claimsErr)
 		}
 
 		if err := s.RBACOptions.Validate(trustedNonUNIIssuers, groupsClaimByIssuer); err != nil {
-			log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
+			log.FromContext(ctx).Info("rbac options advisory check failed", "error", err)
 		}
 	}
 
@@ -217,7 +223,7 @@ func (s *Server) GetServer(client client.Client, readCache client.Reader) (*http
 
 	// A configured collector that cannot be reached at startup fails the
 	// process rather than silently dropping audit records for its lifetime.
-	auditSinks, err := auditSinks(context.TODO(), client, s.AuditOptions)
+	auditSinks, err := auditSinks(ctx, client, s.AuditOptions)
 	if err != nil {
 		return nil, err
 	}

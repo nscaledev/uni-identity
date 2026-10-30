@@ -266,4 +266,14 @@ watched=$(yq -r '
 [[ "$(server_verbs leases)" == "create,delete,get,update" ]] || die "expected only create, delete, get and update on leases for the server"
 [[ -z "$(server_verbs configmaps)" ]] || die "expected no configmaps permission for the server"
 
+# The server reports readiness on /readyz, so a rollout only sends traffic to a
+# replica once it can read the signing key. The probe has its own port, which
+# the Service does not expose, so the ingress cannot reach it.
+rendered=$(helm template test "$CHART")
+server_deployment() { yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-server\") | $1" <<<"$rendered"; }
+[[ "$(server_deployment '.spec.template.spec.containers[0].readinessProbe.httpGet | .path + " " + .port')" == "/readyz health" ]] || die "expected a readiness probe on /readyz on the health port"
+[[ "$(yq -r 'select(.kind == "Service" and .metadata.name == "test-server") | .spec.ports[].targetPort' <<<"$rendered")" == "http" ]] || die "expected the server Service to expose only the http port"
+# pkg/server/shutdown_internal_test.go checks the shutdown fits in this.
+[[ "$(server_deployment '.spec.template.spec.terminationGracePeriodSeconds')" == "30" ]] || die "expected a 30s termination grace period for the server"
+
 echo "chart render checks OK"

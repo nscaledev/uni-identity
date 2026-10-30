@@ -111,8 +111,20 @@ At a high level, `GetServer()` does the following:
 7. construct the top-level handler implementation
 8. attach everything through the generated OpenAPI router and return `http.Server`
 
-The command process publishes build metadata for its lifetime and reports ready
-only while it owns the bound HTTP listener.
+The command process publishes build metadata for its lifetime. It serves readiness on
+`/readyz` on a separate health listener (`:6081`), which the Service does not expose, so the
+ingress cannot route to it; other pods can still reach it on the Pod IP unless a NetworkPolicy
+prevents that, and the chart does not install one. A failing probe gets a bare 503; the cause is logged. A replica is ready when
+it is not shutting down and it has read the primary token signing key once. The key is
+cluster-wide state written by the JOSE leader, so on a fresh install every replica stays not
+ready until the first leader has written it. After that first read the probe does not call the
+API server, so an API server slowdown cannot take every replica out of service together.
+Leadership itself, external OIDC providers and the audit collector do not gate readiness.
+
+On SIGTERM the process reports not ready, keeps serving for 5 seconds so endpoint removal reaches
+every node, then stops the background work and drains in-flight requests for up to 10 seconds.
+It exits only once the drain has finished. The chart's 30 second termination grace period covers
+both; `pkg/server/shutdown.go` owns the timings.
 
 This makes the trust pipeline an application-level invariant rather than a handler-by-handler
 convention.
@@ -130,8 +142,9 @@ convention.
   list includes. Revocation-sensitive token and membership state is always read directly
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
-- API readiness reflects ownership of the bound HTTP listener, not construction
-  of the handler graph
+- API readiness means this replica can serve a request end to end: not shutting down and
+  signing key read. The read cache syncs before the listener binds, so it needs no check. The
+  `unikorn_server_ready` metric reports listener ownership only
 
 ## Caveats
 
