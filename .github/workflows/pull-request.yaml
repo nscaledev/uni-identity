@@ -25,6 +25,8 @@ jobs:
       run: make license
     - name: Validate OpenAPI Schema
       run: make validate
+    - name: Test the dispatched provider version check
+      run: hack/pact/provider-version_test.sh
 #    - name: Validate documentation
 #      run: sudo apt -y install wbritish && make validate-docs
   Runtime:
