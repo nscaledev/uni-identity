@@ -42,49 +42,53 @@ jobs:
         spec-path: pkg/openapi/server.spec.yaml
         version: main
         token: ${{ secrets.OPENAPI_PUBLISH_TOKEN }}
+  # Verifies the commit pushed to main and records that commit as deployed to development. Release
+  # tags point at commits on main, so every release is then a version the broker has verification
+  # results for, and a consumer can later be checked against any release
+  # (INST-1613). Recording the last pull request head instead left a release commit unknown to the
+  # broker, so a consumer's can-i-deploy against it could only answer "unknown".
   ContractDeployment:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-    - name: Get Latest Deployable Version
-      id: get_version
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version-file: go.mod
+    - name: Install Pact FFI Library
       run: |
-        OUTPUT=$(docker run --rm \
-          --network host \
-          pactfoundation/pact-cli:latest \
-          pact-broker describe-version \
-          --pacticipant="uni-identity" \
-          --latest="deployable-to-dev" \
-          --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
-          --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
-          --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}" \
-          --output=json)
-
-        VERSION=$(echo "$OUTPUT" | grep -o '"number"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-
-        if [ -z "$VERSION" ]; then
-          echo "ERROR: No deployable version found with 'deployable-to-dev' tag"
-          echo "Broker response: $OUTPUT"
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+          PACT_ARCH="x86_64"
+        elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then
+          PACT_ARCH="aarch64"
+        else
+          echo "Unsupported architecture: $ARCH"
           exit 1
         fi
-
-        echo "Found deployable version: $VERSION"
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-    - name: Tag Main Branch
+        wget https://github.com/pact-foundation/pact-reference/releases/download/libpact_ffi-v0.4.28/libpact_ffi-linux-${PACT_ARCH}.so.gz
+        gunzip libpact_ffi-linux-${PACT_ARCH}.so.gz
+        sudo mkdir -p /usr/local/lib
+        sudo mv libpact_ffi-linux-${PACT_ARCH}.so /usr/local/lib/libpact_ffi.so
+        sudo ldconfig
+    - name: Setup kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: contract-testing
+    - name: Install CRDs
       run: |
-        docker run --rm \
-          --network host \
-          pactfoundation/pact-cli:latest \
-          pact-broker create-version-tag \
-          --pacticipant="uni-identity" \
-          --version="${{ steps.get_version.outputs.version }}" \
-          --tag="main" \
-          --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
-          --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
-          --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}"
-
+        make charts/identity/crds
+        kubectl apply -f charts/identity/crds/
+    # Publishes results under main's commit, so the commit itself is a verified version.
+    - name: Verify consumer contracts against main
+      env:
+        PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
+        PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
+        PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+        PROVIDER_VERSION: ${{ github.sha }}
+        GIT_BRANCH: main
+      run: make test-contracts-provider-ci
     - name: Set Main Branch
       run: |
         docker run --rm \
@@ -92,21 +96,50 @@ jobs:
           pactfoundation/pact-cli:latest \
           pact-broker create-or-update-version \
           --pacticipant="uni-identity" \
-          --version="${{ steps.get_version.outputs.version }}" \
+          --version="${{ github.sha }}" \
           --branch="main" \
           --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
           --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
           --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}"
-
-    - name: Record Deployment
+    - name: Tag Main Branch
       run: |
         docker run --rm \
           --network host \
           pactfoundation/pact-cli:latest \
-          pact-broker record-deployment \
+          pact-broker create-version-tag \
           --pacticipant="uni-identity" \
-          --version="${{ steps.get_version.outputs.version }}" \
-          --environment="development" \
+          --version="${{ github.sha }}" \
+          --tag="main" \
           --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
           --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
           --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}"
+  # Records development in its own job so it can be serialised without holding up verification: a
+  # queued run superseded by a newer push only loses its recording, which the newer run makes anyway.
+  # Only main's tip is recorded, so overlapping merges or a re-run of an older merge can't move
+  # development back to an older commit.
+  RecordDevelopment:
+    needs: ContractDeployment
+    runs-on: ubuntu-latest
+    # No concurrency group: GitHub keeps one pending job per group, so an older merge finishing
+    # later would replace, and cancel, the newest commit's pending recording. Each run instead
+    # records only while its commit is main's tip, checked just before recording.
+    steps:
+    - name: Pull the Pact CLI
+      run: docker pull pactfoundation/pact-cli:latest
+    - name: Record Deployment if this commit is still main's tip
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ github.repository }}
+        SHA: ${{ github.sha }}
+        PACT_BROKER_BASE_URL: ${{ vars.PACT_BROKER_URL_DEV }}
+        PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
+        PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
+      run: |
+        tip="$(gh api "repos/$REPOSITORY/commits/main" --jq .sha)"
+        if [ "$tip" != "$SHA" ]; then
+          echo "::notice title=Development not recorded::main has moved on to $tip, whose own merge run records it"
+          exit 0
+        fi
+        docker run --rm --network host -e PACT_BROKER_BASE_URL -e PACT_BROKER_USERNAME -e PACT_BROKER_PASSWORD \
+          pactfoundation/pact-cli:latest \
+          pact-broker record-deployment --pacticipant="uni-identity" --version="$SHA" --environment="development"
