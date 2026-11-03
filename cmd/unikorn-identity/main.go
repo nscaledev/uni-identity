@@ -110,8 +110,12 @@ func start() {
 	}
 	defer closeServerMetrics(metrics, logger)
 
+	// Metrics outlive the root context, so the drain is scraped too.
+	metricsCtx, stopMetrics := context.WithCancel(context.Background())
+	defer stopMetrics()
+
 	go func() {
-		if err := s.CoreOptions.ServeMetrics(ctx, ":8080"); err != nil {
+		if err := s.CoreOptions.ServeMetrics(metricsCtx, ":8080"); err != nil {
 			logger.Error(err, "metrics server error")
 		}
 	}()
@@ -145,7 +149,7 @@ func start() {
 
 	serve := func() error { return metrics.Serve(apiServer, listener) }
 
-	if err := server.Serve(serve, apiServer, ready, cancel, sigterm.Done()); err != nil {
+	if err := server.Serve(serve, apiServer, ready, cancel, stopMetrics, sigterm.Done()); err != nil {
 		logger.Error(err, "server error")
 	}
 }

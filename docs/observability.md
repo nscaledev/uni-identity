@@ -11,7 +11,9 @@ Identity has a limited **producer** surface, so the starting point matters:
 
 - **Every Identity workload exposes Prometheus metrics on `:8080/metrics`.**
   The controller-runtime processes use their existing metrics listener; the API
-  server serves the same registry with core's `ServeMetrics`. The chart declares the port as
+  server serves the same registry with core's `ServeMetrics`, and keeps serving
+  it for one scrape interval after its shutdown drain so the drain's requests
+  are collected (`pkg/server/shutdown.go`). The chart declares the port as
   `prometheus`, allowing platform PodMonitors to discover it without exposing it
   through the API Service or Ingress.
 - **The first-party metric surface includes two counters** created via

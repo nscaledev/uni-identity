@@ -30,7 +30,8 @@ import (
 const HealthListenAddress = ":6081"
 
 // lifecycle times how a replica leaves service. The chart's
-// terminationGracePeriodSeconds must cover the delay and the drain.
+// terminationGracePeriodSeconds must cover the delay, the drain and the
+// final scrape.
 type lifecycle struct {
 	// delay is how long the server keeps serving after it reports not ready,
 	// so endpoint removal reaches every node before connections are refused.
@@ -38,11 +39,20 @@ type lifecycle struct {
 
 	// drain bounds how long in-flight requests get to finish.
 	drain time.Duration
+
+	// scrape is how long metrics stay served after the drain, so a scrape
+	// collects what the drain recorded. It exceeds the scrape interval.
+	scrape time.Duration
+
+	// sleep lets the shutdown sequence be observed without waiting in tests.
+	sleep func(time.Duration)
 }
 
 const (
 	shutdownDelay = 5 * time.Second
 	shutdownDrain = 10 * time.Second
+	// The platform PodMonitor uses the default 30s scrape interval.
+	shutdownScrape = 35 * time.Second
 )
 
 // NewHealthServer serves the readiness probe on /readyz.
@@ -63,13 +73,16 @@ type Shutdowner interface {
 }
 
 // Serve runs serve until stop closes, then takes the replica out of service
-// with server's Shutdown. It returns once the drain has finished, so the
-// process does not exit while requests are in flight.
-func Serve(serve func() error, server Shutdowner, ready *readiness.Checker, stopBackground context.CancelFunc, stop <-chan struct{}) error {
-	return lifecycle{delay: shutdownDelay, drain: shutdownDrain}.serve(serve, server, ready, stopBackground, stop)
+// with server's Shutdown. It returns once the drain has finished and metrics
+// have been served for one more scrape, so the process does not exit while
+// requests are in flight or before the drain's metrics are collected.
+func Serve(serve func() error, server Shutdowner, ready *readiness.Checker, stopBackground, stopMetrics context.CancelFunc, stop <-chan struct{}) error {
+	l := lifecycle{delay: shutdownDelay, drain: shutdownDrain, scrape: shutdownScrape}
+
+	return l.serve(serve, server, ready, stopBackground, stopMetrics, stop)
 }
 
-func (l lifecycle) serve(serve func() error, server Shutdowner, ready *readiness.Checker, stopBackground context.CancelFunc, stop <-chan struct{}) error {
+func (l lifecycle) serve(serve func() error, server Shutdowner, ready *readiness.Checker, stopBackground, stopMetrics context.CancelFunc, stop <-chan struct{}) error {
 	stopped := make(chan error, 1)
 	served := make(chan struct{})
 
@@ -78,7 +91,7 @@ func (l lifecycle) serve(serve func() error, server Shutdowner, ready *readiness
 	go func() {
 		select {
 		case <-stop:
-			stopped <- l.stop(ready, stopBackground, server)
+			stopped <- l.stop(ready, stopBackground, stopMetrics, server)
 		case <-served:
 		}
 	}()
@@ -93,16 +106,33 @@ func (l lifecycle) serve(serve func() error, server Shutdowner, ready *readiness
 }
 
 // stop takes the replica out of service, waits for endpoint removal to
-// propagate, stops the background work, then drains the server.
-func (l lifecycle) stop(ready *readiness.Checker, stopBackground context.CancelFunc, server Shutdowner) error {
+// propagate, stops the background work, drains the server, then stops metrics
+// after the final scrape.
+func (l lifecycle) stop(ready *readiness.Checker, stopBackground, stopMetrics context.CancelFunc, server Shutdowner) error {
 	ready.Stopping()
 
-	time.Sleep(l.delay)
+	l.wait(l.delay)
 
 	stopBackground()
 
 	ctx, cancel := context.WithTimeout(context.Background(), l.drain)
 	defer cancel()
 
-	return server.Shutdown(ctx)
+	err := server.Shutdown(ctx)
+
+	l.wait(l.scrape)
+
+	stopMetrics()
+
+	return err
+}
+
+func (l lifecycle) wait(duration time.Duration) {
+	if l.sleep != nil {
+		l.sleep(duration)
+
+		return
+	}
+
+	time.Sleep(duration)
 }

@@ -124,8 +124,9 @@ Leadership itself, external OIDC providers and the audit collector do not gate r
 
 On SIGTERM the process reports not ready, keeps serving for 5 seconds so endpoint removal reaches
 every node, then stops the background work and drains in-flight requests for up to 10 seconds.
-It exits only once the drain has finished. The chart's 30 second termination grace period covers
-both; `pkg/server/shutdown.go` owns the timings.
+Metrics stay served for 35 seconds after the drain, longer than the 30 second scrape interval, so
+the drain's requests are scraped. It exits once that has finished. The chart's 60 second
+termination grace period covers all three; `pkg/server/shutdown.go` owns the timings.
 
 This makes the trust pipeline an application-level invariant rather than a handler-by-handler
 convention.

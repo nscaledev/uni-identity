@@ -273,6 +273,6 @@ server_deployment() { yq -r "select(.kind == \"Deployment\" and .metadata.name =
 [[ "$(server_deployment '.spec.template.spec.containers[0].readinessProbe.httpGet | .path + " " + .port')" == "/readyz health" ]] || die "expected a readiness probe on /readyz on the health port"
 [[ "$(yq -r 'select(.kind == "Service" and .metadata.name == "test-server") | .spec.ports[].targetPort' <<<"$rendered")" == "http" ]] || die "expected the server Service to expose only the http port"
 # pkg/server/shutdown_internal_test.go checks the shutdown fits in this.
-[[ "$(server_deployment '.spec.template.spec.terminationGracePeriodSeconds')" == "30" ]] || die "expected a 30s termination grace period for the server"
+[[ "$(server_deployment '.spec.template.spec.terminationGracePeriodSeconds')" == "60" ]] || die "expected a 60s termination grace period for the server"
 
 echo "chart render checks OK"
