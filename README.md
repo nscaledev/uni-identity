@@ -487,7 +487,9 @@ In exceptional circumstances (e.g. a hotfix that must merge before contract test
 | Label present | Skipped (neutral) | Skipped (neutral) |
 | Verification fails | Failed | Skipped |
 
-Skipped jobs are treated as neutral by GitHub branch protection, so required status checks remain satisfied.
+Adding or removing a label does not start a run.
+After applying the label, use **Re-run all jobs** on the latest `Unikorn Push` run, or push a commit.
+**Re-run failed jobs** won't work: it doesn't re-read the labels, so verification runs and fails again.
 The label application is fully auditable in the PR timeline.
 
 **When to use:** Only when contract tests need updating but cannot block a hotfix. Remove the label once the pact is updated.
