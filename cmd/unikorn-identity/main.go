@@ -63,8 +63,6 @@ type cacheRunner interface {
 
 // run is the entry point to server.  It returns an error when the server fails
 // to start, or when a listener stops before shutdown.
-//
-//nolint:cyclop // Each start step logs and returns its own error.
 func run() error {
 	s := &server.Server{}
 	s.AddFlags(pflag.CommandLine)
@@ -144,24 +142,30 @@ func run() error {
 		}
 	}()
 
+	serve := func() error { return metrics.Serve(apiServer, listener) }
+
+	return serveUntilStopped(logger, apiServer, serve, s.SPIFFEOptions.ListenAddress, ready, cancel)
+}
+
+// serveUntilStopped serves the API server, and the SPIFFE listener when it is on,
+// until SIGTERM or until a listener fails.  The error of a failed listener wraps
+// server.ErrListenerStopped.  Any other error is logged only, so that the process
+// exits with code 0 after SIGTERM, also when the drain runs out of time.
+func serveUntilStopped(logger logr.Logger, apiServer *http.Server, serve func() error, spiffeAddress string, ready *readiness.Checker, stopBackground context.CancelFunc) error {
 	sigterm, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stopSignals()
 
 	stop, stopServer := context.WithCancelCause(sigterm)
 	defer stopServer(nil)
 
-	if err := serveSPIFFE(apiServer, s.SPIFFEOptions.ListenAddress, stopServer); err != nil {
+	if err := serveSPIFFE(apiServer, spiffeAddress, stopServer); err != nil {
 		logger.Error(err, "failed to bind SPIFFE listener")
 
 		return err
 	}
 
-	serve := func() error { return metrics.Serve(apiServer, listener) }
-
-	if err := server.Serve(serve, apiServer, ready, cancel, stop.Done()); err != nil {
+	if err := server.Serve(serve, apiServer, ready, stopBackground, stop.Done()); err != nil {
 		logger.Error(err, "server error")
-
-		return err
 	}
 
 	if err := context.Cause(stop); errors.Is(err, server.ErrListenerStopped) {

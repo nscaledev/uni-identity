@@ -132,8 +132,8 @@ every node, then stops the background work and drains in-flight requests for up 
 It exits only once the drain has finished. The chart's 30 second termination grace period covers
 both; `pkg/server/shutdown.go` owns the timings.
 
-The process exits with code 1 when it fails to start, and when the SPIFFE listener stops with an
-error. In the second case it drains as it does after SIGTERM.
+The process exits with code 0 after SIGTERM. It exits with code 1 when it fails to start, and when
+the SPIFFE listener stops with an error. In the second case it drains as it does after SIGTERM.
 
 ### SPIFFE Listener
 
