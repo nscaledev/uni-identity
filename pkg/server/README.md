@@ -49,17 +49,23 @@ The ordering here is intentional and should be read as precedent for other API s
 
 ### Pre-Routing Shared Middleware
 
-The `core` middleware stack is applied directly to the raw router in this order:
+The `core` middleware stack is applied directly to the raw router in this order, after one
+identity step:
 
-1. request deadline
-2. OpenTelemetry
-3. logging
-4. route resolver
-5. RED metrics
-6. CORS
+1. verified peer headers (identity)
+2. request deadline
+3. OpenTelemetry
+4. logging
+5. route resolver
+6. RED metrics
+7. CORS
 
 The reasons matter:
 
+- The verified peer headers step acts only on a request with a verified TLS peer, which only the
+  SPIFFE listener has (see "SPIFFE Listener"). It deletes `Ssl-Client-Cert` and
+  `Ssl-Client-Verify`, so no later step reads them and the request log never writes them. It
+  runs before logging for that reason.
 - The request deadline runs first so it bounds all later work. The server's write timeout stops
   response writes but does not cancel the request context, so the deadline is the shorter of
   `--server-request-timeout` and `--server-write-timeout` minus two seconds. Those two seconds
@@ -126,6 +132,36 @@ every node, then stops the background work and drains in-flight requests for up 
 It exits only once the drain has finished. The chart's 30 second termination grace period covers
 both; `pkg/server/shutdown.go` owns the timings.
 
+The process exits with code 0 after SIGTERM. It exits with code 1 when it fails to start, and when
+the SPIFFE listener stops with an error. In the second case it drains as it does after SIGTERM.
+
+### SPIFFE Listener
+
+`--spiffe-tls-listen-address` (for example `:6082`) turns on a second listener on the same
+`http.Server`, with the same router and middleware. It is empty by default, and then the process
+behaves as before: the server has no TLS configuration, no protocol limit and no error log.
+`pkg/server/spiffe.go` owns the listener.
+
+When the listener is on:
+
+- At start, the process opens the SPIFFE Workload API source at `SPIFFE_ENDPOINT_SOCKET`. It waits
+  at most `--spiffe-start-timeout` (default `30s`) for the first X.509-SVID, and exits with an error
+  when none arrives. It logs the SPIFFE ID and the expiry time of the SVID.
+- Each ID in `--spiffe-relayer-ids` must be a SPIFFE ID in the trust domain of the SVID of identity,
+  and a key of `--system-account-roles-ids`. Otherwise the process exits with an error. The list can
+  be empty. The validator honours `Unikorn-Client-Certificate` from a verified peer only when the
+  peer is on this list (see [`pkg/middleware/authorization`](../middleware/authorization/README.md)).
+- The listener presents the SVID of identity and requires a client SVID of the same trust domain.
+  It allows TLS 1.3 only, HTTP/1 only, and no session resumption, so each connection verifies its
+  peer at the handshake.
+- The caller of a request is the verified TLS peer. When the peer certificate is past half of its
+  lifetime, each response has `Connection: close`, so the client reconnects with its renewed SVID.
+- The server error log, which holds TLS handshake errors, goes to the structured log under the name
+  `http-server`.
+- Readiness also requires an SVID that has not expired. The condition checks on each probe, so the
+  replica leaves service when the SVID expires and returns when the source renews it. The not-ready
+  log line names the expiry time; the probe response is still a bare 503.
+
 This makes the trust pipeline an application-level invariant rather than a handler-by-handler
 convention.
 
@@ -143,8 +179,9 @@ convention.
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
 - API readiness means this replica can serve a request end to end: not shutting down and
-  signing key read. The read cache syncs before the listener binds, so it needs no check. The
-  `unikorn_server_ready` metric reports listener ownership only
+  signing key read, and, when the SPIFFE listener is on, an SVID that has not expired. The read
+  cache syncs before the listener binds, so it needs no check. The `unikorn_server_ready` metric
+  reports listener ownership only
 
 ## Caveats
 

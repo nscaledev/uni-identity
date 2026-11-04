@@ -307,8 +307,9 @@ external lifecycle exporter ─────────────────�
 
 ### Transport posture (documented, not hardened)
 
-Identity serves no `/metrics`; the only listener is the API itself (`:6080`,
-`pkg/server/options.go`). Metrics leave over OTLP/HTTP push, plain-text
+Identity serves no `/metrics`; the only listeners are the API itself (`:6080`,
+`options.ServerOptions` in uni-core) and, when `--spiffe-tls-listen-address` is set, the SPIFFE
+TLS listener of the same API server (`pkg/server/spiffe.go`). Metrics leave over OTLP/HTTP push, plain-text
 (`WithInsecure`), reachable only as far as the collector endpoint it is pointed at.
 The chart does not configure the externally operated lifecycle exporter. Transport
 settings for that component are therefore outside this chart's scope. This posture
