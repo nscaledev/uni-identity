@@ -276,4 +276,29 @@ server_deployment() { yq -r "select(.kind == \"Deployment\" and .metadata.name =
 # pkg/server/shutdown_internal_test.go checks the shutdown fits in this.
 [[ "$(server_deployment '.spec.template.spec.terminationGracePeriodSeconds')" == "30" ]] || die "expected a 30s termination grace period for the server"
 
+# The SPIFFE listener is off by default, so a default install keeps the
+# legacy pod: no SPIFFE flag, variable, port or volume.
+assert_no_match "$rendered" "--spiffe-"
+assert_no_match "$rendered" "SPIFFE_ENDPOINT_SOCKET"
+assert_no_match "$rendered" "spiffe-workload-api"
+[[ "$(server_deployment '.spec.template.spec.containers[0].ports[].name' | paste -sd, -)" == "http,health" ]] || die "expected only the http and health ports on the server by default"
+
+# With the listener on, the server listens on 6082 behind the same Service,
+# reads the Workload API socket from the CSI volume, and gets the relayer
+# IDs as one comma-separated flag.
+relayers=spiffe://example.org/ns/region/sa/region,spiffe://example.org/ns/compute/sa/compute
+rendered=$(helm template test "$CHART" --set spiffe.enabled=true \
+	--set-json 'spiffe.relayerIds=["spiffe://example.org/ns/region/sa/region","spiffe://example.org/ns/compute/sa/compute"]')
+spiffe_flags() { server_deployment '.spec.template.spec.containers[0].args[] | select(test("^--spiffe-"))' | paste -sd' ' -; }
+[[ "$(spiffe_flags)" == "--spiffe-tls-listen-address=:6082 --spiffe-relayer-ids=$relayers --spiffe-start-timeout=30s" ]] || die "expected the SPIFFE listener flags on the server, got: $(spiffe_flags)"
+[[ "$(server_deployment '.spec.template.spec.containers[0].env[] | select(.name == "SPIFFE_ENDPOINT_SOCKET") | .value')" == "unix:///spiffe-workload-api/spire-agent.sock" ]] || die "expected SPIFFE_ENDPOINT_SOCKET on the server"
+[[ "$(server_deployment '.spec.template.spec.containers[0].ports[] | .name + ":" + (.containerPort | tostring)' | paste -sd, -)" == "http:6080,health:6081,spiffe:6082" ]] || die "expected the container ports http 6080, health 6081 and spiffe 6082"
+[[ "$(server_deployment '.spec.template.spec.volumes[] | select(.name == "spiffe-workload-api") | .csi.driver + " " + (.csi.readOnly | tostring)')" == "csi.spiffe.io true" ]] || die "expected the read-only CSI volume spiffe-workload-api"
+[[ "$(server_deployment '.spec.template.spec.containers[0].volumeMounts[] | select(.name == "spiffe-workload-api") | .mountPath + " " + (.readOnly | tostring)')" == "/spiffe-workload-api true" ]] || die "expected the read-only mount of spiffe-workload-api at /spiffe-workload-api"
+[[ "$(yq -r 'select(.kind == "Service" and .metadata.name == "test-server") | .spec.ports[] | .name + ":" + (.port | tostring) + ":" + .targetPort' <<<"$rendered" | paste -sd, -)" == "http:80:http,spiffe:6082:spiffe" ]] || die "expected the server Service to expose the http and spiffe ports"
+
+# An empty relayer list renders no relayer flag.
+rendered=$(helm template test "$CHART" --set spiffe.enabled=true)
+[[ "$(spiffe_flags)" == "--spiffe-tls-listen-address=:6082 --spiffe-start-timeout=30s" ]] || die "expected no --spiffe-relayer-ids for an empty relayer list, got: $(spiffe_flags)"
+
 echo "chart render checks OK"

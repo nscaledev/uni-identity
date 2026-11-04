@@ -208,16 +208,31 @@ spec:
         {{- if eq .Values.server.runtimeSchemaValidation false }}
         - --runtime-schema-validation=false
         {{- end }}
+        {{- if .Values.spiffe.enabled }}
+        - --spiffe-tls-listen-address=:6082
+        {{- with .Values.spiffe.relayerIds }}
+        - {{ printf "--spiffe-relayer-ids=%s" (join "," .) | quote }}
+        {{- end }}
+        - --spiffe-start-timeout={{ .Values.spiffe.startTimeout }}
+        {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}
         {{- include "unikorn.identity.otelEnv" . | nindent 8 }}
+        {{- if .Values.spiffe.enabled }}
+        - name: SPIFFE_ENDPOINT_SOCKET
+          value: {{ .Values.spiffe.workloadAPISocket | quote }}
+        {{- end }}
         ports:
         - name: http
           containerPort: 6080
         # Kept out of the Service, so the ingress cannot reach the probe.
         - name: health
           containerPort: 6081
+        {{- if .Values.spiffe.enabled }}
+        - name: spiffe
+          containerPort: 6082
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /readyz
@@ -229,8 +244,21 @@ spec:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
           readOnlyRootFilesystem: true
+        {{- if .Values.spiffe.enabled }}
+        volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+        {{- end }}
       serviceAccountName: {{ .Release.Name }}-server
       # Covers the server's shutdown delay and drain, see pkg/server/shutdown.go.
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
+      {{- if .Values.spiffe.enabled }}
+      volumes:
+      - name: spiffe-workload-api
+        csi:
+          driver: csi.spiffe.io
+          readOnly: true
+      {{- end }}

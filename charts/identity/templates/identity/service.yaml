@@ -11,3 +11,8 @@ spec:
   - name: http
     port: 80
     targetPort: http
+  {{- if .Values.spiffe.enabled }}
+  - name: spiffe
+    port: 6082
+    targetPort: spiffe
+  {{- end }}
