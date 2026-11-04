@@ -35,6 +35,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/spf13/pflag"
+	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 
 	"github.com/unikorn-cloud/core/pkg/client"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
@@ -277,6 +278,22 @@ func immediateCallerSubject(r *http.Request) (string, error) {
 	return certificateSubject(certPEM)
 }
 
+// refusedPeer returns the peer of a refusal.  A verified peer that is refused for
+// its common name or its expiry has no subject, so the SPIFFE ID of its leaf
+// certificate names it.
+func refusedPeer(r *http.Request, reason string) (string, error) {
+	if listener(r) == listenerSPIFFE && (reason == reasonPeerHasCommonName || reason == reasonPeerExpired) {
+		id, err := x509svid.IDFromCert(r.TLS.PeerCertificates[0])
+		if err != nil {
+			return "", err
+		}
+
+		return id.String(), nil
+	}
+
+	return immediateCallerSubject(r)
+}
+
 func (v *Validator) record(ctx context.Context, event AuthenticationEvent) {
 	if v.recorder != nil {
 		v.recorder(ctx, event)
@@ -301,7 +318,7 @@ func (v *Validator) refuse(r *http.Request, err error) error {
 
 	values := []any{"reason", reason, "listener", event.Listener}
 
-	if peer, err := immediateCallerSubject(r); err == nil {
+	if peer, err := refusedPeer(r, reason); err == nil {
 		values = append(values, "peer", peer)
 
 		if event.Listener == listenerSPIFFE {
