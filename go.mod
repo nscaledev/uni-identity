@@ -33,6 +33,8 @@ require (
 	sigs.k8s.io/yaml v1.6.0
 )
 
+require github.com/Microsoft/go-winio v0.6.2 // indirect
+
 require (
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
