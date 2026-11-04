@@ -875,3 +875,79 @@ func TestValidatorChecksTheSystemAccountRegistry(t *testing.T) {
 	require.Equal(t, coreapi.AccessDenied, response.Error)
 	require.Equal(t, util.AccessDeniedDescription, response.ErrorDescription)
 }
+
+// TestSPIFFEListenerLogsAHandlerPanicAsAnError checks the levels of the server
+// error log: a handler panic is an error line, and a TLS handshake error stays
+// an info line.
+func TestSPIFFEListenerLogsAHandlerPanicAsAnError(t *testing.T) {
+	t.Parallel()
+
+	captureGlobalLog()
+
+	pki := newSPIFFETestPKI(t)
+
+	const panicValue = "test-spiffe-listener-handler-panic"
+
+	address, _ := serveSPIFFETest(t, pki, func(server *http.Server) {
+		server.Handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic(panicValue)
+		})
+	})
+
+	_, err := get(t, pki.clientConfig(pki.svid(t, regionID)), address)
+	require.Error(t, err)
+
+	connection, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", address)
+	require.NoError(t, err)
+
+	handshakeError := "TLS handshake error from " + connection.LocalAddr().String()
+
+	require.NoError(t, connection.Close())
+
+	require.Eventually(t, func() bool {
+		return len(logLinesContaining(panicValue)) > 0 && len(logLinesContaining(handshakeError)) > 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	for _, line := range logLinesContaining(panicValue) {
+		require.Contains(t, line, `"error"=`)
+	}
+
+	for _, line := range logLinesContaining(handshakeError) {
+		require.NotContains(t, line, `"error"=`)
+	}
+}
+
+// TestServerLogWriterMatchesThePanicPrefix checks that only a line that starts
+// with the panic prefix of net/http is an error line.
+func TestServerLogWriterMatchesThePanicPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		line  string
+		error bool
+	}{
+		{
+			line:  "http: panic serving 10.0.0.1:41234: test-panic\ngoroutine 1 [running]:\n",
+			error: true,
+		},
+		{
+			line:  `http: TLS handshake error from 10.0.0.1:41234: tls: failed to parse client certificate: x509: cannot parse URI "http: panic serving 10.0.0.2:1: test": invalid URI` + "\n",
+			error: false,
+		},
+	}
+
+	for _, test := range tests {
+		var lines []string
+
+		writer := serverLogWriter{logger: funcr.New(func(prefix, args string) {
+			lines = append(lines, prefix+" "+args)
+		}, funcr.Options{})}
+
+		n, err := writer.Write([]byte(test.line))
+		require.NoError(t, err)
+		require.Equal(t, len(test.line), n)
+
+		require.Len(t, lines, 1)
+		require.Equal(t, test.error, strings.Contains(lines[0], `"error"=`), lines[0])
+	}
+}
