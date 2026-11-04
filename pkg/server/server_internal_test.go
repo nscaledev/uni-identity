@@ -21,16 +21,21 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	chi "github.com/go-chi/chi/v5"
 	"github.com/go-logr/logr/funcr"
 	"github.com/spf13/pflag"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
@@ -38,15 +43,22 @@ import (
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
+	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
+	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
+	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/mock"
 	"github.com/unikorn-cloud/identity/pkg/mtlstest"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/readiness"
+	"github.com/unikorn-cloud/identity/pkg/util"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -748,4 +760,118 @@ func TestRouterDeletesClientCertificateHeadersBeforeTheRequestLog(t *testing.T) 
 		require.NotContains(t, line, "client-certificate-of-another-account")
 		require.NotContains(t, line, "Ssl-Client-Verify")
 	}
+}
+
+// TestValidatorGetsTheRelayersAndTheRecorder checks that the API server gives the
+// relayers and the recorder to the validator: a listed relayer can relay a client
+// certificate, another registered peer gets the generic 401, and each result is
+// recorded.  The test calls newValidator for the reason that
+// TestValidatorChecksTheSystemAccountRegistry gives.
+func TestValidatorGetsTheRelayersAndTheRecorder(t *testing.T) {
+	t.Parallel()
+
+	const unlistedID = "spiffe://example.org/compute"
+
+	pki := newSPIFFETestPKI(t)
+
+	s := &Server{}
+	s.OpenAPIOptions.ACLCacheSize = 1
+	s.RBACOptions.SystemAccountRoleIDs = map[string]string{
+		regionID:                             "role",
+		unlistedID:                           "role",
+		pki.caCertificate.Subject.CommonName: "role",
+	}
+	s.SPIFFEOptions.relayers = []string{regionID}
+
+	schema, err := helpers.NewSchema(openapi.GetSwagger)
+	require.NoError(t, err)
+
+	authorizer := mock.NewMockAuthorizer(gomock.NewController(t))
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&openapi.Acl{}, nil)
+
+	var events []openapimiddleware.AuthenticationEvent
+
+	validator := s.newValidator(authorizer, func(_ context.Context, event openapimiddleware.AuthenticationEvent) {
+		events = append(events, event)
+	})
+
+	router := chi.NewRouter()
+	router.Use(routeresolver.New(schema).Middleware)
+	router.Use(validator.Middleware)
+	router.Get("/api/v1/organizations", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	relayedPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: pki.caCertificate.Raw})
+
+	principalJSON, err := json.Marshal(&principal.Principal{Type: openapi.User, Actor: "jane@acme.com"})
+	require.NoError(t, err)
+
+	codes := make([]int, 0, 2)
+
+	for _, peer := range []string{regionID, unlistedID} {
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/organizations", nil)
+		r.TLS = &tls.ConnectionState{PeerCertificates: pki.svid(t, peer).Certificates[:1]}
+		r.Header.Set("Unikorn-Client-Certificate", url.QueryEscape(string(relayedPEM)))
+		r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(principalJSON))
+
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, r)
+
+		codes = append(codes, w.Code)
+	}
+
+	require.Equal(t, []int{http.StatusOK, http.StatusUnauthorized}, codes)
+	require.Equal(t, []openapimiddleware.AuthenticationEvent{
+		{Listener: "spiffe", Result: "ok", Peer: regionID, Subject: pki.caCertificate.Subject.CommonName},
+		{Listener: "spiffe", Result: "refused", Reason: "relay_not_permitted", Peer: unlistedID},
+	}, events)
+}
+
+// TestValidatorChecksTheSystemAccountRegistry checks that the API server gives
+// the registry to the validator: an unregistered certificate subject that sends
+// X-Principal gets the generic 401, and no ACL lookup runs.  GetServer gets its
+// validator from newValidator.  The test calls newValidator and not GetServer,
+// because GetServer starts the JOSE leader election, which needs the in-cluster
+// configuration.
+func TestValidatorChecksTheSystemAccountRegistry(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{}
+	s.OpenAPIOptions.ACLCacheSize = 1
+	s.RBACOptions.SystemAccountRoleIDs = map[string]string{"registered-service": "role"}
+
+	schema, err := helpers.NewSchema(openapi.GetSwagger)
+	require.NoError(t, err)
+
+	// The mock expects no call, so an ACL lookup fails the test.
+	validator := s.newValidator(mock.NewMockAuthorizer(gomock.NewController(t)), nil)
+
+	router := chi.NewRouter()
+	router.Use(routeresolver.New(schema).Middleware)
+	router.Use(validator.Middleware)
+	router.Get("/api/v1/organizations", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// The subject of the certificate is its common name, which is not registered.
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: newSPIFFETestPKI(t).caCertificate.Raw})
+
+	principalJSON, err := json.Marshal(&principal.Principal{Actor: "jane@acme.com"})
+	require.NoError(t, err)
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/organizations", nil)
+	r.Header.Set("Ssl-Client-Cert", url.QueryEscape(string(certPEM)))
+	r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(principalJSON))
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+
+	response := &coreapi.Error{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), response))
+	require.Equal(t, coreapi.AccessDenied, response.Error)
+	require.Equal(t, util.AccessDeniedDescription, response.ErrorDescription)
 }

@@ -234,11 +234,7 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
-	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer,
-		openapimiddleware.WithRelayers(s.SPIFFEOptions.relayers),
-		openapimiddleware.WithAuthenticationRecorder(authentications.Record),
-		openapimiddleware.WithSystemAccounts(s.RBACOptions.SystemAccountRoleIDs),
-	)
+	validator := s.newValidator(authorizer, authentications.Record)
 
 	// A configured collector that cannot be reached at startup fails the
 	// process rather than silently dropping audit records for its lifetime.
@@ -276,6 +272,16 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 	s.SPIFFEOptions.configureServer(server, ready)
 
 	return server, nil
+}
+
+// newValidator returns the validator of the API server, with the relayers, the
+// recorder and the system account registry.
+func (s *Server) newValidator(authorizer openapimiddleware.Authorizer, recorder openapimiddleware.AuthenticationRecorder) *openapimiddleware.Validator {
+	return openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer,
+		openapimiddleware.WithRelayers(s.SPIFFEOptions.relayers),
+		openapimiddleware.WithAuthenticationRecorder(recorder),
+		openapimiddleware.WithSystemAccounts(s.RBACOptions.SystemAccountRoleIDs),
+	)
 }
 
 // requestTimeout returns the request context deadline. The server's write timeout
