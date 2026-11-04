@@ -45,6 +45,55 @@ The package operates around two distinct trust paths.
 This distinction is central to how UNI services compose. `pkg/middleware/openapi` is the package
 that keeps those two models separate while presenting handlers with one normalized interface.
 
+## Client Certificates
+
+The subject of a client certificate comes from `util.GetClientCertificateSubject`: the common name,
+or else exactly one SPIFFE ID URI SAN. A request has a verified peer when it arrived on a TLS
+connection that presented a client certificate (`util.HasVerifiedPeer`). The verified peer is then
+the immediate caller, and the validator does not read the ingress certificate headers.
+[`pkg/middleware/authorization`](../authorization/README.md#client-certificate-of-a-request) gives
+the rules for the certificate in the request context.
+
+### Validator Options
+
+`NewValidator` takes optional `ValidatorOption` values. With no options, the validator has no
+relayers, records nothing and does no registry check. Only identity passes options.
+
+- `WithSystemAccounts` sets the registered certificate subjects, the keys of
+  `--system-account-roles-ids`.
+- `WithRelayers` sets the subjects of the verified peers that can relay a client certificate.
+- `WithAuthenticationRecorder` receives an `AuthenticationEvent` for each refusal, and for each
+  success on the certificate branch. The event has the listener (`spiffe` with a verified peer,
+  `legacy` otherwise) and the result (`ok` or `refused`). A refusal has a reason. A success has the
+  subject. The peer subject is in the event on the `spiffe` listener only. A refusal has no subject.
+
+### Principal Rule
+
+- The validator reads `X-Principal` on every request that carries a client certificate. That is
+  `Ssl-Client-Cert` with `Ssl-Client-Verify: SUCCESS`, or a verified peer. The account type does not
+  matter, so a registered service that sends a user bearer token still propagates the principal.
+- With `WithSystemAccounts`, an unregistered or empty certificate subject gets the generic 401
+  before `X-Principal` or `X-Impersonate` cause any work. On the certificate branch, the subject is
+  the authenticated subject. On the bearer branch, it is the subject of the certificate on the
+  connection.
+- A request with a verified peer is always checked.
+
+### Refusals
+
+A refused client certificate gets a 401 `access_denied` with the description `access denied`. The
+response does not name the subject or the reason. The reason goes to the recorder and to the log
+line of the error, which has the trace ID of the request.
+
+| Reason | Cause |
+|---|---|
+| `relay_not_permitted` | A verified peer that is not a relayer sends the relay header. |
+| `peer_has_common_name` | The leaf certificate of the verified peer has a common name. |
+| `peer_expired` | The current time is after the `NotAfter` of the leaf certificate of the verified peer. |
+| `certificate_invalid` | The client certificate does not parse. |
+| `subject_empty` | The certificate has no common name and no URI SAN. |
+| `subject_malformed` | The common name starts with `spiffe://`, or the URI SANs are not exactly one SPIFFE ID. |
+| `not_registered` | The subject is not a registered system account. |
+
 ## Trust Boundary Rules
 
 - There are exactly two conceptual request-authentication paths: bearer-token user calls and mTLS
