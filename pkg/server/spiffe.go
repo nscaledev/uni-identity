@@ -203,13 +203,20 @@ func verifiedPeerHeaders(next http.Handler) http.Handler {
 }
 
 // serverLogWriter sends each line of the error log of the server, for example a
-// TLS handshake error, to the structured log.
+// TLS handshake error, to the structured log.  A panic of a handler is an error
+// line, and each other line is an info line.
 type serverLogWriter struct {
 	logger logr.Logger
 }
 
 func (w serverLogWriter) Write(p []byte) (int, error) {
-	w.logger.Info("http server error", "message", strings.TrimSuffix(string(p), "\n"))
+	message := strings.TrimSuffix(string(p), "\n")
+
+	if strings.Contains(message, "panic serving") {
+		w.logger.Error(nil, "http server error", "message", message)
+	} else {
+		w.logger.Info("http server error", "message", message)
+	}
 
 	return len(p), nil
 }

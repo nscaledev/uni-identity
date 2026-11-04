@@ -157,7 +157,7 @@ When the listener is on:
 - The caller of a request is the verified TLS peer. When the peer certificate is past half of its
   lifetime, each response has `Connection: close`, so the client reconnects with its renewed SVID.
 - The server error log, which holds TLS handshake errors, goes to the structured log under the name
-  `http-server`.
+  `http-server`. A handler panic is an error line. Each other line is an info line.
 - Readiness also requires an SVID that has not expired. The condition checks on each probe, so the
   replica leaves service when the SVID expires and returns when the source renews it. The not-ready
   log line names the expiry time; the probe response is still a bare 503.
