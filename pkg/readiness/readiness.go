@@ -23,13 +23,19 @@ import (
 	"fmt"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-var ErrStopping = errors.New("server is shutting down")
+var (
+	ErrStopping = errors.New("server is shutting down")
+
+	ErrSVIDExpired = errors.New("SVID expired")
+)
 
 // Condition is one requirement for serving requests.
 type Condition func(ctx context.Context) error
@@ -109,6 +115,25 @@ func SigningKeyAvailable(keys KeyGetter) Condition {
 		}
 
 		available.Store(true)
+
+		return nil
+	}
+}
+
+// SVIDAvailable holds while the source has an SVID that has not expired.  It
+// checks on each probe and does not latch, so the replica leaves service when
+// its SVID expires and returns when the source renews it.  The error names the
+// expiry time, so the not-ready log line shows when the SVID expired.
+func SVIDAvailable(source x509svid.Source) Condition {
+	return func(context.Context) error {
+		svid, err := source.GetX509SVID()
+		if err != nil {
+			return fmt.Errorf("SVID unavailable: %w", err)
+		}
+
+		if notAfter := svid.Certificates[0].NotAfter; !time.Now().Before(notAfter) {
+			return fmt.Errorf("%w at %s", ErrSVIDExpired, notAfter.UTC().Format(time.RFC3339))
+		}
 
 		return nil
 	}

@@ -18,18 +18,25 @@ package readiness_test
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/identity/pkg/readiness"
 )
 
-var errNoKey = errors.New("secrets is forbidden: User \"system:serviceaccount:ns:sa\"")
+var (
+	errNoKey = errors.New("secrets is forbidden: User \"system:serviceaccount:ns:sa\"")
+
+	errSourceClosed = errors.New("x509source: source is closed")
+)
 
 // keys fails while err is set, and counts reads.
 type keys struct {
@@ -96,5 +103,55 @@ func TestChecker(t *testing.T) {
 		checker.Stopping()
 		require.ErrorIs(t, checker.Check(t.Context()), readiness.ErrStopping)
 		require.Equal(t, http.StatusServiceUnavailable, probe(checker).Code)
+	})
+}
+
+// svidSource returns svid, or err when it is set.
+type svidSource struct {
+	svid *x509svid.SVID
+	err  error
+}
+
+func (s *svidSource) GetX509SVID() (*x509svid.SVID, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+
+	return s.svid, nil
+}
+
+func svidExpiringAt(notAfter time.Time) *x509svid.SVID {
+	return &x509svid.SVID{Certificates: []*x509.Certificate{{NotAfter: notAfter}}}
+}
+
+func TestSVIDAvailable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("follows the SVID expiry on each probe", func(t *testing.T) {
+		t.Parallel()
+
+		expiredAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+		source := &svidSource{svid: svidExpiringAt(time.Now().Add(time.Hour))}
+		checker := readiness.New(readiness.SVIDAvailable(source))
+		require.NoError(t, checker.Check(t.Context()))
+
+		source.svid = svidExpiringAt(expiredAt)
+
+		err := checker.Check(t.Context())
+		require.ErrorIs(t, err, readiness.ErrSVIDExpired)
+		require.ErrorContains(t, err, "2026-01-02T03:04:05Z", "the not-ready reason names the expiry time")
+		require.Equal(t, http.StatusServiceUnavailable, probe(checker).Code)
+
+		source.svid = svidExpiringAt(time.Now().Add(time.Hour))
+
+		require.NoError(t, checker.Check(t.Context()), "a renewed SVID returns the replica to service")
+	})
+
+	t.Run("not ready when the source fails", func(t *testing.T) {
+		t.Parallel()
+
+		checker := readiness.New(readiness.SVIDAvailable(&svidSource{err: errSourceClosed}))
+		require.ErrorIs(t, checker.Check(t.Context()), errSourceClosed)
 	})
 }
