@@ -14,12 +14,14 @@ Identity has a limited **producer** surface, so the starting point matters:
   default — the one telemetry knob in the chart, `otlpEndpoint`, is commented
   out). A shared telemetry setup is used by all four binaries. With no endpoint
   configured the MeterProvider has no reader and **nothing is exported at all**.
-- **The first-party metric surface includes two counters** created via
+- **The first-party metric surface includes three counters** created via
   `otel.Meter(constants.Application)`:
   `unikorn_identity_bearer_tokens_unroutable{surface,reason}`
-  (`pkg/oauth2/oauth2.go:174`, incremented in `pkg/oauth2/passport.go:262,272,279`)
-  and `unikorn_identity_auth0_jwks_refreshes_throttled`
-  (`pkg/oauth2/auth0/throttled_transport.go:72`), plus the organization Lease
+  (`pkg/oauth2/oauth2.go:174`, incremented in `pkg/oauth2/passport.go:262,272,279`),
+  `unikorn_identity_auth0_jwks_refreshes_throttled`
+  (`pkg/oauth2/auth0/throttled_transport.go:72`)
+  and `unikorn_identity_system_account_authentications{listener,result,reason,peer,subject}`
+  (`pkg/server/metrics/authentications.go`), plus the organization Lease
   instruments in `pkg/handler/common/lease.go` listed in the producer inventory.
 - **HTTP RED middleware records the API surface.** The server middleware chain
   emits request count, duration, and in-flight metrics after OpenAPI route
@@ -73,6 +75,13 @@ All export is OTLP/HTTP push, gated on `--otlp-endpoint`, plain-HTTP
   Labels (bounded, ~6 series): `surface` ∈ {`bearer`,`exchange`};
   `reason` ∈ {`unparseable_iss`,`unknown_issuer`, *absent*}.
   `pkg/oauth2/oauth2.go:174`, set in `pkg/oauth2/passport.go:262,272,279`.
+- `unikorn_identity_system_account_authentications` — `Int64Counter`, unit
+  `{authentication}`. One event for each refused client certificate, and for
+  each success with a client certificate and no `Authorization` header. Labels:
+  `listener` ∈ {`legacy`,`spiffe`}; `result` ∈ {`ok`,`refused`}; `reason` (the
+  refusal reason code, refusals only); `peer` (the subject of the verified TLS
+  peer, `spiffe` only); `subject` (the system account, successes only).
+  `pkg/server/metrics/authentications.go`, recorded by `pkg/middleware/openapi`.
 - `unikorn_identity_auth0_jwks_refreshes_throttled` — `Int64Counter`, unit
   `{fetch}`, no labels. `pkg/oauth2/auth0/throttled_transport.go:72,96`.
 - Organization Lease instruments (`pkg/handler/common/lease.go`), which serialize
@@ -114,7 +123,7 @@ the default controller registry remains active and is bridged to OTLP.
   lease; build info remains `1` for the process lifetime.
 
 **API server** — no controller-runtime manager, so none of the controller metrics.
-It emits the two counters, HTTP RED metrics, and
+It emits the three counters, HTTP RED metrics, and
 `unikorn_identity_server_build_info{version,revision}` and
 `unikorn_server_ready{version,revision}`. Build info is `1` for the
 process lifetime; readiness is `1` only while the server owns its bound HTTP
@@ -190,7 +199,9 @@ does not have.
 | Scrape plumbing | **REBUT → ADAPT** | Identity exposes no scrape targets, so there is **no identity `up` series and no ServiceMonitor target-membership check**. Identity binary liveness is inferred from its OTLP series arriving (and from Kubernetes pod state), not from `up`. |
 
 Cross-cutting constraints: bounded, operationally-useful labels only (already true
-— the counters and build/readiness gauges are bounded; the external lifecycle
+— the counters and build/readiness gauges are bounded, except the `peer` and
+`subject` labels of `unikorn_identity_system_account_authentications`, which have
+one value for each caller subject; the external lifecycle
 contract is bounded by object count plus a reason enum, and carries **no external
 IDs**. The dashboards make series absence explicit where it can otherwise be
 mistaken for a healthy resource.
@@ -200,7 +211,7 @@ mistaken for a healthy resource.
 The reference's metric families are rebutted where they belong to different
 producers. The adopted contract for Identity is:
 
-- **Adopt the two first-party counters** as the auth-path signal
+- **Adopt two of the three first-party counters** as the auth-path signal
   (`unikorn_identity_bearer_tokens_unroutable`,
   `unikorn_identity_auth0_jwks_refreshes_throttled`). Bounded, already discipline-clean.
 - **Do not query controller-runtime built-ins in dashboards yet.** They reach
