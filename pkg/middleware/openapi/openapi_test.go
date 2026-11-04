@@ -1009,10 +1009,10 @@ func addIngressCertificate(r *http.Request, certificate *x509.Certificate) {
 	r.Header.Set("Ssl-Client-Verify", "SUCCESS")
 }
 
-func addPrincipalHeaderForActor(t *testing.T, r *http.Request, actor string) {
+func addPrincipalActorHeader(t *testing.T, r *http.Request) {
 	t.Helper()
 
-	dataJSON, err := json.Marshal(&principal.Principal{Type: identityapi.User, Actor: actor})
+	dataJSON, err := json.Marshal(&principal.Principal{Type: identityapi.User, Actor: principalActor})
 	require.NoError(t, err)
 
 	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(dataJSON))
@@ -1262,7 +1262,7 @@ func TestImpersonationOnSPIFFEListener(t *testing.T) {
 	for _, impersonate := range []bool{false, true} {
 		r := newRequest(t)
 		setPeer(t, r, relayerID)
-		addPrincipalHeaderForActor(t, r, principalActor)
+		addPrincipalActorHeader(t, r)
 
 		if impersonate {
 			r.Header.Set(principal.ImpersonateHeader, "true")
@@ -1626,7 +1626,7 @@ func TestBearerTokenWithUnregisteredCertificate(t *testing.T) {
 		r := newRequest(t)
 		addAuthorizationHeader(t, r)
 		addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
-		addPrincipalHeaderForActor(t, r, principalActor)
+		addPrincipalActorHeader(t, r)
 
 		w := httptest.NewRecorder()
 		m.ServeHTTP(w, r)
@@ -1748,7 +1748,7 @@ func TestRegisteredCertificateWithBearerTokenReadsPrincipal(t *testing.T) {
 	r := newRequest(t)
 	addAuthorizationHeader(t, r)
 	addCertificateHeader(t, r, true)
-	addPrincipalHeaderForActor(t, r, principalActor)
+	addPrincipalActorHeader(t, r)
 
 	w := httptest.NewRecorder()
 	m.ServeHTTP(w, r)
@@ -1773,7 +1773,7 @@ func TestNilSystemAccountsRefuseAnUnregisteredSubject(t *testing.T) {
 
 	r := newRequest(t)
 	addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
-	addPrincipalHeaderForActor(t, r, principalActor)
+	addPrincipalActorHeader(t, r)
 
 	w := httptest.NewRecorder()
 	m.ServeHTTP(w, r)
@@ -1812,7 +1812,7 @@ func TestUnregisteredSubjectRefusedBeforePrincipal(t *testing.T) {
 			t.Helper()
 			r.Header.Set(principal.ImpersonateHeader, "true")
 		},
-		"neither": func(t *testing.T, r *http.Request) {
+		"neither": func(t *testing.T, _ *http.Request) {
 			t.Helper()
 		},
 	}

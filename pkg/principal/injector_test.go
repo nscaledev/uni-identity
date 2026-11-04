@@ -17,7 +17,6 @@ limitations under the License.
 package principal_test
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -54,7 +53,7 @@ func TestControllerInjectorSendsUnsignedPrincipal(t *testing.T) {
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
 
 	inject := principal.ControllerInjector(fake.NewClientBuilder().Build(), &coreclient.HTTPClientOptions{}, resource)
-	require.NoError(t, inject(context.Background(), r))
+	require.NoError(t, inject(t.Context(), r))
 
 	data, err := base64.RawURLEncoding.DecodeString(r.Header.Get(principal.Header))
 	require.NoError(t, err)
