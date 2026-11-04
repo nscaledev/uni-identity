@@ -208,16 +208,48 @@ spec:
         {{- if eq .Values.server.runtimeSchemaValidation false }}
         - --runtime-schema-validation=false
         {{- end }}
+        {{- if .Values.spiffe.enabled }}
+        - --spiffe-tls-listen-address=:6082
+        {{- if and .Values.spiffe.relayerIds (not (kindIs "slice" .Values.spiffe.relayerIds)) }}
+          {{- fail (printf "spiffe.relayerIds: %s must be a list" (toJson .Values.spiffe.relayerIds)) }}
+        {{- end }}
+        {{- range $i, $id := .Values.spiffe.relayerIds }}
+          {{- if not (hasKey $.Values.systemAccounts $id) }}
+            {{- fail (printf "spiffe.relayerIds[%d]: %q must be a key of systemAccounts" $i $id) }}
+          {{- end }}
+        {{- end }}
+        {{- with .Values.spiffe.relayerIds }}
+        - {{ printf "--spiffe-relayer-ids=%s" (join "," .) | quote }}
+        {{- end }}
+        {{- $startTimeout := toString .Values.spiffe.startTimeout }}
+        {{- if not (regexMatch "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$" $startTimeout) }}
+          {{- fail (printf "spiffe.startTimeout: %q must be a Go duration with a unit, for example 30s" $startTimeout) }}
+        {{- end }}
+        - --spiffe-start-timeout={{ $startTimeout }}
+        {{- end }}
         {{- range $i, $arg := .Values.server.extraFlags }}
         - {{ $arg }}
         {{- end }}
         {{- include "unikorn.identity.otelEnv" . | nindent 8 }}
+        {{- if .Values.spiffe.enabled }}
+        {{- with .Values.spiffe.workloadAPISocket }}
+          {{- if not (hasPrefix "unix://" (toString .)) }}
+            {{- fail (printf "spiffe.workloadAPISocket: %q must be a unix:// URL" (toString .)) }}
+          {{- end }}
+        {{- end }}
+        - name: SPIFFE_ENDPOINT_SOCKET
+          value: {{ .Values.spiffe.workloadAPISocket | quote }}
+        {{- end }}
         ports:
         - name: http
           containerPort: 6080
         # Kept out of the Service, so the ingress cannot reach the probe.
         - name: health
           containerPort: 6081
+        {{- if .Values.spiffe.enabled }}
+        - name: spiffe
+          containerPort: 6082
+        {{- end }}
         readinessProbe:
           httpGet:
             path: /readyz
@@ -229,8 +261,21 @@ spec:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
           readOnlyRootFilesystem: true
+        {{- if .Values.spiffe.enabled }}
+        volumeMounts:
+        - name: spiffe-workload-api
+          mountPath: /spiffe-workload-api
+          readOnly: true
+        {{- end }}
       serviceAccountName: {{ .Release.Name }}-server
       # Covers the server's shutdown delay and drain, see pkg/server/shutdown.go.
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
+      {{- if .Values.spiffe.enabled }}
+      volumes:
+      - name: spiffe-workload-api
+        csi:
+          driver: csi.spiffe.io
+          readOnly: true
+      {{- end }}

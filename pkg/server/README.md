@@ -140,7 +140,9 @@ the SPIFFE listener stops with an error. In the second case it drains as it does
 `--spiffe-tls-listen-address` (for example `:6082`) turns on a second listener on the same
 `http.Server`, with the same router and middleware. It is empty by default, and then the process
 behaves as before: the server has no TLS configuration, no protocol limit and no error log.
-`pkg/server/spiffe.go` owns the listener.
+`pkg/server/spiffe.go` owns the listener. The chart value `spiffe.enabled` sets the flags and
+`SPIFFE_ENDPOINT_SOCKET`, mounts the SPIFFE CSI volume, and adds port 6082 to the pod and the
+Service. It sets `--spiffe-relayer-ids` only when `spiffe.relayerIds` is not empty.
 
 When the listener is on:
 

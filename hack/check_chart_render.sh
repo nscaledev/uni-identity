@@ -15,6 +15,9 @@
 
 # Render assertions for globalRoleBindings, globalGroupRoleBindings and
 # server.runtimeSchemaValidation.
+# The SPIFFE listener: it is off by default.  spiffe.enabled adds the flags, the
+# port, the Workload API socket and its volume.  The render refuses a relayerIds,
+# startTimeout or workloadAPISocket value that the server cannot use.
 # `make lint` runs this script.
 set -euo pipefail
 
@@ -275,5 +278,55 @@ server_deployment() { yq -r "select(.kind == \"Deployment\" and .metadata.name =
 [[ "$(yq -r 'select(.kind == "Service" and .metadata.name == "test-server") | .spec.ports[].targetPort' <<<"$rendered")" == "http" ]] || die "expected the server Service to expose only the http port"
 # pkg/server/shutdown_internal_test.go checks the shutdown fits in this.
 [[ "$(server_deployment '.spec.template.spec.terminationGracePeriodSeconds')" == "30" ]] || die "expected a 30s termination grace period for the server"
+
+# The SPIFFE listener is off by default, so a default install keeps the
+# legacy pod: no SPIFFE flag, variable, port or volume.
+assert_no_match "$rendered" "--spiffe-"
+assert_no_match "$rendered" "SPIFFE_ENDPOINT_SOCKET"
+assert_no_match "$rendered" "spiffe-workload-api"
+[[ "$(server_deployment '.spec.template.spec.containers[0].ports[].name' | paste -sd, -)" == "http,health" ]] || die "expected only the http and health ports on the server by default"
+
+# With the listener on, the server listens on 6082 behind the same Service,
+# reads the Workload API socket from the CSI volume, and gets the relayer
+# IDs as one comma-separated flag.  Each relayer ID is a key of systemAccounts.
+relayers=spiffe://example.org/ns/region/sa/region,spiffe://example.org/ns/compute/sa/compute
+relayer_accounts='{"spiffe://example.org/ns/region/sa/region":"region-service","spiffe://example.org/ns/compute/sa/compute":"compute-service"}'
+rendered=$(helm template test "$CHART" --set spiffe.enabled=true --set-json "systemAccounts=$relayer_accounts" \
+	--set-json 'spiffe.relayerIds=["spiffe://example.org/ns/region/sa/region","spiffe://example.org/ns/compute/sa/compute"]')
+spiffe_flags() { server_deployment '.spec.template.spec.containers[0].args[] | select(test("^--spiffe-"))' | paste -sd' ' -; }
+[[ "$(spiffe_flags)" == "--spiffe-tls-listen-address=:6082 --spiffe-relayer-ids=$relayers --spiffe-start-timeout=30s" ]] || die "expected the SPIFFE listener flags on the server, got: $(spiffe_flags)"
+[[ "$(server_deployment '.spec.template.spec.containers[0].env[] | select(.name == "SPIFFE_ENDPOINT_SOCKET") | .value')" == "unix:///spiffe-workload-api/spire-agent.sock" ]] || die "expected SPIFFE_ENDPOINT_SOCKET on the server"
+[[ "$(server_deployment '.spec.template.spec.containers[0].ports[] | .name + ":" + (.containerPort | tostring)' | paste -sd, -)" == "http:6080,health:6081,spiffe:6082" ]] || die "expected the container ports http 6080, health 6081 and spiffe 6082"
+[[ "$(server_deployment '.spec.template.spec.volumes[] | select(.name == "spiffe-workload-api") | .csi.driver + " " + (.csi.readOnly | tostring)')" == "csi.spiffe.io true" ]] || die "expected the read-only CSI volume spiffe-workload-api"
+[[ "$(server_deployment '.spec.template.spec.containers[0].volumeMounts[] | select(.name == "spiffe-workload-api") | .mountPath + " " + (.readOnly | tostring)')" == "/spiffe-workload-api true" ]] || die "expected the read-only mount of spiffe-workload-api at /spiffe-workload-api"
+[[ "$(yq -r 'select(.kind == "Service" and .metadata.name == "test-server") | .spec.ports[] | .name + ":" + (.port | tostring) + ":" + .targetPort' <<<"$rendered" | paste -sd, -)" == "http:80:http,spiffe:6082:spiffe" ]] || die "expected the server Service to expose the http and spiffe ports"
+
+# An empty relayer list renders no relayer flag.
+rendered=$(helm template test "$CHART" --set spiffe.enabled=true)
+[[ "$(spiffe_flags)" == "--spiffe-tls-listen-address=:6082 --spiffe-start-timeout=30s" ]] || die "expected no --spiffe-relayer-ids for an empty relayer list, got: $(spiffe_flags)"
+
+# The server refuses a relayer ID that is not a key of systemAccounts, and a
+# start timeout with no unit, only at start.  The render refuses both first.
+must_fail_spiffe() {
+	local out
+	if out=$(helm template test "$CHART" --set spiffe.enabled=true "${@:2}" 2>&1 >/dev/null); then
+		die "expected render failure (fragment: $1), but render succeeded"
+	fi
+	grep -qF -- "$1" <<<"$out" || die "render failed, but not for the expected reason
+  expected fragment: $1
+  actual output:     $out"
+}
+must_fail_spiffe 'spiffe.relayerIds[1]: "spiffe://example.org/ns/other/sa/other" must be a key of systemAccounts' \
+	--set-json "systemAccounts=$relayer_accounts" \
+	--set-json 'spiffe.relayerIds=["spiffe://example.org/ns/region/sa/region","spiffe://example.org/ns/other/sa/other"]'
+must_fail_spiffe 'spiffe.startTimeout: "60" must be a Go duration with a unit' --set spiffe.startTimeout=60
+
+# A relayerIds value that is not a list, and a workloadAPISocket that is not a
+# unix:// URL, fail the render.
+must_fail_spiffe 'spiffe.relayerIds: {"region":"spiffe://example.org/ns/region/sa/region"} must be a list' \
+	--set-json "systemAccounts=$relayer_accounts" \
+	--set-json 'spiffe.relayerIds={"region":"spiffe://example.org/ns/region/sa/region"}'
+must_fail_spiffe 'spiffe.workloadAPISocket: "tcp://127.0.0.1:8081" must be a unix:// URL' \
+	--set spiffe.workloadAPISocket=tcp://127.0.0.1:8081
 
 echo "chart render checks OK"

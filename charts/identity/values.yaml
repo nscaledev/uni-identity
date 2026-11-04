@@ -244,12 +244,25 @@ globalGroupRoleBindings: []
 #    group: Support Engineering
 #    roles: [support-quota-editor]
 
-# System accounts map X.509 Common Names to roles.
+# System accounts map a certificate subject (an X.509 Common Name or a SPIFFE ID) to a role.
 systemAccounts:
   unikorn-region: region-service
   unikorn-kubernetes: kubernetes-service
   unikorn-compute: compute-service
   uni-storage: storage-service
+
+# A second listener on port 6082 that authenticates callers by their X.509-SVID.
+# It needs the SPIFFE CSI driver (csi.spiffe.io) on the node.
+spiffe:
+  enabled: false
+  # The SPIFFE Workload API socket, as a unix:// URL. The CSI volume is mounted
+  # at /spiffe-workload-api.
+  workloadAPISocket: unix:///spiffe-workload-api/spire-agent.sock
+  # SPIFFE IDs that can send the certificate of another system account. Each ID
+  # must be a key of systemAccounts.
+  relayerIds: []
+  # The longest wait for the first SVID at start. The process exits after it.
+  startTimeout: 30s
 
 # A static list of roles.
 # Any unscoped API resources are to be managed by the platform operator
