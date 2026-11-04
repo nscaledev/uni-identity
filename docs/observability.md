@@ -73,6 +73,13 @@ All export is OTLP/HTTP push, gated on `--otlp-endpoint`, plain-HTTP
   Labels (bounded, ~6 series): `surface` ∈ {`bearer`,`exchange`};
   `reason` ∈ {`unparseable_iss`,`unknown_issuer`, *absent*}.
   `pkg/oauth2/oauth2.go:174`, set in `pkg/oauth2/passport.go:262,272,279`.
+- `unikorn_identity_system_account_authentications` — `Int64Counter`, unit
+  `{authentication}`. One event for each refused client certificate, and for
+  each success with a client certificate and no `Authorization` header. Labels:
+  `listener` ∈ {`legacy`,`spiffe`}; `result` ∈ {`ok`,`refused`}; `reason` (the
+  refusal reason code, refusals only); `peer` (the subject of the verified TLS
+  peer, `spiffe` only); `subject` (the system account, successes only).
+  `pkg/server/metrics/authentications.go`, recorded by `pkg/middleware/openapi`.
 - `unikorn_identity_auth0_jwks_refreshes_throttled` — `Int64Counter`, unit
   `{fetch}`, no labels. `pkg/oauth2/auth0/throttled_transport.go:72,96`.
 - Organization Lease instruments (`pkg/handler/common/lease.go`), which serialize
