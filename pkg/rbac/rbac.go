@@ -43,15 +43,16 @@ import (
 )
 
 var (
-	ErrResourceReference         = goerrors.New("resource reference error")
-	ErrNoAuthz                   = goerrors.New("no authorization data in userinfo")
-	ErrWrongOrganizationCount    = goerrors.New("expected exactly one organization ID")
-	ErrNotInOrganization         = goerrors.New("subject not a member of organization")
-	ErrInvalidPrincipalType      = goerrors.New("invalid impersonated principal type")
-	ErrBareAdminSubject          = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to globalRoleBindings")
-	ErrUntrustedBindingIssuer    = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
-	ErrGroupBindingNoGroupsClaim = goerrors.New("global group role binding issuer has no groupsClaim configured; the binding can never match")
-	ErrMalformedGroupsClaim      = goerrors.New("groupsClaim is not a namespaced URI (no \"://\"); validator construction will reject it and every token from this issuer will fail")
+	ErrResourceReference          = goerrors.New("resource reference error")
+	ErrNoAuthz                    = goerrors.New("no authorization data in userinfo")
+	ErrWrongOrganizationCount     = goerrors.New("expected exactly one organization ID")
+	ErrNotInOrganization          = goerrors.New("subject not a member of organization")
+	ErrInvalidPrincipalType       = goerrors.New("invalid impersonated principal type")
+	ErrBareAdminSubject           = goerrors.New("bare platform-administrator-subjects entry with non-UNI issuer trusted; migrate to globalRoleBindings")
+	ErrUntrustedBindingIssuer     = goerrors.New("global role binding issuer is neither the UNI sentinel nor a trusted issuer")
+	ErrGroupBindingNoGroupsClaim  = goerrors.New("global group role binding issuer has no groupsClaim configured; the binding can never match")
+	ErrMalformedGroupsClaim       = goerrors.New("groupsClaim is not a namespaced URI (no \"://\"); validator construction will reject it and every token from this issuer will fail")
+	ErrSystemAccountNotRegistered = goerrors.New("system account not registered")
 )
 
 // PlatformAdministratorSubject binds an admin subject to the issuer that must
@@ -120,7 +121,7 @@ type Options struct {
 func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.StringSliceVar(&o.PlatformAdministratorRoleIDs, "platform-administrator-role-ids", nil, "Platform administrator role ID.")
 	f.Var((*PlatformAdministratorSubjectsValue)(&o.PlatformAdministratorSubjects), "platform-administrator-subjects", "Platform administrators as issuer::subject (bare value = UNI issuer).")
-	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map the X.509 Common Name to a role ID.")
+	f.StringToStringVar(&o.SystemAccountRoleIDs, "system-account-roles-ids", nil, "System accounts map a certificate subject, an X.509 Common Name or a SPIFFE ID, to a role ID.")
 	f.Var(&o.GlobalRoleBindings, "global-role-binding", "Global role binding as issuer::subject::role[,role...]; subject '*' matches any subject from the issuer (clamped to read).")
 	f.Var(&o.GlobalGroupRoleBindings, "global-group-role-binding", "Global group role binding as issuer::group::role[,role...]; grants the roles' full global scopes to any subject whose token from issuer carries the group in the issuer's groupsClaim.")
 }
@@ -658,7 +659,7 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 func (r *RBAC) processSystemAccountACL(ctx context.Context, subject string) (*openapi.Acl, error) {
 	roleID, ok := r.options.SystemAccountRoleIDs[subject]
 	if !ok {
-		return nil, fmt.Errorf("%w: system account '%s' not registered", errors.ErrConsistency, subject)
+		return nil, fmt.Errorf("%w: system account '%s' not registered", ErrSystemAccountNotRegistered, subject)
 	}
 
 	roles, err := r.getRoles(ctx)
@@ -1032,12 +1033,14 @@ func (r *RBAC) getSystemAccountACL(ctx context.Context, subject, organizationID 
 		OrgIds:  organizationIDs,
 	}
 
-	principalACL, err := r.processImpersonatedPrincipalACL(ctx, p, organizationID, principalACLClaims)
+	// The registry check comes first, so that an unregistered subject causes no
+	// lookup for the impersonated principal.
+	serviceACL, err := r.processSystemAccountACL(ctx, subject)
 	if err != nil {
 		return nil, err
 	}
 
-	serviceACL, err := r.processSystemAccountACL(ctx, subject)
+	principalACL, err := r.processImpersonatedPrincipalACL(ctx, p, organizationID, principalACLClaims)
 	if err != nil {
 		return nil, err
 	}
