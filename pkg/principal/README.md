@@ -64,6 +64,9 @@ or quota purposes, but may have no direct visibility of that resource.
 `FromResource()` and `ControllerInjector()` show that delegated identity is durable, not merely
 transport-scoped.
 
+`ControllerInjector()` sends the principal unsigned, as `Injector()` does. The `X-Principal` value is
+the principal as base64 JSON, and it needs no certificate key.
+
 Resources may carry:
 
 - placement context such as organization/project ownership

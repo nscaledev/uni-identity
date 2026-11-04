@@ -133,12 +133,12 @@ func ControllerInjector(cli client.Client, options *coreclient.HTTPClientOptions
 			return err
 		}
 
-		value, err := options.EncodeAndSign(ctx, cli, principal)
+		data, err := json.Marshal(principal)
 		if err != nil {
 			return err
 		}
 
-		r.Header.Set(Header, value)
+		r.Header.Set(Header, base64.RawURLEncoding.EncodeToString(data))
 
 		return nil
 	}
