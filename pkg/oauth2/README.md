@@ -132,6 +132,11 @@ That model is now transitional:
 The `client_credentials` path is therefore still part of the package, but it is not the preferred
 long-term service-to-service model.
 
+The grant reads the client certificate from the ingress headers only. A request with a verified
+TLS peer, which only the SPIFFE listener has, gets a 401 `access_denied` and no token. The token
+subject comes from the same subject rule as the validator: the common name, or else exactly one
+SPIFFE ID. A certificate with an empty or malformed subject gets the same 401.
+
 ## Token Exchange
 
 The token endpoint implements the RFC 8693 token-exchange grant for UNI passports.
