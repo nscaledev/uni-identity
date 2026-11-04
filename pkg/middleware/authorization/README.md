@@ -29,6 +29,26 @@ Its main responsibilities are:
   during the request, and read only after the inner handlers have returned. See
   [`pkg/middleware/audit`](../audit/README.md).
 
+## Client Certificate Of A Request
+
+`ExtractClientCertFromRequest` sets the client certificate in the request context. A request has a
+verified peer when it arrived on a TLS connection that presented a client certificate
+(`util.HasVerifiedPeer`). With a verified peer, the function never reads `Ssl-Client-Cert` or
+`Ssl-Client-Verify`.
+
+| Verified peer | Relay header | Result |
+|---|---|---|
+| present, after its `NotAfter` | any | `util.ErrPeerExpired` |
+| present, with a common name | any | `util.ErrPeerHasCommonName` |
+| present, no common name | absent | The context certificate is the peer. |
+| present, no common name | present, and the subject of the peer is a relayer | The context certificate is the relay header. |
+| present, no common name | present, and the subject of the peer is not a relayer | `ErrRelayNotPermitted` |
+| absent | any | The function behaves as `ExtractClientCert`. |
+
+The relay header is `Unikorn-Client-Certificate`. The relayers are a list of subjects that the caller
+supplies. The subject of the peer comes from `util.GetClientCertificateSubject`, so a peer with a
+common name never matches a relayer. `ExtractClientCert` is deprecated. It reads the headers only.
+
 ## Caveats
 
 - The package is intentionally small, but it sits on a trust boundary because downstream packages
