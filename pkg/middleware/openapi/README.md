@@ -60,7 +60,7 @@ the rules for the certificate in the request context.
 relayers, records nothing and does no registry check. Only identity passes options.
 
 - `WithSystemAccounts` sets the registered certificate subjects, the keys of
-  `--system-account-roles-ids`.
+  `--system-account-roles-ids`. An unset flag registers no subject, and the check stays on.
 - `WithRelayers` sets the subjects of the verified peers that can relay a client certificate.
 - `WithAuthenticationRecorder` receives an `AuthenticationEvent` for each refusal, and for each
   success on the certificate branch. The event has the listener (`spiffe` with a verified peer,

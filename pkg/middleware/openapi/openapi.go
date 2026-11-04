@@ -158,7 +158,12 @@ func WithAuthenticationRecorder(recorder AuthenticationRecorder) ValidatorOption
 
 // WithSystemAccounts sets the registered certificate subjects.  The validator then
 // refuses an unregistered subject before it reads X-Principal or X-Impersonate.
+// A nil map registers no subject, and the check stays on.
 func WithSystemAccounts(roleIDs map[string]string) ValidatorOption {
+	if roleIDs == nil {
+		roleIDs = map[string]string{}
+	}
+
 	return func(v *Validator) {
 		v.systemAccounts = roleIDs
 	}

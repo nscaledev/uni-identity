@@ -1694,6 +1694,30 @@ func TestRegisteredCertificateWithBearerTokenReadsPrincipal(t *testing.T) {
 	require.Empty(t, rec.events)
 }
 
+// TestNilSystemAccountsRefuseAnUnregisteredSubject checks that an unset
+// --system-account-roles-ids, which gives a nil map, keeps the registry check
+// on: an unregistered subject that sends X-Principal gets the generic 401, and
+// no ACL lookup runs.
+func TestNilSystemAccountsRefuseAnUnregisteredSubject(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m := getMux(t, authorizer, &handler{}, openapi.WithSystemAccounts(nil))
+
+	r := newRequest(t)
+	addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
+	addPrincipalHeaderForActor(t, r, principalActor)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+}
+
 // TestUnregisteredSubjectRefusedBeforePrincipal checks that an unregistered
 // subject gets the same generic 401 whatever it sends in X-Principal and
 // X-Impersonate, and that no ACL lookup runs.
