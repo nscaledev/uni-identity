@@ -19,11 +19,17 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"testing"
+	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/readiness"
+	"github.com/unikorn-cloud/identity/pkg/server"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -102,4 +108,31 @@ func TestReadCacheOptionsWatchOnlyTheKindsReadFromTheCache(t *testing.T) {
 		fmt.Sprintf("%T", &unikornv1.Allocation{}):   nil,
 		fmt.Sprintf("%T", &unikornv1.Project{}):      nil,
 	}, namespaces)
+}
+
+// TestServeUntilStoppedStopsOnASPIFFEListenerError checks that a failure of the
+// SPIFFE listener stops the API server, and that the error wraps
+// server.ErrListenerStopped, so that the process exits with code 1.
+func TestServeUntilStoppedStopsOnASPIFFEListenerError(t *testing.T) {
+	t.Parallel()
+
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	// The server has no TLS configuration, so ServeTLS on the SPIFFE address fails.
+	apiServer := &http.Server{ReadHeaderTimeout: time.Second}
+	serve := func() error { return apiServer.Serve(listener) }
+
+	served := make(chan error, 1)
+
+	go func() {
+		served <- serveUntilStopped(logr.Discard(), apiServer, serve, "127.0.0.1:0", readiness.New(), func() {})
+	}()
+
+	select {
+	case err := <-served:
+		require.ErrorIs(t, err, server.ErrListenerStopped)
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "a SPIFFE listener error did not stop the API server")
+	}
 }
