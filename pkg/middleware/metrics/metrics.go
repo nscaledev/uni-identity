@@ -106,7 +106,10 @@ func (m *Metrics) Middleware(next http.Handler) http.Handler {
 
 		started := time.Now()
 		response := httpsnoop.CaptureMetrics(next, w, r)
-		attributes = append(attributes, attribute.String("status_class", statusClass(response.Code)))
+		attributes = append(attributes,
+			attribute.String("status_class", statusClass(response.Code)),
+			attribute.String("code", strconv.Itoa(response.Code)),
+		)
 		options = metric.WithAttributes(attributes...)
 		m.duration.Record(r.Context(), time.Since(started).Seconds(), options)
 	})
