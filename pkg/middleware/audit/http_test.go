@@ -257,7 +257,7 @@ func TestHTTPSinkSendsTheBearerToken(t *testing.T) {
 
 	defer server.Close()
 
-	secret, public := mustSigningSecret(t, "nscale-audit-1")
+	secret, _ := mustSigningSecret(t, "nscale-audit-1")
 
 	sink, _ := newSinkWithFlags(t, server, []string{
 		"--audit-token-secret-namespace=" + signingSecretNamespace,
@@ -271,21 +271,13 @@ func TestHTTPSinkSendsTheBearerToken(t *testing.T) {
 
 	require.Equal(t, "Bearer s3cret-token", requests[0].headers.Get("Authorization"))
 
-	// The credential is covered, so a captured body and signature cannot be
-	// replayed under a different token into a different stream.
-	require.Contains(t, requests[0].headers.Get("Signature-Input"), `"authorization"`)
-
-	// And it verifies as the collector will, over the components we declared.
-	verifier, err := httpsign.NewEd25519Verifier(public, httpsign.NewVerifyConfig(),
-		httpsign.Headers(append(signedComponentsForTest(), "authorization")...))
-	require.NoError(t, err)
-
-	require.NoError(t, httpsign.VerifyRequest("sig1", *verifier, asCollectorSees(t, requests[0])))
+	// The credential is not covered: the collector does not keep it.
+	require.NotContains(t, requests[0].headers.Get("Signature-Input"), `"authorization"`)
 }
 
-// Swapping the credential after signing must break verification; that is the
-// whole reason for covering it.
-func TestHTTPSinkSignatureBindsTheToken(t *testing.T) {
+// The collector does not keep the token, so the signature must verify on a
+// request that no longer carries it.
+func TestHTTPSinkSignatureVerifiesWithoutTheToken(t *testing.T) {
 	t.Parallel()
 
 	received := &collector{}
@@ -305,14 +297,14 @@ func TestHTTPSinkSignatureBindsTheToken(t *testing.T) {
 	requests := received.all()
 	require.Len(t, requests, 1)
 
-	tampered := asCollectorSees(t, requests[0])
-	tampered.Header.Set("Authorization", "Bearer someone-elses-token")
+	stored := asCollectorSees(t, requests[0])
+	stored.Header.Del("Authorization")
 
 	verifier, err := httpsign.NewEd25519Verifier(public, httpsign.NewVerifyConfig(),
-		httpsign.Headers(append(signedComponentsForTest(), "authorization")...))
+		httpsign.Headers(signedComponentsForTest()...))
 	require.NoError(t, err)
 
-	require.Error(t, httpsign.VerifyRequest("sig1", *verifier, tampered))
+	require.NoError(t, httpsign.VerifyRequest("sig1", *verifier, stored))
 }
 
 // A collector that wants no token must not receive an empty one.

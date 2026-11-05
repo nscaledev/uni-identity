@@ -57,15 +57,6 @@ const signatureLabel = "sig1"
 //nolint:gochecknoglobals
 var signedComponents = []string{"@method", "@authority", "@path", "content-digest"}
 
-// signedComponentsWithToken additionally covers the credential, so a captured
-// body and signature cannot be replayed under a different token into a
-// different stream.  RFC 9421 section 7.2.1 asks for as much of the message as
-// possible to be covered, and names only components intermediaries rewrite as
-// exceptions.  See the README.
-//
-//nolint:gochecknoglobals
-var signedComponentsWithToken = append(append([]string{}, signedComponents...), "authorization")
-
 // signingKey is the key and the id the collector knows it by, always read
 // together so the two cannot drift.
 type signingKey struct {
@@ -204,11 +195,8 @@ func (t *collectorTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	request.Header.Set("Content-Digest", digest)
 	request.Body = io.NopCloser(bytes.NewReader(body))
 
-	// The credential is attached before signing so the signature can cover it.
-	// Leaving it out would let a captured body and signature be replayed under
-	// a different token, into a different stream, still attributed to us.
-	components := signedComponents
-
+	// The credential MUST NOT be covered: the collector does not keep it, so
+	// a signature over it could never verify.  See the README.
 	if t.tokens != nil {
 		token, err := t.tokens.get(r.Context())
 		if err != nil {
@@ -216,8 +204,6 @@ func (t *collectorTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 		}
 
 		request.Header.Set("Authorization", "Bearer "+token)
-
-		components = signedComponentsWithToken
 	}
 
 	key, err := t.keys.get(r.Context())
@@ -231,7 +217,7 @@ func (t *collectorTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 		// byte for byte is recorded by the collector as a replay.
 		SetNonce(uuid.New().String())
 
-	signer, err := httpsign.NewEd25519Signer(key.key, config, httpsign.Headers(components...))
+	signer, err := httpsign.NewEd25519Signer(key.key, config, httpsign.Headers(signedComponents...))
 	if err != nil {
 		return nil, err
 	}
