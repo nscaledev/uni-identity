@@ -57,30 +57,12 @@ jobs:
         make charts/identity/crds
         kubectl apply -f charts/identity/crds/
 
-    - name: Get Deployed Provider Version
+    # Results are labelled with the commit checked out and verified. Not the broker's latest main
+    # version: merge.yaml registers each main commit, and overlapping merges can make an older one
+    # main's latest, so results would land on code that wasn't tested.
+    - name: Get Provider Version
       id: get_version
-      run: |
-        OUTPUT=$(docker run --rm \
-          --network host \
-          pactfoundation/pact-cli:latest \
-          pact-broker describe-version \
-          --pacticipant="uni-identity" \
-          --latest="main" \
-          --broker-base-url="${{ vars.PACT_BROKER_URL_DEV }}" \
-          --broker-username="${{ vars.PACT_BROKER_USERNAME }}" \
-          --broker-password="${{ secrets.PACT_BROKER_PASSWORD }}" \
-          --output=json)
-
-        VERSION=$(echo "$OUTPUT" | grep -o '"number"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-
-        if [ -z "$VERSION" ]; then
-          echo "ERROR: Could not determine deployed provider version"
-          echo "Broker response: $OUTPUT"
-          exit 1
-        fi
-
-        echo "Deployed provider version: $VERSION"
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+      run: echo "version=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
     - name: Run Provider Contract Verification
       env:
