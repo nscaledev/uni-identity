@@ -48,6 +48,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	coreclient "github.com/unikorn-cloud/core/pkg/client"
+	"github.com/unikorn-cloud/core/pkg/constants"
 	coreapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
@@ -60,6 +62,9 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/util"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -574,6 +579,63 @@ func TestServiceToServiceAuthenticationSuccess(t *testing.T) {
 	addCertificateHeader(t, r, true)
 	addPrincipalHeader(t, r)
 
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	h.validate(t, serviceActor, "")
+}
+
+// TestServiceToServiceControllerPrincipal checks that the validator reads the
+// X-Principal that ControllerInjector sets, and that the ACL lookup gets the
+// principal of the resource.  The project ID makes the encoded value contain _,
+// and its length needs padding in the padded forms, so a change of the encoding
+// fails the test.
+func TestServiceToServiceControllerPrincipal(t *testing.T) {
+	t.Parallel()
+
+	const projectID = "project-?1"
+
+	resource := &metav1.ObjectMeta{
+		Labels: map[string]string{
+			constants.OrganizationPrincipalLabel: "org-1",
+			constants.ProjectPrincipalLabel:      projectID,
+		},
+		Annotations: map[string]string{
+			constants.CreatorPrincipalAnnotation: userActor,
+		},
+	}
+
+	want := &principal.Principal{
+		OrganizationID: "org-1",
+		ProjectID:      projectID,
+		Actor:          userActor,
+	}
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
+		p, err := principal.FromContext(ctx)
+		require.NoError(t, err)
+		require.Equal(t, want, p)
+
+		return &identityapi.Acl{}, nil
+	})
+
+	h := &handler{}
+	m := getMux(t, authorizer, h)
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	addCertificateHeader(t, r, true)
+
+	// The cluster has no client certificate Secret, so the injector cannot sign.
+	inject := principal.ControllerInjector(fake.NewClientBuilder().Build(), &coreclient.HTTPClientOptions{}, resource)
+	require.NoError(t, inject(t.Context(), r))
+
+	w := httptest.NewRecorder()
 	m.ServeHTTP(w, r)
 
 	require.Equal(t, http.StatusOK, w.Result().StatusCode)
