@@ -100,29 +100,20 @@ it, because each covers something the others cannot:
 - **A nonce and timestamp** in the signature parameters let the collector reject replays.
 - **A bearer token**, when the collector requires one, gates admission at its edge.
 
-The token is not redundant with the signature, and neither substitutes for the other. The
-collector's edge can compute an HMAC but cannot verify an asymmetric signature, so the token is the
-only thing that can refuse a request at the door; without it anyone reaching the endpoint could post
-arbitrary volume and it would all be stored until a downstream pass noticed. The signature is
-checked later, away from the request path, and is the only thing that attests to who produced a
-body, which a shared secret cannot do because the collector holds a copy of it.
+The token and the signature do different jobs. The token gets a request in. It is a shared secret,
+so the collector holds a copy and it cannot show who produced a body; the signature can.
 
-The token is covered by the signature. It is a credential rather than a description of the record,
-which is an argument for leaving it out, but not a good one: the collector looks the token up per
-path, so an unsigned credential lets a captured body and signature be re-posted under a different
-token, into a different stream, still verifying as ours. Covering it binds the two. RFC 9421 section
-7.2.1 asks for as much of the message as possible to be signed and names only components that
-intermediaries rewrite — `Via`, `Forwarded` — as the exceptions; section 3.2.1 uses `Authorization`
-itself as its example of a field an application requires to be signed.
+The token is not covered by the signature. The collector does not keep the token, so a signature
+over it could never be checked against a stored record, and every record would fail verification
+once the collector enforces it. The signed set is therefore the same with and without a token. A
+test strips the token from a captured request and asserts the signature still verifies.
 
-The consequence is an ordering constraint: the header is attached before signing, not after. A test
-tampers with the credential on a captured request and asserts verification fails.
+What that gives up: nothing ties a body and its signature to the token it arrived with, so someone
+holding a captured request and a token of their own could post it again under that token. Whether
+the nonce stops that depends on whether the collector checks nonces across tokens or per token,
+which this package does not know.
 
-It is sent as `Authorization: Bearer`, which the collector accepts interchangeably with its own
-`X-Streams-Token`; RFC 6648 deprecates `X-` prefixes and RFC 6750 standardises this one.
-
-The covered set therefore differs between a deployment with a token and one without, which is
-exactly what `Signature-Input` exists to declare.
+It is sent as `Authorization: Bearer` (RFC 6750).
 
 The digest and signature are applied in a `http.RoundTripper` rather than in `Emit`, so the digest
 covers exactly the bytes that go on the wire. Re-serialising JSON to compute a digest is how a
@@ -176,6 +167,22 @@ and appear as grants only when the request succeeded.
 | failed before its check (not found, dependency refused) | from the declaration | absent | the error |
 | rejected before any handler (validation, ACL lookup) | absent | absent | the error |
 
+Which organisation `scope` names, in plain words:
+
+It is the organisation the check ran in, never taken from which organisation the caller belongs to
+(the two are the same only when a caller acts in their own organisation). Where the
+check gets it from depends on the API:
+
+- v1 APIs check against the organisation in the route, before anything is looked up. A refused
+  call names that organisation, and so does a not-found, because the check passed before the lookup
+  failed.
+- v2 APIs look the resource up first and check against its own labels. A refused call names the
+  resource's organisation. A not-found has no scope, because there was nothing to take it from.
+- A refused create names the organisation the caller asked for, which nothing confirmed (see
+  Caveats).
+- A globally scoped operation has no scope.
+- An unauthenticated call (401) is not recorded.
+
 A request nothing described still gets a record, with the caller, the outcome and what the server
 matched it to, and no operation: the HTTP method is the obvious thing to reach for and it would be
 a lie, since a POST to an action sub-resource reads as a creation, so a failed rotation would be
@@ -222,9 +229,9 @@ request the validator rejects is still not recorded.
   the client was given. Rebuilding from the sender makes the derived components agree with the
   signature by construction, and the test then passes whatever they were — which is how the empty
   `@path` reached a release.
-- The bearer token MUST be attached before the request is signed, and MUST be covered by the
-  signature. Attaching it afterwards still sends a valid request, so only a test that tampers with
-  the credential and expects verification to fail catches the mistake.
+- The bearer token MUST NOT be covered by the signature. The collector does not keep it, so a
+  signature over it fails verification on every record. Covering it still sends a request the
+  collector admits, so only a test that verifies with the token removed catches the mistake.
 - The sink MUST NOT follow redirects. Credentials are attached per hop by the `RoundTripper`, so
   `net/http`'s own rule of stripping `Authorization` across hosts does not apply: each hop would be
   freshly signed and freshly credentialed, handing the token to wherever the collector pointed us.
