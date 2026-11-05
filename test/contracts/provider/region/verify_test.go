@@ -223,12 +223,16 @@ var _ = Describe("Identity Provider Verification", func() {
 			// however its interactions fail. Envir's main stays pending above: its can-i-deploy runs after
 			// Envir's CI, from workflow_run, and gates no Envir merge, so a main pact this provider can't
 			// serve yet would otherwise fail every build here. The selector matches whatever Envir has
-			// recorded as released and still supported; until Envir records releases it matches nothing.
+			// recorded as released and still supported (N, N-1 and N-2).
 			strict := []provider.Selector{
 				&provider.ConsumerVersionSelector{Consumer: "nscale-environments", DeployedOrReleased: true},
 			}
+			// Envir always has supported releases with an identity pact, so finding none means the selection
+			// or the broker is wrong, and an empty run would pass while verifying nothing.
+			strictRequest := request(strict, false)
+			strictRequest.FailIfNoPactsFound = true
 
-			err = provider.NewVerifier().VerifyProvider(testingT, request(strict, false))
+			err = provider.NewVerifier().VerifyProvider(testingT, strictRequest)
 			Expect(err).NotTo(HaveOccurred(), "Envir's supported releases must verify")
 		})
 	})
