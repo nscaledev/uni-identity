@@ -19,9 +19,20 @@ package oauth2_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,6 +42,7 @@ import (
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/handler"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
@@ -618,4 +630,137 @@ func TestUserinfoReadsUserOnce(t *testing.T) {
 	_, _, err = authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
 	require.NoError(t, err)
 	require.Equal(t, oneLookup, userReads.Load(), "userinfo should look the user up once")
+}
+
+// clientCertificate returns a self-signed client certificate with the common
+// name, which can be empty, and the URI SANs.
+func clientCertificate(t *testing.T, commonName string, uris ...*url.URL) *x509.Certificate {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: commonName},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		URIs:         uris,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	certificate, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+
+	return certificate
+}
+
+// clientCredentialsRequest is a client_credentials grant with the ingress
+// headers of the certificate.
+func clientCredentialsRequest(t *testing.T, certificate *x509.Certificate) *http.Request {
+	t.Helper()
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://test.com/oauth2/v2/token",
+		strings.NewReader(url.Values{"grant_type": {"client_credentials"}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Ssl-Client-Cert", url.QueryEscape(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}))))
+	r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+
+	return r
+}
+
+func postToken(t *testing.T, env *passportTestEnv, r *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+
+	h, err := handler.New(nil, nil, "", env.jwtIssuer, env.authenticator, nil, nil, nil)
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	h.PostOauth2V2Token(w, r)
+
+	return w
+}
+
+func requireAccessDenied(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+
+	var body openapi.Oauth2Error
+
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	require.Equal(t, openapi.AccessDenied, body.Error)
+	require.Equal(t, "access denied", body.ErrorDescription)
+}
+
+func TestClientCredentialsIssuesATokenToAnIngressCertificate(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	w := postToken(t, env, clientCredentialsRequest(t, clientCertificate(t, "unikorn-region")))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var token openapi.Token
+
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&token))
+
+	claims, err := env.authenticator.Verify(t.Context(), &oauth2.VerifyInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Token:    token.AccessToken,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "unikorn-region", claims.Subject)
+}
+
+// TestClientCredentialsIssuesATokenToASPIFFEID checks that a certificate with no
+// common name and one SPIFFE ID gets a token for that SPIFFE ID, so that the
+// token names the registered system account.
+func TestClientCredentialsIssuesATokenToASPIFFEID(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	id, err := url.Parse("spiffe://example.org/ns/region/sa/region")
+	require.NoError(t, err)
+
+	w := postToken(t, env, clientCredentialsRequest(t, clientCertificate(t, "", id)))
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var token openapi.Token
+
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&token))
+
+	claims, err := env.authenticator.Verify(t.Context(), &oauth2.VerifyInfo{
+		Issuer:   "https://test.com",
+		Audience: "test.com",
+		Token:    token.AccessToken,
+	})
+	require.NoError(t, err)
+	require.Equal(t, id.String(), claims.Subject)
+}
+
+// TestClientCredentialsRefusesAVerifiedPeer checks that the grant reads only
+// the ingress headers, so a caller on the SPIFFE listener gets no token, even
+// with the headers of another certificate.
+func TestClientCredentialsRefusesAVerifiedPeer(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	r := clientCredentialsRequest(t, clientCertificate(t, "unikorn-region"))
+	r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{clientCertificate(t, "")}}
+
+	requireAccessDenied(t, postToken(t, env, r))
+}
+
+func TestClientCredentialsRefusesAnEmptySubject(t *testing.T) {
+	t.Parallel()
+
+	env := setupPassportTestEnv(t)
+
+	requireAccessDenied(t, postToken(t, env, clientCredentialsRequest(t, clientCertificate(t, ""))))
 }

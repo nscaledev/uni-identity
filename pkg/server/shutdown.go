@@ -19,6 +19,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -28,6 +29,10 @@ import (
 // HealthListenAddress serves the readiness probe. The Service does not expose
 // it, so the ingress cannot route to it.
 const HealthListenAddress = ":6081"
+
+// ErrListenerStopped wraps the error of a listener that stopped before the
+// server shut down.
+var ErrListenerStopped = errors.New("listener stopped")
 
 // lifecycle times how a replica leaves service. The chart's
 // terminationGracePeriodSeconds must cover the delay and the drain.
@@ -105,4 +110,17 @@ func (l lifecycle) stop(ready *readiness.Checker, stopBackground context.CancelF
 	defer cancel()
 
 	return server.Shutdown(ctx)
+}
+
+// ServeUntilError runs serve in the background.  When serve returns an error
+// other than http.ErrServerClosed, it calls stop with that error, wrapped in
+// ErrListenerStopped, so the process stops and does not keep serving without
+// the listener.  A cancel function does nothing after its first call, so a
+// signal and a listener error can stop the process together.
+func ServeUntilError(serve func() error, stop context.CancelCauseFunc) {
+	go func() {
+		if err := serve(); !errors.Is(err, http.ErrServerClosed) {
+			stop(fmt.Errorf("%w: %w", ErrListenerStopped, err))
+		}
+	}()
 }

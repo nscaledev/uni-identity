@@ -18,6 +18,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"testing"
@@ -123,6 +124,47 @@ func TestServeReturnsAfterTheDrain(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, <-responded)
 	require.NoError(t, <-served)
+}
+
+var errListen = errors.New("accept tcp [::]:6082: use of closed network connection")
+
+func TestServeUntilErrorStopsOnAListenerError(t *testing.T) {
+	t.Parallel()
+
+	stop, cancel := context.WithCancelCause(t.Context())
+	t.Cleanup(func() { cancel(nil) })
+
+	ServeUntilError(func() error { return errListen }, cancel)
+
+	select {
+	case <-stop.Done():
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "a listener error did not stop the process")
+	}
+
+	require.ErrorIs(t, context.Cause(stop), ErrListenerStopped)
+	require.ErrorIs(t, context.Cause(stop), errListen)
+}
+
+// TestServeUntilErrorIgnoresShutdown checks that the normal end of a listener
+// at shutdown does not make the process exit with an error.
+func TestServeUntilErrorIgnoresShutdown(t *testing.T) {
+	t.Parallel()
+
+	stop, cancel := context.WithCancelCause(t.Context())
+	t.Cleanup(func() { cancel(nil) })
+
+	returned := make(chan struct{})
+
+	ServeUntilError(func() error {
+		defer close(returned)
+
+		return http.ErrServerClosed
+	}, cancel)
+
+	<-returned
+
+	require.Never(t, func() bool { return stop.Err() != nil }, 200*time.Millisecond, 10*time.Millisecond)
 }
 
 // TestShutdownFitsTheGracePeriod guards the chart's

@@ -19,11 +19,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"syscall"
 	"testing"
+	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/readiness"
+	"github.com/unikorn-cloud/identity/pkg/server"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
@@ -102,4 +110,118 @@ func TestReadCacheOptionsWatchOnlyTheKindsReadFromTheCache(t *testing.T) {
 		fmt.Sprintf("%T", &unikornv1.Allocation{}):   nil,
 		fmt.Sprintf("%T", &unikornv1.Project{}):      nil,
 	}, namespaces)
+}
+
+// TestServeUntilStoppedStopsOnASPIFFEListenerError checks that a failure of the
+// SPIFFE listener stops the API server, and that the error wraps
+// server.ErrListenerStopped, so that the process exits with code 1.
+func TestServeUntilStoppedStopsOnASPIFFEListenerError(t *testing.T) {
+	t.Parallel()
+
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	// The server has no TLS configuration, so ServeTLS on the SPIFFE address fails.
+	apiServer := &http.Server{ReadHeaderTimeout: time.Second}
+	serve := func() error { return apiServer.Serve(listener) }
+
+	served := make(chan error, 1)
+
+	go func() {
+		served <- serveUntilStopped(logr.Discard(), apiServer, serve, "127.0.0.1:0", readiness.New(), func() {})
+	}()
+
+	select {
+	case err := <-served:
+		require.ErrorIs(t, err, server.ErrListenerStopped)
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "a SPIFFE listener error did not stop the API server")
+	}
+}
+
+// TestServeUntilStoppedReturnsNilAfterSIGTERM checks that the process exits with
+// code 0 after SIGTERM, also when a request does not finish in the drain time.
+// The shutdown delay and the drain time of server.Serve are fixed, so the test
+// takes about 20 seconds.
+//
+//nolint:paralleltest // SIGTERM stops every server in the test process.
+func TestServeUntilStoppedReturnsNilAfterSIGTERM(t *testing.T) {
+	tests := []struct {
+		name     string
+		inFlight bool
+	}{
+		{
+			name: "with no request in flight",
+		},
+		{
+			name:     "with a request that is longer than the drain time",
+			inFlight: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+
+			entered := make(chan struct{})
+			release := make(chan struct{})
+
+			defer close(release)
+
+			apiServer := &http.Server{
+				Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					close(entered)
+					<-release
+				}),
+				ReadHeaderTimeout: time.Second,
+			}
+
+			serving := make(chan struct{})
+
+			serve := func() error {
+				close(serving)
+
+				return apiServer.Serve(listener)
+			}
+
+			served := make(chan error, 1)
+
+			go func() {
+				served <- serveUntilStopped(logr.Discard(), apiServer, serve, "", readiness.New(), func() {})
+			}()
+
+			select {
+			case <-serving:
+			case <-time.After(10 * time.Second):
+				require.Fail(t, "the API server did not start to serve")
+			}
+
+			if test.inFlight {
+				request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+listener.Addr().String(), nil)
+				require.NoError(t, err)
+
+				go func() {
+					if response, err := http.DefaultClient.Do(request); err == nil {
+						_ = response.Body.Close()
+					}
+				}()
+
+				select {
+				case <-entered:
+				case <-time.After(10 * time.Second):
+					require.Fail(t, "the request did not reach the handler")
+				}
+			}
+
+			require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGTERM))
+
+			select {
+			case err := <-served:
+				require.NoError(t, err)
+			case <-time.After(30 * time.Second):
+				require.Fail(t, "SIGTERM did not stop the API server")
+			}
+		})
+	}
 }

@@ -49,6 +49,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/readiness"
+	servermetrics "github.com/unikorn-cloud/identity/pkg/server/metrics"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -89,6 +90,9 @@ type Server struct {
 	// AuditOptions optionally ship audit records to an external collector,
 	// in addition to the structured log, which is always emitted.
 	AuditOptions *audit.Options
+
+	// SPIFFEOptions configure the optional listener that verifies X.509-SVIDs.
+	SPIFFEOptions SPIFFEOptions
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -100,6 +104,7 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
+	s.SPIFFEOptions.AddFlags(flags)
 
 	if s.AuditOptions == nil {
 		s.AuditOptions = audit.NewOptions()
@@ -118,7 +123,9 @@ func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
 
 // newRouter applies the middleware that runs on all requests pre-routing.
 // Ordering is important:
-//   - The request deadline comes first so it bounds everything else.
+//   - The verified peer headers come first, so no later step sees the client
+//     certificate headers of a request with a verified TLS peer.
+//   - The request deadline comes next so it bounds everything else.
 //   - OpenTelemetry middleware optionally transmits spans over OTLP, but also
 //     establishes a trace ID that is used to correlate logs with user issues.
 //   - Logging ensures at least all errors are captured by logging telemetry and we
@@ -137,6 +144,7 @@ func (s *Server) newRouter(schema *helpers.Schema) (*chi.Mux, error) {
 	}
 
 	router := chi.NewRouter()
+	router.Use(verifiedPeerHeaders)
 	router.Use(requestDeadline)
 	router.Use(opentelemetry.New(constants.Application, constants.Version).Middleware)
 	router.Use(logging.New().Middleware)
@@ -152,6 +160,8 @@ func (s *Server) newRouter(schema *helpers.Schema) (*chi.Mux, error) {
 // GetServer assembles the HTTP server. Background work it starts, such as the
 // JOSE leader election, stops when ctx ends. The readiness checker gains the
 // conditions the handler graph adds.
+//
+//nolint:cyclop // Each assembly step returns its own error.
 func (s *Server) GetServer(ctx context.Context, client client.Client, readCache client.Reader, ready *readiness.Checker) (*http.Server, error) {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
@@ -217,9 +227,14 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 		}
 	}
 
+	authentications, err := servermetrics.NewAuthentications(otel.Meter(constants.Application))
+	if err != nil {
+		return nil, err
+	}
+
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
-	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
+	validator := s.newValidator(authorizer, authentications.Record)
 
 	// A configured collector that cannot be reached at startup fails the
 	// process rather than silently dropping audit records for its lifetime.
@@ -254,7 +269,19 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 		Handler:           openapi.HandlerWithOptions(handlerInterface, chiServerOptions),
 	}
 
+	s.SPIFFEOptions.configureServer(server, ready)
+
 	return server, nil
+}
+
+// newValidator returns the validator of the API server, with the relayers, the
+// recorder and the system account registry.
+func (s *Server) newValidator(authorizer openapimiddleware.Authorizer, recorder openapimiddleware.AuthenticationRecorder) *openapimiddleware.Validator {
+	return openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer,
+		openapimiddleware.WithRelayers(s.SPIFFEOptions.relayers),
+		openapimiddleware.WithAuthenticationRecorder(recorder),
+		openapimiddleware.WithSystemAccounts(s.RBACOptions.SystemAccountRoleIDs),
+	)
 }
 
 // requestTimeout returns the request context deadline. The server's write timeout

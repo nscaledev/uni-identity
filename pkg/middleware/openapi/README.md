@@ -96,6 +96,9 @@ line of the error, which has the trace ID of the request.
 | `subject_malformed` | The common name starts with `spiffe://`, or the URI SANs are not exactly one SPIFFE ID. |
 | `not_registered` | The subject is not a registered system account. |
 
+For `peer_has_common_name` and `peer_expired`, the peer is the SPIFFE ID of the leaf certificate,
+not the common name. When the leaf does not have exactly one SPIFFE ID URI SAN, the peer is absent.
+
 ## Trust Boundary Rules
 
 - There are exactly two conceptual request-authentication paths: bearer-token user calls and mTLS

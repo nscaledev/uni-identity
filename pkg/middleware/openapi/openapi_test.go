@@ -1546,33 +1546,93 @@ func TestRelayOfUnregisteredSubjectLabels(t *testing.T) {
 	}
 }
 
+// logErrorDetails returns the request with a logger that adds each "error detail"
+// line to lines.
+func logErrorDetails(t *testing.T, r *http.Request, lines *[]map[string]any) *http.Request {
+	t.Helper()
+
+	logger := funcr.NewJSON(func(obj string) {
+		line := map[string]any{}
+		require.NoError(t, json.Unmarshal([]byte(obj), &line))
+
+		if line["msg"] == "error detail" {
+			*lines = append(*lines, line)
+		}
+	}, funcr.Options{})
+
+	return r.WithContext(log.IntoContext(r.Context(), logger))
+}
+
+// requireLoggedPeer checks the peer of the one "error detail" line.  An empty peer
+// means that the line has no peer.
+func requireLoggedPeer(t *testing.T, lines []map[string]any, peer string) {
+	t.Helper()
+
+	require.Len(t, lines, 1)
+
+	if peer == "" {
+		require.NotContains(t, lines[0], "peer")
+
+		return
+	}
+
+	require.Equal(t, peer, lines[0]["peer"])
+}
+
 // TestVerifiedPeerWithCommonNameRefused checks that a verified peer with a common
-// name is refused, also when that common name is registered.
+// name is refused, also when that common name is registered.  The refusal names
+// the peer by its SPIFFE ID, so that the refused caller is known, and never by
+// its common name.
 func TestVerifiedPeerWithCommonNameRefused(t *testing.T) {
 	t.Parallel()
 
-	c := gomock.NewController(t)
-	defer c.Finish()
-
-	authorizer := mock.NewMockAuthorizer(c)
-
-	m, rec := getIdentityMux(t, authorizer, &handler{})
-
-	r := newRequest(t)
-	r.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{newCertificate(t, serviceActor, time.Now().Add(time.Hour), relayerID)},
+	tests := []struct {
+		name string
+		uris []string
+		peer string
+	}{
+		{
+			name: "with a SPIFFE ID",
+			uris: []string{relayerID},
+			peer: relayerID,
+		},
+		{
+			name: "without a SPIFFE ID",
+		},
 	}
-	addPrincipalHeader(t, r)
 
-	w := httptest.NewRecorder()
-	m.ServeHTTP(w, r)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	requireGenericRefusal(t, w)
-	requireRefusal(t, rec, "spiffe", "peer_has_common_name", "")
+			c := gomock.NewController(t)
+			defer c.Finish()
+
+			authorizer := mock.NewMockAuthorizer(c)
+
+			m, rec := getIdentityMux(t, authorizer, &handler{})
+
+			var lines []map[string]any
+
+			r := logErrorDetails(t, newRequest(t), &lines)
+			r.TLS = &tls.ConnectionState{
+				PeerCertificates: []*x509.Certificate{newCertificate(t, serviceActor, time.Now().Add(time.Hour), test.uris...)},
+			}
+			addPrincipalHeader(t, r)
+
+			w := httptest.NewRecorder()
+			m.ServeHTTP(w, r)
+
+			body := requireGenericRefusal(t, w)
+			require.NotContains(t, body, "spiffe")
+			requireRefusal(t, rec, "spiffe", "peer_has_common_name", test.peer)
+			requireLoggedPeer(t, lines, test.peer)
+		})
+	}
 }
 
 // TestExpiredPeerRefused checks that a request on a connection that outlives the
-// peer certificate is refused.
+// peer certificate is refused, and that the refusal names the peer by its SPIFFE ID.
 func TestExpiredPeerRefused(t *testing.T) {
 	t.Parallel()
 
@@ -1583,7 +1643,9 @@ func TestExpiredPeerRefused(t *testing.T) {
 
 	m, rec := getIdentityMux(t, authorizer, &handler{})
 
-	r := newRequest(t)
+	var lines []map[string]any
+
+	r := logErrorDetails(t, newRequest(t), &lines)
 	r.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{newCertificate(t, "", time.Now().Add(-time.Minute), relayerID)},
 	}
@@ -1593,7 +1655,8 @@ func TestExpiredPeerRefused(t *testing.T) {
 	m.ServeHTTP(w, r)
 
 	requireGenericRefusal(t, w)
-	requireRefusal(t, rec, "spiffe", "peer_expired", "")
+	requireRefusal(t, rec, "spiffe", "peer_expired", relayerID)
+	requireLoggedPeer(t, lines, relayerID)
 }
 
 // TestBearerTokenWithUnregisteredCertificate checks that a bearer token caller

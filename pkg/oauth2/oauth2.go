@@ -72,6 +72,8 @@ var (
 	ErrReference               = goerrors.New("resource reference error")
 	ErrUserNotDomainMapped     = goerrors.New("user is not domain mapped to an organization")
 	ErrSourceTokenExpired      = goerrors.New("source token has expired")
+
+	ErrClientCredentialsVerifiedPeer = goerrors.New("client_credentials grant is not served to a verified TLS peer")
 )
 
 type Options struct {
@@ -1355,6 +1357,10 @@ func (a *Authenticator) TokenRefreshToken(w http.ResponseWriter, r *http.Request
 // mTLS based authentication.
 // TODO: delete me, services should use mTLS alone.
 func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Request) (*openapi.Token, error) {
+	if util.HasVerifiedPeer(r) {
+		return nil, errors.OAuth2AccessDenied(util.AccessDeniedDescription).WithError(fmt.Errorf("%w: listener=spiffe", ErrClientCredentialsVerifiedPeer))
+	}
+
 	certPEM, err := util.GetClientCertificateHeader(r.Header)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("mTLS client verification failed").WithError(err)
@@ -1365,12 +1371,17 @@ func (a *Authenticator) TokenClientCredentials(w http.ResponseWriter, r *http.Re
 		return nil, errors.OAuth2InvalidRequest("mTLS certificate validation failed").WithError(err)
 	}
 
+	subject, err := util.GetClientCertificateSubject(certificate)
+	if err != nil {
+		return nil, errors.OAuth2AccessDenied(util.AccessDeniedDescription).WithError(err)
+	}
+
 	thumbprint := util.GetClientCertifcateThumbprint(certificate)
 
 	info := &IssueInfo{
 		Issuer:   a.getInternalIssuer(),
 		Audience: a.getAudience(),
-		Subject:  certificate.Subject.CommonName,
+		Subject:  subject,
 		Type:     TokenTypeService,
 		Service: &ServiceClaims{
 			X509Thumbprint: thumbprint,

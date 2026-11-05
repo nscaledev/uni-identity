@@ -22,6 +22,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -59,8 +61,9 @@ type cacheRunner interface {
 	WaitForCacheSync(ctx context.Context) bool
 }
 
-// start is the entry point to server.
-func start() {
+// run is the entry point to server.  It returns an error when the server fails
+// to start, or when a listener stops before shutdown.
+func run() error {
 	s := &server.Server{}
 	s.AddFlags(pflag.CommandLine)
 
@@ -81,14 +84,21 @@ func start() {
 	if err := s.SetupOpenTelemetry(ctx); err != nil {
 		logger.Error(err, "failed to setup OpenTelemetry")
 
-		return
+		return err
 	}
+
+	if err := s.SetupSPIFFE(ctx); err != nil {
+		logger.Error(err, "failed to setup the SPIFFE listener")
+
+		return err
+	}
+	defer closeSPIFFE(&s.SPIFFEOptions, logger)
 
 	client, readCache, err := newKubernetesClients(ctx, s.CoreOptions.Namespace)
 	if err != nil {
 		logger.Error(err, "failed to create Kubernetes clients")
 
-		return
+		return err
 	}
 
 	ready := readiness.New()
@@ -97,14 +107,14 @@ func start() {
 	if err != nil {
 		logger.Error(err, "failed to setup Handler")
 
-		return
+		return err
 	}
 
 	metrics, err := servermetrics.New(otel.Meter(constants.Application), constants.ServiceDescriptor())
 	if err != nil {
 		logger.Error(err, "failed to setup server metrics")
 
-		return
+		return err
 	}
 	defer closeServerMetrics(metrics, logger)
 
@@ -112,7 +122,7 @@ func start() {
 	if err != nil {
 		logger.Error(err, "failed to bind server listener")
 
-		return
+		return err
 	}
 
 	healthServer := server.NewHealthServer(ready)
@@ -121,7 +131,7 @@ func start() {
 	if err != nil {
 		logger.Error(err, "failed to bind health listener")
 
-		return
+		return err
 	}
 
 	// The health server answers until the process exits, so the probe
@@ -132,13 +142,62 @@ func start() {
 		}
 	}()
 
+	serve := func() error { return metrics.Serve(apiServer, listener) }
+
+	return serveUntilStopped(logger, apiServer, serve, s.SPIFFEOptions.ListenAddress, ready, cancel)
+}
+
+// serveUntilStopped serves the API server, and the SPIFFE listener when it is on,
+// until SIGTERM or until a listener fails.  The error of a failed listener wraps
+// server.ErrListenerStopped.  Any other error is logged only, so that the process
+// exits with code 0 after SIGTERM, also when the drain runs out of time.
+func serveUntilStopped(logger logr.Logger, apiServer *http.Server, serve func() error, spiffeAddress string, ready *readiness.Checker, stopBackground context.CancelFunc) error {
 	sigterm, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stopSignals()
 
-	serve := func() error { return metrics.Serve(apiServer, listener) }
+	stop, stopServer := context.WithCancelCause(sigterm)
+	defer stopServer(nil)
 
-	if err := server.Serve(serve, apiServer, ready, cancel, sigterm.Done()); err != nil {
+	if err := serveSPIFFE(apiServer, spiffeAddress, stopServer); err != nil {
+		logger.Error(err, "failed to bind SPIFFE listener")
+
+		return err
+	}
+
+	if err := server.Serve(serve, apiServer, ready, stopBackground, stop.Done()); err != nil {
 		logger.Error(err, "server error")
+	}
+
+	if err := context.Cause(stop); errors.Is(err, server.ErrListenerStopped) {
+		logger.Error(err, "server error")
+
+		return err
+	}
+
+	return nil
+}
+
+// serveSPIFFE serves the SPIFFE listener in the background when it is on.  The
+// listener shares the API server, and an error of the listener stops the process.
+func serveSPIFFE(apiServer *http.Server, address string, stop context.CancelCauseFunc) error {
+	if address == "" {
+		return nil
+	}
+
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+
+	// The file names are empty, because the TLS configuration supplies the SVID.
+	server.ServeUntilError(func() error { return apiServer.ServeTLS(listener, "", "") }, stop)
+
+	return nil
+}
+
+func closeSPIFFE(options *server.SPIFFEOptions, logger logr.Logger) {
+	if err := options.Close(); err != nil {
+		logger.Error(err, "failed to close the SPIFFE source")
 	}
 }
 
@@ -255,5 +314,7 @@ func closeServerMetrics(metrics *servermetrics.Reporter, logger logr.Logger) {
 }
 
 func main() {
-	start()
+	if err := run(); err != nil {
+		os.Exit(1)
+	}
 }
