@@ -296,6 +296,12 @@ Raw Grafana JSON under `charts/identity-observability/files/dashboards/*.json`,
 provisioned through the Grafana sidecar or grafana-operator (see the chart
 README).
 
+Every dashboard has a `datasource` selector of type prometheus, and every
+panel, query and variable uses it, so the viewer's choice applies to the whole
+dashboard. Grafana instances name their datasources differently, so the
+selector has no saved value and no name filter: it starts on the instance's
+default Prometheus datasource and lists all of them.
+
 Every dashboard has a top-level `cluster` selector and filters every panel on it.
 Every panel query also filters on `service="unikorn-identity"`: the RED and
 readiness families use platform-generic metric names, so the service must be
@@ -382,7 +388,8 @@ Identity validates its chart with a **bash** render harness
    provisioning mode, dashboards remain opt-in, operator mode fails without an
    instance selector, and **no datasource or ServiceMonitor is emitted**.
 2. **Dashboard contract checks** — assert stable dashboard UIDs, one `cluster`
-   selector per dashboard, and a cluster filter on every panel query. This prevents
+   selector per dashboard, a cluster filter on every panel query, and that
+   every panel, query and variable uses the generic `datasource` variable. This prevents
    independent clusters from being combined in one view.
 3. **End-to-end smoke** — with an external lifecycle exporter publishing
    `uni_resource_*` and the platform PodMonitor scraping Identity in a development

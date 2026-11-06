@@ -83,13 +83,31 @@ for dashboard in "$chart"/files/dashboards/*.json; do
 	jq --exit-status '
 		.id == null and
 		(.uid | type == "string" and length > 0) and
-		(.templating.list | length == 1) and
-		.templating.list[0].name == "cluster" and
-		.templating.list[0].type == "query" and
+		([.templating.list[].name] == ["datasource", "cluster"]) and
+		.templating.list[1].type == "query" and
 		(.panels | length > 0) and
 		all(.panels[]; .id != null and .gridPos != null) and
 		all(.panels[].targets[]; .expr | contains("cluster=~\"$cluster\""))
 	' "$dashboard" >/dev/null
+done
+
+# Each Grafana picks its own Prometheus through the datasource variable, so
+# its regex and default stay empty, and every panel, target and query
+# variable must use it rather than fall back to Grafana's default.
+for dashboard in "$chart"/files/dashboards/*.json; do
+	if ! jq --exit-status '
+		(.templating.list[0] |
+			.type == "datasource" and .query == "prometheus" and
+			.regex == "" and .current == {}) and
+		all(
+			(.templating.list[] | select(.type == "query")),
+			(.. | objects | select(has("targets") or has("expr")));
+			.datasource == {"type": "prometheus", "uid": "${datasource}"}
+		)
+	' "$dashboard" >/dev/null; then
+		echo "$dashboard: every query must use the generic \${datasource} variable" >&2
+		exit 1
+	fi
 done
 
 # The RED metric names are platform-generic, so dashboard queries select the
@@ -97,7 +115,7 @@ done
 # scraper-owned job label. The server's JOSE lease is unnamed, so name!=""
 # keeps the leader-election panels to the controllers' leases.
 jq --exit-status '
-	[.panels[].targets[].expr, .templating.list[0].query] as $expressions |
+	[.panels[].targets[].expr, .templating.list[1].query] as $expressions |
 	all($expressions[]; contains("service=\"unikorn-identity\", name!=\"\"")) and
 	all($expressions[]; contains("app=") | not) and
 	all($expressions[]; contains("job=") | not)
@@ -125,9 +143,9 @@ jq --exit-status '
 	any($expressions[]; contains("http_server_request_duration_seconds_count")) and
 	any($expressions[]; contains("http_server_request_duration_seconds_bucket")) and
 	any($expressions[]; contains("http_server_active_requests")) and
-	all(($expressions + [.templating.list[0].query])[]; contains("service=\"unikorn-identity\"")) and
-	all(($expressions + [.templating.list[0].query])[]; contains("app=") | not) and
-	all(($expressions + [.templating.list[0].query])[]; contains("job=") | not)
+	all(($expressions + [.templating.list[1].query])[]; contains("service=\"unikorn-identity\"")) and
+	all(($expressions + [.templating.list[1].query])[]; contains("app=") | not) and
+	all(($expressions + [.templating.list[1].query])[]; contains("job=") | not)
 ' "$chart/files/dashboards/uni-identity-api.json" >/dev/null
 
 jq --exit-status '
@@ -140,9 +158,9 @@ jq --exit-status '
 	any($expressions[]; contains("unikorn_identity_controller_build_info")) and
 	any($expressions[]; contains("unikorn_server_ready")) and
 	any($expressions[]; contains("unikorn_identity_server_build_info")) and
-	all(($expressions + [.templating.list[0].query])[]; contains("service=\"unikorn-identity\"")) and
-	all(($expressions + [.templating.list[0].query])[]; contains("app=") | not) and
-	all(($expressions + [.templating.list[0].query])[]; contains("job=") | not) and
+	all(($expressions + [.templating.list[1].query])[]; contains("service=\"unikorn-identity\"")) and
+	all(($expressions + [.templating.list[1].query])[]; contains("app=") | not) and
+	all(($expressions + [.templating.list[1].query])[]; contains("job=") | not) and
 	all($expressions[]; contains("controller_runtime") | not) and
 	all($expressions[]; contains("state-metrics") | not) and
 	[.panels[] | select(.title == "Ready controllers")] as $controllerReadiness |

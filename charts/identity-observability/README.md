@@ -17,7 +17,9 @@ them. Set `grafana.dashboards.enabled` and choose a `provisioningMode`:
 Set `grafana.dashboards.leaderElection.enabled` only when the metric store receives
 the controllers' leader-election metrics. It adds the optional leadership dashboard.
 
-Dashboards are provisioned in the `UNI/Identity` Grafana folder.
+Dashboards are provisioned in the `UNI/Identity` Grafana folder. Each has a
+`datasource` variable of type prometheus with no saved value; it starts on
+Grafana's default Prometheus datasource and viewers can pick another.
 
 Every dashboard filters on `cluster` and on `service="unikorn-identity"`, which
 core sets in code on every series identity serves. Identity's metrics use

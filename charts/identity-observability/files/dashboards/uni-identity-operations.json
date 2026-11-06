@@ -13,9 +13,21 @@
   "templating": {
     "list": [
       {
+        "name": "datasource",
+        "label": "Datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "regex": ""
+      },
+      {
         "name": "cluster",
         "label": "Cluster",
         "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "query": "label_values(unikorn_controller_ready{service=\"unikorn-identity\"}, cluster)",
         "includeAll": true,
         "allValue": ".*",
@@ -52,8 +64,16 @@
         },
         "overrides": []
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (cluster) (unikorn_controller_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
           "legendFormat": "{{cluster}}",
           "refId": "A"
@@ -79,8 +99,16 @@
         "x": 8,
         "y": 0
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "max by (controller, version, revision) (unikorn_identity_controller_build_info{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
           "format": "table",
           "instant": true,
@@ -113,8 +141,16 @@
         },
         "overrides": []
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (cluster) (unikorn_server_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
           "legendFormat": "{{cluster}}",
           "refId": "A"
@@ -140,8 +176,16 @@
         "x": 8,
         "y": 8
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "max by (version, revision) (unikorn_identity_server_build_info{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
           "format": "table",
           "instant": true,
