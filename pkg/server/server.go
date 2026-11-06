@@ -28,11 +28,13 @@ import (
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
+	coremetrics "github.com/unikorn-cloud/core/pkg/server/middleware/metrics"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
@@ -42,7 +44,6 @@ import (
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
-	redmetrics "github.com/unikorn-cloud/identity/pkg/middleware/metrics"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -112,10 +113,6 @@ func (s *Server) SetupLogging() {
 	s.CoreOptions.SetupLogging()
 }
 
-func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
-	return s.CoreOptions.SetupOpenTelemetry(ctx)
-}
-
 // newRouter applies the middleware that runs on all requests pre-routing.
 // Ordering is important:
 //   - The request deadline comes first so it bounds everything else.
@@ -123,15 +120,21 @@ func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
 //     establishes a trace ID that is used to correlate logs with user issues.
 //   - Logging ensures at least all errors are captured by logging telemetry and we
 //     can trigger alerts based on them.
+//   - Metrics records every request, so it goes before the route resolver,
+//     which answers requests it cannot resolve itself.
 //   - Route resolver provides routing and OpenAPI information to child middlewares.
 //   - CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
 func (s *Server) newRouter(schema *helpers.Schema) (*chi.Mux, error) {
+	return s.newRouterWithMeter(schema, otel.Meter(constants.Application))
+}
+
+func (s *Server) newRouterWithMeter(schema *helpers.Schema, meter metric.Meter) (*chi.Mux, error) {
 	requestDeadline, err := requestDeadlineMiddleware(&s.ServerOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	metrics, err := redmetrics.New(otel.Meter(constants.Application))
+	metrics, err := coremetrics.New(meter)
 	if err != nil {
 		return nil, err
 	}
@@ -140,8 +143,8 @@ func (s *Server) newRouter(schema *helpers.Schema) (*chi.Mux, error) {
 	router.Use(requestDeadline)
 	router.Use(opentelemetry.New(constants.Application, constants.Version).Middleware)
 	router.Use(logging.New().Middleware)
-	router.Use(routeresolver.New(schema).Middleware)
 	router.Use(metrics.Middleware)
+	router.Use(routeresolver.New(schema).Middleware)
 	router.Use(cors.New(&s.CORSOptions).Middleware)
 	router.NotFound(http.HandlerFunc(handler.NotFound))
 	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))

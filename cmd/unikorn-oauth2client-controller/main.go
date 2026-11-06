@@ -19,9 +19,10 @@ package main
 
 import (
 	"github.com/unikorn-cloud/core/pkg/manager"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/controllers/oauth2client"
 )
 
 func main() {
-	manager.Run(&oauth2client.Factory{})
+	manager.RunService(constants.Service, &oauth2client.Factory{})
 }

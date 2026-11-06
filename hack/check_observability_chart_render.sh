@@ -69,14 +69,15 @@ for dashboard in "$chart"/files/dashboards/*.json; do
 	' "$dashboard" >/dev/null
 done
 
-# The RED metric names are platform-generic (OTel HTTP server semantic
-# conventions in their Prometheus-stored form), so every query must also be
-# scoped to identity by job — the Prometheus-convention label the pipeline
-# derives from the OTLP resource's service.name. The name alone no longer
-# selects the service.
+# The RED metric names are platform-generic, so dashboard queries select the
+# service label core sets in code, not the release-named pod app label or the
+# scraper-owned job label. The server's JOSE lease is unnamed, so name!=""
+# keeps the leader-election panels to the controllers' leases.
 jq --exit-status '
 	[.panels[].targets[].expr, .templating.list[0].query] as $expressions |
-	all($expressions[]; contains("job=\"unikorn-identity\""))
+	all($expressions[]; contains("service=\"unikorn-identity\", name!=\"\"")) and
+	all($expressions[]; contains("app=") | not) and
+	all($expressions[]; contains("job=") | not)
 ' "$chart/files/dashboards/leader-election.json" >/dev/null
 
 jq --exit-status '
@@ -101,7 +102,9 @@ jq --exit-status '
 	any($expressions[]; contains("http_server_request_duration_seconds_count")) and
 	any($expressions[]; contains("http_server_request_duration_seconds_bucket")) and
 	any($expressions[]; contains("http_server_active_requests")) and
-	all(($expressions + [.templating.list[0].query])[]; contains("job=\"unikorn-identity\""))
+	all(($expressions + [.templating.list[0].query])[]; contains("service=\"unikorn-identity\"")) and
+	all(($expressions + [.templating.list[0].query])[]; contains("app=") | not) and
+	all(($expressions + [.templating.list[0].query])[]; contains("job=") | not)
 ' "$chart/files/dashboards/uni-identity-api.json" >/dev/null
 
 jq --exit-status '
@@ -114,13 +117,15 @@ jq --exit-status '
 	any($expressions[]; contains("unikorn_identity_controller_build_info")) and
 	any($expressions[]; contains("unikorn_server_ready")) and
 	any($expressions[]; contains("unikorn_identity_server_build_info")) and
-	all(($expressions + [.templating.list[0].query])[]; contains("job=\"unikorn-identity\"")) and
+	all(($expressions + [.templating.list[0].query])[]; contains("service=\"unikorn-identity\"")) and
+	all(($expressions + [.templating.list[0].query])[]; contains("app=") | not) and
+	all(($expressions + [.templating.list[0].query])[]; contains("job=") | not) and
 	all($expressions[]; contains("controller_runtime") | not) and
 	all($expressions[]; contains("state-metrics") | not) and
 	[.panels[] | select(.title == "Ready controllers")] as $controllerReadiness |
 	($controllerReadiness | length == 1) and
 	all($controllerReadiness[];
-		.targets[0].expr == "sum by (cluster) (unikorn_controller_ready{job=\"unikorn-identity\", cluster=~\"$cluster\"})" and
+		.targets[0].expr == "sum by (cluster) (unikorn_controller_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})" and
 		.targets[0].legendFormat == "{{cluster}}" and
 		.options.textMode == "value_and_name" and
 		.options.reduceOptions.values == false and
@@ -133,7 +138,7 @@ jq --exit-status '
 	[.panels[] | select(.title == "Server ready")] as $serverReadiness |
 	($serverReadiness | length == 1) and
 	all($serverReadiness[];
-		.targets[0].expr == "sum by (cluster) (unikorn_server_ready{job=\"unikorn-identity\", cluster=~\"$cluster\"})" and
+		.targets[0].expr == "sum by (cluster) (unikorn_server_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})" and
 		.targets[0].legendFormat == "{{cluster}}" and
 		.options.textMode == "value_and_name" and
 		.options.reduceOptions.values == false and

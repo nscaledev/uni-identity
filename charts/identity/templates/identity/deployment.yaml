@@ -218,6 +218,8 @@ spec:
         # Kept out of the Service, so the ingress cannot reach the probe.
         - name: health
           containerPort: 6081
+        - name: prometheus
+          containerPort: 8080
         readinessProbe:
           httpGet:
             path: /readyz
@@ -230,7 +232,8 @@ spec:
         securityContext:
           readOnlyRootFilesystem: true
       serviceAccountName: {{ .Release.Name }}-server
-      # Covers the server's shutdown delay and drain, see pkg/server/shutdown.go.
-      terminationGracePeriodSeconds: 30
+      # Covers the server's shutdown delay, drain and final scrape, see
+      # pkg/server/shutdown.go.
+      terminationGracePeriodSeconds: 60
       securityContext:
         runAsNonRoot: true

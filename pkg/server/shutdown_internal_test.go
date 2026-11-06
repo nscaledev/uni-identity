@@ -33,31 +33,72 @@ type recordingServer struct {
 	t          *testing.T
 	ready      *readiness.Checker
 	background context.Context //nolint:containedctx // the test observes the context's state.
+	metrics    context.Context //nolint:containedctx // the test observes the context's state.
+	shutdown   chan<- struct{}
 	drained    bool
 }
 
 func (s *recordingServer) Shutdown(ctx context.Context) error {
 	require.ErrorIs(s.t, s.ready.Check(ctx), readiness.ErrStopping, "readiness fails before the drain")
 	require.ErrorIs(s.t, s.background.Err(), context.Canceled, "background work stops before the drain")
+	require.NoError(s.t, s.metrics.Err(), "metrics are served during the drain")
 
 	_, bounded := ctx.Deadline()
 	require.True(s.t, bounded, "the drain is bounded")
 
 	s.drained = true
+	if s.shutdown != nil {
+		close(s.shutdown)
+	}
 
 	return nil
 }
 
-func TestStopFailsReadinessThenStopsBackgroundThenDrains(t *testing.T) {
+func TestStopFailsReadinessThenStopsBackgroundThenDrainsThenStopsMetrics(t *testing.T) {
 	t.Parallel()
 
 	ready := readiness.New()
 	background, stopBackground := context.WithCancel(t.Context())
-	server := &recordingServer{t: t, ready: ready, background: background}
-	l := lifecycle{delay: time.Millisecond, drain: time.Second}
+	metrics, stopMetrics := context.WithCancel(t.Context())
+	server := &recordingServer{t: t, ready: ready, background: background, metrics: metrics}
+	l := lifecycle{delay: time.Millisecond, drain: time.Second, scrape: time.Millisecond}
 
-	require.NoError(t, l.stop(ready, stopBackground, server))
+	require.NoError(t, l.stop(ready, stopBackground, stopMetrics, server))
 	require.True(t, server.drained)
+	require.ErrorIs(t, metrics.Err(), context.Canceled, "metrics stop after the drain")
+}
+
+func TestStopServesMetricsThroughTheFinalScrape(t *testing.T) {
+	t.Parallel()
+
+	ready := readiness.New()
+	background, stopBackground := context.WithCancel(t.Context())
+	metrics, stopMetrics := context.WithCancel(t.Context())
+	shutdown := make(chan struct{})
+	scrapeStarted := make(chan struct{})
+	releaseScrape := make(chan struct{})
+	server := &recordingServer{t: t, ready: ready, background: background, metrics: metrics, shutdown: shutdown}
+	l := lifecycle{
+		drain:  time.Second,
+		scrape: time.Second,
+		sleep: func(duration time.Duration) {
+			if duration == time.Second {
+				close(scrapeStarted)
+				<-releaseScrape
+			}
+		},
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- l.stop(ready, stopBackground, stopMetrics, server) }()
+
+	<-shutdown
+	<-scrapeStarted
+	require.NoError(t, metrics.Err(), "metrics stay served until the final scrape completes")
+
+	close(releaseScrape)
+	require.NoError(t, <-stopped)
+	require.ErrorIs(t, metrics.Err(), context.Canceled)
 }
 
 // TestServeReturnsAfterTheDrain checks that Serve waits for an in-flight
@@ -81,12 +122,12 @@ func TestServeReturnsAfterTheDrain(t *testing.T) {
 	require.NoError(t, err)
 
 	stop := make(chan struct{})
-	l := lifecycle{delay: time.Millisecond, drain: 5 * time.Second}
+	l := lifecycle{delay: time.Millisecond, drain: 5 * time.Second, scrape: time.Millisecond}
 
 	served := make(chan error, 1)
 
 	go func() {
-		served <- l.serve(func() error { return server.Serve(listener) }, server, readiness.New(), func() {}, stop)
+		served <- l.serve(func() error { return server.Serve(listener) }, server, readiness.New(), func() {}, func() {}, stop)
 	}()
 
 	responded := make(chan int, 1)
@@ -126,9 +167,9 @@ func TestServeReturnsAfterTheDrain(t *testing.T) {
 }
 
 // TestShutdownFitsTheGracePeriod guards the chart's
-// terminationGracePeriodSeconds of 30, which hack/check_chart_render.sh checks.
+// terminationGracePeriodSeconds of 60, which hack/check_chart_render.sh checks.
 func TestShutdownFitsTheGracePeriod(t *testing.T) {
 	t.Parallel()
 
-	require.Less(t, shutdownDelay+shutdownDrain, 30*time.Second)
+	require.Less(t, shutdownDelay+shutdownDrain+shutdownScrape, 60*time.Second)
 }
