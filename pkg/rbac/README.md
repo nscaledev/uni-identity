@@ -161,7 +161,8 @@ deployment time.
   pinned by the contract test in `platform_reader_contract_test.go`. Audit
   record, revocation story, and runbook: [docs/platform-reader.md](../../docs/platform-reader.md).
 - `region-service`, `kubernetes-service`, `compute-service`, `storage-service` — system
-  accounts mapped from an mTLS certificate common name (see the Actor Model). Each holds
+  accounts mapped from a certificate subject, an mTLS certificate common name or a SPIFFE ID
+  (see the Actor Model). Each holds
   only the global permissions the corresponding service actually exercises;
   over-permissioning here is a security defect.
 
@@ -241,11 +242,15 @@ Users derive access from organization membership, groups, and roles.
 Service accounts derive access from their bound organization and group membership.
 
 System accounts derive access from configured platform roles mapped from their authenticated service
-identity, typically an mTLS certificate common name.
+identity: the subject of the client certificate, an X.509 common name or a SPIFFE ID. Both kinds of
+subject are keys of the one `--system-account-roles-ids` map. An unregistered subject fails with
+`ErrSystemAccountNotRegistered`.
 
 When a system account carries an impersonated principal, RBAC does not simply switch to the
 principal's ACL. Instead, it intersects the principal ACL with the system account ACL so the service
-cannot exercise permissions that either side lacks.
+cannot exercise permissions that either side lacks. RBAC checks that the system account is
+registered before it resolves the principal ACL, so an unregistered subject causes no principal
+lookup.
 
 ### Global role bindings
 
@@ -477,7 +482,8 @@ deployment configuration.** Three sources populate `acl.Global`:
    `accumulateGlobalPermissions`, or `accumulateGlobalReadPermissions` for wildcard bindings.
 2. `resolveGroupRoleBindings` — group bindings, described above, also feeding
    `accumulateGlobalPermissions`, unclamped.
-3. `processSystemAccountACL`'s X.509-CN-to-role mapping for system accounts.
+3. `processSystemAccountACL`'s mapping from a certificate subject (an X.509 CN or a SPIFFE ID) to a
+   role for system accounts.
 
 UNI `Group` membership resolves only `Role.Spec.Scopes.Organization` and
 `Role.Spec.Scopes.Project` (`accumulateOrganizationPermissions`, `accumulateProjectPermissions`).
