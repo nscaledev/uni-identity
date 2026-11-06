@@ -5,7 +5,7 @@
 This design gives the UNI `identity` service a clear observability ownership
 boundary: the application chart emits and exports signals, while a separately
 deployed observability chart (`charts/identity-observability`) owns Grafana
-dashboards and datasource wiring.
+dashboards.
 
 Identity has a limited **producer** surface, so the starting point matters:
 
@@ -51,14 +51,13 @@ and not to build a bespoke identity state exporter. Instead:
   from inventing a second state-export mechanism.
 - **Breadth:** a focused, high-signal set of two dashboards plus an opt-in
   leader-election view, not the reference's much broader asset set.
-- **Ownership:** a new `charts/identity-observability` chart owns dashboards and
-  the datasource. Its central profile owns the complete dashboard suite.
-  Its workload profile can render only dashboards, and only when that Grafana
-  instance can query the central Identity metric store. Identity's existing
-  single chart (`charts/identity`) owns the named scrape port.
+- **Ownership:** a new `charts/identity-observability` chart owns dashboards
+  and no datasources. It carries no deployment details; the deploying
+  repository supplies them. Identity's existing single chart
+  (`charts/identity`) owns the named scrape port.
 
-The gap this design closes is the dashboard side: there are no Identity dashboards,
-datasource wiring, or render validation. What it cannot close on its own is the
+The gap this design closes is the dashboard side: there are no Identity dashboards
+or render validation. What it cannot close on its own is the
 producer gap on the API surface — that is called out explicitly rather than papered
 over (see "Producer gaps").
 
@@ -255,22 +254,23 @@ The lifecycle-exporter series and the Prometheus scrape path must land in the
 metric store that Grafana queries. This must be verified in the deployment
 environment rather than assumed.
 
-## Ownership, deployment profiles & scrape path
+## Ownership, deployment & scrape path
 
 New chart `charts/identity-observability` has its own `Chart.yaml` and label helpers.
-One owner per asset class, rendered through two explicitly different profiles:
+One owner per asset class:
 
-| Asset | Owner | Central observability profile | Workload profile |
-| --- | --- | --- |
-| Grafana dashboards | `identity-observability` | enabled; Grafana queries the store that receives Identity and lifecycle-exporter series | opt-in sidecar ConfigMaps only when its datasource can query that same store |
-| Grafana Loki datasource | `identity-observability` | enabled for the Grafana instance | never rendered; a workload Grafana must use its separately owned datasource |
-| ServiceMonitors | **none** | Identity uses the platform-owned PodMonitor | none |
-| metrics-reader RBAC | **n/a** | this chart scrapes nothing | none |
+| Asset | Owner |
+| --- | --- |
+| Grafana dashboards | `identity-observability` |
+| Grafana datasources | **none**; each Grafana instance owns its own |
+| ServiceMonitors | **none**; Identity uses the platform-owned PodMonitor |
+| metrics-reader RBAC | **n/a**; this chart scrapes nothing |
 
-`values-central.yaml` enables the datasource and dashboard provisioning.
-`values-workload.yaml` may enable dashboards only after its Grafana datasource
-contract is verified. A deployment without access to the required metrics is
-misleading rather than useful and must remain disabled.
+The chart is public, so it carries no deployment details: the deploying
+repository supplies the namespace and, in operator mode, the Grafana instance
+selector. The chart README describes the values. Dashboards should be enabled
+only where Grafana can query a store holding Identity's series; without them
+the dashboards mislead rather than help.
 
 ```text
 Identity workloads                         Observability backend
@@ -281,7 +281,7 @@ server / 3 controllers ── PodMonitor ──▶ agent Collector ──▶ met
                                      local Prometheus
 
 external lifecycle exporter ────────────────────────────────▶ metric store
-  (condition-state metrics)                         Grafana dashboards + datasource
+  (condition-state metrics)                         Grafana dashboards
 ```
 
 ### Transport posture (documented, not hardened)
@@ -292,11 +292,15 @@ or the externally operated lifecycle exporter.
 
 ## Dashboards (focused set, 2 + optional leadership)
 
-Raw Grafana JSON under `charts/identity-observability/files/dashboards/*.json`.
-The central profile provisions them for central Grafana; the workload profile
-renders sidecar-labelled ConfigMaps (`grafana_dashboard: "1"`,
-`grafana_folder: Identity`) only when a workload Grafana can query the central
-metric store. They are otherwise absent from workload clusters.
+Raw Grafana JSON under `charts/identity-observability/files/dashboards/*.json`,
+provisioned through the Grafana sidecar or grafana-operator (see the chart
+README).
+
+Every dashboard has a `datasource` selector of type prometheus, and every
+panel, query and variable uses it, so the viewer's choice applies to the whole
+dashboard. Grafana instances name their datasources differently, so the
+selector has no saved value and no name filter: it starts on the instance's
+default Prometheus datasource and lists all of them.
 
 Every dashboard has a top-level `cluster` selector and filters every panel on it.
 Every panel query also filters on `service="unikorn-identity"`: the RED and
@@ -345,9 +349,9 @@ Every panel query is checked against its producer contract (see Testing).
   correlation is stamped into the request logger by the otel middleware. The audit
   middleware emits structured audit records as ordinary `Info("audit", ...)` log
   lines (`pkg/middleware/audit/logging.go:145`) — subject to the same console-only
-  shipping, not a separate audit sink. The Loki datasource this chart adds wires
-  Grafana to whatever Loki the cluster runs, so logs (including audit lines) are
-  explorable alongside metrics; identity itself does not forward them.
+  shipping, not a separate audit sink. This chart adds no Loki datasource;
+  where the cluster's logs reach a Loki that Grafana already queries, they are
+  explorable there.
 
 ## Implementation outline
 
@@ -357,12 +361,9 @@ Create `charts/identity-observability` (new chart, `unikorn-common` dependency):
    `files/dashboards/{operations,auth,leader-election}.json` —
    ConfigMaps with the sidecar label, gated by `grafana.dashboards.enabled`. The
    leadership dashboard has its own opt-in gate.
-2. `templates/grafana-loki-datasource.yaml` — datasource ConfigMap
-   (`grafana_datasource: "1"`), gated by `lokiDatasource.enabled`.
-3. `values.yaml` plus `values-central.yaml` and `values-workload.yaml` — the central
-   profile enables the datasource and dashboard provisioning; the workload profile
-   can enable only sidecar dashboards.
-4. Chart `README.md` — the documented transport posture, the "healthy = absent
+2. `values.yaml` — dashboards disabled by default, with no deployment-specific
+   values; operator mode requires an instance selector.
+3. Chart `README.md` — the documented transport posture, the "healthy = absent
    series" and "`Available`-only / no `Healthy`" contract notes, the
    lifecycle-exporter availability caveat, the prerequisites and their order, and the
    logs/tracing posture.
@@ -375,7 +376,7 @@ Patterns and sources to reuse:
   external lifecycle-exporter contract.
 - Condition/reason vocabulary: use the shared lifecycle contract's documented
   `Available` reasons, rather than inferring them from Identity type definitions.
-- House style: use the chart's dashboard sidecar convention and datasource shape.
+- House style: use the chart's dashboard sidecar convention.
 
 ## Testing / verification
 
@@ -383,11 +384,12 @@ Identity validates its chart with a **bash** render harness
 (`hack/check_chart_render.sh`, run by `make lint`):
 
 1. **Rendered-chart checks** (extend `hack/check_chart_render.sh` or add a sibling):
-   assert the dashboard and datasource ConfigMaps carry the expected labels; assert
-   the workload profile has neither, workload dashboards remain opt-in, and **no
-   ServiceMonitor is emitted** (identity owns none).
+   assert the dashboard ConfigMaps carry the expected labels in each
+   provisioning mode, dashboards remain opt-in, operator mode fails without an
+   instance selector, and **no datasource or ServiceMonitor is emitted**.
 2. **Dashboard contract checks** — assert stable dashboard UIDs, one `cluster`
-   selector per dashboard, and a cluster filter on every panel query. This prevents
+   selector per dashboard, a cluster filter on every panel query, and that
+   every panel, query and variable uses the generic `datasource` variable. This prevents
    independent clusters from being combined in one view.
 3. **End-to-end smoke** — with an external lifecycle exporter publishing
    `uni_resource_*` and the platform PodMonitor scraping Identity in a development
