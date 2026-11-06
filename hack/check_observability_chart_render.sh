@@ -10,20 +10,48 @@
 set -euo pipefail
 
 chart=charts/identity-observability
-central=$(helm template identity-observability "$chart" -f "$chart/values-central.yaml" --api-versions grafana.integreatly.org/v1beta1)
-central_leadership=$(helm template identity-observability "$chart" -f "$chart/values-central.yaml" --set grafana.dashboards.leaderElection.enabled=true --api-versions grafana.integreatly.org/v1beta1)
-legacy_leadership=$(helm template identity-observability "$chart" -f "$chart/values-central.yaml" --set-json grafana.dashboards.leaderElection=null --api-versions grafana.integreatly.org/v1beta1)
-workload=$(helm template identity-observability "$chart" -f "$chart/values-workload.yaml")
 
-grep -q 'kind: GrafanaDashboard' <<<"$central"
-grep -q 'grafana_datasource: "1"' <<<"$central"
-grep -q 'grafana_folder: "UNI/Identity"' <<<"$central"
-grep -q 'dashboard-uni-identity-api' <<<"$central"
-grep -q 'uni-identity-api.json' <<<"$central"
-grep -q 'dashboard-uni-identity-operations' <<<"$central"
-grep -q 'uni-identity-operations.json' <<<"$central"
+render() {
+	helm template identity-observability "$chart" --set grafana.dashboards.enabled=true "$@"
+}
 
-if grep -q 'dashboard-leader-election' <<<"$central"; then
+# The selector is a placeholder: deployments supply their own.
+operator_args=(--set grafana.dashboards.provisioningMode=operator --set grafana.dashboards.instanceSelector.matchLabels.example=identity)
+
+defaults=$(helm template identity-observability "$chart")
+sidecar=$(render)
+operator=$(render "${operator_args[@]}")
+operator_leadership=$(render "${operator_args[@]}" --set grafana.dashboards.leaderElection.enabled=true)
+legacy_leadership=$(render "${operator_args[@]}" --set-json grafana.dashboards.leaderElection=null)
+
+if [[ -n "$defaults" ]]; then
+	echo "chart must render nothing unless dashboards are enabled" >&2
+	exit 1
+fi
+
+grep -q 'grafana_dashboard: "1"' <<<"$sidecar"
+if grep -q 'kind: GrafanaDashboard' <<<"$sidecar"; then
+	echo "sidecar mode must not render GrafanaDashboard resources" >&2
+	exit 1
+fi
+
+grep -q 'kind: GrafanaDashboard' <<<"$operator"
+grep -q 'example: identity' <<<"$operator"
+grep -q 'grafana_folder: "UNI/Identity"' <<<"$operator"
+grep -q 'dashboard-uni-identity-api' <<<"$operator"
+grep -q 'uni-identity-api.json' <<<"$operator"
+grep -q 'dashboard-uni-identity-operations' <<<"$operator"
+grep -q 'uni-identity-operations.json' <<<"$operator"
+
+# An empty selector would hand the dashboards to whichever Grafana
+# instances the operator matches, so operator mode must name one.
+if missing_selector=$(render --set grafana.dashboards.provisioningMode=operator 2>&1); then
+	echo "operator mode must fail without an instanceSelector" >&2
+	exit 1
+fi
+grep -q 'grafana.dashboards.instanceSelector is required' <<<"$missing_selector"
+
+if grep -q 'dashboard-leader-election' <<<"$operator"; then
 	echo "leader-election dashboard must be opt-in" >&2
 	exit 1
 fi
@@ -33,19 +61,14 @@ if grep -q 'dashboard-leader-election' <<<"$legacy_leadership"; then
 	exit 1
 fi
 
-if grep -q 'dashboard-collection-health' <<<"$central$central_leadership"; then
+if grep -q 'dashboard-collection-health' <<<"$operator$operator_leadership"; then
 	echo "chart must not render the removed collection-health dashboard" >&2
 	exit 1
 fi
-grep -q 'dashboard-leader-election' <<<"$central_leadership"
+grep -q 'dashboard-leader-election' <<<"$operator_leadership"
 
-if grep -qE 'GrafanaDashboard|grafana_datasource' <<<"$workload"; then
-	echo "workload profile rendered a central-only asset" >&2
-	exit 1
-fi
-
-if grep -qE 'PrometheusRule|ServiceMonitor' <<<"$central$workload"; then
-	echo "identity observability must render dashboards and datasources only" >&2
+if grep -qE 'PrometheusRule|ServiceMonitor|grafana_datasource' <<<"$sidecar$operator_leadership"; then
+	echo "identity observability must render dashboards only" >&2
 	exit 1
 fi
 

@@ -1,11 +1,18 @@
 # Identity observability
 
-This chart owns Identity dashboards and the central Loki datasource.
-It owns no ServiceMonitor: the platform-owned PodMonitor scrapes Identity.
+This chart owns Identity's Grafana dashboards and nothing else: no datasources
+and no ServiceMonitor. The platform-owned PodMonitor scrapes Identity.
 
-Use `values-central.yaml` in the central observability cluster. It renders dashboards
-and the datasource. `values-workload.yaml` renders no datasource; enable its
-dashboards only when workload Grafana queries the central Identity metric store.
+The chart carries no deployment details; the deploying repository supplies
+them. Set `grafana.dashboards.enabled` and choose a `provisioningMode`:
+
+- `sidecar` (default) renders ConfigMaps labelled for the Grafana dashboard
+  sidecar (`grafana.dashboards.label`).
+- `operator` also renders a `GrafanaDashboard` per dashboard for
+  grafana-operator. `grafana.dashboards.instanceSelector` is required, and
+  rendering fails without it.
+
+`grafana.dashboards.namespace` defaults to the release namespace.
 
 Set `grafana.dashboards.leaderElection.enabled` only when the metric store receives
 the controllers' leader-election metrics. It adds the optional leadership dashboard.
