@@ -230,7 +230,9 @@ func TestOrganizationLease(t *testing.T) {
 				return start
 			}
 
-			return start.Add(organizationLeaseDuration + organizationLeaseRetry)
+			// The worst case: the Lease went unchanged for a full duration just
+			// after a contender looked, and it waits the longest backoff to look again.
+			return start.Add(organizationLeaseDuration + organizationLeaseBackoff*organizationLeaseRetry)
 		}
 
 		lease, lockedContext, err := AcquireOrganizationLease(t.Context(), client, leaseTestNamespace, organizationA,
@@ -310,34 +312,6 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 		require.True(t, servererrors.IsConflict(err))
 	})
 
-	t.Run("backs off between attempts while the lease is held", func(t *testing.T) {
-		t.Parallel()
-
-		gets := 0
-		fakeClient := fake.NewClientBuilder().
-			WithObjects(&coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}}).
-			WithInterceptorFuncs(interceptor.Funcs{
-				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-					gets++
-
-					return c.Get(ctx, key, obj, opts...)
-				},
-			}).Build()
-
-		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-		t.Cleanup(cancel)
-
-		_, _, err := AcquireOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA,
-			withLeaseRetry(2*time.Millisecond),
-			withLeaseClock(func() time.Time { return now }),
-		)
-		require.True(t, servererrors.IsConflict(err))
-
-		// Polling every 2ms would make about 100 attempts; backing off to between
-		// 8ms and 16ms makes at most 30.
-		require.LessOrEqual(t, gets, 30)
-	})
-
 	t.Run("rejects options without a critical section before writing a lease", func(t *testing.T) {
 		t.Parallel()
 
@@ -377,6 +351,49 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 		require.ErrorIs(t, err, forbidden)
 		require.False(t, servererrors.IsConflict(err))
 	})
+}
+
+func TestLeaseBackoff(t *testing.T) {
+	t.Parallel()
+
+	// The documented schedule: from 50 ms up to 400 ms.
+	const (
+		retry   = 50 * time.Millisecond
+		longest = 400 * time.Millisecond
+	)
+
+	config := &leaseOptions{retry: retry}
+
+	// Each wait is between half and all of its ceiling, which doubles from the
+	// retry interval up to the cap.
+	cases := []struct {
+		name    string
+		last    time.Duration
+		ceiling time.Duration
+	}{
+		{name: "starts at the retry interval", last: 0, ceiling: retry},
+		{name: "doubles the last wait", last: retry, ceiling: 2 * retry},
+		{name: "caps the wait", last: longest, ceiling: longest},
+		{name: "keeps the cap", last: 2 * longest, ceiling: longest},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			waits := map[time.Duration]struct{}{}
+
+			for range 100 {
+				wait := config.backoff(c.last)
+				waits[wait] = struct{}{}
+
+				require.GreaterOrEqual(t, wait, c.ceiling/2)
+				require.LessOrEqual(t, wait, c.ceiling)
+			}
+
+			require.Greater(t, len(waits), 1, "waits are jittered")
+		})
+	}
 }
 
 func TestOrganizationLeaseError(t *testing.T) {
