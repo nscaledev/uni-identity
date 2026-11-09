@@ -465,6 +465,27 @@ func TestWithOrganizationLease(t *testing.T) {
 		require.Equal(t, int64(0), leaseCounter(t, reader, leaseReleasesName, leaseResultReleased))
 	})
 
+	t.Run("releases the lease when the rate limiter refuses the write", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+		reader := sdkmetric.NewManualReader()
+		refused := rateLimiterError(t)
+
+		_, err := WithOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA, func(ctx context.Context, lease *OrganizationLease) (struct{}, error) {
+			require.NoError(t, lease.Check(ctx))
+
+			// The quota client wraps the refusal in an error whose message hides it.
+			return struct{}{}, servererrors.OAuth2InvalidRequest("unable to create quota").WithError(refused)
+		}, withLeaseMeter(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")))
+		require.True(t, servererrors.IsConflict(err))
+
+		leases := &coordinationv1.LeaseList{}
+		require.NoError(t, fakeClient.List(t.Context(), leases))
+		require.Empty(t, leases.Items, "a refused write was never sent, so contenders need not wait it out")
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultReleased))
+	})
+
 	t.Run("releases the lease when a write fails for another reason", func(t *testing.T) {
 		t.Parallel()
 

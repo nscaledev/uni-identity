@@ -241,12 +241,23 @@ func leaseConflict(err error) error {
 }
 
 // isContextError reports whether a call failed because its context ended, however
-// it was wrapped on the way back. That includes a call the client rate limiter
-// refused because it could not start before the deadline: the limiter's error does
-// not wrap context.DeadlineExceeded, so it is matched by its message.
+// it was wrapped on the way back.
 func isContextError(err error) bool {
-	return goerrors.Is(err, context.DeadlineExceeded) || goerrors.Is(err, context.Canceled) ||
-		(err != nil && strings.Contains(err.Error(), rateLimiterDeadline))
+	return goerrors.Is(err, context.DeadlineExceeded) || goerrors.Is(err, context.Canceled)
+}
+
+// isRateLimited reports whether the client rate limiter refused a call because it
+// could not start before the deadline. The limiter's error has no type and does not
+// wrap the context error, so it is matched by its message at each level of the
+// chain: a caller may have wrapped it in an error whose message hides the cause.
+func isRateLimited(err error) bool {
+	for ; err != nil; err = goerrors.Unwrap(err) {
+		if strings.Contains(err.Error(), rateLimiterDeadline) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // rateLimiterDeadline is the message golang.org/x/time/rate gives when a wait
@@ -265,7 +276,7 @@ func (o *leaseOptions) backoff(last time.Duration) time.Duration {
 // retryable conflict as waiting too long. Any other failure keeps its cause, even
 // if the deadline has also passed.
 func acquireError(ctx context.Context, config *leaseOptions, action string, err error) error {
-	if isContextError(err) {
+	if isContextError(err) || isRateLimited(err) {
 		config.metrics.acquisitions.Add(ctx, 1, leaseResult(leaseResultTimedOut))
 
 		return leaseConflict(fmt.Errorf("organization is busy: %w", err))
@@ -376,7 +387,7 @@ func (l *OrganizationLease) Check(ctx context.Context) error {
 // the Lease, whatever status the caller wrapped it in. Any other failure, such as a
 // rejected request, is reported as it is.
 func (l *OrganizationLease) Error(ctx context.Context, err error) error {
-	if isContextError(err) {
+	if isContextError(err) || isRateLimited(err) {
 		l.metrics.sections.Add(ctx, 1, leaseResult(leaseResultOverdue))
 
 		return leaseConflict(fmt.Errorf("%w: %w", ErrLeaseDeadline, err))
@@ -454,6 +465,7 @@ func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namesp
 
 	result, err := fn(lockedContext, lease)
 	if err != nil {
+		// A write the rate limiter refused was never sent, so the Lease can go.
 		writeCutOff = lease.writing && isContextError(err)
 
 		return zero, lease.Error(ctx, err)
