@@ -36,6 +36,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,6 +47,25 @@ import (
 const leaseTestNamespace = "identity"
 
 var errRead = goerrors.New("read failed")
+
+// rateLimiterError returns the error client-go gives when its rate limiter
+// refuses a call that could not start before the deadline, produced by the
+// limiter itself so a change to its message fails these tests.
+func rateLimiterError(t *testing.T) error {
+	t.Helper()
+
+	limiter := flowcontrol.NewTokenBucketRateLimiter(0.001, 1)
+	limiter.Accept()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	t.Cleanup(cancel)
+
+	err := limiter.Wait(ctx)
+	require.Error(t, err)
+	require.NoError(t, ctx.Err(), "the limiter refuses before the deadline passes")
+
+	return fmt.Errorf("client rate limiter Wait returned an error: %w", err)
+}
 
 func leaseTestClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
@@ -263,6 +283,49 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 		require.True(t, servererrors.IsConflict(err))
 	})
 
+	t.Run("reports a call the rate limiter refused before the deadline as a conflict", func(t *testing.T) {
+		t.Parallel()
+
+		refused := rateLimiterError(t)
+		fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+				return refused
+			},
+		}).Build()
+
+		lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA)
+		require.Nil(t, lease)
+		require.True(t, servererrors.IsConflict(err))
+	})
+
+	t.Run("backs off between attempts while the lease is held", func(t *testing.T) {
+		t.Parallel()
+
+		gets := 0
+		fakeClient := fake.NewClientBuilder().
+			WithObjects(&coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationA)}}).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					gets++
+
+					return c.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+
+		ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+		t.Cleanup(cancel)
+
+		_, _, err := AcquireOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA,
+			withLeaseRetry(2*time.Millisecond),
+			withLeaseClock(func() time.Time { return now }),
+		)
+		require.True(t, servererrors.IsConflict(err))
+
+		// Polling every 2ms would make about 100 attempts; backing off to between
+		// 8ms and 16ms makes at most 30.
+		require.LessOrEqual(t, gets, 30)
+	})
+
 	t.Run("rejects options without a critical section before writing a lease", func(t *testing.T) {
 		t.Parallel()
 
@@ -316,6 +379,9 @@ func TestOrganizationLeaseError(t *testing.T) {
 	require.True(t, servererrors.IsConflict(err))
 	require.False(t, servererrors.IsBadRequest(err))
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	err = lease.Error(t.Context(), fmt.Errorf("list allocations: %w", rateLimiterError(t)))
+	require.True(t, servererrors.IsConflict(err), "a call the rate limiter refused is cut off, not failed")
 }
 
 func TestWithOrganizationLease(t *testing.T) {

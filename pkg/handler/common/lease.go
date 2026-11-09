@@ -20,6 +20,8 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,13 +48,18 @@ const (
 	organizationLeaseMargin   = time.Second
 	organizationLeaseRetry    = 50 * time.Millisecond
 
+	// organizationLeaseBackoff caps the wait between attempts as a multiple of the
+	// first. Every waiter on a replica polls through one client rate limiter for
+	// Leases, so fixed fast polling starves other organizations' Lease calls.
+	organizationLeaseBackoff = 8
+
 	// OrganizationLeaseReleaseTimeout bounds Lease cleanup, which may run after the
 	// request deadline has passed.
 	OrganizationLeaseReleaseTimeout = time.Second
 
 	// OrganizationLeaseTakeoverBudget is the request time needed to take over a crashed
 	// holder's Lease and still have the full critical section.
-	OrganizationLeaseTakeoverBudget = organizationLeaseDuration + organizationLeaseRetry + organizationLeaseDuration - organizationLeaseMargin
+	OrganizationLeaseTakeoverBudget = organizationLeaseDuration + organizationLeaseBackoff*organizationLeaseRetry + organizationLeaseDuration - organizationLeaseMargin
 )
 
 var (
@@ -226,9 +233,24 @@ func leaseConflict(err error) error {
 }
 
 // isContextError reports whether a call failed because its context ended, however
-// it was wrapped on the way back.
+// it was wrapped on the way back. That includes a call the client rate limiter
+// refused because it could not start before the deadline: the limiter's error does
+// not wrap context.DeadlineExceeded, so it is matched by its message.
 func isContextError(err error) bool {
-	return goerrors.Is(err, context.DeadlineExceeded) || goerrors.Is(err, context.Canceled)
+	return goerrors.Is(err, context.DeadlineExceeded) || goerrors.Is(err, context.Canceled) ||
+		(err != nil && strings.Contains(err.Error(), rateLimiterDeadline))
+}
+
+// rateLimiterDeadline is the message golang.org/x/time/rate gives when a wait
+// would outlast the context.
+const rateLimiterDeadline = "would exceed context deadline"
+
+// backoff returns the wait before the next attempt: twice the last, up to the cap,
+// with jitter so waiters on different replicas spread out.
+func (o *leaseOptions) backoff(last time.Duration) time.Duration {
+	next := min(max(2*last, o.retry), organizationLeaseBackoff*o.retry)
+
+	return next/2 + rand.N(next/2+1) //nolint:gosec // jitter, not a secret
 }
 
 // acquireError reports an API call cut off by the request deadline as the same
@@ -261,6 +283,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 
 	var observedResourceVersion string
 	var observedAt, start time.Time
+	var wait time.Duration
 
 	for {
 		now := config.now()
@@ -306,7 +329,8 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			}
 		}
 
-		timer := time.NewTimer(config.retry)
+		wait = config.backoff(wait)
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
