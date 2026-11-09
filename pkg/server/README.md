@@ -112,6 +112,12 @@ At a high level, `GetServer()` does the following:
 7. construct the top-level handler implementation
 8. attach everything through the generated OpenAPI router and return `http.Server`
 
+The server keeps an idle keep-alive connection open for `--server-idle-timeout` (default 120s).
+Without it, net/http would close idle connections after `--server-read-timeout` (1s). The idle
+timeout must stay longer than the upstream keep-alive timeout of any proxy in front (ingress-nginx's is 60s), so
+the proxy closes idle connections first. Otherwise the proxy can send a request on a connection as
+the server closes it; the request is reset, and the proxy does not retry a POST, so it returns 502.
+
 The command process publishes build metadata for its lifetime. It serves readiness on
 `/readyz` on a separate health listener (`:6081`), which the Service does not expose, so the
 ingress cannot route to it; other pods can still reach it on the Pod IP unless a NetworkPolicy
