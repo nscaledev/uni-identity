@@ -15,6 +15,18 @@ render() {
 	helm template identity-observability "$chart" --set grafana.dashboards.enabled=true "$@"
 }
 
+# Nightly builds package the chart with a long version; label values must
+# still fit Kubernetes' 63 character limit.
+package_dir=$(mktemp -d)
+trap 'rm -rf "$package_dir"' EXIT
+helm package "$chart" --version 0.0.0-20261109020146-f8762e84be7f -d "$package_dir" >/dev/null
+nightly=$(helm template unikorn-identity-observability "$package_dir"/*.tgz --set grafana.dashboards.enabled=true)
+
+if grep -E '^ +(helm\.sh/chart|app\.kubernetes\.io/[a-z-]+): ' <<<"$nightly" | awk '{ if (length($2) > 63) { print; bad = 1 } } END { exit !bad }' >&2; then
+	echo "label values must be 63 characters or fewer" >&2
+	exit 1
+fi
+
 # The selector is a placeholder: deployments supply their own.
 operator_args=(--set grafana.dashboards.provisioningMode=operator --set grafana.dashboards.instanceSelector.matchLabels.example=identity)
 
