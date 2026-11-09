@@ -30,8 +30,9 @@ Lease is deleted on success, and on failure unless a write was cut off in flight
 cut-off holder delays only that organization until the first contender has observed its unchanged
 Lease for a full duration.
 
-Contenders receive a retryable HTTP 409 when their request context expires. A holder whose read or
-write is cut off by its bounded context receives the same 409; any other failure, such as a rejected
+Contenders receive a retryable HTTP 409 when their request context expires; its description says
+that another change for the organization is in progress. A holder whose read or write is cut off by
+its bounded context receives the same 409; any other failure, such as a rejected
 request, keeps its own status. A write that was sent and then cut off may still be committed by the
 API server, so the holder leaves its Lease to expire instead of releasing it, and contenders wait
 out a full Lease duration before they read. A caller that retries a cut-off create may therefore

@@ -18,8 +18,11 @@ package common
 
 import (
 	"context"
+	"encoding/json"
 	goerrors "errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -263,7 +266,16 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 		)
 		require.Nil(t, lease)
 		require.Error(t, err)
-		require.True(t, servererrors.IsConflict(err))
+
+		recorder := httptest.NewRecorder()
+		servererrors.HandleError(recorder, httptest.NewRequest(http.MethodPost, "/", nil), err)
+		require.Equal(t, http.StatusConflict, recorder.Code)
+
+		var body map[string]any
+
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+		require.Equal(t, "conflict", body["error"])
+		require.Equal(t, "another quota or allocation change for this organization is in progress, retry the request", body["error_description"])
 	})
 
 	t.Run("reports an API call cut off by the request deadline as a conflict", func(t *testing.T) {

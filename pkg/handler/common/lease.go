@@ -21,6 +21,7 @@ import (
 	goerrors "errors"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -228,8 +230,14 @@ func (o *leaseOptions) hold(lease *coordinationv1.Lease, identity string, now ti
 	lease.Spec.RenewTime = &metav1.MicroTime{Time: now}
 }
 
+// leaseConflict tells the client the organization is busy and the request can be
+// retried. The default conflict description says the resource already exists,
+// which is wrong here.
 func leaseConflict(err error) error {
-	return errors.HTTPConflict().WithError(err)
+	return errors.FromOpenAPIError(http.StatusConflict, nil, &coreopenapi.Error{
+		Error:            coreopenapi.Conflict,
+		ErrorDescription: "another quota or allocation change for this organization is in progress, retry the request",
+	}).WithError(err)
 }
 
 // isContextError reports whether a call failed because its context ended, however
