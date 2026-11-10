@@ -18,8 +18,11 @@ package common
 
 import (
 	"context"
+	"encoding/json"
 	goerrors "errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -36,6 +39,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,6 +50,25 @@ import (
 const leaseTestNamespace = "identity"
 
 var errRead = goerrors.New("read failed")
+
+// rateLimiterError returns the error client-go gives when its rate limiter
+// refuses a call that could not start before the deadline, produced by the
+// limiter itself so a change to its message fails these tests.
+func rateLimiterError(t *testing.T) error {
+	t.Helper()
+
+	limiter := flowcontrol.NewTokenBucketRateLimiter(0.001, 1)
+	limiter.Accept()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	t.Cleanup(cancel)
+
+	err := limiter.Wait(ctx)
+	require.Error(t, err)
+	require.NoError(t, ctx.Err(), "the limiter refuses before the deadline passes")
+
+	return fmt.Errorf("client rate limiter Wait returned an error: %w", err)
+}
 
 func leaseTestClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
@@ -207,7 +230,9 @@ func TestOrganizationLease(t *testing.T) {
 				return start
 			}
 
-			return start.Add(organizationLeaseDuration + organizationLeaseRetry)
+			// The worst case: the Lease went unchanged for a full duration just
+			// after a contender looked, and it waits the longest backoff to look again.
+			return start.Add(organizationLeaseDuration + organizationLeaseBackoff*organizationLeaseRetry)
 		}
 
 		lease, lockedContext, err := AcquireOrganizationLease(t.Context(), client, leaseTestNamespace, organizationA,
@@ -243,7 +268,16 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 		)
 		require.Nil(t, lease)
 		require.Error(t, err)
-		require.True(t, servererrors.IsConflict(err))
+
+		recorder := httptest.NewRecorder()
+		servererrors.HandleError(recorder, httptest.NewRequest(http.MethodPost, "/", nil), err)
+		require.Equal(t, http.StatusConflict, recorder.Code)
+
+		var body map[string]any
+
+		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+		require.Equal(t, "conflict", body["error"])
+		require.Equal(t, "another quota or allocation change for this organization is in progress, retry the request", body["error_description"])
 	})
 
 	t.Run("reports an API call cut off by the request deadline as a conflict", func(t *testing.T) {
@@ -259,6 +293,21 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 		}).Build()
 
 		lease, _, err := AcquireOrganizationLease(ctx, fakeClient, leaseTestNamespace, organizationA)
+		require.Nil(t, lease)
+		require.True(t, servererrors.IsConflict(err))
+	})
+
+	t.Run("reports a call the rate limiter refused before the deadline as a conflict", func(t *testing.T) {
+		t.Parallel()
+
+		refused := rateLimiterError(t)
+		fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.CreateOption) error {
+				return refused
+			},
+		}).Build()
+
+		lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA)
 		require.Nil(t, lease)
 		require.True(t, servererrors.IsConflict(err))
 	})
@@ -304,6 +353,49 @@ func TestAcquireOrganizationLeaseErrors(t *testing.T) {
 	})
 }
 
+func TestLeaseBackoff(t *testing.T) {
+	t.Parallel()
+
+	// The documented schedule: from 50 ms up to 400 ms.
+	const (
+		retry   = 50 * time.Millisecond
+		longest = 400 * time.Millisecond
+	)
+
+	config := &leaseOptions{retry: retry}
+
+	// Each wait is between half and all of its ceiling, which doubles from the
+	// retry interval up to the cap.
+	cases := []struct {
+		name    string
+		last    time.Duration
+		ceiling time.Duration
+	}{
+		{name: "starts at the retry interval", last: 0, ceiling: retry},
+		{name: "doubles the last wait", last: retry, ceiling: 2 * retry},
+		{name: "caps the wait", last: longest, ceiling: longest},
+		{name: "keeps the cap", last: 2 * longest, ceiling: longest},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			waits := map[time.Duration]struct{}{}
+
+			for range 100 {
+				wait := config.backoff(c.last)
+				waits[wait] = struct{}{}
+
+				require.GreaterOrEqual(t, wait, c.ceiling/2)
+				require.LessOrEqual(t, wait, c.ceiling)
+			}
+
+			require.Greater(t, len(waits), 1, "waits are jittered")
+		})
+	}
+}
+
 func TestOrganizationLeaseError(t *testing.T) {
 	t.Parallel()
 
@@ -316,6 +408,9 @@ func TestOrganizationLeaseError(t *testing.T) {
 	require.True(t, servererrors.IsConflict(err))
 	require.False(t, servererrors.IsBadRequest(err))
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	err = lease.Error(t.Context(), fmt.Errorf("list allocations: %w", rateLimiterError(t)))
+	require.True(t, servererrors.IsConflict(err), "a call the rate limiter refused is cut off, not failed")
 }
 
 func TestWithOrganizationLease(t *testing.T) {
@@ -385,6 +480,27 @@ func TestWithOrganizationLease(t *testing.T) {
 		require.Len(t, leases.Items, 1, "contenders must wait out the Lease, not read straight away")
 		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultAbandoned))
 		require.Equal(t, int64(0), leaseCounter(t, reader, leaseReleasesName, leaseResultReleased))
+	})
+
+	t.Run("releases the lease when the rate limiter refuses the write", func(t *testing.T) {
+		t.Parallel()
+
+		fakeClient := leaseTestClient(t)
+		reader := sdkmetric.NewManualReader()
+		refused := rateLimiterError(t)
+
+		_, err := WithOrganizationLease(t.Context(), fakeClient, leaseTestNamespace, organizationA, func(ctx context.Context, lease *OrganizationLease) (struct{}, error) {
+			require.NoError(t, lease.Check(ctx))
+
+			// The quota client wraps the refusal in an error whose message hides it.
+			return struct{}{}, servererrors.OAuth2InvalidRequest("unable to create quota").WithError(refused)
+		}, withLeaseMeter(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")))
+		require.True(t, servererrors.IsConflict(err))
+
+		leases := &coordinationv1.LeaseList{}
+		require.NoError(t, fakeClient.List(t.Context(), leases))
+		require.Empty(t, leases.Items, "a refused write was never sent, so contenders need not wait it out")
+		require.Equal(t, int64(1), leaseCounter(t, reader, leaseReleasesName, leaseResultReleased))
 	})
 
 	t.Run("releases the lease when a write fails for another reason", func(t *testing.T) {

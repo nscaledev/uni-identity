@@ -20,6 +20,9 @@ import (
 	"context"
 	goerrors "errors"
 	"fmt"
+	"math/rand/v2"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -46,13 +50,18 @@ const (
 	organizationLeaseMargin   = time.Second
 	organizationLeaseRetry    = 50 * time.Millisecond
 
+	// organizationLeaseBackoff caps the wait between attempts as a multiple of the
+	// first. Every waiter on a replica polls through one client rate limiter for
+	// Leases, so fixed fast polling starves other organizations' Lease calls.
+	organizationLeaseBackoff = 8
+
 	// OrganizationLeaseReleaseTimeout bounds Lease cleanup, which may run after the
 	// request deadline has passed.
 	OrganizationLeaseReleaseTimeout = time.Second
 
 	// OrganizationLeaseTakeoverBudget is the request time needed to take over a crashed
 	// holder's Lease and still have the full critical section.
-	OrganizationLeaseTakeoverBudget = organizationLeaseDuration + organizationLeaseRetry + organizationLeaseDuration - organizationLeaseMargin
+	OrganizationLeaseTakeoverBudget = organizationLeaseDuration + organizationLeaseBackoff*organizationLeaseRetry + organizationLeaseDuration - organizationLeaseMargin
 )
 
 var (
@@ -221,8 +230,14 @@ func (o *leaseOptions) hold(lease *coordinationv1.Lease, identity string, now ti
 	lease.Spec.RenewTime = &metav1.MicroTime{Time: now}
 }
 
+// leaseConflict tells the client the organization is busy and the request can be
+// retried. The default conflict description says the resource already exists,
+// which is wrong here.
 func leaseConflict(err error) error {
-	return errors.HTTPConflict().WithError(err)
+	return errors.FromOpenAPIError(http.StatusConflict, nil, &coreopenapi.Error{
+		Error:            coreopenapi.Conflict,
+		ErrorDescription: "another quota or allocation change for this organization is in progress, retry the request",
+	}).WithError(err)
 }
 
 // isContextError reports whether a call failed because its context ended, however
@@ -231,11 +246,37 @@ func isContextError(err error) bool {
 	return goerrors.Is(err, context.DeadlineExceeded) || goerrors.Is(err, context.Canceled)
 }
 
+// isRateLimited reports whether the client rate limiter refused a call because it
+// could not start before the deadline. The limiter's error has no type and does not
+// wrap the context error, so it is matched by its message at each level of the
+// chain: a caller may have wrapped it in an error whose message hides the cause.
+func isRateLimited(err error) bool {
+	for ; err != nil; err = goerrors.Unwrap(err) {
+		if strings.Contains(err.Error(), rateLimiterDeadline) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// rateLimiterDeadline is the message golang.org/x/time/rate gives when a wait
+// would outlast the context.
+const rateLimiterDeadline = "would exceed context deadline"
+
+// backoff returns the wait before the next attempt: twice the last, up to the cap,
+// with jitter so waiters on different replicas spread out.
+func (o *leaseOptions) backoff(last time.Duration) time.Duration {
+	next := min(max(2*last, o.retry), organizationLeaseBackoff*o.retry)
+
+	return next/2 + rand.N(next/2+1) //nolint:gosec // jitter, not a secret
+}
+
 // acquireError reports an API call cut off by the request deadline as the same
 // retryable conflict as waiting too long. Any other failure keeps its cause, even
 // if the deadline has also passed.
 func acquireError(ctx context.Context, config *leaseOptions, action string, err error) error {
-	if isContextError(err) {
+	if isContextError(err) || isRateLimited(err) {
 		config.metrics.acquisitions.Add(ctx, 1, leaseResult(leaseResultTimedOut))
 
 		return leaseConflict(fmt.Errorf("organization is busy: %w", err))
@@ -261,6 +302,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 
 	var observedResourceVersion string
 	var observedAt, start time.Time
+	var wait time.Duration
 
 	for {
 		now := config.now()
@@ -306,7 +348,8 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 			}
 		}
 
-		timer := time.NewTimer(config.retry)
+		wait = config.backoff(wait)
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -344,7 +387,7 @@ func (l *OrganizationLease) Check(ctx context.Context) error {
 // the Lease, whatever status the caller wrapped it in. Any other failure, such as a
 // rejected request, is reported as it is.
 func (l *OrganizationLease) Error(ctx context.Context, err error) error {
-	if isContextError(err) {
+	if isContextError(err) || isRateLimited(err) {
 		l.metrics.sections.Add(ctx, 1, leaseResult(leaseResultOverdue))
 
 		return leaseConflict(fmt.Errorf("%w: %w", ErrLeaseDeadline, err))
@@ -422,6 +465,7 @@ func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namesp
 
 	result, err := fn(lockedContext, lease)
 	if err != nil {
+		// A write the rate limiter refused was never sent, so the Lease can go.
 		writeCutOff = lease.writing && isContextError(err)
 
 		return zero, lease.Error(ctx, err)
