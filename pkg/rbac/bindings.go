@@ -351,6 +351,26 @@ func (r *RBAC) resolveGroupRoleBindings(srcIss string, groups []string) []GroupR
 	return out
 }
 
+// BoundGroups returns the sorted, deduplicated Group values of the group
+// bindings that match srcIss and the token's groups. Only those groups can
+// change a decision, so a passport carries them and drops the rest.
+func (r *RBAC) BoundGroups(srcIss string, groups []string) []string {
+	matched := r.resolveGroupRoleBindings(srcIss, groups)
+	if len(matched) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(matched))
+
+	for _, b := range matched {
+		out = append(out, b.Group)
+	}
+
+	slices.Sort(out)
+
+	return slices.Compact(out)
+}
+
 // describeSubjectBindings renders matched subject bindings for the exercise
 // log. Each line gives the matched subject (or "*") and the roles it granted.
 func describeSubjectBindings(bindings []GlobalRoleBinding) []string {
