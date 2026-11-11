@@ -1,7 +1,7 @@
 # Builds the job summary. Arguments: $phases, $counts, $k6 (array of per-phase
 # k6 summaries), $ceilings (array of ceiling-<phase>.json, empty when the
 # ceiling was not run), $dataset (slurped; object counts), $inputs, $qps,
-# $cpuLimit (cores, null when unknown).
+# $cpuLimit (cores, null when unknown), $warmup (warmup.json, null when absent).
 
 def f2: (. * 100 | round) / 100;
 def f3: (. * 1000 | round) / 1000;
@@ -53,6 +53,22 @@ def top($m): $m | to_entries | map(select(.value > 0)) | sort_by(-.value)
       "| Phase | First failure at req/s | Ceiling req/s | p95 ms | CPU cores used | Failure rate | Holds tried (target req/s: failed / dropped / delivered req/s) |",
       "|---|---|---|---|---|---|---|",
       ($ceilings[] | "| \(.phase) | \(if .topReached then "none (top \(.ceilingMax) reached)" else (.firstFailureRps | round | tostring) end) | \(if .ceilingRps == null then "none held" else .ceilingRps end) | \(if .p95Ms == null then "n/a" else (.p95Ms | f2) end) | \(if .cpuCores == null then "n/a" else (.cpuCores | f3) end) | \(if .failureRate == null then "n/a" else .failureRate end) | \(.holds | map("\(.rate): \(.failed) / \(.dropped) / \(.deliveredRps | round)") | join(", ")) |"),
+      ""
+     end),
+    (if $warmup == null then empty
+     else
+      "### Server restarts",
+      "",
+      "Measured by restarting the server deployment \($warmup.restarts | length) times before the phases. Readiness probe: `\($warmup.readinessProbe | tojson)`. progressDeadlineSeconds: \($warmup.progressDeadlineSeconds). Strategy: `\($warmup.strategy | tojson)`.",
+      "",
+      (if ($warmup.restarts | length) == 0 then "No restarts were run (warmup_restarts is 0)."
+       else
+        "| Restart | Pod | Seconds from pod creation to Ready | Memory working set once Ready (MiB) | Old pod served until the new one was Ready | Seconds with no pod serving |",
+        "|---|---|---|---|---|---|",
+        ($warmup.restarts | to_entries[] | "| \(.key + 1) | \(.value.pod) | \(.value.secondsToReady) | \(.value.workingSetBytes / 1048576 | f2) | \(if .value.surged and .value.noServingSeconds == 0 then "yes" elif .value.surged then "overlapped, then a gap" else "no" end) | \(.value.noServingSeconds) |"),
+        "",
+        "Seconds to Ready has 1 s resolution (Kubernetes timestamps); serving is observed at 1 s polls. Memory is read from cadvisor a few seconds after Ready."
+       end),
       ""
      end),
     "### Modelled",

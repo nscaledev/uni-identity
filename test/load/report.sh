@@ -4,7 +4,7 @@
 # Usage: report.sh OUT_DIR
 #
 # Reads OUT_DIR/{phases,counts,dataset}.json and OUT_DIR/k6-*.json, and
-# OUT_DIR/ceiling/ceiling-*.json when they exist.
+# OUT_DIR/warmup.json and OUT_DIR/ceiling/ceiling-*.json when they exist.
 # Environment: RATE, DURATION, CEILING_MAX, DATASET;
 # NAMESPACE and SERVER_DEPLOYMENT to read the server's CPU limit (optional).
 set -euo pipefail
@@ -28,6 +28,11 @@ if [[ -n "${NAMESPACE:-}" && -n "${SERVER_DEPLOYMENT:-}" ]]; then
   esac
 fi
 
+WARMUP=null
+if [[ -s "${OUT_DIR}/warmup.json" ]]; then
+  WARMUP=$(jq -c . "${OUT_DIR}/warmup.json")
+fi
+
 jq -rn \
   --slurpfile phases "${OUT_DIR}/phases.json" \
   --slurpfile counts "${OUT_DIR}/counts.json" \
@@ -37,5 +42,5 @@ jq -rn \
     --arg ceilingMax "${CEILING_MAX:-2000}" \
     '$ARGS.named')" \
   --slurpfile ceilings <(jq -c . "${OUT_DIR}"/ceiling/ceiling-*.json 2>/dev/null || true) \
-  --argjson qps "${QPS}" --argjson cpuLimit "${CPU_LIMIT}" \
+  --argjson qps "${QPS}" --argjson cpuLimit "${CPU_LIMIT}" --argjson warmup "${WARMUP}" \
   -f "${HERE}/report.jq"
