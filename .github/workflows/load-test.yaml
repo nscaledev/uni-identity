@@ -8,11 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       dataset:
-        description: Dataset size
         type: choice
+        description: Dataset size. Medium (about 2,000 organizations) and web (about 20,000) are built in direct mode, with identity's controllers scaled to 0
         options:
         - small
-        - large
+        - medium
+        - web
         default: small
       rate:
         description: Requests per second per phase
@@ -49,6 +50,9 @@ jobs:
       ISSUER: http://jwks.load-test-idp.svc.cluster.local/
       AUDIENCE: https://load-test.invalid/api
       DATASET: ${{ inputs.dataset }}
+      # Small goes through identity's API. Medium and web write the records
+      # straight to the Kubernetes API (see test/load/README.md).
+      MODE: ${{ inputs.dataset == 'small' && 'api' || 'direct' }}
       RATE: ${{ inputs.rate }}
       DURATION: ${{ inputs.duration }}
       CEILING: ${{ inputs.ceiling }}
@@ -104,12 +108,23 @@ jobs:
         INTEGRATION_EXTRA_VALUES: hack/ci/load-values.yaml
       run: make integration-install
 
+    # Direct mode writes the status the controllers would, so they must not run
+    # and race it.
+    - name: Scale identity's controllers to zero
+      if: ${{ inputs.dataset != 'small' }}
+      run: |
+        for controller in organization project oauth2client; do
+          kubectl scale deployment -n "${IDENTITY_NAMESPACE}" "${IDENTITY_RELEASE}-${controller}-controller" --replicas=0
+          kubectl wait --for=delete pod -n "${IDENTITY_NAMESPACE}" -l "app=${IDENTITY_RELEASE}-${controller}-controller" --timeout=120s
+        done
+
     - name: Create load fixtures
       run: |
         set -a; . test/.env.install; set +a
         mkdir -p "${OUT_DIR}" "${RUNNER_TEMP}/load"
         go run ./hack/ci/loadfixtures/... \
           --dataset "${DATASET}" \
+          --mode "${MODE}" \
           --base-url "${IDENTITY_BASE_URL}" \
           --namespace "${IDENTITY_NAMESPACE}" \
           --ca-cert "${IDENTITY_CA_CERT}" \
@@ -127,8 +142,10 @@ jobs:
         kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
 
     # The project controller is busy for a while after fixtures; load must not
-    # overlap it.
+    # overlap it. Direct mode has no controllers running, and its projects
+    # carry no status.
     - name: Wait for fixtures to settle
+      if: ${{ inputs.dataset == 'small' }}
       run: |
         kubectl wait --for=condition=Available --timeout=15m \
           organizations.identity.unikorn-cloud.org --all -A

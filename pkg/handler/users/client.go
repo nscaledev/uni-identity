@@ -310,7 +310,9 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	return out, nil
 }
 
-func organizationUserName(organizationID ids.OrganizationID, userID string) string {
+// OrganizationUserName is the stored name of the OrganizationUser that joins a
+// global user to an organization. The load-test fixtures derive it the same way.
+func OrganizationUserName(organizationID ids.OrganizationID, userID string) string {
 	return util.GenerateDeterministicResourceID(organizationUserNamespace(), organizationUserSeed(organizationID, userID))
 }
 
@@ -520,7 +522,7 @@ func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organiza
 func (c *Client) getCanonicalOrganizationUser(ctx context.Context, organization *organizations.Meta, globalUserID string) (*unikornv1.OrganizationUser, error) {
 	result := &unikornv1.OrganizationUser{}
 
-	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: organizationUserName(organization.ID, globalUserID)}, result); err != nil {
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: OrganizationUserName(organization.ID, globalUserID)}, result); err != nil {
 		if kerrors.IsNotFound(err) {
 			return nil, ErrReference
 		}

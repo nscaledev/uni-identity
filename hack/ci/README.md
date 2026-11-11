@@ -11,7 +11,7 @@ higher-level services call it directly to deploy dependencies. Fix once, fix eve
 | `setup-infra` | CI workflow, `make integration-infra` | Installs cluster-level prerequisites (cert-manager, ingress-nginx, unikorn-core). Idempotent. |
 | `install` | CI workflow, `make integration-install`, downstream services | Deploys identity into a running cluster with a given namespace and release name. Outputs a `.env` fragment to stdout. |
 | `fixtures/main.go` | CI workflow, `make integration-fixtures` | Creates test resources via the identity API using mTLS. Outputs a `.env` fragment to stdout. |
-| `loadfixtures/` | Load Test workflow | Builds the load test's data and Auth0-shaped tokens. See [`../../test/load/README.md`](../../test/load/README.md). |
+| `loadfixtures/` | Load Test workflow | Builds the load test's data (through the identity API, or straight into Kubernetes for the medium and web datasets) and Auth0-shaped tokens. See [`../../test/load/README.md`](../../test/load/README.md). |
 | `internal/fixturelib/` | `fixtures`, `loadfixtures` | Identity API helpers shared by the fixture programs. |
 
 ## Output contracts
