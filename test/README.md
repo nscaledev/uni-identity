@@ -98,6 +98,12 @@ Or all at once on KinD:
 make integration-test
 ```
 
+## Load Test
+
+A manually triggered workflow, "Load Test", drives identity's hot paths in a throwaway kind cluster
+and gates on how many API-server calls identity makes per request. See
+[`load/README.md`](load/README.md).
+
 ## Upgrade Path
 
 The repository is in a transition from multiple test entry points toward one main way of running

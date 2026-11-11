@@ -60,8 +60,24 @@ func MustParseOrganizationID(orgID string) ids.OrganizationID {
 	return id
 }
 
+// Quiet silences Detailf, the per-object output of the Create* helpers, for
+// programs that call them thousands of times.
+//
+//nolint:gochecknoglobals // a process-wide switch for a CI tool
+var Quiet bool
+
+// Logf prints a progress line.
 func Logf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "==> "+format+"\n", args...)
+}
+
+// Detailf prints a per-object progress line unless Quiet is set.
+func Detailf(format string, args ...interface{}) {
+	if Quiet {
+		return
+	}
+
+	Logf(format, args...)
 }
 
 func NewClientScheme() *runtime.Scheme {
@@ -103,7 +119,7 @@ func IssueCert(ctx context.Context, k8s client.Client, namespace, name, cn strin
 		Fatalf("failed to create Certificate %s: %v", name, err)
 	}
 
-	Logf("Waiting for Certificate %s/%s to be ready...", namespace, name)
+	Detailf("Waiting for Certificate %s/%s to be ready...", namespace, name)
 
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 
@@ -215,7 +231,7 @@ func FindRole(roles *openapi.RolesResponse, name string) string {
 
 // CreateGroup creates a group with the given role IDs assigned.
 func CreateGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, roleIDs []string) string {
-	Logf("Creating group %q...", name)
+	Detailf("Creating group %q...", name)
 
 	resp, err := ac.PostApiV1OrganizationsOrganizationIDGroupsWithResponse(ctx, MustParseOrganizationID(orgID), openapi.GroupWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
@@ -233,14 +249,14 @@ func CreateGroup(ctx context.Context, ac *openapi.ClientWithResponses, orgID, na
 	}
 
 	id := resp.JSON201.Metadata.Id
-	Logf("  group %q ID: %s", name, id)
+	Detailf("  group %q ID: %s", name, id)
 
 	return id
 }
 
 // CreateProject creates a project with the given group memberships and returns its ID.
 func CreateProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) string {
-	Logf("Creating project %q...", name)
+	Detailf("Creating project %q...", name)
 
 	resp, err := ac.PostApiV1OrganizationsOrganizationIDProjectsWithResponse(ctx, MustParseOrganizationID(orgID), openapi.ProjectWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
@@ -255,14 +271,14 @@ func CreateProject(ctx context.Context, ac *openapi.ClientWithResponses, orgID, 
 	}
 
 	id := resp.JSON202.Metadata.Id
-	Logf("  project %q ID: %s", name, id)
+	Detailf("  project %q ID: %s", name, id)
 
 	return id
 }
 
 // CreateServiceAccount creates a service account in the given groups and returns its ID and token.
 func CreateServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, orgID, name string, groupIDs []string) (string, string) {
-	Logf("Creating service account %q...", name)
+	Detailf("Creating service account %q...", name)
 
 	resp, err := ac.PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(ctx, MustParseOrganizationID(orgID), openapi.ServiceAccountWrite{
 		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
@@ -283,14 +299,14 @@ func CreateServiceAccount(ctx context.Context, ac *openapi.ClientWithResponses, 
 		token = *resp.JSON201.Status.AccessToken
 	}
 
-	Logf("  service account %q ID: %s", name, id)
+	Detailf("  service account %q ID: %s", name, id)
 
 	return id, token
 }
 
 // CreateUser creates an active user in the given groups and returns its organization user ID.
 func CreateUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, subject string, groupIDs []string) string {
-	Logf("Creating user %q...", subject)
+	Detailf("Creating user %q...", subject)
 
 	resp, err := ac.PostApiV1OrganizationsOrganizationIDUsersWithResponse(ctx, MustParseOrganizationID(orgID), openapi.UserWrite{
 		Spec: openapi.UserSpec{
@@ -308,7 +324,7 @@ func CreateUser(ctx context.Context, ac *openapi.ClientWithResponses, orgID, sub
 	}
 
 	id := resp.JSON201.Metadata.Id
-	Logf("  user %q organization user ID: %s", subject, id)
+	Detailf("  user %q organization user ID: %s", subject, id)
 
 	return id
 }
@@ -332,7 +348,7 @@ func FindGlobalUserID(ctx context.Context, k8s client.Client, namespace, subject
 
 // WaitForOrgNamespace polls until the organization controller has provisioned the backing namespace.
 func WaitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgID string) {
-	Logf("Waiting for Organization %s to be provisioned...", orgID)
+	Detailf("Waiting for Organization %s to be provisioned...", orgID)
 
 	if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 60*time.Second, true, func(ctx context.Context) (bool, error) {
 		org := &unstructured.Unstructured{}
@@ -359,7 +375,7 @@ func WaitForOrgNamespace(ctx context.Context, k8s client.Client, namespace, orgI
 // - user is required.
 // - auditor is required.
 func ResolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID string) (string, string, string) {
-	Logf("Resolving role IDs...")
+	Detailf("Resolving role IDs...")
 
 	rolesResp, err := ac.GetApiV1OrganizationsOrganizationIDRolesWithResponse(ctx, MustParseOrganizationID(orgID))
 	if err != nil {
@@ -385,9 +401,32 @@ func ResolveRoles(ctx context.Context, ac *openapi.ClientWithResponses, orgID st
 		Fatalf("auditor role not found in org %s", orgID)
 	}
 
-	Logf("  administrator role ID: %s", administratorRoleID)
-	Logf("  user role ID: %s", userRoleID)
-	Logf("  auditor role ID: %s", auditRoleID)
+	Detailf("  administrator role ID: %s", administratorRoleID)
+	Detailf("  user role ID: %s", userRoleID)
+	Detailf("  auditor role ID: %s", auditRoleID)
 
 	return administratorRoleID, userRoleID, auditRoleID
+}
+
+// CreateOrganization creates an organization and waits for its namespace.
+func CreateOrganization(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace, name string) string {
+	Detailf("Creating Organization %q...", name)
+
+	resp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
+		Metadata: coreopenapi.ResourceWriteMetadata{Name: name},
+		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
+	})
+	if err != nil {
+		Fatalf("failed to create Organization %q: %v", name, err)
+	}
+
+	if resp.JSON202 == nil {
+		Fatalf("create Organization %q returned %s", name, resp.Status())
+	}
+
+	id := resp.JSON202.Metadata.Id
+
+	WaitForOrgNamespace(ctx, k8s, namespace, id)
+
+	return id
 }

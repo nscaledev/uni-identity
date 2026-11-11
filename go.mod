@@ -24,6 +24,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0
 	go.uber.org/mock v0.5.2
 	golang.org/x/oauth2 v0.36.0
+	golang.org/x/sync v0.22.0
 	k8s.io/api v0.35.8
 	k8s.io/apimachinery v0.35.8
 	k8s.io/client-go v0.35.8
@@ -121,7 +122,6 @@ require (
 	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/mod v0.38.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
