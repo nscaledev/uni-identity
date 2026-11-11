@@ -12,7 +12,7 @@ ceiling (the highest rate with no failed request) are reported, never gated.
 
 ```sh
 gh workflow run "Load Test" --ref <branch> \
-  -f dataset=small -f rate=20 -f duration=60 -f ceiling=true -f ceiling_max=2000
+  -f dataset=small -f warmup_restarts=3 -f rate=20 -f duration=60 -f ceiling=true -f ceiling_max=2000
 ```
 
 Then open the run's job summary. The artifact `load-test-<run id>` holds the per-phase k6 summaries,
@@ -21,6 +21,7 @@ the counts and the phase windows (no tokens).
 | Input | Default | Meaning |
 |---|---|---|
 | `dataset` | `small` | `small`, `medium` or `web` (see below). Medium and web are built in direct mode |
+| `warmup_restarts` | `3` | times to restart identity's server before the phases, recording each cold start (0 records the settings only) |
 | `rate` | `20` | requests per second per phase in the steady state (where the ceiling ramp starts) |
 | `duration` | `60` | seconds per steady-state phase |
 | `ceiling` | `true` | find each path's ceiling after the steady state (see The ceiling) |
@@ -41,11 +42,13 @@ paths from its informer cache it passes.
    claims) and writes the tokens and the public key set. The private key is never written.
 4. A stock nginx pod (`idp.yaml`, image pinned by digest) serves the public key set at
    `http://jwks.load-test-idp.svc.cluster.local/.well-known/jwks.json`, the provider's issuer.
-5. `run-phases.sh`: a warm-up, a 60 second no-load baseline, then one steady-state k6 run per
-   phase, then (when `ceiling` is on) `ceiling.sh`: the ceiling search for each phase.
-6. `count-audit.sh`: the workflow copies the audit log out of the control-plane container, and the
+5. `warmup.sh`: restarts identity's server `warmup_restarts` times and records each cold start.
+6. `run-phases.sh`: a short k6 warm-up, a 60 second no-load baseline, then one k6 run per phase.
+6. `run-phases.sh`: a short k6 warm-up, a 60 second no-load baseline, then one steady-state k6 run
+   per phase, then (when `ceiling` is on) `ceiling.sh`: the ceiling search for each phase.
+7. `count-audit.sh`: the workflow copies the audit log out of the control-plane container, and the
    script counts identity's calls per phase window.
-7. `report.sh`: the job summary.
+8. `report.sh`: the job summary.
 
 ### Datasets
 
@@ -88,6 +91,24 @@ still runs the service account token check: the handler passes the bearer to
 the organization and the service account to check the token is current. Any API call counted in that
 phase therefore comes from the token check. An endpoint such as the organization's projects list
 reads the API server in its handler on purpose, which would hide the token check's cost.
+
+### Warm-up
+
+`warmup.sh` runs before the phases. It restarts the server deployment `warmup_restarts` times, each
+time waiting until the new pod serves and the old one is gone, and writes `warmup.json` (in the
+artifact and the job summary). It records the deployment's readiness probe, `progressDeadlineSeconds`
+and rollout strategy once, and per restart:
+
+- seconds from the new pod's creation to Ready (Kubernetes timestamps, so 1 s resolution);
+- the server container's memory working set, read from cadvisor once the pod is Ready. cadvisor
+  publishes a new pod a few seconds late, so the record also holds how long after Ready it was read;
+- whether the rollout surged: an old pod still serving while the new pod existed and was not yet
+  Ready, and the seconds, at 1 s polls, in which no pod was serving.
+
+It stops the run if a restart does not finish within `progressDeadlineSeconds` or no memory reading
+appears. The restarts come before the baseline window, so their startup list and watch calls are not
+counted against any phase. Like the phases it measures this runner only; the readiness and surge
+settings are the part that transfers.
 
 ### Direct mode
 
@@ -153,6 +174,7 @@ kubectl create configmap jwks -n load-test-idp --from-file=jwks.json=/tmp/load/j
 kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
 
 export NAMESPACE=unikorn-identity-load SERVER_DEPLOYMENT=identity-load-server OUT_DIR=load-out
+WARMUP_RESTARTS=3 test/load/warmup.sh
 BASE_URL="${IDENTITY_BASE_URL}" TOKENS=/tmp/load/tokens.json \
   RATE=20 DURATION=60 CEILING=true CEILING_MAX=2000 test/load/run-phases.sh
 
@@ -268,11 +290,12 @@ shape; absolute figures do not.
 | File | Job |
 |---|---|
 | `identity.js` | k6 script: one phase per run |
+| `warmup.sh` | server restarts: cold start, memory, readiness settings, surge |
+| `lib.sh` | cadvisor reads, the phase list and the idle CPU read, shared by the scripts |
 | `run-phases.sh` | warm-up, baseline, steady-state phases; records windows and CPU; then the ceiling when asked |
 | `ceiling.sh` | each phase's ceiling: the ramp to the first failure, then the 30 s holds |
 | `ceiling.jq` | the ceiling's decisions: R from the ramp, hold rates, when a hold passes |
 | `ceiling_test.sh` | checks `ceiling.sh` and `ceiling.jq` with a fake `k6` and `kubectl` (needs only bash and jq) |
-| `lib.sh` | cadvisor reads, the phase list and the idle CPU read, shared by the scripts |
 | `count-audit.sh`, `count-audit.jq` | counts identity's API-server calls per phase and applies the gate |
 | `report.sh`, `report.jq` | job summary |
 | `idp.yaml` | stand-in identity provider serving the public key set |

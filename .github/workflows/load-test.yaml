@@ -15,6 +15,10 @@ on:
         - medium
         - web
         default: small
+      warmup_restarts:
+        description: Times to restart identity's server before the phases, measuring each cold start
+        type: string
+        default: '3'
       rate:
         description: Requests per second per phase
         type: string
@@ -53,6 +57,7 @@ jobs:
       # Small goes through identity's API. Medium and web write the records
       # straight to the Kubernetes API (see test/load/README.md).
       MODE: ${{ inputs.dataset == 'small' && 'api' || 'direct' }}
+      WARMUP_RESTARTS: ${{ inputs.warmup_restarts }}
       RATE: ${{ inputs.rate }}
       DURATION: ${{ inputs.duration }}
       CEILING: ${{ inputs.ceiling }}
@@ -61,6 +66,7 @@ jobs:
     steps:
     - name: Check inputs
       run: |
+        [[ "${WARMUP_RESTARTS}" =~ ^[0-9]+$ ]] || { echo "warmup_restarts must be a non-negative integer"; exit 1; }
         [[ "${RATE}" =~ ^[1-9][0-9]*$ ]] || { echo "rate must be a positive integer"; exit 1; }
         [[ "${DURATION}" =~ ^[1-9][0-9]*$ ]] || { echo "duration must be a positive integer"; exit 1; }
         [[ "${CEILING_MAX}" =~ ^[1-9][0-9]*$ ]] || { echo "ceiling_max must be a positive integer"; exit 1; }
@@ -151,6 +157,14 @@ jobs:
           organizations.identity.unikorn-cloud.org --all -A
         kubectl wait --for=condition=Available --timeout=15m \
           projects.identity.unikorn-cloud.org --all -A
+
+    # Restarts identity's server and records each cold start; it also warms the
+    # server for the phases. See test/load/README.md.
+    - name: Restart identity and measure warm-up
+      run: |
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
+          test/load/warmup.sh
 
     - name: Run load phases
       run: |

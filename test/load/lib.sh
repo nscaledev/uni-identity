@@ -1,5 +1,5 @@
-# Shared by run-phases.sh and ceiling.sh: reads of the server container's
-# metrics from the kubelet's cadvisor. Source it; it needs NAMESPACE and
+# Shared by run-phases.sh, ceiling.sh and warmup.sh: reads of the server
+# container's metrics from the kubelet's cadvisor. Source it; it needs NAMESPACE and
 # SERVER_DEPLOYMENT (also the server container's name) in the environment.
 
 # server_pod prints the name of the server's pod. It fails when there is none.
