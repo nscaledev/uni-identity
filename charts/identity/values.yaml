@@ -288,7 +288,10 @@ roles:
         region:securitygroups:v2: [create,read,update,delete]
         region:servers: [create,read,update,delete]
         region:servers:v2: [create,read,update,delete]
-        region:servers:v2/provider-create-gates: [update]
+        # create configures gates on a new Server and infrastructure-ref pins
+        # it to a host; update satisfies a gate (uni-region#776).
+        region:servers:v2/provider-create-gates: [create,update]
+        region:servers:v2/infrastructure-ref: [create]
         region:volumeclasses:v2: [read]
         region:volumes:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
