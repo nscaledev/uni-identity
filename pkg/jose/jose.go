@@ -95,23 +95,30 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 // will rotate every 60 days (by default), so you MUST ensure they are
 // not cached in perpetuity.  Additionally, due to horizontal scale-out
 // these secrets need to be shared between all replicas so that a token
-// issued by one, can be verified by another.  As such if you ever do
-// cache the certificate load, it will need to be coordinated between
-// all instances.
+// issued by one, can be verified by another.  Reads go through the
+// informer cache; each replica's cache lags the API server by its own watch,
+// so a change reaches replicas at slightly different times (see the README's
+// "Readers" section).
 type JWTIssuer struct {
 	options *Options
 
 	// client is the Kubernetes client for certificate management.
 	client client.Client
 
+	// reader reads the signing keys to sign and verify tokens. In the server
+	// it is the informer cache, so a token check makes no API server call.
+	reader client.Reader
+
 	// namespace is where we are running so we can find leases and secrets.
 	namespace string
 }
 
-// NewJWTIssuer returns a new JWT issuer and validator.
-func NewJWTIssuer(client client.Client, namespace string, options *Options) *JWTIssuer {
+// NewJWTIssuer returns a new JWT issuer and validator. client creates and
+// rotates the signing keys; reader reads them for every other use.
+func NewJWTIssuer(client client.Client, reader client.Reader, namespace string, options *Options) *JWTIssuer {
 	return &JWTIssuer{
 		client:    client,
+		reader:    reader,
 		namespace: namespace,
 		options:   options,
 	}
@@ -381,7 +388,7 @@ func (i *JWTIssuer) GetJSONWebKey(pem []byte) (*jose.JSONWebKey, *jose.JSONWebKe
 func (i *JWTIssuer) GetJSONWebKeySet(ctx context.Context) (*jose.JSONWebKeySet, *jose.JSONWebKeySet, error) {
 	var signingKeys unikornv1.SigningKey
 
-	if err := i.client.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: SigningKeyName}, &signingKeys); err != nil {
+	if err := i.reader.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: SigningKeyName}, &signingKeys); err != nil {
 		return nil, nil, err
 	}
 

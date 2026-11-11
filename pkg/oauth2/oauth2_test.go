@@ -19,7 +19,6 @@ package oauth2_test
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -39,7 +38,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -49,8 +47,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
-
-var errOrganizationReadUsedDirectClient = errors.New("organization read used direct client")
 
 const (
 	// JWT claims have second accuracy, so use whole seconds as our time
@@ -84,7 +80,7 @@ func TestTokens(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(user).Build()
+	client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user).Build()
 
 	josetesting.RotateCertificate(t, client)
 
@@ -93,13 +89,12 @@ func TestTokens(t *testing.T) {
 		RotationPeriod:   josetesting.RefreshPeriod,
 	}
 
-	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, joseOptions)
+	issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, joseOptions)
 
 	ctx := t.Context()
 
 	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
 
-	userDatabase := userdb.NewUserDatabase(client, josetesting.Namespace)
 	rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
 	options := &oauth2.Options{
@@ -114,7 +109,7 @@ func TestTokens(t *testing.T) {
 		Hostname: "foo.com",
 	}
 
-	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, client, client, issuer, userDatabase, rbac)
+	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, client, client, issuer, rbac)
 	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
@@ -146,67 +141,6 @@ func TestTokens(t *testing.T) {
 
 	_, err = authenticator.Verify(ctx, verifyInfo)
 	require.Error(t, err)
-}
-
-func TestVerifyServiceAccountUsesOrganizationReader(t *testing.T) {
-	t.Parallel()
-
-	organization := &unikornv1.Organization{
-		ObjectMeta: metav1.ObjectMeta{Namespace: josetesting.Namespace, Name: "test-org"},
-		Status:     unikornv1.OrganizationStatus{Namespace: josetesting.Namespace + "-org"},
-	}
-	serviceAccount := &unikornv1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{Namespace: organization.Status.Namespace, Name: "test-service-account"},
-	}
-	scheme := getScheme(t)
-	directClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization, serviceAccount).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, object client.Object, options ...client.GetOption) error {
-				if _, ok := object.(*unikornv1.Organization); ok {
-					return errOrganizationReadUsedDirectClient
-				}
-
-				return inner.Get(ctx, key, object, options...)
-			},
-		}).Build()
-	organizationReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(organization).Build()
-
-	josetesting.RotateCertificate(t, directClient)
-	issuer := jose.NewJWTIssuer(directClient, josetesting.Namespace, &jose.Options{
-		IssuerSecretName: josetesting.KeySecretName,
-		RotationPeriod:   josetesting.RefreshPeriod,
-	})
-	require.NoError(t, issuer.Run(t.Context(), &josetesting.FakeCoordinationClientGetter{}))
-	time.Sleep(2 * josetesting.RefreshPeriod)
-
-	authenticator, err := oauth2.New(&oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 1}, josetesting.Namespace, handlercommon.IssuerValue{
-		URL:      "https://test.com",
-		Hostname: "test.com",
-	}, directClient, organizationReader, issuer, userdb.NewUserDatabase(directClient, josetesting.Namespace), rbac.New(directClient, josetesting.Namespace, &rbac.Options{}))
-	require.NoError(t, err)
-
-	tokens, err := authenticator.Issue(t.Context(), &oauth2.IssueInfo{
-		Issuer:   "https://test.com",
-		Audience: "test.com",
-		Subject:  serviceAccount.Name,
-		Type:     oauth2.TokenTypeServiceAccount,
-		ServiceAccount: &oauth2.ServiceAccountClaims{
-			OrganizationID: organization.Name,
-		},
-	})
-	require.NoError(t, err)
-
-	stored := &unikornv1.ServiceAccount{}
-	require.NoError(t, directClient.Get(t.Context(), client.ObjectKeyFromObject(serviceAccount), stored))
-	stored.Spec.AccessToken = tokens.AccessToken
-	require.NoError(t, directClient.Update(t.Context(), stored))
-
-	_, err = authenticator.Verify(t.Context(), &oauth2.VerifyInfo{
-		Issuer:   "https://test.com",
-		Audience: "test.com",
-		Token:    tokens.AccessToken,
-	})
-	require.NoError(t, err)
 }
 
 // TestUserinfoCustomClaims tests that tokens include correct custom authorization claims.
@@ -424,8 +358,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 
 				req := httptest.NewRequest(http.MethodGet, "https://test.com/oauth2/v2/userinfo", nil)
 				_, _, err := authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
-				require.Error(t, err)
-				assert.True(t, apierrors.IsNotFound(err))
+				require.ErrorIs(t, err, userdb.ErrResourceReference)
 			},
 			expectedSub:    "test-service-account",
 			expectedType:   openapi.Service,
@@ -448,11 +381,11 @@ func TestUserinfoCustomClaims(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(tc.objects...).Build()
+			client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(tc.objects...).Build()
 
 			josetesting.RotateCertificate(t, client)
 
-			issuer := jose.NewJWTIssuer(client, josetesting.Namespace, &jose.Options{
+			issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, &jose.Options{
 				IssuerSecretName: josetesting.KeySecretName,
 				RotationPeriod:   josetesting.RefreshPeriod,
 			})
@@ -461,7 +394,6 @@ func TestUserinfoCustomClaims(t *testing.T) {
 
 			require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
 
-			userDatabase := userdb.NewUserDatabase(client, josetesting.Namespace)
 			rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
 			issuerHost := handlercommon.IssuerValue{
@@ -474,7 +406,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				RefreshTokenDuration: refreshTokenDuration,
 				TokenLeewayDuration:  accessTokenDuration,
 				TokenCacheSize:       1024,
-			}, josetesting.Namespace, issuerHost, client, client, issuer, userDatabase, rbac)
+			}, josetesting.Namespace, issuerHost, client, client, issuer, rbac)
 			require.NoError(t, err)
 
 			time.Sleep(2 * josetesting.RefreshPeriod)
@@ -556,11 +488,11 @@ func TestUserinfoReadsUserOnce(t *testing.T) {
 		},
 	}
 
-	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(user).WithInterceptorFuncs(counting).Build()
+	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user).WithInterceptorFuncs(counting).Build()
 
 	josetesting.RotateCertificate(t, cli)
 
-	issuer := jose.NewJWTIssuer(cli, josetesting.Namespace, &jose.Options{
+	issuer := jose.NewJWTIssuer(cli, cli, josetesting.Namespace, &jose.Options{
 		IssuerSecretName: josetesting.KeySecretName,
 		RotationPeriod:   josetesting.RefreshPeriod,
 	})
@@ -577,10 +509,8 @@ func TestUserinfoReadsUserOnce(t *testing.T) {
 
 	issuerVal := handlercommon.IssuerValue{URL: "https://foo.com", Hostname: "foo.com"}
 
-	userDatabase := userdb.NewUserDatabase(cli, josetesting.Namespace)
-
 	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, cli, cli, issuer,
-		userDatabase, rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
+		rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
 	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
@@ -607,7 +537,7 @@ func TestUserinfoReadsUserOnce(t *testing.T) {
 	// user up once costs.
 	userReads.Store(0)
 
-	_, err = userDatabase.GetActiveUser(ctx, "barry@foo.com")
+	_, err = userdb.NewUserDatabase(cli, cli, josetesting.Namespace).GetActiveUser(ctx, "barry@foo.com")
 	require.NoError(t, err)
 
 	oneLookup := userReads.Load()

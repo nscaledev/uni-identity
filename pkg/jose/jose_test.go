@@ -63,7 +63,7 @@ func TestRotation(t *testing.T) {
 		RotationPeriod:   josetesting.RefreshPeriod,
 	}
 
-	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, options)
+	issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, options)
 
 	ctx := t.Context()
 
@@ -109,7 +109,7 @@ func TestSigningKeysCreatedOnLeadership(t *testing.T) {
 		RotationPeriod:   time.Hour,
 	}
 
-	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, options)
+	issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, options)
 
 	ctx, cancel := context.WithCancel(t.Context())
 
@@ -148,7 +148,7 @@ func TestJWTIssue(t *testing.T) {
 		RotationPeriod:   josetesting.RefreshPeriod,
 	}
 
-	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, options)
+	issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, options)
 
 	ctx := t.Context()
 
@@ -203,7 +203,7 @@ func TestJWEIssue(t *testing.T) {
 		RotationPeriod:   josetesting.RefreshPeriod,
 	}
 
-	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, options)
+	issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, options)
 
 	ctx := t.Context()
 

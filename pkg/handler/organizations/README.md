@@ -41,8 +41,10 @@ The global branch lists Organizations from the read cache with `UnsafeDisableDee
 it returns every organization and a direct read would load the API server on each request. The
 list can briefly lag a write. The permission check that selects this branch does not use the
 cache. The membership branch reads the `OrganizationUser` records and one organization per
-membership directly, so a removed membership takes effect at once and a new organization is found
-before the cache has seen it. `convert` copies every value it takes from those objects, including
+membership from the same cache, so a membership change shows within the watch lag. A membership
+whose organization the cache has not seen yet (or no longer holds) is left out of the list, with
+a log line, until the cache catches up. A service account is read by key in the organization its token names. This is interim: the
+list goes away once tokens are bound to one organization. `convert` copies every value it takes from those objects, including
 the pointer fields and the deletion time, so the returned list shares no memory with the cache.
 The handler package, not this package, fills the extras that `include` requests.
 

@@ -20,7 +20,6 @@ package userdb
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -43,14 +42,43 @@ var (
 	ErrAmbiguousSubject = fmt.Errorf("%w: subject matches more than one user", ErrResourceReference)
 )
 
+// SubjectIndexField indexes Users by the canonical form of their subject. It
+// serves the legacy lookup in GetUser.
+const SubjectIndexField = "spec.subject.canonical"
+
+// SubjectIndexValue is the index function for SubjectIndexField.
+func SubjectIndexValue(object client.Object) []string {
+	user, ok := object.(*unikornv1.User)
+	if !ok {
+		return nil
+	}
+
+	return []string{unikornv1.NormalizeSubject(user.Spec.Subject)}
+}
+
+// IndexSubjects registers SubjectIndexField with indexer. A cache MUST have it
+// before it starts if it is given to NewUserDatabase as the index reader.
+func IndexSubjects(ctx context.Context, indexer client.FieldIndexer) error {
+	return indexer.IndexField(ctx, &unikornv1.User{}, SubjectIndexField, SubjectIndexValue)
+}
+
+// UserDatabase resolves identities. It never writes.
 type UserDatabase struct {
-	client    client.Client
+	// client reads the records returned to the caller.
+	client client.Reader
+	// index finds legacy users by SubjectIndexField. The API server cannot
+	// serve that index, so this is the informer cache, even when client is live.
+	index     client.Reader
 	namespace string
 }
 
-func NewUserDatabase(client client.Client, namespace string) *UserDatabase {
+// NewUserDatabase returns a user database that reads records with client and
+// finds legacy users with index, which MUST serve SubjectIndexField.  See the
+// README's "Readers" section.
+func NewUserDatabase(client, index client.Reader, namespace string) *UserDatabase {
 	return &UserDatabase{
 		client:    client,
+		index:     index,
 		namespace: namespace,
 	}
 }
@@ -91,10 +119,13 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 	return d.getLegacyUser(ctx, subject)
 }
 
+// getLegacyUser finds an unlabelled, random-named User. The index holds every
+// record whose canonical subject matches, which is the set MatchSubject would
+// pick from in a full list, so the result is the same without listing all users.
 func (d *UserDatabase) getLegacyUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
-	if err := d.client.List(ctx, result); err != nil {
+	if err := d.index.List(ctx, result, client.MatchingFields{SubjectIndexField: unikornv1.NormalizeSubject(subject)}); err != nil {
 		return nil, err
 	}
 
@@ -119,7 +150,19 @@ func (d *UserDatabase) getLegacyUser(ctx context.Context, subject string) (*unik
 		return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)
 	}
 
-	return result.Items[index].DeepCopy(), nil
+	// The index only names the record; read it through client, so a live
+	// database returns live content.
+	user := &unikornv1.User{}
+
+	if err := d.client.Get(ctx, client.ObjectKeyFromObject(&result.Items[index]), user); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)
+		}
+
+		return nil, err
+	}
+
+	return user, nil
 }
 
 // GetActiveUser returns a user that match the subject and is active.
@@ -162,25 +205,34 @@ func (d *UserDatabase) GetActiveOrganizationUser(ctx context.Context, organizati
 	return organizationUser, nil
 }
 
-// GetServiceAccount looks up a service account.
-func (d *UserDatabase) GetServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
-	result := &unikornv1.ServiceAccountList{}
+// GetServiceAccount reads a service account by key: its organization's
+// namespace and its ID.
+func (d *UserDatabase) GetServiceAccount(ctx context.Context, organizationID, id string) (*unikornv1.ServiceAccount, error) {
+	organization := &unikornv1.Organization{}
 
-	if err := d.client.List(ctx, result, &client.ListOptions{}); err != nil {
+	if err := d.client.Get(ctx, client.ObjectKey{Namespace: d.namespace, Name: organizationID}, organization); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: organization %s does not exist", ErrResourceReference, organizationID)
+		}
+
 		return nil, err
 	}
 
-	predicate := func(s unikornv1.ServiceAccount) bool {
-		return s.Name != id
+	if organization.Status.Namespace == "" {
+		return nil, fmt.Errorf("%w: organization %s has no namespace", ErrResourceReference, organizationID)
 	}
 
-	result.Items = slices.DeleteFunc(result.Items, predicate)
+	serviceAccount := &unikornv1.ServiceAccount{}
 
-	if len(result.Items) != 1 {
-		return nil, fmt.Errorf("%w: expected 1 instance of service account ID %s", ErrResourceReference, id)
+	if err := d.client.Get(ctx, client.ObjectKey{Namespace: organization.Status.Namespace, Name: id}, serviceAccount); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: service account %s does not exist", ErrResourceReference, id)
+		}
+
+		return nil, err
 	}
 
-	return &result.Items[0], nil
+	return serviceAccount, nil
 }
 
 // GetOrganizationIDsForUser returns the active organization IDs for an active user.

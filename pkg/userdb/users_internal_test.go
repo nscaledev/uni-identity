@@ -65,7 +65,19 @@ func newTestClient(t *testing.T, r *recorder, objects ...client.Object) client.C
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(r.funcs()).Build()
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
+		WithIndex(&unikornv1.User{}, SubjectIndexField, SubjectIndexValue).
+		WithInterceptorFuncs(r.funcs()).Build()
+}
+
+// newTestDatabase reads records and the subject index from one client, as the
+// informer cache serves both in the server.
+func newTestDatabase(t *testing.T, r *recorder, objects ...client.Object) *UserDatabase {
+	t.Helper()
+
+	c := newTestClient(t, r, objects...)
+
+	return NewUserDatabase(c, c, testNamespace)
 }
 
 func testUser() *unikornv1.User {
@@ -75,18 +87,75 @@ func testUser() *unikornv1.User {
 	}
 }
 
-func TestGetUserListsLegacyRecordsWithoutCacheOptions(t *testing.T) {
+// TestGetUserFindsLegacyRecordsByTheSubjectIndex checks that an unlabelled
+// legacy record is found through the subject index, not a list of every user,
+// in any case of the claim.
+func TestGetUserFindsLegacyRecordsByTheSubjectIndex(t *testing.T) {
 	t.Parallel()
 
-	r := &recorder{}
-	d := NewUserDatabase(newTestClient(t, r, testUser()), testNamespace)
+	for _, claim := range []string{"alice@example.com", "Alice@Example.com"} {
+		r := &recorder{}
+		d := newTestDatabase(t, r, testUser())
 
-	user, err := d.GetUser(t.Context(), "alice@example.com")
+		user, err := d.GetUser(t.Context(), claim)
+		require.NoError(t, err, claim)
+		require.Equal(t, "alice@example.com", user.Spec.Subject)
+		require.Len(t, r.lists, 2)
+		require.Equal(t, unikornv1.UserSubjectIDLabel+"="+unikornv1.GlobalUserName("alice@example.com"), r.lists[0].LabelSelector.String())
+		require.Equal(t, SubjectIndexField+"=alice@example.com", r.lists[1].FieldSelector.String())
+		require.Equal(t, client.ObjectKeyFromObject(testUser()), r.gets[len(r.gets)-1], "the record is read through the database's own client")
+	}
+}
+
+// TestGetUserReadsLegacyRecordsThroughItsOwnClient checks that the index only
+// names a legacy record: its content comes from the client, which is live for
+// the reads that decide a write.
+func TestGetUserReadsLegacyRecordsThroughItsOwnClient(t *testing.T) {
+	t.Parallel()
+
+	stale := testUser()
+	stale.Spec.State = unikornv1.UserStateSuspended
+
+	current := testUser()
+	current.Spec.State = unikornv1.UserStateActive
+
+	d := NewUserDatabase(newTestClient(t, &recorder{}, current), newTestClient(t, &recorder{}, stale), testNamespace)
+
+	user, err := d.GetActiveUser(t.Context(), "alice@example.com")
 	require.NoError(t, err)
-	require.Equal(t, "alice@example.com", user.Spec.Subject)
-	require.Len(t, r.lists, 2)
-	require.Equal(t, unikornv1.UserSubjectIDLabel+"="+unikornv1.GlobalUserName("alice@example.com"), r.lists[0].LabelSelector.String())
-	require.Nil(t, r.lists[1].UnsafeDisableDeepCopy)
+	require.Equal(t, unikornv1.UserStateActive, user.Spec.State)
+}
+
+// TestGetServiceAccountReadsByKey checks that a service account is read by its
+// organization's namespace and its ID, not found in a list of every account.
+func TestGetServiceAccountReadsByKey(t *testing.T) {
+	t.Parallel()
+
+	organization := &unikornv1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "organization"},
+		Status:     unikornv1.OrganizationStatus{Namespace: "organization-ns"},
+	}
+	serviceAccount := &unikornv1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "organization-ns", Name: "service-account"},
+	}
+
+	r := &recorder{}
+	d := newTestDatabase(t, r, organization, serviceAccount)
+
+	result, err := d.GetServiceAccount(t.Context(), "organization", "service-account")
+	require.NoError(t, err)
+	require.Equal(t, "service-account", result.Name)
+	require.Empty(t, r.lists)
+	require.Equal(t, []client.ObjectKey{
+		{Namespace: testNamespace, Name: "organization"},
+		{Namespace: "organization-ns", Name: "service-account"},
+	}, r.gets)
+
+	_, err = d.GetServiceAccount(t.Context(), "organization", "missing")
+	require.ErrorIs(t, err, ErrResourceReference)
+
+	_, err = d.GetServiceAccount(t.Context(), "missing", "service-account")
+	require.ErrorIs(t, err, ErrResourceReference)
 }
 
 func TestGetUserUsesSubjectIDLabel(t *testing.T) {
@@ -97,7 +166,7 @@ func TestGetUserUsesSubjectIDLabel(t *testing.T) {
 	user.Labels = map[string]string{
 		unikornv1.UserSubjectIDLabel: unikornv1.GlobalUserName(user.Spec.Subject),
 	}
-	d := NewUserDatabase(newTestClient(t, r, user), testNamespace)
+	d := newTestDatabase(t, r, user)
 
 	result, err := d.GetUser(t.Context(), user.Spec.Subject)
 	require.NoError(t, err)
@@ -121,7 +190,7 @@ func TestGetUserFoldsSubjectForLabelledLegacyRecord(t *testing.T) {
 
 	for _, claim := range []string{"bob@example.com", "Bob@Example.com"} {
 		r := &recorder{}
-		d := NewUserDatabase(newTestClient(t, r, user), testNamespace)
+		d := newTestDatabase(t, r, user)
 
 		result, err := d.GetUser(t.Context(), claim)
 		require.NoError(t, err, claim)
@@ -140,7 +209,7 @@ func TestGetUserFoldsSubjectForCanonicalName(t *testing.T) {
 	user := testUser()
 	user.Spec.Subject = "bob@example.com"
 	user.Name = unikornv1.GlobalUserName(user.Spec.Subject)
-	d := NewUserDatabase(newTestClient(t, r, user), testNamespace)
+	d := newTestDatabase(t, r, user)
 
 	result, err := d.GetUser(t.Context(), "Bob@Example.com")
 	require.NoError(t, err)
@@ -155,7 +224,7 @@ func TestGetUserUsesCanonicalName(t *testing.T) {
 	r := &recorder{}
 	user := testUser()
 	user.Name = unikornv1.GlobalUserName(user.Spec.Subject)
-	d := NewUserDatabase(newTestClient(t, r, user), testNamespace)
+	d := newTestDatabase(t, r, user)
 
 	result, err := d.GetUser(t.Context(), "alice@example.com")
 	require.NoError(t, err)
@@ -171,7 +240,7 @@ func TestGetUserRejectsAmbiguousLegacyRecords(t *testing.T) {
 	first := testUser()
 	second := testUser()
 	second.Name = "u2222222-2222-4222-8222-222222222222"
-	d := NewUserDatabase(newTestClient(t, r, first, second), testNamespace)
+	d := newTestDatabase(t, r, first, second)
 
 	_, err := d.GetUser(t.Context(), "alice@example.com")
 	require.ErrorIs(t, err, ErrResourceReference)
@@ -196,7 +265,7 @@ func TestGetOrganizationIDsForUserDoesNotResolveTheUserAgain(t *testing.T) {
 	}
 
 	r := &recorder{}
-	d := NewUserDatabase(newTestClient(t, r, user, organizationUser), testNamespace)
+	d := newTestDatabase(t, r, user, organizationUser)
 
 	organizationIDs, err := d.GetOrganizationIDsForUser(t.Context(), user)
 	require.NoError(t, err)

@@ -38,7 +38,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -148,12 +147,12 @@ func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer commo
 		return nil, nil, err
 	}
 
-	jwtIssuer := jose.NewJWTIssuer(k8sClient, TestNamespace, &jose.Options{})
+	jwtIssuer := jose.NewJWTIssuer(k8sClient, k8sClient, TestNamespace, &jose.Options{})
 	options := &oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 16}
 
-	users := userdb.NewUserDatabase(k8sClient, TestNamespace)
-
-	authenticator, err := oauth2.New(options, TestNamespace, issuer, k8sClient, k8sClient, jwtIssuer, users, nil)
+	// The live client stands in for the informer cache, so a state is visible to the
+	// request at once.
+	authenticator, err := oauth2.New(options, TestNamespace, issuer, k8sClient, k8sClient, jwtIssuer, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -528,9 +527,16 @@ func readUserParams(params map[string]any) userParams {
 func (sm *StateManager) createUserSession(ctx context.Context, userID, subject string, authenticator *oauth2.Authenticator, issuer common.IssuerValue) (string, error) {
 	const clientID = "envir-contract"
 
+	// The subject label is what user creation writes. Without it the user is a legacy
+	// record, found only through the informer cache's subject index, which the live
+	// client used here cannot serve.
 	user := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{Namespace: sm.namespace, Name: userID},
-		Spec:       unikornv1.UserSpec{Subject: subject, State: unikornv1.UserStateActive},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: sm.namespace,
+			Name:      userID,
+			Labels:    map[string]string{unikornv1.UserSubjectIDLabel: unikornv1.GlobalUserName(subject)},
+		},
+		Spec: unikornv1.UserSpec{Subject: subject, State: unikornv1.UserStateActive},
 	}
 
 	if err := sm.client.Create(ctx, user); err != nil {

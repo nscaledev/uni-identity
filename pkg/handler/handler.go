@@ -58,9 +58,8 @@ type Handler struct {
 	// client accesses Kubernetes directly.
 	client client.Client
 
-	// readCache serves the organization list and its includes. They return
-	// every object of a kind, so a direct read would load the API server on
-	// each request.
+	// readCache serves the organization list and its includes. Other handler
+	// reads use client, so a resource API reads its own writes.
 	readCache client.Reader
 
 	// namespace is the namespace we are running in.
@@ -75,7 +74,7 @@ type Handler struct {
 	// rbac gives access to low level rbac functionality.
 	rbac *rbac.RBAC
 
-	// userdb has the user database
+	// userdb resolves the caller for the organization list, from readCache.
 	userdb *userdb.UserDatabase
 
 	// options allows behaviour to be defined on the CLI.

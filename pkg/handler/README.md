@@ -120,6 +120,10 @@ README, so this section holds that contract.
 this package because `quotas` and `projects` import `organizations`. An import in the other
 direction would create an import cycle.
 
+The organization list itself, both its global and its membership branch, reads the read cache;
+see [`pkg/handler/organizations`](organizations/README.md). Every other handler reads through the
+direct client, so a resource API reads its own writes.
+
 The step reads without a selector. The Quota, Allocation and Project lists come from the read
 cache with `UnsafeDisableDeepCopy`, because a direct read of every object of a kind on each
 request loads the API server. QuotaMetadata is small and is read directly:

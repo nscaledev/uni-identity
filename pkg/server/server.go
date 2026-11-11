@@ -154,7 +154,10 @@ func (s *Server) newRouterWithMeter(schema *helpers.Schema, meter metric.Meter) 
 
 // GetServer assembles the HTTP server. Background work it starts, such as the
 // JOSE leader election, stops when ctx ends. The readiness checker gains the
-// conditions the handler graph adds.
+// conditions the handler graph adds. client writes and serves the reads that
+// decide a write; readCache, the informer cache, serves every other read, so
+// the per-request token check, ACL build and passport exchange make no API
+// server call.
 func (s *Server) GetServer(ctx context.Context, client client.Client, readCache client.Reader, ready *readiness.Checker) (*http.Server, error) {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
@@ -167,14 +170,14 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 	}
 
 	// Setup authn/authz
-	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
+	issuer := jose.NewJWTIssuer(client, readCache, s.CoreOptions.Namespace, &s.JoseOptions)
 	if err := issuer.Run(ctx, &jose.InClusterCoordinationClientGetter{}); err != nil {
 		return nil, err
 	}
 
 	ready.Require(readiness.SigningKeyAvailable(issuer))
 
-	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
+	userdb := userdb.NewUserDatabase(readCache, readCache, s.CoreOptions.Namespace)
 
 	// On main, bare admin entries matched from any authentication path. Mirror
 	// them onto the legacy Auth0 issuer so both pre-existing paths (UNI login,
@@ -187,8 +190,8 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 	// deprecated auth0-exchange flags.
 	s.RBACOptions.PlatformAdministratorSubjects = expandBareAdminSubjects(s.RBACOptions.PlatformAdministratorSubjects, s.OAuth2Options.Auth0ExchangeIssuer)
 
-	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, readCache, issuer, userdb, rbac)
+	rbac := rbac.New(readCache, s.CoreOptions.Namespace, &s.RBACOptions)
+	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, readCache, issuer, rbac)
 
 	if err != nil {
 		return nil, err
@@ -205,7 +208,7 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 	// still runs with a nil map, so the subject-binding advisory keeps working.
 	// Validate treats nil differently from an empty-but-successful map, so it
 	// never reads a failed fetch as "no dead bindings".
-	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(ctx, client, s.CoreOptions.Namespace)
+	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(ctx, readCache, s.CoreOptions.Namespace)
 
 	if issuersErr != nil {
 		log.FromContext(ctx).Info("rbac options advisory check skipped: provider list unavailable", "error", issuersErr)
@@ -328,7 +331,7 @@ func expandBareAdminSubjects(subjects []rbac.PlatformAdministratorSubject, legac
 //
 // A List failure is returned as an error so the caller can skip the advisory
 // check rather than mistake it for a genuinely empty trusted-issuer list.
-func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace string) ([]string, error) {
+func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Reader, namespace string) ([]string, error) {
 	var providers unikornv1.OAuth2ProviderList
 
 	if err := cli.List(ctx, &providers, &client.ListOptions{Namespace: namespace}); err != nil {

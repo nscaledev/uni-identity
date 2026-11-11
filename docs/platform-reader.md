@@ -172,7 +172,8 @@ kubectl -n unikorn-identity patch roles.identity.unikorn-cloud.org <ID> \
 
 - **Takes effect within `--acl-cache-timeout` (default 1m)** as cached ACLs expire — no
   restart, no deploy. Unlike IdP offboarding, already-issued tokens and passports do not
-  extend the window: the role is read live on the next uncached ACL computation.
+  extend the window: the role is read from the informer cache, which follows the API server
+  within the watch lag, on the next uncached ACL computation.
 - Emptying scopes denies as clean **403s** ("no global-scope permissions"). Deleting the Role
   CRD also works but fails closed as **500s** for every user of the bound issuer — the
   unresolvable-role path above. The patch is the calmer signal for downstream tooling.

@@ -49,8 +49,29 @@ normalizes local identity lookups for other parts of the system.
 
 `GetUser` reads the deterministic User name derived from the folded subject, so a claim in any
 case finds a record stored in any case. On a miss, it selects random-named legacy records by the
-subject-ID label, which is derived the same way. Unlabelled records remain a final list-and-filter
-compatibility fallback. The returned record is owned by the caller.
+subject-ID label, which is derived the same way. Unlabelled records are a final fallback, found
+through the subject index (see Readers). The returned record is owned by the caller.
+
+### Readers
+
+`NewUserDatabase` takes two readers:
+
+- `client` reads every record the database returns.
+- `index` serves `SubjectIndexField`, the canonical subject of each User, for the unlabelled legacy
+  lookup. The API server cannot serve that index, so this is always the informer cache, with the
+  index registered by `IndexSubjects` before the cache starts.
+
+The server builds two databases. The per-request one (token check, userinfo, passport exchange,
+organization list) reads both from the cache, so it makes no API server call. The one `pkg/oauth2`
+uses for the reads that decide a write (callback, refresh) reads records from the live client. Its
+legacy lookup still finds the record's name through the cache index, then reads the record itself
+live. Legacy records are no longer created, so the index lag cannot hide one.
+
+The index holds exactly the records whose canonical subject matches, which is the set
+`MatchSubject` would pick from in a full list, so the result is the same without listing every
+user.
+
+`GetServiceAccount` reads the account by key, in the namespace of the organization its token names.
 
 A lookup that finds the deterministic record trusts it without checking for another record with
 the same subject. User creation refuses that state (see
@@ -73,7 +94,7 @@ works whether the stored subject is folded or not. `GetActiveUser` and the subje
 `GetOrganizationIDs` go through `GetUser`, so they resolve the same way. Callers that already hold
 an active user can use `GetOrganizationIDsForUser` to avoid resolving it a second time.
 
-The lookup lists users in no fixed order. If the subject matches no record exactly but folds onto
+The legacy lookup lists users in no fixed order. If the subject matches no record exactly but folds onto
 two or more, a pick depends on that order. It can give a different user from one call to the next.
 `GetUser` returns `ErrAmbiguousSubject` in that case and does not pick.
 
@@ -91,8 +112,10 @@ two or more, a pick depends on that order. It can give a different user from one
 
 - The package is tightly coupled to the current Kubernetes-backed identity storage model even
   though its purpose is to shield other packages from that coupling.
-- Canonical users use their deterministic name. Labelled legacy users use an indexed selector;
-  only unlabelled legacy users require list-and-filter compatibility lookup.
+- Canonical users use their deterministic name. Labelled legacy users use a label selector;
+  unlabelled legacy users use the cache's subject index.
+- A database built on the cache sees writes within the watch lag. A revoked or suspended user is
+  refused once the change reaches the cache, not on the next request.
 - Missing and multiply-resolved identities return `ErrResourceReference`. `GetActiveUser` instead
   returns `ErrUserInactive` for an inactive global user, which wraps `ErrResourceReference` so
   existing `errors.Is` callers are unaffected; `GetActiveOrganizationUser` still returns the plain

@@ -78,11 +78,11 @@ func newCasingAuthenticator(t *testing.T) (*Authenticator, *jose.JWTIssuer, clie
 		Status:     unikornv1.OAuth2ClientStatus{Secret: casingSecret},
 	}
 
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user, oauth2Client).Build()
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user, oauth2Client).Build()
 
 	josetesting.RotateCertificate(t, cli)
 
-	issuer := jose.NewJWTIssuer(cli, josetesting.Namespace, &jose.Options{
+	issuer := jose.NewJWTIssuer(cli, cli, josetesting.Namespace, &jose.Options{
 		IssuerSecretName: josetesting.KeySecretName,
 		RotationPeriod:   josetesting.RefreshPeriod,
 	})
@@ -97,7 +97,7 @@ func newCasingAuthenticator(t *testing.T) (*Authenticator, *jose.JWTIssuer, clie
 	issuerValue := handlercommon.IssuerValue{URL: "https://test.com", Hostname: "test.com"}
 
 	authenticator, err := New(options, josetesting.Namespace, issuerValue, cli, cli, issuer,
-		userdb.NewUserDatabase(cli, josetesting.Namespace), rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
+		rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
 	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)

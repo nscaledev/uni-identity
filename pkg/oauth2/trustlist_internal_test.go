@@ -91,11 +91,9 @@ func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trust
 func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...client.Object) *trustlistTestEnv {
 	t.Helper()
 
-	cli := fake.NewClientBuilder().WithScheme(getTrustlistScheme(t)).WithObjects(objects...).Build()
+	cli := fake.NewClientBuilder().WithScheme(getTrustlistScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
-
-	udb := userdb.NewUserDatabase(cli, josetesting.Namespace)
 	rbacInst := rbac.New(cli, josetesting.Namespace, &rbac.Options{})
 
 	issuerVal := handlercommon.IssuerValue{
@@ -110,7 +108,6 @@ func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...clien
 		cli,
 		cli,
 		nil, // jwtIssuer unused by validatorForIssuer
-		udb,
 		rbacInst,
 	)
 	if err != nil {

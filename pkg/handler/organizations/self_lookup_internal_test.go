@@ -62,7 +62,7 @@ func selfLookup(t *testing.T, email string, objects ...client.Object) (*unikornv
 	s := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(s))
 
-	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+	cli := fake.NewClientBuilder().WithScheme(s).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(objects...).Build()
 
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{
@@ -73,7 +73,7 @@ func selfLookup(t *testing.T, email string, objects ...client.Object) (*unikornv
 
 	ctx := rbac.NewContext(t.Context(), &openapi.Acl{})
 
-	return New(cli, selfTestNamespace).getUserbyEmail(ctx, userdb.NewUserDatabase(cli, selfTestNamespace), info, email)
+	return New(cli, selfTestNamespace).getUserbyEmail(ctx, userdb.NewUserDatabase(cli, cli, selfTestNamespace), info, email)
 }
 
 // TestGetUserByEmailLetsACallerReadItselfInAnotherCase pins the self-check.  The

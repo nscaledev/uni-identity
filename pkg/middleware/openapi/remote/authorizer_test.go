@@ -309,12 +309,13 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
+		WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
 		WithObjects(signingSecret, clientCertSecret, caCertSecret,
 			signingKey, user, serviceAccount).
 		Build()
 
 	// Create JWT issuer
-	issuer := jose.NewJWTIssuer(fakeClient, testNamespace, &jose.Options{
+	issuer := jose.NewJWTIssuer(fakeClient, fakeClient, testNamespace, &jose.Options{
 		IssuerSecretName: certificateName,
 	})
 
@@ -334,9 +335,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		Hostname: u.Host,
 	}
 
-	userdb := userdb.NewUserDatabase(fakeClient, testNamespace)
-
-	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, fakeClient, issuer, userdb, rbacClient)
+	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, fakeClient, issuer, rbacClient)
 	require.NoError(t, err)
 
 	// Issue a test token
@@ -449,11 +448,12 @@ func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
 	// Create a separate k8s client with the unauthorized keys
 	unauthorizedClient := fake.NewClientBuilder().
 		WithScheme(k8sClient.Scheme()).
+		WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
 		WithObjects(unauthorizedSigningSecret, unauthorizedSigningKey).
 		Build()
 
 	// Create issuer with the separate key
-	unauthorizedIssuer := jose.NewJWTIssuer(unauthorizedClient, unauthNamespace, &jose.Options{
+	unauthorizedIssuer := jose.NewJWTIssuer(unauthorizedClient, unauthorizedClient, unauthNamespace, &jose.Options{
 		IssuerSecretName: unauthorizedSigningSecret.Name,
 	})
 	token, err := unauthorizedIssuer.EncodeJWT(t.Context(), map[string]any{"iss": "https://unknown.example.com"})

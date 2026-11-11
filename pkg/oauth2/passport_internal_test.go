@@ -69,10 +69,11 @@ func getPassportInternalScheme(t *testing.T) *runtime.Scheme {
 func newPassportInternalAuthenticator(t *testing.T, objects ...client.Object) *Authenticator {
 	t.Helper()
 
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(objects...).Build()
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(objects...).Build()
 
 	return &Authenticator{
 		client:    cli,
+		reader:    cli,
 		namespace: passportTestNamespace,
 	}
 }
@@ -514,12 +515,14 @@ func TestValidateProjectScopeK8sFailure(t *testing.T) {
 
 			cli := fake.NewClientBuilder().
 				WithScheme(getPassportInternalScheme(t)).
+				WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
 				WithObjects(test.objects...).
 				WithInterceptorFuncs(interceptor.Funcs{Get: test.get}).
 				Build()
 
 			authenticator := &Authenticator{
 				client:    cli,
+				reader:    cli,
 				namespace: passportTestNamespace,
 			}
 
@@ -1034,12 +1037,13 @@ func buildExternalUserinfoEnv(t *testing.T, opts ...externalUserinfoOpt) (*Authe
 	require.NoError(t, scheme.AddToScheme(s))
 	require.NoError(t, unikornv1.AddToScheme(s))
 
-	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(cfg.seedObjects...).Build()
+	cli := fake.NewClientBuilder().WithScheme(s).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(cfg.seedObjects...).Build()
 
-	udb := userdb.NewUserDatabase(cli, passportTestNamespace)
+	udb := userdb.NewUserDatabase(cli, cli, passportTestNamespace)
 
 	a := &Authenticator{
 		client:    cli,
+		reader:    cli,
 		namespace: passportTestNamespace,
 		userdb:    udb,
 	}
@@ -1186,10 +1190,8 @@ func TestDispatchUserinfoCarriesExternalGroups(t *testing.T) {
 		TokenVerificationLeeway: 0,
 		ValidatorCacheSize:      64,
 	}, provider)
-	a.userdb = userdb.NewUserDatabase(
-		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
-		passportTestNamespace,
-	)
+	noUsers := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).Build()
+	a.userdb = userdb.NewUserDatabase(noUsers, noUsers, passportTestNamespace)
 
 	groups := []string{"Platform Engineering"}
 	tok := iss.tokenWithGroups(t, audience, email, time.Now().Add(time.Hour), groups)
@@ -1209,7 +1211,7 @@ func TestDispatchUserinfoCarriesExternalGroups(t *testing.T) {
 func newPassportInternalAuthenticatorWithOpts(t *testing.T, opts *Options, objects ...client.Object) *Authenticator {
 	t.Helper()
 
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(objects...).Build()
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(objects...).Build()
 
 	counter, err := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewManualReader())).
 		Meter("test").Int64Counter("test_unroutable_" + t.Name())
@@ -1217,6 +1219,7 @@ func newPassportInternalAuthenticatorWithOpts(t *testing.T, opts *Options, objec
 
 	return &Authenticator{
 		client:           cli,
+		reader:           cli,
 		namespace:        passportTestNamespace,
 		options:          opts,
 		validatorCache:   newValidatorCache(opts.ValidatorCacheSize),
@@ -1279,6 +1282,7 @@ func TestDispatchKubernetesReadFailureSurfaces503(t *testing.T) {
 	// Create a client that fails on List.
 	cli := fake.NewClientBuilder().
 		WithScheme(getPassportInternalScheme(t)).
+		WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
 		WithInterceptorFuncs(interceptor.Funcs{
 			List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 				return ErrKubernetesReadUnavailable
@@ -1288,6 +1292,7 @@ func TestDispatchKubernetesReadFailureSurfaces503(t *testing.T) {
 
 	authenticator := &Authenticator{
 		client:         cli,
+		reader:         cli,
 		namespace:      passportTestNamespace,
 		options:        &Options{ValidatorCacheSize: 64},
 		validatorCache: newValidatorCache(64),
@@ -1372,10 +1377,8 @@ func TestDirectBearerExternalDoesNotInheritUNIAdmin(t *testing.T) {
 	}, trustedProvider)
 
 	// Also wire a userdb so externalUserinfo can call GetOrganizationIDs.
-	a.userdb = userdb.NewUserDatabase(
-		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
-		passportTestNamespace,
-	)
+	noUsers := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).Build()
+	a.userdb = userdb.NewUserDatabase(noUsers, noUsers, passportTestNamespace)
 
 	// Build the JWS token.
 	signer, err := gojose.NewSigner(
@@ -1463,10 +1466,8 @@ func TestDispatchMultipleTrustedIssuers(t *testing.T) {
 	}, providerA, providerB)
 
 	// Empty userdb + AllowExternalIdentity=true → happy path resolves to empty orgIds.
-	a.userdb = userdb.NewUserDatabase(
-		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
-		passportTestNamespace,
-	)
+	noUsers := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).Build()
+	a.userdb = userdb.NewUserDatabase(noUsers, noUsers, passportTestNamespace)
 
 	t.Run("issuer A token validates and stamps issuer A", func(t *testing.T) {
 		t.Parallel()
@@ -1568,10 +1569,8 @@ func TestDispatchTrailingSlashIssuer(t *testing.T) {
 		TokenVerificationLeeway: 0,
 		ValidatorCacheSize:      64,
 	}, provider)
-	a.userdb = userdb.NewUserDatabase(
-		fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).Build(),
-		passportTestNamespace,
-	)
+	noUsers := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).Build()
+	a.userdb = userdb.NewUserDatabase(noUsers, noUsers, passportTestNamespace)
 
 	signer, err := gojose.NewSigner(
 		gojose.SigningKey{Algorithm: gojose.RS256, Key: gojose.JSONWebKey{Key: iss.key, KeyID: "test-key"}},

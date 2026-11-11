@@ -150,14 +150,17 @@ func newConflictAuthenticatorFor(t *testing.T, user *unikornv1.User, concurrent 
 
 	cli := fake.NewClientBuilder().
 		WithScheme(getPassportInternalScheme(t)).
+		WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
 		WithObjects(user.DeepCopy(), oauth2Client.DeepCopy()).
 		WithInterceptorFuncs(funcs).
 		Build()
 
 	authenticator := &Authenticator{
 		client:     cli,
+		reader:     cli,
 		namespace:  passportTestNamespace,
-		userdb:     userdb.NewUserDatabase(cli, passportTestNamespace),
+		userdb:     userdb.NewUserDatabase(cli, cli, passportTestNamespace),
+		liveUserdb: userdb.NewUserDatabase(cli, cli, passportTestNamespace),
 		tokenCache: cache.NewLRUExpireCache(16),
 	}
 
@@ -296,7 +299,7 @@ func TestUnknownAuthorizationCodeLeavesOtherClientSession(t *testing.T) {
 			},
 		},
 	}
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user).Build()
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user).Build()
 	authenticator := &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}
 
 	_, err := authenticator.updateSession(t.Context(), &IssueInfo{
@@ -323,7 +326,7 @@ func TestExpiredPendingAuthorizationCodeIsRejectedAndPruned(t *testing.T) {
 			}},
 		},
 	}
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user).Build()
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user).Build()
 	authenticator := &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}
 
 	_, err := authenticator.updateSession(t.Context(), &IssueInfo{Federated: &FederatedClaims{ClientID: conflictClientID, UserID: conflictUserID}}, &Tokens{}, ptr.To(conflictCodeID))
@@ -342,7 +345,7 @@ func newPendingCodeAuthenticator(t *testing.T, pending []unikornv1.PendingAuthor
 			PendingAuthorizationCodes: pending,
 		},
 	}
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user).Build()
+	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user).Build()
 
 	return &Authenticator{client: cli, namespace: passportTestNamespace, tokenCache: cache.NewLRUExpireCache(16)}, cli
 }

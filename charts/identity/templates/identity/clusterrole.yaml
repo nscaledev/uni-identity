@@ -5,9 +5,12 @@ metadata:
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 rules:
-# These feed the server's read cache: organizations for namespace routing and
-# the organization list, the rest for the organization list includes. Keep this
-# list in step with readCacheOptions in cmd/unikorn-identity.
+# These feed the server's read cache, which serves the per-request token check,
+# ACL build and passport exchange, and the organization list. The cache lists
+# and watches each kind. Without list the cache never syncs, and startup gives
+# up after its sync timeout. Without watch it still syncs from list, then
+# relists every 30-60 s and serves stale data between relists. Keep this list in step
+# with readCacheOptions in cmd/unikorn-identity.
 - apiGroups:
   - identity.unikorn-cloud.org
   resources:
@@ -15,29 +18,16 @@ rules:
   - projects
   - quotas
   - allocations
+  - users
+  - serviceaccounts
+  - organizationusers
+  - oauth2providers
+  - roles
+  - groups
   verbs:
   - get
   - list
   - watch
-  - update
-  - patch
-  - create
-  - delete
-# Everything else is read directly from the API server, so needs no watch.
-- apiGroups:
-  - identity.unikorn-cloud.org
-  resources:
-  - groups
-  - oauth2clients
-  - oauth2providers
-  - quotametadata
-  - roles
-  - serviceaccounts
-  - users
-  - organizationusers
-  verbs:
-  - get
-  - list
   - update
   - patch
   - create
@@ -48,8 +38,23 @@ rules:
   - signingkeys
   verbs:
   - get
+  - list
+  - watch
   - create
   - update
+# Everything else is read directly from the API server, so needs no watch.
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - oauth2clients
+  - quotametadata
+  verbs:
+  - get
+  - list
+  - update
+  - patch
+  - create
+  - delete
 - apiGroups:
   - ""
   resources:

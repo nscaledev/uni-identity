@@ -97,7 +97,7 @@ func newTestClients(t *testing.T, direct, cached *recorder, objects ...client.Ob
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	store := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(objects...).Build()
 
 	return interceptor.NewClient(store, direct.funcs()), interceptor.NewClient(store, cached.funcs())
 }
@@ -159,29 +159,28 @@ func TestListGlobalBranchReadsTheCache(t *testing.T) {
 	require.True(t, ptr.Deref(cached.lists[0].UnsafeDisableDeepCopy, false))
 }
 
-// The membership branch reads directly, so a removed membership takes effect
-// at once.
-func TestListMembershipBranchReadsDirectly(t *testing.T) {
+// The membership branch reads the cache too, so it makes no API server call.
+func TestListMembershipBranchReadsTheCache(t *testing.T) {
 	t.Parallel()
 
 	direct, cached := &recorder{}, &recorder{}
 	k8s, cache := newTestClients(t, direct, cached, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgB))
 
-	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(k8s, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 2, "duplicate memberships still return the organization twice")
 	require.Equal(t, orgB, out[0].Metadata.Id)
 
-	require.Zero(t, cached.reads())
-	require.Len(t, direct.organizationGets, 2, "one organization read per membership")
+	require.Zero(t, direct.reads())
+	require.Len(t, cached.organizationGets, 2, "one organization read per membership")
 
-	for _, options := range direct.organizationGets {
+	for _, options := range cached.organizationGets {
 		require.Nil(t, options.UnsafeDisableDeepCopy)
 	}
 }
 
 // An email filter takes the membership branch even for a global reader.
-func TestListEmailFilterReadsDirectly(t *testing.T) {
+func TestListEmailFilterReadsTheCache(t *testing.T) {
 	t.Parallel()
 
 	direct, cached := &recorder{}, &recorder{}
@@ -189,11 +188,40 @@ func TestListEmailFilterReadsDirectly(t *testing.T) {
 
 	ctx := authorization.NewContext(globalReadContext(t), &authorization.Info{Userinfo: &openapi.Userinfo{Sub: subject, Email: ptr.To(subject)}})
 
-	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(k8s, testNamespace), ptr.To(subject))
+	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(cache, cache, testNamespace), ptr.To(subject))
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 	require.Equal(t, orgA, out[0].Metadata.Id)
-	require.Zero(t, cached.reads())
+	require.Zero(t, direct.reads())
+}
+
+// A service account's organization is the one its token names; the account
+// is read by key there, from the cache.
+func TestListServiceAccountReadsByKey(t *testing.T) {
+	t.Parallel()
+
+	organization := org(orgA)
+	organization.Status.Namespace = "org-a"
+
+	account := &unikornv1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "org-a", Name: "sa"}}
+
+	direct, cached := &recorder{}, &recorder{}
+	k8s, cache := newTestClients(t, direct, cached, organization, account)
+
+	ctx := authorization.NewContext(rbac.NewContext(t.Context(), &openapi.Acl{}), &authorization.Info{
+		ServiceAccount: true,
+		Userinfo: &openapi.Userinfo{
+			Sub:                       "sa",
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{OrgIds: []string{orgA}},
+		},
+	})
+
+	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, orgA, out[0].Metadata.Id)
+	require.Zero(t, direct.reads())
+	require.Empty(t, cached.lists, "a service account is not found by listing every account")
 }
 
 func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
@@ -202,7 +230,7 @@ func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(user(), membership("m1", orgA)).WithInterceptorFuncs(interceptor.Funcs{
+	k8s := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user(), membership("m1", orgA)).WithInterceptorFuncs(interceptor.Funcs{
 		Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if _, ok := obj.(*unikornv1.Organization); ok {
 				return errBoom
@@ -212,7 +240,7 @@ func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
 		},
 	}).Build()
 
-	_, err := New(k8s, testNamespace).List(memberContext(t), nil, userdb.NewUserDatabase(k8s, testNamespace), nil)
+	_, err := New(k8s, testNamespace).List(memberContext(t), k8s, userdb.NewUserDatabase(k8s, k8s, testNamespace), nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, errBoom)
 	require.NotErrorIs(t, err, coreerrors.ErrConsistency)
@@ -223,20 +251,22 @@ func TestListMembershipBranchSortsByID(t *testing.T) {
 
 	k8s, cache := newTestClients(t, &recorder{}, &recorder{}, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgA))
 
-	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(k8s, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 2)
 	require.Equal(t, orgA, out[0].Metadata.Id)
 	require.Equal(t, orgB, out[1].Metadata.Id)
 }
 
-func TestListMembershipBranchDanglingMembershipIsInconsistent(t *testing.T) {
+func TestListMembershipBranchSkipsOrganizationMissingFromCache(t *testing.T) {
 	t.Parallel()
 
-	k8s, cache := newTestClients(t, &recorder{}, &recorder{}, user(), membership("m1", orgA))
+	k8s, cache := newTestClients(t, &recorder{}, &recorder{}, org(orgB), user(), membership("m1", orgA), membership("m2", orgB))
 
-	_, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(k8s, testNamespace), nil)
-	require.ErrorIs(t, err, coreerrors.ErrConsistency)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, orgB, out[0].Metadata.Id)
 }
 
 func TestConvertSharesNoMemoryWithTheCache(t *testing.T) {

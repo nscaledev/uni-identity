@@ -69,12 +69,12 @@ func TestGetUserRefusesAnAmbiguousFold(t *testing.T) {
 	s := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(s))
 
-	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(
+	cli := fake.NewClientBuilder().WithScheme(s).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(
 		newSubjectUser("user-a", "Dave@Example.com"),
 		newSubjectUser("user-b", "DAVE@example.com"),
 	).Build()
 
-	db := userdb.NewUserDatabase(cli, "userdb-test")
+	db := userdb.NewUserDatabase(cli, cli, "userdb-test")
 
 	_, err := db.GetUser(t.Context(), "dave@example.com")
 	require.ErrorIs(t, err, userdb.ErrAmbiguousSubject)

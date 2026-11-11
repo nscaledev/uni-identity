@@ -399,7 +399,7 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 // can use it without reading it again.
 func (a *Authenticator) verify(ctx context.Context, info *VerifyInfo) (*Claims, *unikornv1.User, error) {
 	// Decoding and cryptographic validation are expensive, so cache the claims.
-	// Revocable identity state is always checked against Kubernetes below.
+	// Revocable identity state is checked against the informer cache below.
 	if value, ok := a.tokenCache.Get(info.Token); ok {
 		claims, ok := value.(*Claims)
 		if !ok {
@@ -441,7 +441,7 @@ func (a *Authenticator) verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 
 	// Bound the cache entry's lifetime: evict entries eventually to cap memory,
 	// and never let one outlive the token's own expiry, since the cache-hit path
-	// skips the time-based claim checks. Revocation is checked live on every hit.
+	// skips the time-based claim checks. Revocation is checked on every hit.
 	timeout := time.Hour
 
 	if tokenExpiresIn := time.Until(claims.Expiry.Time()); tokenExpiresIn < timeout {
@@ -468,15 +468,8 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 		return nil
 	}
 
-	organization := &unikornv1.Organization{}
-
-	if err := a.organizationReader.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
-		return err
-	}
-
-	serviceAccount := &unikornv1.ServiceAccount{}
-
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: organization.Status.Namespace, Name: claims.Subject}, serviceAccount); err != nil {
+	serviceAccount, err := a.userdb.GetServiceAccount(ctx, claims.ServiceAccount.OrganizationID, claims.Subject)
+	if err != nil {
 		return err
 	}
 

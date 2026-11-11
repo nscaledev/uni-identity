@@ -61,7 +61,11 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 	"github.com/unikorn-cloud/identity/test/api"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
+
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -76,6 +80,8 @@ func TestContracts(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Identity Provider Contract Verification Suite")
 }
+
+var errUserCacheSync = errors.New("user cache did not sync")
 
 var _ = Describe("Identity Provider Verification", func() {
 	var (
@@ -141,7 +147,10 @@ var _ = Describe("Identity Provider Verification", func() {
 		jwtIssuer, authenticator, err = SetupTokenIssuer(ctx, k8sClient, handlerOptions.Issuer)
 		Expect(err).NotTo(HaveOccurred())
 
-		testServer = startTestServer(ctx, k8sClient, handlerOptions, jwtIssuer, authenticator, fmt.Sprintf("127.0.0.1:%d", port))
+		userIndex, err := newUserIndexCache(ctx, cfg, scheme)
+		Expect(err).NotTo(HaveOccurred())
+
+		testServer = startTestServer(ctx, k8sClient, userIndex, handlerOptions, jwtIssuer, authenticator, fmt.Sprintf("127.0.0.1:%d", port))
 
 		Eventually(func() error {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
@@ -366,8 +375,37 @@ func isClientCredentialsGrant(r *http.Request) bool {
 	return err == nil && form.Get("grant_type") == "client_credentials"
 }
 
+// newUserIndexCache starts an informer cache of the test namespace's Users with
+// the subject index, as the server does. The API server cannot serve a field
+// index, so a legacy user lookup must read it from here. It stops with ctx.
+func newUserIndexCache(ctx context.Context, cfg *rest.Config, scheme *runtime.Scheme) (cache.Cache, error) {
+	userCache, err := cache.New(cfg, cache.Options{
+		Scheme: scheme,
+		ByObject: map[client.Object]cache.ByObject{
+			&unikornv1.User{}: {Namespaces: map[string]cache.Config{TestNamespace: {}}},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := userdb.IndexSubjects(ctx, userCache); err != nil {
+		return nil, err
+	}
+
+	go func() {
+		_ = userCache.Start(ctx)
+	}()
+
+	if !userCache.WaitForCacheSync(ctx) {
+		return nil, errUserCacheSync
+	}
+
+	return userCache, nil
+}
+
 // createHandlerInterface creates the handler interface with minimal dependencies for contract testing.
-func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator) openapi.ServerInterface {
+func createHandlerInterface(k8sClient client.Client, userIndex client.Reader, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator) openapi.ServerInterface {
 	// The issuer and authenticator are real, so service account creation, the token endpoint,
 	// userinfo and JWKS run as in production; the handlers' RBAC stays nil because
 	// MockACLMiddleware, or EnvirACLMiddleware for Envir's /api/v1/acl, provides the ACL.
@@ -378,7 +416,7 @@ func createHandlerInterface(k8sClient client.Client, handlerOptions *handler.Opt
 		jwtIssuer,
 		authenticator,
 		// ai-gateway's organization list finds the caller's user here.
-		userdb.NewUserDatabase(k8sClient, TestNamespace),
+		userdb.NewUserDatabase(k8sClient, userIndex, TestNamespace),
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
 		handlerOptions,
 	)
@@ -439,13 +477,13 @@ func startServerAsync(httpServer *http.Server) {
 // startTestServer creates and starts a test instance of the identity server.
 // Note: This is a simplified version for contract testing that uses MockACLMiddleware
 // to bypass RBAC checks, reducing setup complexity and potential failure points.
-func startTestServer(_ context.Context, k8sClient client.Client, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator, listenAddr string) *http.Server {
+func startTestServer(_ context.Context, k8sClient client.Client, userIndex client.Reader, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator, listenAddr string) *http.Server {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create schema: %v", err))
 	}
 
-	handlerInterface := createHandlerInterface(k8sClient, handlerOptions, jwtIssuer, authenticator)
+	handlerInterface := createHandlerInterface(k8sClient, userIndex, handlerOptions, jwtIssuer, authenticator)
 	router := buildRouter(schema, local.NewAuthorizer(authenticator, rbac.New(k8sClient, TestNamespace, &rbac.Options{})))
 	chiServerOptions := buildChiServerOptions(router)
 
