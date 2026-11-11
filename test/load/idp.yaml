@@ -1,0 +1,47 @@
+# Stand-in identity provider for the load test: serves only the public key set
+# at <issuer>/.well-known/jwks.json. The issuer URL is
+# http://jwks.load-test-idp.svc.cluster.local/ and must match
+# hack/ci/load-values.yaml. The load-test workflow creates the "jwks"
+# ConfigMap from the fixtures' output.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: load-test-idp
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jwks
+  namespace: load-test-idp
+spec:
+  selector:
+    app: jwks
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jwks
+  namespace: load-test-idp
+  labels:
+    app: jwks
+spec:
+  containers:
+  - name: nginx
+    # nginx 1.31.6-alpine
+    image: nginx@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
+    ports:
+    - containerPort: 80
+    readinessProbe:
+      httpGet:
+        path: /.well-known/jwks.json
+        port: 80
+    volumeMounts:
+    - name: jwks
+      mountPath: /usr/share/nginx/html/.well-known
+  volumes:
+  - name: jwks
+    configMap:
+      name: jwks

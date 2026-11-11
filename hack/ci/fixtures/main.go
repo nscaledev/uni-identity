@@ -40,13 +40,11 @@ import (
 	"time"
 
 	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
-	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/identity/hack/ci/internal/fixturelib"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
-	"github.com/unikorn-cloud/identity/pkg/openapi"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -107,31 +105,6 @@ func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, 
 	return tokens.AccessToken
 }
 
-func createNonMemberOrganization(ctx context.Context, ac *openapi.ClientWithResponses, k8s client.Client, namespace string) string {
-	fixturelib.Logf("Creating non-member Organization...")
-
-	otherOrgName := fmt.Sprintf("ci-unauthorised-org-%d", time.Now().UnixNano())
-
-	resp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{Name: otherOrgName},
-		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
-	})
-	if err != nil {
-		fixturelib.Fatalf("failed to create non-member Organization: %v", err)
-	}
-
-	if resp.JSON202 == nil {
-		fixturelib.Fatalf("create non-member Organization returned %s", resp.Status())
-	}
-
-	orgID := resp.JSON202.Metadata.Id
-	fixturelib.Logf("  Organization ID: %s", orgID)
-
-	fixturelib.WaitForOrgNamespace(ctx, k8s, namespace, orgID)
-
-	return orgID
-}
-
 func main() {
 	baseURL := flag.String("base-url", os.Getenv("IDENTITY_BASE_URL"), "Identity service base URL")
 	namespace := flag.String("namespace", os.Getenv("IDENTITY_NAMESPACE"), "Kubernetes namespace where identity is deployed")
@@ -172,30 +145,12 @@ func main() {
 
 	ac := fixturelib.NewAPIClient(*baseURL, *caCertPath, certPEM, keyPEM)
 
-	// ── Create Organization ──────────────────────────────────────────────────
-	fixturelib.Logf("Creating test Organization...")
+	// ── Create Organizations ─────────────────────────────────────────────────
+	orgID := fixturelib.CreateOrganization(ctx, ac, k8s, *namespace, "ci-test-org")
 
-	orgResp, err := ac.PostApiV1OrganizationsWithResponse(ctx, openapi.OrganizationWrite{
-		Metadata: coreopenapi.ResourceWriteMetadata{Name: "ci-test-org"},
-		Spec:     openapi.OrganizationSpec{OrganizationType: openapi.Adhoc},
-	})
-	if err != nil {
-		fixturelib.Fatalf("failed to create Organization: %v", err)
-	}
-
-	if orgResp.JSON202 == nil {
-		fixturelib.Fatalf("create Organization returned %s", orgResp.Status())
-	}
-
-	orgID := orgResp.JSON202.Metadata.Id
-	fixturelib.Logf("  Organization ID: %s", orgID)
-
-	// Wait for the organization controller to provision the backing namespace.
-	fixturelib.WaitForOrgNamespace(ctx, k8s, *namespace, orgID)
-
-	// Create a second org that test identities are not members of.
+	// A second org that test identities are not members of.
 	// Used by non-member authorization tests (UNAUTHORISED_ORG_ID).
-	unauthorisedOrgID := createNonMemberOrganization(ctx, ac, k8s, *namespace)
+	unauthorisedOrgID := fixturelib.CreateOrganization(ctx, ac, k8s, *namespace, fmt.Sprintf("ci-unauthorised-org-%d", time.Now().UnixNano()))
 
 	// ── Resolve role IDs ─────────────────────────────────────────────────────
 	// platform-administrator is protected and not returned by the API.

@@ -11,6 +11,8 @@ higher-level services call it directly to deploy dependencies. Fix once, fix eve
 | `setup-infra` | CI workflow, `make integration-infra` | Installs cluster-level prerequisites (cert-manager, ingress-nginx, unikorn-core). Idempotent. |
 | `install` | CI workflow, `make integration-install`, downstream services | Deploys identity into a running cluster with a given namespace and release name. Outputs a `.env` fragment to stdout. |
 | `fixtures/main.go` | CI workflow, `make integration-fixtures` | Creates test resources via the identity API using mTLS. Outputs a `.env` fragment to stdout. |
+| `loadfixtures/` | Load Test workflow | Builds the load test's data and Auth0-shaped tokens. See [`../../test/load/README.md`](../../test/load/README.md). |
+| `internal/fixturelib/` | `fixtures`, `loadfixtures` | Identity API helpers shared by the fixture programs. |
 
 ## Output contracts
 
@@ -49,6 +51,8 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | `kind-config.yaml` | KinD cluster config (ingress-ready node label) |
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
 | `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
+| `load-kind-config.yaml`, `load-audit-policy.yaml` | Load Test only: `kind-config.yaml` plus the kube-apiserver audit log, limited to identity's server ServiceAccount |
+| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally

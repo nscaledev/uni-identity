@@ -1,0 +1,178 @@
+name: Load Test
+
+# Manual only. Runs identity's hot paths at a steady rate in a throwaway kind
+# cluster and gates on how many API-server calls identity makes per request,
+# then finds each path's ceiling (the highest rate with no failed request).
+# See test/load/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: Dataset size
+        type: choice
+        options:
+        - small
+        - large
+        default: small
+      rate:
+        description: Requests per second per phase
+        type: string
+        default: '20'
+      duration:
+        description: Seconds per steady-state phase
+        type: string
+        default: '60'
+      ceiling:
+        description: Find each path's ceiling after the steady state
+        type: boolean
+        default: true
+      ceiling_max:
+        description: Top of the ceiling ramp, requests per second
+        type: string
+        default: '2000'
+
+permissions:
+  contents: read
+
+jobs:
+  load-test:
+    name: Load test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CLUSTER: load-test-${{ github.run_id }}
+      # Fixed so the audit policy can name identity's ServiceAccount. Keep in
+      # step with hack/ci/load-audit-policy.yaml.
+      IDENTITY_NAMESPACE: unikorn-identity-load
+      IDENTITY_RELEASE: identity-load
+      # Must match hack/ci/load-values.yaml and test/load/idp.yaml.
+      ISSUER: http://jwks.load-test-idp.svc.cluster.local/
+      AUDIENCE: https://load-test.invalid/api
+      DATASET: ${{ inputs.dataset }}
+      RATE: ${{ inputs.rate }}
+      DURATION: ${{ inputs.duration }}
+      CEILING: ${{ inputs.ceiling }}
+      CEILING_MAX: ${{ inputs.ceiling_max }}
+      OUT_DIR: load-out
+    steps:
+    - name: Check inputs
+      run: |
+        [[ "${RATE}" =~ ^[1-9][0-9]*$ ]] || { echo "rate must be a positive integer"; exit 1; }
+        [[ "${DURATION}" =~ ^[1-9][0-9]*$ ]] || { echo "duration must be a positive integer"; exit 1; }
+        [[ "${CEILING_MAX}" =~ ^[1-9][0-9]*$ ]] || { echo "ceiling_max must be a positive integer"; exit 1; }
+        (( CEILING_MAX > RATE )) || { echo "ceiling_max must be above rate"; exit 1; }
+
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+
+    - name: Install Helm
+      uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      with:
+        # Same pin as the integration workflow: helm v4.2.1 regressed --wait.
+        version: v4.2.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install k6
+      uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
+      with:
+        k6-version: 1.8.2
+
+    # The config adds the kube-apiserver audit log to hack/ci/kind-config.yaml.
+    - name: Create KinD cluster
+      uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+      with:
+        version: v0.33.0
+        cluster_name: ${{ env.CLUSTER }}
+        config: hack/ci/load-kind-config.yaml
+
+    - name: Install cluster infrastructure
+      env:
+        KIND_CLUSTER: ${{ env.CLUSTER }}
+      run: make integration-infra
+
+    # Trusts the stand-in provider below (hack/ci/load-values.yaml).
+    - name: Install identity
+      env:
+        KIND_CLUSTER: ${{ env.CLUSTER }}
+        KIND_SUFFIX: load
+        INTEGRATION_EXTRA_VALUES: hack/ci/load-values.yaml
+      run: make integration-install
+
+    - name: Create load fixtures
+      run: |
+        set -a; . test/.env.install; set +a
+        mkdir -p "${OUT_DIR}" "${RUNNER_TEMP}/load"
+        go run ./hack/ci/loadfixtures/... \
+          --dataset "${DATASET}" \
+          --base-url "${IDENTITY_BASE_URL}" \
+          --namespace "${IDENTITY_NAMESPACE}" \
+          --ca-cert "${IDENTITY_CA_CERT}" \
+          --issuer "${ISSUER}" \
+          --audience "${AUDIENCE}" \
+          --out-dir "${RUNNER_TEMP}/load"
+        # Tokens stay out of the uploaded artifact; only the counts go in.
+        jq .counts "${RUNNER_TEMP}/load/tokens.json" > "${OUT_DIR}/dataset.json"
+
+    - name: Serve the stand-in provider's public keys
+      run: |
+        kubectl apply -f test/load/idp.yaml
+        kubectl create configmap jwks -n load-test-idp \
+          --from-file=jwks.json="${RUNNER_TEMP}/load/jwks.json"
+        kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
+
+    # The project controller is busy for a while after fixtures; load must not
+    # overlap it.
+    - name: Wait for fixtures to settle
+      run: |
+        kubectl wait --for=condition=Available --timeout=15m \
+          organizations.identity.unikorn-cloud.org --all -A
+        kubectl wait --for=condition=Available --timeout=15m \
+          projects.identity.unikorn-cloud.org --all -A
+
+    - name: Run load phases
+      run: |
+        set -a; . test/.env.install; set +a
+        BASE_URL="${IDENTITY_BASE_URL}" \
+        TOKENS="${RUNNER_TEMP}/load/tokens.json" \
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
+          test/load/run-phases.sh
+
+    - name: Collect the API server audit log
+      if: ${{ !cancelled() }}
+      run: |
+        docker exec "${CLUSTER}-control-plane" cat /var/log/kubernetes/kube-apiserver-audit.log \
+          > "${RUNNER_TEMP}/load/audit.log"
+
+    - name: Count identity's API-server calls
+      if: ${{ !cancelled() }}
+      env:
+        IDENTITY_USER: system:serviceaccount:${{ env.IDENTITY_NAMESPACE }}:${{ env.IDENTITY_RELEASE }}-server
+      run: |
+        test/load/count-audit.sh "${RUNNER_TEMP}/load/audit.log" "${OUT_DIR}/phases.json" "${OUT_DIR}/counts.json"
+
+    - name: Write job summary
+      if: ${{ !cancelled() }}
+      env:
+        NAMESPACE: ${{ env.IDENTITY_NAMESPACE }}
+        SERVER_DEPLOYMENT: ${{ env.IDENTITY_RELEASE }}-server
+      run: |
+        if [[ -s "${OUT_DIR}/counts.json" ]]; then
+          test/load/report.sh "${OUT_DIR}" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "No counts were produced; see the failed step." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: load-test-${{ github.run_id }}
+        path: ${{ env.OUT_DIR }}
+        if-no-files-found: warn
