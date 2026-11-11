@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 
 	"github.com/unikorn-cloud/identity/hack/ci/internal/fixturelib"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -83,6 +84,7 @@ func buildTokens(dataset string, m *minter, shp shape, users []user, orgs []org)
 type options struct {
 	baseURL, namespace, caCertPath string
 	dataset, issuer, audience      string
+	mode                           string
 	outDir                         string
 }
 
@@ -91,31 +93,53 @@ func parseFlags() (options, shape) {
 
 	flag.StringVar(&o.baseURL, "base-url", os.Getenv("IDENTITY_BASE_URL"), "Identity service base URL")
 	flag.StringVar(&o.namespace, "namespace", os.Getenv("IDENTITY_NAMESPACE"), "Namespace identity is deployed in")
-	flag.StringVar(&o.caCertPath, "ca-cert", os.Getenv("IDENTITY_CA_CERT"), "Path to CA certificate bundle")
-	flag.StringVar(&o.dataset, "dataset", "small", "Dataset size: small or large")
+	flag.StringVar(&o.caCertPath, "ca-cert", os.Getenv("IDENTITY_CA_CERT"), "Path to CA certificate bundle (api mode)")
+	flag.StringVar(&o.dataset, "dataset", "small", "Dataset size: small, medium or web")
+	flag.StringVar(&o.mode, "mode", modeAPI, "How the records are created: api (through identity) or direct (straight to the Kubernetes API; identity's controllers must be scaled to 0)")
 	flag.StringVar(&o.issuer, "issuer", "", "Issuer of the minted tokens (trailing slash included)")
 	flag.StringVar(&o.audience, "audience", "", "Audience of the minted tokens")
 	flag.StringVar(&o.outDir, "out-dir", ".", "Directory for tokens.json and jwks.json")
 	flag.Parse()
 
 	shp, ok := shapeFor(o.dataset)
-	if !ok || o.baseURL == "" || o.namespace == "" || o.caCertPath == "" || o.issuer == "" || o.audience == "" {
-		fixturelib.Fatalf("usage: load-fixtures --dataset small|large --base-url URL --namespace NS --ca-cert PATH --issuer URL --audience AUD [--out-dir DIR]")
+	valid := ok && o.baseURL != "" && o.namespace != "" && o.issuer != "" && o.audience != ""
+	valid = valid && (o.mode == modeDirect || (o.mode == modeAPI && o.caCertPath != ""))
+
+	if !valid {
+		fixturelib.Fatalf("usage: load-fixtures --dataset small|medium|web --mode api|direct --base-url URL --namespace NS [--ca-cert PATH (api mode)] --issuer URL --audience AUD [--out-dir DIR]")
 	}
 
 	return o, shp
 }
 
-func newBuilder(ctx context.Context, o options) *builder {
+const (
+	modeAPI    = "api"
+	modeDirect = "direct"
+)
+
+// newKubeClient returns a client for the current kubeconfig. A non-zero qps
+// raises its rate limit.
+func newKubeClient(qps float32, burst int) client.Client {
 	cfg, err := config.GetConfig()
 	if err != nil {
 		fixturelib.Fatalf("failed to get kubeconfig: %v", err)
+	}
+
+	if qps > 0 {
+		cfg.QPS = qps
+		cfg.Burst = burst
 	}
 
 	k8s, err := client.New(cfg, client.Options{Scheme: fixturelib.NewClientScheme()})
 	if err != nil {
 		fixturelib.Fatalf("failed to create Kubernetes client: %v", err)
 	}
+
+	return k8s
+}
+
+func newBuilder(ctx context.Context, o options) *builder {
+	k8s := newKubeClient(0, 0)
 
 	certPEM, keyPEM := fixturelib.IssueCert(ctx, k8s, o.namespace, "ci-fixtures", "ci-fixtures")
 
@@ -126,25 +150,75 @@ func newBuilder(ctx context.Context, o options) *builder {
 	}
 }
 
-func main() {
-	o, shp := parseFlags()
-	ctx := context.Background()
-
-	fixturelib.Quiet = true
-
+// populateAPI creates the dataset through identity's API.
+func populateAPI(ctx context.Context, o options, shp shape, users []user) []org {
 	b := newBuilder(ctx, o)
 
 	fixturelib.Logf("Creating %d organizations", shp.orgs)
 
 	orgs := b.createOrgs(ctx, shp)
 
-	users := plan(shp)
-
 	fixturelib.Logf("Creating %d users", len(users))
 	// In turn: adding a user updates its groups, and concurrent updates of
 	// one group conflict (409) because the server does not retry them.
 	for _, u := range users {
 		b.createUser(ctx, orgs, u)
+	}
+
+	return orgs
+}
+
+// populateDirect writes the dataset straight to the Kubernetes API server.
+func populateDirect(ctx context.Context, o options, shp shape, users []user) []org {
+	k8s := newKubeClient(directQPS, directBurst)
+
+	issuer := handlercommon.IssuerValue{}
+	if err := issuer.Set(o.baseURL); err != nil {
+		fixturelib.Fatalf("invalid base URL %q: %v", o.baseURL, err)
+	}
+
+	recs, err := buildRecords(shp, users, directParams{
+		namespace:   o.namespace,
+		issuer:      issuer.URL,
+		adminRoleID: fixturelib.FindRoleID(ctx, k8s, o.namespace, "administrator"),
+		userRoleID:  fixturelib.FindRoleID(ctx, k8s, o.namespace, "user"),
+	})
+	if err != nil {
+		fixturelib.Fatalf("failed to build the records: %v", err)
+	}
+
+	mint, err := newTokenMinter(k8s, o.namespace, o.baseURL)
+	if err != nil {
+		fixturelib.Fatalf("%v", err)
+	}
+
+	fixturelib.Logf("Minting %d service account tokens", len(recs.serviceAccounts))
+
+	if err := mintTokens(ctx, &recs, mint); err != nil {
+		fixturelib.Fatalf("%v", err)
+	}
+
+	if err := apply(ctx, k8s, &recs); err != nil {
+		fixturelib.Fatalf("%v", err)
+	}
+
+	return recs.orgs()
+}
+
+func main() {
+	o, shp := parseFlags()
+	ctx := context.Background()
+
+	fixturelib.Quiet = true
+
+	users := plan(shp)
+
+	var orgs []org
+
+	if o.mode == modeDirect {
+		orgs = populateDirect(ctx, o, shp, users)
+	} else {
+		orgs = populateAPI(ctx, o, shp, users)
 	}
 
 	fixturelib.Logf("Minting %d tokens", shp.tokens)

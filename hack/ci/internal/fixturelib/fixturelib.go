@@ -31,6 +31,7 @@ import (
 	"os"
 	"time"
 
+	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -211,6 +212,24 @@ func NewAPIClient(baseURL, caCertPath string, certPEM, keyPEM []byte) *openapi.C
 	}
 
 	return ac
+}
+
+// FindRoleID resolves a Role CRD ID by its friendly name label. Protected
+// roles never appear in the user-facing role listing, so the API cannot be
+// used for this.
+func FindRoleID(ctx context.Context, k8s client.Client, namespace, name string) string {
+	roles := &unikornv1.RoleList{}
+
+	if err := k8s.List(ctx, roles, client.InNamespace(namespace),
+		client.MatchingLabels{coreconstants.NameLabel: name}); err != nil {
+		Fatalf("failed to list roles: %v", err)
+	}
+
+	if len(roles.Items) != 1 {
+		Fatalf("expected exactly one role named %q, got %d", name, len(roles.Items))
+	}
+
+	return roles.Items[0].Name
 }
 
 // FindRole returns the ID of a named role within an organization.

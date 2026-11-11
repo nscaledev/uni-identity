@@ -28,26 +28,46 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// userClass is a group of users who each belong to the same number of
+// organizations.
+type userClass struct {
+	memberships int
+	count       int
+}
+
 // shape sizes a dataset. Users are split by how many organizations each
 // belongs to, so a cost that grows with membership shows up.
 type shape struct {
 	orgs           int
 	groupsPerOrg   int
 	projectsPerOrg int
-	// users1, users5 and users20 count users in 1, 5 and 20 organizations.
-	users1, users5, users20 int
+	users          []userClass
 	// tokens is the number of distinct Auth0 tokens minted.
 	tokens int
 }
 
-// shapeFor returns the named dataset. Large is several times small on every
-// axis.
+// shapeFor returns the named dataset. Medium and web have about three
+// projects, two groups and one service account per organization, and as many
+// users as organizations: most in one to three organizations, a few in 20. The
+// tokens are one per user, so every user and every membership is exercised.
+// Medium and web are meant for direct mode (see direct.go).
 func shapeFor(name string) (shape, bool) {
 	switch name {
 	case "small":
-		return shape{orgs: 20, groupsPerOrg: 4, projectsPerOrg: 3, users1: 10, users5: 6, users20: 3, tokens: 600}, true
-	case "large":
-		return shape{orgs: 100, groupsPerOrg: 30, projectsPerOrg: 10, users1: 200, users5: 80, users20: 40, tokens: 5000}, true
+		return shape{
+			orgs: 20, groupsPerOrg: 4, projectsPerOrg: 3, tokens: 600,
+			users: []userClass{{1, 10}, {5, 6}, {20, 3}},
+		}, true
+	case "medium":
+		return shape{
+			orgs: 2000, groupsPerOrg: 2, projectsPerOrg: 3, tokens: 2000,
+			users: []userClass{{1, 900}, {2, 600}, {3, 400}, {20, 100}},
+		}, true
+	case "web":
+		return shape{
+			orgs: 20000, groupsPerOrg: 2, projectsPerOrg: 3, tokens: 20000,
+			users: []userClass{{1, 9000}, {2, 6000}, {3, 4000}, {20, 1000}},
+		}, true
 	}
 
 	return shape{}, false
@@ -58,8 +78,8 @@ const (
 	concurrency = 16
 	// userGroups is how many of an organization's groups each user joins.
 	userGroups = 3
-	// minGroups keeps the administrator group, the user group and one more.
-	minGroups = 3
+	// minGroups keeps the administrator group and the user group.
+	minGroups = 2
 )
 
 type org struct {
@@ -136,21 +156,17 @@ func (b *builder) createOrg(ctx context.Context, i int, s shape) org {
 func plan(s shape) []user {
 	var users []user
 
-	add := func(count, memberships int) {
-		for k := range count {
-			u := user{email: fmt.Sprintf("load-user-%d-%03d@example.invalid", memberships, k)}
+	for _, class := range s.users {
+		for k := range class.count {
+			u := user{email: fmt.Sprintf("load-user-%d-%03d@example.invalid", class.memberships, k)}
 
-			for j := range memberships {
-				u.orgs = append(u.orgs, (k*memberships+j)%s.orgs)
+			for j := range class.memberships {
+				u.orgs = append(u.orgs, (k*class.memberships+j)%s.orgs)
 			}
 
 			users = append(users, u)
 		}
 	}
-
-	add(s.users1, 1)
-	add(s.users5, 5)
-	add(s.users20, 20)
 
 	return users
 }

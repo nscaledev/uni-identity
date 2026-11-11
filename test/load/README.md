@@ -20,7 +20,7 @@ the counts and the phase windows (no tokens).
 
 | Input | Default | Meaning |
 |---|---|---|
-| `dataset` | `small` | `small` or `large` (see below) |
+| `dataset` | `small` | `small`, `medium` or `web` (see below). Medium and web are built in direct mode |
 | `rate` | `20` | requests per second per phase in the steady state (where the ceiling ramp starts) |
 | `duration` | `60` | seconds per steady-state phase |
 | `ceiling` | `true` | find each path's ceiling after the steady state (see The ceiling) |
@@ -36,8 +36,8 @@ paths from its informer cache it passes.
    `hack/ci/load-audit-policy.yaml`: Metadata level, identity's server ServiceAccount only).
 2. Infrastructure and identity, installed as the integration workflow does, plus
    `hack/ci/load-values.yaml`, which adds an `OAuth2Provider` with `bearerTrust` (CI only).
-3. `hack/ci/loadfixtures`: creates the data through the identity API, generates an RSA key in
-   memory, mints Auth0-shaped JWTs (issuer with a trailing slash, audience, email, authz and groups
+3. `hack/ci/loadfixtures`: creates the data (through the identity API for `small`, straight into
+   the Kubernetes API for `medium` and `web`: see Direct mode), generates an RSA key in memory, mints Auth0-shaped JWTs (issuer with a trailing slash, audience, email, authz and groups
    claims) and writes the tokens and the public key set. The private key is never written.
 4. A stock nginx pod (`idp.yaml`, image pinned by digest) serves the public key set at
    `http://jwks.load-test-idp.svc.cluster.local/.well-known/jwks.json`, the provider's issuer.
@@ -49,14 +49,18 @@ paths from its informer cache it passes.
 
 ### Datasets
 
-| | small | large |
-|---|---|---|
-| organizations | 20 | 100 |
-| groups per organization | 4 | 30 |
-| projects per organization | 3 | 10 |
-| users in 1 / 5 / 20 organizations | 10 / 6 / 3 | 200 / 80 / 40 |
-| service accounts | 1 per organization | 1 per organization |
-| distinct Auth0 tokens | 600 | 5000 |
+| | small | medium | web |
+|---|---|---|---|
+| organizations | 20 | 2,000 | 20,000 |
+| groups per organization | 4 | 2 | 2 |
+| projects per organization | 3 | 3 | 3 |
+| users | 19 | 2,000 | 20,000 |
+| users in 1 / 2 / 3 / 5 / 20 organizations | 10 / 0 / 0 / 6 / 3 | 900 / 600 / 400 / 0 / 100 | 9,000 / 6,000 / 4,000 / 0 / 1,000 |
+| service accounts | 1 per organization | 1 per organization | 1 per organization |
+| distinct Auth0 tokens | 600 | 2,000 (one per user) | 20,000 (one per user) |
+
+The first group of every organization holds the administrator role and its service account; the
+others hold the user role and the members (each user joins up to three of them).
 
 Every token's email has a UNI user. Tokens are used in turn, so a long run reuses them. Identity
 keeps no per-token cache for Auth0 tokens: it validates each one afresh, so their count only decides
@@ -84,6 +88,81 @@ still runs the service account token check: the handler passes the bearer to
 the organization and the service account to check the token is current. Any API call counted in that
 phase therefore comes from the token check. An endpoint such as the organization's projects list
 reads the API server in its handler on purpose, which would hide the token check's cost.
+
+### Direct mode
+
+`--mode direct` (the workflow's choice for `medium` and `web`) writes the identity records straight
+to the Kubernetes API with controller-runtime: bounded parallelism (`errgroup` with a limit),
+a raised client rate limit, and `retry.RetryOnConflict` on the writes that update an existing
+record. Through the API, 20,000 organizations take hours; this takes minutes.
+
+It writes, for each organization, what identity's request path reads:
+
+- the `Organization` with the controller's finalizer and the status the organization controller
+  sets (its namespace, `Available` and `Healthy` conditions), and that namespace, labelled as the
+  controller labels it;
+- in that namespace: `Group`s (with their members, as subjects and as organization user IDs, and
+  the service account), `Project`s, the `ServiceAccount` (its token minted with identity's own
+  signing key, read from the cluster) and the `OrganizationUser`s;
+- in identity's namespace: the global `User`s.
+
+Names follow #604: users and organization users take the names the users handler gives them (they
+come from `v1alpha1.GlobalUserName` and `users.OrganizationUserName`); the rest are derived from the
+dataset position, so a rerun converges on the same records, and replaces each service account's
+token. Labels and annotations come from the same core builder the handlers use. A unit test
+(`hack/ci/loadfixtures/direct_test.go`) applies a three organization dataset to a fake cluster
+and reads it back through `pkg/userdb` and the group membership check.
+
+It bypasses identity's controllers and handlers:
+
+- **Identity's controllers must be scaled to 0 first** (the workflow does), or they race the status
+  writes. The cluster's admission policies still run.
+- None of the handlers' validation runs: group, role and membership checks, subject rules.
+- Projects are written without status and without their own namespaces. Nothing identity's hot
+  paths read depends on them; a controller started later creates the namespaces.
+- It needs the signing key, so identity must be installed and its server running first.
+
+### Run it locally
+
+Use a new cluster, never an existing one; the install suffix must be `load` (the audit policy names
+identity's ServiceAccount). Needs `kind`, `kubectl`, `helm`, `jq`, `yq`, `openssl`, Go, Docker and
+k6 on the path. From the repository root, for `medium` (use `web` the same way):
+
+```sh
+kind create cluster --name load-test --config hack/ci/load-kind-config.yaml
+KIND_CLUSTER=load-test make integration-infra
+KIND_CLUSTER=load-test KIND_SUFFIX=load \
+  INTEGRATION_EXTRA_VALUES=hack/ci/load-values.yaml make integration-install
+
+# Direct mode (medium, web): identity's controllers off.
+for c in organization project oauth2client; do
+  kubectl scale deployment -n unikorn-identity-load "identity-load-${c}-controller" --replicas=0
+  kubectl wait --for=delete pod -n unikorn-identity-load -l "app=identity-load-${c}-controller" --timeout=120s
+done
+
+set -a; . test/.env.install; set +a
+mkdir -p load-out /tmp/load
+go run ./hack/ci/loadfixtures/... --dataset medium --mode direct \
+  --base-url "${IDENTITY_BASE_URL}" --namespace "${IDENTITY_NAMESPACE}" \
+  --issuer http://jwks.load-test-idp.svc.cluster.local/ --audience https://load-test.invalid/api \
+  --out-dir /tmp/load
+jq .counts /tmp/load/tokens.json > load-out/dataset.json
+
+kubectl apply -f test/load/idp.yaml
+kubectl create configmap jwks -n load-test-idp --from-file=jwks.json=/tmp/load/jwks.json
+kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
+
+export NAMESPACE=unikorn-identity-load SERVER_DEPLOYMENT=identity-load-server OUT_DIR=load-out
+BASE_URL="${IDENTITY_BASE_URL}" TOKENS=/tmp/load/tokens.json \
+  RATE=20 DURATION=60 CEILING=true CEILING_MAX=2000 test/load/run-phases.sh
+
+docker exec load-test-control-plane cat /var/log/kubernetes/kube-apiserver-audit.log > /tmp/load/audit.log
+IDENTITY_USER=system:serviceaccount:unikorn-identity-load:identity-load-server \
+  test/load/count-audit.sh /tmp/load/audit.log load-out/phases.json load-out/counts.json
+DATASET=medium RATE=20 DURATION=60 CEILING_MAX=2000 test/load/report.sh load-out
+
+kind delete cluster --name load-test
+```
 
 ## The ceiling
 
@@ -135,7 +214,8 @@ The job fails if any of these hold:
 - The audit log holds no events from identity's ServiceAccount at all. Identity's informers always
   log their startup list and watch, so an empty log means the probe is blind (wrong user, audit
   policy not applied), and a blind probe would otherwise count zero calls and pass. The gate passes
-  only when identity audit events are present.- A phase's identity API-server calls per request, less the idle rate, exceed `0.05`. This allows
+  only when identity audit events are present.
+- A phase's identity API-server calls per request, less the idle rate, exceed `0.05`. This allows
   stray background calls; a hot path should make none. A request here is a 200 response: a failed
   request does no cache-served work and would dilute the figure.
 - A phase made no requests.

@@ -39,9 +39,7 @@ import (
 	"path/filepath"
 	"time"
 
-	coreconstants "github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/identity/hack/ci/internal/fixturelib"
-	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
@@ -49,24 +47,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
-
-// findRoleID resolves a Role CRD ID by its friendly name label. Protected
-// roles never appear in the user-facing role listing, so the API cannot be
-// used for this.
-func findRoleID(ctx context.Context, k8s client.Client, namespace, name string) string {
-	roles := &unikornv1.RoleList{}
-
-	if err := k8s.List(ctx, roles, client.InNamespace(namespace),
-		client.MatchingLabels{coreconstants.NameLabel: name}); err != nil {
-		fixturelib.Fatalf("failed to list roles: %v", err)
-	}
-
-	if len(roles.Items) != 1 {
-		fixturelib.Fatalf("expected exactly one role named %q, got %d", name, len(roles.Items))
-	}
-
-	return roles.Items[0].Name
-}
 
 func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, subject, globalUserID string) string {
 	issuer := handlercommon.IssuerValue{}
@@ -225,7 +205,7 @@ func main() {
 	// Protected roles are invisible through the API by design, so the role ID
 	// for the non-grantability test is resolved from the Role CRD by its
 	// unikorn-cloud.org/name label.
-	platformReaderRoleID := findRoleID(ctx, k8s, *namespace, "platform-reader")
+	platformReaderRoleID := fixturelib.FindRoleID(ctx, k8s, *namespace, "platform-reader")
 
 	// ── Output .env fragment to stdout ────────────────────────────────────────
 	fmt.Printf("IDENTITY_BASE_URL=%s\n", *baseURL)
