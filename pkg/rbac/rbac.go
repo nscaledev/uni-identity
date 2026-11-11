@@ -27,7 +27,6 @@ import (
 
 	"github.com/spf13/pflag"
 
-	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	idconstants "github.com/unikorn-cloud/identity/pkg/constants"
@@ -36,8 +35,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -324,18 +321,14 @@ func (r *RBAC) getRoles(ctx context.Context) (map[string]*unikornv1.Role, error)
 	return out, nil
 }
 
-// getProjects grabs all projects for an organization.
-func (r *RBAC) getProjects(ctx context.Context, organizationID string) (*unikornv1.ProjectList, error) {
-	requirement, err := labels.NewRequirement(constants.OrganizationLabel, selection.Equals, []string{organizationID})
-	if err != nil {
-		return nil, err
-	}
-
-	selector := labels.NewSelector().Add(*requirement)
-
+// getProjects returns the projects of an organization. They live in the
+// organization's namespace, so this is a namespaced List, which the cache
+// serves from its namespace index; a label selector over all namespaces would
+// walk every project in the estate.  See the README's "Readers" section.
+func (r *RBAC) getProjects(ctx context.Context, organizationNamespace string) (*unikornv1.ProjectList, error) {
 	result := &unikornv1.ProjectList{}
 
-	if err := r.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
+	if err := r.client.List(ctx, result, &client.ListOptions{Namespace: organizationNamespace}); err != nil {
 		return nil, err
 	}
 
@@ -537,7 +530,7 @@ func accumulateOrganizationScopedProjects(ctx context.Context, acl *openapi.Acl,
 // accumulateOrganizationScopedPermissions are only applied for scoped ACL accesses.  This accepts
 // a set of groups the subject is a member of, adds any organization scoped permissions,
 // then adds any project scoped permissions.
-func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl *openapi.Acl, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, organizationID string) error {
+func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl *openapi.Acl, groups map[string]*unikornv1.Group, roles map[string]*unikornv1.Role, organizationID, organizationNamespace string) error {
 	// No scope is asked for, so none shall be populated!
 	if organizationID == "" {
 		return nil
@@ -551,7 +544,7 @@ func (r *RBAC) accumulateOrganizationScopedPermissions(ctx context.Context, acl 
 		}
 	}
 
-	projects, err := r.getProjects(ctx, organizationID)
+	projects, err := r.getProjects(ctx, organizationNamespace)
 	if err != nil {
 		return err
 	}
@@ -608,7 +601,7 @@ func (r *RBAC) accumulatePermissions(ctx context.Context, acl *openapi.Acl, orga
 			Endpoints: endpoints,
 		}
 
-		projects, err := r.getProjects(ctx, organizationID)
+		projects, err := r.getProjects(ctx, organization.Status.Namespace)
 		if err != nil {
 			return err
 		}
@@ -734,7 +727,7 @@ func (r *RBAC) processServiceAccountACL(ctx context.Context, subject, organizati
 
 	// Scoped ACL handling — only when the requested org matches the service account's org.
 	if organizationID == "" || organizationID == subjectOrganizationID {
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, subjectOrganizationID); err != nil {
+		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, subjectOrganizationID, organizationNamespace); err != nil {
 			return nil, err
 		}
 	}
@@ -854,7 +847,7 @@ func (r *RBAC) processUserAccountACL(ctx context.Context, subject, srcIss, organ
 		}
 
 		// Scoped ACL handling.
-		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID); err != nil {
+		if err := r.accumulateOrganizationScopedPermissions(ctx, acl, groups, roles, organizationID, organizationNamespace); err != nil {
 			return nil, err
 		}
 	}

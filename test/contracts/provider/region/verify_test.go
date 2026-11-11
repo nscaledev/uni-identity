@@ -61,11 +61,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 	"github.com/unikorn-cloud/identity/test/api"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/rest"
-
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -81,8 +77,6 @@ func TestContracts(t *testing.T) {
 	RunSpecs(t, "Identity Provider Contract Verification Suite")
 }
 
-var errUserCacheSync = errors.New("user cache did not sync")
-
 var _ = Describe("Identity Provider Verification", func() {
 	var (
 		testServer     *http.Server
@@ -90,6 +84,7 @@ var _ = Describe("Identity Provider Verification", func() {
 		ctx            context.Context
 		cancel         context.CancelFunc
 		k8sClient      client.Client
+		readCache      client.Reader
 		stateManager   *StateManager
 		handlerOptions *handler.Options
 		jwtIssuer      *jose.JWTIssuer
@@ -144,13 +139,17 @@ var _ = Describe("Identity Provider Verification", func() {
 
 		handlerOptions = buildHandlerOptions(serverURL)
 
-		jwtIssuer, authenticator, err = SetupTokenIssuer(ctx, k8sClient, handlerOptions.Issuer)
+		// The server reads through an informer cache, as production does, never
+		// the live client. It lags writes, so each state waits for it.
+		readCache, err = newReadCache(ctx, cfg, scheme)
 		Expect(err).NotTo(HaveOccurred())
 
-		userIndex, err := newUserIndexCache(ctx, cfg, scheme)
+		jwtIssuer, authenticator, err = SetupTokenIssuer(ctx, k8sClient, readCache, handlerOptions.Issuer)
 		Expect(err).NotTo(HaveOccurred())
 
-		testServer = startTestServer(ctx, k8sClient, userIndex, handlerOptions, jwtIssuer, authenticator, fmt.Sprintf("127.0.0.1:%d", port))
+		Expect(waitForReadCache(ctx, k8sClient, readCache)).To(Succeed())
+
+		testServer = startTestServer(ctx, k8sClient, readCache, handlerOptions, jwtIssuer, authenticator, fmt.Sprintf("127.0.0.1:%d", port))
 
 		Eventually(func() error {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
@@ -176,7 +175,7 @@ var _ = Describe("Identity Provider Verification", func() {
 	Describe("Verifying pacts from Pact Broker", func() {
 		It("should verify all consumer contracts", func() {
 			verifier := provider.NewVerifier()
-			stateHandlers := createStateHandlers(ctx, stateManager, authenticator, handlerOptions.Issuer)
+			stateHandlers := createStateHandlers(ctx, stateManager, authenticator, handlerOptions.Issuer, k8sClient, readCache)
 
 			// Build base selectors for normal CI verification
 			selectors := []provider.Selector{
@@ -251,7 +250,7 @@ var _ = Describe("Identity Provider Verification", func() {
 
 			verifier := provider.NewVerifier()
 
-			stateHandlers := createStateHandlers(ctx, stateManager, authenticator, handlerOptions.Issuer)
+			stateHandlers := createStateHandlers(ctx, stateManager, authenticator, handlerOptions.Issuer, k8sClient, readCache)
 
 			err := verifier.VerifyProvider(testingT, provider.VerifyRequest{
 				ProviderBaseURL: serverURL,
@@ -266,7 +265,30 @@ var _ = Describe("Identity Provider Verification", func() {
 	})
 })
 
-func createStateHandlers(ctx context.Context, stateManager *StateManager, authenticator *oauth2.Authenticator, issuer common.IssuerValue) models.StateHandlers {
+func createStateHandlers(ctx context.Context, stateManager *StateManager, authenticator *oauth2.Authenticator, issuer common.IssuerValue, live, readCache client.Reader) models.StateHandlers {
+	return syncedStateHandlers(ctx, live, readCache, createRawStateHandlers(ctx, stateManager, authenticator, issuer))
+}
+
+// syncedStateHandlers makes every state wait for the read cache after it sets up
+// or tears down, so the request that follows reads what the state wrote.
+func syncedStateHandlers(ctx context.Context, live, readCache client.Reader, handlers models.StateHandlers) models.StateHandlers {
+	synced := make(models.StateHandlers, len(handlers))
+
+	for name, handle := range handlers {
+		synced[name] = func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
+			response, err := handle(setup, state)
+			if err != nil {
+				return response, err
+			}
+
+			return response, waitForReadCache(ctx, live, readCache)
+		}
+	}
+
+	return synced
+}
+
+func createRawStateHandlers(ctx context.Context, stateManager *StateManager, authenticator *oauth2.Authenticator, issuer common.IssuerValue) models.StateHandlers {
 	automation := func(name string) models.StateHandler {
 		return func(setup bool, state models.ProviderState) (models.ProviderStateResponse, error) {
 			return nil, stateManager.HandleAutomationIdentity(ctx, name, setup, state.Parameters)
@@ -375,48 +397,19 @@ func isClientCredentialsGrant(r *http.Request) bool {
 	return err == nil && form.Get("grant_type") == "client_credentials"
 }
 
-// newUserIndexCache starts an informer cache of the test namespace's Users with
-// the subject index, as the server does. The API server cannot serve a field
-// index, so a legacy user lookup must read it from here. It stops with ctx.
-func newUserIndexCache(ctx context.Context, cfg *rest.Config, scheme *runtime.Scheme) (cache.Cache, error) {
-	userCache, err := cache.New(cfg, cache.Options{
-		Scheme: scheme,
-		ByObject: map[client.Object]cache.ByObject{
-			&unikornv1.User{}: {Namespaces: map[string]cache.Config{TestNamespace: {}}},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if err := userdb.IndexSubjects(ctx, userCache); err != nil {
-		return nil, err
-	}
-
-	go func() {
-		_ = userCache.Start(ctx)
-	}()
-
-	if !userCache.WaitForCacheSync(ctx) {
-		return nil, errUserCacheSync
-	}
-
-	return userCache, nil
-}
-
 // createHandlerInterface creates the handler interface with minimal dependencies for contract testing.
-func createHandlerInterface(k8sClient client.Client, userIndex client.Reader, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator) openapi.ServerInterface {
+func createHandlerInterface(k8sClient client.Client, readCache client.Reader, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator) openapi.ServerInterface {
 	// The issuer and authenticator are real, so service account creation, the token endpoint,
 	// userinfo and JWKS run as in production; the handlers' RBAC stays nil because
 	// MockACLMiddleware, or EnvirACLMiddleware for Envir's /api/v1/acl, provides the ACL.
 	handlerInterface, err := handler.New(
 		k8sClient,
-		k8sClient,
+		readCache,
 		TestNamespace,
 		jwtIssuer,
 		authenticator,
 		// ai-gateway's organization list finds the caller's user here.
-		userdb.NewUserDatabase(k8sClient, userIndex, TestNamespace),
+		userdb.NewUserDatabase(readCache, TestNamespace),
 		nil, // RBAC not used in contract tests - MockACLMiddleware handles authorization
 		handlerOptions,
 	)
@@ -477,13 +470,13 @@ func startServerAsync(httpServer *http.Server) {
 // startTestServer creates and starts a test instance of the identity server.
 // Note: This is a simplified version for contract testing that uses MockACLMiddleware
 // to bypass RBAC checks, reducing setup complexity and potential failure points.
-func startTestServer(_ context.Context, k8sClient client.Client, userIndex client.Reader, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator, listenAddr string) *http.Server {
+func startTestServer(_ context.Context, k8sClient client.Client, readCache client.Reader, handlerOptions *handler.Options, jwtIssuer *jose.JWTIssuer, authenticator *oauth2.Authenticator, listenAddr string) *http.Server {
 	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create schema: %v", err))
 	}
 
-	handlerInterface := createHandlerInterface(k8sClient, userIndex, handlerOptions, jwtIssuer, authenticator)
+	handlerInterface := createHandlerInterface(k8sClient, readCache, handlerOptions, jwtIssuer, authenticator)
 	router := buildRouter(schema, local.NewAuthorizer(authenticator, rbac.New(k8sClient, TestNamespace, &rbac.Options{})))
 	chiServerOptions := buildChiServerOptions(router)
 

@@ -42,14 +42,13 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const (
@@ -307,9 +306,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		Spec: unikornv1.ServiceAccountSpec{},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
+	fakeClient := userdbtest.NewClientBuilder(scheme).
 		WithObjects(signingSecret, clientCertSecret, caCertSecret,
 			signingKey, user, serviceAccount).
 		Build()
@@ -446,9 +443,7 @@ func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
 	}
 
 	// Create a separate k8s client with the unauthorized keys
-	unauthorizedClient := fake.NewClientBuilder().
-		WithScheme(k8sClient.Scheme()).
-		WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
+	unauthorizedClient := userdbtest.NewClientBuilder(k8sClient.Scheme()).
 		WithObjects(unauthorizedSigningSecret, unauthorizedSigningKey).
 		Build()
 

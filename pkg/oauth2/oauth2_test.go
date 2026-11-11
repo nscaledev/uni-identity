@@ -37,6 +37,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,7 +45,6 @@ import (
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
@@ -80,7 +80,7 @@ func TestTokens(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user).Build()
+	client := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(user).Build()
 
 	josetesting.RotateCertificate(t, client)
 
@@ -381,7 +381,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(tc.objects...).Build()
+			client := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(tc.objects...).Build()
 
 			josetesting.RotateCertificate(t, client)
 
@@ -488,7 +488,7 @@ func TestUserinfoReadsUserOnce(t *testing.T) {
 		},
 	}
 
-	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user).WithInterceptorFuncs(counting).Build()
+	cli := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(user).WithInterceptorFuncs(counting).Build()
 
 	josetesting.RotateCertificate(t, cli)
 
@@ -537,7 +537,7 @@ func TestUserinfoReadsUserOnce(t *testing.T) {
 	// user up once costs.
 	userReads.Store(0)
 
-	_, err = userdb.NewUserDatabase(cli, cli, josetesting.Namespace).GetActiveUser(ctx, "barry@foo.com")
+	_, err = userdb.NewUserDatabase(cli, josetesting.Namespace).GetActiveUser(ctx, "barry@foo.com")
 	require.NoError(t, err)
 
 	oneLookup := userReads.Load()

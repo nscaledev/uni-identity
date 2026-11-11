@@ -44,12 +44,11 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func passportIssuedTokenType() string {
@@ -139,7 +138,7 @@ func setupAuth0PassportTestEnv(t *testing.T, auth0Issuer *auth0TestIssuer) *pass
 func setupPassportTestEnvWithOAuth2Options(t *testing.T, rbacOptions *rbac.Options, oauth2Options *oauth2.Options, objects ...client.Object) *passportTestEnv {
 	t.Helper()
 
-	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(objects...).Build()
+	cli := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
 

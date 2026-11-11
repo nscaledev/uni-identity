@@ -137,6 +137,11 @@ and are read-only. Read quantities only with `Value()`, because `String()` and `
 cache into the receiver. The extras can briefly lag a write, but the ACL in the request context,
 not the cache, decides which rows get them.
 
+Not served from the cache: `common.GetQuota` and `common.GetAllocations` run on the live client
+(every `common.New` caller passes the live client). Each is one label-selected List across all
+namespaces, answered by the API server, so it costs one API call per request and no walk of the
+cache. They are not on the per-request token or ACL path.
+
 A field is present only when `include` names it and the ACL in the request context lets the
 caller see it. A fault in the quota data of one organization, such as two Quota objects or a nil
 quantity, sets `quotasError` on that row. The handler logs the fault with the organization ID. A

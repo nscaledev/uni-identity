@@ -38,12 +38,11 @@ import (
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const (
@@ -78,7 +77,7 @@ func newCasingAuthenticator(t *testing.T) (*Authenticator, *jose.JWTIssuer, clie
 		Status:     unikornv1.OAuth2ClientStatus{Secret: casingSecret},
 	}
 
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user, oauth2Client).Build()
+	cli := userdbtest.NewClientBuilder(getPassportInternalScheme(t)).WithObjects(user, oauth2Client).Build()
 
 	josetesting.RotateCertificate(t, cli)
 

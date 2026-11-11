@@ -31,13 +31,13 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
@@ -97,7 +97,7 @@ func newTestClients(t *testing.T, direct, cached *recorder, objects ...client.Ob
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	store := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(objects...).Build()
+	store := userdbtest.NewClientBuilder(scheme).WithObjects(objects...).Build()
 
 	return interceptor.NewClient(store, direct.funcs()), interceptor.NewClient(store, cached.funcs())
 }
@@ -166,7 +166,7 @@ func TestListMembershipBranchReadsTheCache(t *testing.T) {
 	direct, cached := &recorder{}, &recorder{}
 	k8s, cache := newTestClients(t, direct, cached, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgB))
 
-	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 2, "duplicate memberships still return the organization twice")
 	require.Equal(t, orgB, out[0].Metadata.Id)
@@ -188,7 +188,7 @@ func TestListEmailFilterReadsTheCache(t *testing.T) {
 
 	ctx := authorization.NewContext(globalReadContext(t), &authorization.Info{Userinfo: &openapi.Userinfo{Sub: subject, Email: ptr.To(subject)}})
 
-	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(cache, cache, testNamespace), ptr.To(subject))
+	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(cache, testNamespace), ptr.To(subject))
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 	require.Equal(t, orgA, out[0].Metadata.Id)
@@ -216,7 +216,7 @@ func TestListServiceAccountReadsByKey(t *testing.T) {
 		},
 	})
 
-	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(ctx, cache, userdb.NewUserDatabase(cache, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 	require.Equal(t, orgA, out[0].Metadata.Id)
@@ -230,7 +230,7 @@ func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	k8s := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).WithObjects(user(), membership("m1", orgA)).WithInterceptorFuncs(interceptor.Funcs{
+	k8s := userdbtest.NewClientBuilder(scheme).WithObjects(user(), membership("m1", orgA)).WithInterceptorFuncs(interceptor.Funcs{
 		Get: func(ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if _, ok := obj.(*unikornv1.Organization); ok {
 				return errBoom
@@ -240,7 +240,7 @@ func TestListMembershipBranchGetErrorIsWrapped(t *testing.T) {
 		},
 	}).Build()
 
-	_, err := New(k8s, testNamespace).List(memberContext(t), k8s, userdb.NewUserDatabase(k8s, k8s, testNamespace), nil)
+	_, err := New(k8s, testNamespace).List(memberContext(t), k8s, userdb.NewUserDatabase(k8s, testNamespace), nil)
 	require.Error(t, err)
 	require.ErrorIs(t, err, errBoom)
 	require.NotErrorIs(t, err, coreerrors.ErrConsistency)
@@ -251,7 +251,7 @@ func TestListMembershipBranchSortsByID(t *testing.T) {
 
 	k8s, cache := newTestClients(t, &recorder{}, &recorder{}, org(orgA), org(orgB), user(), membership("m1", orgB), membership("m2", orgA))
 
-	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 2)
 	require.Equal(t, orgA, out[0].Metadata.Id)
@@ -263,7 +263,7 @@ func TestListMembershipBranchSkipsOrganizationMissingFromCache(t *testing.T) {
 
 	k8s, cache := newTestClients(t, &recorder{}, &recorder{}, org(orgB), user(), membership("m1", orgA), membership("m2", orgB))
 
-	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, cache, testNamespace), nil)
+	out, err := New(k8s, testNamespace).List(memberContext(t), cache, userdb.NewUserDatabase(cache, testNamespace), nil)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 	require.Equal(t, orgB, out[0].Metadata.Id)

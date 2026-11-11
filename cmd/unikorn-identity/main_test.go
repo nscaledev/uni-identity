@@ -171,8 +171,8 @@ func (r *testRegistry) IndexField(_ context.Context, _ ctrlclient.Object, field 
 	return nil
 }
 
-// Without the subject index, every legacy user lookup fails in production.
-func TestRegisterReadCacheRegistersInformersAndSubjectIndex(t *testing.T) {
+// Without its indexes, every user and membership lookup fails in production.
+func TestRegisterReadCacheRegistersInformersAndUserIndexes(t *testing.T) {
 	t.Parallel()
 
 	registry := &testRegistry{}
@@ -182,5 +182,5 @@ func TestRegisterReadCacheRegistersInformersAndSubjectIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, informers, len(options.ByObject))
 	require.Len(t, registry.informers, len(options.ByObject))
-	require.Equal(t, []string{userdb.SubjectIndexField}, registry.indexes)
+	require.Equal(t, []string{userdb.SubjectIndexField, userdb.SubjectLabelIndexField, userdb.MembershipUserIndexField}, registry.indexes)
 }

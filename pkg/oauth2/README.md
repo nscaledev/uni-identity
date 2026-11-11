@@ -61,15 +61,28 @@ refused.
 The client writes, and serves the reads that decide a write. These run once per sign-in or per
 token lifetime, not per request:
 
-- the user read at authorization and callback, which adds a pending authorization code (#597)
-- the session read in `updateSession`, and the refresh-token check, which clears a refresh token
+- the user read at callback, which adds a pending authorization code (#597), and at refresh, which
+  clears a refresh token. `getLiveUser` reads the canonical record live by its deterministic
+  name; only if that does not exist does it find a legacy record's key through the cache-backed user
+  database and read that live. It checks the canonical subject again on the live copy; the
+  callers check the state on the live copy
+- the session read in `updateSession`
 - the re-read after a write conflict in `updateUser`
 - the OAuth2 client and its credentials Secret at sign-in and the token endpoint; Secrets are never
   cached
 - provider and domain lookups at sign-in
 
-A read on the cached path fails only with "not found", which is a real rejection, so the token
-check no longer turns an API server failure into a 401. The cost is lag: a revocation (session,
+The cache serves a List by namespace or by a registered field index; any other selector walks every
+cached object of the kind. The per-request path therefore lists by namespace (`pkg/rbac`: projects,
+groups, roles; bearer trust providers) or through the user database's indexes
+(`pkg/userdb`: user subject label, membership by user), so its cost does not grow with the number of
+organizations. The user database is cache-only; a live read that decides a write lives here and
+re-checks the live copy, and the live client never queries those indexes. See
+[`pkg/userdb`](../userdb/README.md).
+
+A read on the cached path never calls the API server, so an API server failure no longer turns
+into a 401. It can still fail with errors other than "not found", such as a missing informer or a
+cancelled context, and the token check answers those with a 401 too (see the middleware README). The cost is lag: a revocation (session,
 service account, membership, provider) lands within the watch lag instead of on the next request,
 and a new or rotated token can fail its first use on any replica, the one that wrote it included,
 until that replica's cache has caught up. A token check never falls back to a live read: a holder

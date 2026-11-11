@@ -150,10 +150,6 @@ type Authenticator struct {
 	// userdb resolves identities from reader, for the per-request path.
 	userdb *userdb.UserDatabase
 
-	// liveUserdb resolves identities from client, for reads that decide a
-	// write.
-	liveUserdb *userdb.UserDatabase
-
 	// rbac is needed for ACL computation in passport exchange.
 	rbac *rbac.RBAC
 
@@ -198,8 +194,7 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		reader:           reader,
 		issuer:           issuer,
 		jwtIssuer:        jwtIssuer,
-		userdb:           userdb.NewUserDatabase(reader, reader, namespace),
-		liveUserdb:       userdb.NewUserDatabase(client, reader, namespace),
+		userdb:           userdb.NewUserDatabase(reader, namespace),
 		rbac:             rbac,
 		tokenCache:       cache.NewLRUExpireCache(options.TokenCacheSize),
 		validatorCache:   newValidatorCache(validatorCacheSize),
@@ -966,7 +961,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	normalizeIDTokenSubject(idToken)
 
 	// Live: the code below is written to this record.
-	user, err := a.liveUserdb.GetUser(r.Context(), idToken.Email.Email)
+	user, err := a.getLiveUser(r.Context(), idToken.Email.Email)
 	if err != nil {
 		redirector.raise(ErrorAccessDenied, "user not found")
 		return
@@ -1286,8 +1281,9 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 		return session.ClientID == claims.Federated.ClientID
 	}
 
-	// Live: the session check below decides a write.
-	user, err := a.liveUserdb.GetActiveUser(ctx, claims.Subject)
+	// Live: the session check below decides a write. The state is checked on
+	// the live copy in the change below.
+	user, err := a.getLiveUser(ctx, claims.Subject)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
 	}

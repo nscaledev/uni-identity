@@ -177,7 +177,7 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 
 	ready.Require(readiness.SigningKeyAvailable(issuer))
 
-	userdb := userdb.NewUserDatabase(readCache, readCache, s.CoreOptions.Namespace)
+	userdb := userdb.NewUserDatabase(readCache, s.CoreOptions.Namespace)
 
 	// On main, bare admin entries matched from any authentication path. Mirror
 	// them onto the legacy Auth0 issuer so both pre-existing paths (UNI login,

@@ -38,14 +38,13 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
@@ -255,11 +254,10 @@ type guardEnv struct {
 func newGuardEnv(t *testing.T) *guardEnv {
 	t.Helper()
 
-	keySource := fake.NewClientBuilder().WithScheme(getScheme(t)).Build()
+	keySource := userdbtest.NewClientBuilder(getScheme(t)).Build()
 	signingKey := josetesting.RotateCertificate(t, keySource)
 
-	store := fake.NewClientBuilder().WithScheme(getScheme(t)).
-		WithIndex(&unikornv1.User{}, userdb.SubjectIndexField, userdb.SubjectIndexValue).
+	store := userdbtest.NewClientBuilder(getScheme(t)).
 		WithObjects(guardObjects(signingKey)...).
 		Build()
 

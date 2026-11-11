@@ -36,7 +36,6 @@ import (
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -207,7 +206,7 @@ func serviceAccountOrganizationIDs(ctx context.Context, userdb *userdb.UserDatab
 	return []string{authz.OrgIds[0]}, nil
 }
 
-func (c *Client) organizationIDs(ctx context.Context, readCache client.Reader, userdb *userdb.UserDatabase, email *string) ([]string, error) {
+func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabase, email *string) ([]string, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: userinfo is not set", err)
@@ -231,20 +230,15 @@ func (c *Client) organizationIDs(ctx context.Context, readCache client.Reader, u
 		}
 	}
 
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-
-	if err := readCache.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
+	organizationUsers, err := userdb.ListOrganizationUsers(ctx, user)
+	if err != nil {
 		return nil, err
 	}
 
-	result := make([]string, len(organizationUsers.Items))
+	result := make([]string, len(organizationUsers))
 
-	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
+	for i := range organizationUsers {
+		result[i] = organizationUsers[i].Labels[constants.OrganizationLabel]
 	}
 
 	return result, nil
@@ -277,7 +271,7 @@ func (c *Client) List(ctx context.Context, readCache client.Reader, userdb *user
 		return convertList(&result), nil
 	}
 
-	organizationIDs, err := c.organizationIDs(ctx, readCache, userdb, email)
+	organizationIDs, err := c.organizationIDs(ctx, userdb, email)
 	if err != nil {
 		return nil, err
 	}

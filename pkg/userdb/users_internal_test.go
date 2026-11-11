@@ -18,6 +18,7 @@ package userdb
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,6 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -65,19 +65,23 @@ func newTestClient(t *testing.T, r *recorder, objects ...client.Object) client.C
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
-		WithIndex(&unikornv1.User{}, SubjectIndexField, SubjectIndexValue).
-		WithInterceptorFuncs(r.funcs()).Build()
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...)
+
+	for _, index := range Indexes() {
+		builder = builder.WithIndex(index.Object, index.Field, index.Func)
+	}
+
+	return builder.WithInterceptorFuncs(r.funcs()).Build()
 }
 
-// newTestDatabase reads records and the subject index from one client, as the
-// informer cache serves both in the server.
+// newTestDatabase reads from one indexed client, as the informer cache serves
+// the user database in the server.
 func newTestDatabase(t *testing.T, r *recorder, objects ...client.Object) *UserDatabase {
 	t.Helper()
 
 	c := newTestClient(t, r, objects...)
 
-	return NewUserDatabase(c, c, testNamespace)
+	return NewUserDatabase(c, testNamespace)
 }
 
 func testUser() *unikornv1.User {
@@ -101,29 +105,9 @@ func TestGetUserFindsLegacyRecordsByTheSubjectIndex(t *testing.T) {
 		require.NoError(t, err, claim)
 		require.Equal(t, "alice@example.com", user.Spec.Subject)
 		require.Len(t, r.lists, 2)
-		require.Equal(t, unikornv1.UserSubjectIDLabel+"="+unikornv1.GlobalUserName("alice@example.com"), r.lists[0].LabelSelector.String())
+		require.Equal(t, SubjectLabelIndexField+"="+unikornv1.GlobalUserName("alice@example.com"), r.lists[0].FieldSelector.String())
 		require.Equal(t, SubjectIndexField+"=alice@example.com", r.lists[1].FieldSelector.String())
-		require.Equal(t, client.ObjectKeyFromObject(testUser()), r.gets[len(r.gets)-1], "the record is read through the database's own client")
 	}
-}
-
-// TestGetUserReadsLegacyRecordsThroughItsOwnClient checks that the index only
-// names a legacy record: its content comes from the client, which is live for
-// the reads that decide a write.
-func TestGetUserReadsLegacyRecordsThroughItsOwnClient(t *testing.T) {
-	t.Parallel()
-
-	stale := testUser()
-	stale.Spec.State = unikornv1.UserStateSuspended
-
-	current := testUser()
-	current.Spec.State = unikornv1.UserStateActive
-
-	d := NewUserDatabase(newTestClient(t, &recorder{}, current), newTestClient(t, &recorder{}, stale), testNamespace)
-
-	user, err := d.GetActiveUser(t.Context(), "alice@example.com")
-	require.NoError(t, err)
-	require.Equal(t, unikornv1.UserStateActive, user.Spec.State)
 }
 
 // TestGetServiceAccountReadsByKey checks that a service account is read by its
@@ -171,9 +155,12 @@ func TestGetUserUsesSubjectIDLabel(t *testing.T) {
 	result, err := d.GetUser(t.Context(), user.Spec.Subject)
 	require.NoError(t, err)
 	require.Equal(t, user.Name, result.Name)
-	require.Equal(t, []client.ObjectKey{{Namespace: testNamespace, Name: unikornv1.GlobalUserName(user.Spec.Subject)}}, r.gets)
+	require.Equal(t, []client.ObjectKey{
+		{Namespace: testNamespace, Name: unikornv1.GlobalUserName(user.Spec.Subject)},
+	}, r.gets, "the index returns the record itself, no second read")
 	require.Len(t, r.lists, 1)
-	require.True(t, r.lists[0].LabelSelector.Matches(labels.Set(user.Labels)))
+	require.Equal(t, SubjectLabelIndexField+"="+user.Labels[unikornv1.UserSubjectIDLabel], r.lists[0].FieldSelector.String())
+	require.Nil(t, r.lists[0].LabelSelector, "a label selector would walk every cached user")
 }
 
 // TestGetUserFoldsSubjectForLabelledLegacyRecord checks that a legacy record
@@ -196,7 +183,7 @@ func TestGetUserFoldsSubjectForLabelledLegacyRecord(t *testing.T) {
 		require.NoError(t, err, claim)
 		require.Equal(t, user.Name, result.Name)
 		require.Len(t, r.lists, 1, "a labelled record must not need the compatibility scan")
-		require.True(t, r.lists[0].LabelSelector.Matches(labels.Set(user.Labels)))
+		require.Equal(t, SubjectLabelIndexField+"="+user.Labels[unikornv1.UserSubjectIDLabel], r.lists[0].FieldSelector.String())
 	}
 }
 
@@ -271,4 +258,88 @@ func TestGetOrganizationIDsForUserDoesNotResolveTheUserAgain(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"organization"}, organizationIDs)
 	require.Len(t, r.lists, 1)
+	require.Equal(t, MembershipUserIndexField+"="+user.Name, r.lists[0].FieldSelector.String())
+	require.Nil(t, r.lists[0].LabelSelector, "a label selector would walk every cached membership")
+}
+
+func testOrganizationUser(name, organization, user string, state unikornv1.UserState) *unikornv1.OrganizationUser {
+	return &unikornv1.OrganizationUser{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: organization + "-ns",
+			Name:      name,
+			Labels: map[string]string{
+				constants.UserLabel:         user,
+				constants.OrganizationLabel: organization,
+			},
+		},
+		Spec: unikornv1.OrganizationUserSpec{State: state},
+	}
+}
+
+// TestMembershipLookupsExcludeOtherUsersAndOrganizations checks that the
+// index returns the same set the label selector did, across many
+// organizations: only the user's records, and only the asked-for organization.
+func TestMembershipLookupsExcludeOtherUsersAndOrganizations(t *testing.T) {
+	t.Parallel()
+
+	alice := testUser()
+	alice.Spec.State = unikornv1.UserStateActive
+
+	objects := []client.Object{
+		alice,
+		testOrganizationUser("a1", "org-1", alice.Name, unikornv1.UserStateActive),
+		testOrganizationUser("a2", "org-2", alice.Name, unikornv1.UserStateSuspended),
+		testOrganizationUser("a3", "org-3", alice.Name, unikornv1.UserStateActive),
+	}
+
+	for i := range 50 {
+		objects = append(objects, testOrganizationUser(fmt.Sprintf("other-%d", i), fmt.Sprintf("org-%d", i), "someone-else", unikornv1.UserStateActive))
+	}
+
+	d := newTestDatabase(t, &recorder{}, objects...)
+
+	all, err := d.ListOrganizationUsers(t.Context(), alice)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"a1", "a2", "a3"}, []string{all[0].Name, all[1].Name, all[2].Name})
+	require.Len(t, all, 3)
+
+	ids, err := d.GetOrganizationIDsForUser(t.Context(), alice)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"org-1", "org-3"}, ids)
+
+	member, err := d.GetActiveOrganizationUser(t.Context(), "org-1", alice)
+	require.NoError(t, err)
+	require.Equal(t, "a1", member.Name)
+
+	_, err = d.GetActiveOrganizationUser(t.Context(), "org-2", alice)
+	require.ErrorIs(t, err, ErrResourceReference)
+
+	_, err = d.GetActiveOrganizationUser(t.Context(), "org-4", alice)
+	require.ErrorIs(t, err, ErrResourceReference)
+}
+
+// TestLabelledUserLookupExcludesOtherUsers checks the subject-label index
+// returns only the record with that label.
+func TestLabelledUserLookupExcludesOtherUsers(t *testing.T) {
+	t.Parallel()
+
+	objects := []client.Object{}
+
+	for i := range 50 {
+		subject := fmt.Sprintf("user-%d@example.com", i)
+		objects = append(objects, &unikornv1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: testNamespace,
+				Name:      fmt.Sprintf("legacy-%d", i),
+				Labels:    map[string]string{unikornv1.UserSubjectIDLabel: unikornv1.GlobalUserName(subject)},
+			},
+			Spec: unikornv1.UserSpec{Subject: subject},
+		})
+	}
+
+	d := newTestDatabase(t, &recorder{}, objects...)
+
+	user, err := d.GetUser(t.Context(), "user-7@example.com")
+	require.NoError(t, err)
+	require.Equal(t, "legacy-7", user.Name)
 }

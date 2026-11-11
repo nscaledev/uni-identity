@@ -230,7 +230,7 @@ type informerRegistry interface {
 
 // registerReadCache creates an informer for every kind in options and
 // registers the indexes the readers use. It MUST run before the cache starts:
-// the user database fails every legacy user lookup without the subject index.
+// the user database fails every user and membership lookup without its indexes.
 // It returns the informers by kind, for the startup sync report.
 func registerReadCache(ctx context.Context, registry informerRegistry, options cache.Options) (map[string]cache.Informer, error) {
 	informers := make(map[string]cache.Informer, len(options.ByObject))
@@ -244,7 +244,7 @@ func registerReadCache(ctx context.Context, registry informerRegistry, options c
 		informers[fmt.Sprintf("%T", object)] = informer
 	}
 
-	if err := userdb.IndexSubjects(ctx, registry); err != nil {
+	if err := userdb.IndexUsers(ctx, registry); err != nil {
 		return nil, err
 	}
 

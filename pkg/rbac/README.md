@@ -528,6 +528,17 @@ These warnings are not the security control. The security control is the issuer-
 `(srcIss, subject)` match that `resolveGlobalRoleBindings` performs, and the `(srcIss, group)` match
 that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
+## Readers
+
+`New` takes a `client.Reader`, the informer cache in the server. The cache indexes objects by
+namespace and by registered field index only; a List with a label selector and no namespace walks
+every cached object of the kind, so the cost per request would grow with the size of the estate.
+An ACL build therefore lists only inside a namespace it already holds: groups and projects in the
+organization's status namespace, roles in the identity namespace. Projects live in their
+organization's namespace, so the namespaced List returns the same set the organization label did.
+Do not add a label-selected, cluster-wide List here; index it instead (see
+[`pkg/userdb`](../userdb/README.md), "Readers").
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
