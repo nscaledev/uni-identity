@@ -115,11 +115,13 @@ At a high level, `GetServer()` does the following:
 The command process publishes build metadata for its lifetime. It serves readiness on
 `/readyz` on a separate health listener (`:6081`), which the Service does not expose, so the
 ingress cannot route to it; other pods can still reach it on the Pod IP unless a NetworkPolicy
-prevents that, and the chart does not install one. A failing probe gets a bare 503; the cause is logged. A replica is ready when
-it is not shutting down and it has read the primary token signing key once. The key is
-cluster-wide state written by the JOSE leader, so on a fresh install every replica stays not
+prevents that, and the chart does not install one. A failing probe gets a bare 503; the cause is
+logged. A replica is ready when it is not shutting down, its read-cache health check passes, and
+it has read the primary token signing key once. The key is cluster-wide state written by the
+JOSE leader, so on a fresh install every replica stays not
 ready until the first leader has written it. After that first read the probe does not call the
-API server, so an API server slowdown cannot take every replica out of service together.
+API server. Sustained list/watch failures can make every replica unready. The failure grace,
+recovery policy and limitations are defined in [replica readiness](../readiness/README.md).
 Leadership itself, external OIDC providers and the audit collector do not gate readiness.
 
 On SIGTERM the process reports not ready, keeps serving for 5 seconds so endpoint removal reaches
@@ -138,15 +140,14 @@ convention.
 - middleware ordering is part of the package contract because later stages depend on context from
   earlier stages
 - `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
-- the API server reads Kubernetes directly, except through one synchronized read cache. The
-  cache holds Organizations in the identity namespace, for namespace routing and the full
-  organization list, and Quotas, Allocations and Projects in all namespaces, for the organization
-  list includes. Revocation-sensitive token and membership state is always read directly
+- resource handlers and reads that decide writes use the live Kubernetes client. Per-request
+  authentication, authorization and organization listing use the read cache; see
+  [authentication reads](../oauth2/README.md#readers)
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
-- API readiness means this replica can serve a request end to end: not shutting down and
-  signing key read. The read cache syncs before the listener binds, so it needs no check. The
-  `unikorn_server_ready` metric reports listener ownership only
+- API readiness checks shutdown, signing-key availability and
+  [read-cache health](../readiness/README.md). The cache syncs before the listener binds.
+  The `unikorn_server_ready` metric reports listener ownership only
 
 ## Caveats
 

@@ -56,6 +56,7 @@ import (
 const (
 	kubernetesClientQPS   = 100
 	kubernetesClientBurst = 200
+	watchFailureGrace     = 30 * time.Second
 )
 
 var (
@@ -97,14 +98,14 @@ func start() {
 		return
 	}
 
-	client, readCache, err := newKubernetesClients(ctx, s.CoreOptions.Namespace)
+	client, readCache, cacheReady, err := newKubernetesClients(ctx, s.CoreOptions.Namespace)
 	if err != nil {
 		logger.Error(err, "failed to create Kubernetes clients")
 
 		return
 	}
 
-	ready := readiness.New()
+	ready := readiness.New(cacheReady)
 
 	apiServer, err := s.GetServer(ctx, client, readCache, ready)
 	if err != nil {
@@ -181,44 +182,45 @@ func setupTelemetry(ctx context.Context, o *coreoptions.CoreOptions) error {
 
 // newKubernetesClients returns the live client, which writes and serves the
 // reads that decide a write, and the synced informer cache, which serves every
-// other read.
-func newKubernetesClients(ctx context.Context, namespace string) (ctrlclient.Client, ctrlclient.Reader, error) {
+// other read, with its readiness condition.
+func newKubernetesClients(ctx context.Context, namespace string) (ctrlclient.Client, ctrlclient.Reader, readiness.Condition, error) {
 	clientConfig, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	configureKubernetesClient(clientConfig)
 
 	scheme, err := coreclient.NewScheme(unikornv1.AddToScheme)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	kubernetesClient, err := ctrlclient.New(clientConfig, ctrlclient.Options{
 		Scheme: scheme,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	options := readCacheOptions(scheme, namespace)
+	watches := readiness.NewWatches(watchFailureGrace)
+	options := readCacheOptions(scheme, namespace, watches)
 
 	readCache, err := cache.New(clientConfig, options)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	informers, err := registerReadCache(ctx, readCache, options)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if err := startAndSyncCache(ctx, readCache, cacheSyncTimeout, informers); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return kubernetesClient, readCache, nil
+	return kubernetesClient, readCache, watches.Check, nil
 }
 
 // informerRegistry is the part of the cache that must be set up before it
@@ -258,7 +260,7 @@ func registerReadCache(ctx context.Context, registry informerRegistry, options c
 // namespaces, but cached reads list the identity namespace only; reads in an
 // organization's namespace use the live client. Keep this list in step with the server ClusterRole,
 // which must grant watch on each kind.
-func readCacheOptions(scheme *runtime.Scheme, namespace string) cache.Options {
+func readCacheOptions(scheme *runtime.Scheme, namespace string, watches *readiness.Watches) cache.Options {
 	identityNamespace := func() cache.ByObject {
 		return cache.ByObject{Namespaces: map[string]cache.Config{namespace: {}}}
 	}
@@ -268,6 +270,7 @@ func readCacheOptions(scheme *runtime.Scheme, namespace string) cache.Options {
 		ReaderFailOnMissingInformer: true,
 		DefaultTransform:            cache.TransformStripManagedFields(),
 		DefaultWatchErrorHandler:    logWatchError,
+		NewInformer:                 readCacheInformer(watches),
 		ByObject: map[ctrlclient.Object]cache.ByObject{
 			&unikornv1.Organization{}:     identityNamespace(),
 			&unikornv1.User{}:             identityNamespace(),
@@ -281,6 +284,18 @@ func readCacheOptions(scheme *runtime.Scheme, namespace string) cache.Options {
 			&unikornv1.Allocation{}:       {},
 			&unikornv1.Project{}:          {},
 		},
+	}
+}
+
+// Quota and allocation snapshots supply response summaries; enforcement reads live.
+func readCacheInformer(watches *readiness.Watches) func(toolscache.ListerWatcher, runtime.Object, time.Duration, toolscache.Indexers) toolscache.SharedIndexInformer {
+	return func(lw toolscache.ListerWatcher, object runtime.Object, resync time.Duration, indexes toolscache.Indexers) toolscache.SharedIndexInformer {
+		switch object.(type) {
+		case *unikornv1.Quota, *unikornv1.Allocation:
+			return toolscache.NewSharedIndexInformer(lw, object, resync, indexes)
+		default:
+			return watches.NewInformer(lw, object, resync, indexes)
+		}
 	}
 }
 
