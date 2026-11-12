@@ -49,6 +49,7 @@ OIDC §3.1.3.7) — there is no issuer normalization.
 - [middleware](./middleware/README.md)
 - [handler](./handler/README.md)
 - [server](./server/README.md)
+- [readiness](./readiness/README.md)
 - [server metrics](./server/metrics/README.md)
 
 These packages show how the request pipeline is assembled, how the API layer

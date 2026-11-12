@@ -125,6 +125,9 @@ metrics, and
 process lifetime; readiness is `1` only while the server owns its bound HTTP
 listener.
 
+This gauge does not report `/readyz`. Sustained list/watch failures withdraw readiness and log
+`read cache list/watch failing`; see the [read-cache health policy](../pkg/readiness/README.md).
+
 **HTTP RED (API server only)** —
 `http_server_request_duration_seconds{route,method,status_class}` (a histogram;
 its `_count` serves as the request counter) and

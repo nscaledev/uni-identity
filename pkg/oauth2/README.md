@@ -88,6 +88,9 @@ and a new or rotated token can fail its first use on any replica, the one that w
 until that replica's cache has caught up. A token check never falls back to a live read: a holder
 of a superseded but unexpired token could then force one API read per request.
 
+Reported read-cache failures withdraw readiness according to the
+[replica readiness policy](../readiness/README.md). This does not impose a maximum watch lag.
+
 ## Invariants
 
 - This package is the built-in OIDC/OAuth2 implementation for identity and remains a supported path.

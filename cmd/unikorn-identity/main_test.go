@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -126,12 +127,13 @@ func TestStartAndSyncCacheKeepsRunningCache(t *testing.T) {
 func TestReadCacheOptionsWatchOnlyTheKindsReadFromTheCache(t *testing.T) {
 	t.Parallel()
 
-	options := readCacheOptions(runtime.NewScheme(), "identity")
+	options := readCacheOptions(runtime.NewScheme(), "identity", readiness.NewWatches(watchFailureGrace))
 
 	require.True(t, options.ReaderFailOnMissingInformer)
 	require.Empty(t, options.DefaultNamespaces)
 	require.NotNil(t, options.DefaultTransform)
 	require.NotNil(t, options.DefaultWatchErrorHandler)
+	require.NotNil(t, options.NewInformer)
 
 	namespaces := map[string]map[string]cache.Config{}
 
@@ -176,7 +178,7 @@ func TestRegisterReadCacheRegistersInformersAndUserIndexes(t *testing.T) {
 	t.Parallel()
 
 	registry := &testRegistry{}
-	options := readCacheOptions(runtime.NewScheme(), "identity")
+	options := readCacheOptions(runtime.NewScheme(), "identity", readiness.NewWatches(watchFailureGrace))
 
 	informers, err := registerReadCache(t.Context(), registry, options)
 	require.NoError(t, err)
