@@ -3,7 +3,8 @@ name: Load Test
 # Manual only. Runs identity's hot paths at a steady rate in a throwaway kind
 # cluster and gates on how many API-server calls identity makes per request,
 # then finds each path's ceiling (the highest rate with no failed request).
-# See test/load/README.md.
+# With compare on (the default) it also runs the same phases against a release
+# and reports better, worse or same, and each build's ceiling. See test/load/README.md.
 on:
   workflow_dispatch:
     inputs:
@@ -27,8 +28,20 @@ on:
         description: Seconds per steady-state phase
         type: string
         default: '60'
+      compare:
+        description: Also run the newest release (or baseline) and compare, in the order baseline, candidate, candidate, baseline, then the ceiling of each build (when ceiling is on). Report-only
+        type: boolean
+        default: true
+      baseline:
+        description: Compare only. Git ref to compare against (a tag, a commit, or origin/<branch>). Empty means the newest release tag with no pre-release suffix. The same ref as the candidate is an A/A run
+        type: string
+        default: ''
+      compare_margin_pct:
+        description: Compare only. Percent a metric must differ on both candidate turns to be reported better or worse
+        type: string
+        default: '25'
       ceiling:
-        description: Find each path's ceiling after the steady state
+        description: Find each path's ceiling after the steady state (in compare mode, once for each build)
         type: boolean
         default: true
       ceiling_max:
@@ -54,6 +67,9 @@ jobs:
       ISSUER: http://jwks.load-test-idp.svc.cluster.local/
       AUDIENCE: https://load-test.invalid/api
       DATASET: ${{ inputs.dataset }}
+      COMPARE: ${{ inputs.compare }}
+      BASELINE_INPUT: ${{ inputs.baseline }}
+      COMPARE_MARGIN_PCT: ${{ inputs.compare_margin_pct }}
       # Small goes through identity's API. Medium and web write the records
       # straight to the Kubernetes API (see test/load/README.md).
       MODE: ${{ inputs.dataset == 'small' && 'api' || 'direct' }}
@@ -70,10 +86,16 @@ jobs:
         [[ "${RATE}" =~ ^[1-9][0-9]*$ ]] || { echo "rate must be a positive integer"; exit 1; }
         [[ "${DURATION}" =~ ^[1-9][0-9]*$ ]] || { echo "duration must be a positive integer"; exit 1; }
         [[ "${CEILING_MAX}" =~ ^[1-9][0-9]*$ ]] || { echo "ceiling_max must be a positive integer"; exit 1; }
-        (( CEILING_MAX > RATE )) || { echo "ceiling_max must be above rate"; exit 1; }
+        if [[ "${CEILING}" == true ]]; then
+          (( CEILING_MAX > RATE )) || { echo "ceiling_max must be above rate"; exit 1; }
+        fi
+        [[ "${COMPARE_MARGIN_PCT}" =~ ^[1-9][0-9]*$ ]] || { echo "compare_margin_pct must be a positive integer"; exit 1; }
 
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # Tags and history, so a release can be checked out as the baseline.
+        fetch-depth: 0
 
     - name: Setup Go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -105,6 +127,33 @@ jobs:
       env:
         KIND_CLUSTER: ${{ env.CLUSTER }}
       run: make integration-infra
+
+    # Compare mode: the baseline's source tree is built into an image beside
+    # the candidate's, tagged apart so neither is mistaken for the other. Only
+    # images are used from the baseline; the chart is the candidate's.
+    # See test/load/README.md.
+    - name: Build the baseline and candidate images
+      if: ${{ inputs.compare }}
+      env:
+        KIND_CLUSTER: ${{ env.CLUSTER }}
+      run: |
+        ref="${BASELINE_INPUT}"
+        if [[ -z "${ref}" ]]; then
+          tags=$(git tag --list 'v*' --sort=-v:refname)
+          ref=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "${tags}" | head -n 1 || true)
+          [[ -n "${ref}" ]] || { echo "no release tag (v1.2.3, no suffix) to use as the baseline; set baseline"; exit 1; }
+        fi
+        sha=$(git rev-parse --verify --quiet --end-of-options "${ref}^{commit}") \
+          || { echo "baseline ${ref} is not a ref or commit in this checkout"; exit 1; }
+        git worktree add --detach "${RUNNER_TEMP}/baseline" "${sha}"
+        {
+          echo "BASELINE_REF=${ref}"
+          echo "CANDIDATE_REF=$(git rev-parse --short=8 HEAD)"
+          echo "BASELINE_TAG=baseline-${sha:0:8}"
+          echo "CANDIDATE_TAG=candidate-$(git rev-parse --short=8 HEAD)"
+        } >> "${GITHUB_ENV}"
+        make -C "${RUNNER_TEMP}/baseline" images-kind-load VERSION="baseline-${sha:0:8}" KIND_CLUSTER="${KIND_CLUSTER}"
+        make images-kind-load VERSION="candidate-$(git rev-parse --short=8 HEAD)" KIND_CLUSTER="${KIND_CLUSTER}"
 
     # Trusts the stand-in provider below (hack/ci/load-values.yaml).
     - name: Install identity
@@ -161,12 +210,14 @@ jobs:
     # Restarts identity's server and records each cold start; it also warms the
     # server for the phases. See test/load/README.md.
     - name: Restart identity and measure warm-up
+      if: ${{ !inputs.compare }}
       run: |
         NAMESPACE="${IDENTITY_NAMESPACE}" \
         SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
           test/load/warmup.sh
 
     - name: Run load phases
+      if: ${{ !inputs.compare }}
       run: |
         set -a; . test/.env.install; set +a
         BASE_URL="${IDENTITY_BASE_URL}" \
@@ -174,6 +225,21 @@ jobs:
         NAMESPACE="${IDENTITY_NAMESPACE}" \
         SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
           test/load/run-phases.sh
+
+    # Fixtures and chart are shared: only the server's image changes between
+    # turns (the candidate's chart, CRDs and values stay). Each turn restarts
+    # and measures warm-up on its own. Baseline, candidate, candidate,
+    # baseline; a baseline that cannot become Ready on the candidate's chart,
+    # or cannot run, fails the job.
+    - name: Run baseline and candidate turns
+      if: ${{ inputs.compare }}
+      run: |
+        set -a; . test/.env.install; set +a
+        BASE_URL="${IDENTITY_BASE_URL}" \
+        TOKENS="${RUNNER_TEMP}/load/tokens.json" \
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        RELEASE="${IDENTITY_RELEASE}" \
+          test/load/compare-turns.sh
 
     - name: Collect the API server audit log
       if: ${{ !cancelled() }}
@@ -186,7 +252,11 @@ jobs:
       env:
         IDENTITY_USER: system:serviceaccount:${{ env.IDENTITY_NAMESPACE }}:${{ env.IDENTITY_RELEASE }}-server
       run: |
-        test/load/count-audit.sh "${RUNNER_TEMP}/load/audit.log" "${OUT_DIR}/phases.json" "${OUT_DIR}/counts.json"
+        if [[ "${COMPARE}" == "true" ]]; then
+          test/load/count-turns.sh "${RUNNER_TEMP}/load/audit.log" "${OUT_DIR}"
+        else
+          test/load/count-audit.sh "${RUNNER_TEMP}/load/audit.log" "${OUT_DIR}/phases.json" "${OUT_DIR}/counts.json"
+        fi
 
     - name: Write job summary
       if: ${{ !cancelled() }}
@@ -194,7 +264,9 @@ jobs:
         NAMESPACE: ${{ env.IDENTITY_NAMESPACE }}
         SERVER_DEPLOYMENT: ${{ env.IDENTITY_RELEASE }}-server
       run: |
-        if [[ -s "${OUT_DIR}/counts.json" ]]; then
+        if [[ "${COMPARE}" == "true" && -s "${OUT_DIR}/turns.json" ]]; then
+          test/load/compare.sh "${OUT_DIR}" >> "$GITHUB_STEP_SUMMARY"
+        elif [[ "${COMPARE}" != "true" && -s "${OUT_DIR}/counts.json" ]]; then
           test/load/report.sh "${OUT_DIR}" >> "$GITHUB_STEP_SUMMARY"
         else
           echo "No counts were produced; see the failed step." >> "$GITHUB_STEP_SUMMARY"

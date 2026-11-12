@@ -48,13 +48,13 @@ esac
 KUBECTL
 chmod +x "${WORK}/bin/k6" "${WORK}/bin/kubectl"
 
-# run_ceiling NAME SPEC_JSON: runs ceiling.sh into WORK/NAME.
+# run_ceiling NAME SPEC_JSON [IDLE_CORES]: runs ceiling.sh into WORK/NAME.
 run_ceiling() {
   echo "$2" > "${WORK}/$1.spec"
   echo 0 > "${WORK}/cpu"
   PATH="${WORK}/bin:${PATH}" FAKE_SPEC="${WORK}/$1.spec" FAKE_CPU_FILE="${WORK}/cpu" \
     BASE_URL=http://unused TOKENS=unused OUT_DIR="${WORK}/$1" NAMESPACE=ns SERVER_DEPLOYMENT=srv \
-    IDLE_CORES=0 SETTLE=0 HOLD_SECONDS=1 "${HERE}/ceiling.sh" > "${WORK}/$1.log" 2>&1 \
+    IDLE_CORES="${3:-0}" SETTLE=0 HOLD_SECONDS=1 "${HERE}/ceiling.sh" > "${WORK}/$1.log" 2>&1 \
     || { echo "FAIL $1: ceiling.sh exited non-zero"; cat "${WORK}/$1.log"; failed=1; }
 }
 
@@ -95,5 +95,16 @@ run_ceiling quiet '{
 expect quiet auth0-bearer drops-not-a-failure '[.r, .topReached, [.holds[] | [.rate, .failed, .dropped, .pass]], .ceilingRps]' '[2000,true,[[1800,0,5,true]],1800]'
 expect quiet passport-exchange slow-hold-fails '[[.holds[] | [.rate, .failed, .dropped, .deliveredRps, .pass]], .ceilingRps]' '[[[433,0,0,389.7,false],[337,0,0,337,true]],337]'
 expect quiet service-account slow-none-held '[[.holds[].pass], .ceilingRps]' '[[false,false,false],null]'
+
+# CPU: a hold's cores are less the idle rate, as in a steady-state phase (one
+# calculation, metrics.jq): positive with no idle, null when idle exceeds use.
+expect errors auth0-bearer cores-positive '.holds[0].cpuCores > 0' 'true'
+run_ceiling idle '{"auth0-bearer": {"rampCap": 482, "holdCap": 1e9, "kind": "errors"}}' 1000000
+expect idle auth0-bearer cores-below-idle '[.holds[0].cpuCores, .cpuCores]' '[null,null]'
+
+# The idle rate: 2 CPU seconds over a 60 s window and two 5 s gaps.
+echo '{"settleSeconds": 5, "baseline": {"start": "2026-01-01T00:00:00.5Z", "end": "2026-01-01T00:01:00.5Z", "cpuBefore": 10, "cpuAfter": 12}}' > "${WORK}/phases.json"
+got=$(. "${HERE}/lib.sh" && idle_cores "${WORK}/phases.json")
+if [[ "${got}" == 0.02857142857142857 ]]; then echo "ok   idle_cores: ${got}"; else echo "FAIL idle_cores: got ${got}"; failed=1; fi
 
 exit "${failed}"

@@ -212,6 +212,7 @@ lint: $(GENDIR)
 	./hack/check_chart_render.sh
 	./hack/check_observability_chart_render.sh
 	./test/load/ceiling_test.sh
+	./test/load/compare_test.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate

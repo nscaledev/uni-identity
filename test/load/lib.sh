@@ -50,10 +50,7 @@ read_cpu() { cpu_seconds || { echo "ERROR: could not read the server's CPU use" 
 PHASES=(auth0-bearer passport-exchange acl-heavy service-account)
 
 # idle_cores PHASES_JSON prints the server's CPU use with no load, in cores,
-# from the baseline window of a run-phases.sh run (the quiet gaps either side
-# of the window are counted, as the reads include them).
+# from the baseline window of a run-phases.sh run (see metrics.jq).
 idle_cores() {
-  jq -r 'def iso: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
-    (.baseline.cpuAfter - .baseline.cpuBefore)
-    / ((.baseline.end | iso) - (.baseline.start | iso) + 2 * .settleSeconds)' "$1"
+  jq -r -L "$(dirname "${BASH_SOURCE[0]}")" 'include "metrics"; idle_cores(.)' "$1"
 }

@@ -79,8 +79,11 @@ for phase in "${PHASES[@]}"; do
     sleep "${SETTLE}"
     cpu_after=$(read_cpu)
     t_after=$(date +%s.%N)
-    cores=$(awk -v c0="${cpu_before}" -v c1="${cpu_after}" -v idle="${IDLE_CORES}" -v t0="${t_before}" -v t1="${t_after}" -v w0="${start}" -v w1="${end}" \
-      'BEGIN { printf "%.3f", (c1 - c0 - idle * (t1 - t0)) / (w1 - w0) }')
+    # The same figure as a steady-state phase (metrics.jq): less the idle rate,
+    # null when the hold used no more than that.
+    cores=$(jq -n -L "${HERE}" --argjson c0 "${cpu_before}" --argjson c1 "${cpu_after}" --argjson idle "${IDLE_CORES}" \
+      --argjson t0 "${t_before}" --argjson t1 "${t_after}" --argjson w0 "${start}" --argjson w1 "${end}" \
+      'include "metrics"; cores_used(net_cpu($c1 - $c0; $idle; $t1 - $t0); $w1 - $w0)')
     holds=$(jq -c -L "${HERE}" --argjson rate "${rate}" --argjson cores "${cores}" --slurpfile k "${out}" \
       'include "ceiling"; . + [$k[0] | hold_record($rate; $cores)]' <<< "${holds}")
     cpu_before="${cpu_after}" t_before="${t_after}"
