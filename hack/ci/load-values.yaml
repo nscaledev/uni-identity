@@ -1,4 +1,4 @@
-# Helm values for the load test only (never chart defaults). Trusts the
+# Helm values for the load test and the per-PR gate only (never chart defaults). Trusts the
 # in-cluster stand-in identity provider that serves the load test's public
 # keys. The issuer has a trailing slash, as Auth0's does; it must match
 # hack/ci/loadfixtures and .github/workflows/load-test.yaml.
@@ -9,8 +9,3 @@ providers:
     bearerTrust:
       audience: https://load-test.invalid/api
       groupsClaim: https://unikorn-cloud.org/groups
-
-# Production runs without response validation; with it on, its cost grows
-# with the response body and hides identity's own cost.
-server:
-  runtimeSchemaValidation: false

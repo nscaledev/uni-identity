@@ -60,7 +60,8 @@ jobs:
     env:
       CLUSTER: load-test-${{ github.run_id }}
       # Fixed so the audit policy can name identity's ServiceAccount. Keep in
-      # step with hack/ci/load-audit-policy.yaml.
+      # step with hack/ci/load-audit-policy.yaml (shared with the integration
+      # workflow's gate, which uses suffix "gate").
       IDENTITY_NAMESPACE: unikorn-identity-load
       IDENTITY_RELEASE: identity-load
       # Must match hack/ci/load-values.yaml and test/load/idp.yaml.
@@ -160,7 +161,9 @@ jobs:
       env:
         KIND_CLUSTER: ${{ env.CLUSTER }}
         KIND_SUFFIX: load
-        INTEGRATION_EXTRA_VALUES: hack/ci/load-values.yaml
+        # Production runs without response validation; with it on, its cost
+        # grows with the response body and hides identity's own cost.
+        INTEGRATION_EXTRA_VALUES: hack/ci/test-values-runtime-schema-validation-off.yaml hack/ci/load-values.yaml
       run: make integration-install
 
     # Direct mode writes the status the controllers would, so they must not run

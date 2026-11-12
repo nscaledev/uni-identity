@@ -20,10 +20,18 @@ jobs:
         include:
         - label: response validation on
           slug: validation-on
-          extraValues: ''
+          extraValues: hack/ci/load-values.yaml
+          gate: false
         - label: response validation off
           slug: validation-off
-          extraValues: hack/ci/test-values-runtime-schema-validation-off.yaml
+          # Space separated. Both legs trust the gate's stand-in provider
+          # (load-values.yaml); this one also turns validation off.
+          extraValues: hack/ci/test-values-runtime-schema-validation-off.yaml hack/ci/load-values.yaml
+          # This leg also runs the API-call count gate (test/load/README.md).
+          gate: true
+          # Fixed so the audit policy can name identity's ServiceAccount; keep
+          # in step with hack/ci/load-audit-policy.yaml.
+          suffix: gate
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -53,11 +61,15 @@ jobs:
       id: rand
       run: echo "suffix=$(openssl rand -hex 4)" >> "$GITHUB_OUTPUT"
 
+    # Both legs get the same cluster: the config adds the kube-apiserver audit
+    # log (used by the gate leg only), and its node image and the kind version
+    # are pinned together (see the config).
     - name: Create KinD cluster
-      uses: helm/kind-action@v1
+      uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
       with:
+        version: v0.33.0
         cluster_name: identity-${{ github.run_id }}
-        config: hack/ci/kind-config.yaml
+        config: hack/ci/load-kind-config.yaml
 
     - name: Install cluster infrastructure
       env:
@@ -67,14 +79,14 @@ jobs:
     - name: Install identity
       env:
         KIND_CLUSTER: identity-${{ github.run_id }}
-        KIND_SUFFIX: ${{ steps.rand.outputs.suffix }}
+        KIND_SUFFIX: ${{ matrix.suffix || steps.rand.outputs.suffix }}
         INTEGRATION_EXTRA_VALUES: ${{ matrix.extraValues }}
       run: make integration-install
 
     - name: Create test fixtures
       env:
         KIND_CLUSTER: identity-${{ github.run_id }}
-        KIND_SUFFIX: ${{ steps.rand.outputs.suffix }}
+        KIND_SUFFIX: ${{ matrix.suffix || steps.rand.outputs.suffix }}
       run: make integration-fixtures
 
     - name: Run API integration tests
@@ -137,6 +149,122 @@ jobs:
 
         printf '%s\n' "$OUTPUT" >> "$GITHUB_STEP_SUMMARY"
         exit 0
+
+    # API-call count gate, response validation off leg only (it matches
+    # production). Runs after the API tests so they are unaffected. Fails the
+    # job when identity's hot paths make more than 0.05 Kubernetes API calls per
+    # request, or return a 5xx. Latency and CPU are reported, never gated.
+    # See test/load/README.md ("Per-PR gate").
+    - name: Install k6
+      if: ${{ matrix.gate }}
+      uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
+      with:
+        k6-version: 1.8.2
+
+    - name: Create gate fixtures
+      if: ${{ matrix.gate }}
+      env:
+        # Must match hack/ci/load-values.yaml and test/load/idp.yaml.
+        ISSUER: http://jwks.load-test-idp.svc.cluster.local/
+        AUDIENCE: https://load-test.invalid/api
+      run: |
+        set -a; . test/.env.install; set +a
+        mkdir -p "${RUNNER_TEMP}/load" gate-out
+        go run ./hack/ci/loadfixtures/... \
+          --dataset small \
+          --mode api \
+          --base-url "${IDENTITY_BASE_URL}" \
+          --namespace "${IDENTITY_NAMESPACE}" \
+          --ca-cert "${IDENTITY_CA_CERT}" \
+          --issuer "${ISSUER}" \
+          --audience "${AUDIENCE}" \
+          --out-dir "${RUNNER_TEMP}/load"
+        # Tokens stay out of the uploaded artifact; only the counts go in.
+        jq .counts "${RUNNER_TEMP}/load/tokens.json" > gate-out/dataset.json
+
+    - name: Serve the stand-in provider's public keys
+      if: ${{ matrix.gate }}
+      run: |
+        kubectl apply -f test/load/idp.yaml
+        kubectl create configmap jwks -n load-test-idp \
+          --from-file=jwks.json="${RUNNER_TEMP}/load/jwks.json"
+        kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
+
+    # Only the gate's own organizations: the API tests' leftovers are not ours
+    # to wait on. The project controller must be idle before load starts.
+    - name: Wait for gate fixtures to settle
+      if: ${{ matrix.gate }}
+      run: |
+        set -a; . test/.env.install; set +a
+        for org in $(jq -r '[.serviceAccounts[].orgId] | unique[]' "${RUNNER_TEMP}/load/tokens.json"); do
+          kubectl wait --for=condition=Available --timeout=5m \
+            "organizations.identity.unikorn-cloud.org/${org}" -n "${IDENTITY_NAMESPACE}"
+          ns=$(kubectl get "organizations.identity.unikorn-cloud.org/${org}" -n "${IDENTITY_NAMESPACE}" -o jsonpath='{.status.namespace}')
+          kubectl wait --for=condition=Available --timeout=5m \
+            projects.identity.unikorn-cloud.org --all -n "${ns}"
+        done
+
+    # No server restarts (warm-up restarts 0). A short idle baseline and settle
+    # keep the run short; the gate allows 20 calls per phase, so a 15 s baseline
+    # is enough to net off stray background calls. SETTLE is cadvisor's lag, so
+    # the CPU figures are read after it.
+    - name: Run gate load phases
+      id: gate-phases
+      if: ${{ matrix.gate }}
+      env:
+        OUT_DIR: gate-out
+        RATE: '20'
+        DURATION: '20'
+        CEILING: 'false'
+        BASELINE_SECONDS: '15'
+        SETTLE: '10'
+      run: |
+        set -a; . test/.env.install; set +a
+        BASE_URL="${IDENTITY_BASE_URL}" \
+        TOKENS="${RUNNER_TEMP}/load/tokens.json" \
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
+          test/load/run-phases.sh
+
+    - name: Collect the API server audit log
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      run: |
+        docker exec "identity-${{ github.run_id }}-control-plane" cat /var/log/kubernetes/kube-apiserver-audit.log \
+          > "${RUNNER_TEMP}/load/audit.log"
+
+    - name: Count identity's API-server calls
+      id: gate-count
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      run: |
+        set -a; . test/.env.install; set +a
+        IDENTITY_USER="system:serviceaccount:${IDENTITY_NAMESPACE}:${IDENTITY_RELEASE}-server" \
+          test/load/count-audit.sh "${RUNNER_TEMP}/load/audit.log" gate-out/phases.json gate-out/counts.json
+
+    - name: Write gate summary
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      run: |
+        set -a; . test/.env.install; set +a
+        {
+          echo "## API-call count gate (${{ matrix.label }})"
+          echo
+          if [[ -s gate-out/counts.json && -s gate-out/phases.json ]]; then
+            # The failures first, so a report failure cannot hide them.
+            test/load/gate-summary.sh gate-out/phases.json gate-out/counts.json
+            NAMESPACE="${IDENTITY_NAMESPACE}" SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
+            RATE=20 DURATION=20 CEILING_MAX=0 DATASET=small \
+              test/load/report.sh gate-out
+          else
+            echo "No counts were produced; see the failed step."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload gate results
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: gate-results-${{ matrix.slug }}
+        path: gate-out
+        if-no-files-found: warn
 
     - name: Upload test artifacts
       if: failure()

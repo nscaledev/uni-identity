@@ -115,7 +115,9 @@ This performs:
 3. `test-api-ci` — runs the main `test/api` suite in randomised, race-detected mode
 
 Each run uses a fresh random suffix (`KIND_SUFFIX`), so release names, namespaces, and ingress
-hostnames vary from run to run. This catches hardcoded names.
+hostnames vary from run to run. This catches hardcoded names. The one exception is the CI leg that
+runs the API-call count gate: it uses the fixed suffix `gate`, so the audit policy can name
+identity's ServiceAccount.
 
 ## Iterating Without Rebuilding
 
@@ -228,7 +230,7 @@ If you do not have a cluster yet:
 | `KIND_SUFFIX` | random 8 chars | Suffix for release name and namespace. |
 | `KIND_NAMESPACE` | `unikorn-identity-$(KIND_SUFFIX)` | Kubernetes namespace for the deploy. |
 | `KIND_RELEASE` | `identity-$(KIND_SUFFIX)` | Helm release name. |
-| `INTEGRATION_EXTRA_VALUES` | empty | Optional second Helm values file. `integration-install` applies it after `hack/ci/test-values.yaml`. |
+| `INTEGRATION_EXTRA_VALUES` | empty | Optional Helm values files, space separated. `integration-install` applies them, in order, after `hack/ci/test-values.yaml`. |
 
 Example:
 

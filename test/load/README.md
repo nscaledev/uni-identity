@@ -2,7 +2,7 @@
 
 A manually triggered GitHub Actions workflow, `.github/workflows/load-test.yaml` ("Load Test"),
 that drives identity's hot paths in a throwaway kind cluster on the runner. It is not part of PR or
-nightly CI.
+nightly CI; a short version of its count gate runs on every PR (see Per-PR gate).
 
 It proves one thing: **on the hot paths, identity makes no API-server calls per request**. The
 gate counts those calls exactly, from the kube-apiserver audit log. Latency, CPU and the
@@ -51,6 +51,30 @@ paths from its informer cache it passes.
 7. `count-audit.sh`: the workflow copies the audit log out of the control-plane container, and the
    script counts identity's calls per phase window.
 8. `report.sh`: the job summary.
+
+### Per-PR gate
+
+`.github/workflows/integration.yaml` runs the same count gate in its "response validation off" leg
+(the one that matches production), after the API tests, so an emergency fix cannot bring back
+per-request API calls unseen. It uses that leg's cluster, images and install. Both legs build their cluster
+from `hack/ci/load-kind-config.yaml` (audit log on, pinned node image and kind version) and
+install identity with `hack/ci/load-values.yaml` (the stand-in provider's trust); the legs differ
+only in response validation and the gate steps. The gate leg's suffix is `gate`, so the audit
+policy can name its ServiceAccount. Then: the `small` fixtures (api mode), the stand-in provider, `run-phases.sh` for
+all four phases (20 req/s for 20 s, no ceiling, no server restarts, 15 s baseline, 10 s settle, which is cadvisor's lag),
+and `count-audit.sh`.
+
+- Gated: at most 0.05 identity API-server calls per request in every phase, and no 5xx (nor 401 or
+  other non-200; k6's thresholds). The step log and the job summary name the failed phase and its
+  figure (`gate-summary.sh`).
+- Reported only: latency and CPU.
+- Modelled added time, about 6 minutes: warm-up and idle baseline about 65 s, four phases about
+  43 s each (20 s of load, two 10 s settles, k6 start), fixtures and controllers settling about
+  1 to 2 minutes, k6 install, stand-in provider and a second `go run` about 30 s. The phases and
+  the fixtures dominate; the settles are needed so the CPU figures are right.
+- `gate_test.sh` checks, with a hand-made audit log and a stub k6, `count-audit.sh` (the gate,
+  repeated audit IDs, window edges, other users, a blind probe), `gate-summary.sh` and
+  `run-phases.sh` failing when k6's thresholds fail; it runs in `make lint`.
 
 ### Datasets
 
@@ -155,7 +179,8 @@ k6 on the path. From the repository root, for `medium` (use `web` the same way):
 kind create cluster --name load-test --config hack/ci/load-kind-config.yaml
 KIND_CLUSTER=load-test make integration-infra
 KIND_CLUSTER=load-test KIND_SUFFIX=load \
-  INTEGRATION_EXTRA_VALUES=hack/ci/load-values.yaml make integration-install
+  INTEGRATION_EXTRA_VALUES="hack/ci/test-values-runtime-schema-validation-off.yaml hack/ci/load-values.yaml" \
+  make integration-install
 
 # Direct mode (medium, web): identity's controllers off.
 for c in organization project oauth2client; do
@@ -382,8 +407,10 @@ shape; absolute figures do not.
 | `count-turns.sh` | compare: counts per turn; the gate on candidate turns only |
 | `compare.sh`, `compare.jq` | compare: the job summary and the comparison rule |
 | `compare_test.sh` | checks `compare.jq` with hand-made turns, `compare.sh` with a part-finished ceiling search, `compare-turns.sh`'s `ceiling` switch (stub steps) and the workflow's input check; needs `jq` and mikefarah `yq`; run by `make lint` |
+| `gate-summary.sh` | names each phase that failed the count gate, with its figure, for the job summary |
+| `gate_test.sh` | checks `count-audit.sh`, `gate-summary.sh` and `run-phases.sh`'s k6 failure with a hand-made audit log and a stub k6; run by `make lint` |
 | `idp.yaml` | stand-in identity provider serving the public key set |
 
-The cluster, namespace and release names are fixed (`unikorn-identity-load`, `identity-load`) so the
-audit policy can name identity's ServiceAccount; the workflow and
-`hack/ci/load-audit-policy.yaml` must agree.
+The cluster, namespace and release names are fixed (`unikorn-identity-load`, `identity-load`; the
+per-PR gate uses `unikorn-identity-gate`, `identity-gate`) so the audit policy can name identity's
+ServiceAccount; the workflows and `hack/ci/load-audit-policy.yaml` must agree.

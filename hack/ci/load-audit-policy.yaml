@@ -1,6 +1,9 @@
-# kube-apiserver audit policy for the load test. Metadata level, identity's
-# server ServiceAccount only. The namespace and release are fixed by
-# .github/workflows/load-test.yaml; keep them in step.
+# kube-apiserver audit policy for the API-call count. Metadata level, identity's
+# server ServiceAccount only. One user per install that uses this policy; the
+# names come from the install's namespace and release, so keep them in step
+# with:
+#   - .github/workflows/load-test.yaml (suffix "load")
+#   - .github/workflows/integration.yaml (suffix "gate")
 apiVersion: audit.k8s.io/v1
 kind: Policy
 omitStages:
@@ -9,4 +12,5 @@ rules:
 - level: Metadata
   users:
   - system:serviceaccount:unikorn-identity-load:identity-load-server
+  - system:serviceaccount:unikorn-identity-gate:identity-gate-server
 - level: None
