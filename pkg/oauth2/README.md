@@ -50,6 +50,44 @@ The main token classes are:
 `pkg/jose` is the cryptographic trust anchor underneath this layer. `pkg/oauth2` defines how those
 tokens are used, validated, refreshed, and mapped into local session semantics.
 
+## Readers
+
+`New` takes a client and a reader. The reader is the informer cache. It serves every read on the
+per-request path: the token check (signing keys, user session, service account), userinfo
+membership, bearer trust lookup, and passport exchange (project scope and, through `pkg/rbac`, the
+ACL). That path therefore makes no API server call; the guard test drives it with every live call
+refused.
+
+The client writes, and serves the reads that decide a write. These run once per sign-in or per
+token lifetime, not per request:
+
+- the user read at callback, which adds a pending authorization code (#597), and at refresh, which
+  clears a refresh token. `getLiveUser` reads the canonical record live by its deterministic
+  name; only if that does not exist does it find a legacy record's key through the cache-backed user
+  database and read that live. It checks the canonical subject again on the live copy; the
+  callers check the state on the live copy
+- the session read in `updateSession`
+- the re-read after a write conflict in `updateUser`
+- the OAuth2 client and its credentials Secret at sign-in and the token endpoint; Secrets are never
+  cached
+- provider and domain lookups at sign-in
+
+The cache serves a List by namespace or by a registered field index; any other selector walks every
+cached object of the kind. The per-request path therefore lists by namespace (`pkg/rbac`: projects,
+groups, roles; bearer trust providers) or through the user database's indexes
+(`pkg/userdb`: user subject label, membership by user), so its cost does not grow with the number of
+organizations. The user database is cache-only; a live read that decides a write lives here and
+re-checks the live copy, and the live client never queries those indexes. See
+[`pkg/userdb`](../userdb/README.md).
+
+A read on the cached path never calls the API server, so an API server failure no longer turns
+into a 401. It can still fail with errors other than "not found", such as a missing informer or a
+cancelled context, and the token check answers those with a 401 too (see the middleware README). The cost is lag: a revocation (session,
+service account, membership, provider) lands within the watch lag instead of on the next request,
+and a new or rotated token can fail its first use on any replica, the one that wrote it included,
+until that replica's cache has caught up. A token check never falls back to a live read: a holder
+of a superseded but unexpired token could then force one API read per request.
+
 ## Invariants
 
 - This package is the built-in OIDC/OAuth2 implementation for identity and remains a supported path.
@@ -97,11 +135,10 @@ tokens are used, validated, refreshed, and mapped into local session semantics.
   from the API server. It applies its change to the latest version and writes once more, so the other write
   stays, and the refresh-token reuse check runs again on the latest version. A second conflict fails
   the request.
-- Decoded token claims are cached because cryptographic validation is expensive. The stable
-  Organization namespace used to route service-account lookups is cache-synchronized, while
-  revocable service-account and user-session state is checked directly against Kubernetes on every
-  request. Userinfo reuses the user that the session check read for the organization lookup, so a
-  federated request reads its user once.
+- Decoded token claims are cached because cryptographic validation is expensive. Revocable
+  service-account and user-session state is checked against the informer cache on every request
+  (see Readers). Userinfo reuses the user that the session check read for the organization lookup,
+  so a federated request reads its user once.
 - Token classes for federated users, service accounts, and services are intentionally distinct.
 - Admission is intentionally coupled to local system validity: users who are inactive or not
   meaningful participants in the local authorization model should not be allowed to proceed as if

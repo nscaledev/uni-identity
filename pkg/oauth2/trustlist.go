@@ -199,14 +199,14 @@ type validatedIssuer struct {
 // provider name + spec fingerprint; go-oidc's RemoteKeySet handles JWKS
 // rotation, so a rebuild does not refetch keys.
 //
-// Trust membership is always the per-request List result — never read from the
-// validator cache. The cache memoizes only the built *auth0.Validator for
-// providers present in the current List. A deleted provider drops out of the
-// next List, so revocation takes effect immediately regardless of TTL.
+// Trust membership is always the per-request List result from the informer
+// cache, never from the validator cache, which memoizes only the built
+// *auth0.Validator for providers present in the current List. A deleted
+// provider drops out of the List within the watch lag, regardless of TTL.
 func (a *Authenticator) validatorForIssuer(ctx context.Context, rawIss string) (*validatedIssuer, error) {
 	var providers unikornv1.OAuth2ProviderList
 
-	if err := a.client.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
+	if err := a.reader.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrKubernetesReadUnavailable, err)
 	}
 
@@ -245,7 +245,7 @@ func (a *Authenticator) validatorForIssuer(ctx context.Context, rawIss string) (
 func (a *Authenticator) GroupsClaimByIssuer(ctx context.Context) (map[string]string, error) {
 	var providers unikornv1.OAuth2ProviderList
 
-	if err := a.client.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
+	if err := a.reader.List(ctx, &providers, &client.ListOptions{Namespace: a.namespace}); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrKubernetesReadUnavailable, err)
 	}
 

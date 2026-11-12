@@ -22,9 +22,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
@@ -37,9 +41,12 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"github.com/unikorn-cloud/identity/pkg/server"
 	servermetrics "github.com/unikorn-cloud/identity/pkg/server/metrics"
+	"github.com/unikorn-cloud/identity/pkg/userdb"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	toolscache "k8s.io/client-go/tools/cache"
 
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,6 +62,10 @@ var (
 	errReadCacheStopped = errors.New("read cache stopped before synchronization")
 	errReadCacheSync    = errors.New("read cache failed to synchronize")
 )
+
+// cacheSyncTimeout bounds the startup sync. A cache that cannot list a kind
+// (for example a missing list permission) would otherwise wait for ever.
+const cacheSyncTimeout = 5 * time.Minute
 
 type cacheRunner interface {
 	Start(ctx context.Context) error
@@ -168,6 +179,9 @@ func setupTelemetry(ctx context.Context, o *coreoptions.CoreOptions) error {
 	return nil
 }
 
+// newKubernetesClients returns the live client, which writes and serves the
+// reads that decide a write, and the synced informer cache, which serves every
+// other read.
 func newKubernetesClients(ctx context.Context, namespace string) (ctrlclient.Client, ctrlclient.Reader, error) {
 	clientConfig, err := rest.InClusterConfig()
 	if err != nil {
@@ -195,41 +209,97 @@ func newKubernetesClients(ctx context.Context, namespace string) (ctrlclient.Cli
 		return nil, nil, err
 	}
 
-	for object := range options.ByObject {
-		if _, err := readCache.GetInformer(ctx, object); err != nil {
-			return nil, nil, err
-		}
+	informers, err := registerReadCache(ctx, readCache, options)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	if err := startAndSyncCache(ctx, readCache); err != nil {
+	if err := startAndSyncCache(ctx, readCache, cacheSyncTimeout, informers); err != nil {
 		return nil, nil, err
 	}
 
 	return kubernetesClient, readCache, nil
 }
 
+// informerRegistry is the part of the cache that must be set up before it
+// starts.
+type informerRegistry interface {
+	GetInformer(ctx context.Context, obj ctrlclient.Object, opts ...cache.InformerGetOption) (cache.Informer, error)
+	ctrlclient.FieldIndexer
+}
+
+// registerReadCache creates an informer for every kind in options and
+// registers the indexes the readers use. It MUST run before the cache starts:
+// the user database fails every user and membership lookup without its indexes.
+// It returns the informers by kind, for the startup sync report.
+func registerReadCache(ctx context.Context, registry informerRegistry, options cache.Options) (map[string]cache.Informer, error) {
+	informers := make(map[string]cache.Informer, len(options.ByObject))
+
+	for object := range options.ByObject {
+		informer, err := registry.GetInformer(ctx, object)
+		if err != nil {
+			return nil, err
+		}
+
+		informers[fmt.Sprintf("%T", object)] = informer
+	}
+
+	if err := userdb.IndexUsers(ctx, registry); err != nil {
+		return nil, err
+	}
+
+	return informers, nil
+}
+
 // readCacheOptions limits the cache to the kinds that the server reads from
-// it. Organizations live in the identity namespace. Quotas, Allocations and
-// Projects are listed in full for the organization list includes, so they
-// are cached in all namespaces.
+// it: every kind the per-request token check, ACL build and passport exchange
+// read, plus the organization list includes. Kinds that live only in the
+// identity namespace are cached there. OAuth2Providers are cached in all
+// namespaces, but cached reads list the identity namespace only; reads in an
+// organization's namespace use the live client. Keep this list in step with the server ClusterRole,
+// which must grant watch on each kind.
 func readCacheOptions(scheme *runtime.Scheme, namespace string) cache.Options {
+	identityNamespace := func() cache.ByObject {
+		return cache.ByObject{Namespaces: map[string]cache.Config{namespace: {}}}
+	}
+
 	return cache.Options{
 		Scheme:                      scheme,
 		ReaderFailOnMissingInformer: true,
+		DefaultTransform:            cache.TransformStripManagedFields(),
+		DefaultWatchErrorHandler:    logWatchError,
 		ByObject: map[ctrlclient.Object]cache.ByObject{
-			&unikornv1.Organization{}: {
-				Namespaces: map[string]cache.Config{
-					namespace: {},
-				},
-			},
-			&unikornv1.Quota{}:      {},
-			&unikornv1.Allocation{}: {},
-			&unikornv1.Project{}:    {},
+			&unikornv1.Organization{}:     identityNamespace(),
+			&unikornv1.User{}:             identityNamespace(),
+			&unikornv1.Role{}:             identityNamespace(),
+			&unikornv1.SigningKey{}:       identityNamespace(),
+			&unikornv1.ServiceAccount{}:   {},
+			&unikornv1.OrganizationUser{}: {},
+			&unikornv1.OAuth2Provider{}:   {},
+			&unikornv1.Group{}:            {},
+			&unikornv1.Quota{}:            {},
+			&unikornv1.Allocation{}:       {},
+			&unikornv1.Project{}:          {},
 		},
 	}
 }
 
-func startAndSyncCache(ctx context.Context, resourceCache cacheRunner) error {
+// logWatchError logs a failed watch on the read cache. The reflector retries
+// by itself, and the cache serves its last state until it recovers. A watch
+// that closed normally, closed with an unexpected EOF or expired is routine, so
+// it is not logged. This matches client-go's DefaultWatchErrorHandler, which
+// compares EOF by identity ("case err == io.EOF:").
+func logWatchError(_ context.Context, r *toolscache.Reflector, err error) {
+	if err == io.EOF || err == io.ErrUnexpectedEOF || kerrors.IsResourceExpired(err) || kerrors.IsGone(err) { //nolint:errorlint,err113 // client-go compares by identity
+		return
+	}
+
+	log.Log.WithName("read-cache").Error(err, "watch failed", "type", r.TypeDescription())
+}
+
+// startAndSyncCache starts the cache and waits for every informer to sync. It
+// gives up after timeout, naming the kinds that had not synced.
+func startAndSyncCache(ctx context.Context, resourceCache cacheRunner, timeout time.Duration, informers map[string]cache.Informer) error {
 	cacheCtx, cancel := context.WithCancel(ctx)
 	cancelOnError := true
 
@@ -246,7 +316,10 @@ func startAndSyncCache(ctx context.Context, resourceCache cacheRunner) error {
 		startResult <- resourceCache.Start(cacheCtx)
 	}()
 	go func() {
-		syncResult <- resourceCache.WaitForCacheSync(cacheCtx)
+		syncCtx, syncCancel := context.WithTimeout(cacheCtx, timeout)
+		defer syncCancel()
+
+		syncResult <- resourceCache.WaitForCacheSync(syncCtx)
 	}()
 
 	select {
@@ -263,7 +336,7 @@ func startAndSyncCache(ctx context.Context, resourceCache cacheRunner) error {
 			return nil
 		}
 
-		return errReadCacheSync
+		return fmt.Errorf("%w: kinds not synced after %v: %s", errReadCacheSync, timeout, unsyncedKinds(informers))
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -282,4 +355,19 @@ func closeServerMetrics(metrics *servermetrics.Reporter, logger logr.Logger) {
 
 func main() {
 	start()
+}
+
+// unsyncedKinds names the kinds whose informers have not synced, sorted.
+func unsyncedKinds(informers map[string]cache.Informer) string {
+	kinds := []string{}
+
+	for kind, informer := range informers {
+		if !informer.HasSynced() {
+			kinds = append(kinds, kind)
+		}
+	}
+
+	slices.Sort(kinds)
+
+	return strings.Join(kinds, ", ")
 }

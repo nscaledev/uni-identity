@@ -38,7 +38,6 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -125,7 +124,7 @@ func readAutomationParams(params map[string]any) automationParams {
 
 // SetupTokenIssuer installs a signing key and returns the JWT issuer and authenticator, so the
 // handlers that issue or verify tokens (service account creation, userinfo) run for real.
-func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer common.IssuerValue) (*jose.JWTIssuer, *oauth2.Authenticator, error) {
+func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, readCache client.Reader, issuer common.IssuerValue) (*jose.JWTIssuer, *oauth2.Authenticator, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
@@ -148,12 +147,12 @@ func SetupTokenIssuer(ctx context.Context, k8sClient client.Client, issuer commo
 		return nil, nil, err
 	}
 
-	jwtIssuer := jose.NewJWTIssuer(k8sClient, TestNamespace, &jose.Options{})
+	jwtIssuer := jose.NewJWTIssuer(k8sClient, k8sClient, TestNamespace, &jose.Options{})
 	options := &oauth2.Options{AccessTokenDuration: time.Hour, TokenCacheSize: 16}
 
-	users := userdb.NewUserDatabase(k8sClient, TestNamespace)
-
-	authenticator, err := oauth2.New(options, TestNamespace, issuer, k8sClient, k8sClient, jwtIssuer, users, nil)
+	// readCache is a started informer cache with the user database's indexes, as in
+	// production. The client writes and serves the reads that decide a write.
+	authenticator, err := oauth2.New(options, TestNamespace, issuer, k8sClient, readCache, jwtIssuer, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -528,9 +527,15 @@ func readUserParams(params map[string]any) userParams {
 func (sm *StateManager) createUserSession(ctx context.Context, userID, subject string, authenticator *oauth2.Authenticator, issuer common.IssuerValue) (string, error) {
 	const clientID = "envir-contract"
 
+	// The subject label is what user creation writes, so the state seeds a user as
+	// the API does, not a legacy record. The read cache serves either.
 	user := &unikornv1.User{
-		ObjectMeta: metav1.ObjectMeta{Namespace: sm.namespace, Name: userID},
-		Spec:       unikornv1.UserSpec{Subject: subject, State: unikornv1.UserStateActive},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: sm.namespace,
+			Name:      userID,
+			Labels:    map[string]string{unikornv1.UserSubjectIDLabel: unikornv1.GlobalUserName(subject)},
+		},
+		Spec: unikornv1.UserSpec{Subject: subject, State: unikornv1.UserStateActive},
 	}
 
 	if err := sm.client.Create(ctx, user); err != nil {

@@ -528,6 +528,17 @@ These warnings are not the security control. The security control is the issuer-
 `(srcIss, subject)` match that `resolveGlobalRoleBindings` performs, and the `(srcIss, group)` match
 that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
+## Readers
+
+`New` takes a `client.Reader`, the informer cache in the server. The cache indexes objects by
+namespace and by registered field index only; a List with a label selector and no namespace walks
+every cached object of the kind, so the cost per request would grow with the size of the estate.
+An ACL build therefore lists only inside a namespace it already holds: groups and projects in the
+organization's status namespace, roles in the identity namespace. Projects live in their
+organization's namespace, so the namespaced List returns the same set the organization label did.
+Do not add a label-selected, cluster-wide List here; index it instead (see
+[`pkg/userdb`](../userdb/README.md), "Readers").
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
@@ -591,6 +602,14 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
 - The package is tightly coupled to the identity storage and scoping model, including groups,
   projects, organization mappings, and label-based queries.
+- `New` takes a `client.Reader`; the package never writes. In the server it is the informer cache,
+  so an ACL build makes no API server call. A change to a Role, Group, Project or Organization
+  reaches an ACL within the watch lag, plus the ACL cache timeout where the caller caches ACLs. A
+  project or organization the cache has not seen yet is missing from the ACL until it has: an
+  unscoped ACL build skips (and logs) a membership whose organization is not cached, and a group
+  role that is not cached. A role missing for a global role binding still fails the ACL: those
+  bindings come from configuration, so that is a config fault, not cache lag. A request scoped to an organization still fails if that
+  organization is missing.
 - Group membership is read from `Group.Subjects` only, matched by subject ID. The group and user
   handlers still write the deprecated `Group.UserIDs` field next to each subject, but RBAC does not
   read it. An earlier lookup through `UserIDs` listed every `User` once for each group on each ACL

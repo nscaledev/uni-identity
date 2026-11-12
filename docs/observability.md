@@ -31,7 +31,10 @@ Identity has a limited **producer** surface, so the starting point matters:
 - **The three controllers** (organization, project, oauth2client) register the
   controller-runtime built-ins (`controller_runtime_reconcile_*`, `workqueue_*`,
   `rest_client_*`, Go/process collectors) on the shared registry, served on
-  the metrics endpoint. **The API server runs no manager**, so it has none of these.
+  the metrics endpoint. **The API server runs no manager**, so it has none of
+  these except `rest_client_*`: its client-go calls register on the same
+  registry and are served on the same endpoint. The per-request authn/authz path
+  reads the informer cache, so it adds nothing to `rest_client_requests_total`.
 - **Each controller publishes build and readiness gauges.** Controller readiness
   follows cache sync and leader acquisition. The API server also publishes build
   and listener-readiness gauges.
@@ -114,7 +117,9 @@ controller registry is served directly at the metrics endpoint.
   lease; build info remains `1` for the process lifetime.
 
 **API server** — no controller-runtime manager, so none of the controller metrics.
-It emits the two counters, HTTP RED metrics, and
+It emits `rest_client_*` for its API server calls (writes, the reads that decide
+a write, and the read cache's list and watch), the two counters, HTTP RED
+metrics, and
 `unikorn_identity_server_build_info{version,revision}` and
 `unikorn_server_ready{version,revision}`. Build info is `1` for the
 process lifetime; readiness is `1` only while the server owns its bound HTTP

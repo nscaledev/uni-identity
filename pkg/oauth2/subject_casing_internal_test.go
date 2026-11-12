@@ -38,12 +38,11 @@ import (
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const (
@@ -78,11 +77,11 @@ func newCasingAuthenticator(t *testing.T) (*Authenticator, *jose.JWTIssuer, clie
 		Status:     unikornv1.OAuth2ClientStatus{Secret: casingSecret},
 	}
 
-	cli := fake.NewClientBuilder().WithScheme(getPassportInternalScheme(t)).WithObjects(user, oauth2Client).Build()
+	cli := userdbtest.NewClientBuilder(getPassportInternalScheme(t)).WithObjects(user, oauth2Client).Build()
 
 	josetesting.RotateCertificate(t, cli)
 
-	issuer := jose.NewJWTIssuer(cli, josetesting.Namespace, &jose.Options{
+	issuer := jose.NewJWTIssuer(cli, cli, josetesting.Namespace, &jose.Options{
 		IssuerSecretName: josetesting.KeySecretName,
 		RotationPeriod:   josetesting.RefreshPeriod,
 	})
@@ -97,7 +96,7 @@ func newCasingAuthenticator(t *testing.T) (*Authenticator, *jose.JWTIssuer, clie
 	issuerValue := handlercommon.IssuerValue{URL: "https://test.com", Hostname: "test.com"}
 
 	authenticator, err := New(options, josetesting.Namespace, issuerValue, cli, cli, issuer,
-		userdb.NewUserDatabase(cli, josetesting.Namespace), rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
+		rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
 	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)

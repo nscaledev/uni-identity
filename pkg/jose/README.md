@@ -32,6 +32,14 @@ window:
 New tokens are always issued with the current primary. Verification and decryption accept either
 the current or previous key so tokens survive one rotation, but not two.
 
+### Readers
+
+`NewJWTIssuer` takes a client and a reader. The leader reads and writes the `SigningKey` through
+the client, because its read decides the write. Every other read of the keys, to sign or to verify
+a token, goes through the reader, which in the server is the informer cache. A token check
+therefore makes no API server call. A rotation reaches the other replicas within the watch lag;
+until it does, a replica cannot verify a token signed with the new primary.
+
 ## Invariants
 
 - `pkg/oauth2` is the primary consumer, but the package also supports other JWT/JWE issuing use

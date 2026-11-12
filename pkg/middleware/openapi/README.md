@@ -123,9 +123,12 @@ identity failure would make a slow identity log every console user out. Every ca
 refuses the request. The middleware does not return 502/503/504 either, as clients are not expected
 to honour `Retry-After`.
 
-Known gap: identity's token endpoint itself still answers 401 when it cannot check a token, not
-only when the token is bad (a failed Kubernetes read or Auth0 key fetch inside the check), and that
-401 passes through here unchanged.
+Known gap: identity's token endpoint itself still answers 401 when an Auth0 key fetch inside the
+check fails, not only when the token is bad (go-oidc reports the failed fetch as an invalid token),
+and that 401 passes through here unchanged. The token check reads Kubernetes state only from the
+informer cache, so a "not found" there is usually a real rejection but can be informer lag, such as a
+token written moments ago, which clears once the watch delivers it. A missing informer or a cancelled
+context inside the check also comes back as 401, not 5xx.
 
 Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There
 is no fallback to the legacy userinfo path. Passports are consumed in-process and are never

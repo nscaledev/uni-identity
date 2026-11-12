@@ -27,13 +27,13 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const (
@@ -62,7 +62,7 @@ func selfLookup(t *testing.T, email string, objects ...client.Object) (*unikornv
 	s := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(s))
 
-	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+	cli := userdbtest.NewClientBuilder(s).WithObjects(objects...).Build()
 
 	info := &authorization.Info{
 		Userinfo: &openapi.Userinfo{

@@ -248,16 +248,18 @@ server_verbs() {
 	' <<<"$out" | sort -u | paste -sd, -
 }
 
-# Only the read cache watches, and only the kinds it holds.  Core resources
-# are read directly and only with the verbs the server uses.
+# Only the read cache watches, and only the kinds it holds; without watch on a
+# kind the cache still syncs from list but relists every 30-60 s, and without
+# list it never syncs (startup gives up after its sync timeout).  Core resources are
+# read directly and only with the verbs the server uses.
 watched=$(yq -r '
 	select(.kind == "ClusterRole" and .metadata.name == "test-server") |
 	.rules[] |
 	select(.verbs[] == "watch") |
 	.resources[]
 ' <<<"$out" | sort -u | paste -sd, -)
-[[ "$watched" == "allocations,organizations,projects,quotas" ]] || die "expected watch only on the read cache kinds for the server, got: $watched"
-[[ "$(server_verbs signingkeys)" == "create,get,update" ]] || die "expected only create, get and update on signingkeys for the server"
+[[ "$watched" == "allocations,groups,oauth2providers,organizations,organizationusers,projects,quotas,roles,serviceaccounts,signingkeys,users" ]] || die "expected watch only on the read cache kinds for the server, got: $watched"
+[[ "$(server_verbs signingkeys)" == "create,get,list,update,watch" ]] || die "expected only create, get, list, update and watch on signingkeys for the server"
 [[ "$(server_verbs secrets)" == "get" ]] || die "expected only get on secrets for the server"
 [[ "$(server_verbs namespaces)" == "list" ]] || die "expected only list on namespaces for the server"
 # Organization Lease release deletes the Lease; without delete every release

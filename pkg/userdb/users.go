@@ -26,7 +26,6 @@ import (
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -43,14 +42,94 @@ var (
 	ErrAmbiguousSubject = fmt.Errorf("%w: subject matches more than one user", ErrResourceReference)
 )
 
+// Field indexes served by the informer cache. A List with a label selector
+// and no namespace walks every cached object of the kind, so each lookup that
+// would select by label asks the matching index instead.  See the README's
+// "Readers" section.
+const (
+	// SubjectIndexField indexes Users by the canonical form of their subject.
+	// It serves the unlabelled legacy lookup in GetUser.
+	SubjectIndexField = "spec.subject.canonical"
+
+	// SubjectLabelIndexField indexes Users by their subject-ID label. It
+	// serves the labelled legacy lookup in GetUser.
+	SubjectLabelIndexField = "metadata.labels.user-subject-id"
+
+	// MembershipUserIndexField indexes OrganizationUsers by their user label.
+	// It serves every membership lookup.
+	MembershipUserIndexField = "metadata.labels.user"
+)
+
+// Index is a field index that the cache given to NewUserDatabase MUST have
+// registered before it starts.
+type Index struct {
+	Object client.Object
+	Field  string
+	Func   client.IndexerFunc
+}
+
+// Indexes returns every index the user database queries.
+func Indexes() []Index {
+	return []Index{
+		{&unikornv1.User{}, SubjectIndexField, SubjectIndexValue},
+		{&unikornv1.User{}, SubjectLabelIndexField, labelIndexValue[*unikornv1.User](unikornv1.UserSubjectIDLabel)},
+		{&unikornv1.OrganizationUser{}, MembershipUserIndexField, labelIndexValue[*unikornv1.OrganizationUser](constants.UserLabel)},
+	}
+}
+
+// IndexUsers registers every index in Indexes with indexer.
+func IndexUsers(ctx context.Context, indexer client.FieldIndexer) error {
+	for _, index := range Indexes() {
+		if err := indexer.IndexField(ctx, index.Object, index.Field, index.Func); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// SubjectIndexValue is the index function for SubjectIndexField.
+func SubjectIndexValue(object client.Object) []string {
+	user, ok := object.(*unikornv1.User)
+	if !ok {
+		return nil
+	}
+
+	return []string{unikornv1.NormalizeSubject(user.Spec.Subject)}
+}
+
+// labelIndexValue indexes an object of type T by the value of a label, and
+// leaves it out of the index if it has none.
+func labelIndexValue[T client.Object](label string) client.IndexerFunc {
+	return func(object client.Object) []string {
+		typed, ok := object.(T)
+		if !ok {
+			return nil
+		}
+
+		if value := typed.GetLabels()[label]; value != "" {
+			return []string{value}
+		}
+
+		return nil
+	}
+}
+
+// UserDatabase resolves identities from the informer cache. It never writes
+// and never reads live.
 type UserDatabase struct {
-	client    client.Client
+	reader    client.Reader
 	namespace string
 }
 
-func NewUserDatabase(client client.Client, namespace string) *UserDatabase {
+// NewUserDatabase returns a user database over reader. The reader MUST be the
+// informer cache with every index in Indexes registered before it starts: the
+// API server cannot serve a field index on a custom resource, so a live client
+// fails every lookup. A caller that decides a write on a record MUST read it
+// live itself and check it again.  See the README's "Readers" section.
+func NewUserDatabase(reader client.Reader, namespace string) *UserDatabase {
 	return &UserDatabase{
-		client:    client,
+		reader:    reader,
 		namespace: namespace,
 	}
 }
@@ -59,7 +138,7 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 	canonical := unikornv1.NormalizeSubject(subject)
 	user := &unikornv1.User{}
 
-	if err := d.client.Get(ctx, client.ObjectKey{Namespace: d.namespace, Name: unikornv1.GlobalUserName(subject)}, user); err == nil {
+	if err := d.reader.Get(ctx, client.ObjectKey{Namespace: d.namespace, Name: unikornv1.GlobalUserName(subject)}, user); err == nil {
 		if unikornv1.NormalizeSubject(user.Spec.Subject) != canonical {
 			return nil, fmt.Errorf("%w: canonical user subject does not match", ErrResourceReference)
 		}
@@ -70,9 +149,8 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 	}
 
 	result := &unikornv1.UserList{}
-	selector := labels.SelectorFromSet(map[string]string{unikornv1.UserSubjectIDLabel: unikornv1.GlobalUserName(subject)})
 
-	if err := d.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
+	if err := d.reader.List(ctx, result, client.MatchingFields{SubjectLabelIndexField: unikornv1.GlobalUserName(subject)}); err != nil {
 		return nil, err
 	}
 
@@ -81,7 +159,7 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 			return nil, fmt.Errorf("%w: subject label does not match", ErrResourceReference)
 		}
 
-		return result.Items[0].DeepCopy(), nil
+		return &result.Items[0], nil
 	}
 
 	if len(result.Items) > 1 {
@@ -91,10 +169,13 @@ func (d *UserDatabase) GetUser(ctx context.Context, subject string) (*unikornv1.
 	return d.getLegacyUser(ctx, subject)
 }
 
+// getLegacyUser finds an unlabelled, random-named User. The index holds every
+// record whose canonical subject matches, which is the set MatchSubject would
+// pick from in a full list, so the result is the same without listing all users.
 func (d *UserDatabase) getLegacyUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	result := &unikornv1.UserList{}
 
-	if err := d.client.List(ctx, result); err != nil {
+	if err := d.reader.List(ctx, result, client.MatchingFields{SubjectIndexField: unikornv1.NormalizeSubject(subject)}); err != nil {
 		return nil, err
 	}
 
@@ -119,7 +200,7 @@ func (d *UserDatabase) getLegacyUser(ctx context.Context, subject string) (*unik
 		return nil, fmt.Errorf("%w: user does not exist", ErrResourceReference)
 	}
 
-	return result.Items[index].DeepCopy(), nil
+	return &result.Items[index], nil
 }
 
 // GetActiveUser returns a user that match the subject and is active.
@@ -136,24 +217,36 @@ func (d *UserDatabase) GetActiveUser(ctx context.Context, subject string) (*unik
 	return user, nil
 }
 
-// GetActiveOrganizationUser gets an organization user that references the actual user.
-func (d *UserDatabase) GetActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.OrganizationLabel: organizationID,
-		constants.UserLabel:         user.Name,
-	})
+// ListOrganizationUsers returns the user's membership records, in every
+// organization and in any state. The index finds them by user label, so the
+// cost follows the user's memberships, not the number of members in the
+// estate.
+func (d *UserDatabase) ListOrganizationUsers(ctx context.Context, user *unikornv1.User) ([]unikornv1.OrganizationUser, error) {
+	found := &unikornv1.OrganizationUserList{}
 
-	result := &unikornv1.OrganizationUserList{}
-
-	if err := d.client.List(ctx, result, &client.ListOptions{LabelSelector: selector}); err != nil {
+	if err := d.reader.List(ctx, found, client.MatchingFields{MembershipUserIndexField: user.Name}); err != nil {
 		return nil, err
 	}
 
-	if len(result.Items) != 1 {
+	return found.Items, nil
+}
+
+// GetActiveOrganizationUser gets an organization user that references the actual user.
+func (d *UserDatabase) GetActiveOrganizationUser(ctx context.Context, organizationID string, user *unikornv1.User) (*unikornv1.OrganizationUser, error) {
+	memberships, err := d.ListOrganizationUsers(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+
+	memberships = slices.DeleteFunc(memberships, func(o unikornv1.OrganizationUser) bool {
+		return o.Labels[constants.OrganizationLabel] != organizationID
+	})
+
+	if len(memberships) != 1 {
 		return nil, fmt.Errorf("%w: user does not exist in organization or exists multiple times", ErrResourceReference)
 	}
 
-	organizationUser := &result.Items[0]
+	organizationUser := &memberships[0]
 
 	if organizationUser.Spec.State != unikornv1.UserStateActive {
 		return nil, fmt.Errorf("%w: user is not active", ErrResourceReference)
@@ -162,46 +255,51 @@ func (d *UserDatabase) GetActiveOrganizationUser(ctx context.Context, organizati
 	return organizationUser, nil
 }
 
-// GetServiceAccount looks up a service account.
-func (d *UserDatabase) GetServiceAccount(ctx context.Context, id string) (*unikornv1.ServiceAccount, error) {
-	result := &unikornv1.ServiceAccountList{}
+// GetServiceAccount reads a service account by key: its organization's
+// namespace and its ID.
+func (d *UserDatabase) GetServiceAccount(ctx context.Context, organizationID, id string) (*unikornv1.ServiceAccount, error) {
+	organization := &unikornv1.Organization{}
 
-	if err := d.client.List(ctx, result, &client.ListOptions{}); err != nil {
+	if err := d.reader.Get(ctx, client.ObjectKey{Namespace: d.namespace, Name: organizationID}, organization); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: organization %s does not exist", ErrResourceReference, organizationID)
+		}
+
 		return nil, err
 	}
 
-	predicate := func(s unikornv1.ServiceAccount) bool {
-		return s.Name != id
+	if organization.Status.Namespace == "" {
+		return nil, fmt.Errorf("%w: organization %s has no namespace", ErrResourceReference, organizationID)
 	}
 
-	result.Items = slices.DeleteFunc(result.Items, predicate)
+	serviceAccount := &unikornv1.ServiceAccount{}
 
-	if len(result.Items) != 1 {
-		return nil, fmt.Errorf("%w: expected 1 instance of service account ID %s", ErrResourceReference, id)
+	if err := d.reader.Get(ctx, client.ObjectKey{Namespace: organization.Status.Namespace, Name: id}, serviceAccount); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, fmt.Errorf("%w: service account %s does not exist", ErrResourceReference, id)
+		}
+
+		return nil, err
 	}
 
-	return &result.Items[0], nil
+	return serviceAccount, nil
 }
 
 // GetOrganizationIDsForUser returns the active organization IDs for an active user.
 func (d *UserDatabase) GetOrganizationIDsForUser(ctx context.Context, user *unikornv1.User) ([]string, error) {
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-	if err := d.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
+	memberships, err := d.ListOrganizationUsers(ctx, user)
+	if err != nil {
 		return nil, err
 	}
 
-	result := make([]string, 0, len(organizationUsers.Items))
+	result := make([]string, 0, len(memberships))
 
-	for i := range organizationUsers.Items {
-		if organizationUsers.Items[i].Spec.State != unikornv1.UserStateActive {
+	for i := range memberships {
+		if memberships[i].Spec.State != unikornv1.UserStateActive {
 			continue
 		}
 
-		result = append(result, organizationUsers.Items[i].Labels[constants.OrganizationLabel])
+		result = append(result, memberships[i].Labels[constants.OrganizationLabel])
 	}
 
 	return result, nil

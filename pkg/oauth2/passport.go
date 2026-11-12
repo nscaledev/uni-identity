@@ -946,7 +946,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 // the organization's backing namespace.
 func (a *Authenticator) projectInOrganization(ctx context.Context, organizationID, projectID string) (bool, error) {
 	var org unikornv1.Organization
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: organizationID}, &org); err != nil {
+	if err := a.reader.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: organizationID}, &org); err != nil {
 		if kerrors.IsNotFound(err) {
 			return false, nil
 		}
@@ -959,7 +959,7 @@ func (a *Authenticator) projectInOrganization(ctx context.Context, organizationI
 	}
 
 	var project unikornv1.Project
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: org.Status.Namespace, Name: projectID}, &project); err != nil {
+	if err := a.reader.Get(ctx, client.ObjectKey{Namespace: org.Status.Namespace, Name: projectID}, &project); err != nil {
 		if kerrors.IsNotFound(err) {
 			return false, nil
 		}

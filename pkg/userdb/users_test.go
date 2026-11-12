@@ -24,11 +24,10 @@ import (
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // TestErrUserInactiveWrapsErrResourceReference pins the compatibility contract:
@@ -69,7 +68,7 @@ func TestGetUserRefusesAnAmbiguousFold(t *testing.T) {
 	s := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(s))
 
-	cli := fake.NewClientBuilder().WithScheme(s).WithObjects(
+	cli := userdbtest.NewClientBuilder(s).WithObjects(
 		newSubjectUser("user-a", "Dave@Example.com"),
 		newSubjectUser("user-b", "DAVE@example.com"),
 	).Build()

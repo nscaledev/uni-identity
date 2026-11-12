@@ -44,12 +44,11 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2/oidc"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func passportIssuedTokenType() string {
@@ -139,19 +138,17 @@ func setupAuth0PassportTestEnv(t *testing.T, auth0Issuer *auth0TestIssuer) *pass
 func setupPassportTestEnvWithOAuth2Options(t *testing.T, rbacOptions *rbac.Options, oauth2Options *oauth2.Options, objects ...client.Object) *passportTestEnv {
 	t.Helper()
 
-	cli := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(objects...).Build()
+	cli := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
 
-	jwtIssuer := jose.NewJWTIssuer(cli, josetesting.Namespace, &jose.Options{
+	jwtIssuer := jose.NewJWTIssuer(cli, cli, josetesting.Namespace, &jose.Options{
 		IssuerSecretName: josetesting.KeySecretName,
 		RotationPeriod:   josetesting.RefreshPeriod,
 	})
 
 	ctx := t.Context()
 	require.NoError(t, jwtIssuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
-
-	userDatabase := userdb.NewUserDatabase(cli, josetesting.Namespace)
 
 	if rbacOptions == nil {
 		rbacOptions = &rbac.Options{}
@@ -164,7 +161,7 @@ func setupPassportTestEnvWithOAuth2Options(t *testing.T, rbacOptions *rbac.Optio
 		Hostname: "test.com",
 	}
 
-	authenticator, err := oauth2.New(oauth2Options, josetesting.Namespace, issuerVal, cli, cli, jwtIssuer, userDatabase, rbacInst)
+	authenticator, err := oauth2.New(oauth2Options, josetesting.Namespace, issuerVal, cli, cli, jwtIssuer, rbacInst)
 	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
@@ -237,7 +234,7 @@ func TestSilentAuthorizationCodeExchangesOnceAcrossReplicas(t *testing.T) {
 		AccessTokenDuration: accessTokenDuration, RefreshTokenDuration: refreshTokenDuration,
 		TokenLeewayDuration: accessTokenDuration, TokenCacheSize: 1024,
 	}, josetesting.Namespace, handlercommon.IssuerValue{URL: "https://test.com", Hostname: "test.com"},
-		env.client, env.client, env.jwtIssuer, userdb.NewUserDatabase(env.client, josetesting.Namespace), rbac.New(env.client, josetesting.Namespace, &rbac.Options{}))
+		env.client, env.client, env.jwtIssuer, rbac.New(env.client, josetesting.Namespace, &rbac.Options{}))
 	require.NoError(t, err)
 
 	exchange := func() *http.Request {

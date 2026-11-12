@@ -49,8 +49,41 @@ normalizes local identity lookups for other parts of the system.
 
 `GetUser` reads the deterministic User name derived from the folded subject, so a claim in any
 case finds a record stored in any case. On a miss, it selects random-named legacy records by the
-subject-ID label, which is derived the same way. Unlabelled records remain a final list-and-filter
-compatibility fallback. The returned record is owned by the caller.
+subject-ID label, which is derived the same way. Unlabelled records are a final fallback, found
+through the subject index (see Readers). The returned record is owned by the caller.
+
+### Readers
+
+`NewUserDatabase` takes one `client.Reader`, and it MUST be the informer cache with the indexes in
+`Indexes` registered by `IndexUsers` before the cache starts. The package never reads live and
+never takes a live client: the API server cannot serve a field index on a custom resource, so a
+live reader fails every user and membership lookup.
+
+The indexes are the canonical subject of each User (`SubjectIndexField`, the unlabelled legacy
+lookup), the subject-ID label of each User (`SubjectLabelIndexField`), and the user label of each
+OrganizationUser (`MembershipUserIndexField`, every membership lookup). The cache indexes only by
+namespace and by registered field, and a List with a label selector and no namespace walks every
+cached object of the kind. The label lookups therefore go through the indexes: the cost follows the
+user's own memberships, not the number of organizations. The organization of a membership is
+filtered after the index, in memory, from the few records the user has.
+
+Records come from the cache, so they can lag a write by the watch delay. A caller that decides a
+write on a record, such as sign-in or refresh in `pkg/oauth2`, reads the canonical record live by
+name, and uses this package only to find a legacy record's key, then reads the record live itself,
+and checks it again on the live copy (see
+[`pkg/oauth2`](../oauth2/README.md), "Readers"). Legacy records are no longer created, so the index
+lag cannot hide one.
+
+The index holds exactly the records whose canonical subject matches, which is the set
+`MatchSubject` would pick from in a full list, so the result is the same without listing every
+user.
+
+Tests build the reader with `userdbtest.NewClientBuilder`, a fake client with the indexes. The
+benchmarks use `cachetest.Reader`, built on the client-go indexer the cache is built on, because a
+fake client scans every object for any selector and hides the saving. Both packages are for
+`_test.go` files and `test/` only.
+
+`GetServiceAccount` reads the account by key, in the namespace of the organization its token names.
 
 A lookup that finds the deterministic record trusts it without checking for another record with
 the same subject. User creation refuses that state (see
@@ -73,7 +106,7 @@ works whether the stored subject is folded or not. `GetActiveUser` and the subje
 `GetOrganizationIDs` go through `GetUser`, so they resolve the same way. Callers that already hold
 an active user can use `GetOrganizationIDsForUser` to avoid resolving it a second time.
 
-The lookup lists users in no fixed order. If the subject matches no record exactly but folds onto
+The legacy lookup lists users in no fixed order. If the subject matches no record exactly but folds onto
 two or more, a pick depends on that order. It can give a different user from one call to the next.
 `GetUser` returns `ErrAmbiguousSubject` in that case and does not pick.
 
@@ -91,8 +124,10 @@ two or more, a pick depends on that order. It can give a different user from one
 
 - The package is tightly coupled to the current Kubernetes-backed identity storage model even
   though its purpose is to shield other packages from that coupling.
-- Canonical users use their deterministic name. Labelled legacy users use an indexed selector;
-  only unlabelled legacy users require list-and-filter compatibility lookup.
+- Canonical users use their deterministic name. Labelled legacy users are found through the
+  `SubjectLabelIndexField` field index; unlabelled legacy users through the subject index.
+- A database built on the cache sees writes within the watch lag. A revoked or suspended user is
+  refused once the change reaches the cache, not on the next request.
 - Missing and multiply-resolved identities return `ErrResourceReference`. `GetActiveUser` instead
   returns `ErrUserInactive` for an inactive global user, which wraps `ErrResourceReference` so
   existing `errors.Is` callers are unaffected; `GetActiveOrganizationUser` still returns the plain

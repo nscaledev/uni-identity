@@ -372,12 +372,12 @@ func issueUserToken(ctx context.Context, k8s client.Client, namespace, baseURL, 
 		fatalf("failed to parse issuer %q: %v", baseURL, err)
 	}
 
-	jwtIssuer := jose.NewJWTIssuer(k8s, namespace, &jose.Options{})
+	jwtIssuer := jose.NewJWTIssuer(k8s, k8s, namespace, &jose.Options{})
 	authenticator, err := oauth2.New(&oauth2.Options{
 		AccessTokenDuration:  time.Hour,
 		RefreshTokenDuration: time.Hour,
 		TokenCacheSize:       8192,
-	}, namespace, issuer, k8s, k8s, jwtIssuer, nil, nil)
+	}, namespace, issuer, k8s, k8s, jwtIssuer, nil)
 
 	if err != nil {
 		fatalf("failed to create authenticator: %v", err)

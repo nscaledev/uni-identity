@@ -132,9 +132,14 @@ type Authenticator struct {
 
 	namespace string
 
+	// client writes, and serves the reads that decide a write: sign-in,
+	// the token endpoint and refresh.
 	client client.Client
 
-	organizationReader client.Reader
+	// reader is the informer cache. It serves every read on the per-request
+	// token check and passport exchange, so they make no API server call.
+	// See the README's "Readers" section.
+	reader client.Reader
 
 	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
 	issuer common.IssuerValue
@@ -142,7 +147,7 @@ type Authenticator struct {
 	// jwtIssuer allows creation and validation of JWT bearer tokens.
 	jwtIssuer *jose.JWTIssuer
 
-	// userdb has all the operations needed for consulting the user database (User, OrganizationUser, ServiceAccount)
+	// userdb resolves identities from reader, for the per-request path.
 	userdb *userdb.UserDatabase
 
 	// rbac is needed for ACL computation in passport exchange.
@@ -167,7 +172,7 @@ type Authenticator struct {
 // is validated. Deprecated --auth0-exchange-{issuer,audience} flags feed a synthetic
 // auth0-legacy provider for backward compatibility; new deployments should use
 // OAuth2Provider bearerTrust blocks instead.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, organizationReader client.Reader, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, reader client.Reader, jwtIssuer *jose.JWTIssuer, rbac *rbac.RBAC) (*Authenticator, error) {
 	// The error only reports an invalid instrument configuration; the name,
 	// description, and unit are static and the API returns a usable no-op
 	// counter regardless, so there is nothing actionable to handle.
@@ -183,17 +188,17 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 	}
 
 	return &Authenticator{
-		options:            options,
-		namespace:          namespace,
-		client:             client,
-		organizationReader: organizationReader,
-		issuer:             issuer,
-		jwtIssuer:          jwtIssuer,
-		userdb:             userdb,
-		rbac:               rbac,
-		tokenCache:         cache.NewLRUExpireCache(options.TokenCacheSize),
-		validatorCache:     newValidatorCache(validatorCacheSize),
-		unroutableTokens:   unroutableTokens,
+		options:          options,
+		namespace:        namespace,
+		client:           client,
+		reader:           reader,
+		issuer:           issuer,
+		jwtIssuer:        jwtIssuer,
+		userdb:           userdb.NewUserDatabase(reader, namespace),
+		rbac:             rbac,
+		tokenCache:       cache.NewLRUExpireCache(options.TokenCacheSize),
+		validatorCache:   newValidatorCache(validatorCacheSize),
+		unroutableTokens: unroutableTokens,
 	}, nil
 }
 
@@ -955,7 +960,8 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	// the claim once, here.
 	normalizeIDTokenSubject(idToken)
 
-	user, err := a.userdb.GetUser(r.Context(), idToken.Email.Email)
+	// Live: the code below is written to this record.
+	user, err := a.getLiveUser(r.Context(), idToken.Email.Email)
 	if err != nil {
 		redirector.raise(ErrorAccessDenied, "user not found")
 		return
@@ -1275,7 +1281,9 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 		return session.ClientID == claims.Federated.ClientID
 	}
 
-	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
+	// Live: the session check below decides a write. The state is checked on
+	// the live copy in the change below.
+	user, err := a.getLiveUser(ctx, claims.Subject)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
 	}

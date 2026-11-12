@@ -26,14 +26,13 @@ import (
 	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // accessTokenDurationTL is a short access-token lifetime used by trustlist
@@ -91,11 +90,9 @@ func setupAuthenticatorWithClient(t *testing.T, objects ...client.Object) *trust
 func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...client.Object) *trustlistTestEnv {
 	t.Helper()
 
-	cli := fake.NewClientBuilder().WithScheme(getTrustlistScheme(t)).WithObjects(objects...).Build()
+	cli := userdbtest.NewClientBuilder(getTrustlistScheme(t)).WithObjects(objects...).Build()
 
 	josetesting.RotateCertificate(t, cli)
-
-	udb := userdb.NewUserDatabase(cli, josetesting.Namespace)
 	rbacInst := rbac.New(cli, josetesting.Namespace, &rbac.Options{})
 
 	issuerVal := handlercommon.IssuerValue{
@@ -110,7 +107,6 @@ func setupAuthenticatorWithOptions(t *testing.T, opts *Options, objects ...clien
 		cli,
 		cli,
 		nil, // jwtIssuer unused by validatorForIssuer
-		udb,
 		rbacInst,
 	)
 	if err != nil {

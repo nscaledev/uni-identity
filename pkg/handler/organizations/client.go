@@ -24,7 +24,6 @@ import (
 	"strings"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
-	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -37,10 +36,10 @@ import (
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type Client struct {
@@ -192,6 +191,21 @@ func (c *Client) getUserbyEmail(ctx context.Context, userdb *userdb.UserDatabase
 	return user, nil
 }
 
+// serviceAccountOrganizationIDs returns the one organization a service account
+// belongs to, named in its token, once the account is found there.
+func serviceAccountOrganizationIDs(ctx context.Context, userdb *userdb.UserDatabase, info *authorization.Info) ([]string, error) {
+	authz := info.Userinfo.HttpsunikornCloudOrgauthz
+	if authz == nil || len(authz.OrgIds) != 1 {
+		return nil, errors.HTTPForbidden("service account has no organization")
+	}
+
+	if _, err := userdb.GetServiceAccount(ctx, authz.OrgIds[0], info.Userinfo.Sub); err != nil {
+		return nil, errors.HTTPForbidden("service account not found").WithError(err)
+	}
+
+	return []string{authz.OrgIds[0]}, nil
+}
+
 func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabase, email *string) ([]string, error) {
 	info, err := authorization.FromContext(ctx)
 	if err != nil {
@@ -199,12 +213,7 @@ func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabas
 	}
 
 	if info.ServiceAccount {
-		account, err := userdb.GetServiceAccount(ctx, info.Userinfo.Sub)
-		if err != nil {
-			return nil, errors.HTTPForbidden("service account not found").WithError(err)
-		}
-
-		return []string{account.Labels[constants.OrganizationLabel]}, nil
+		return serviceAccountOrganizationIDs(ctx, userdb, info)
 	}
 
 	var user *unikornv1.User
@@ -221,29 +230,23 @@ func (c *Client) organizationIDs(ctx context.Context, userdb *userdb.UserDatabas
 		}
 	}
 
-	selector := labels.SelectorFromSet(map[string]string{
-		constants.UserLabel: user.Name,
-	})
-
-	organizationUsers := &unikornv1.OrganizationUserList{}
-
-	if err := c.client.List(ctx, organizationUsers, &client.ListOptions{LabelSelector: selector}); err != nil {
+	organizationUsers, err := userdb.ListOrganizationUsers(ctx, user)
+	if err != nil {
 		return nil, err
 	}
 
-	result := make([]string, len(organizationUsers.Items))
+	result := make([]string, len(organizationUsers))
 
-	for i := range organizationUsers.Items {
-		result[i] = organizationUsers.Items[i].Labels[constants.OrganizationLabel]
+	for i := range organizationUsers {
+		result[i] = organizationUsers[i].Labels[constants.OrganizationLabel]
 	}
 
 	return result, nil
 }
 
-// List returns the organizations visible to the caller. readCache serves the
-// global branch, which returns every organization. The membership branch reads
-// directly, so a removed membership takes effect at once, and a new
-// organization is found even before the cache has seen it.
+// List returns the organizations visible to the caller. Both branches read
+// readCache, the informer cache, so a membership change shows within the watch
+// lag. See the README's "Membership-Driven Listing" section.
 func (c *Client) List(ctx context.Context, readCache client.Reader, userdb *userdb.UserDatabase, email *string) (openapi.Organizations, error) {
 	// This is the only special case in the system.  When requesting organizations we
 	// will have an unscoped ACL, so can check for global access to all organizations.
@@ -280,9 +283,14 @@ func (c *Client) List(ctx context.Context, readCache client.Reader, userdb *user
 	for _, organizationID := range organizationIDs {
 		organization := &unikornv1.Organization{}
 
-		if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization); err != nil {
+		if err := readCache.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: organizationID}, organization); err != nil {
+			// The membership and organization informers are not ordered, so a
+			// membership can arrive before its organization (or outlive it).
+			// See the README's membership branch.
 			if kerrors.IsNotFound(err) {
-				return nil, fmt.Errorf("%w: failed to find organization for user", coreerrors.ErrConsistency)
+				log.FromContext(ctx).Info("skipping organization missing from the cache", "organizationID", organizationID)
+
+				continue
 			}
 
 			return nil, fmt.Errorf("%w: failed to get organization", err)
