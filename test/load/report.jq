@@ -1,7 +1,10 @@
+include "metrics";
+
 # Builds the job summary. Arguments: $phases, $counts, $k6 (array of per-phase
 # k6 summaries), $ceilings (array of ceiling-<phase>.json, empty when the
-# ceiling was not run), $dataset (slurped; object counts), $inputs, $qps,
-# $cpuLimit (cores, null when unknown), $warmup (warmup.json, null when absent).
+# ceiling was not run), $dataset (slurped; object counts), $inputs, $qps, $cpuLimit (cores,
+# null when unknown), $warmup (warmup.json, null when absent). $inputs.gated is
+# "false" for a baseline turn: its count result is reported, never a gate.
 
 def f2: (. * 100 | round) / 100;
 def f3: (. * 1000 | round) / 1000;
@@ -11,28 +14,15 @@ def top($m): $m | to_entries | map(select(.value > 0)) | sort_by(-.value)
 
 ($phases[0]) as $ph
 | ($counts[0]) as $c
-| ($ph.settleSeconds * 2) as $gap
-| (($ph.baseline.cpuAfter - $ph.baseline.cpuBefore)
-   / ((($ph.baseline.end | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) - ($ph.baseline.start | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) + $gap)) as $idleCpu
-| [ $ph.phases[] as $p
-    | ($c.phases[] | select(.name == $p.name)) as $cnt
-    | ($k6[] | select(.phase == $p.name)) as $k
-    | (($p.end | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) - ($p.start | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) + $gap) as $window
-    | (($p.cpuAfter - $p.cpuBefore) - $idleCpu * $window) as $cpu
-    | {
-        name: $p.name, k: $k, cnt: $cnt,
-        cpuPerRequest: (if $p.requests > 0 and $cpu > 0 then $cpu / $p.requests else null end),
-        # Cores used over the k6 run itself (the quiet gaps are not load).
-        cpuCores: (if $cpu > 0 then $cpu / ($window - $gap) else null end)
-      }
-  ] as $rows
+| rows($ph; $c; $k6) as $rows
 | [
     "## Load test",
     "",
     "Dataset: \($inputs.dataset) (\($dataset[0] | to_entries | map("\(.value) \(.key)") | join(", "))). " +
     "Steady state: \($inputs.rate) req/s per phase for \($inputs.duration) s.",
     "",
-    (if $c.pass then "**Count gate: PASS** (identity audit events seen, and at most \($c.maxCallsPerRequest) identity API-server calls per request in every phase)."
+    (if $inputs.gated == "false" then "Count check, report-only (this build is not gated): \(if $c.pass then "within" else "over" end) \($c.maxCallsPerRequest) identity API-server calls per request; identity audit events seen: \($c.identityEvents)."
+     elif $c.pass then "**Count gate: PASS** (identity audit events seen, and at most \($c.maxCallsPerRequest) identity API-server calls per request in every phase)."
      elif $c.identityEvents == 0 then "**Count gate: FAIL** (the audit log has no events from identity's ServiceAccount, so the probe is blind)."
      else "**Count gate: FAIL** (more than \($c.maxCallsPerRequest) identity API-server calls per request in at least one phase)." end),
     "",

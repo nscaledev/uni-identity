@@ -24,8 +24,11 @@ the counts and the phase windows (no tokens).
 | `warmup_restarts` | `3` | times to restart identity's server before the phases, recording each cold start (0 records the settings only) |
 | `rate` | `20` | requests per second per phase in the steady state (where the ceiling ramp starts) |
 | `duration` | `60` | seconds per steady-state phase |
-| `ceiling` | `true` | find each path's ceiling after the steady state (see The ceiling) |
-| `ceiling_max` | `2000` | the top of the ceiling ramp, requests per second; must be above `rate` |
+| `compare` | `true` | also run a release and compare (see Comparing against a release) |
+| `baseline` | empty | compare only: git ref to compare against (a tag, a commit, or `origin/<branch>`). Empty is the newest release tag with no pre-release suffix |
+| `compare_margin_pct` | `25` | compare only: the margin, X |
+| `ceiling` | `true` | find each path's ceiling after the steady state (see The ceiling); in compare mode, once for each build |
+| `ceiling_max` | `2000` | the top of the ceiling ramp, requests per second; must be above `rate` when `ceiling` is on |
 
 Run it on `main` as it is today and it **fails the count gate**, because identity still makes live
 API calls per request. That failure is the proof the gate works. On a branch that serves these
@@ -43,7 +46,6 @@ paths from its informer cache it passes.
 4. A stock nginx pod (`idp.yaml`, image pinned by digest) serves the public key set at
    `http://jwks.load-test-idp.svc.cluster.local/.well-known/jwks.json`, the provider's issuer.
 5. `warmup.sh`: restarts identity's server `warmup_restarts` times and records each cold start.
-6. `run-phases.sh`: a short k6 warm-up, a 60 second no-load baseline, then one k6 run per phase.
 6. `run-phases.sh`: a short k6 warm-up, a 60 second no-load baseline, then one steady-state k6 run
    per phase, then (when `ceiling` is on) `ceiling.sh`: the ceiling search for each phase.
 7. `count-audit.sh`: the workflow copies the audit log out of the control-plane container, and the
@@ -186,6 +188,82 @@ DATASET=medium RATE=20 DURATION=60 CEILING_MAX=2000 test/load/report.sh load-out
 kind delete cluster --name load-test
 ```
 
+## Comparing against a release
+
+A single run cannot say better or worse: its figures belong to one runner on one day. With `compare`
+on, the job runs the same phases against a release as well, on the same cluster and the same
+dataset, and reports where the candidate (the commit the workflow runs on) stands. **It is
+report-only: nothing in it can fail the job.** It becomes a gate only after X is set (see A/A runs).
+
+How the job does it:
+
+1. Resolves the baseline (`baseline`, else the newest `vX.Y.Z` tag) and checks it out beside the
+   candidate. Builds both server images with distinct tags (`baseline-<sha>`, `candidate-<sha>`)
+   and loads them into the cluster. `test/load/swap-build.sh` and `compare-turns.sh` take the
+   tags as variables, so a local run can use its own and never overwrite `v0.0.0`.
+2. Builds the fixtures once. Both builds read the same records.
+3. Installs once, with the candidate's chart, CRDs and values. A switch changes only the server
+   Deployment's image tag (`kubectl set image`) and always restarts it (`kubectl rollout restart`),
+   so every turn, including the second candidate turn, starts on a fresh pod. The controllers and
+   the fixtures are never touched. **Both builds run on the candidate's chart and CRDs**; the
+   baseline's own chart is not used. If the baseline cannot start on them (an unknown flag, say),
+   the rollout fails and the job fails, naming the build. One chart means one set of resource
+   limits for every turn. A PR that adds a server flag the release doesn't know cannot be compared
+   against that release: the baseline fails to start and the job fails.
+4. Runs four turns: **baseline, candidate, candidate, baseline.** The mirrored order puts any
+   drift in the runner (a noisy neighbour, thermal, cache state) on both builds equally. Each
+   turn restarts and measures warm-up (`warmup.sh`) and runs the phases (`run-phases.sh`) into its
+   own folder `turns/<n>-<build>/` in the artifact.
+5. Counts API-server calls per turn from the one audit log (`count-turns.sh`).
+
+If the baseline cannot become Ready on the candidate's chart or run its phases, the job fails
+with a message naming the turn and the step. It never passes without the comparison.
+
+**Absolute checks** are unchanged and apply to the candidate only: at most `0.05` API-server calls
+per request, and no 5xx. A baseline's counts are reported, never gated: an old release is expected
+to fail the count gate.
+
+**The comparison rule** (`compare.jq`), per phase, for CPU seconds per request and for p95:
+
+- worse: both candidate turns are more than X% above the worse of the two baseline turns;
+- better: both candidate turns are more than X% below the better of the two baseline turns;
+- same: anything else (one turn over the line and one not is "same").
+
+X is `compare_margin_pct`. The summary prints one line per check, with the candidate's mean
+against the baseline's mean, each candidate turn alone, and the **baseline spread**: the two
+baseline turns' difference as a share of their mean. That spread is the job's own A/A noise; a
+result inside it is not evidence. A turn with no CPU reading (below noise) gives "no reading", not
+"same". The ceiling is not compared by this rule: it is reported per build, side by side.
+
+**The ceiling in compare mode.** With `ceiling` on, after the four turns each build gets one ceiling search
+(`ceiling.sh`, see The ceiling), baseline first, each on a fresh restart of the server. The summary
+shows both builds' first failure, ceiling, p95, CPU cores and failure rate side by side. One search
+per build is one sample: a difference between two ceilings is not evidence until the A/A runs have
+shown how far two searches of the same build differ. Report-only. With `ceiling` off the turns
+are all that runs. If a search stops part way, the summary still shows every phase that finished
+for each build and says "not measured" for the rest.
+
+Time, web dataset (modelled, not measured): about 15 minutes for the cluster and fixtures, 10 for
+the two builds, and about 8 per turn (three restarts about 5, phases about 6 at the defaults),
+so about 57 minutes before the ceilings (all there is with `ceiling` off). A ceiling search is a restart and warm-up (about 2
+minutes) plus, per phase, from about 1.5 minutes (a build that fails early in the ramp, then holds
+at 0.9R) to 4.8 minutes (a ramp that runs its 120 s, then three holds): 8 to 21 minutes a build, so
+16 to 42 for both. The job takes about 73 to 99 minutes against the 120 minute limit. Raising
+`duration`, `warmup_restarts` or `ceiling_max` raises it.
+
+### A/A runs
+
+Setting `baseline` to the same commit as the candidate (for example its SHA) is an A/A run: both
+builds are the same code, so every result should be "same" and the baseline spread is the noise.
+Run it about ten times:
+
+```sh
+gh workflow run "Load Test" --ref <branch> -f dataset=web -f baseline=$(git rev-parse HEAD)
+```
+
+X is fixed from those runs, above the noise they show, before the comparison becomes a gate. Until
+then the default of 25 is a placeholder. No history is stored: each run stands alone.
+
 ## The ceiling
 
 `ceiling.sh` runs after the steady-state phases, once per phase. Report-only.
@@ -255,7 +333,7 @@ The ceiling has no gate: failed requests there are how it finds the ceiling.
   phase window, less the idle rate measured in the baseline window, divided by the phase's
   requests. Events are deduplicated by audit ID (a watch logs two stages) and placed in a window at
   one-second resolution; the script leaves a quiet gap between windows.
-- 5xx rate, 401 count, p95: from k6.
+- Failure rate (any non-200, timeouts included), 5xx rate, 401 count, p95: from k6.
 - CPU cores used: the server container's CPU seconds over the window (cadvisor reads either side
   of it, with a quiet gap, less the idle rate), divided by the window's length. The same read gives
   CPU seconds per request.
@@ -292,12 +370,18 @@ shape; absolute figures do not.
 | `identity.js` | k6 script: one phase per run |
 | `warmup.sh` | server restarts: cold start, memory, readiness settings, surge |
 | `lib.sh` | cadvisor reads, the phase list and the idle CPU read, shared by the scripts |
-| `run-phases.sh` | warm-up, baseline, steady-state phases; records windows and CPU; then the ceiling when asked |
+| `run-phases.sh` | k6 warm-up, baseline, steady-state phases; records windows and CPU; then the ceiling when asked |
 | `ceiling.sh` | each phase's ceiling: the ramp to the first failure, then the 30 s holds |
 | `ceiling.jq` | the ceiling's decisions: R from the ramp, hold rates, when a hold passes |
 | `ceiling_test.sh` | checks `ceiling.sh` and `ceiling.jq` with a fake `k6` and `kubectl` (needs only bash and jq) |
 | `count-audit.sh`, `count-audit.jq` | counts identity's API-server calls per phase and applies the gate |
-| `report.sh`, `report.jq` | job summary |
+| `report.sh`, `report.jq` | job summary of one run |
+| `metrics.jq` | the CPU figures, one copy: per-phase rows (`report.jq`, `compare.sh`), the idle rate (`lib.sh`) and a ceiling hold's cores (`ceiling.sh`) |
+| `swap-build.sh` | compare: switch the server to one build's image and restart it |
+| `compare-turns.sh` | compare: the four turns, each in its own folder, then each build's ceiling |
+| `count-turns.sh` | compare: counts per turn; the gate on candidate turns only |
+| `compare.sh`, `compare.jq` | compare: the job summary and the comparison rule |
+| `compare_test.sh` | checks `compare.jq` with hand-made turns, `compare.sh` with a part-finished ceiling search, `compare-turns.sh`'s `ceiling` switch (stub steps) and the workflow's input check; needs `jq` and mikefarah `yq`; run by `make lint` |
 | `idp.yaml` | stand-in identity provider serving the public key set |
 
 The cluster, namespace and release names are fixed (`unikorn-identity-load`, `identity-load`) so the
