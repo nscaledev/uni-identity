@@ -361,6 +361,7 @@ The X.509 certificate must be signed by the trusted client CA (typically issued 
 `unikorn-client-issuer` managed by cert-manager).
 The X.509 Common Name (CN) encoded in the certificate is the key to the system-account mapping e.g.
 `unikorn-kubernetes`.
+A certificate with no CN and one SPIFFE ID URI SAN uses that SPIFFE ID as the key.
 The mapped value references a role name that is either installed by default, or created
 specifically for your service.
 

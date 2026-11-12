@@ -18,6 +18,9 @@ limitations under the License.
 package openapi_test
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -27,6 +30,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -37,8 +41,10 @@ import (
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/go-chi/chi/v5"
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -52,6 +58,9 @@ import (
 	identityapi "github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/util"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -317,7 +326,7 @@ func getSchema(t *testing.T) *helpers.Schema {
 // middleware and any prerequisite. middleware that it depends upon.  Accepts a
 // hadnler that captures various things about the request if it makes it past
 // the middlweare stage so that it can be validated for correctness.
-func getMux(t *testing.T, authorizer openapi.Authorizer, handler *handler) http.Handler {
+func getMux(t *testing.T, authorizer openapi.Authorizer, handler *handler, opts ...openapi.ValidatorOption) http.Handler {
 	t.Helper()
 
 	options := &openapi.Options{
@@ -326,7 +335,7 @@ func getMux(t *testing.T, authorizer openapi.Authorizer, handler *handler) http.
 	}
 
 	routeresolver := routeresolver.New(getSchema(t))
-	validator := openapi.NewValidator(options, authorizer)
+	validator := openapi.NewValidator(options, authorizer, opts...)
 
 	r := chi.NewRouter()
 	r.Use(routeresolver.Middleware)
@@ -899,4 +908,1038 @@ func TestRequestValidationErrorMissingParameter(t *testing.T) {
 
 	require.Contains(t, description, "needed")
 	require.Contains(t, description, "value is required but missing")
+}
+
+const (
+	// relayerID is a registered SPIFFE ID on the relay list.
+	relayerID = "spiffe://example.org/ns/region/sa/region"
+	// unlistedID is a registered SPIFFE ID that is not on the relay list.
+	unlistedID = "spiffe://example.org/ns/compute/sa/compute"
+	// unregisteredID is a SPIFFE ID that is not registered.
+	unregisteredID = "spiffe://example.org/ns/other/sa/other"
+	// unregisteredCN is a common name that is not registered.
+	unregisteredCN = "unikorn-unknown"
+	// otherCN is a registered common name of another account.
+	otherCN = "compute-service"
+	// principalActor differs from the token subject, so that a test can tell a
+	// principal read from X-Principal from a generated one.
+	principalActor = "jane@acme.com"
+)
+
+// recorder keeps the authentication events of a validator.
+type recorder struct {
+	events []openapi.AuthenticationEvent
+}
+
+func (r *recorder) record(_ context.Context, event openapi.AuthenticationEvent) {
+	r.events = append(r.events, event)
+}
+
+// getIdentityMux returns the mux with the validator options that identity sets.
+func getIdentityMux(t *testing.T, authorizer openapi.Authorizer, h *handler) (http.Handler, *recorder) {
+	t.Helper()
+
+	rec := &recorder{}
+
+	systemAccounts := map[string]string{
+		serviceActor: "service",
+		otherCN:      "service",
+		relayerID:    "service",
+		unlistedID:   "service",
+	}
+
+	m := getMux(t, authorizer, h,
+		openapi.WithSystemAccounts(systemAccounts),
+		openapi.WithRelayers([]string{relayerID}),
+		openapi.WithAuthenticationRecorder(rec.record),
+	)
+
+	return m, rec
+}
+
+// newCertificate issues a self-signed certificate with an optional common name
+// and optional URI SANs.
+func newCertificate(t *testing.T, commonName string, notAfter time.Time, uris ...string) *x509.Certificate {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: commonName,
+		},
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  notAfter,
+	}
+
+	for _, uri := range uris {
+		u, err := url.Parse(uri)
+		require.NoError(t, err)
+
+		template.URIs = append(template.URIs, u)
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	certificate, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+
+	return certificate
+}
+
+func escapedPEM(certificate *x509.Certificate) string {
+	return url.QueryEscape(string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})))
+}
+
+// setPeer makes the request look as if it arrived on the SPIFFE listener, with a
+// verified peer.
+func setPeer(t *testing.T, r *http.Request, id string) {
+	t.Helper()
+
+	r.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{newCertificate(t, "", time.Now().Add(time.Hour), id)},
+	}
+}
+
+func addIngressCertificate(r *http.Request, certificate *x509.Certificate) {
+	r.Header.Set("Ssl-Client-Cert", escapedPEM(certificate))
+	r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+}
+
+func addPrincipalActorHeader(t *testing.T, r *http.Request) {
+	t.Helper()
+
+	dataJSON, err := json.Marshal(&principal.Principal{Type: identityapi.User, Actor: principalActor})
+	require.NoError(t, err)
+
+	r.Header.Set(principal.Header, base64.RawURLEncoding.EncodeToString(dataJSON))
+}
+
+func newRequest(t *testing.T) *http.Request {
+	t.Helper()
+
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authenticatedURL, nil)
+	require.NoError(t, err)
+
+	return r
+}
+
+// requireGenericRefusal checks for the 401 that names no reason, and returns the body.
+func requireGenericRefusal(t *testing.T, w *httptest.ResponseRecorder) string {
+	t.Helper()
+
+	require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode)
+
+	oauthError := &coreapi.Error{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), oauthError))
+	require.Equal(t, coreapi.AccessDenied, oauthError.Error)
+	require.Equal(t, util.AccessDeniedDescription, oauthError.ErrorDescription)
+
+	return w.Body.String()
+}
+
+func requireRefusal(t *testing.T, rec *recorder, listener, reason, peer string) {
+	t.Helper()
+
+	require.Equal(t, []openapi.AuthenticationEvent{
+		{Listener: listener, Result: "refused", Reason: reason, Peer: peer},
+	}, rec.events)
+}
+
+// TestRelayFromListedRelayer checks that a listed relayer gets the ACL of the
+// account that it relays, not its own.
+func TestRelayFromListedRelayer(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
+		info, err := authorization.FromContext(ctx)
+		require.NoError(t, err)
+		require.Equal(t, otherCN, info.Userinfo.Sub)
+
+		return &identityapi.Acl{}, nil
+	})
+
+	h := &handler{}
+	m, rec := getIdentityMux(t, authorizer, h)
+
+	r := newRequest(t)
+	setPeer(t, r, relayerID)
+	r.Header.Set("Unikorn-Client-Certificate", escapedPEM(newCertificate(t, otherCN, time.Now().Add(time.Hour))))
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	h.validate(t, otherCN, "")
+	require.Equal(t, []openapi.AuthenticationEvent{
+		{Listener: "spiffe", Result: "ok", Peer: relayerID, Subject: otherCN},
+	}, rec.events)
+}
+
+// TestRelayFromUnlistedPeerRefused checks that a registered peer that is not on
+// the relay list gets the generic 401 when it sends the relay header.
+func TestRelayFromUnlistedPeerRefused(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m, rec := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	setPeer(t, r, unlistedID)
+	addRelayedCertificateHeader(t, r)
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+	requireRefusal(t, rec, "spiffe", "relay_not_permitted", unlistedID)
+}
+
+// TestBadCertificateSubjectRefused checks that a subject that is empty, malformed
+// or not registered gets the generic 401 before any ACL lookup, so no cache entry
+// exists for it.  A common name that starts with spiffe:// is malformed.
+func TestBadCertificateSubjectRefused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		cn     string
+		uris   []string
+		reason string
+	}{
+		{
+			name:   "an empty subject",
+			reason: "subject_empty",
+		},
+		{
+			name:   "two SPIFFE IDs",
+			uris:   []string{relayerID, unlistedID},
+			reason: "subject_malformed",
+		},
+		{
+			name:   "an unregistered common name",
+			cn:     unregisteredCN,
+			reason: "not_registered",
+		},
+		{
+			name:   "a common name that starts with spiffe://",
+			cn:     relayerID,
+			reason: "subject_malformed",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := gomock.NewController(t)
+			defer c.Finish()
+
+			authorizer := mock.NewMockAuthorizer(c)
+
+			m, rec := getIdentityMux(t, authorizer, &handler{})
+
+			r := newRequest(t)
+			addIngressCertificate(r, newCertificate(t, test.cn, time.Now().Add(time.Hour), test.uris...))
+			addPrincipalHeader(t, r)
+
+			w := httptest.NewRecorder()
+			m.ServeHTTP(w, r)
+
+			requireGenericRefusal(t, w)
+			requireRefusal(t, rec, "legacy", test.reason, "")
+		})
+	}
+}
+
+// TestBearerTokenWithBadCertificateSubjectRefused checks that a bearer token caller
+// with X-Principal and a certificate that has no usable subject gets the generic
+// 401 before any ACL lookup.
+func TestBearerTokenWithBadCertificateSubjectRefused(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		certificate string
+		reason      string
+	}{
+		{
+			name:        "an empty subject",
+			certificate: escapedPEM(newCertificate(t, "", time.Now().Add(time.Hour))),
+			reason:      "subject_empty",
+		},
+		{
+			name:        "a common name that starts with spiffe://",
+			certificate: escapedPEM(newCertificate(t, relayerID, time.Now().Add(time.Hour))),
+			reason:      "subject_malformed",
+		},
+		{
+			name:        "a certificate that does not parse",
+			certificate: "cat",
+			reason:      "certificate_invalid",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := gomock.NewController(t)
+			defer c.Finish()
+
+			authorizer := mock.NewMockAuthorizer(c)
+			authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+
+			m, rec := getIdentityMux(t, authorizer, &handler{})
+
+			r := newRequest(t)
+			addAuthorizationHeader(t, r)
+			r.Header.Set("Ssl-Client-Cert", test.certificate)
+			r.Header.Set("Ssl-Client-Verify", "SUCCESS")
+			addPrincipalActorHeader(t, r)
+
+			w := httptest.NewRecorder()
+			m.ServeHTTP(w, r)
+
+			requireGenericRefusal(t, w)
+			requireRefusal(t, rec, "legacy", test.reason, "")
+		})
+	}
+}
+
+// TestNotRegisteredFromACLLookupRefused checks that an unregistered subject that
+// the ACL lookup finds gets the generic 401 in place of a server error.
+func TestNotRegisteredFromACLLookupRefused(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("%w: system account '%s' not registered", rbac.ErrSystemAccountNotRegistered, serviceActor))
+
+	m := getMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	addCertificateHeader(t, r, true)
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+}
+
+// TestUnregisteredSPIFFEPeerRefused checks the registry on the SPIFFE listener.
+func TestUnregisteredSPIFFEPeerRefused(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m, rec := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	setPeer(t, r, unregisteredID)
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+	requireRefusal(t, rec, "spiffe", "not_registered", unregisteredID)
+}
+
+// TestUnparseableRelayedCertificateRefused checks that a relayed certificate that
+// does not parse gets the generic 401, not a 500.
+func TestUnparseableRelayedCertificateRefused(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m, rec := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	setPeer(t, r, relayerID)
+	r.Header.Set("Unikorn-Client-Certificate", "cat")
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+	requireRefusal(t, rec, "spiffe", "certificate_invalid", relayerID)
+}
+
+// TestImpersonationOnSPIFFEListener checks that a verified peer reads X-Principal
+// and X-Impersonate, and that a direct and an impersonated call do not share an
+// ACL cache entry.
+func TestImpersonationOnSPIFFEListener(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	var impersonated []bool
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Times(2).DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
+		p, err := principal.FromContext(ctx)
+		require.NoError(t, err)
+		require.Equal(t, principalActor, p.Actor)
+
+		impersonated = append(impersonated, principal.ImpersonateFromContext(ctx))
+
+		return &identityapi.Acl{}, nil
+	})
+
+	m, _ := getIdentityMux(t, authorizer, &handler{})
+
+	for _, impersonate := range []bool{false, true} {
+		r := newRequest(t)
+		setPeer(t, r, relayerID)
+		addPrincipalActorHeader(t, r)
+
+		if impersonate {
+			r.Header.Set(principal.ImpersonateHeader, "true")
+		}
+
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+
+		require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	}
+
+	require.Equal(t, []bool{false, true}, impersonated)
+}
+
+// TestBoundTokenThroughListedRelayer checks that the bound token check sees the
+// relayed certificate when a listed relayer passes it on.
+func TestBoundTokenThroughListedRelayer(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	relayed := escapedPEM(newCertificate(t, otherCN, time.Now().Add(time.Hour)))
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).DoAndReturn(func(input *openapi3filter.AuthenticationInput) (*authorization.Info, error) {
+		certificate, err := authorization.ClientCertFromContext(input.RequestValidationInput.Request.Context())
+		require.NoError(t, err)
+		require.Equal(t, relayed, certificate)
+
+		return authInfoFixture(identityapi.User), nil
+	})
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	m, _ := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	setPeer(t, r, relayerID)
+	r.Header.Set("Unikorn-Client-Certificate", relayed)
+	addAuthorizationHeader(t, r)
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+}
+
+// TestBoundTokenThroughUnlistedPeerRefused checks that the relay rule also covers
+// the bearer branch.
+func TestBoundTokenThroughUnlistedPeerRefused(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m, _ := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	setPeer(t, r, unlistedID)
+	r.Header.Set("Unikorn-Client-Certificate", escapedPEM(newCertificate(t, otherCN, time.Now().Add(time.Hour))))
+	addAuthorizationHeader(t, r)
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+}
+
+// TestIngressHeadersIgnoredOnSPIFFEListener checks that the caller of a request
+// with a verified peer is the peer, and the ingress headers are not read.
+func TestIngressHeadersIgnoredOnSPIFFEListener(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m, _ := getIdentityMux(t, authorizer, h)
+
+	r := newRequest(t)
+	setPeer(t, r, relayerID)
+	addIngressCertificate(r, newCertificate(t, otherCN, time.Now().Add(time.Hour)))
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	h.validate(t, relayerID, "")
+}
+
+// TestRefusalNamesNoReason checks that the response to a refusal names neither the
+// subject nor the reason, and that the reason goes to one log line of the request
+// logger, which carries the trace ID.
+func TestRefusalNamesNoReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		setup  func(t *testing.T, r *http.Request)
+		reason string
+	}{
+		{
+			name: "an unregistered subject",
+			setup: func(t *testing.T, r *http.Request) {
+				t.Helper()
+				addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
+			},
+			reason: "not_registered",
+		},
+		{
+			name: "an unlisted peer that relays",
+			setup: func(t *testing.T, r *http.Request) {
+				t.Helper()
+				setPeer(t, r, unlistedID)
+				addRelayedCertificateHeader(t, r)
+			},
+			reason: "relay_not_permitted",
+		},
+	}
+
+	bodies := make([]string, 0, len(tests))
+
+	for _, test := range tests {
+		c := gomock.NewController(t)
+
+		authorizer := mock.NewMockAuthorizer(c)
+
+		m, _ := getIdentityMux(t, authorizer, &handler{})
+
+		var lines []map[string]any
+
+		logger := funcr.NewJSON(func(obj string) {
+			line := map[string]any{}
+			require.NoError(t, json.Unmarshal([]byte(obj), &line))
+
+			if line["msg"] == "error detail" {
+				lines = append(lines, line)
+			}
+		}, funcr.Options{}).WithValues("traceID", "trace-1")
+
+		r := newRequest(t)
+		r = r.WithContext(log.IntoContext(r.Context(), logger))
+		test.setup(t, r)
+		addPrincipalHeader(t, r)
+
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+
+		body := requireGenericRefusal(t, w)
+		require.NotContains(t, body, unregisteredCN, test.name)
+		require.NotContains(t, body, "spiffe", test.name)
+		require.NotContains(t, body, test.reason, test.name)
+
+		require.Len(t, lines, 1, test.name)
+		require.Equal(t, test.reason, lines[0]["reason"], test.name)
+		require.Equal(t, "trace-1", lines[0]["traceID"], test.name)
+
+		bodies = append(bodies, body)
+
+		c.Finish()
+	}
+
+	require.Equal(t, bodies[0], bodies[1])
+}
+
+// TestRelayOfUnregisteredSubjectLabels checks that a refused relay records the
+// verified peer but not the relayed subject, so the counter labels stay bounded.
+// On the legacy listener the peer comes from a header, so it is not recorded.
+func TestRelayOfUnregisteredSubjectLabels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		setPeer  func(t *testing.T, r *http.Request)
+		listener string
+		peer     string
+	}{
+		{
+			name: "spiffe listener",
+			setPeer: func(t *testing.T, r *http.Request) {
+				t.Helper()
+				setPeer(t, r, relayerID)
+			},
+			listener: "spiffe",
+			peer:     relayerID,
+		},
+		{
+			name: "legacy listener",
+			setPeer: func(t *testing.T, r *http.Request) {
+				t.Helper()
+				addCertificateHeader(t, r, true)
+			},
+			listener: "legacy",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := gomock.NewController(t)
+			defer c.Finish()
+
+			authorizer := mock.NewMockAuthorizer(c)
+
+			m, rec := getIdentityMux(t, authorizer, &handler{})
+
+			r := newRequest(t)
+			test.setPeer(t, r)
+			r.Header.Set("Unikorn-Client-Certificate", escapedPEM(newCertificate(t, unregisteredCN, time.Now().Add(time.Hour))))
+			addPrincipalHeader(t, r)
+
+			w := httptest.NewRecorder()
+			m.ServeHTTP(w, r)
+
+			requireGenericRefusal(t, w)
+			requireRefusal(t, rec, test.listener, "not_registered", test.peer)
+		})
+	}
+}
+
+// TestVerifiedPeerWithCommonNameRefused checks that a verified peer with a common
+// name is refused, also when that common name is registered.
+func TestVerifiedPeerWithCommonNameRefused(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m, rec := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	r.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{newCertificate(t, serviceActor, time.Now().Add(time.Hour), relayerID)},
+	}
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+	requireRefusal(t, rec, "spiffe", "peer_has_common_name", "")
+}
+
+// TestExpiredPeerRefused checks that a request on a connection that outlives the
+// peer certificate is refused.
+func TestExpiredPeerRefused(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m, rec := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	r.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{newCertificate(t, "", time.Now().Add(-time.Minute), relayerID)},
+	}
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+	requireRefusal(t, rec, "spiffe", "peer_expired", "")
+}
+
+// TestBearerTokenWithUnregisteredCertificate checks that a bearer token caller
+// with an unregistered certificate gets the generic 401 when it sends X-Principal
+// or X-Impersonate.
+// Without X-Principal or X-Impersonate the registry is not checked, so that
+// caller keeps the result that it gets with no registry.
+func TestBearerTokenWithUnregisteredCertificate(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with X-Principal", func(t *testing.T) {
+		t.Parallel()
+
+		c := gomock.NewController(t)
+		defer c.Finish()
+
+		authorizer := mock.NewMockAuthorizer(c)
+		authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+
+		m, _ := getIdentityMux(t, authorizer, &handler{})
+
+		r := newRequest(t)
+		addAuthorizationHeader(t, r)
+		addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
+		addPrincipalActorHeader(t, r)
+
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+
+		requireGenericRefusal(t, w)
+	})
+
+	t.Run("with X-Impersonate", func(t *testing.T) {
+		t.Parallel()
+
+		c := gomock.NewController(t)
+		defer c.Finish()
+
+		authorizer := mock.NewMockAuthorizer(c)
+		authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+
+		m, _ := getIdentityMux(t, authorizer, &handler{})
+
+		r := newRequest(t)
+		addAuthorizationHeader(t, r)
+		addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
+		r.Header.Set(principal.ImpersonateHeader, "true")
+
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+
+		requireGenericRefusal(t, w)
+	})
+
+	t.Run("without X-Principal or X-Impersonate", func(t *testing.T) {
+		t.Parallel()
+
+		c := gomock.NewController(t)
+		defer c.Finish()
+
+		authorizer := mock.NewMockAuthorizer(c)
+		authorizer.EXPECT().Authorize(gomock.Any()).Times(2).Return(authInfoFixture(identityapi.User), nil)
+
+		certificate := newCertificate(t, unregisteredCN, time.Now().Add(time.Hour))
+
+		responses := make([]*httptest.ResponseRecorder, 0, 2)
+
+		identityMux, _ := getIdentityMux(t, authorizer, &handler{})
+
+		for _, m := range []http.Handler{identityMux, getMux(t, authorizer, &handler{})} {
+			r := newRequest(t)
+			addAuthorizationHeader(t, r)
+			addIngressCertificate(r, certificate)
+
+			w := httptest.NewRecorder()
+			m.ServeHTTP(w, r)
+
+			responses = append(responses, w)
+		}
+
+		require.Equal(t, http.StatusBadRequest, responses[0].Code)
+		require.Equal(t, responses[1].Code, responses[0].Code)
+		require.Equal(t, responses[1].Body.String(), responses[0].Body.String())
+	})
+
+	t.Run("on the SPIFFE listener without X-Principal", func(t *testing.T) {
+		t.Parallel()
+
+		c := gomock.NewController(t)
+		defer c.Finish()
+
+		authorizer := mock.NewMockAuthorizer(c)
+		authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+
+		m, _ := getIdentityMux(t, authorizer, &handler{})
+
+		r := newRequest(t)
+		addAuthorizationHeader(t, r)
+		setPeer(t, r, unregisteredID)
+
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+
+		requireGenericRefusal(t, w)
+	})
+}
+
+// TestLegacyRegisteredAndUnregisteredCommonName checks the legacy listener: a
+// registered common name keeps working, and an unregistered one gets the generic
+// 401 in place of a server error.
+func TestLegacyRegisteredAndUnregisteredCommonName(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).Return(&identityapi.Acl{}, nil)
+
+	h := &handler{}
+	m, rec := getIdentityMux(t, authorizer, h)
+
+	r := newRequest(t)
+	addCertificateHeader(t, r, true)
+	addPrincipalHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	h.validate(t, serviceActor, "")
+	require.Equal(t, []openapi.AuthenticationEvent{
+		{Listener: "legacy", Result: "ok", Subject: serviceActor},
+	}, rec.events)
+
+	r = newRequest(t)
+	addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
+	addPrincipalHeader(t, r)
+
+	w = httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+}
+
+// TestRegisteredCertificateWithBearerTokenReadsPrincipal checks the user ACL
+// lookup of region: a user token, the certificate of region and X-Principal.
+func TestRegisteredCertificateWithBearerTokenReadsPrincipal(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+	authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+	authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, _ string) (*identityapi.Acl, error) {
+		p, err := principal.FromContext(ctx)
+		require.NoError(t, err)
+		require.Equal(t, principalActor, p.Actor)
+
+		return &identityapi.Acl{}, nil
+	})
+
+	m, rec := getIdentityMux(t, authorizer, &handler{})
+
+	r := newRequest(t)
+	addAuthorizationHeader(t, r)
+	addCertificateHeader(t, r, true)
+	addPrincipalActorHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	require.Empty(t, rec.events)
+}
+
+// TestNilSystemAccountsRefuseAnUnregisteredSubject checks that an unset
+// --system-account-roles-ids, which gives a nil map, keeps the registry check
+// on: an unregistered subject that sends X-Principal gets the generic 401, and
+// no ACL lookup runs.
+func TestNilSystemAccountsRefuseAnUnregisteredSubject(t *testing.T) {
+	t.Parallel()
+
+	c := gomock.NewController(t)
+	defer c.Finish()
+
+	authorizer := mock.NewMockAuthorizer(c)
+
+	m := getMux(t, authorizer, &handler{}, openapi.WithSystemAccounts(nil))
+
+	r := newRequest(t)
+	addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
+	addPrincipalActorHeader(t, r)
+
+	w := httptest.NewRecorder()
+	m.ServeHTTP(w, r)
+
+	requireGenericRefusal(t, w)
+}
+
+// TestUnregisteredSubjectRefusedBeforePrincipal checks that an unregistered
+// subject gets the same generic 401 whatever it sends in X-Principal and
+// X-Impersonate, and that no ACL lookup runs.
+func TestUnregisteredSubjectRefusedBeforePrincipal(t *testing.T) {
+	t.Parallel()
+
+	callers := map[string]func(t *testing.T, r *http.Request){
+		"legacy": func(t *testing.T, r *http.Request) {
+			t.Helper()
+			addIngressCertificate(r, newCertificate(t, unregisteredCN, time.Now().Add(time.Hour)))
+		},
+		"spiffe": func(t *testing.T, r *http.Request) {
+			t.Helper()
+			setPeer(t, r, unregisteredID)
+		},
+	}
+
+	headers := map[string]func(t *testing.T, r *http.Request){
+		"principal and impersonate": func(t *testing.T, r *http.Request) {
+			t.Helper()
+			addPrincipalHeader(t, r)
+			r.Header.Set(principal.ImpersonateHeader, "true")
+		},
+		"bad principal": func(t *testing.T, r *http.Request) {
+			t.Helper()
+			r.Header.Set(principal.Header, "!!")
+		},
+		"impersonate without principal": func(t *testing.T, r *http.Request) {
+			t.Helper()
+			r.Header.Set(principal.ImpersonateHeader, "true")
+		},
+		"neither": func(t *testing.T, _ *http.Request) {
+			t.Helper()
+		},
+	}
+
+	bodies := make([]string, 0, len(callers)*len(headers))
+
+	for callerName, caller := range callers {
+		for headerName, header := range headers {
+			c := gomock.NewController(t)
+
+			authorizer := mock.NewMockAuthorizer(c)
+
+			m, _ := getIdentityMux(t, authorizer, &handler{})
+
+			r := newRequest(t)
+			caller(t, r)
+			header(t, r)
+
+			w := httptest.NewRecorder()
+			m.ServeHTTP(w, r)
+
+			require.Equal(t, http.StatusUnauthorized, w.Result().StatusCode, callerName+", "+headerName)
+
+			bodies = append(bodies, requireGenericRefusal(t, w))
+
+			c.Finish()
+		}
+	}
+
+	for _, body := range bodies {
+		require.Equal(t, bodies[0], body)
+	}
+}
+
+// expiringPeer sets a verified peer whose leaf expires one to two seconds from
+// now, because a certificate keeps whole seconds.  It returns a function that
+// waits until the leaf has expired.
+func expiringPeer(t *testing.T, r *http.Request, id string) func() {
+	t.Helper()
+
+	leaf := newCertificate(t, "", time.Now().Add(2*time.Second), id)
+
+	r.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{leaf},
+	}
+
+	return func() {
+		time.Sleep(time.Until(leaf.NotAfter) + 10*time.Millisecond)
+	}
+}
+
+// TestPeerThatExpiresDuringARequestRefused checks that a verified peer whose leaf
+// expires while the request runs gets the generic 401 at the next read of the
+// peer certificate.
+func TestPeerThatExpiresDuringARequestRefused(t *testing.T) {
+	t.Parallel()
+
+	t.Run("inside Authorize", func(t *testing.T) {
+		t.Parallel()
+
+		c := gomock.NewController(t)
+		defer c.Finish()
+
+		r := newRequest(t)
+		expire := expiringPeer(t, r, relayerID)
+		addAuthorizationHeader(t, r)
+		addPrincipalActorHeader(t, r)
+
+		authorizer := mock.NewMockAuthorizer(c)
+		authorizer.EXPECT().Authorize(gomock.Any()).DoAndReturn(func(*openapi3filter.AuthenticationInput) (*authorization.Info, error) {
+			expire()
+
+			return authInfoFixture(identityapi.User), nil
+		})
+
+		// With no registry, the next read is the read of the principal.
+		rec := &recorder{}
+		m := getMux(t, authorizer, &handler{}, openapi.WithAuthenticationRecorder(rec.record))
+
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+
+		requireGenericRefusal(t, w)
+		require.Len(t, rec.events, 1)
+		require.Equal(t, "peer_expired", rec.events[0].Reason)
+	})
+
+	t.Run("inside the ACL lookup", func(t *testing.T) {
+		t.Parallel()
+
+		c := gomock.NewController(t)
+		defer c.Finish()
+
+		r := newRequest(t)
+		expire := expiringPeer(t, r, relayerID)
+		addAuthorizationHeader(t, r)
+		addPrincipalActorHeader(t, r)
+
+		authorizer := mock.NewMockAuthorizer(c)
+		authorizer.EXPECT().Authorize(gomock.Any()).Return(authInfoFixture(identityapi.User), nil)
+		authorizer.EXPECT().GetACL(gomock.Any(), gomock.Any()).DoAndReturn(func(context.Context, string) (*identityapi.Acl, error) {
+			expire()
+
+			return &identityapi.Acl{}, nil
+		})
+
+		m, rec := getIdentityMux(t, authorizer, &handler{})
+
+		w := httptest.NewRecorder()
+		m.ServeHTTP(w, r)
+
+		requireGenericRefusal(t, w)
+		require.Len(t, rec.events, 1)
+		require.Equal(t, "peer_expired", rec.events[0].Reason)
+	})
 }
