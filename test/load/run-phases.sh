@@ -7,7 +7,8 @@
 # Environment (all required unless a default is shown):
 #   BASE_URL           identity's base URL
 #   TOKENS             tokens.json from hack/ci/loadfixtures
-#   OUT_DIR            output directory: phases.json, k6-<phase>.json
+#   OUT_DIR            output directory: phases.json, k6-<phase>.json, and
+#                      k6-<phase>.log (k6's per-request log, kept off the console)
 #   NAMESPACE          identity's namespace
 #   SERVER_DEPLOYMENT  identity's server deployment (also its container name)
 #   RATE               requests per second per phase (20)
@@ -50,7 +51,7 @@ mkdir -p "${OUT_DIR}"
 echo "==> Warming up" >&2
 for phase in "${PHASES[@]}"; do
   PHASE="${phase}" MODE=fixed RATE=5 DURATION=5 SUMMARY_OUT="${OUT_DIR}/warmup-${phase}.json" \
-    k6 run -q "${HERE}/identity.js" || { echo "ERROR: warm-up of ${phase} failed; fixtures or trust are wrong" >&2; exit 1; }
+    k6_run "${OUT_DIR}/warmup-${phase}.log" || { echo "ERROR: warm-up of ${phase} failed; fixtures or trust are wrong" >&2; k6_excerpt "${OUT_DIR}/warmup-${phase}.log"; exit 1; }
 done
 
 echo "==> Baseline (${BASELINE_SECONDS}s, no load)" >&2
@@ -72,13 +73,18 @@ for phase in "${PHASES[@]}"; do
   start=$(now)
 
   k6_status=0
-  PHASE="${phase}" MODE=fixed SUMMARY_OUT="${OUT_DIR}/k6-${phase}.json" k6 run -q "${HERE}/identity.js" || k6_status=$?
+  PHASE="${phase}" MODE=fixed SUMMARY_OUT="${OUT_DIR}/k6-${phase}.json" k6_run "${OUT_DIR}/k6-${phase}.log" || k6_status=$?
 
   end=$(now)
   sleep "${SETTLE}"
   cpu1=$(read_cpu)
 
-  [[ "${k6_status}" -eq 0 ]] || status=1
+  # A steady phase is meant to run clean: say so loudly, with the cause.
+  if [[ "${k6_status}" -ne 0 ]]; then
+    status=1
+    echo "FAIL ${phase}: k6 exited ${k6_status}; its thresholds failed (a failed request, a 5xx or a 401). First errors:" >&2
+    k6_excerpt "${OUT_DIR}/k6-${phase}.log"
+  fi
 
   # Requests are the 200 responses: failures do no cache-served work and
   # would dilute calls per request.

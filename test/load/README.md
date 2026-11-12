@@ -289,6 +289,20 @@ gh workflow run "Load Test" --ref <branch> -f dataset=web -f baseline=$(git rev-
 X is fixed from those runs, above the noise they show, before the comparison becomes a gate. Until
 then the default of 25 is a placeholder. No history is stored: each run stands alone.
 
+## Reading the output
+
+The console has one summary line per k6 run (`auth0-bearer (fixed): 32222 requests, 0 failed, ...`)
+and one line per step. k6 also logs a `Request Failed` warning for every failed request; those go
+to a file, not the console, through `--log-output=file=<path>,level=warning` (`k6_run` in
+`lib.sh`). There is one file per k6 run, next to its summary in the output folder
+(`k6-<phase>.log`, `k6-ceiling-<phase>.log`, `k6-hold-<phase>-<share>.log`, `warmup-*.log`), and
+the workflows upload the whole folder with the results.
+
+The ceiling ramp is meant to fail: it finds the edge. Its lines say so (`failures expected`), and
+each hold says `clean -> ceiling` or `backing off`. A steady phase is meant to run clean. When one
+fails its thresholds the console shows a `FAIL <phase>` line and the first few errors from its k6
+log, and the run still exits non-zero.
+
 ## The ceiling
 
 `ceiling.sh` runs after the steady-state phases, once per phase. Report-only.
@@ -398,7 +412,7 @@ shape; absolute figures do not.
 | `run-phases.sh` | k6 warm-up, baseline, steady-state phases; records windows and CPU; then the ceiling when asked |
 | `ceiling.sh` | each phase's ceiling: the ramp to the first failure, then the 30 s holds |
 | `ceiling.jq` | the ceiling's decisions: R from the ramp, hold rates, when a hold passes |
-| `ceiling_test.sh` | checks `ceiling.sh` and `ceiling.jq` with a fake `k6` and `kubectl` (needs only bash and jq) |
+| `ceiling_test.sh` | checks `ceiling.sh` and `ceiling.jq` with a fake `k6` and `kubectl`, and that k6's per-request lines stay off the console (needs only bash and jq) |
 | `count-audit.sh`, `count-audit.jq` | counts identity's API-server calls per phase and applies the gate |
 | `report.sh`, `report.jq` | job summary of one run |
 | `metrics.jq` | the CPU figures, one copy: per-phase rows (`report.jq`, `compare.sh`), the idle rate (`lib.sh`) and a ceiling hold's cores (`ceiling.sh`) |

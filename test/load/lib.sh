@@ -54,3 +54,21 @@ PHASES=(auth0-bearer passport-exchange acl-heavy service-account)
 idle_cores() {
   jq -r -L "$(dirname "${BASH_SOURCE[0]}")" 'include "metrics"; idle_cores(.)' "$1"
 }
+
+# k6_run LOG runs identity.js with k6's own log, one line per failed request,
+# written to LOG and not the console; only the summary line reaches stdout. k6
+# appends to LOG, so each run gets its own. The environment (PHASE, MODE, ...)
+# is read by identity.js. See "Reading the output" in the README.
+k6_run() {
+  k6 run -q --log-output="file=$1,level=warning" "$(dirname "${BASH_SOURCE[0]}")/identity.js"
+}
+
+# k6_excerpt LOG prints, to stderr, the first few error lines of k6's log, so
+# the cause of an unexpected failure is on the console (5 lines at most). The rest stays in LOG.
+k6_excerpt() {
+  [[ -s "$1" ]] || { echo "    (k6 logged nothing to $1)" >&2; return 0; }
+  # Errors first (a threshold, a crash), then a couple of failed requests:
+  # the first lines alone would all be per-request ones.
+  { grep -m3 'level=error' "$1" || true; grep -m2 'Request Failed' "$1" || true; } | sed 's/^/    /' >&2
+  echo "    (all of k6's log: $1)" >&2
+}

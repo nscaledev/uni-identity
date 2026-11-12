@@ -72,8 +72,19 @@ check window-end-excluded 0 ""
 mkdir -p "${DIR}/bin"
 cat > "${DIR}/bin/k6" <<'K6'
 #!/usr/bin/env bash
+# Like k6, it logs to the file named by --log-output=file=PATH,level=warning,
+# or to the console without it.
+logfile=/dev/stderr
+for a in "$@"; do
+  case "${a}" in --log-output=file=*,level=warning) logfile="${a#--log-output=file=}"; logfile="${logfile%,level=warning}" ;; esac
+done
 jq -n '{requests: 400, countNotOK: 0}' > "${SUMMARY_OUT}"
-[[ "${PHASE}" != acl-heavy || "${DURATION}" == 5 ]] || exit 99
+echo "stub summary ${PHASE}"
+for _ in 1 2 3 4 5 6 7 8; do echo 'time="x" level=warning msg="Request Failed" error="EOF"' >> "${logfile}"; done
+if [[ "${PHASE}" == acl-heavy && "${DURATION}" != 5 ]]; then
+  echo 'time="x" level=error msg="thresholds on metrics have been crossed"' >> "${logfile}"
+  exit 99
+fi
 K6
 cat > "${DIR}/bin/kubectl" <<'KUBECTL'
 #!/usr/bin/env bash
@@ -93,6 +104,24 @@ if [[ "${rc}" != 0 && "${got}" == "auth0-bearer=0 passport-exchange=0 acl-heavy=
   echo "ok   run-phases-k6-failure"
 else
   echo "FAIL run-phases-k6-failure: exit ${rc}; phases: ${got}"; cat "${DIR}/run.log"; failed=1
+fi
+
+# The console has the summaries, and for the failed phase a FAIL line with the
+# first k6 errors (at most 5); the per-request lines are in the k6 log files.
+if [[ "$(grep -c 'Request Failed' "${DIR}/run.log")" -le 5 ]] && grep -q 'stub summary acl-heavy' "${DIR}/run.log"; then
+  echo "ok   run-phases-console-quiet"
+else
+  echo "FAIL run-phases-console-quiet: per-request lines on the console, or no summary"; cat "${DIR}/run.log"; failed=1
+fi
+if grep -q '^FAIL acl-heavy: k6 exited 99' "${DIR}/run.log" && grep -q 'thresholds on metrics have been crossed' "${DIR}/run.log"; then
+  echo "ok   run-phases-fail-line-and-excerpt"
+else
+  echo "FAIL run-phases-fail-line-and-excerpt"; cat "${DIR}/run.log"; failed=1
+fi
+if [[ "$(grep -c 'Request Failed' "${DIR}/run/k6-acl-heavy.log" 2>/dev/null)" == 8 ]]; then
+  echo "ok   run-phases-k6-log-file"
+else
+  echo "FAIL run-phases-k6-log-file: k6-acl-heavy.log lacks the 8 per-request lines"; failed=1
 fi
 
 exit "${failed}"
