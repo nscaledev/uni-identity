@@ -15,7 +15,8 @@
 #      that hold's rate; if all three fail it is null.
 # The decisions are in ceiling.jq.
 #
-# Output: OUT_DIR/ceiling-<phase>.json, plus the k6 summaries it came from.
+# Output: OUT_DIR/ceiling-<phase>.json, plus the k6 summaries it came from and
+# k6's per-request logs (k6-*.log), which the console does not show.
 #
 # Environment (all required unless a default is shown):
 #   BASE_URL, TOKENS, OUT_DIR, NAMESPACE, SERVER_DEPLOYMENT   as run-phases.sh
@@ -39,11 +40,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mkdir -p "${OUT_DIR}"
 
 # k6 exits 99 when a threshold fails, which is how a failed request shows. Any
-# other non-zero exit is the tooling and stops the run.
+# other non-zero exit is the tooling and stops the run. LOG is k6's own log.
 run_k6() {
   local status=0
-  k6 run -q "${HERE}/identity.js" >&2 || status=$?
-  [[ "${status}" -eq 0 || "${status}" -eq 99 ]] || { echo "ERROR: k6 exited ${status} for ${PHASE}" >&2; exit 1; }
+  k6_run "$1" >&2 || status=$?
+  [[ "${status}" -eq 0 || "${status}" -eq 99 ]] || { echo "ERROR: k6 exited ${status} for ${PHASE}" >&2; k6_excerpt "$1"; exit 1; }
 }
 
 # Warm up: caches and validators are not what is measured. A restart has
@@ -51,13 +52,14 @@ run_k6() {
 echo "==> Warming up for the ceiling" >&2
 for phase in "${PHASES[@]}"; do
   PHASE="${phase}" MODE=fixed RATE=5 DURATION=5 SUMMARY_OUT="${OUT_DIR}/warmup-ceiling-${phase}.json" \
-    k6 run -q "${HERE}/identity.js" >&2 || { echo "ERROR: warm-up of ${phase} failed; fixtures or trust are wrong" >&2; exit 1; }
+    k6_run "${OUT_DIR}/warmup-ceiling-${phase}.log" >&2 \
+      || { echo "ERROR: warm-up of ${phase} failed; fixtures or trust are wrong" >&2; k6_excerpt "${OUT_DIR}/warmup-ceiling-${phase}.log"; exit 1; }
 done
 
 for phase in "${PHASES[@]}"; do
-  echo "==> Ceiling ${phase}: ramp ${RATE} to ${CEILING_MAX} req/s" >&2
+  echo "==> Ceiling ${phase}: ramp ${RATE} to ${CEILING_MAX} req/s (failures expected: this finds the edge)" >&2
   export PHASE="${phase}"
-  MODE=ceiling RATE="${RATE}" CEILING_MAX="${CEILING_MAX}" SUMMARY_OUT="${OUT_DIR}/k6-ceiling-${phase}.json" run_k6
+  MODE=ceiling RATE="${RATE}" CEILING_MAX="${CEILING_MAX}" SUMMARY_OUT="${OUT_DIR}/k6-ceiling-${phase}.json" run_k6 "${OUT_DIR}/k6-ceiling-${phase}.log"
   ramp="${OUT_DIR}/k6-ceiling-${phase}.json"
   result=$(jq -c -L "${HERE}" 'include "ceiling"; ramp_result' "${ramp}")
   r=$(jq -r .r <<< "${result}")
@@ -71,10 +73,10 @@ for phase in "${PHASES[@]}"; do
   holds='[]'
   for share in 0.9 0.7 0.5; do
     rate=$(jq -n -L "${HERE}" --argjson r "${r}" --argjson s "${share}" 'include "ceiling"; hold_rate($r; $s)')
-    echo "==> ${phase}: hold ${rate} req/s (${share} of ${r}) for ${HOLD_SECONDS}s" >&2
+    echo "==> ${phase}: hold ${rate} req/s (${share} of ${r}) for ${HOLD_SECONDS}s (failures here mean back off)" >&2
     out="${OUT_DIR}/k6-hold-${phase}-${share}.json"
     start=$(date +%s.%N)
-    MODE=fixed RATE="${rate}" DURATION="${HOLD_SECONDS}" SUMMARY_OUT="${out}" run_k6
+    MODE=fixed RATE="${rate}" DURATION="${HOLD_SECONDS}" SUMMARY_OUT="${out}" run_k6 "${OUT_DIR}/k6-hold-${phase}-${share}.log"
     end=$(date +%s.%N)
     sleep "${SETTLE}"
     cpu_after=$(read_cpu)
@@ -87,9 +89,14 @@ for phase in "${PHASES[@]}"; do
     holds=$(jq -c -L "${HERE}" --argjson rate "${rate}" --argjson cores "${cores}" --slurpfile k "${out}" \
       'include "ceiling"; . + [$k[0] | hold_record($rate; $cores)]' <<< "${holds}")
     cpu_before="${cpu_after}" t_before="${t_after}"
-    jq -e '.[-1].pass' <<< "${holds}" > /dev/null && break
+    if jq -e '.[-1].pass' <<< "${holds}" > /dev/null; then
+      echo "==> ${phase}: hold ${rate} req/s: clean -> ceiling ${rate} req/s" >&2
+      break
+    fi
+    echo "==> ${phase}: hold ${rate} req/s: $(jq -r '.[-1] | "\(.failed) failed, \(.deliveredRps | floor) delivered"' <<< "${holds}"), backing off" >&2
   done
   ceiling=$(jq -c -L "${HERE}" --argjson holds "${holds}" -n 'include "ceiling"; ceiling_of($holds)')
+  [[ "${ceiling}" != null ]] || echo "==> ${phase}: no hold passed: the ceiling is below $(jq -r '.[-1].rate' <<< "${holds}") req/s" >&2
 
   # The ceiling's figures are its hold's; null when no hold passed.
   jq -n --arg phase "${phase}" --argjson result "${result}" --argjson holds "${holds}" \

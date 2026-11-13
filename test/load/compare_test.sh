@@ -12,7 +12,7 @@ run() {
   jq -n --argjson cpu "$1" --argjson p95 "$2" '
     ["baseline", "candidate", "candidate", "baseline"] | to_entries
     | map({build: .value, rows: (if .key == (env.DROP // "-1" | tonumber) then [] else [{name: "acl-heavy", cpuPerRequest: $cpu[.key], p95Ms: $p95[.key]}] end)})' \
-    | jq -c --arg ref v1.0.0 --argjson margin "${3:-25}" -f "${HERE}/compare.jq"
+    | jq -c --arg ref v1.0.0 --argjson margin "${3:-25}" --argjson gate "${GATE:-false}" -L "${HERE}" -f "${HERE}/compare.jq"
 }
 
 # expect NAME CPU P95 CPU_VERDICT P95_VERDICT [MARGIN]
@@ -53,6 +53,24 @@ if [[ "${got}" == "no reading no reading" ]]; then echo "ok   first-turn-missing
 line=$(run '[1.0,1.4,1.5,1.1]' '[100,100,100,100]' | jq -r '.[0].line')
 want='CPU per request, acl-heavy: +38.1% vs v1.0.0 (candidate turns +33.3%, +42.9%; baseline spread 9.5%) — worse (report-only)'
 if [[ "${line}" == "${want}" ]]; then echo "ok   line"; else echo "FAIL line: ${line}"; failed=1; fi
+
+# A zero change reads "0%", and one that rounds to zero does too; never "+0%"
+# or "-0%" (the table's vs baseline columns use the same def, signed_pct).
+line=$(run '[1.0,1.0,1.0,1.0]' '[100,100,100,100]' | jq -r '.[0].line')
+if [[ "${line}" == *": 0% vs v1.0.0 (candidate turns 0%, 0%;"* ]]; then echo "ok   zero-change-line"; else echo "FAIL zero-change-line: ${line}"; failed=1; fi
+line=$(run '[1.0,0.9996,1.0,1.0]' '[100,100,100,100]' | jq -r '.[0].line')
+if [[ "${line}" == *": 0% vs v1.0.0 (candidate turns 0%, 0%;"* ]]; then echo "ok   rounds-to-zero-line"; else echo "FAIL rounds-to-zero-line: ${line}"; failed=1; fi
+
+# The gate's rule at its margin (100, 2x): only CPU is gated, p95 never is. A
+# 2.5x candidate is worse and gated; a 1.3x one is same; the lines say "gated".
+expect gate-2.5x    '[1.0,2.5,2.6,1.1]'    '[100,250,260,110]' worse worse 100
+expect gate-1.3x    '[1.0,1.3,1.4,1.1]'    '[100,130,140,110]' same same 100
+got=$(GATE=true run '[1.0,2.5,2.6,1.1]' '[100,250,260,110]' 100 | jq -r '[.[] | "\(.check)=\(.gated)"] | join(" ")')
+if [[ "${got}" == "CPU per request=true p95 latency=false" ]]; then echo "ok   gated-flags"; else echo "FAIL gated-flags: ${got}"; failed=1; fi
+got=$(GATE=true run '[1.0,2.5,2.6,1.1]' '[100,250,260,110]' 100 | jq -r '[.[].line | capture("\\((?<m>gated|report-only)\\)$").m] | join(" ")')
+if [[ "${got}" == "gated report-only" ]]; then echo "ok   gated-wording"; else echo "FAIL gated-wording: ${got}"; failed=1; fi
+got=$(GATE=true run '[1.0,null,1.5,1.1]' '[100,100,100,100]' 100 | jq -r '.[0] | "\(.verdict) \(.gated)"')
+if [[ "${got}" == "no reading true" ]]; then echo "ok   gated-no-reading"; else echo "FAIL gated-no-reading: ${got}"; failed=1; fi
 
 # compare.sh with a ceiling search that stopped part way: each phase of each
 # build stands alone, "not measured" fills the gaps, the order is the run order
@@ -105,6 +123,14 @@ for want in "false:" "true:baseline candidate " ":baseline candidate "; do
   got=$(turns_ceilings "${want%%:*}")
   if [[ "${got}" == "${want#*:}" ]]; then echo "ok   turns-ceiling ${want%%:*}: '${got}'"; else echo "FAIL turns-ceiling ${want%%:*}: want '${want#*:}' got '${got}'"; failed=1; fi
 done
+
+# A failed turn is recorded in turns.json for perf-gate.sh: here the base's
+# image switch fails (turn 1), and the commit passed in is kept.
+printf '#!/usr/bin/env bash\nexit 1\n' > "${TURNS}/swap-build.sh"
+BASELINE_COMMIT=abc123 BASELINE_REF=v1 CANDIDATE_REF=cand BASELINE_TAG=a CANDIDATE_TAG=b OUT_DIR="${OUT}/run-fail" RELEASE=r NAMESPACE=ns \
+  "${TURNS}/compare-turns.sh" > /dev/null 2>&1 && echo "compare-turns.sh should have failed"
+got=$(jq -r '"\(.failure.turn) \(.failure.build) \(.failure.step) \(.baselineCommit)"' "${OUT}/run-fail/turns.json")
+if [[ "${got}" == "1 baseline switch abc123" ]]; then echo "ok   turns-failure-recorded"; else echo "FAIL turns-failure-recorded: '${got}'"; failed=1; fi
 
 # The workflow's input check needs ceiling_max above rate only when the ceiling
 # is on (yq extracts the step; the script runs as the job runs it).

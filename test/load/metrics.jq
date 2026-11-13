@@ -5,6 +5,10 @@
 
 def iso: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 
+# A percentage to one decimal place, signed: "+3.2%", "-3.2%", and "0%" for
+# zero or anything that rounds to it (never "+-0%").
+def signed_pct: (. * 10 | round / 10) as $r | if $r == 0 then "0%" elif $r > 0 then "+\($r)%" else "\($r)%" end;
+
 # The server's CPU use with no load, in cores, from a phases.json (the quiet
 # gaps either side of the baseline window are counted, as the reads include them).
 def idle_cores($ph):

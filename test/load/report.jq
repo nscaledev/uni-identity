@@ -66,7 +66,7 @@ def top($m): $m | to_entries | map(select(.value > 0)) | sort_by(-.value)
     "Computed from the measured figures above; not observed.",
     "",
     "- Limiter ceiling: the Kubernetes client limiter allows \($qps) calls per second per replica, so a phase tops out at \($qps) / calls-per-request requests per second per replica.",
-    "- CPU ceiling: the server container CPU limit (\(if $cpuLimit == null then "unknown" else "\($cpuLimit) cores" end)) divided by CPU seconds per request. CPU is read from the kubelet before and after each phase, less the idle rate.",
+    "- CPU ceiling: the server container CPU limit (\(if $cpuLimit == null then "unknown" else "\($cpuLimit) cores" end)) divided by CPU seconds per request. CPU is read live from the container runtime (crictl) before and after each phase, less the idle rate.",
     "",
     "| Phase | Limiter ceiling req/s per replica | CPU seconds per request | CPU ceiling req/s per replica |",
     "|---|---|---|---|",

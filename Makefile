@@ -213,6 +213,8 @@ lint: $(GENDIR)
 	./hack/check_observability_chart_render.sh
 	./test/load/ceiling_test.sh
 	./test/load/compare_test.sh
+	./test/load/gate_test.sh
+	./test/load/perf_gate_test.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate
@@ -445,7 +447,7 @@ KIND_SUFFIX    := $(KIND_SUFFIX)
 KIND_NAMESPACE ?= unikorn-identity-$(KIND_SUFFIX)
 KIND_RELEASE   ?= identity-$(KIND_SUFFIX)
 
-# Optional second values file. integration-install applies it after test-values.yaml.
+# Optional extra values files, space separated. integration-install applies them, in order, after test-values.yaml.
 INTEGRATION_EXTRA_VALUES ?=
 
 .PHONY: kind-cluster
@@ -463,7 +465,7 @@ integration-install:  ## Deploy identity into the current cluster with random na
 	  --namespace $(KIND_NAMESPACE) \
 	  --release-name $(KIND_RELEASE) \
 	  --values hack/ci/test-values.yaml \
-	  $(if $(INTEGRATION_EXTRA_VALUES),--values $(INTEGRATION_EXTRA_VALUES)) \
+	  $(foreach f,$(INTEGRATION_EXTRA_VALUES),--values $(f)) \
 	  > test/.env.install
 
 .PHONY: integration-fixtures

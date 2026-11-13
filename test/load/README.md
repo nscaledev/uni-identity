@@ -2,11 +2,13 @@
 
 A manually triggered GitHub Actions workflow, `.github/workflows/load-test.yaml` ("Load Test"),
 that drives identity's hot paths in a throwaway kind cluster on the runner. It is not part of PR or
-nightly CI.
+nightly CI; a short version of its count gate, and a CPU comparison with the PR's base commit, run on
+every PR (see Per-PR gate).
 
 It proves one thing: **on the hot paths, identity makes no API-server calls per request**. The
-gate counts those calls exactly, from the kube-apiserver audit log. Latency, CPU and the
-ceiling (the highest rate with no failed request) are reported, never gated.
+gate counts those calls exactly, from the kube-apiserver audit log. In this workflow, latency, CPU
+and the ceiling (the highest rate with no failed request) are reported, never gated. The per-PR
+gate also gates CPU per request against the base (see Per-PR gate).
 
 ## Run it
 
@@ -51,6 +53,57 @@ paths from its informer cache it passes.
 7. `count-audit.sh`: the workflow copies the audit log out of the control-plane container, and the
    script counts identity's calls per phase window.
 8. `report.sh`: the job summary.
+
+### Per-PR gate
+
+`.github/workflows/integration.yaml` runs a gate in its "response validation off" leg
+(the one that matches production), after the API tests, so an emergency fix cannot bring back
+per-request API calls unseen, nor a change double identity's CPU per request. It uses that leg's
+cluster, images and install. Both legs build their cluster
+from `hack/ci/load-kind-config.yaml` (audit log on, pinned node image and kind version) and
+install identity with `hack/ci/load-values.yaml` (the stand-in provider's trust); the legs differ
+only in response validation and the gate steps. The gate leg's suffix is `gate`, so the audit
+policy can name its ServiceAccount. Then: the `small` fixtures (api mode), the stand-in provider,
+the base images, and `compare-turns.sh` (the turns of Comparing against a release: base, PR, PR,
+base) with `WARMUP_RESTARTS=0` and `CEILING=false`. Each turn runs all four phases at 100 req/s for
+20 s, with a 15 s idle baseline and a 2 s settle. Then `count-turns.sh`,
+`compare.sh` (the summary) and `perf-gate.sh` (the verdict).
+
+**The base** is the PR's base commit: the workflow checks out the PR's merge commit, and its first
+parent is the base branch's tip (`fetch-depth: 2`). Its server image is built from a worktree of
+that commit and tagged `base-<sha8>`. The PR's image is the one the install already loaded; its
+tag is read from the server Deployment. The chart is the PR's, as in Comparing against a release.
+The summary names the base's ref and commit at the top.
+
+- Gated, API calls: at most 0.05 identity API-server calls per request in every PR turn, and no 5xx
+  (nor 401 or other non-200; k6's thresholds). The step log and the job summary name the failed
+  phase and its figure (`gate-summary.sh`). **No label lets this through.**
+- Gated, CPU: CPU per request, by the comparison rule of Comparing against a release with the
+  margin at 100 (twice the base): a phase is red when both PR turns are more than twice the worse
+  base turn. **The 2x margin stays until history says otherwise**: every run prints the spread
+  between its two base turns, and the margin is tightened only once real PR runs show it is safe.
+  Measured on the first three runs: worst spread 18.6% (service-account). p95 is shown, never gated.
+- Red, with the reason in the job summary: CPU per request "worse"; "no reading" (a turn used no
+  CPU above the idle rate, or has none); "base could not start" (the base image did not become
+  Ready on the PR's chart, as when the PR adds a flag the base does not know); any turn not
+  finishing (a switch, a restart or k6 failing, a 5xx).
+- Let through: the label `perf-regression-accepted` on the PR turns "worse", "no reading" and
+  "base could not start" into a pass; the summary says the label did it and keeps the figures. It
+  never covers a turn that did not finish or the API-call gate. `perf-gate.sh` reads the labels
+  live with `gh pr view` (a re-run reuses the first event's payload, so its labels go stale); a
+  failed read counts as no label. When the base could not start, the PR's turns did not run
+  either, so the API-call gate did not run; the summary says so.
+- The "vs baseline" columns of the All turns table are a PR turn against the mean of the base turns
+  for the phase; the ceiling table has one too, when a ceiling ran.
+- Modelled added time, about 18 minutes (not measured): per turn a switch about 30 s, k6
+  warm-up about 30 s, idle baseline and settles about 35 s, four phases about 43 s each, so about
+  4.5 minutes; four turns about 18 minutes, against about 4 for the single run it replaces; the
+  base image build adds about 4 minutes. The legs run in parallel, so the job is as long as this
+  leg. Fixtures and controllers settling, the k6 install and the stand-in provider are unchanged.
+- `gate_test.sh` checks, with a hand-made audit log and a stub k6, `count-audit.sh` (the gate,
+  repeated audit IDs, window edges, other users, a blind probe), `gate-summary.sh` and
+  `run-phases.sh` failing when k6's thresholds fail. `perf_gate_test.sh` checks `perf-gate.sh` (each
+  red, the label, the count gate) and the "vs baseline" columns. Both run in `make lint`.
 
 ### Datasets
 
@@ -155,7 +208,8 @@ k6 on the path. From the repository root, for `medium` (use `web` the same way):
 kind create cluster --name load-test --config hack/ci/load-kind-config.yaml
 KIND_CLUSTER=load-test make integration-infra
 KIND_CLUSTER=load-test KIND_SUFFIX=load \
-  INTEGRATION_EXTRA_VALUES=hack/ci/load-values.yaml make integration-install
+  INTEGRATION_EXTRA_VALUES="hack/ci/test-values-runtime-schema-validation-off.yaml hack/ci/load-values.yaml" \
+  make integration-install
 
 # Direct mode (medium, web): identity's controllers off.
 for c in organization project oauth2client; do
@@ -192,8 +246,10 @@ kind delete cluster --name load-test
 
 A single run cannot say better or worse: its figures belong to one runner on one day. With `compare`
 on, the job runs the same phases against a release as well, on the same cluster and the same
-dataset, and reports where the candidate (the commit the workflow runs on) stands. **It is
-report-only: nothing in it can fail the job.** It becomes a gate only after X is set (see A/A runs).
+dataset, and reports where the candidate (the commit the workflow runs on) stands. **In the Load
+Test it is report-only: nothing in it can fail the job.** It becomes a gate there only after X is
+set (see A/A runs). The per-PR gate uses the same scripts as a gate, on CPU per request, with its own
+margin (see Per-PR gate).
 
 How the job does it:
 
@@ -233,7 +289,10 @@ X is `compare_margin_pct`. The summary prints one line per check, with the candi
 against the baseline's mean, each candidate turn alone, and the **baseline spread**: the two
 baseline turns' difference as a share of their mean. That spread is the job's own A/A noise; a
 result inside it is not evidence. A turn with no CPU reading (below noise) gives "no reading", not
-"same". The ceiling is not compared by this rule: it is reported per build, side by side.
+"same". The ceiling is not compared by this rule: it is reported per build, side by side. The All
+turns table has "vs baseline" columns: a candidate turn's CPU per request and p95 against the mean of
+the baseline turns. `compare.sh` also writes `verdicts.json` (this rule's output), which
+`perf-gate.sh` reads; with `COMPARE_GATE=true` the summary says CPU per request is gated.
 
 **The ceiling in compare mode.** With `ceiling` on, after the four turns each build gets one ceiling search
 (`ceiling.sh`, see The ceiling), baseline first, each on a fresh restart of the server. The summary
@@ -263,6 +322,20 @@ gh workflow run "Load Test" --ref <branch> -f dataset=web -f baseline=$(git rev-
 
 X is fixed from those runs, above the noise they show, before the comparison becomes a gate. Until
 then the default of 25 is a placeholder. No history is stored: each run stands alone.
+
+## Reading the output
+
+The console has one summary line per k6 run (`auth0-bearer (fixed): 32222 requests, 0 failed, ...`)
+and one line per step. k6 also logs a `Request Failed` warning for every failed request; those go
+to a file, not the console, through `--log-output=file=<path>,level=warning` (`k6_run` in
+`lib.sh`). There is one file per k6 run, next to its summary in the output folder
+(`k6-<phase>.log`, `k6-ceiling-<phase>.log`, `k6-hold-<phase>-<share>.log`, `warmup-*.log`), and
+the workflows upload the whole folder with the results.
+
+The ceiling ramp is meant to fail: it finds the edge. Its lines say so (`failures expected`), and
+each hold says `clean -> ceiling` or `backing off`. A steady phase is meant to run clean. When one
+fails its thresholds the console shows a `FAIL <phase>` line and the first few errors from its k6
+log, and the run still exits non-zero.
 
 ## The ceiling
 
@@ -325,6 +398,9 @@ The job fails if any of these hold:
 
 The ceiling has no gate: failed requests there are how it finds the ceiling.
 
+The per-PR gate adds CPU per request against the base on top of these (see Per-PR gate); the
+Load Test workflow has no CPU gate.
+
 ## What the numbers mean
 
 **Measured on this runner**
@@ -334,8 +410,8 @@ The ceiling has no gate: failed requests there are how it finds the ceiling.
   requests. Events are deduplicated by audit ID (a watch logs two stages) and placed in a window at
   one-second resolution; the script leaves a quiet gap between windows.
 - Failure rate (any non-200, timeouts included), 5xx rate, 401 count, p95: from k6.
-- CPU cores used: the server container's CPU seconds over the window (cadvisor reads either side
-  of it, with a quiet gap, less the idle rate), divided by the window's length. The same read gives
+- CPU cores used: the server container's CPU seconds over the window (live reads either side
+  of it, with a short quiet gap, less the idle rate), divided by the window's length. The same read gives
   CPU seconds per request.
 - Ceiling: see below.
 
@@ -345,9 +421,13 @@ The ceiling has no gate: failed requests there are how it finds the ceiling.
   `cmd/unikorn-identity/main.go`) divided by calls per request. "No limiter ceiling" when the calls
   are zero.
 - CPU ceiling per replica: the server container's CPU limit divided by CPU seconds per request.
-  CPU comes from the kubelet's cadvisor counter for the server container, read before and after each
-  phase with a quiet gap either side (cadvisor lags the cgroup), less the idle rate. A reading that
-  cannot be taken stops the run; it is never recorded as zero.
+  CPU comes from the server container's CPU counter, read live from the container runtime
+  (`docker exec <kind node> crictl stats -o json --id <container>`, field `usageCoreNanoSeconds`)
+  before and after each phase with a 2 s quiet gap either side for k6 to finish, less the idle rate.
+  The kubelet's cadvisor was tried first: it lags the cgroup by up to about 10 s, so up to 2.3 CPU
+  seconds of a phase fell between two phases' reads and counted in neither (measured on CI, a 35%
+  spread between two identical builds). These scripts therefore need a kind cluster and docker on
+  the runner. A reading that cannot be taken stops the run; it is never recorded as zero.
 
 **Absolute requests per second and p95 are for this runner only.** The load tool, the kind node,
 the ingress and identity share its CPU. Call counts and CPU seconds per request transfer as a
@@ -369,21 +449,25 @@ shape; absolute figures do not.
 |---|---|
 | `identity.js` | k6 script: one phase per run |
 | `warmup.sh` | server restarts: cold start, memory, readiness settings, surge |
-| `lib.sh` | cadvisor reads, the phase list and the idle CPU read, shared by the scripts |
+| `lib.sh` | the CPU read (crictl), the cadvisor memory read, the phase list and the idle CPU read, shared by the scripts |
 | `run-phases.sh` | k6 warm-up, baseline, steady-state phases; records windows and CPU; then the ceiling when asked |
 | `ceiling.sh` | each phase's ceiling: the ramp to the first failure, then the 30 s holds |
 | `ceiling.jq` | the ceiling's decisions: R from the ramp, hold rates, when a hold passes |
-| `ceiling_test.sh` | checks `ceiling.sh` and `ceiling.jq` with a fake `k6` and `kubectl` (needs only bash and jq) |
+| `ceiling_test.sh` | checks `ceiling.sh` and `ceiling.jq` with a fake `k6` and `kubectl`, and that k6's per-request lines stay off the console (needs only bash and jq) |
 | `count-audit.sh`, `count-audit.jq` | counts identity's API-server calls per phase and applies the gate |
 | `report.sh`, `report.jq` | job summary of one run |
 | `metrics.jq` | the CPU figures, one copy: per-phase rows (`report.jq`, `compare.sh`), the idle rate (`lib.sh`) and a ceiling hold's cores (`ceiling.sh`) |
 | `swap-build.sh` | compare: switch the server to one build's image and restart it |
 | `compare-turns.sh` | compare: the four turns, each in its own folder, then each build's ceiling |
 | `count-turns.sh` | compare: counts per turn; the gate on candidate turns only |
-| `compare.sh`, `compare.jq` | compare: the job summary and the comparison rule |
+| `compare.sh`, `compare.jq` | compare: the job summary, `verdicts.json` and the comparison rule |
+| `perf-gate.sh` | per-PR gate: turns the verdicts and the turns' state into pass or red, with the label let-through |
+| `perf_gate_test.sh` | checks `perf-gate.sh` (stub `gh`) and the "vs baseline" columns; run by `make lint` |
 | `compare_test.sh` | checks `compare.jq` with hand-made turns, `compare.sh` with a part-finished ceiling search, `compare-turns.sh`'s `ceiling` switch (stub steps) and the workflow's input check; needs `jq` and mikefarah `yq`; run by `make lint` |
+| `gate-summary.sh` | names each phase that failed the count gate, with its figure, for the job summary |
+| `gate_test.sh` | checks `count-audit.sh`, `gate-summary.sh` and `run-phases.sh`'s k6 failure with a hand-made audit log and a stub k6; run by `make lint` |
 | `idp.yaml` | stand-in identity provider serving the public key set |
 
-The cluster, namespace and release names are fixed (`unikorn-identity-load`, `identity-load`) so the
-audit policy can name identity's ServiceAccount; the workflow and
-`hack/ci/load-audit-policy.yaml` must agree.
+The cluster, namespace and release names are fixed (`unikorn-identity-load`, `identity-load`; the
+per-PR gate uses `unikorn-identity-gate`, `identity-gate`) so the audit policy can name identity's
+ServiceAccount; the workflows and `hack/ci/load-audit-policy.yaml` must agree.

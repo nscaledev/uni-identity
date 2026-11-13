@@ -14,19 +14,34 @@ jobs:
   Integration:
     name: Integration (${{ matrix.label }})
     runs-on: ubuntu-latest
+    # pull-requests: the gate reads the PR's labels live (gh pr view).
+    permissions:
+      contents: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
         include:
         - label: response validation on
           slug: validation-on
-          extraValues: ''
+          extraValues: hack/ci/load-values.yaml
+          gate: false
         - label: response validation off
           slug: validation-off
-          extraValues: hack/ci/test-values-runtime-schema-validation-off.yaml
+          # Space separated. Both legs trust the gate's stand-in provider
+          # (load-values.yaml); this one also turns validation off.
+          extraValues: hack/ci/test-values-runtime-schema-validation-off.yaml hack/ci/load-values.yaml
+          # This leg also runs the API-call count gate (test/load/README.md).
+          gate: true
+          # Fixed so the audit policy can name identity's ServiceAccount; keep
+          # in step with hack/ci/load-audit-policy.yaml.
+          suffix: gate
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+      with:
+        # The PR's merge commit; its first parent is the base the gate compares with.
+        fetch-depth: 2
 
     - name: Setup Go
       uses: actions/setup-go@v6
@@ -53,11 +68,15 @@ jobs:
       id: rand
       run: echo "suffix=$(openssl rand -hex 4)" >> "$GITHUB_OUTPUT"
 
+    # Both legs get the same cluster: the config adds the kube-apiserver audit
+    # log (used by the gate leg only), and its node image and the kind version
+    # are pinned together (see the config).
     - name: Create KinD cluster
-      uses: helm/kind-action@v1
+      uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
       with:
+        version: v0.33.0
         cluster_name: identity-${{ github.run_id }}
-        config: hack/ci/kind-config.yaml
+        config: hack/ci/load-kind-config.yaml
 
     - name: Install cluster infrastructure
       env:
@@ -67,14 +86,14 @@ jobs:
     - name: Install identity
       env:
         KIND_CLUSTER: identity-${{ github.run_id }}
-        KIND_SUFFIX: ${{ steps.rand.outputs.suffix }}
+        KIND_SUFFIX: ${{ matrix.suffix || steps.rand.outputs.suffix }}
         INTEGRATION_EXTRA_VALUES: ${{ matrix.extraValues }}
       run: make integration-install
 
     - name: Create test fixtures
       env:
         KIND_CLUSTER: identity-${{ github.run_id }}
-        KIND_SUFFIX: ${{ steps.rand.outputs.suffix }}
+        KIND_SUFFIX: ${{ matrix.suffix || steps.rand.outputs.suffix }}
       run: make integration-fixtures
 
     - name: Run API integration tests
@@ -137,6 +156,173 @@ jobs:
 
         printf '%s\n' "$OUTPUT" >> "$GITHUB_STEP_SUMMARY"
         exit 0
+
+    # Gate, response validation off leg only (it matches production). Runs
+    # after the API tests so they are unaffected. Two checks on the PR build:
+    # more than 0.05 Kubernetes API calls per request, or a 5xx, fails the job;
+    # so does CPU per request that is both turns over twice the PR's base
+    # commit, run on this same cluster. The label perf-regression-accepted lets
+    # a CPU result through, never the call count. p95 is shown, not gated.
+    # See test/load/README.md ("Per-PR gate").
+    - name: Install k6
+      if: ${{ matrix.gate }}
+      uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
+      with:
+        k6-version: 1.8.2
+
+    - name: Create gate fixtures
+      if: ${{ matrix.gate }}
+      env:
+        # Must match hack/ci/load-values.yaml and test/load/idp.yaml.
+        ISSUER: http://jwks.load-test-idp.svc.cluster.local/
+        AUDIENCE: https://load-test.invalid/api
+      run: |
+        set -a; . test/.env.install; set +a
+        mkdir -p "${RUNNER_TEMP}/load" gate-out
+        go run ./hack/ci/loadfixtures/... \
+          --dataset small \
+          --mode api \
+          --base-url "${IDENTITY_BASE_URL}" \
+          --namespace "${IDENTITY_NAMESPACE}" \
+          --ca-cert "${IDENTITY_CA_CERT}" \
+          --issuer "${ISSUER}" \
+          --audience "${AUDIENCE}" \
+          --out-dir "${RUNNER_TEMP}/load"
+        # Tokens stay out of the uploaded artifact; only the counts go in.
+        jq .counts "${RUNNER_TEMP}/load/tokens.json" > gate-out/dataset.json
+
+    - name: Serve the stand-in provider's public keys
+      if: ${{ matrix.gate }}
+      run: |
+        kubectl apply -f test/load/idp.yaml
+        kubectl create configmap jwks -n load-test-idp \
+          --from-file=jwks.json="${RUNNER_TEMP}/load/jwks.json"
+        kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
+
+    # Only the gate's own organizations: the API tests' leftovers are not ours
+    # to wait on. The project controller must be idle before load starts.
+    - name: Wait for gate fixtures to settle
+      if: ${{ matrix.gate }}
+      run: |
+        set -a; . test/.env.install; set +a
+        for org in $(jq -r '[.serviceAccounts[].orgId] | unique[]' "${RUNNER_TEMP}/load/tokens.json"); do
+          kubectl wait --for=condition=Available --timeout=5m \
+            "organizations.identity.unikorn-cloud.org/${org}" -n "${IDENTITY_NAMESPACE}"
+          ns=$(kubectl get "organizations.identity.unikorn-cloud.org/${org}" -n "${IDENTITY_NAMESPACE}" -o jsonpath='{.status.namespace}')
+          kubectl wait --for=condition=Available --timeout=5m \
+            projects.identity.unikorn-cloud.org --all -n "${ns}"
+        done
+
+    # The base is the merge commit's first parent. Its images are built from a
+    # worktree and tagged apart; the PR's images are the ones already installed
+    # (their tag is read from the server Deployment). The chart is the PR's.
+    - name: Build the base images
+      if: ${{ matrix.gate }}
+      env:
+        KIND_CLUSTER: identity-${{ github.run_id }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        # Two parents: a merge commit, so HEAD^1 is the base and not an earlier PR commit.
+        [[ "$(git rev-list --parents -n 1 HEAD | wc -w)" -eq 3 ]] \
+          || { echo "HEAD is not the PR's merge commit; cannot find the base"; exit 1; }
+        sha=$(git rev-parse HEAD^1)
+        git worktree add --detach "${RUNNER_TEMP}/base" "${sha}"
+        make -C "${RUNNER_TEMP}/base" images-kind-load VERSION="base-${sha:0:8}" KIND_CLUSTER="${KIND_CLUSTER}"
+        set -a; . test/.env.install; set +a
+        image=$(kubectl get deployment -n "${IDENTITY_NAMESPACE}" "${IDENTITY_RELEASE}-server" \
+          -o jsonpath='{.spec.template.spec.containers[0].image}')
+        {
+          echo "BASELINE_REF=${BASE_REF}"
+          echo "BASELINE_COMMIT=${sha}"
+          echo "BASELINE_TAG=base-${sha:0:8}"
+          echo "CANDIDATE_REF=$(git rev-parse --short=8 HEAD)"
+          echo "CANDIDATE_TAG=${image##*:}"
+        } >> "${GITHUB_ENV}"
+
+    # Base, PR, PR, base (compare-turns.sh): the server's image alone is switched
+    # and restarted per turn, so no server restarts beyond that (warm-up
+    # restarts 0). continue-on-error: the gate step below turns a failed turn
+    # into a red job with its reason, or lets a base that cannot start through
+    # on the label. Short baseline and settle keep it quick; at 100 req/s for
+    # 20 s a phase allows 100 stray calls at 0.05, so a 15 s idle baseline is
+    # enough to net them off. SETTLE is a short quiet gap for k6 to finish.
+    - name: Run gate load phases
+      id: gate-phases
+      if: ${{ matrix.gate }}
+      continue-on-error: true
+      env:
+        OUT_DIR: gate-out
+        RATE: '100'
+        DURATION: '20'
+        CEILING: 'false'
+        WARMUP_RESTARTS: '0'
+        BASELINE_SECONDS: '15'
+        SETTLE: '2'
+      run: |
+        set -a; . test/.env.install; set +a
+        BASE_URL="${IDENTITY_BASE_URL}" \
+        TOKENS="${RUNNER_TEMP}/load/tokens.json" \
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        RELEASE="${IDENTITY_RELEASE}" \
+          test/load/compare-turns.sh
+
+    - name: Collect the API server audit log
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      run: |
+        docker exec "identity-${{ github.run_id }}-control-plane" cat /var/log/kubernetes/kube-apiserver-audit.log \
+          > "${RUNNER_TEMP}/load/audit.log"
+
+    # Red when a PR turn goes over the API-call gate; no label lets that through.
+    - name: Count identity's API-server calls
+      id: gate-count
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      run: |
+        set -a; . test/.env.install; set +a
+        IDENTITY_USER="system:serviceaccount:${IDENTITY_NAMESPACE}:${IDENTITY_RELEASE}-server" \
+          test/load/count-turns.sh "${RUNNER_TEMP}/load/audit.log" gate-out
+
+    # Margin 100: CPU per request must be more than twice the base's, in both PR
+    # turns, to fail. Tightened only when PR runs' base spread allows (README).
+    - name: Write gate summary and decide
+      id: gate-verdict
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -a; . test/.env.install; set +a
+        if [[ ! -s gate-out/turns.json ]]; then
+          echo "## Gate (${{ matrix.label }}): no turn ran; see the failed step." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+        COMPARE_GATE=true COMPARE_MARGIN_PCT=100 \
+        NAMESPACE="${IDENTITY_NAMESPACE}" SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
+        RATE=100 DURATION=20 CEILING_MAX=0 DATASET=small \
+          test/load/compare.sh gate-out > gate-out/summary.md
+        status=0
+        test/load/perf-gate.sh gate-out > gate-out/verdict.md || status=$?
+        {
+          echo "## Gate (${{ matrix.label }})"
+          echo
+          cat gate-out/verdict.md
+          echo
+          # The count gate's failures next, each named with its figure.
+          for counts in gate-out/turns/*-candidate/counts.json; do
+            [[ -s "${counts}" ]] || continue
+            dir="${counts%/counts.json}"
+            test/load/gate-summary.sh "${dir}/phases.json" "${counts}" | sed "s/^### Gate failed/### API-call gate failed, turn ${dir##*/}/"
+          done
+          cat gate-out/summary.md
+        } >> "$GITHUB_STEP_SUMMARY"
+        exit "${status}"
+
+    - name: Upload gate results
+      if: ${{ matrix.gate && !cancelled() && steps.gate-phases.outcome != 'skipped' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: gate-results-${{ matrix.slug }}
+        path: gate-out
+        if-no-files-found: warn
 
     - name: Upload test artifacts
       if: failure()

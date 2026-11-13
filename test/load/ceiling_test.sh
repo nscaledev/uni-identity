@@ -15,8 +15,14 @@ mkdir -p "${WORK}/bin"
 # starts), holdCap (the highest rate a hold serves) and kind (errors: non-200s;
 # dropped: k6 drops iterations but still delivers the rate; slow: k6 delivers
 # under 95% of the rate, as it does when it runs out of VUs).
+# Like k6, it sends its per-request warning lines to the file named by
+# --log-output=file=PATH,level=warning, or to the console without it.
 cat > "${WORK}/bin/k6" <<'K6'
 #!/usr/bin/env bash
+logfile=/dev/stderr
+for a in "$@"; do
+  case "${a}" in --log-output=file=*,level=warning) logfile="${a#--log-output=file=}"; logfile="${logfile%,level=warning}" ;; esac
+done
 jq -n --arg phase "${PHASE}" --arg mode "${MODE}" --argjson rate "${RATE}" --argjson max "${CEILING_MAX:-2000}" \
   --slurpfile spec "${FAKE_SPEC}" '
   ($spec[0][$phase] // {rampCap: 1e9, holdCap: 1e9, kind: "errors"}) as $s
@@ -30,23 +36,30 @@ jq -n --arg phase "${PHASE}" --arg mode "${MODE}" --argjson rate "${RATE}" --arg
       . + {ceilingMax: $max, rampSeconds: 120,
            firstFailureAtSeconds: (if $fail then ($s.rampCap - $rate) * 120 / ($max - $rate) else null end)}
     else . end' > "${SUMMARY_OUT}"
-[[ "$(jq '.countNotOK' "${SUMMARY_OUT}")" -eq 0 ]] || exit 99
+failed=$(jq '.countNotOK' "${SUMMARY_OUT}")
+for _ in $(seq 1 "${failed}"); do echo 'time="x" level=warning msg="Request Failed" error="EOF"' >> "${logfile}"; done
+echo "stub summary ${PHASE} ${MODE}"
+[[ "${failed}" -eq 0 ]] || exit 99
 K6
 
-# The fake kubectl answers the three calls lib.sh makes; the CPU counter moves
-# on by 1.5 s each time it is read.
+# The fake kubectl and docker answer the calls lib.sh makes; the CPU counter
+# moves on by 1.5 s each time it is read.
 cat > "${WORK}/bin/kubectl" <<'KUBECTL'
 #!/usr/bin/env bash
 case "$*" in
-  *"get pod -n"*"-l app="*) echo -n pod-0 ;;
-  *"get pod -n"*nodeName*) echo -n node-0 ;;
-  *"get --raw"*)
-    n=$(( $(cat "${FAKE_CPU_FILE}") + 1 )); echo "${n}" > "${FAKE_CPU_FILE}"
-    echo "container_cpu_usage_seconds_total{container=\"srv\",pod=\"pod-0\"} $(( n * 3 / 2 ))" ;;
+  *"get pod -n"*"-l app="*) echo '{"items":[{"metadata":{"name":"pod-0"}}]}' ;;
+  *"get pod -n"*"pod-0 -o json"*) echo '{"spec":{"nodeName":"node-0"},"status":{"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecarid"},{"name":"srv","containerID":"containerd://srvid"}]}}' ;;
   *) echo "fake kubectl: unexpected $*" >&2; exit 1 ;;
 esac
 KUBECTL
-chmod +x "${WORK}/bin/k6" "${WORK}/bin/kubectl"
+cat > "${WORK}/bin/docker" <<'DOCKER'
+#!/usr/bin/env bash
+[[ "$*" == "exec node-0 crictl stats -o json --id srvid" ]] \
+  || { echo "fake docker: unexpected $*" >&2; exit 1; }
+n=$(( $(cat "${FAKE_CPU_FILE}") + 1 )); echo "${n}" > "${FAKE_CPU_FILE}"
+echo "{\"stats\":[{\"cpu\":{\"usageCoreNanoSeconds\":{\"value\":\"$(( n * 1500000000 ))\"}}}]}"
+DOCKER
+chmod +x "${WORK}/bin/k6" "${WORK}/bin/kubectl" "${WORK}/bin/docker"
 
 # run_ceiling NAME SPEC_JSON [IDLE_CORES]: runs ceiling.sh into WORK/NAME.
 run_ceiling() {
@@ -72,6 +85,19 @@ run_ceiling errors '{
   "passport-exchange": {"rampCap": 1010, "holdCap": 800, "kind": "errors"},
   "acl-heavy":         {"rampCap": 482,  "holdCap": 100, "kind": "errors"},
   "service-account":   {"rampCap": 5000, "holdCap": 1e9, "kind": "errors"}}'
+
+# The console keeps the summaries and the labels; k6's per-request lines are in
+# the run's output folder.
+if grep -q 'Request Failed' "${WORK}/errors.log"; then echo "FAIL errors console: k6's per-request lines reached the console"; failed=1; else echo "ok   errors console: no per-request lines"; fi
+if grep -q 'stub summary acl-heavy ceiling' "${WORK}/errors.log"; then echo "ok   errors console: summary line kept"; else echo "FAIL errors console: summary line missing"; failed=1; fi
+if grep -q 'Request Failed' "${WORK}/errors/k6-ceiling-acl-heavy.log" 2>/dev/null; then echo "ok   errors k6 log file holds the per-request lines"; else echo "FAIL errors: no per-request lines in k6-ceiling-acl-heavy.log"; failed=1; fi
+for want in \
+  'Ceiling auth0-bearer: ramp 20 to 2000 req/s (failures expected: this finds the edge)' \
+  'auth0-bearer: hold 909 req/s: clean -> ceiling 909 req/s' \
+  'passport-exchange: hold 909 req/s: 5 failed, 909 delivered, backing off' \
+  'acl-heavy: no hold passed: the ceiling is below 241 req/s'; do
+  if grep -qF -- "${want}" "${WORK}/errors.log"; then echo "ok   errors label: ${want}"; else echo "FAIL errors label missing: ${want}"; failed=1; fi
+done
 
 # R is the rate at the first failure's start time.
 expect errors auth0-bearer R '[.r, .firstFailureRps, .topReached]' '[1010,1010,false]'

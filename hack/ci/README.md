@@ -51,8 +51,8 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | `kind-config.yaml` | KinD cluster config (ingress-ready node label) |
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
 | `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
-| `load-kind-config.yaml`, `load-audit-policy.yaml` | Load Test only: `kind-config.yaml` plus the kube-apiserver audit log, limited to identity's server ServiceAccount |
-| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider |
+| `load-kind-config.yaml`, `load-audit-policy.yaml` | Load Test and the per-PR gate, API calls and CPU against the base commit (the integration job's "response validation off" leg): `kind-config.yaml` plus the kube-apiserver audit log, limited to identity's server ServiceAccount (the policy lists both installs' names) |
+| `load-values.yaml` | Load Test and the per-PR gate: trusts the load test's stand-in identity provider |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally

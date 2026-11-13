@@ -11,10 +11,14 @@
 #
 # Environment (all required unless a default is shown):
 #   BASELINE_REF, CANDIDATE_REF       names for messages and the summary
+#   BASELINE_COMMIT                   optional: the baseline's commit, for the summary
 #   BASELINE_TAG, CANDIDATE_TAG       image tags, already loaded; must differ
 #   NAMESPACE, RELEASE   as swap-build.sh
 #   OUT_DIR, BASE_URL, TOKENS, SERVER_DEPLOYMENT, RATE, DURATION and the other
 #     run-phases.sh and warmup.sh variables
+#
+# A failed turn is recorded in turns.json ({failure: {turn, build, step, at}}, step being switch, warmup or phases) before
+# the script exits, for perf-gate.sh.
 #
 # Each turn: swap-build.sh switches the server's image and restarts it, then
 # warmup.sh restarts it
@@ -36,8 +40,9 @@ export SERVER_DEPLOYMENT="${SERVER_DEPLOYMENT:-${RELEASE}-server}"
 . "${HERE}/lib.sh"
 
 mkdir -p "${OUT_DIR}/turns"
-jq -n --arg b "${BASELINE_REF}" --arg c "${CANDIDATE_REF}" \
-  '{baselineRef: $b, candidateRef: $c, order: ["baseline", "candidate", "candidate", "baseline"]}' > "${OUT_DIR}/turns.json"
+jq -n --arg b "${BASELINE_REF}" --arg c "${CANDIDATE_REF}" --arg commit "${BASELINE_COMMIT:-}" \
+  '{baselineRef: $b, candidateRef: $c, order: ["baseline", "candidate", "candidate", "baseline"]}
+   + (if $commit == "" then {} else {baselineCommit: $commit} end)' > "${OUT_DIR}/turns.json"
 
 n=0
 for build in baseline candidate candidate baseline; do
@@ -51,11 +56,16 @@ for build in baseline candidate candidate baseline; do
 
   turn_dir="${OUT_DIR}/turns/${n}-${build}"
   mkdir -p "${turn_dir}"
-  step() { echo "ERROR: turn ${n} (${build}, ${name}) failed at $1" >&2; exit 1; }
+  step() {
+    echo "ERROR: turn ${n} (${build}, ${name}) failed at $1" >&2
+    jq --argjson n "${n}" --arg build "${build}" --arg step "$2" --arg at "$1" '.failure = {turn: $n, build: $build, step: $step, at: $at}' \
+      "${OUT_DIR}/turns.json" > "${OUT_DIR}/turns.json.new" && mv "${OUT_DIR}/turns.json.new" "${OUT_DIR}/turns.json"
+    exit 1
+  }
 
-  "${HERE}/swap-build.sh" "${name}" "${tag}" || step "the switch to the build"
-  OUT_DIR="${turn_dir}" "${HERE}/warmup.sh" || step "the warm-up restarts"
-  OUT_DIR="${turn_dir}" "${HERE}/run-phases.sh" || step "the load phases (k6 warm-up, phases, thresholds or CPU read; see its output above)"
+  "${HERE}/swap-build.sh" "${name}" "${tag}" || step "the switch to the build" switch
+  OUT_DIR="${turn_dir}" "${HERE}/warmup.sh" || step "the warm-up restarts" warmup
+  OUT_DIR="${turn_dir}" "${HERE}/run-phases.sh" || step "the load phases (k6 warm-up, phases, thresholds or CPU read; see its output above)" phases
 done
 
 # One ceiling search per build. Each starts on a fresh pod, as a turn does, and

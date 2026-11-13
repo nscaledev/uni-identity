@@ -1,4 +1,5 @@
-# kind-config.yaml plus the kube-apiserver audit log, for the load test.
+# kind-config.yaml plus the kube-apiserver audit log, for the load test and the
+# per-PR API-call gate.
 # Create the cluster from the repository root: the policy path is relative.
 #
 # The node image is pinned because the audit patch below is written for
