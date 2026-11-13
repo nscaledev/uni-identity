@@ -87,7 +87,10 @@ gated on `--otlp-endpoint`.
     `timed_out` is a contender that gave up (an HTTP 409) and is the wedge as
     callers see it.
   - `unikorn_identity_organization_lease_wait_seconds` — `Float64Histogram`, unit
-    `s`, no labels: time waited by acquisitions that succeeded.
+    `s`, no labels: time waited by acquisitions that succeeded. Bucket boundaries
+    in seconds: `0, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 4, 6, 8`. An uncontested
+    acquisition records exactly zero; divide the `le="0"` bucket by the count for
+    the uncontested share.
   - `unikorn_identity_organization_lease_sections{result}` — `Int64Counter`, unit
     `{section}`; `result` ∈ {`ok`, `overdue`, `failed`}. `overdue` means the holder
     ran past its write deadline and abandoned the write.

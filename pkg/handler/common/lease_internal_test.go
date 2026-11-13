@@ -590,6 +590,105 @@ func leaseWaitCount(t *testing.T, reader *sdkmetric.ManualReader) uint64 {
 	return 0
 }
 
+func leaseHistogram(t *testing.T, reader *sdkmetric.ManualReader, name, result string) metricdata.HistogramDataPoint[float64] {
+	t.Helper()
+
+	var collected metricdata.ResourceMetrics
+
+	require.NoError(t, reader.Collect(t.Context(), &collected))
+
+	for _, scope := range collected.ScopeMetrics {
+		for _, found := range scope.Metrics {
+			if found.Name != name {
+				continue
+			}
+
+			require.Equal(t, "s", found.Unit)
+			histogram, ok := found.Data.(metricdata.Histogram[float64])
+			require.True(t, ok)
+			require.Len(t, histogram.DataPoints, 1)
+			point := histogram.DataPoints[0]
+			attributes := attribute.NewSet()
+
+			if result != "" {
+				attributes = attribute.NewSet(attribute.String("result", result))
+			}
+
+			require.Equal(t, attributes, point.Attributes)
+
+			return point
+		}
+	}
+
+	t.Fatalf("histogram %q was not collected", name)
+
+	return metricdata.HistogramDataPoint[float64]{}
+}
+
+// TestOrganizationLeaseWaitBuckets checks the wait buckets resolve waits up to a
+// takeover, and that an uncontested acquisition lands in the zero bucket.
+func TestOrganizationLeaseWaitBuckets(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 3*time.Second, organizationLeaseDuration, "a takeover waits about one Lease duration")
+
+	cases := []struct {
+		name     string
+		takeover bool
+		wait     float64
+		bucket   int
+	}{
+		{name: "uncontested", bucket: 0},
+		{name: "takeover", takeover: true, wait: 3, bucket: 7},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+			now := time.Now()
+			reader := sdkmetric.NewManualReader()
+			provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+			t.Cleanup(func() { require.NoError(t, provider.Shutdown(t.Context())) })
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, coordinationv1.AddToScheme(scheme))
+
+			gets := 0
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cli client.WithWatch, key client.ObjectKey, obj client.Object, options ...client.GetOption) error {
+					gets++
+					if gets == 2 {
+						now = now.Add(3 * time.Second)
+					}
+
+					return cli.Get(ctx, key, obj, options...)
+				},
+			})
+
+			if c.takeover {
+				builder.WithObjects(&coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationID)}})
+			}
+
+			lease, _, err := AcquireOrganizationLease(t.Context(), builder.Build(), leaseTestNamespace, organizationID,
+				withLeaseMeter(provider.Meter("test")), withLeaseClock(func() time.Time { return now }), withLeaseRetry(time.Millisecond))
+			require.NoError(t, err)
+			require.NoError(t, lease.Release(context.WithoutCancel(t.Context())))
+
+			wait := leaseHistogram(t, reader, "unikorn_identity_organization_lease_wait_seconds", "")
+			require.Equal(t, []float64{0, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 4, 6, 8}, wait.Bounds)
+			require.Equal(t, uint64(1), wait.Count)
+			require.InDelta(t, c.wait, wait.Sum, 1e-9)
+
+			counts := make([]uint64, 12)
+			counts[c.bucket] = 1
+			require.Equal(t, counts, wait.BucketCounts)
+		})
+	}
+}
+
 // TestOrganizationLeaseMetrics checks that each way a Lease can wedge an
 // organization, or recover from one, is counted under its own result.
 func TestOrganizationLeaseMetrics(t *testing.T) {

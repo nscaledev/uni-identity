@@ -106,7 +106,8 @@ func newLeaseMetrics(meter metric.Meter) *leaseMetrics {
 		metric.WithUnit("{acquisition}"))
 	wait, _ := meter.Float64Histogram(leaseWaitName,
 		metric.WithDescription("Time spent waiting to acquire an organization Lease, for acquisitions that succeeded."),
-		metric.WithUnit("s"))
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 4, 6, 8))
 	sections, _ := meter.Int64Counter(leaseSectionsName,
 		metric.WithDescription("Critical sections run under an organization Lease by outcome. Overdue means the holder ran past its write deadline and abandoned its write."),
 		metric.WithUnit("{section}"))
