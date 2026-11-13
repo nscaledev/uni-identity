@@ -80,6 +80,32 @@ var _ = Describe("Access Control Discovery", func() {
 
 				GinkgoWriter.Printf("Global ACL retrieved with %d organizations\n", len(*acl.Organizations))
 			})
+
+			It("should grant the auditor only read operations in the organization", func() {
+				if auditClient == nil {
+					Skip("AUDIT_AUTH_TOKEN must be set by integration fixtures")
+				}
+
+				acl, err := auditClient.GetGlobalACL(ctx)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(acl).NotTo(BeNil())
+				Expect(acl.Organizations).NotTo(BeNil(), "Organizations ACL should be present")
+
+				var endpoints []identityopenapi.AclEndpoint
+				for _, org := range *acl.Organizations {
+					if org.Id == config.OrgID && org.Endpoints != nil {
+						endpoints = *org.Endpoints
+					}
+				}
+
+				Expect(endpoints).NotTo(BeEmpty(), "auditor should have endpoint permissions in organization %s", config.OrgID)
+
+				for _, endpoint := range endpoints {
+					Expect(endpoint.Operations).To(ConsistOf(identityopenapi.Read),
+						"auditor should only read %s", endpoint.Name)
+				}
+			})
 		})
 
 		Describe("Given invalid authentication", func() {
