@@ -1,0 +1,596 @@
+{
+  "id": null,
+  "uid": "uni-identity-leases",
+  "title": "Identity Organization Leases",
+  "tags": [
+    "identity",
+    "leases"
+  ],
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "regex": ""
+      },
+      {
+        "name": "cluster",
+        "label": "Cluster",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(http_server_request_duration_seconds_count{service=\"unikorn-identity\"}, cluster)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Acquisition Success",
+      "description": "Share of Lease acquisitions that got the Lease. Every other acquisition was a 409 or a 5xx.",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * sum(rate(unikorn_identity_organization_lease_acquisitions_total{service=\"unikorn-identity\", cluster=~\"$cluster\", result=~\"created|taken_over\"}[5m])) / clamp_min(sum(rate(unikorn_identity_organization_lease_acquisitions_total{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Uncontested Acquisitions",
+      "description": "Share of successful acquisitions that found the Lease free and waited zero. A fall means organizations are contending for their Lease.",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * sum(rate(unikorn_identity_organization_lease_wait_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\", le=~\"0|0.0\"}[5m])) / clamp_min(sum(rate(unikorn_identity_organization_lease_wait_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Takeovers (1h)",
+      "description": "Acquisitions that took over a Lease whose holder crashed or overran. Each made a contender wait out a full Lease duration.",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(unikorn_identity_organization_lease_acquisitions_total{service=\"unikorn-identity\", cluster=~\"$cluster\", result=\"taken_over\"}[1h]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Leases Left to Expire (1h)",
+      "description": "Releases that abandoned a cut-off write or failed to delete the Lease. Each blocks the organization's next write for up to one Lease duration.",
+      "type": "stat",
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(unikorn_identity_organization_lease_releases_total{service=\"unikorn-identity\", cluster=~\"$cluster\", result=~\"abandoned|failed\"}[1h]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "p95 Latency: Lease Routes vs All Routes",
+      "description": "p95 request latency for the quota and allocation writes that take the organization Lease, against all Identity routes.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\", route=~\".+/(quotas|allocations|allocations/.+)\", method=~\"POST|PUT\"}[5m])))",
+          "legendFormat": "{{method}} {{route}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "legendFormat": "all routes",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Lease Wait vs Request Duration",
+      "description": "p95 time waiting for the Lease and holding it, against p95 duration of the requests that take it. When wait is most of the request, the cost is contention; otherwise it is the work under the Lease.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(unikorn_identity_organization_lease_wait_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "legendFormat": "p95 Lease wait",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(unikorn_identity_organization_lease_section_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "legendFormat": "p95 Lease held",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\", route=~\".+/(quotas|allocations|allocations/.+)\", method=~\"POST|PUT\"}[5m])))",
+          "legendFormat": "p95 request on Lease routes",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Lease Conflicts vs 4xx on Lease Routes",
+      "description": "Lease outcomes that return a retryable 409, against all 4xx on the Lease routes. The gap is other client errors.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\", route=~\".+/(quotas|allocations|allocations/.+)\", method=~\"POST|PUT\", status_class=\"4xx\"}[5m]))",
+          "legendFormat": "4xx on Lease routes",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(unikorn_identity_organization_lease_acquisitions_total{service=\"unikorn-identity\", cluster=~\"$cluster\", result=~\"timed_out|rate_limited\"}[5m]))",
+          "legendFormat": "acquire {{result}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(unikorn_identity_organization_lease_sections_total{service=\"unikorn-identity\", cluster=~\"$cluster\", result=~\"overdue|rate_limited\"}[5m]))",
+          "legendFormat": "section {{result}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Time Holding the Lease",
+      "description": "Critical-section duration quantiles. The red line is the two-second window (Lease duration minus margin); sections past it are cut off as overdue.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(unikorn_identity_organization_lease_section_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(unikorn_identity_organization_lease_section_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(unikorn_identity_organization_lease_section_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Acquisitions by Result",
+      "description": "created and taken_over got the Lease; timed_out gave up at the request deadline; rate_limited was refused by the replica's client rate limiter; error is another API failure.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 22
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(unikorn_identity_organization_lease_acquisitions_total{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "title": "Sections by Result",
+      "description": "overdue ran past the critical-section deadline; rate_limited was refused by the client rate limiter; failed is another error, such as a rejected request.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 22
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(unikorn_identity_organization_lease_sections_total{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "Releases by Result",
+      "description": "lost found the Lease already taken over; abandoned left it to expire after a cut-off write; failed could not delete it.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 22
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(unikorn_identity_organization_lease_releases_total{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "title": "Lease Failures by Pod",
+      "description": "Failed acquisitions and sections per replica. One replica dominating points at its client rate limiter or network; all replicas at the API server or a busy organization.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pod, result) (rate(unikorn_identity_organization_lease_acquisitions_total{service=\"unikorn-identity\", cluster=~\"$cluster\", result=~\"timed_out|rate_limited|error\"}[5m]))",
+          "legendFormat": "{{pod}} acquire {{result}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pod, result) (rate(unikorn_identity_organization_lease_sections_total{service=\"unikorn-identity\", cluster=~\"$cluster\", result=~\"overdue|rate_limited|failed\"}[5m]))",
+          "legendFormat": "{{pod}} section {{result}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "title": "API Server Lease Latency",
+      "description": "p95 API server latency for Lease calls by verb, cluster-wide. Slow Lease calls show up as timed_out acquisitions and overdue sections. POST creates a Lease and PUT takes one over or renews it. Controller leader election shares these series, mostly as GET and PUT.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, verb) (rate(apiserver_request_duration_seconds_bucket{cluster=~\"$cluster\", group=\"coordination.k8s.io\", resource=\"leases\", verb=~\"POST|GET|PUT|DELETE\"}[5m])))",
+          "legendFormat": "{{verb}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "title": "API Server Lease Errors",
+      "description": "Non-2xx API server responses to Lease calls by verb and code, cluster-wide. 409 on POST or PUT is expected contention between holders; 429 is API priority and fairness throttling; 5xx is the API server failing.",
+      "type": "timeseries",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (verb, code) (rate(apiserver_request_total{cluster=~\"$cluster\", group=\"coordination.k8s.io\", resource=\"leases\", code!~\"2..\"}[5m]))",
+          "legendFormat": "{{verb}} {{code}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
