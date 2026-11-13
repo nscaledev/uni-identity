@@ -74,6 +74,7 @@ const (
 	leaseAcquisitionsName = "unikorn_identity_organization_lease_acquisitions"
 	leaseWaitName         = "unikorn_identity_organization_lease_wait_seconds"
 	leaseSectionsName     = "unikorn_identity_organization_lease_sections"
+	leaseSectionName      = "unikorn_identity_organization_lease_section_seconds"
 	leaseReleasesName     = "unikorn_identity_organization_lease_releases"
 
 	leaseResultCreated     = "created"
@@ -95,6 +96,7 @@ type leaseMetrics struct {
 	acquisitions metric.Int64Counter
 	wait         metric.Float64Histogram
 	sections     metric.Int64Counter
+	section      metric.Float64Histogram
 	releases     metric.Int64Counter
 }
 
@@ -112,11 +114,15 @@ func newLeaseMetrics(meter metric.Meter) *leaseMetrics {
 	sections, _ := meter.Int64Counter(leaseSectionsName,
 		metric.WithDescription("Organization Lease critical sections by result: ok completed successfully; overdue ended with a context error; rate_limited when the client refused a call before its deadline; failed for other errors."),
 		metric.WithUnit("{section}"))
+	section, _ := meter.Float64Histogram(leaseSectionName,
+		metric.WithDescription("Time holding an organization Lease from its acquire time until the critical section returns, excluding release. Compare with the Lease duration minus margin (currently 2s). Results: ok completed successfully; overdue ended with a context error; rate_limited when the client refused a call before its deadline; failed for other errors."),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3))
 	releases, _ := meter.Int64Counter(leaseReleasesName,
 		metric.WithDescription("Organization Lease releases by outcome. Lost means another replica had already taken the Lease over; abandoned means a cut-off write left it to expire on purpose; failed means a delete failed and left it to expire."),
 		metric.WithUnit("{release}"))
 
-	return &leaseMetrics{acquisitions: acquisitions, wait: wait, sections: sections, releases: releases}
+	return &leaseMetrics{acquisitions: acquisitions, wait: wait, sections: sections, section: section, releases: releases}
 }
 
 func leaseResult(result string) metric.MeasurementOption {
@@ -188,6 +194,9 @@ type OrganizationLease struct {
 	lease   *coordinationv1.Lease
 	cancel  context.CancelFunc
 	metrics *leaseMetrics
+	now     func() time.Time
+	// acquiredAt is when the Lease was stamped, which the deadline counts from.
+	acquiredAt time.Time
 	// writing is set once the holder has passed Check, so a write may be in flight.
 	writing bool
 }
@@ -382,7 +391,7 @@ func AcquireOrganizationLease(ctx context.Context, cli client.Client, namespace 
 func newOrganizationLease(ctx context.Context, cli client.Client, lease *coordinationv1.Lease, acquiredAt time.Time, config *leaseOptions) (*OrganizationLease, context.Context, error) {
 	lockedContext, cancel := context.WithDeadline(ctx, acquiredAt.Add(config.duration-config.margin))
 
-	return &OrganizationLease{client: cli, lease: lease.DeepCopy(), cancel: cancel, metrics: config.metrics}, lockedContext, nil
+	return &OrganizationLease{client: cli, lease: lease.DeepCopy(), cancel: cancel, metrics: config.metrics, now: config.now, acquiredAt: acquiredAt}, lockedContext, nil
 }
 
 // Check rejects a write once the holder's critical-section deadline has passed,
@@ -403,13 +412,19 @@ func (l *OrganizationLease) Check(ctx context.Context) error {
 // rejected request, is reported as it is.
 func (l *OrganizationLease) Error(ctx context.Context, err error) error {
 	result := leaseFailureResult(err, leaseResultOverdue, leaseResultFailed)
-	l.metrics.sections.Add(ctx, 1, leaseResult(result))
+	l.finish(ctx, result)
 
 	if result != leaseResultFailed {
 		return leaseConflict(fmt.Errorf("%w: %w", ErrLeaseDeadline, err))
 	}
 
 	return err
+}
+
+// finish records the end of the critical section and how long it held the Lease.
+func (l *OrganizationLease) finish(ctx context.Context, result string) {
+	l.metrics.sections.Add(ctx, 1, leaseResult(result))
+	l.metrics.section.Record(ctx, l.now().Sub(l.acquiredAt).Seconds(), leaseResult(result))
 }
 
 // Release deletes the Lease only if it has not been taken over.
@@ -485,7 +500,7 @@ func WithOrganizationLease[T any](ctx context.Context, cli client.Client, namesp
 		return zero, lease.Error(ctx, err)
 	}
 
-	lease.metrics.sections.Add(ctx, 1, leaseResult(leaseResultOK))
+	lease.finish(ctx, leaseResultOK)
 
 	return result, nil
 }

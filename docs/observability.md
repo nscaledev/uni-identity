@@ -101,6 +101,14 @@ gated on `--otlp-endpoint`.
     means the section returned a context error; `rate_limited` means the client
     refused a call before its deadline; `failed` covers other errors. Both
     `overdue` and `rate_limited` return a retryable HTTP 409.
+  - `unikorn_identity_organization_lease_section_seconds{result}` —
+    `Float64Histogram`, unit `s`, with the same results as the sections counter:
+    time from the Lease's acquire time, where its deadline starts, to the end of
+    the critical section, excluding release.
+    Compare it with the Lease duration minus margin (currently two seconds) to
+    see sections approaching or exceeding their window, even if they succeed.
+    Bucket boundaries in seconds: `0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5,
+    2, 2.5, 3`.
   - `unikorn_identity_organization_lease_releases{result}` — `Int64Counter`, unit
     `{release}`; `result` ∈ {`released`, `lost`, `abandoned`, `failed`}. `lost`
     means another replica had already taken the Lease over; `abandoned` means a

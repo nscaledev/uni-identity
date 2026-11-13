@@ -399,7 +399,7 @@ func TestLeaseBackoff(t *testing.T) {
 func TestOrganizationLeaseError(t *testing.T) {
 	t.Parallel()
 
-	lease := &OrganizationLease{metrics: newLeaseMetrics(noop.NewMeterProvider().Meter("test"))}
+	lease := &OrganizationLease{metrics: newLeaseMetrics(noop.NewMeterProvider().Meter("test")), now: time.Now}
 
 	require.Equal(t, errRead, lease.Error(t.Context(), errRead), "a failure unrelated to the deadline is reported as it is")
 
@@ -795,6 +795,109 @@ func TestOrganizationLeaseSectionResults(t *testing.T) {
 			default:
 				require.ErrorIs(t, err, c.err)
 				leaseConflictResponse(t, err)
+			}
+		})
+	}
+}
+
+// TestOrganizationLeaseSectionSeconds checks the section histogram records the
+// time the holder spent in its critical section, under the section result, with
+// buckets that resolve around the critical-section window.
+func TestOrganizationLeaseSectionSeconds(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, 2*time.Second, organizationLeaseDuration-organizationLeaseMargin, "section buckets resolve around this window")
+
+	cases := []struct {
+		name     string
+		err      error
+		result   string
+		duration time.Duration
+		bucket   int
+		takeover bool
+		// writeDelay is how long the write that took the Lease took to return.
+		writeDelay time.Duration
+	}{
+		{name: "successful section", result: "ok", duration: 1500 * time.Millisecond, bucket: 7},
+		{name: "successful overrun", result: "ok", duration: 2500 * time.Millisecond, bucket: 9},
+		{name: "overdue section", err: context.DeadlineExceeded, result: "overdue", duration: 2500 * time.Millisecond, bucket: 9},
+		{name: "rate limited section", err: rateLimiterError(t), result: "rate_limited", duration: 500 * time.Millisecond, bucket: 5},
+		{name: "failed section", err: errRead, result: "failed", duration: 250 * time.Millisecond, bucket: 4},
+		{name: "takeover excludes waiting", result: "ok", duration: 1500 * time.Millisecond, bucket: 7, takeover: true},
+		{name: "slow create counts", result: "ok", duration: 1500 * time.Millisecond, writeDelay: 600 * time.Millisecond, bucket: 9},
+		{name: "slow takeover counts", result: "ok", duration: 1500 * time.Millisecond, writeDelay: 600 * time.Millisecond, bucket: 9, takeover: true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			organizationID := ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111")
+			now := time.Now()
+			reader := sdkmetric.NewManualReader()
+			provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+			t.Cleanup(func() { require.NoError(t, provider.Shutdown(t.Context())) })
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, coordinationv1.AddToScheme(scheme))
+
+			gets := 0
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cli client.WithWatch, key client.ObjectKey, obj client.Object, options ...client.GetOption) error {
+					gets++
+					if gets == 2 {
+						now = now.Add(3 * time.Second)
+					}
+
+					return cli.Get(ctx, key, obj, options...)
+				},
+				Create: func(ctx context.Context, cli client.WithWatch, obj client.Object, options ...client.CreateOption) error {
+					err := cli.Create(ctx, obj, options...)
+					if err == nil {
+						now = now.Add(c.writeDelay)
+					}
+
+					return err
+				},
+				Update: func(ctx context.Context, cli client.WithWatch, obj client.Object, options ...client.UpdateOption) error {
+					err := cli.Update(ctx, obj, options...)
+					if err == nil {
+						now = now.Add(c.writeDelay)
+					}
+
+					return err
+				},
+				Delete: func(ctx context.Context, cli client.WithWatch, obj client.Object, options ...client.DeleteOption) error {
+					now = now.Add(10 * time.Second)
+
+					return cli.Delete(ctx, obj, options...)
+				},
+			})
+
+			if c.takeover {
+				builder.WithObjects(&coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: leaseTestNamespace, Name: organizationLeaseName(organizationID)}})
+			}
+
+			_, err := WithOrganizationLease(t.Context(), builder.Build(), leaseTestNamespace, organizationID,
+				func(context.Context, *OrganizationLease) (struct{}, error) {
+					now = now.Add(c.duration)
+
+					return struct{}{}, c.err
+				}, withLeaseMeter(provider.Meter("test")), withLeaseClock(func() time.Time { return now }), withLeaseRetry(time.Millisecond))
+			require.ErrorIs(t, err, c.err)
+
+			section := leaseHistogram(t, reader, "unikorn_identity_organization_lease_section_seconds", c.result)
+			require.Equal(t, []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5, 2, 2.5, 3}, section.Bounds)
+			require.Equal(t, uint64(1), section.Count)
+			require.InDelta(t, (c.writeDelay + c.duration).Seconds(), section.Sum, 1e-9, "duration runs from the Lease stamp, excluding waiting and release")
+
+			counts := make([]uint64, 12)
+			counts[c.bucket] = 1
+			require.Equal(t, counts, section.BucketCounts)
+
+			if c.takeover {
+				require.Equal(t, int64(1), leaseCounter(t, reader, "unikorn_identity_organization_lease_acquisitions", "taken_over"))
 			}
 		})
 	}
