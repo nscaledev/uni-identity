@@ -24,40 +24,17 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// Options allows server options to be overridden.
+// Options are server options that core's ServerOptions does not cover.
 type Options struct {
-	Namespace string
-
-	// ListenAddress tells the server what to listen on, you shouldn't
-	// need to change this, its already non-privileged and the default
-	// should be modified to avoid clashes with other services e.g prometheus.
-	ListenAddress string
-
-	// ReadTimeout defines how long before we give up on the client,
-	// this should be fairly short.
-	ReadTimeout time.Duration
-
-	// ReadHeaderTimeout defines how long before we give up on the client,
-	// this should be fairly short.
-	ReadHeaderTimeout time.Duration
-
-	// WriteTimeout defines how long we take to respond before we give up.
-	// Ideally we'd like this to be short, but Openstack in general sucks
-	// for performance.  Additionally some calls like cluster creation can
-	// do a cascading create, e.g. create a default control plane, than in
-	// turn creates a project.
-	WriteTimeout time.Duration
-
-	// RequestTimeout places a hard limit on all requests lengths.
-	RequestTimeout time.Duration
+	// IdleTimeout is how long a keep-alive connection may wait for its next
+	// request. It must exceed the upstream keep-alive timeout of any proxy in
+	// front (ingress-nginx's is 60s), so the proxy closes idle connections
+	// first. Otherwise the proxy can send a request on a connection just as
+	// the server closes it, and the request is reset.
+	IdleTimeout time.Duration
 }
 
-// addFlags allows server options to be modified.
+// AddFlags registers the options' flags.
 func (o *Options) AddFlags(f *pflag.FlagSet) {
-	f.StringVar(&o.Namespace, "namespace", "", "The namespace the service is running in.")
-	f.StringVar(&o.ListenAddress, "server-listen-address", ":6080", "API listener address.")
-	f.DurationVar(&o.ReadTimeout, "server-read-timeout", time.Second, "How long to wait for the client to send the request body.")
-	f.DurationVar(&o.ReadHeaderTimeout, "server-read-header-timeout", time.Second, "How long to wait for the client to send headers.")
-	f.DurationVar(&o.WriteTimeout, "server-write-timeout", 10*time.Second, "How long to wait for the API to respond to the client.")
-	f.DurationVar(&o.RequestTimeout, "server-request-timeout", 30*time.Second, "How long to wait of a request to be serviced.")
+	f.DurationVar(&o.IdleTimeout, "server-idle-timeout", 120*time.Second, "How long to keep an idle keep-alive connection open. Must exceed the upstream keep-alive timeout of any proxy in front.")
 }
