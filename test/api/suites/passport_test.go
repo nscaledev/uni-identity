@@ -380,6 +380,40 @@ var _ = Describe("Passport Token Exchange", func() {
 			})
 		})
 
+		Describe("Given legacy organizationId and projectId form names", func() {
+			It("should not accept them as scoped passport claims", func() {
+				form := url.Values{
+					"grant_type":           {tokenExchangeGrantType()},
+					"subject_token":        {config.AuthToken},
+					"subject_token_type":   {accessTokenSubjectTokenType()},
+					"requested_token_type": {passportIssuedTokenType()},
+					"organizationId":       {config.OrgID},
+					"projectId":            {config.ProjectID},
+				}
+
+				resp, respBody, err := client.ExchangePassportRawForm(ctx, 0, form)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp).NotTo(BeNil())
+
+				// The exchange may ignore the unknown fields or reject them; either way they must not scope it.
+				if resp.StatusCode == http.StatusOK {
+					var result identityopenapi.Token
+					Expect(json.Unmarshal(respBody, &result)).To(Succeed())
+					Expect(result.AccessToken).NotTo(BeEmpty())
+
+					claims := decodePassportClaims(result.AccessToken)
+					Expect(claims.OrgID).To(BeEmpty())
+					Expect(claims.ProjectID).To(BeEmpty())
+
+					return
+				}
+
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest))
+				Expect(string(respBody)).NotTo(ContainSubstring("access_token"))
+			})
+		})
+
 		Describe("Given an invalid resource URI", func() {
 			It("should reject the exchange with an OAuth2 invalid_request response", func() {
 				resource := "not-a-uri"
