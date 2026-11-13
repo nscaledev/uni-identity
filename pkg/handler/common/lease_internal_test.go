@@ -689,6 +689,117 @@ func TestOrganizationLeaseWaitBuckets(t *testing.T) {
 	}
 }
 
+// leaseConflictResponse checks err renders as the retryable organization-busy 409.
+func leaseConflictResponse(t *testing.T, err error) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	servererrors.HandleError(recorder, httptest.NewRequest(http.MethodPost, "/", nil), err)
+	require.Equal(t, http.StatusConflict, recorder.Code)
+
+	var body map[string]any
+
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.Equal(t, "conflict", body["error"])
+	require.Equal(t, "another quota or allocation change for this organization is in progress, retry the request", body["error_description"])
+}
+
+func TestOrganizationLeaseAcquisitionResults(t *testing.T) {
+	t.Parallel()
+
+	refused := rateLimiterError(t)
+	cases := []struct {
+		name   string
+		err    error
+		result string
+	}{
+		{name: "deadline", err: context.DeadlineExceeded, result: "timed_out"},
+		{name: "canceled", err: context.Canceled, result: "timed_out"},
+		{name: "rate limited", err: refused, result: "rate_limited"},
+		{name: "rate limited and deadline", err: fmt.Errorf("%w: %w", refused, context.DeadlineExceeded), result: "timed_out"},
+		{name: "API failure", err: errRead, result: "error"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := sdkmetric.NewManualReader()
+			provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+			t.Cleanup(func() { require.NoError(t, provider.Shutdown(t.Context())) })
+
+			fakeClient := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+					return c.err
+				},
+			}).Build()
+
+			lease, _, err := AcquireOrganizationLease(t.Context(), fakeClient, leaseTestNamespace,
+				ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111"), withLeaseMeter(provider.Meter("test")))
+			require.Nil(t, lease)
+			require.ErrorIs(t, err, c.err)
+			require.Equal(t, int64(1), leaseCounter(t, reader, "unikorn_identity_organization_lease_acquisitions", c.result))
+
+			if c.result == "error" {
+				require.False(t, servererrors.IsConflict(err))
+
+				return
+			}
+
+			leaseConflictResponse(t, err)
+		})
+	}
+}
+
+func TestOrganizationLeaseSectionResults(t *testing.T) {
+	t.Parallel()
+
+	refused := rateLimiterError(t)
+	cases := []struct {
+		name   string
+		err    error
+		result string
+	}{
+		{name: "ok", result: "ok"},
+		{name: "deadline", err: context.DeadlineExceeded, result: "overdue"},
+		{name: "canceled", err: context.Canceled, result: "overdue"},
+		{name: "rate limited", err: refused, result: "rate_limited"},
+		{name: "rate limited and deadline", err: fmt.Errorf("%w: %w", refused, context.DeadlineExceeded), result: "overdue"},
+		{name: "failed", err: errRead, result: "failed"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			reader := sdkmetric.NewManualReader()
+			provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+			t.Cleanup(func() { require.NoError(t, provider.Shutdown(t.Context())) })
+
+			_, err := WithOrganizationLease(t.Context(), leaseTestClient(t), leaseTestNamespace,
+				ids.MustParseOrganizationID("a1111111-1111-4111-8111-111111111111"),
+				func(context.Context, *OrganizationLease) (struct{}, error) {
+					return struct{}{}, c.err
+				}, withLeaseMeter(provider.Meter("test")))
+
+			require.Equal(t, int64(1), leaseCounter(t, reader, "unikorn_identity_organization_lease_sections", c.result))
+
+			switch c.result {
+			case "ok":
+				require.NoError(t, err)
+			case "failed":
+				require.ErrorIs(t, err, c.err)
+				require.False(t, servererrors.IsConflict(err))
+			default:
+				require.ErrorIs(t, err, c.err)
+				leaseConflictResponse(t, err)
+			}
+		})
+	}
+}
+
 // TestOrganizationLeaseMetrics checks that each way a Lease can wedge an
 // organization, or recover from one, is counted under its own result.
 func TestOrganizationLeaseMetrics(t *testing.T) {

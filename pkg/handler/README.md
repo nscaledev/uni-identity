@@ -200,8 +200,8 @@ timeout. The service deletes a held Lease after either path completes, unless th
 cut off and may still commit; then, as after a crash, a contender waits one full unchanged Lease
 duration before takeover. A write the rate limiter refused was never sent, so its Lease is deleted
 at once. The read/check/write path uses the direct client.
-Lease acquisitions, critical sections and releases are counted by outcome; see
-[`docs/observability.md`](../../docs/observability.md).
+Lease acquisitions, critical sections and releases are counted by outcome, separating client
+rate-limit refusals from context timeouts; see [`docs/observability.md`](../../docs/observability.md).
 
 ## Shared Caveat: Atomicity
 

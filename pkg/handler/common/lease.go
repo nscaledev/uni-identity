@@ -76,16 +76,17 @@ const (
 	leaseSectionsName     = "unikorn_identity_organization_lease_sections"
 	leaseReleasesName     = "unikorn_identity_organization_lease_releases"
 
-	leaseResultCreated   = "created"
-	leaseResultTakenOver = "taken_over"
-	leaseResultTimedOut  = "timed_out"
-	leaseResultError     = "error"
-	leaseResultOK        = "ok"
-	leaseResultOverdue   = "overdue"
-	leaseResultFailed    = "failed"
-	leaseResultReleased  = "released"
-	leaseResultLost      = "lost"
-	leaseResultAbandoned = "abandoned"
+	leaseResultCreated     = "created"
+	leaseResultTakenOver   = "taken_over"
+	leaseResultTimedOut    = "timed_out"
+	leaseResultRateLimited = "rate_limited"
+	leaseResultError       = "error"
+	leaseResultOK          = "ok"
+	leaseResultOverdue     = "overdue"
+	leaseResultFailed      = "failed"
+	leaseResultReleased    = "released"
+	leaseResultLost        = "lost"
+	leaseResultAbandoned   = "abandoned"
 )
 
 // leaseMetrics surfaces the Lease failures that wedge an organization: holders
@@ -102,14 +103,14 @@ func newLeaseMetrics(meter metric.Meter) *leaseMetrics {
 	// descriptions and units are static, and the API returns usable no-op
 	// instruments regardless, so there is nothing actionable to handle.
 	acquisitions, _ := meter.Int64Counter(leaseAcquisitionsName,
-		metric.WithDescription("Organization Lease acquisitions by outcome. A takeover means the previous holder crashed or overran its Lease."),
+		metric.WithDescription("Organization Lease acquisitions by result: created a new Lease; taken_over from a crashed or overrun holder; timed_out when the request context ended; rate_limited when the client refused a call before its deadline; error for other API failures."),
 		metric.WithUnit("{acquisition}"))
 	wait, _ := meter.Float64Histogram(leaseWaitName,
 		metric.WithDescription("Time spent waiting to acquire an organization Lease, for acquisitions that succeeded."),
 		metric.WithUnit("s"),
 		metric.WithExplicitBucketBoundaries(0, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 4, 6, 8))
 	sections, _ := meter.Int64Counter(leaseSectionsName,
-		metric.WithDescription("Critical sections run under an organization Lease by outcome. Overdue means the holder ran past its write deadline and abandoned its write."),
+		metric.WithDescription("Organization Lease critical sections by result: ok completed successfully; overdue ended with a context error; rate_limited when the client refused a call before its deadline; failed for other errors."),
 		metric.WithUnit("{section}"))
 	releases, _ := meter.Int64Counter(leaseReleasesName,
 		metric.WithDescription("Organization Lease releases by outcome. Lost means another replica had already taken the Lease over; abandoned means a cut-off write left it to expire on purpose; failed means a delete failed and left it to expire."),
@@ -247,6 +248,20 @@ func isContextError(err error) bool {
 	return goerrors.Is(err, context.DeadlineExceeded) || goerrors.Is(err, context.Canceled)
 }
 
+func leaseFailureResult(err error, contextResult, fallback string) string {
+	// A context error wins over a rate-limit match: the cut-off call may have been
+	// a write that was sent, and WithOrganizationLease abandons the Lease for it.
+	if isContextError(err) {
+		return contextResult
+	}
+
+	if isRateLimited(err) {
+		return leaseResultRateLimited
+	}
+
+	return fallback
+}
+
 // isRateLimited reports whether the client rate limiter refused a call because it
 // could not start before the deadline. The limiter's error has no type and does not
 // wrap the context error, so it is matched by its message at each level of the
@@ -277,13 +292,12 @@ func (o *leaseOptions) backoff(last time.Duration) time.Duration {
 // retryable conflict as waiting too long. Any other failure keeps its cause, even
 // if the deadline has also passed.
 func acquireError(ctx context.Context, config *leaseOptions, action string, err error) error {
-	if isContextError(err) || isRateLimited(err) {
-		config.metrics.acquisitions.Add(ctx, 1, leaseResult(leaseResultTimedOut))
+	result := leaseFailureResult(err, leaseResultTimedOut, leaseResultError)
+	config.metrics.acquisitions.Add(ctx, 1, leaseResult(result))
 
+	if result != leaseResultError {
 		return leaseConflict(fmt.Errorf("organization is busy: %w", err))
 	}
-
-	config.metrics.acquisitions.Add(ctx, 1, leaseResult(leaseResultError))
 
 	return fmt.Errorf("%s organization lease: %w", action, err)
 }
@@ -388,13 +402,12 @@ func (l *OrganizationLease) Check(ctx context.Context) error {
 // the Lease, whatever status the caller wrapped it in. Any other failure, such as a
 // rejected request, is reported as it is.
 func (l *OrganizationLease) Error(ctx context.Context, err error) error {
-	if isContextError(err) || isRateLimited(err) {
-		l.metrics.sections.Add(ctx, 1, leaseResult(leaseResultOverdue))
+	result := leaseFailureResult(err, leaseResultOverdue, leaseResultFailed)
+	l.metrics.sections.Add(ctx, 1, leaseResult(result))
 
+	if result != leaseResultFailed {
 		return leaseConflict(fmt.Errorf("%w: %w", ErrLeaseDeadline, err))
 	}
-
-	l.metrics.sections.Add(ctx, 1, leaseResult(leaseResultFailed))
 
 	return err
 }

@@ -83,17 +83,24 @@ gated on `--otlp-endpoint`.
   bounded `result` label and no per-organization label.
   - `unikorn_identity_organization_lease_acquisitions{result}` — `Int64Counter`,
     unit `{acquisition}`; `result` ∈ {`created`, `taken_over`, `timed_out`,
-    `error`}. `taken_over` means the previous holder crashed or overran its Lease;
-    `timed_out` is a contender that gave up (an HTTP 409) and is the wedge as
-    callers see it.
+    `rate_limited`, `error`}. `created` means a new Lease was acquired;
+    `taken_over` means the previous holder crashed or overran its Lease;
+    `timed_out` means the request context ended; `rate_limited` means the client
+    refused a call that could not start before its deadline; `error` covers other
+    API failures. Both `timed_out` and `rate_limited` return a retryable HTTP 409.
+    A context error takes precedence over a rate-limit match, here and in the
+    section results, because a cut-off write may have been sent and the Lease is
+    then left to expire.
   - `unikorn_identity_organization_lease_wait_seconds` — `Float64Histogram`, unit
     `s`, no labels: time waited by acquisitions that succeeded. Bucket boundaries
     in seconds: `0, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 4, 6, 8`. An uncontested
     acquisition records exactly zero; divide the `le="0"` bucket by the count for
     the uncontested share.
   - `unikorn_identity_organization_lease_sections{result}` — `Int64Counter`, unit
-    `{section}`; `result` ∈ {`ok`, `overdue`, `failed`}. `overdue` means the holder
-    ran past its write deadline and abandoned the write.
+    `{section}`; `result` ∈ {`ok`, `overdue`, `rate_limited`, `failed`}. `overdue`
+    means the section returned a context error; `rate_limited` means the client
+    refused a call before its deadline; `failed` covers other errors. Both
+    `overdue` and `rate_limited` return a retryable HTTP 409.
   - `unikorn_identity_organization_lease_releases{result}` — `Int64Counter`, unit
     `{release}`; `result` ∈ {`released`, `lost`, `abandoned`, `failed`}. `lost`
     means another replica had already taken the Lease over; `abandoned` means a
@@ -103,7 +110,8 @@ gated on `--otlp-endpoint`.
     organization for up to one Lease duration.
   A sustained `taken_over`, `lost`, `overdue`, `abandoned` or release `failed` rate
   points at holders that cannot finish within the Lease; a rising `timed_out` rate
-  with none of those points at contention.
+  with none of those points at contention. A rising `rate_limited` rate points at
+  client-side API throttling on the replica.
 
 **controller-runtime built-ins (the three controllers only)** — the default
 controller registry is served directly at the metrics endpoint.
