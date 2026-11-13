@@ -277,4 +277,25 @@ server_deployment() { yq -r "select(.kind == \"Deployment\" and .metadata.name =
 # pkg/server/shutdown_internal_test.go checks the shutdown fits in this.
 [[ "$(server_deployment '.spec.template.spec.terminationGracePeriodSeconds')" == "60" ]] || die "expected a 60s termination grace period for the server"
 
+# The identity API server defaults to two replicas and its PDB permits one
+# voluntary disruption without preventing a one-replica node drain. Best-effort
+# hostname spreading keeps the replicas on different nodes when possible.
+deployment=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 2$' <<<"$deployment") -eq 1 ]] || die "expected identity server to default to two replicas"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints | length' <<<"$deployment")" == "1" ]] || die "expected one identity server topology spread constraint"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].maxSkew' <<<"$deployment")" == "1" ]] || die "expected identity server topology spread maxSkew of one"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].topologyKey' <<<"$deployment")" == "kubernetes.io/hostname" ]] || die "expected identity server hostname topology spread"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable' <<<"$deployment")" == "ScheduleAnyway" ]] || die "expected best-effort identity server topology spread"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels.app' <<<"$deployment")" == "test-server" ]] || die "expected identity server topology spread selector"
+
+deployment=$(helm template test "$CHART" --set server.replicas=3 | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 3$' <<<"$deployment") -eq 1 ]] || die "expected identity server replica override"
+
+deployment=$(helm template test "$CHART" --set server.replicas=1 | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 1$' <<<"$deployment") -eq 1 ]] || die "expected identity server one-replica override"
+
+pdb=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: PodDisruptionBudget/ && /name: test-server/ { print }')
+[[ $(grep -c '^  maxUnavailable: 1$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB to allow one unavailable pod"
+[[ $(grep -c '^      app: test-server$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB selector"
+
 echo "chart render checks OK"
