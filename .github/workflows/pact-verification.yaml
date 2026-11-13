@@ -1,6 +1,11 @@
 name: Pact Provider Verification
 
-# Triggered by webhook when consumer publishes new pacts
+# Triggered when a consumer publishes a pact that needs verifying. With client_payload.provider_version
+# set, it verifies that deployed provider commit instead of main, as Pact's
+# contract_requiring_verification_published flow does for each deployed provider version
+# (https://docs.pact.io/pact_broker/webhooks#the-contract-requiring-verification-published-event), so
+# can-i-deploy --to-environment staging|production has a result for the provider that environment runs.
+# Without it, the run verifies main as before.
 on:
   repository_dispatch:
     types: [pact_verification]
@@ -12,25 +17,60 @@ jobs:
   verify-pacts:
     runs-on: ubuntu-latest
     steps:
+    # Payload fields reach the shell through env, never interpolated into the script.
     - name: Log webhook payload
+      env:
+        CONSUMER_NAME: ${{ github.event.client_payload.consumer_name }}
+        PACT_URL: ${{ github.event.client_payload.pact_url }}
+        REQUESTED_VERSION: ${{ github.event.client_payload.provider_version }}
+        PROVIDER_BRANCH: ${{ github.event.client_payload.provider_branch }}
       run: |
-        echo "Triggered by consumer: ${{ github.event.client_payload.consumer_name }}"
-        echo "Pact URL: ${{ github.event.client_payload.pact_url }}"
-        echo "Provider version to verify: ${{ github.event.client_payload.provider_version }}"
-        echo "Provider branch: ${{ github.event.client_payload.provider_branch }}"
+        echo "Triggered by consumer: $CONSUMER_NAME"
+        echo "Pact URL: $PACT_URL"
+        echo "Provider version to verify: $REQUESTED_VERSION"
+        echo "Provider branch: $PROVIDER_BRANCH"
 
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        # Checkout the provider branch/version specified by the webhook
-        ref: ${{ github.event.client_payload.provider_branch || 'main' }}
+        # Checkout the provider branch/version specified by the webhook. A deployed provider_version is
+        # validated and checked out by the next step, from main's own copy of the script.
+        ref: ${{ github.event.client_payload.provider_version != '' && 'main' || github.event.client_payload.provider_branch || 'main' }}
+        # '0' as a string: a numeric 0 is falsy in an expression, so `&& 0 || 1` always gave 1 and the
+        # checkout lacked the history the ancestry check needs.
+        fetch-depth: ${{ github.event.client_payload.provider_version != '' && '0' || '1' }}
+
+    # Only a full commit already on origin/main is checked out, so the payload can't point the run at any
+    # other ref. The old commit then runs its own provider state handlers: a pact that needs a state
+    # added since fails here, and that failure is the correct "can't deploy" answer for that version.
+    # A malformed value fails the job. A full SHA that isn't on main is skipped and the job succeeds:
+    # development records the latest PR head, which a squash merge leaves off main, and that head was
+    # already verified in its own PR run. Every later step is gated on skip.
+    - name: Check out the deployed provider version
+      id: deployed
+      if: ${{ github.event.client_payload.provider_version != '' }}
+      env:
+        REQUESTED: ${{ github.event.client_payload.provider_version }}
+      run: |
+        rc=0
+        version="$(hack/pact/provider-version.sh "$REQUESTED")" || rc=$?
+        if [ "$rc" = 2 ]; then
+          echo "::notice::Skipping provider_version $REQUESTED: it isn't a commit on main, so it is a pre-squash PR head, already verified in its own PR run."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        [ "$rc" = 0 ] || exit "$rc"
+        git checkout --quiet --detach "$version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
 
     - name: Setup Go
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       uses: actions/setup-go@v6
       with:
         go-version-file: go.mod
 
     - name: Install Pact FFI Library
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       run: |
         ARCH=$(uname -m)
         if [ "$ARCH" = "x86_64" ]; then
@@ -48,17 +88,20 @@ jobs:
         sudo ldconfig
 
     - name: Setup kind cluster
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       uses: helm/kind-action@v1
       with:
         cluster_name: contract-testing
 
     - name: Install CRDs
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       run: |
         make charts/identity/crds
         kubectl apply -f charts/identity/crds/
 
     - name: Get Deployed Provider Version
       id: get_version
+      if: ${{ github.event.client_payload.provider_version == '' }}
       run: |
         OUTPUT=$(docker run --rm \
           --network host \
@@ -83,18 +126,29 @@ jobs:
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
     - name: Run Provider Contract Verification
+      if: ${{ steps.deployed.outputs.skip != 'true' }}
       env:
         PACT_BROKER_URL: ${{ vars.PACT_BROKER_URL_DEV }}
         PACT_BROKER_USERNAME: ${{ vars.PACT_BROKER_USERNAME }}
         PACT_BROKER_PASSWORD: ${{ secrets.PACT_BROKER_PASSWORD }}
-        PROVIDER_VERSION: ${{ steps.get_version.outputs.version }}
+        PROVIDER_VERSION: ${{ steps.deployed.outputs.version || steps.get_version.outputs.version }}
         CONSUMER_BRANCH: ${{ github.event.client_payload.consumer_branch }}
+        DEPLOYED_VERSION: ${{ steps.deployed.outputs.version }}
         CGO_LDFLAGS: "-L/usr/local/lib"
         LD_LIBRARY_PATH: "/usr/local/lib"
-      run: make test-contracts-provider-ci
+      run: |
+        # A deployed version publishes on its own `deployed` branch, not main: the broker moves the head of
+        # whatever branch a version is added to
+        # (https://github.com/pact-foundation/pact_broker/blob/master/lib/pact_broker/versions/branch_version_repository.rb),
+        # so main's head would become this older commit and consumers' can-i-merge would check against it
+        # until the next merge. It can't be empty either: the pacts-for-verification request with pending
+        # on and no tags rejects a blank branch
+        # (https://github.com/pact-foundation/pact_broker/blob/master/lib/pact_broker/api/contracts/pacts_for_verification_json_query_schema.rb).
+        if [ -n "$DEPLOYED_VERSION" ]; then export GIT_BRANCH=deployed; fi
+        make test-contracts-provider-ci
 
     - name: Report verification status
-      if: always()
+      if: ${{ always() && steps.deployed.outputs.skip != 'true' }}
       run: |
         if [ "${{ job.status }}" == "success" ]; then
           echo "Provider verification passed - contracts are compatible"
