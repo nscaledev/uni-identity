@@ -54,6 +54,8 @@ grep -q 'dashboard-uni-identity-api' <<<"$operator"
 grep -q 'uni-identity-api.json' <<<"$operator"
 grep -q 'dashboard-uni-identity-operations' <<<"$operator"
 grep -q 'uni-identity-operations.json' <<<"$operator"
+grep -q 'dashboard-uni-identity-leases' <<<"$operator"
+grep -q 'uni-identity-leases.json' <<<"$operator"
 
 # An empty selector would hand the dashboards to whichever Grafana
 # instances the operator matches, so operator mode must name one.
@@ -86,8 +88,8 @@ fi
 
 dashboard_uid_count=$(jq -r '.uid' "$chart"/files/dashboards/*.json | sort -u | wc -l | tr -d ' ')
 
-if [[ "$dashboard_uid_count" -ne 3 ]]; then
-	echo "identity dashboards must have three unique UIDs" >&2
+if [[ "$dashboard_uid_count" -ne 4 ]]; then
+	echo "identity dashboards must have four unique UIDs" >&2
 	exit 1
 fi
 
@@ -159,6 +161,20 @@ jq --exit-status '
 	all(($expressions + [.templating.list[1].query])[]; contains("app=") | not) and
 	all(($expressions + [.templating.list[1].query])[]; contains("job=") | not)
 ' "$chart/files/dashboards/uni-identity-api.json" >/dev/null
+
+# The Lease metric names are identity's own; a Go test checks them against the
+# exporter. The API server's Lease series have one source per cluster, so only
+# identity's own queries select the service.
+jq --exit-status '
+	.uid == "uni-identity-leases" and
+	any(.panels[].targets[].expr; contains("apiserver_request_duration_seconds_bucket")) and
+	[.panels[].targets[].expr | select(contains("apiserver_") | not)] as $expressions |
+	any($expressions[]; contains("unikorn_identity_organization_lease_acquisitions_total")) and
+	any($expressions[]; contains("unikorn_identity_organization_lease_section_seconds_bucket")) and
+	all(($expressions + [.templating.list[1].query])[]; contains("service=\"unikorn-identity\"")) and
+	all(($expressions + [.templating.list[1].query])[]; contains("app=") | not) and
+	all(($expressions + [.templating.list[1].query])[]; contains("job=") | not)
+' "$chart/files/dashboards/uni-identity-leases.json" >/dev/null
 
 jq --exit-status '
 	[.panels[].title] as $titles |

@@ -83,14 +83,32 @@ gated on `--otlp-endpoint`.
   bounded `result` label and no per-organization label.
   - `unikorn_identity_organization_lease_acquisitions{result}` — `Int64Counter`,
     unit `{acquisition}`; `result` ∈ {`created`, `taken_over`, `timed_out`,
-    `error`}. `taken_over` means the previous holder crashed or overran its Lease;
-    `timed_out` is a contender that gave up (an HTTP 409) and is the wedge as
-    callers see it.
+    `rate_limited`, `error`}. `created` means a new Lease was acquired;
+    `taken_over` means the previous holder crashed or overran its Lease;
+    `timed_out` means the request context ended; `rate_limited` means the client
+    refused a call that could not start before its deadline; `error` covers other
+    API failures. Both `timed_out` and `rate_limited` return a retryable HTTP 409.
+    A context error takes precedence over a rate-limit match, here and in the
+    section results, because a cut-off write may have been sent and the Lease is
+    then left to expire.
   - `unikorn_identity_organization_lease_wait_seconds` — `Float64Histogram`, unit
-    `s`, no labels: time waited by acquisitions that succeeded.
+    `s`, no labels: time waited by acquisitions that succeeded. Bucket boundaries
+    in seconds: `0, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 4, 6, 8`. An uncontested
+    acquisition records exactly zero; divide the `le="0"` bucket by the count for
+    the uncontested share.
   - `unikorn_identity_organization_lease_sections{result}` — `Int64Counter`, unit
-    `{section}`; `result` ∈ {`ok`, `overdue`, `failed`}. `overdue` means the holder
-    ran past its write deadline and abandoned the write.
+    `{section}`; `result` ∈ {`ok`, `overdue`, `rate_limited`, `failed`}. `overdue`
+    means the section returned a context error; `rate_limited` means the client
+    refused a call before its deadline; `failed` covers other errors. Both
+    `overdue` and `rate_limited` return a retryable HTTP 409.
+  - `unikorn_identity_organization_lease_section_seconds{result}` —
+    `Float64Histogram`, unit `s`, with the same results as the sections counter:
+    time from the Lease's acquire time, where its deadline starts, to the end of
+    the critical section, excluding release.
+    Compare it with the Lease duration minus margin (currently two seconds) to
+    see sections approaching or exceeding their window, even if they succeed.
+    Bucket boundaries in seconds: `0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 1.5,
+    2, 2.5, 3`.
   - `unikorn_identity_organization_lease_releases{result}` — `Int64Counter`, unit
     `{release}`; `result` ∈ {`released`, `lost`, `abandoned`, `failed`}. `lost`
     means another replica had already taken the Lease over; `abandoned` means a
@@ -100,7 +118,8 @@ gated on `--otlp-endpoint`.
     organization for up to one Lease duration.
   A sustained `taken_over`, `lost`, `overdue`, `abandoned` or release `failed` rate
   points at holders that cannot finish within the Lease; a rising `timed_out` rate
-  with none of those points at contention.
+  with none of those points at contention. A rising `rate_limited` rate points at
+  client-side API throttling on the replica.
 
 **controller-runtime built-ins (the three controllers only)** — the default
 controller registry is served directly at the metrics endpoint.
@@ -295,7 +314,7 @@ Identity exposes `:8080/metrics` only on pod IPs. The API Service and Ingress do
 not expose that port. The chart does not configure the platform-owned PodMonitor
 or the externally operated lifecycle exporter.
 
-## Dashboards (focused set, 2 + optional leadership)
+## Dashboards (focused set, 3 + optional leadership)
 
 Raw Grafana JSON under `charts/identity-observability/files/dashboards/*.json`,
 provisioned through the Grafana sidecar or grafana-operator (see the chart
@@ -308,9 +327,11 @@ selector has no saved value and no name filter: it starts on the instance's
 default Prometheus datasource and lists all of them.
 
 Every dashboard has a top-level `cluster` selector and filters every panel on it.
-Every panel query also filters on `service="unikorn-identity"`: the RED and
-readiness families use platform-generic metric names, so the service must be
-selected by label, not by name. Core sets that label in code, so it does not
+Queries for metrics that more than one service emits also filter on
+`service="unikorn-identity"`: the RED and readiness families use
+platform-generic metric names, so the service must be selected by label, not by
+name. Metrics with a single source per cluster, such as the API server's, filter
+on `cluster` only. Core sets that label in code, so it does not
 depend on the PodMonitor or the Helm release name. The leader-election panels
 also filter on `name!=""`, because the server's JOSE lease has no name and
 would otherwise count as an extra, unnamed leader.
@@ -327,7 +348,17 @@ would otherwise count as an extra, unnamed leader.
 2. **Identity API** — request rate, 4xx and 5xx ratios, p95 latency, request
    rate by route and status class, route-level error and latency breakdowns,
    latency quantiles, and active requests by route.
-3. **Identity Controller Leadership** *(opt-in)* — `leader_election_master_status`
+3. **Identity Organization Leases** — health and cost of the per-organization
+   Lease that serializes quota and allocation writes: acquisition success,
+   uncontested share, takeovers and Leases left to expire; p95 latency of the
+   Lease routes against all routes, and Lease wait and hold time against their
+   request duration; Lease 409s against 4xx on those routes; hold-time
+   quantiles against the two-second critical-section window; outcomes of
+   acquisitions, sections and releases; failures by pod; and the API server's
+   Lease latency and error codes by verb, which include leader election. The Lease
+   instruments are defined above. `TestLeaseDashboardMetricNames` checks each
+   name it queries against the Prometheus exporter.
+4. **Identity Controller Leadership** *(opt-in)* — `leader_election_master_status`
    by lease name. It is rendered only when
    `grafana.dashboards.leaderElection.enabled=true`, because a dashboard without
    stored leader-election series is misleading.
