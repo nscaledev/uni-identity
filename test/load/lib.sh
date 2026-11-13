@@ -1,13 +1,20 @@
 # Shared by run-phases.sh, ceiling.sh and warmup.sh: reads of the server
-# container's metrics from the kubelet's cadvisor. Source it; it needs NAMESPACE and
+# container's CPU (live, from the container runtime) and memory (kubelet's
+# cadvisor). Needs a kind cluster and docker. Source it; it needs NAMESPACE and
 # SERVER_DEPLOYMENT (also the server container's name) in the environment.
 
-# server_pod prints the name of the server's pod. It fails when there is none.
+# server_pod prints the name of the server's one live pod. It fails unless
+# exactly one pod is not terminating: just after a rollout the old pod is still
+# listed, and reading its CPU counter for one end of a window corrupts the
+# window (see the README's "Per-PR gate").
 server_pod() {
-  local pod
-  pod=$(kubectl get pod -n "${NAMESPACE}" -l "app=${SERVER_DEPLOYMENT}" -o jsonpath='{.items[0].metadata.name}') \
-    && [[ -n "${pod}" ]] || { echo "ERROR: no server pod for app=${SERVER_DEPLOYMENT}" >&2; return 1; }
-  echo "${pod}"
+  local pods
+  pods=$(kubectl get pod -n "${NAMESPACE}" -l "app=${SERVER_DEPLOYMENT}" -o json \
+    | jq -r '.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name') \
+    || { echo "ERROR: could not list server pods for app=${SERVER_DEPLOYMENT}" >&2; return 1; }
+  [[ -n "${pods}" && "${pods}" != *$'\n'* ]] \
+    || { echo "ERROR: want one live server pod for app=${SERVER_DEPLOYMENT}, got: ${pods:-none}" >&2; return 1; }
+  echo "${pods}"
 }
 
 # cadvisor_sum METRIC POD FORMAT prints the sum of METRIC over the server
@@ -30,17 +37,30 @@ cadvisor_sum() {
         }'
 }
 
-# cadvisor lags the cgroup by up to ~10s, so CPU is read after a quiet gap on
-# both sides of a window.
-SETTLE="${SETTLE:-15}"
+# A quiet gap on both sides of a window: k6 has exited and its last requests
+# are served. The CPU read is live, so this is not a lag allowance.
+SETTLE="${SETTLE:-2}"
 
 now() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
 
-# Total CPU seconds used by the server container, from the kubelet's cadvisor.
+# Total CPU seconds used by the server container, read live from the container
+# runtime on the pod's kind node (the node's name is its docker container's):
+# crictl's usageCoreNanoSeconds, the CRI's own figure. It fails, with a message,
+# on any missing step or figure, never printing 0. See the README's "Per-PR gate".
 cpu_seconds() {
-  local pod
+  local pod info node id nanos
   pod=$(server_pod) || return 1
-  cadvisor_sum container_cpu_usage_seconds_total "${pod}" "%.3f"
+  info=$(kubectl get pod -n "${NAMESPACE}" "${pod}" -o json \
+    | jq -r --arg ctr "${SERVER_DEPLOYMENT}" \
+      '.spec.nodeName, (.status.containerStatuses[]? | select(.name == $ctr) | .containerID | sub("^containerd://"; ""))') \
+    || { echo "ERROR: could not read pod ${pod}" >&2; return 1; }
+  { read -r node; read -r id; } <<< "${info}"
+  [[ -n "${node}" && -n "${id}" && "${id}" != null ]] \
+    || { echo "ERROR: pod ${pod} has no node or no ${SERVER_DEPLOYMENT} container ID" >&2; return 1; }
+  nanos=$(docker exec "${node}" crictl stats -o json --id "${id}" \
+    | jq -er '.stats[0].cpu.usageCoreNanoSeconds.value | tonumber') \
+    || { echo "ERROR: no crictl CPU figure for ${pod}/${SERVER_DEPLOYMENT} on ${node}" >&2; return 1; }
+  awk -v n="${nanos}" 'BEGIN { printf "%.3f\n", n / 1e9 }'
 }
 
 # Reads the CPU counter or stops the run: a missing reading must not become a zero.

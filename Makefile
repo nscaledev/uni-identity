@@ -214,6 +214,7 @@ lint: $(GENDIR)
 	./test/load/ceiling_test.sh
 	./test/load/compare_test.sh
 	./test/load/gate_test.sh
+	./test/load/perf_gate_test.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate

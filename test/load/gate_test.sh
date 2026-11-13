@@ -2,7 +2,7 @@
 # Checks the count gate on a hand-made audit log: count-audit.sh (and so
 # count-audit.jq: the limit, other users, a repeated audit ID, a window's edges,
 # a blind probe) and gate-summary.sh; and that run-phases.sh fails when k6's
-# thresholds fail (a 5xx), using a stub k6 and kubectl. Needs only bash and jq.
+# thresholds fail (a 5xx), using a stub k6, kubectl and docker. Needs only bash and jq.
 # Usage: gate_test.sh
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,13 +89,19 @@ K6
 cat > "${DIR}/bin/kubectl" <<'KUBECTL'
 #!/usr/bin/env bash
 case "$*" in
-  *"get pod -n"*"-l app="*) echo -n pod-0 ;;
-  *"get pod -n"*nodeName*) echo -n node-0 ;;
-  *"get --raw"*) echo 'container_cpu_usage_seconds_total{container="srv",pod="pod-0"} 1' ;;
+  *"get pod -n"*"-l app="*) echo '{"items":[{"metadata":{"name":"pod-0"}}]}' ;;
+  *"get pod -n"*"pod-0 -o json"*) echo '{"spec":{"nodeName":"node-0"},"status":{"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecarid"},{"name":"srv","containerID":"containerd://srvid"}]}}' ;;
   *) echo "stub kubectl: unexpected $*" >&2; exit 1 ;;
 esac
 KUBECTL
-chmod +x "${DIR}/bin/k6" "${DIR}/bin/kubectl"
+cat > "${DIR}/bin/docker" <<'DOCKER'
+#!/usr/bin/env bash
+# The CPU read: docker exec NODE crictl stats -o json --id ID, for the server's container only.
+[[ "$*" == "exec node-0 crictl stats -o json --id srvid" ]] \
+  || { echo "stub docker: unexpected $*" >&2; exit 1; }
+echo '{"stats":[{"cpu":{"usageCoreNanoSeconds":{"value":"1000000000"}}}]}'
+DOCKER
+chmod +x "${DIR}/bin/k6" "${DIR}/bin/kubectl" "${DIR}/bin/docker"
 rc=0
 PATH="${DIR}/bin:${PATH}" BASE_URL=http://unused TOKENS=unused OUT_DIR="${DIR}/run" NAMESPACE=ns SERVER_DEPLOYMENT=srv \
   SETTLE=0 BASELINE_SECONDS=1 RATE=1 DURATION=1 "${HERE}/run-phases.sh" > "${DIR}/run.log" 2>&1 || rc=$?
@@ -122,6 +128,78 @@ if [[ "$(grep -c 'Request Failed' "${DIR}/run/k6-acl-heavy.log" 2>/dev/null)" ==
   echo "ok   run-phases-k6-log-file"
 else
   echo "FAIL run-phases-k6-log-file: k6-acl-heavy.log lacks the 8 per-request lines"; failed=1
+fi
+
+# server_pod: just after a rollout the old, terminating pod is listed first;
+# only the live one may be read. Two live pods is an error, not a guess.
+mkdir -p "${DIR}/pods/bin"
+cat > "${DIR}/pods/bin/kubectl" <<'KUBECTL'
+#!/usr/bin/env bash
+cat "${PODS_JSON}"
+KUBECTL
+chmod +x "${DIR}/pods/bin/kubectl"
+pods() { PODS_JSON="$1" PATH="${DIR}/pods/bin:${PATH}" NAMESPACE=ns SERVER_DEPLOYMENT=srv \
+  bash -c '. "$0"; server_pod' "${HERE}/lib.sh" 2>/dev/null; }
+echo '{"items":[{"metadata":{"name":"old","deletionTimestamp":"2026-01-01T00:00:00Z"}},{"metadata":{"name":"new"}}]}' > "${DIR}/pods/swap.json"
+echo '{"items":[{"metadata":{"name":"a"}},{"metadata":{"name":"b"}}]}' > "${DIR}/pods/two.json"
+if [[ "$(pods "${DIR}/pods/swap.json")" == new ]]; then
+  echo "ok   server-pod-skips-terminating"
+else
+  echo "FAIL server-pod-skips-terminating: got '$(pods "${DIR}/pods/swap.json")'"; failed=1
+fi
+if ! pods "${DIR}/pods/two.json" > /dev/null; then
+  echo "ok   server-pod-two-live-fails"
+else
+  echo "FAIL server-pod-two-live-fails: picked one of two live pods"; failed=1
+fi
+
+# read_cpu: the CPU figure is crictl's usageCoreNanoSeconds for the server's own
+# container (not a sidecar's), with containerd:// stripped from its ID, in
+# seconds. A missing or empty figure stops the run: it is never 0.
+mkdir -p "${DIR}/cpu/bin"
+cat > "${DIR}/cpu/bin/kubectl" <<'KUBECTL'
+#!/usr/bin/env bash
+case "$*" in
+  *"-l app="*) echo '{"items":[{"metadata":{"name":"pod-0"}}]}' ;;
+  *"pod-0 -o json"*) cat "${POD_JSON}" ;;
+  *) exit 1 ;;
+esac
+KUBECTL
+cat > "${DIR}/cpu/bin/docker" <<'DOCKER'
+#!/usr/bin/env bash
+echo "$*" > "${DOCKER_ARGS}"
+printf '%s' "${CRICTL_OUT}"
+DOCKER
+chmod +x "${DIR}/cpu/bin/kubectl" "${DIR}/cpu/bin/docker"
+echo '{"spec":{"nodeName":"node-0"},"status":{"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecarid"},{"name":"srv","containerID":"containerd://srvid"}]}}' > "${DIR}/cpu/ok.json"
+echo '{"spec":{"nodeName":"node-0"},"status":{"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecarid"}]}}' > "${DIR}/cpu/nosrv.json"
+# cpu POD_JSON CRICTL_OUT: runs read_cpu; prints its stdout, then the exit status.
+cpu() {
+  local out rc=0
+  out=$(POD_JSON="$1" CRICTL_OUT="$2" DOCKER_ARGS="${DIR}/cpu/args" PATH="${DIR}/cpu/bin:${PATH}" NAMESPACE=ns SERVER_DEPLOYMENT=srv \
+    bash -c '. "$0"; read_cpu' "${HERE}/lib.sh" 2> /dev/null) || rc=$?
+  echo "${out}|${rc}"
+}
+GOOD='{"stats":[{"cpu":{"usageCoreNanoSeconds":{"value":"2500000000"}}}]}'
+got=$(cpu "${DIR}/cpu/ok.json" "${GOOD}")
+if [[ "${got}" == "2.500|0" && "$(cat "${DIR}/cpu/args")" == "exec node-0 crictl stats -o json --id srvid" ]]; then
+  echo "ok   read-cpu-server-container-id"
+else
+  echo "FAIL read-cpu-server-container-id: got '${got}', docker ran '$(cat "${DIR}/cpu/args")'"; failed=1
+fi
+for case in "empty:" 'no-stats:{"stats":[]}' 'no-cpu:{"stats":[{"memory":{}}]}' 'null-value:{"stats":[{"cpu":{"usageCoreNanoSeconds":{}}}]}'; do
+  got=$(cpu "${DIR}/cpu/ok.json" "${case#*:}")
+  if [[ "${got}" == "|1" ]]; then
+    echo "ok   read-cpu-missing-figure-fails (${case%%:*})"
+  else
+    echo "FAIL read-cpu-missing-figure-fails (${case%%:*}): got '${got}'"; failed=1
+  fi
+done
+got=$(cpu "${DIR}/cpu/nosrv.json" "${GOOD}")
+if [[ "${got}" == "|1" ]]; then
+  echo "ok   read-cpu-no-server-container-fails"
+else
+  echo "FAIL read-cpu-no-server-container-fails: got '${got}'"; failed=1
 fi
 
 exit "${failed}"

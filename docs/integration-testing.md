@@ -116,8 +116,10 @@ This performs:
 
 Each run uses a fresh random suffix (`KIND_SUFFIX`), so release names, namespaces, and ingress
 hostnames vary from run to run. This catches hardcoded names. The one exception is the CI leg that
-runs the API-call count gate: it uses the fixed suffix `gate`, so the audit policy can name
-identity's ServiceAccount.
+runs the API-call count gate and the CPU comparison with the PR's base commit: it uses the fixed
+suffix `gate`, so the audit policy can name identity's ServiceAccount. The label
+`perf-regression-accepted` on the PR lets a CPU regression through, never the call count. See
+`test/load/README.md` ("Per-PR gate").
 
 ## Iterating Without Rebuilding
 

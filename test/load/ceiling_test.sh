@@ -42,20 +42,24 @@ echo "stub summary ${PHASE} ${MODE}"
 [[ "${failed}" -eq 0 ]] || exit 99
 K6
 
-# The fake kubectl answers the three calls lib.sh makes; the CPU counter moves
-# on by 1.5 s each time it is read.
+# The fake kubectl and docker answer the calls lib.sh makes; the CPU counter
+# moves on by 1.5 s each time it is read.
 cat > "${WORK}/bin/kubectl" <<'KUBECTL'
 #!/usr/bin/env bash
 case "$*" in
-  *"get pod -n"*"-l app="*) echo -n pod-0 ;;
-  *"get pod -n"*nodeName*) echo -n node-0 ;;
-  *"get --raw"*)
-    n=$(( $(cat "${FAKE_CPU_FILE}") + 1 )); echo "${n}" > "${FAKE_CPU_FILE}"
-    echo "container_cpu_usage_seconds_total{container=\"srv\",pod=\"pod-0\"} $(( n * 3 / 2 ))" ;;
+  *"get pod -n"*"-l app="*) echo '{"items":[{"metadata":{"name":"pod-0"}}]}' ;;
+  *"get pod -n"*"pod-0 -o json"*) echo '{"spec":{"nodeName":"node-0"},"status":{"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecarid"},{"name":"srv","containerID":"containerd://srvid"}]}}' ;;
   *) echo "fake kubectl: unexpected $*" >&2; exit 1 ;;
 esac
 KUBECTL
-chmod +x "${WORK}/bin/k6" "${WORK}/bin/kubectl"
+cat > "${WORK}/bin/docker" <<'DOCKER'
+#!/usr/bin/env bash
+[[ "$*" == "exec node-0 crictl stats -o json --id srvid" ]] \
+  || { echo "fake docker: unexpected $*" >&2; exit 1; }
+n=$(( $(cat "${FAKE_CPU_FILE}") + 1 )); echo "${n}" > "${FAKE_CPU_FILE}"
+echo "{\"stats\":[{\"cpu\":{\"usageCoreNanoSeconds\":{\"value\":\"$(( n * 1500000000 ))\"}}}]}"
+DOCKER
+chmod +x "${WORK}/bin/k6" "${WORK}/bin/kubectl" "${WORK}/bin/docker"
 
 # run_ceiling NAME SPEC_JSON [IDLE_CORES]: runs ceiling.sh into WORK/NAME.
 run_ceiling() {

@@ -6,9 +6,11 @@
 # Usage: compare.sh OUT_DIR
 #
 # Reads OUT_DIR/turns.json and OUT_DIR/turns/<n>-<build>/ (what run-phases.sh,
-# warmup.sh and count-turns.sh wrote). The comparison is report-only; this
-# script does not fail on it. Environment: COMPARE_MARGIN_PCT (25), and what
-# report.sh reads.
+# warmup.sh and count-turns.sh wrote). Writes OUT_DIR/verdicts.json (compare.jq's
+# output, when all four turns finished). This script never fails on the
+# comparison; perf-gate.sh decides what a verdict does.
+# Environment: COMPARE_MARGIN_PCT (25), COMPARE_GATE (true when CPU per request
+# is gated, default false; wording only), and what report.sh reads.
 set -euo pipefail
 
 OUT_DIR="${1:?Usage: $0 OUT_DIR}"
@@ -16,6 +18,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=test/load/lib.sh
 . "${HERE}/lib.sh"
 MARGIN="${COMPARE_MARGIN_PCT:-25}"
+GATE="${COMPARE_GATE:-false}"
 BASELINE_REF=$(jq -r .baselineRef "${OUT_DIR}/turns.json")
 CANDIDATE_REF=$(jq -r .candidateRef "${OUT_DIR}/turns.json")
 
@@ -38,6 +41,9 @@ done
 finished=$(jq length <<< "${turns}")
 echo "## Load test: ${CANDIDATE_REF} against ${BASELINE_REF}"
 echo
+# What the baseline is: its ref and, when the caller recorded it, its commit.
+jq -r '"Baseline: \(.baselineRef)" + (if .baselineCommit then " at commit \(.baselineCommit)" else "" end)' "${OUT_DIR}/turns.json"
+echo
 
 # Absolute checks, candidate only. They come first: a build that fails them is
 # not rescued by a good comparison.
@@ -55,12 +61,18 @@ jq -r '
     end' <<< "${turns}"
 echo
 
-echo "### Comparison (report-only, not a gate)"
+if [[ "${GATE}" == true ]]; then
+  echo "### Comparison (CPU per request is gated; p95 is shown, not gated)"
+else
+  echo "### Comparison (report-only, not a gate)"
+fi
 echo
 echo "Turn order: baseline, candidate, candidate, baseline. A phase is worse (or better) only when both candidate turns are more than ${MARGIN}% worse than the worse baseline turn (or better than the better one). The ceiling is reported below, per build, and not compared by this rule."
 echo
+rm -f "${OUT_DIR}/verdicts.json"
 if [[ "${finished}" -eq 4 ]]; then
-  jq -r --arg ref "${BASELINE_REF}" --argjson margin "${MARGIN}" -f "${HERE}/compare.jq" <<< "${turns}" | jq -r '.[].line | "- " + .'
+  jq -c --arg ref "${BASELINE_REF}" --argjson margin "${MARGIN}" --argjson gate "${GATE}" -L "${HERE}" -L "${HERE}" -f "${HERE}/compare.jq" <<< "${turns}" > "${OUT_DIR}/verdicts.json"
+  jq -r '.[].line | "- " + .' "${OUT_DIR}/verdicts.json"
 else
   echo "Not made: ${finished} of 4 turns finished."
 fi
@@ -68,14 +80,25 @@ echo
 
 echo "### All turns"
 echo
-echo "Baseline turns are not gated. CPU per request is in CPU seconds, less the idle rate."
+echo "Baseline turns are not gated. CPU per request is in CPU seconds, less the idle rate. The vs baseline columns are a candidate turn against the mean of the baseline turns for that phase."
 echo
-echo "| Turn | Build | Phase | CPU per request | CPU cores used | p95 ms | API-server calls per request | Failure rate (any non-200) |"
-echo "|---|---|---|---|---|---|---|---|"
-jq -r --arg b "${BASELINE_REF}" --arg c "${CANDIDATE_REF}" '
-  def r5: (. * 100000 | round) / 100000;
-  .[] | . as $t | .rows[]
-  | "| \($t.turn) | \(if $t.build == "baseline" then $b else $c end) (\($t.build)) | \(.name) | \(if .cpuPerRequest == null then "below noise" else (.cpuPerRequest | r5) end) | \(if .cpuCores == null then "below noise" else (.cpuCores * 1000 | round / 1000) end) | \(.p95Ms * 100 | round / 100) | \(if .callsPerRequest == null then "n/a" else (.callsPerRequest * 1000 | round / 1000) end) | \(.failureRate) |"' <<< "${turns}"
+echo "| Turn | Build | Phase | CPU per request | CPU vs baseline | CPU cores used | p95 ms | p95 vs baseline | API-server calls per request | Failure rate (any non-200) |"
+echo "|---|---|---|---|---|---|---|---|---|---|"
+jq -r -L "${HERE}" --arg b "${BASELINE_REF}" --arg c "${CANDIDATE_REF}" 'include "metrics";
+  . as $turns
+  | def r5: (. * 100000 | round) / 100000;
+  def mean: add / length;
+  # Signed percent against the mean of the baseline turns for the phase; blank on a
+  # baseline row, n/a when either side has no reading.
+  def vs($t; $phase; $key):
+    if $t.build == "baseline" then ""
+    else ([$turns[] | select(.build == "baseline") | .rows[] | select(.name == $phase) | .[$key]]) as $b
+      | if .[$key] == null or ($b | length) == 0 or ($b | any(. == null or . <= 0)) then "n/a"
+        else (.[$key] / ($b | mean) * 100 - 100) as $d
+          | $d | signed_pct end
+    end;
+  $turns[] | . as $t | .rows[] | . as $row
+  | "| \($t.turn) | \(if $t.build == "baseline" then $b else $c end) (\($t.build)) | \(.name) | \(if .cpuPerRequest == null then "below noise" else (.cpuPerRequest | r5) end) | \($row | vs($t; $row.name; "cpuPerRequest")) | \(if .cpuCores == null then "below noise" else (.cpuCores * 1000 | round / 1000) end) | \(.p95Ms * 100 | round / 100) | \($row | vs($t; $row.name; "p95Ms")) | \(if .callsPerRequest == null then "n/a" else (.callsPerRequest * 1000 | round / 1000) end) | \(.failureRate) |"' <<< "${turns}"
 echo
 
 # The ceiling of each build, once each, after the four turns. Report-only.
@@ -92,20 +115,26 @@ if [[ "${#files[@]}" -eq 0 ]]; then
 else
   echo "The highest rate with no failed request: one ramp that stopped at the first failure (a non-200, a 5 s timeout, or k6 falling behind its schedule), then 30 s holds at 0.9, 0.7 and 0.5 of the rate the failure started at, stopping at the first that failed nothing and delivered 95% of its rate. Each build ran once, on a fresh restart. Figures are for this runner."
   echo
-  echo "| Phase | Build | First failure at req/s | Ceiling req/s | p95 ms | CPU cores used | Failure rate |"
-  echo "|---|---|---|---|---|---|---|"
+  echo "| Phase | Build | First failure at req/s | Ceiling req/s | p95 ms | CPU cores used | Failure rate | Ceiling vs baseline |"
+  echo "|---|---|---|---|---|---|---|---|"
   for phase in "${PHASES[@]}"; do
     for build in baseline candidate; do
       ref="${CANDIDATE_REF}"
       [[ "${build}" == baseline ]] && ref="${BASELINE_REF}"
       f="${OUT_DIR}/ceiling/${build}/ceiling-${phase}.json"
       if [[ ! -s "${f}" ]]; then
-        echo "| ${phase} | ${ref} (${build}) | not measured | not measured | n/a | n/a | n/a |"
+        echo "| ${phase} | ${ref} (${build}) | not measured | not measured | n/a | n/a | n/a | n/a |"
         continue
       fi
-      jq -r --arg build "${build}" --arg ref "${ref}" '
+      # The candidate's ceiling against the baseline's, when both held one.
+      base_f="${OUT_DIR}/ceiling/baseline/ceiling-${phase}.json"
+      base_rps=null
+      if [[ "${build}" == candidate && -s "${base_f}" ]]; then base_rps=$(jq -c .ceilingRps "${base_f}"); fi
+      jq -r -L "${HERE}" --arg build "${build}" --arg ref "${ref}" --argjson baseRps "${base_rps}" 'include "metrics";
         def f3: . * 1000 | round / 1000;
-        "| \(.phase) | \($ref) (\($build)) | \(if .topReached then "none (top \(.ceilingMax) reached)" else (.firstFailureRps | round | tostring) end) | \(if .ceilingRps == null then "none held" else .ceilingRps end) | \(if .p95Ms == null then "n/a" else (.p95Ms * 100 | round / 100) end) | \(if .cpuCores == null then "n/a" else (.cpuCores | f3) end) | \(if .failureRate == null then "n/a" else .failureRate end) |"' \
+        def vs: if $build == "baseline" then "" elif .ceilingRps == null or $baseRps == null or $baseRps <= 0 then "n/a"
+          else (.ceilingRps / $baseRps * 100 - 100) | signed_pct end;
+        "| \(.phase) | \($ref) (\($build)) | \(if .topReached then "none (top \(.ceilingMax) reached)" else (.firstFailureRps | round | tostring) end) | \(if .ceilingRps == null then "none held" else .ceilingRps end) | \(if .p95Ms == null then "n/a" else (.p95Ms * 100 | round / 100) end) | \(if .cpuCores == null then "n/a" else (.cpuCores | f3) end) | \(if .failureRate == null then "n/a" else .failureRate end) | \(vs) |"' \
         "${f}"
     done
   done
