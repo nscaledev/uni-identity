@@ -56,7 +56,7 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
 | `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
 | `load-kind-config.yaml`, `load-audit-policy.yaml` | Load Test only: `kind-config.yaml` plus the kube-apiserver audit log, limited to identity's server ServiceAccount |
-| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider |
+| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider, keeps the default ACL cache timeout and lowers the server's CPU request so a rolling restart fits |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally

@@ -38,7 +38,7 @@ K6
 cat > "${WORK}/bin/kubectl" <<'KUBECTL'
 #!/usr/bin/env bash
 case "$*" in
-  *"get pod -n"*"-l app="*) echo -n pod-0 ;;
+  *"get pod -n"*"-l app="*) echo '{"items": [{"metadata": {"name": "pod-0"}}]}' ;;
   *"get pod -n"*nodeName*) echo -n node-0 ;;
   *"get --raw"*)
     n=$(( $(cat "${FAKE_CPU_FILE}") + 1 )); echo "${n}" > "${FAKE_CPU_FILE}"

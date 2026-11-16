@@ -49,7 +49,7 @@ def top($m): $m | to_entries | map(select(.value > 0)) | sort_by(-.value)
      else
       "### Server restarts",
       "",
-      "Measured by restarting the server deployment \($warmup.restarts | length) times before the phases. Readiness probe: `\($warmup.readinessProbe | tojson)`. progressDeadlineSeconds: \($warmup.progressDeadlineSeconds). Strategy: `\($warmup.strategy | tojson)`.",
+      "Measured by restarting the server deployment \($warmup.restarts | length) times before the phases. Readiness probe: `\($warmup.readinessProbe | tojson)`. Replicas: \($warmup.replicas). progressDeadlineSeconds: \($warmup.progressDeadlineSeconds). Strategy: `\($warmup.strategy | tojson)`.",
       "",
       (if ($warmup.restarts | length) == 0 then "No restarts were run (warmup_restarts is 0)."
        else

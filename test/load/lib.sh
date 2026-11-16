@@ -2,12 +2,14 @@
 # container's metrics from the kubelet's cadvisor. Source it; it needs NAMESPACE and
 # SERVER_DEPLOYMENT (also the server container's name) in the environment.
 
-# server_pod prints the name of the server's pod. It fails when there is none.
-server_pod() {
-  local pod
-  pod=$(kubectl get pod -n "${NAMESPACE}" -l "app=${SERVER_DEPLOYMENT}" -o jsonpath='{.items[0].metadata.name}') \
-    && [[ -n "${pod}" ]] || { echo "ERROR: no server pod for app=${SERVER_DEPLOYMENT}" >&2; return 1; }
-  echo "${pod}"
+# server_pods prints the names of the server's pods that are not terminating,
+# one per line. It fails when there are none.
+server_pods() {
+  local pods
+  pods=$(kubectl get pod -n "${NAMESPACE}" -l "app=${SERVER_DEPLOYMENT}" -o json \
+    | jq -r '.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name') \
+    && [[ -n "${pods}" ]] || { echo "ERROR: no server pod for app=${SERVER_DEPLOYMENT}" >&2; return 1; }
+  echo "${pods}"
 }
 
 # cadvisor_sum METRIC POD FORMAT prints the sum of METRIC over the server
@@ -36,11 +38,17 @@ SETTLE="${SETTLE:-15}"
 
 now() { date -u +%Y-%m-%dT%H:%M:%S.%NZ; }
 
-# Total CPU seconds used by the server container, from the kubelet's cadvisor.
+# Total CPU seconds used by the server containers of every replica, from the
+# kubelet's cadvisor. The load is spread over the replicas, so CPU per request
+# needs all of them.
 cpu_seconds() {
-  local pod
-  pod=$(server_pod) || return 1
-  cadvisor_sum container_cpu_usage_seconds_total "${pod}" "%.3f"
+  local pods pod cpu total=0
+  pods=$(server_pods) || return 1
+  for pod in ${pods}; do
+    cpu=$(cadvisor_sum container_cpu_usage_seconds_total "${pod}" "%.3f") || return 1
+    total=$(awk -v a="${total}" -v b="${cpu}" 'BEGIN { printf "%.3f", a + b }')
+  done
+  echo "${total}"
 }
 
 # Reads the CPU counter or stops the run: a missing reading must not become a zero.

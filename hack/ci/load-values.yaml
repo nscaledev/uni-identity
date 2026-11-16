@@ -14,3 +14,12 @@ providers:
 # with the response body and hides identity's own cost.
 server:
   runtimeSchemaValidation: false
+  # Clears test-values.yaml's short ACL cache, so the load test runs with
+  # production's default.
+  extraFlags: []
+  # A limit alone also sets the request, so each replica would ask for a
+  # whole CPU and a rolling restart's extra pod would not fit on the
+  # runner. The limit stays, as the report's CPU ceiling is based on it.
+  resources:
+    requests:
+      cpu: 250m

@@ -39,7 +39,8 @@ paths from its informer cache it passes.
 1. A kind cluster with the kube-apiserver audit log on (`hack/ci/load-kind-config.yaml`,
    `hack/ci/load-audit-policy.yaml`: Metadata level, identity's server ServiceAccount only).
 2. Infrastructure and identity, installed as the integration workflow does, plus
-   `hack/ci/load-values.yaml`, which adds an `OAuth2Provider` with `bearerTrust` (CI only).
+   `hack/ci/load-values.yaml`, which adds an `OAuth2Provider` with `bearerTrust` (CI only) and
+   puts the ACL cache back to production's default. The server runs the chart's replica count.
 3. `hack/ci/loadfixtures`: creates the data (through the identity API for `small`, straight into
    the Kubernetes API for `medium` and `web`: see Direct mode), generates an RSA key in memory, mints Auth0-shaped JWTs (issuer with a trailing slash, audience, email, authz and groups
    claims) and writes the tokens and the public key set. The private key is never written.
@@ -97,9 +98,9 @@ reads the API server in its handler on purpose, which would hide the token check
 ### Warm-up
 
 `warmup.sh` runs before the phases. It restarts the server deployment `warmup_restarts` times, each
-time waiting until the new pod serves and the old one is gone, and writes `warmup.json` (in the
-artifact and the job summary). It records the deployment's readiness probe, `progressDeadlineSeconds`
-and rollout strategy once, and per restart:
+time waiting until a new pod serves and the old ones are gone, and writes `warmup.json` (in the
+artifact and the job summary). It records the deployment's replica count, readiness probe,
+`progressDeadlineSeconds` and rollout strategy once, and per restart, for the first new pod to serve:
 
 - seconds from the new pod's creation to Ready (Kubernetes timestamps, so 1 s resolution);
 - the server container's memory working set, read from cadvisor once the pod is Ready. cadvisor
@@ -343,10 +344,12 @@ The ceiling has no gate: failed requests there are how it finds the ceiling.
 
 - Limiter ceiling per replica: the client's rate limit (`kubernetesClientQPS` in
   `cmd/unikorn-identity/main.go`) divided by calls per request. "No limiter ceiling" when the calls
-  are zero.
+  are zero. Each replica has its own limiter, so the deployment's ceiling is the replica count
+  times this when the requests are spread evenly.
 - CPU ceiling per replica: the server container's CPU limit divided by CPU seconds per request.
-  CPU comes from the kubelet's cadvisor counter for the server container, read before and after each
-  phase with a quiet gap either side (cadvisor lags the cgroup), less the idle rate. A reading that
+  CPU comes from the kubelet's cadvisor counter for the server container, summed over the serving
+  replicas and read before and after each phase with a quiet gap either side (cadvisor lags the
+  cgroup), less the idle rate. A reading that
   cannot be taken stops the run; it is never recorded as zero.
 
 **Absolute requests per second and p95 are for this runner only.** The load tool, the kind node,
@@ -361,7 +364,6 @@ shape; absolute figures do not.
 - Real callers' replica counts and their passport caches.
 - Failure injection (slow API server, informer relist, replica kill, retries, cold start). Not in
   this version.
-- Several identity replicas: it runs one.
 
 ## Files
 

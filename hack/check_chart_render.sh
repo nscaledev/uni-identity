@@ -298,4 +298,14 @@ pdb=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: PodDisruption
 [[ $(grep -c '^  maxUnavailable: 1$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB to allow one unavailable pod"
 [[ $(grep -c '^      app: test-server$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB selector"
 
+# The load test installs with test-values.yaml then load-values.yaml. It must
+# run at production's ACL cache timeout, not the short one the integration
+# tests use.
+out=$(helm template test "$CHART" -f hack/ci/test-values.yaml -f hack/ci/load-values.yaml)
+assert_no_match "$out" "--acl-cache-timeout"
+# The warm-up's rolling restart needs room for one more server pod.
+load_server() { yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-server\") | $1" <<<"$out"; }
+[[ "$(load_server '.spec.template.spec.containers[0].resources.requests.cpu')" == "250m" ]] || die "expected a 250m CPU request on the load test server"
+[[ "$(load_server '.spec.template.spec.containers[0].resources.limits.cpu')" == "1" ]] || die "expected a 1 CPU limit on the load test server"
+
 echo "chart render checks OK"
