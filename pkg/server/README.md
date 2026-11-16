@@ -138,10 +138,10 @@ convention.
 - middleware ordering is part of the package contract because later stages depend on context from
   earlier stages
 - `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
-- the API server reads Kubernetes directly, except through one synchronized read cache. The
-  cache holds Organizations in the identity namespace, for namespace routing and the full
-  organization list, and Quotas, Allocations and Projects in all namespaces, for the organization
-  list includes. Revocation-sensitive token and membership state is always read directly
+- the API server has one synchronized informer cache. The token check, the ACL build, passport
+  exchange and the organization list read only the cache, so they make no API server call. Reads
+  that decide a write, and other handlers' resource reads, use the direct client; see
+  [`pkg/oauth2`](../oauth2/README.md#readers) and [`pkg/handler`](../handler/README.md)
 - each API server replica keeps only state it can rebuild locally: its informer cache and its ACL
   cache. Authorization codes, sessions, allocation admission and quota changes are decided on
   direct reads or per-organization Kubernetes Leases. A write, a revocation included, reaches a
