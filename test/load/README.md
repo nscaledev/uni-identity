@@ -171,9 +171,7 @@ go run ./hack/ci/loadfixtures/... --dataset medium --mode direct \
   --out-dir /tmp/load
 jq .counts /tmp/load/tokens.json > load-out/dataset.json
 
-kubectl apply -f test/load/idp.yaml
-kubectl create configmap jwks -n load-test-idp --from-file=jwks.json=/tmp/load/jwks.json
-kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
+test/load/serve-idp.sh /tmp/load/jwks.json
 
 export NAMESPACE=unikorn-identity-load SERVER_DEPLOYMENT=identity-load-server OUT_DIR=load-out
 WARMUP_RESTARTS=3 test/load/warmup.sh
@@ -382,7 +380,7 @@ shape; absolute figures do not.
 | `count-turns.sh` | compare: counts per turn; the gate on candidate turns only |
 | `compare.sh`, `compare.jq` | compare: the job summary and the comparison rule |
 | `compare_test.sh` | checks `compare.jq` with hand-made turns, `compare.sh` with a part-finished ceiling search, `compare-turns.sh`'s `ceiling` switch (stub steps) and the workflow's input check; needs `jq` and mikefarah `yq`; run by `make lint` |
-| `idp.yaml` | stand-in identity provider serving the public key set |
+| `idp.yaml`, `serve-idp.sh` | stand-in identity provider serving the public key set, and the script that starts it |
 
 The cluster, namespace and release names are fixed (`unikorn-identity-load`, `identity-load`) so the
 audit policy can name identity's ServiceAccount; the workflow and

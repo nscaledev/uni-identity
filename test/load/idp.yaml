@@ -1,13 +1,8 @@
 # Stand-in identity provider for the load test: serves only the public key set
 # at <issuer>/.well-known/jwks.json. The issuer URL is
 # http://jwks.load-test-idp.svc.cluster.local/ and must match
-# hack/ci/load-values.yaml. The load-test workflow creates the "jwks"
-# ConfigMap from the fixtures' output.
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: load-test-idp
----
+# hack/ci/load-values.yaml. Apply it with serve-idp.sh, which creates the
+# namespace and the "jwks" ConfigMap from the fixtures' output.
 apiVersion: v1
 kind: Service
 metadata:
@@ -28,6 +23,9 @@ metadata:
   labels:
     app: jwks
 spec:
+  # No token, so the Pod does not wait for the namespace's kube-root-ca.crt,
+  # which has the same backlog as its default ServiceAccount (see serve-idp.sh).
+  automountServiceAccountToken: false
   containers:
   - name: nginx
     # nginx 1.31.6-alpine
