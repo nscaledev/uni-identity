@@ -23,9 +23,13 @@ IDENTITY_BASE_URL=https://identity-<suffix>.<ingress-ip>.nip.io
 IDENTITY_NAMESPACE=unikorn-identity-<suffix>
 IDENTITY_RELEASE=identity-<suffix>
 IDENTITY_CA_CERT=/path/to/hack/ci/ca-bundle.pem
+ACL_CACHE_TIMEOUT=5s
 ```
 
 Redirect to a file (`> test/.env.install`) and source it before running fixtures.
+`ACL_CACHE_TIMEOUT` is read from the deployed server's `--acl-cache-timeout` flag
+(set in `test-values.yaml`) and is omitted if the flag isn't set; `make
+integration-fixtures` copies it into `test/.env`.
 
 ### `fixtures` stdout
 
@@ -52,7 +56,7 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
 | `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
 | `load-kind-config.yaml`, `load-audit-policy.yaml` | Load Test only: `kind-config.yaml` plus the kube-apiserver audit log, limited to identity's server ServiceAccount |
-| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider |
+| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider, keeps the default ACL cache timeout and lowers the server's CPU request so a rolling restart fits |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally

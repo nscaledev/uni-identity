@@ -10,7 +10,7 @@
 #   OUT_DIR            output directory: warmup.json
 #   WARMUP_RESTARTS    how many restarts (3); 0 records the settings only
 #
-# Per restart, warmup.json records:
+# Per restart, warmup.json records, for the first new pod to serve:
 #   secondsToReady     from the new pod's creation to its Ready condition. Both
 #                      are Kubernetes timestamps, so the resolution is 1 s.
 #   workingSetBytes    the server container's memory working set, read from
@@ -21,8 +21,8 @@
 #                      and was not yet Ready
 #   noServingSeconds   seconds, at 1 s polls, in which no pod was serving
 #
-# The deployment's readiness probe, progressDeadlineSeconds and rollout
-# strategy are recorded once, as they bound the figures above.
+# The deployment's replica count, readiness probe, progressDeadlineSeconds and
+# rollout strategy are recorded once, as they bound the figures above.
 set -euo pipefail
 # Command substitutions stop the script too, so a failed kubectl is not read as
 # an empty answer.
@@ -75,8 +75,8 @@ restart_once() {
   kubectl rollout restart -n "${NAMESPACE}" "deployment/${SERVER_DEPLOYMENT}" > /dev/null || return 1
   start=$(date +%s)
 
-  # Until the new pod serves and the old ones are gone, so the next restart
-  # starts from one pod.
+  # Until a new pod serves and the old ones are gone, so the next restart
+  # starts from a settled deployment.
   while true; do
     snap=$(snapshot "${old}")
 

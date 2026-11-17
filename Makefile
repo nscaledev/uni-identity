@@ -212,6 +212,7 @@ lint: $(GENDIR)
 	./hack/check_chart_render.sh
 	./hack/check_observability_chart_render.sh
 	./test/load/ceiling_test.sh
+	./test/load/lib_test.sh
 	./test/load/compare_test.sh
 
 # Validate the server OpenAPI schema is legit.
@@ -469,10 +470,11 @@ integration-install:  ## Deploy identity into the current cluster with random na
 .PHONY: integration-fixtures
 integration-fixtures:  ## Create integration fixtures and write test/.env
 	. test/.env.install && \
-	go run ./hack/ci/fixtures/... \
+	{ go run ./hack/ci/fixtures/... \
 	  --base-url "$$IDENTITY_BASE_URL" \
 	  --namespace "$$IDENTITY_NAMESPACE" \
-	  --ca-cert "$$IDENTITY_CA_CERT" \
+	  --ca-cert "$$IDENTITY_CA_CERT" && \
+	  { grep '^ACL_CACHE_TIMEOUT=' test/.env.install || true; }; } \
 	  > test/.env
 
 .PHONY: integration-test
