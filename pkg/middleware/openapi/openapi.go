@@ -119,6 +119,56 @@ func authorizationInfoFromContext(ctx context.Context) (*authorizationInfo, erro
 	return v, nil
 }
 
+// AuthenticationEvent describes one authentication of a client certificate.
+// An empty field has no value.
+type AuthenticationEvent struct {
+	// Listener is "spiffe" for a request with a verified TLS peer, and
+	// "legacy" otherwise.
+	Listener string
+	// Result is "ok" or "refused".
+	Result string
+	// Reason is the reason code of a refusal.
+	Reason string
+	// Peer is the subject of the verified TLS peer.
+	Peer string
+	// Subject is the authenticated system account of a success.
+	Subject string
+}
+
+// AuthenticationRecorder receives each authentication event.
+type AuthenticationRecorder func(ctx context.Context, event AuthenticationEvent)
+
+// ValidatorOption sets an optional behavior of a validator.
+type ValidatorOption func(*Validator)
+
+// WithRelayers sets the subjects of the verified TLS peers that can relay a
+// client certificate.
+func WithRelayers(ids []string) ValidatorOption {
+	return func(v *Validator) {
+		v.relayers = ids
+	}
+}
+
+// WithAuthenticationRecorder sets a recorder for the authentication events.
+func WithAuthenticationRecorder(recorder AuthenticationRecorder) ValidatorOption {
+	return func(v *Validator) {
+		v.recorder = recorder
+	}
+}
+
+// WithSystemAccounts sets the registered certificate subjects.  The validator then
+// refuses an unregistered subject before it reads X-Principal or X-Impersonate.
+// A nil map registers no subject, and the check stays on.
+func WithSystemAccounts(roleIDs map[string]string) ValidatorOption {
+	if roleIDs == nil {
+		roleIDs = map[string]string{}
+	}
+
+	return func(v *Validator) {
+		v.systemAccounts = roleIDs
+	}
+}
+
 // Validator provides Schema validation of request and response codes,
 // media, and schema validation of payloads to ensure we are meeting the
 // specification.
@@ -131,18 +181,199 @@ type Validator struct {
 
 	// acls caches ACLs and ensures they time out peridically.
 	acls *cache.LRUExpireCache[string, *identityapi.Acl]
+
+	// relayers are the subjects of the verified peers that can relay a
+	// client certificate.
+	relayers []string
+
+	// recorder, when set, receives each authentication event.
+	recorder AuthenticationRecorder
+
+	// systemAccounts, when set, holds the registered certificate subjects.
+	systemAccounts map[string]string
 }
 
 // NewValidator returns an initialized validator middleware.
-func NewValidator(options *Options, authorizer Authorizer) *Validator {
+func NewValidator(options *Options, authorizer Authorizer, opts ...ValidatorOption) *Validator {
 	acls := cache.NewLRUExpireCache[string, *identityapi.Acl](options.ACLCacheSize)
 	acls.ZeroCopy()
 
-	return &Validator{
+	v := &Validator{
 		options:    options,
 		authorizer: authorizer,
 		acls:       acls,
 	}
+
+	for _, opt := range opts {
+		opt(v)
+	}
+
+	return v
+}
+
+const (
+	listenerLegacy = "legacy"
+	listenerSPIFFE = "spiffe"
+
+	resultOK      = "ok"
+	resultRefused = "refused"
+
+	reasonRelayNotPermitted  = "relay_not_permitted"
+	reasonPeerHasCommonName  = "peer_has_common_name"
+	reasonPeerExpired        = "peer_expired"
+	reasonCertificateInvalid = "certificate_invalid"
+	reasonSubjectEmpty       = "subject_empty"
+	reasonSubjectMalformed   = "subject_malformed"
+	reasonNotRegistered      = "not_registered"
+)
+
+// refusalReason returns the reason code of an error that refuses a client
+// certificate, or an empty string for any other error.
+func refusalReason(err error) string {
+	switch {
+	case goerrors.Is(err, authorization.ErrRelayNotPermitted):
+		return reasonRelayNotPermitted
+	case goerrors.Is(err, util.ErrPeerHasCommonName):
+		return reasonPeerHasCommonName
+	case goerrors.Is(err, util.ErrPeerExpired):
+		return reasonPeerExpired
+	case goerrors.Is(err, util.ErrSubjectEmpty):
+		return reasonSubjectEmpty
+	case goerrors.Is(err, util.ErrSubjectMalformed):
+		return reasonSubjectMalformed
+	case goerrors.Is(err, rbac.ErrSystemAccountNotRegistered):
+		return reasonNotRegistered
+	}
+
+	return ""
+}
+
+func listener(r *http.Request) string {
+	if util.HasVerifiedPeer(r) {
+		return listenerSPIFFE
+	}
+
+	return listenerLegacy
+}
+
+// certificateSubject parses a propagated client certificate and returns its subject.
+func certificateSubject(certPEM string) (string, error) {
+	certificate, err := util.GetClientCertificate(certPEM)
+	if err != nil {
+		return "", err
+	}
+
+	return util.GetClientCertificateSubject(certificate)
+}
+
+// immediateCallerSubject returns the subject of the certificate of the caller on
+// this connection, which is not a relayed certificate.
+func immediateCallerSubject(r *http.Request) (string, error) {
+	certPEM, err := util.GetImmediateCallerCertificate(r)
+	if err != nil {
+		return "", err
+	}
+
+	return certificateSubject(certPEM)
+}
+
+func (v *Validator) record(ctx context.Context, event AuthenticationEvent) {
+	if v.recorder != nil {
+		v.recorder(ctx, event)
+	}
+}
+
+// refuse returns the generic 401 for a refused client certificate.  The response
+// does not name the reason.  The reason goes to the log line of the error and to
+// the recorder.  The peer is in the recorded event on the spiffe listener only,
+// because on the legacy listener it comes from a request header.
+func (v *Validator) refuse(r *http.Request, err error) error {
+	reason := refusalReason(err)
+	if reason == "" {
+		reason = reasonCertificateInvalid
+	}
+
+	event := AuthenticationEvent{
+		Listener: listener(r),
+		Result:   resultRefused,
+		Reason:   reason,
+	}
+
+	values := []any{"reason", reason, "listener", event.Listener}
+
+	if peer, err := immediateCallerSubject(r); err == nil {
+		values = append(values, "peer", peer)
+
+		if event.Listener == listenerSPIFFE {
+			event.Peer = peer
+		}
+	}
+
+	v.record(r.Context(), event)
+
+	return errors.AccessDenied(r, util.AccessDeniedDescription).WithError(err).WithValues(values...)
+}
+
+// recordSuccess records a system account that authenticated with a client
+// certificate.  A bearer token caller is not recorded.
+func (v *Validator) recordSuccess(r *http.Request, info *authorization.Info) {
+	if hasHTTPAuthorization(r) {
+		return
+	}
+
+	event := AuthenticationEvent{
+		Listener: listener(r),
+		Result:   resultOK,
+		Subject:  info.Userinfo.Sub,
+	}
+
+	if event.Listener == listenerSPIFFE {
+		event.Peer, _ = immediateCallerSubject(r)
+	}
+
+	v.record(r.Context(), event)
+}
+
+// checkSystemAccount refuses a certificate subject that is not registered, before
+// X-Principal or X-Impersonate cause any work.  On the certificate branch the
+// subject is the authenticated one.  On the bearer branch it is the subject of
+// the certificate on this connection.  A bearer caller on the legacy listener
+// that sends neither header is not checked, so that it keeps its result.
+//
+//nolint:cyclop
+func (v *Validator) checkSystemAccount(r *http.Request, info *authorization.Info) error {
+	if v.systemAccounts == nil {
+		return nil
+	}
+
+	subject := info.Userinfo.Sub
+
+	if hasHTTPAuthorization(r) {
+		if !util.HasVerifiedPeer(r) && r.Header.Get(principal.Header) == "" && r.Header.Get(principal.ImpersonateHeader) == "" {
+			return nil
+		}
+
+		certPEM, err := util.GetImmediateCallerCertificate(r)
+		if err != nil && util.HasVerifiedPeer(r) {
+			// The first read accepted this verified peer, so an error here means
+			// its leaf has expired.  Refuse it.
+			return v.refuse(r, err)
+		}
+
+		if err != nil {
+			return nil //nolint:nilerr // The request carries no client certificate to check.
+		}
+
+		if subject, err = certificateSubject(certPEM); err != nil {
+			return v.refuse(r, err)
+		}
+	}
+
+	if _, ok := v.systemAccounts[subject]; !ok {
+		return v.refuse(r, fmt.Errorf("%w: system account '%s' not registered", rbac.ErrSystemAccountNotRegistered, subject))
+	}
+
+	return nil
 }
 
 // hasHTTPAuthorization checks to see if an authorization header is present in
@@ -258,21 +489,21 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 	// be set by an end user.  Failure to do so will result in a privilege escalation.
 	if !hasHTTPAuthorization(request) {
 		// This ensures the connection is over MTLS.
-		if _, err := util.GetClientCertificateHeader(request.Header); err != nil {
+		if _, err := util.GetImmediateCallerCertificate(request); err != nil {
 			return nil, errors.AccessDenied(request, "authorization header missing").WithError(err)
 		}
 
 		// Grab the certificate that is actually making this request
 		// and set the authorization context's subject directly from the
-		// certificate's common name.
+		// certificate's subject.
 		certPEM, err := authorization.ClientCertFromContext(ctx)
 		if err != nil {
 			return nil, err
 		}
 
-		certificate, err := util.GetClientCertificate(certPEM)
+		subject, err := certificateSubject(certPEM)
 		if err != nil {
-			return nil, err
+			return nil, v.refuse(request, err)
 		}
 
 		info := &authorization.Info{
@@ -283,7 +514,7 @@ func (v *Validator) validateAuthentication(ctx context.Context, input *openapi3f
 			// fast-path that consumes SrcIss. The empty value is fail-closed: cannot match
 			// an external admin entry.
 			Userinfo: &identityapi.Userinfo{
-				Sub: certificate.Subject.CommonName,
+				Sub: subject,
 				HttpsunikornCloudOrgauthz: &identityapi.AuthClaims{
 					Acctype: identityapi.System,
 				},
@@ -450,21 +681,33 @@ func (v *Validator) validateRequest(r *http.Request, route *routers.Route, param
 		// validation.
 		authorization.Hold(ctx, info)
 
+		if err := v.checkSystemAccount(r, info); err != nil {
+			authInfo.err = err
+			return err
+		}
+
 		// Add the principal to the context, the ACL call will use the internal
 		// identity client, and that requires a principal to be present.
 		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo)
 		if err != nil {
-			authInfo.err = errors.OAuth2InvalidRequest("principal propagation failure for authentication").WithError(err)
+			authInfo.err = principalError(err, "principal propagation failure for authentication")
 			return err
 		}
 
 		acl, err := v.getACL(ctx, info, params["organizationID"])
 		if err != nil {
+			if goerrors.Is(err, rbac.ErrSystemAccountNotRegistered) {
+				err = v.refuse(r, err)
+			}
+
 			authInfo.err = err
+
 			return err
 		}
 
 		authInfo.acl = acl
+
+		v.recordSuccess(r, info)
 
 		return nil
 	}
@@ -553,7 +796,7 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 		// TODO: fallback, delete me... I am VERY slow.
 		// Use the certificate of the service that actually called us.
 		// The one in the context is used to propagate token binding information.
-		certRaw, err := util.GetClientCertificateHeader(r.Header)
+		certRaw, err := util.GetImmediateCallerCertificate(r)
 		if err != nil {
 			return nil, err
 		}
@@ -594,16 +837,30 @@ func extractPrincipal(ctx context.Context, r *http.Request) (context.Context, er
 // extractOrGeneratePrincipal extracts the principal if mTLS is in use, for service to service
 // API calls, otherwise it generates it from the available information.
 func (v *Validator) extractOrGeneratePrincipal(ctx context.Context, r *http.Request, params map[string]string, userinfo *identityapi.Userinfo) (context.Context, error) {
-	if util.HasClientCertificateHeader(r.Header) {
+	if _, err := util.GetImmediateCallerCertificate(r); err == nil {
 		newCtx, err := extractPrincipal(ctx, r)
 		if err != nil {
 			return nil, err
 		}
 
 		return newCtx, nil
+	} else if util.HasVerifiedPeer(r) {
+		// The first read accepted this verified peer, so an error here means
+		// its leaf has expired.  Refuse it.
+		return nil, v.refuse(r, err)
 	}
 
 	return v.generatePrincipal(ctx, params, userinfo), nil
+}
+
+// principalError keeps the generic 401 of a refused peer.  Any other error of
+// extractOrGeneratePrincipal is a bad request with the description.
+func principalError(err error, description string) error {
+	if errors.IsAccessDenied(err) {
+		return err
+	}
+
+	return errors.OAuth2InvalidRequest(description).WithError(err)
 }
 
 // validateAndAuthorize performs OpenAPI schema validation of the request, and also
@@ -618,8 +875,12 @@ func (v *Validator) validateAndAuthorize(ctx context.Context, r *http.Request, r
 	// be propagated to the identity service during authentication/token exchange and
 	// authorization (ACL call), otherwise you risk it being injected where it's not
 	// wanted.
-	authorizationCtx, err := authorization.ExtractClientCert(ctx, r.Header)
+	authorizationCtx, err := authorization.ExtractClientCertFromRequest(ctx, r, v.relayers)
 	if err != nil {
+		if refusalReason(err) != "" {
+			return nil, nil, v.refuse(r, err)
+		}
+
 		return nil, nil, errors.OAuth2InvalidRequest("certificate propagation failure").WithError(err)
 	}
 
@@ -656,7 +917,7 @@ func (v *Validator) handle(ctx context.Context, w http.ResponseWriter, r *http.R
 
 		ctx, err = v.extractOrGeneratePrincipal(ctx, r, params, authInfo.info.Userinfo)
 		if err != nil {
-			return errors.OAuth2InvalidRequest("identity info propagation failure").WithError(err)
+			return principalError(err, "identity info propagation failure")
 		}
 	}
 
