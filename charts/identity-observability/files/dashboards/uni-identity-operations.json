@@ -119,8 +119,8 @@
     {
       "id": 4,
       "title": "Server ready",
-      "description": "The single API server must own its bound HTTP listener.",
-      "type": "stat",
+      "description": "Ready API replicas own their bound HTTP listener. Scraped counts server build-info series, including surge and draining pods, not desired replicas. Ready % is red at zero, amber below 100%, and green at 100%. Missing scrapes are not counted.",
+      "type": "table",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -129,17 +129,25 @@
       },
       "fieldConfig": {
         "defaults": {
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {"text": "0/1"},
-                "1": {"text": "1/1"}
-              }
-            }
-          ]
+          "decimals": 0,
+          "mappings": []
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Ready %"},
+            "properties": [
+              {"id": "unit", "value": "percentunit"},
+              {"id": "decimals", "value": 1},
+              {"id": "custom.cellOptions", "value": {"type": "color-background"}},
+              {"id": "color", "value": {"mode": "thresholds"}},
+              {"id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [{"color": "yellow", "value": null}, {"color": "green", "value": 1}]
+              }},
+              {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "0%", "color": "red"}}}]}
+            ]
+          }
+        ]
       },
       "datasource": {
         "type": "prometheus",
@@ -152,18 +160,43 @@
             "uid": "${datasource}"
           },
           "expr": "sum by (cluster) (unikorn_server_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
-          "legendFormat": "{{cluster}}",
+          "format": "table",
+          "instant": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count by (cluster) (unikorn_identity_server_build_info{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (cluster) (unikorn_server_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"}) / count by (cluster) (unikorn_identity_server_build_info{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
         }
       ],
-      "options": {
-        "textMode": "value_and_name",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
+      "transformations": [
+        {"id": "merge", "options": {}},
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {"Time": true},
+            "indexByName": {"cluster": 0, "Value #A": 1, "Value #B": 2, "Value #C": 3},
+            "renameByName": {"cluster": "Cluster", "Value #A": "Ready", "Value #B": "Scraped", "Value #C": "Ready %"}
+          }
         }
-      }
+      ],
+      "options": {"showHeader": true}
     },
     {
       "id": 5,

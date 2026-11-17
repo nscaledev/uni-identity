@@ -330,8 +330,8 @@ Every dashboard has a top-level `cluster` selector and filters every panel on it
 Queries for metrics that more than one service emits also filter on
 `service="unikorn-identity"`: the RED and readiness families use
 platform-generic metric names, so the service must be selected by label, not by
-name. Metrics with a single source per cluster, such as the API server's, filter
-on `cluster` only. Core sets that label in code, so it does not
+name. Kubernetes API server metrics queried by the Lease dashboard filter on
+`cluster` only. Core sets Identity's `service` label in code, so it does not
 depend on the PodMonitor or the Helm release name. The leader-election panels
 also filter on `name!=""`, because the server's JOSE lease has no name and
 would otherwise count as an extra, unnamed leader.
@@ -364,6 +364,19 @@ would otherwise count as an extra, unnamed leader.
    stored leader-election series is misleading.
 
 Every panel query is checked against its producer contract (see Testing).
+
+### Server readiness
+
+The Operations dashboard's **Server ready** table shows Ready and Scraped counts
+per cluster, plus Ready %. Ready sums `unikorn_server_ready`; Scraped counts
+`unikorn_identity_server_build_info` series. The platform PodMonitor adds
+`namespace`, `pod` and `container`, keeping each replica's series distinct.
+The percentage cell is red at zero, amber below 100%, and green at 100%.
+For example, two ready replicas out of three scraped show `2`, `3`, `66.7%`.
+Surge and draining pods remain in the denominator while scraped; this is not
+the Deployment's desired replica count. Missing scrapes are not counted.
+Listener readiness is distinct from `/readyz` (see
+[`pkg/server`](../pkg/server/README.md)).
 
 ## Logs & tracing posture
 

@@ -25,6 +25,9 @@ Every dashboard filters on `cluster`. Queries for metrics that more than one
 service emits also filter on `service="unikorn-identity"`, which core sets in
 code on every series identity serves. Identity's metrics use platform-generic
 names (the OTel HTTP server semantic conventions for the RED families), so the
-label, not the metric name, selects identity. The API server's metrics have one
-source per cluster and filter on `cluster` only. Core's
+label, not the metric name, selects identity. Kubernetes API server metrics in
+the Lease dashboard filter on `cluster` only. Core's
 `docs/metrics.md` defines which labels dashboards can rely on.
+
+The Operations dashboard compares ready API replicas with scraped replicas;
+see the [server readiness contract](../../docs/observability.md#server-readiness).
