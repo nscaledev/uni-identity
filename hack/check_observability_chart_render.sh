@@ -134,9 +134,10 @@ jq --exit-status '
 ' "$chart/files/dashboards/leader-election.json" >/dev/null
 
 jq --exit-status '
+	[.panels[].title] as $titles |
+	[.panels[].targets[].expr] as $expressions |
 	.uid == "uni-identity-api" and
 	.title == "Identity API" and
-	[.panels[].title] as $titles |
 	all(
 		"Request Rate",
 		"5xx Error Rate",
@@ -151,7 +152,6 @@ jq --exit-status '
 		"Active Requests by Route";
 		. as $title | $titles | index($title)
 	) and
-	[.panels[].targets[].expr] as $expressions |
 	any($expressions[]; contains("http_server_request_duration_seconds_count")) and
 	any($expressions[]; contains("http_server_request_duration_seconds_bucket")) and
 	any($expressions[]; contains("http_server_active_requests")) and
@@ -162,10 +162,12 @@ jq --exit-status '
 
 jq --exit-status '
 	[.panels[].title] as $titles |
+	[.panels[].targets[].expr] as $expressions |
+	[.panels[] | select(.title == "Ready controllers")] as $controllerReadiness |
+	[.panels[] | select(.title == "Server ready")] as $serverReadiness |
 	all("Ready controllers", "Controller builds", "Server ready", "Server builds";
 		. as $title | $titles | index($title)
 	) and
-	[.panels[].targets[].expr] as $expressions |
 	any($expressions[]; contains("unikorn_controller_ready")) and
 	any($expressions[]; contains("unikorn_identity_controller_build_info")) and
 	any($expressions[]; contains("unikorn_server_ready")) and
@@ -175,7 +177,6 @@ jq --exit-status '
 	all(($expressions + [.templating.list[1].query])[]; contains("job=") | not) and
 	all($expressions[]; contains("controller_runtime") | not) and
 	all($expressions[]; contains("state-metrics") | not) and
-	[.panels[] | select(.title == "Ready controllers")] as $controllerReadiness |
 	($controllerReadiness | length == 1) and
 	all($controllerReadiness[];
 		.targets[0].expr == "sum by (cluster) (unikorn_controller_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})" and
@@ -188,7 +189,6 @@ jq --exit-status '
 		.fieldConfig.defaults.mappings[0].options["2"].text == "2/3" and
 		.fieldConfig.defaults.mappings[0].options["3"].text == "3/3"
 	) and
-	[.panels[] | select(.title == "Server ready")] as $serverReadiness |
 	($serverReadiness | length == 1) and
 	all($serverReadiness[];
 		.targets[0].expr == "sum by (cluster) (unikorn_server_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})" and
