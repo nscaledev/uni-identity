@@ -177,7 +177,7 @@ func (i *JWTIssuer) Run(ctx context.Context, coordinationClientGetter Coordinati
 	lock := &resourcelock.LeaseLock{
 		LeaseMeta: metav1.ObjectMeta{
 			Namespace: i.namespace,
-			Name:      "unikorn-identity-jose-tls",
+			Name:      leaderElectionName,
 		},
 		Client: coordination,
 		LockConfig: resourcelock.ResourceLockConfig{
@@ -186,6 +186,7 @@ func (i *JWTIssuer) Run(ctx context.Context, coordinationClientGetter Coordinati
 	}
 
 	lec := leaderelection.LeaderElectionConfig{
+		Name:          leaderElectionName,
 		Lock:          lock,
 		LeaseDuration: 15 * time.Second,
 		RenewDeadline: 10 * time.Second,
@@ -206,7 +207,10 @@ func (i *JWTIssuer) Run(ctx context.Context, coordinationClientGetter Coordinati
 	return nil
 }
 
-const SigningKeyName = "unikorn-identity-jose"
+const (
+	leaderElectionName = "unikorn-identity-jose-tls"
+	SigningKeyName     = "unikorn-identity-jose"
+)
 
 // StartLeading does certificate rotation handling. It reconciles the signing
 // keys as soon as it becomes leader, so a fresh install can sign tokens without

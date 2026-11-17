@@ -23,6 +23,12 @@ uses leader election so only one replica manages key rotation state at a time. T
 reconciles the keys as soon as it is elected, then once per `--jose-tls-rotation-period`, so a
 fresh install can sign tokens without waiting a full period.
 
+The election name matches its Lease, `unikorn-identity-jose-tls`. The server's
+metrics endpoint exposes `leader_election_master_status` with that `name` label:
+`1` on the leader and `0` on other replicas. The
+[leadership dashboard](../../docs/observability.md#dashboards-focused-set-3--optional-leadership)
+includes this election.
+
 The package then projects that live key into the `SigningKey` resource as a rolling compatibility
 window:
 

@@ -126,9 +126,14 @@ done
 
 # The RED metric names are platform-generic, so dashboard queries select the
 # service label core sets in code, not the release-named pod app label or the
-# scraper-owned job label. The server's JOSE lease is unnamed, so name!=""
-# keeps the leader-election panels to the controllers' leases.
+# scraper-owned job label. Named elections include the controllers and JOSE.
 jq --exit-status '
+	.title == "Identity Leadership" and
+	.panels[0].title == "Active leaders" and
+	.panels[0].targets[0].expr == "sum(leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})" and
+	.panels[1].targets[0].expr == "sum by (name) (leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})" and
+	.panels[1].targets[0].legendFormat == "{{name}}" and
+	.panels[1].description == "Counts replicas reporting leadership for each controller or JOSE lease across selected clusters. Select one cluster: 0 means no leader, 1 means one leader, and 2 or more means simultaneous leaders." and
 	[.panels[].targets[].expr, .templating.list[1].query] as $expressions |
 	all($expressions[]; contains("service=\"unikorn-identity\", name!=\"\"")) and
 	all($expressions[]; contains("app=") | not) and
@@ -207,12 +212,36 @@ jq --exit-status '
 	[.panels[] | select(.title == "Server ready")] as $serverReadiness |
 	($serverReadiness | length == 1) and
 	all($serverReadiness[];
+		.type == "table" and
+		.description == "Ready API replicas own their bound HTTP listener. Scraped counts server build-info series, including surge and draining pods, not desired replicas. Ready % is red at zero, amber below 100%, and green at 100%. Missing scrapes are not counted." and
+		[.targets[].refId] == ["A", "B", "C"] and
+		all(.targets[]; .instant == true and .format == "table") and
 		.targets[0].expr == "sum by (cluster) (unikorn_server_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"})" and
-		.targets[0].legendFormat == "{{cluster}}" and
-		.options.textMode == "value_and_name" and
-		.options.reduceOptions.values == false and
-		.fieldConfig.defaults.mappings[0].type == "value" and
-		.fieldConfig.defaults.mappings[0].options["0"].text == "0/1" and
-		.fieldConfig.defaults.mappings[0].options["1"].text == "1/1"
+		.targets[1].expr == "count by (cluster) (unikorn_identity_server_build_info{service=\"unikorn-identity\", cluster=~\"$cluster\"})" and
+		.targets[2].expr == "sum by (cluster) (unikorn_server_ready{service=\"unikorn-identity\", cluster=~\"$cluster\"}) / count by (cluster) (unikorn_identity_server_build_info{service=\"unikorn-identity\", cluster=~\"$cluster\"})" and
+		.transformations == [
+			{"id": "merge", "options": {}},
+			{"id": "organize", "options": {
+				"excludeByName": {"Time": true},
+				"indexByName": {"cluster": 0, "Value #A": 1, "Value #B": 2, "Value #C": 3},
+				"renameByName": {"cluster": "Cluster", "Value #A": "Ready", "Value #B": "Scraped", "Value #C": "Ready %"}
+			}}
+		] and
+		.options.showHeader == true and
+		.fieldConfig.defaults.mappings == [] and
+		.fieldConfig.overrides == [{
+			"matcher": {"id": "byName", "options": "Ready %"},
+			"properties": [
+				{"id": "unit", "value": "percentunit"},
+				{"id": "decimals", "value": 1},
+				{"id": "custom.cellOptions", "value": {"type": "color-background"}},
+				{"id": "color", "value": {"mode": "thresholds"}},
+				{"id": "thresholds", "value": {
+					"mode": "absolute",
+					"steps": [{"color": "yellow", "value": null}, {"color": "green", "value": 1}]
+				}},
+				{"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "0%", "color": "red"}}}]}
+			]
+		}]
 	)
 ' "$chart/files/dashboards/uni-identity-operations.json" >/dev/null

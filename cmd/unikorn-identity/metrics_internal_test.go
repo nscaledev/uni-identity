@@ -32,6 +32,8 @@ import (
 
 	coreoptions "github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/identity/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/jose"
+	josetesting "github.com/unikorn-cloud/identity/pkg/jose/testing"
 )
 
 const metricsScrapeTestProcess = "IDENTITY_METRICS_SCRAPE_TEST_PROCESS"
@@ -55,7 +57,16 @@ func TestSetupTelemetryServesLabeledCounters(t *testing.T) {
 	require.NoError(t, err)
 	counter.Add(t.Context(), 1)
 
-	assert.Regexp(t, `\nidentity_test_scrape_total\{[^}]*service="unikorn-identity"[^}]*\} 1\n`, scrapeMetrics(t, options))
+	// Cancellation leaves the election's initial standby metric without acquiring a Lease.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	issuer := jose.NewJWTIssuer(nil, nil, "default", &jose.Options{})
+	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
+
+	body := scrapeMetrics(t, options)
+	assert.Regexp(t, `\nidentity_test_scrape_total\{[^}]*service="unikorn-identity"[^}]*\} 1\n`, body)
+	assert.Contains(t, body, "\nleader_election_master_status{name=\"unikorn-identity-jose-tls\",service=\"unikorn-identity\"} 0\n")
 }
 
 func scrapeMetrics(t *testing.T, options *coreoptions.CoreOptions) string {
