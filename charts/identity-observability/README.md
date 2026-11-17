@@ -15,7 +15,8 @@ them. Set `grafana.dashboards.enabled` and choose a `provisioningMode`:
 `grafana.dashboards.namespace` defaults to the release namespace.
 
 Set `grafana.dashboards.leaderElection.enabled` only when the metric store receives
-the controllers' leader-election metrics. It adds the optional leadership dashboard.
+the controller and JOSE leader-election metrics. It adds the optional leadership
+dashboard described in the [observability design](../../docs/observability.md#dashboards-focused-set-3--optional-leadership).
 
 Dashboards are provisioned in the `UNI/Identity` Grafana folder. Each has a
 `datasource` variable of type prometheus with no saved value; it starts on

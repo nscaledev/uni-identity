@@ -31,10 +31,11 @@ Identity has a limited **producer** surface, so the starting point matters:
 - **The three controllers** (organization, project, oauth2client) register the
   controller-runtime built-ins (`controller_runtime_reconcile_*`, `workqueue_*`,
   `rest_client_*`, Go/process collectors) on the shared registry, served on
-  the metrics endpoint. **The API server runs no manager**, so it has none of
-  these except `rest_client_*`: its client-go calls register on the same
-  registry and are served on the same endpoint. The per-request authn/authz path
-  reads the informer cache, so it adds nothing to `rest_client_requests_total`.
+  the metrics endpoint. **The API server runs no manager**, so it has no
+  reconcile or workqueue metrics. Its `rest_client_*` and JOSE leader-election
+  gauge register on the same registry and are served on the same endpoint.
+  The per-request authn/authz path reads the informer cache, so it adds nothing
+  to `rest_client_requests_total`.
 - **Each controller publishes build and readiness gauges.** Controller readiness
   follows cache sync and leader acquisition. The API server also publishes build
   and listener-readiness gauges.
@@ -128,14 +129,13 @@ controller registry is served directly at the metrics endpoint.
   `controller_runtime_reconcile_errors_total{controller}`,
   `controller_runtime_reconcile_time_seconds{controller}`
 - `workqueue_*{name}`, `rest_client_requests_total{code,method,host}`
-- Go/process collectors (`go_*`, `process_*`), controller-runtime
-  leader-election gauge
+- Go/process collectors (`go_*`, `process_*`)
 - `unikorn_identity_controller_build_info{controller,version,revision}` and
   `unikorn_controller_ready{controller,version,revision}`. Readiness is
   `1` only after the manager cache has synced and the controller holds its leader
   lease; build info remains `1` for the process lifetime.
 
-**API server** — no controller-runtime manager, so none of the controller metrics.
+**API server** — no controller-runtime manager, so no reconcile or workqueue metrics.
 It emits `rest_client_*` for its API server calls (writes, the reads that decide
 a write, and the read cache's list and watch), the two counters, HTTP RED
 metrics, and
@@ -143,6 +143,14 @@ metrics, and
 `unikorn_server_ready{version,revision}`. Build info is `1` for the
 process lifetime; readiness is `1` only while the server owns its bound HTTP
 listener.
+
+**Leader election (controllers and API server)** — controller-runtime registers
+client-go's `leader_election_master_status{name}` gauge on the shared registry
+even without a manager. The three controller elections use their service names;
+the server's signing-key election uses the Lease name documented in
+[`pkg/jose`](../pkg/jose/README.md#key-lifecycle-model). The leadership dashboard
+sums by name so simultaneous leaders are not hidden. The pinned
+controller-runtime registers only this gauge, not the slowpath counter.
 
 **HTTP RED (API server only)** —
 `http_server_request_duration_seconds{route,method,status_class}` (a histogram;
@@ -333,8 +341,7 @@ platform-generic metric names, so the service must be selected by label, not by
 name. Kubernetes API server metrics queried by the Lease dashboard filter on
 `cluster` only. Core sets Identity's `service` label in code, so it does not
 depend on the PodMonitor or the Helm release name. The leader-election panels
-also filter on `name!=""`, because the server's JOSE lease has no name and
-would otherwise count as an extra, unnamed leader.
+filter on `name!=""` and include both the controller and JOSE elections.
 
 1. **Identity Operations** — resource lifecycle and controller health: count of
    Organization/Project/OAuth2Client with `Available != True` by `reason`
@@ -358,8 +365,11 @@ would otherwise count as an extra, unnamed leader.
    Lease latency and error codes by verb, which include leader election. The Lease
    instruments are defined above. `TestLeaseDashboardMetricNames` checks each
    name it queries against the Prometheus exporter.
-4. **Identity Controller Leadership** *(opt-in)* — `leader_election_master_status`
-   by lease name. It is rendered only when
+4. **Identity Leadership** *(opt-in)* — `leader_election_master_status`
+   by lease name for the three controller types and JOSE signing-key rotation.
+   Select one cluster to distinguish missing or simultaneous leaders for each
+   lease; with several clusters selected their counts are added. It is rendered
+   only when
    `grafana.dashboards.leaderElection.enabled=true`, because a dashboard without
    stored leader-election series is misleading.
 

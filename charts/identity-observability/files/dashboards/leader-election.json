@@ -1,8 +1,8 @@
 {
   "id": null,
   "uid": "identity-controller-leadership",
-  "title": "Identity Controller Leadership",
-  "tags": ["identity", "controllers", "leadership"],
+  "title": "Identity Leadership",
+  "tags": ["identity", "controllers", "server", "leadership"],
   "schemaVersion": 39,
   "version": 1,
   "timezone": "browser",
@@ -39,8 +39,8 @@
   "panels": [
     {
       "id": 1,
-      "title": "Active controller leaders",
-      "description": "Each Identity controller manager holds one lease. Fewer active leases than controllers means reconciliation has stopped for at least one resource type.",
+      "title": "Active leaders",
+      "description": "Expected: four leaders per cluster, one for each of the three controller types and one for JOSE signing-key rotation. Counts all replicas reporting leadership across the selected clusters; inspect each lease for missing or simultaneous leaders.",
       "type": "stat",
       "gridPos": {
         "h": 8,
@@ -58,7 +58,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max by (name) (leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"}))",
+          "expr": "sum(leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})",
           "refId": "A"
         }
       ]
@@ -66,7 +66,7 @@
     {
       "id": 2,
       "title": "Leadership by lease",
-      "description": "A lease reports 1 while any manager is leader and 0 when no manager holds it.",
+      "description": "Counts replicas reporting leadership for each controller or JOSE lease across selected clusters. Select one cluster: 0 means no leader, 1 means one leader, and 2 or more means simultaneous leaders.",
       "type": "state-timeline",
       "gridPos": {
         "h": 8,
@@ -84,7 +84,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (name) (leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})",
+          "expr": "sum by (name) (leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})",
           "legendFormat": "{{name}}",
           "refId": "A"
         }

@@ -126,9 +126,14 @@ done
 
 # The RED metric names are platform-generic, so dashboard queries select the
 # service label core sets in code, not the release-named pod app label or the
-# scraper-owned job label. The server's JOSE lease is unnamed, so name!=""
-# keeps the leader-election panels to the controllers' leases.
+# scraper-owned job label. Named elections include the controllers and JOSE.
 jq --exit-status '
+	.title == "Identity Leadership" and
+	.panels[0].title == "Active leaders" and
+	.panels[0].targets[0].expr == "sum(leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})" and
+	.panels[1].targets[0].expr == "sum by (name) (leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})" and
+	.panels[1].targets[0].legendFormat == "{{name}}" and
+	.panels[1].description == "Counts replicas reporting leadership for each controller or JOSE lease across selected clusters. Select one cluster: 0 means no leader, 1 means one leader, and 2 or more means simultaneous leaders." and
 	[.panels[].targets[].expr, .templating.list[1].query] as $expressions |
 	all($expressions[]; contains("service=\"unikorn-identity\", name!=\"\"")) and
 	all($expressions[]; contains("app=") | not) and
