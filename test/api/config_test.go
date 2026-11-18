@@ -36,3 +36,13 @@ func TestLoadTestConfigRequiresSubjectSuffix(t *testing.T) {
 	_, err := api.LoadTestConfig()
 	require.ErrorContains(t, err, "TEST_SUBJECT_SUFFIX")
 }
+
+// Identity reuses the global user for a subject it has seen, so a run that derives the same
+// subject from the same key and suffix creates no new global user.
+func TestUserSubjectIsStableForKeyAndSuffix(t *testing.T) {
+	t.Parallel()
+
+	config := &api.TestConfig{SubjectSuffix: "nightly"}
+
+	require.Equal(t, "users-create-nightly@example.com", api.UserSubject(config, "users-create"))
+}

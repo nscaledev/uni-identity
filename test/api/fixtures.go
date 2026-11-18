@@ -227,23 +227,23 @@ type UserPayloadBuilder struct {
 	user identityopenapi.UserWrite
 }
 
-// NewUserPayload creates a new user payload builder with a unique subject.
-func NewUserPayload() *UserPayloadBuilder {
+// UserSubject returns the subject for the user a spec creates under key. A fixed key, not a
+// unique name, because identity keeps every global user it creates and reuses one by subject.
+func UserSubject(config *TestConfig, key string) string {
+	return fmt.Sprintf("%s-%s@example.com", key, config.SubjectSuffix)
+}
+
+// NewUserPayload creates a new user payload builder for the given subject.
+func NewUserPayload(subject string) *UserPayloadBuilder {
 	return &UserPayloadBuilder{
 		user: identityopenapi.UserWrite{
 			Spec: identityopenapi.UserSpec{
-				Subject:  uniqueName("test-user") + "@example.com",
+				Subject:  subject,
 				State:    "active",
 				GroupIDs: []string{},
 			},
 		},
 	}
-}
-
-// WithSubject sets the user subject (email).
-func (b *UserPayloadBuilder) WithSubject(subject string) *UserPayloadBuilder {
-	b.user.Spec.Subject = subject
-	return b
 }
 
 // WithGroupIDs sets the group IDs for the user.

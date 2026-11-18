@@ -274,8 +274,7 @@ var _ = Describe("Group Management", func() {
 
 				// Create a user and assign them to the group via the users API.
 				// Internally this calls updateGroups, which writes Issuer: "".
-				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("test-user-%s@example.com", time.Now().Format("20060102150405"))).
+				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-issuer")).
 					WithState(identityopenapi.Active).
 					WithGroupIDs([]string{groupID}).
 					Build())
@@ -321,8 +320,7 @@ var _ = Describe("Group Management", func() {
 
 				// Create a user and add them to the group via the users API.
 				// updateGroups writes Issuer: "" onto the subject.
-				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("dangling-subject-test-%s@example.com", time.Now().Format("20060102150405"))).
+				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-dangling-subject")).
 					WithState(identityopenapi.Active).
 					WithGroupIDs([]string{groupID}).
 					Build())
@@ -872,12 +870,10 @@ var _ = Describe("Group Subjects", func() {
 
 		Describe("Given an existing group with two subjects, removing one via PUT", func() {
 			It("should no longer return the removed subject in the GET response", func() {
-				firstUser, firstUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("qa-rem-user-1-%d@nscale.test", time.Now().UnixNano())).
+				firstUser, firstUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-remove-subject-first")).
 					WithState(identityopenapi.Active).
 					Build())
-				secondUser, secondUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("qa-rem-user-2-%d@nscale.test", time.Now().UnixNano())).
+				secondUser, secondUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-remove-subject-second")).
 					WithState(identityopenapi.Active).
 					Build())
 				firstSubject := internalSubject(firstUser.Spec.Subject)

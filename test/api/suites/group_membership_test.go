@@ -262,8 +262,7 @@ var _ = Describe("Group membership changes with ungrantable roles", func() {
 			It("should refuse joining the group through the users API, naming the role", func() {
 				user := readUser(config.UserID)
 
-				payload := api.NewUserPayload().
-					WithSubject(user.Spec.Subject).
+				payload := api.NewUserPayload(user.Spec.Subject).
 					WithState(user.Spec.State).
 					WithGroupIDs(append(slices.Clone(user.Spec.GroupIDs), groupID)).
 					Build()
@@ -296,8 +295,7 @@ var _ = Describe("Group membership changes with ungrantable roles", func() {
 
 				seedGroupMember(kube, orgNamespace, groupID, config.UserID)
 
-				payload := api.NewUserPayload().
-					WithSubject(user.Spec.Subject).
+				payload := api.NewUserPayload(user.Spec.Subject).
 					WithState(user.Spec.State).
 					WithGroupIDs(slices.Clone(user.Spec.GroupIDs)).
 					Build()

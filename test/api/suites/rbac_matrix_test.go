@@ -172,7 +172,7 @@ var _ = Describe("RBAC Enforcement", func() {
 
 		Describe("Given a request to list users", func() {
 			It("should be permitted to list users", func() {
-				api.CreateUserWithCleanup(adminClient, ctx, config, api.NewUserPayload().Build())
+				api.CreateUserWithCleanup(adminClient, ctx, config, api.NewUserPayload(api.UserSubject(config, "rbac-admin-list-users")).Build())
 
 				users, err := adminClient.ListUsers(ctx, config.OrgID)
 
