@@ -214,6 +214,7 @@ lint: $(GENDIR)
 	./test/load/ceiling_test.sh
 	./test/load/lib_test.sh
 	./test/load/compare_test.sh
+	./test/api/skips_test.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate
@@ -270,6 +271,19 @@ test-api-ci: test-api-setup
 	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
 	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
 	ginkgo run --randomize-all --randomize-suites --race $(GINKGO_INTEGRATION_TEST_FLAGS) --output-interceptor-mode=none ./test/api/suites/
+
+TEST_RESULTS ?= test-results.json
+
+# Lists the specs in a Ginkgo JSON report that called Skip(), by reason.
+.PHONY: test-api-skips
+test-api-skips:
+	@jq -r -f test/api/skips.jq $(TEST_RESULTS)
+
+# Fails when a spec skipped: a run with every fixture (kind) must run every spec.
+.PHONY: test-api-no-skips
+test-api-no-skips:
+	@skips="$$(jq -r -f test/api/skips.jq $(TEST_RESULTS))" || exit 1; \
+	if [ -n "$$skips" ]; then echo "$$skips"; echo "ERROR: specs skipped" >&2; exit 1; fi
 
 .PHONY: test-api-setup
 test-api-setup:
@@ -478,4 +492,4 @@ integration-fixtures:  ## Create integration fixtures and write test/.env
 	  > test/.env
 
 .PHONY: integration-test
-integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci  ## Full local integration run
+integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci test-api-no-skips  ## Full local integration run

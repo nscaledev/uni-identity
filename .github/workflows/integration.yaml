@@ -81,6 +81,9 @@ jobs:
       id: api-tests
       run: make test-api-ci
 
+    - name: Fail on skipped specs
+      run: make test-api-no-skips
+
     - name: Analyze API test failures with Claude
       if: always() && steps.api-tests.outcome == 'failure'
       env:
