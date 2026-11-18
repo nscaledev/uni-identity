@@ -53,7 +53,8 @@ func originalOrganizationName(name string) string {
 
 // Sweep deletes the test objects a run left in the test organization, and undoes a rename the
 // organization update spec did not get to restore. Standing fixtures do not match and stay.
-// Projects and service accounts go before groups, because both reference groups.
+// Groups go first: deleting a group rewrites every project that references it, which must not
+// race a project the sweep has already set deprovisioning.
 //
 //nolint:cyclop // One flat pass per kind; splitting it would hide the delete order.
 func Sweep(ctx context.Context, client *APIClient, config *TestConfig, log io.Writer) error {
@@ -73,12 +74,12 @@ func Sweep(ctx context.Context, client *APIClient, config *TestConfig, log io.Wr
 		fmt.Fprintf(log, "deleted %s %s\n", kind, name)
 	}
 
-	projects, err := client.ListProjects(ctx, config.OrgID)
+	groups, err := client.ListGroups(ctx, config.OrgID)
 	errs = append(errs, err)
 
-	for _, p := range projects {
-		if isTestObjectName(p.Metadata.Name) && p.Metadata.ProvisioningStatus != coreapi.ResourceProvisioningStatusDeprovisioning {
-			remove("project", p.Metadata.Name, func() error { return client.DeleteProject(ctx, config.OrgID, p.Metadata.Id) })
+	for _, g := range groups {
+		if isTestObjectName(g.Metadata.Name) {
+			remove("group", g.Metadata.Name, func() error { return client.DeleteGroup(ctx, config.OrgID, g.Metadata.Id) })
 		}
 	}
 
@@ -100,21 +101,21 @@ func Sweep(ctx context.Context, client *APIClient, config *TestConfig, log io.Wr
 		}
 	}
 
-	groups, err := client.ListGroups(ctx, config.OrgID)
-	errs = append(errs, err)
-
-	for _, g := range groups {
-		if isTestObjectName(g.Metadata.Name) {
-			remove("group", g.Metadata.Name, func() error { return client.DeleteGroup(ctx, config.OrgID, g.Metadata.Id) })
-		}
-	}
-
 	users, err := client.ListUsers(ctx, config.OrgID)
 	errs = append(errs, err)
 
 	for _, u := range users {
 		if isTestUserSubject(config, u.Spec.Subject) {
 			remove("user", u.Spec.Subject, func() error { return client.DeleteUser(ctx, config.OrgID, u.Metadata.Id) })
+		}
+	}
+
+	projects, err := client.ListProjects(ctx, config.OrgID)
+	errs = append(errs, err)
+
+	for _, p := range projects {
+		if isTestObjectName(p.Metadata.Name) && p.Metadata.ProvisioningStatus != coreapi.ResourceProvisioningStatusDeprovisioning {
+			remove("project", p.Metadata.Name, func() error { return client.DeleteProject(ctx, config.OrgID, p.Metadata.Id) })
 		}
 	}
 
