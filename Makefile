@@ -151,7 +151,7 @@ test: test-unit
 
 .PHONY: test-unit
 test-unit:
-	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api -e /test/contracts)
+	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api/suites -e /test/contracts)
 	go tool cover -html cover.out -o cover.html
 
 # Regenerate the RBAC conformance vectors from the Lean formal model in ./formal.
