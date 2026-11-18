@@ -2,14 +2,16 @@
 
 Identity now has a single main integration suite: `test/api`.
 
-The suite can run in two modes:
+The suite can run in three modes:
 
 1. **Per-PR kind CI**: the GitHub Actions integration workflow creates a fresh KinD cluster,
    deploys identity, creates fixtures, and runs `make test-api-ci`.
 2. **Manual / triggered mode**: provide `test/.env` yourself and run the same `test/api` suite
    against an existing environment.
+3. **Nightly against staging**: the "API Tests" workflow runs the same suite against the identity
+   version deployed on staging.
 
-This keeps one test suite and two execution modes, rather than maintaining separate `api` and
+This keeps one test suite and several execution modes, rather than maintaining separate `api` and
 `e2e` test trees.
 
 ## Current Execution Modes
@@ -26,6 +28,7 @@ make integration-infra
 make integration-install
 make integration-fixtures
 make test-api-ci
+make test-api-no-skips
 ```
 
 In practice the workflow invokes the underlying scripts directly, but the behaviour is the same:
@@ -36,6 +39,7 @@ In practice the workflow invokes the underlying scripts directly, but the behavi
 - create fixtures via mTLS
 - write `test/.env`
 - run the main `test/api` suite
+- fail when any spec skipped: the fixtures supply every token, so a skip means a fixture broke
 
 ### Manual / triggered mode
 
@@ -53,6 +57,11 @@ Required variables:
 - `API_AUTH_TOKEN`
 - `TEST_ORG_ID`
 - `TEST_PROJECT_ID`
+- `TEST_SUBJECT_SUFFIX` — ends the subject of every user the suite creates
+  (`<spec key>-<suffix>@example.com`). Identity keeps every global user it creates and reuses one
+  by subject, so on a long-lived environment use a fixed suffix; a new suffix adds one global user
+  per created user, and nothing can delete them through the API. The kind fixtures write a random
+  suffix for each run.
 
 Optional variables for richer coverage:
 
@@ -82,6 +91,28 @@ Notes:
   cluster access via `KUBECONFIG`. They discover the identity and organization namespaces from
   `TEST_ORG_ID`, and skip when no kubeconfig is configured (an HTTP-API-only run); a present but
   broken `KUBECONFIG` fails fast.
+
+### Nightly against staging
+
+[`../.github/workflows/test-api.yaml`](../.github/workflows/test-api.yaml) runs at 05:00 UTC, a
+slot no uni-region or uni-compute schedule uses, and calls
+[`../.github/workflows/run-api-suite.yaml`](../.github/workflows/run-api-suite.yaml) for staging
+(`uat`). The run:
+
+- checks out the tag that staging reports at `/api/version`, so the tests match the deployed
+  release;
+- runs no test when that tag predates `make test-api-no-skips` (the nightly support check), and
+  turns on by itself once staging runs a newer release;
+- sweeps the test organization first (`go run ./hack/ci/sweep`, built from the workflow's own
+  commit): it deletes `uniqueName` projects, OAuth2 providers, service accounts and groups, users
+  with the run's subject suffix, and any `-updated` left on the organization name;
+- uses organization-scoped standing fixtures (admin, user-role and auditor service accounts, a
+  project, groups and a user, all named `identity-api-tests-*`), which the sweep never matches;
+- has no privileged tokens and no kubeconfig, so the specs that need them skip, and the job
+  summary lists every skip reason;
+- reports to Slack and the test history; it opens no Linear issues.
+
+The workflow's variables and secrets carry the `UAT_` prefix.
 
 ## Local KinD Flow
 
@@ -114,6 +145,7 @@ integration coverage.
 Current state:
 
 - PR validation uses a fresh kind-backed deployment and runs `test/api`
+- a nightly run executes `test/api` against staging
 - manual and legacy jobs can still provide `test/.env` and run `test/api`
 - cluster creation remains `kind-cluster`; deployment and fixtures use neutral `integration-*` names
 

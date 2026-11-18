@@ -293,7 +293,7 @@ test-api-setup:
 # Clean test artifacts
 .PHONY: test-api-clean
 test-api-clean:
-	@rm -f test/api/suites/test-results.json test/api/suites/junit.xml
+	@rm -f test-results.json junit.xml
 
 # Pact library path configuration (OS-specific defaults)
 UNAME_S := $(shell uname -s)

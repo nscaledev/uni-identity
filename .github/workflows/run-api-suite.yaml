@@ -1,0 +1,310 @@
+name: Run API Suite
+# With `expected_version` set, no test runs unless the deployed version matches it, and the
+# versions-summary artifact is uploaded on every outcome: release-evidence-dispatch.yml
+# publishes from it. Callers must pass `secrets: inherit` and grant `id-token: write` (the
+# test job needs it for Teleport).
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment: uat'
+        type: string
+        required: true
+      expected_version:
+        description: 'If set, gate the run on the deployed version matching it (release evidence)'
+        type: string
+        required: false
+        default: ''
+      focus:
+        description: 'Single test area to run (ignored when smoke=true)'
+        type: string
+        required: false
+        default: 'All'
+      smoke:
+        description: 'Run only the curated smoke subset'
+        type: boolean
+        required: false
+        default: false
+      skip_slack_notifications:
+        description: 'Skip the Slack report'
+        type: boolean
+        required: false
+        default: false
+      use_deployed_version:
+        description: 'Resolve the checkout ref from the deployed version API (vs the called ref)'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Always runs (this is a call-only workflow), so resolvers can depend on it with plain
+  # success() semantics: a failed guard blocks them, there is no skipped-guard case.
+  validate-inputs:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    steps:
+    - name: Guard environment and focus
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        FOCUS: ${{ inputs.focus }}
+      run: |
+        case "$ENVIRONMENT" in
+          uat) ;;
+          *) echo "::error::environment must be uat, got '$ENVIRONMENT'"; exit 1;;
+        esac
+        case "${FOCUS:-All}" in
+          All|'Service Version') ;;
+          *) echo "::error::unknown focus '$FOCUS'"; exit 1;;
+        esac
+
+  find-uat-deployed-version:
+    name: Resolve UAT test ref
+    runs-on: ubuntu-latest
+    needs: [validate-inputs]
+    if: inputs.environment == 'uat'
+    outputs:
+      ref: ${{ steps.find.outputs.ref }}
+      version: ${{ steps.find.outputs.version }}
+    steps:
+    - name: Resolve UAT checkout ref
+      uses: nscaledev/quality-tooling/.github/actions/uni-find-staging-constellation@main
+      id: find
+      with:
+        service: uni-identity
+        # Pin to uni-identity: inside a cross-repo workflow_call, github.repository is the
+        # caller's repo, so the action's service-repo default would validate the tag in the
+        # wrong repository. uni-identity is public, so the default github.token can read it.
+        service-repo: nscaledev/uni-identity
+        releases-read-token: ${{ secrets.RELEASES_READ_TOKEN }}
+        use-staging-constellation: ${{ inputs.use_deployed_version }}
+        use-version-api: true
+        version-api-url: ${{ vars.UAT_API_BASE_URL }}/api/version
+        version-api-token: ${{ secrets.UAT_API_AUTH_TOKEN }}
+        fallback-to-constellation: false
+        summary-title: UAT API Test Version
+
+    - name: Gate on expected version
+      id: gate
+      if: inputs.expected_version != ''
+      env:
+        EXPECTED: ${{ inputs.expected_version }}
+        DEPLOYED: ${{ steps.find.outputs.version }}
+      run: |
+        norm() { printf '%s' "${1#v}"; }
+        exp="$(norm "$EXPECTED")"; got="$(norm "$DEPLOYED")"
+        if [ -z "$got" ]; then
+          echo "::error::no deployed version resolved for the gate"; exit 1
+        fi
+        if [ "$exp" != "$got" ]; then
+          echo "::error::version mismatch: expected '$exp' but '$got' is deployed; not running evidence tests"; exit 1
+        fi
+        echo "version gate passed: $got"
+
+    - name: Write versions summary
+      if: ${{ always() && inputs.expected_version != '' }}
+      env:
+        ENVIRONMENT_NAME: uat
+        EXPECTED: ${{ inputs.expected_version }}
+        DEPLOYED: ${{ steps.find.outputs.version }}
+        REF: ${{ steps.find.outputs.ref }}
+        FIND_OUTCOME: ${{ steps.find.outcome }}
+        GATE_OUTCOME: ${{ steps.gate.outcome }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        if [ "$FIND_OUTCOME" != "success" ] || [ -z "$DEPLOYED" ]; then
+          gate_result="unresolved"
+        elif [ "$GATE_OUTCOME" = "success" ]; then
+          gate_result="passed"
+        else
+          gate_result="failed"
+        fi
+        jq -n \
+          --arg component uni-identity \
+          --arg environment "$ENVIRONMENT_NAME" \
+          --arg expected "$EXPECTED" \
+          --arg tested "$DEPLOYED" \
+          --arg ref "$REF" \
+          --arg gate "$gate_result" \
+          --arg run_url "$RUN_URL" \
+          --arg timestamp "$ts" \
+          '{component:$component, environment:$environment, expected_version:$expected,
+            tested_version:$tested, ref:$ref, gate_result:$gate, run_url:$run_url,
+            timestamp:$timestamp}' > versions-summary.json
+
+    - name: Archive versions summary
+      if: ${{ always() && inputs.expected_version != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: versions-summary-uat
+        path: versions-summary.json
+        retention-days: 180
+
+  API-Tests-UAT:
+    name: API Tests (uat)
+    needs: find-uat-deployed-version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for Teleport-backed Grafana lookup and OTLP collector shipping.
+      id-token: write
+    if: inputs.environment == 'uat' && needs.find-uat-deployed-version.outputs.ref != ''
+    # Full runs share the test organization and fixed user subjects, so they queue; a smoke run
+    # writes nothing, so it gets a group of its own.
+    concurrency:
+      group: identity-api-uat${{ inputs.smoke && format('-{0}', github.run_id) || '' }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: uat
+      FOCUS: ${{ inputs.focus || 'All' }}
+      IDENTITY_BASE_URL: ${{ vars.UAT_API_BASE_URL }}
+      API_AUTH_TOKEN: ${{ secrets.UAT_API_AUTH_TOKEN }}
+      SERVICE_ACCOUNT_TOKEN: ${{ secrets.UAT_SERVICE_ACCOUNT_TOKEN }}
+      AUDIT_AUTH_TOKEN: ${{ secrets.UAT_AUDIT_AUTH_TOKEN }}
+      TEST_ORG_ID: ${{ vars.UAT_TEST_ORG_ID }}
+      TEST_PROJECT_ID: ${{ vars.UAT_TEST_PROJECT_ID }}
+      TEST_ADMIN_GROUP_ID: ${{ vars.UAT_TEST_ADMIN_GROUP_ID }}
+      TEST_USER_GROUP_ID: ${{ vars.UAT_TEST_USER_GROUP_ID }}
+      TEST_USER_ID: ${{ vars.UAT_TEST_USER_ID }}
+      TEST_USER_SUBJECT_EMAIL: ${{ vars.UAT_TEST_USER_SUBJECT_EMAIL }}
+      TEST_USER_SA_ID: ${{ vars.UAT_TEST_USER_SA_ID }}
+      UNAUTHORISED_ORG_ID: ${{ vars.UAT_UNAUTHORISED_ORG_ID }}
+      # Fixed, so identity reuses the same global users every night instead of keeping new ones.
+      TEST_SUBJECT_SUFFIX: nightly
+      # Specs that install custom resources skip without cluster access.
+      KUBECONFIG: ''
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        # Explicit: checkout defaults to the caller's repo on a cross-repo workflow_call.
+        repository: nscaledev/uni-identity
+        ref: ${{ needs.find-uat-deployed-version.outputs.ref }}
+
+    - name: Setup Go
+      uses: actions/setup-go@v3
+      with:
+        go-version-file: go.mod
+        cache: true
+
+    - name: Touch
+      run: make touch
+
+    # A release from before deployed-run support would report known failures and add global
+    # users every night; the nightly turns on by itself once staging runs a newer release.
+    - name: Check nightly support
+      id: support
+      if: inputs.smoke != true
+      env:
+        DEPLOYED: ${{ needs.find-uat-deployed-version.outputs.version || needs.find-uat-deployed-version.outputs.ref }}
+      run: |
+        if make -n test-api-no-skips >/dev/null 2>&1; then
+          echo "supported=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "supported=false" >> "$GITHUB_OUTPUT"
+          echo "Staging runs identity \`$DEPLOYED\`, which predates deployed-run support; no test ran." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Checkout sweep
+      if: inputs.smoke != true && steps.support.outputs.supported == 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: nscaledev/uni-identity
+        ref: ${{ github.sha }}
+        path: tooling
+
+    # Built from this workflow's commit, not the deployed tag, so a sweep fix needs no release.
+    - name: Sweep leftover test objects
+      id: sweep
+      if: inputs.smoke != true && steps.support.outputs.supported == 'true'
+      continue-on-error: true
+      working-directory: tooling
+      run: go run ./hack/ci/sweep
+
+    - name: Run API Tests (smoke)
+      if: inputs.smoke == true
+      run: make test-api-smoke
+
+    - name: Run API Tests
+      if: inputs.smoke != true && steps.support.outputs.supported == 'true' && (inputs.focus == '' || inputs.focus == 'All')
+      run: make test-api
+
+    - name: Run API Tests with Focus
+      if: inputs.smoke != true && steps.support.outputs.supported == 'true' && inputs.focus != '' && inputs.focus != 'All'
+      run: make test-api-focus FOCUS="$FOCUS"
+
+    - name: Summarise skipped specs
+      if: ${{ !cancelled() && (inputs.smoke == true || steps.support.outputs.supported == 'true') }}
+      continue-on-error: true
+      run: |
+        {
+          echo "### Skipped specs"
+          make --no-print-directory test-api-skips
+          if [ "${{ steps.sweep.outcome }}" = "failure" ]; then
+            echo "### Sweep failed; see the step log"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Archive API Test Results
+      if: ${{ !cancelled() && (inputs.smoke == true || steps.support.outputs.supported == 'true') }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-test-results-uat
+        path: test-results.json
+        retention-days: 180
+
+    - name: Archive API Test JUnit Report
+      if: ${{ !cancelled() && (inputs.smoke == true || steps.support.outputs.supported == 'true') }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-test-junit-uat
+        path: junit.xml
+        retention-days: 180
+
+    - name: Report API Test Results
+      uses: nscaledev/quality-tooling/.github/actions/test-results-report@main
+      if: ${{ !cancelled() && (inputs.smoke == true || steps.support.outputs.supported == 'true') }}
+      with:
+        test-results-path: test-results.json
+        format: ginkgo-json
+        workflow-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        send-slack: ${{ inputs.skip_slack_notifications != true && 'true' || 'false' }}
+        environment: uat
+        deployed-version: ${{ needs.find-uat-deployed-version.outputs.version || needs.find-uat-deployed-version.outputs.ref }}
+        title: ${{ steps.sweep.outcome == 'failure' && 'Identity API Test Results (sweep failed)' || 'Identity API Test Results' }}
+        test-history-suite: uni-identity-api
+        component-name: uni-identity
+        component-repo: nscaledev/uni-identity
+        component-ref: ${{ needs.find-uat-deployed-version.outputs.ref }}
+        component-version-url: ${{ env.IDENTITY_BASE_URL }}/api/version
+        component-version-token: ${{ env.API_AUTH_TOKEN }}
+        enable-ai-analysis: 'true'
+        claude-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        # Off until uni-identity has a Grafana service account token.
+        enable-grafana-log-enrichment: 'false'
+
+  # Alerts when the tests did not run (e.g. an expired version-api token skips the test job,
+  # so nothing else posts to Slack).
+  notify-skipped-api-tests:
+    name: Notify skipped API tests
+    needs:
+    - find-uat-deployed-version
+    - API-Tests-UAT
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && inputs.skip_slack_notifications != true }}
+    steps:
+    - name: Notify Slack that UAT API tests did not run
+      if: inputs.environment == 'uat' && needs.API-Tests-UAT.result == 'skipped'
+      uses: slackapi/slack-github-action@v2
+      with:
+        webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+        webhook-type: incoming-webhook
+        payload: |
+          {
+            "text": ":red_circle: *Identity API Tests (uat) did not run* — `${{ github.repository }}`. Resolve UAT test ref finished with `${{ needs.find-uat-deployed-version.result }}` — see the run for the cause.\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
