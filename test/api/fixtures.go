@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -227,10 +228,11 @@ type UserPayloadBuilder struct {
 	user identityopenapi.UserWrite
 }
 
-// UserSubject returns the subject for the user a spec creates under key. A fixed key, not a
-// unique name, because identity keeps every global user it creates and reuses one by subject.
+// UserSubject returns the subject for the user a spec creates under key, in the lower case
+// identity stores. A fixed key, not a unique name, because identity keeps every global user it
+// creates and reuses one by subject.
 func UserSubject(config *TestConfig, key string) string {
-	return fmt.Sprintf("%s-%s@example.com", key, config.SubjectSuffix)
+	return strings.ToLower(fmt.Sprintf("%s-%s@example.com", key, config.SubjectSuffix))
 }
 
 // NewUserPayload creates a new user payload builder for the given subject.

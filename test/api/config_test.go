@@ -17,6 +17,8 @@ limitations under the License.
 package api_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,7 +29,10 @@ import (
 // A run without a subject suffix would create users with new subjects, and identity never
 // deletes a global user, so a deployed environment would grow by one record per created user.
 func TestLoadTestConfigRequiresSubjectSuffix(t *testing.T) {
-	t.Chdir(t.TempDir())
+	// LoadTestConfig reads ../../.env; two empty levels keep any stray file out of reach.
+	dir := filepath.Join(t.TempDir(), "a", "b")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	t.Chdir(dir)
 	t.Setenv("IDENTITY_BASE_URL", "https://identity.example.com")
 	t.Setenv("TEST_ORG_ID", "org")
 	t.Setenv("TEST_PROJECT_ID", "project")
@@ -37,12 +42,12 @@ func TestLoadTestConfigRequiresSubjectSuffix(t *testing.T) {
 	require.ErrorContains(t, err, "TEST_SUBJECT_SUFFIX")
 }
 
-// Identity reuses the global user for a subject it has seen, so a run that derives the same
-// subject from the same key and suffix creates no new global user.
-func TestUserSubjectIsStableForKeyAndSuffix(t *testing.T) {
+// Identity reuses the global user for a subject it has seen, so the same key and suffix must
+// give the same subject, in the lower case identity stores, which is what the sweep matches.
+func TestUserSubjectIsTheStoredForm(t *testing.T) {
 	t.Parallel()
 
-	config := &api.TestConfig{SubjectSuffix: "nightly"}
+	config := &api.TestConfig{SubjectSuffix: "Nightly"}
 
 	require.Equal(t, "users-create-nightly@example.com", api.UserSubject(config, "users-create"))
 }
