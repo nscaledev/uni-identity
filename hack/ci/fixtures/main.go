@@ -33,10 +33,12 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/unikorn-cloud/identity/hack/ci/internal/fixturelib"
@@ -228,4 +230,6 @@ func main() {
 	fmt.Printf("BINDING_ADMIN_AUTH_TOKEN=%s\n", bindingAdminToken)
 	fmt.Printf("PLATFORM_READER_AUTH_TOKEN=%s\n", platformReaderToken)
 	fmt.Printf("TEST_PLATFORM_READER_ROLE_ID=%s\n", platformReaderRoleID)
+	// Random per run, so every kind run creates users with subjects no earlier run used.
+	fmt.Printf("TEST_SUBJECT_SUFFIX=%s\n", strings.ToLower(rand.Text()[:8]))
 }

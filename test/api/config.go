@@ -41,6 +41,7 @@ type TestConfig struct {
 	UserSAID             string
 	UnauthorisedOrgID    string
 	ServiceAccountToken  string
+	SubjectSuffix        string
 	// ACLCacheTimeout is how long each server replica caches an ACL, so how
 	// long a permission change can take to reach every replica.
 	ACLCacheTimeout time.Duration
@@ -98,6 +99,7 @@ func LoadTestConfig() (*TestConfig, error) {
 		UserSAID:             v.GetString("TEST_USER_SA_ID"),
 		UnauthorisedOrgID:    v.GetString("UNAUTHORISED_ORG_ID"),
 		ServiceAccountToken:  v.GetString("SERVICE_ACCOUNT_TOKEN"),
+		SubjectSuffix:        v.GetString("TEST_SUBJECT_SUFFIX"),
 		// Defaults to the server's own default for --acl-cache-timeout.
 		ACLCacheTimeout: coreconfig.GetDurationFromViper(v, "ACL_CACHE_TIMEOUT", time.Minute),
 	}
@@ -107,6 +109,9 @@ func LoadTestConfig() (*TestConfig, error) {
 		"IDENTITY_BASE_URL": config.BaseURL,
 		"TEST_ORG_ID":       config.OrgID,
 		"TEST_PROJECT_ID":   config.ProjectID,
+		// Identity reuses the global user for a known subject and never deletes one, so a fixed
+		// suffix keeps a deployed environment's user count flat; kind runs pass a random one.
+		"TEST_SUBJECT_SUFFIX": config.SubjectSuffix,
 	}
 
 	if err := coreconfig.ValidateRequiredFields(required); err != nil {

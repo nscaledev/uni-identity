@@ -36,7 +36,7 @@ var _ = Describe("User Management", func() {
 	Context("When listing users", func() {
 		Describe("Given valid organization", func() {
 			It("should return all users in the organization with complete metadata", func() {
-				api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().Build())
+				api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "users-list")).Build())
 
 				users, err := client.ListUsers(ctx, config.OrgID)
 
@@ -74,7 +74,7 @@ var _ = Describe("User Management", func() {
 	Context("When creating users", func() {
 		Describe("Given valid user data", func() {
 			It("should create a user with subject and state", func() {
-				payload := api.NewUserPayload().Build()
+				payload := api.NewUserPayload(api.UserSubject(config, "users-create")).Build()
 				created, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
 
 				Expect(userID).NotTo(BeEmpty())
@@ -88,7 +88,7 @@ var _ = Describe("User Management", func() {
 			})
 
 			It("should create a user and find it in the organization list", func() {
-				payload := api.NewUserPayload().Build()
+				payload := api.NewUserPayload(api.UserSubject(config, "users-create-listed")).Build()
 				created, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
 
 				users, err := client.ListUsers(ctx, config.OrgID)
@@ -113,7 +113,7 @@ var _ = Describe("User Management", func() {
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config,
 					api.NewGroupPayload().Build())
 
-				payload := api.NewUserPayload().
+				payload := api.NewUserPayload(api.UserSubject(config, "users-create-with-group")).
 					WithGroupIDs([]string{groupID}).
 					Build()
 				_, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
@@ -142,7 +142,7 @@ var _ = Describe("User Management", func() {
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config,
 					api.NewGroupPayload().Build())
 
-				payload := api.NewUserPayload().
+				payload := api.NewUserPayload(api.UserSubject(config, "users-create-group-membership")).
 					WithGroupIDs([]string{groupID}).
 					Build()
 				_, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
@@ -162,15 +162,14 @@ var _ = Describe("User Management", func() {
 				_, secondGroupID := api.CreateGroupWithCleanup(client, ctx, config,
 					api.NewGroupPayload().Build())
 
-				firstPayload := api.NewUserPayload().
+				firstPayload := api.NewUserPayload(api.UserSubject(config, "users-create-twice")).
 					WithState(identityopenapi.Suspended).
 					WithGroupIDs([]string{firstGroupID}).
 					Build()
 
 				first, firstUserID := api.CreateUserWithCleanup(client, ctx, config, firstPayload)
 
-				secondPayload := api.NewUserPayload().
-					WithSubject(firstPayload.Spec.Subject).
+				secondPayload := api.NewUserPayload(firstPayload.Spec.Subject).
 					WithState(identityopenapi.Active).
 					WithGroupIDs([]string{secondGroupID}).
 					Build()
@@ -220,7 +219,7 @@ var _ = Describe("User Management", func() {
 
 		Describe("Given a user created with suspended state", func() {
 			It("should reflect the suspended state immediately on read", func() {
-				payload := api.NewUserPayload().
+				payload := api.NewUserPayload(api.UserSubject(config, "users-create-suspended")).
 					WithState(identityopenapi.Suspended).
 					Build()
 				created, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
@@ -234,7 +233,7 @@ var _ = Describe("User Management", func() {
 
 		Describe("Given invalid organization ID", func() {
 			It("should return error when creating in non-existent organization", func() {
-				payload := api.NewUserPayload().Build()
+				payload := api.NewUserPayload(api.UserSubject(config, "users-create-invalid-org")).Build()
 
 				_, err := client.CreateUser(ctx, "invalid-org-id", payload)
 
@@ -249,10 +248,10 @@ var _ = Describe("User Management", func() {
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config,
 					api.NewGroupPayload().Build())
 
-				payload := api.NewUserPayload().Build()
+				payload := api.NewUserPayload(api.UserSubject(config, "users-update-groups")).Build()
 				_, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
 
-				updatedPayload := api.NewUserPayload().
+				updatedPayload := api.NewUserPayload(payload.Spec.Subject).
 					WithGroupIDs([]string{groupID}).
 					Build()
 
@@ -284,7 +283,7 @@ var _ = Describe("User Management", func() {
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config,
 					api.NewGroupPayload().Build())
 
-				payload := api.NewUserPayload().
+				payload := api.NewUserPayload(api.UserSubject(config, "users-clear-groups")).
 					WithGroupIDs([]string{groupID}).
 					Build()
 				_, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
@@ -317,7 +316,7 @@ var _ = Describe("User Management", func() {
 			})
 
 			It("should suspend an active user", func() {
-				payload := api.NewUserPayload().
+				payload := api.NewUserPayload(api.UserSubject(config, "users-suspend")).
 					WithState(identityopenapi.Active).
 					Build()
 				_, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
@@ -335,7 +334,7 @@ var _ = Describe("User Management", func() {
 			})
 
 			It("should reactivate a suspended user", func() {
-				payload := api.NewUserPayload().
+				payload := api.NewUserPayload(api.UserSubject(config, "users-reactivate")).
 					WithState(identityopenapi.Suspended).
 					Build()
 				_, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
@@ -355,7 +354,7 @@ var _ = Describe("User Management", func() {
 
 		Describe("Given invalid user ID", func() {
 			It("should return not-found error", func() {
-				payload := api.NewUserPayload().Build()
+				payload := api.NewUserPayload(api.UserSubject(config, "users-update-missing")).Build()
 
 				_, err := client.UpdateUser(ctx, config.OrgID, "00000000-0000-0000-0000-000000000000", payload)
 
@@ -368,7 +367,7 @@ var _ = Describe("User Management", func() {
 	Context("When deleting users", func() {
 		Describe("Given existing user", func() {
 			It("should delete user and confirm it disappears from the list", func() {
-				payload := api.NewUserPayload().Build()
+				payload := api.NewUserPayload(api.UserSubject(config, "users-delete")).Build()
 				_, userID := api.CreateUserWithCleanup(client, ctx, config, payload)
 
 				err := client.DeleteUser(ctx, config.OrgID, userID)

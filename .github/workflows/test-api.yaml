@@ -1,0 +1,41 @@
+name: API Tests
+# Staging only. Passes no expected_version, so these runs are regression, not release evidence.
+on:
+  schedule:
+    # 05:00 UTC: no uni-region or uni-compute schedule touches staging between their 03:00
+    # fuzz run and the 06:00 compute API tests.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    inputs:
+      use_staging_constellation:
+        description: 'Use the deployed staging version for the checkout (off: this branch)'
+        type: boolean
+        default: true
+      skip_slack_notifications:
+        description: 'Skip Slack notifications'
+        type: boolean
+        default: false
+      focus:
+        description: 'Test suite to run'
+        required: false
+        default: 'All'
+        type: choice
+        options:
+        - 'All'
+        - 'Service Version'
+
+permissions:
+  contents: read
+  # Granted so the reusable's test job can request it (Teleport).
+  id-token: write
+
+jobs:
+  uat:
+    name: UAT
+    uses: ./.github/workflows/run-api-suite.yaml
+    with:
+      environment: uat
+      focus: ${{ github.event.inputs.focus || 'All' }}
+      skip_slack_notifications: ${{ github.event.inputs.skip_slack_notifications == 'true' }}
+      use_deployed_version: ${{ github.event_name == 'schedule' || github.event.inputs.use_staging_constellation != 'false' }}
+    secrets: inherit

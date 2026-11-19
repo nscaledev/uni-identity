@@ -44,7 +44,7 @@ var _ = Describe("Organization Management", func() {
 				restorePayload := api.NewOrganizationPayload().FromRead(*original).Build()
 				updatedPayload := api.NewOrganizationPayload().
 					FromRead(*original).
-					WithName(original.Metadata.Name + "-updated").
+					WithName(original.Metadata.Name + api.OrganizationRenameSuffix).
 					Build()
 
 				DeferCleanup(func() {

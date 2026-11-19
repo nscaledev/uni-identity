@@ -13,6 +13,7 @@ higher-level services call it directly to deploy dependencies. Fix once, fix eve
 | `fixtures/main.go` | CI workflow, `make integration-fixtures` | Creates test resources via the identity API using mTLS. Outputs a `.env` fragment to stdout. |
 | `loadfixtures/` | Load Test workflow | Builds the load test's data (through the identity API, or straight into Kubernetes for the medium and web datasets) and Auth0-shaped tokens. See [`../../test/load/README.md`](../../test/load/README.md). |
 | `internal/fixturelib/` | `fixtures`, `loadfixtures` | Identity API helpers shared by the fixture programs. |
+| `sweep/` | API Tests workflow (`run-api-suite.yaml`) | Deletes the test objects earlier runs left in a deployed environment's test organization, and undoes an organization rename. Reads the suite's configuration; standing `identity-api-tests-*` fixtures never match. |
 
 ## Output contracts
 
@@ -44,6 +45,7 @@ TEST_ADMIN_SA_ID=<uuid>
 TEST_USER_SA_ID=<uuid>
 ADMIN_AUTH_TOKEN=<jwt>   # administrator role — full org-level identity CRUD
 USER_AUTH_TOKEN=<jwt>    # user role — project-scoped access
+TEST_SUBJECT_SUFFIX=<8 random chars>  # ends every user subject the suite creates
 ```
 
 Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
