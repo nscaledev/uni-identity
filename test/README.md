@@ -101,8 +101,8 @@ slot no uni-region or uni-compute schedule uses, and calls
 
 - checks out the tag that staging reports at `/api/version`, so the tests match the deployed
   release;
-- runs no test when that tag predates `make test-api-no-skips` (the nightly support check), posts
-  a Slack warning that says so, and turns on by itself once staging runs a newer release;
+- runs no test when that tag predates `make test-api-no-skips` (the nightly support check), says
+  so in the job summary, and turns on by itself once staging runs a newer release;
 - sweeps the test organization first (`go run ./hack/ci/sweep`, built from the workflow's own
   commit): it deletes `uniqueName` projects, OAuth2 providers, service accounts and groups, users
   with the run's subject suffix, and any `-updated` left on the organization name;

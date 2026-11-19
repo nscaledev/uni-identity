@@ -152,8 +152,6 @@ jobs:
       # Required for Teleport-backed Grafana lookup and OTLP collector shipping.
       id-token: write
     if: inputs.environment == 'uat' && needs.find-uat-deployed-version.outputs.ref != ''
-    outputs:
-      supported: ${{ steps.support.outputs.supported }}
     # Full runs share the test organization and fixed user subjects, so they queue; a smoke run
     # writes nothing, so it gets a group of its own.
     concurrency:
@@ -290,8 +288,8 @@ jobs:
         # Off until uni-identity has a Grafana service account token.
         enable-grafana-log-enrichment: 'false'
 
-  # Alerts when the tests did not run: an expired version-api token skips the test job, and a
-  # deployed release without nightly support runs no test, so nothing else posts to Slack.
+  # Alerts when the tests did not run (e.g. an expired version-api token skips the test job,
+  # so nothing else posts to Slack).
   notify-skipped-api-tests:
     name: Notify skipped API tests
     needs:
@@ -309,15 +307,4 @@ jobs:
         payload: |
           {
             "text": ":red_circle: *Identity API Tests (uat) did not run* — `${{ github.repository }}`. Resolve UAT test ref finished with `${{ needs.find-uat-deployed-version.result }}` — see the run for the cause.\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          }
-
-    - name: Notify Slack that the deployed release has no nightly support
-      if: inputs.environment == 'uat' && needs.API-Tests-UAT.outputs.supported == 'false'
-      uses: slackapi/slack-github-action@v2
-      with:
-        webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-        webhook-type: incoming-webhook
-        payload: |
-          {
-            "text": ":warning: *Identity API Tests (uat) ran no test* — `${{ github.repository }}`. Staging runs `${{ needs.find-uat-deployed-version.outputs.version }}`, which predates nightly support; the nightly tests again by itself once staging runs a newer release.\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           }
