@@ -114,6 +114,27 @@ slot no uni-region or uni-compute schedule uses, and calls
 
 The workflow's variables and secrets carry the `UAT_` prefix.
 
+### Release evidence (smoke set)
+
+A k8s-cluster-nks staging promotion sends a `release-evidence-request` dispatch, handled by
+[`../.github/workflows/release-evidence-dispatch.yml`](../.github/workflows/release-evidence-dispatch.yml).
+It refuses any component but `identity`, waits until staging reports the requested version,
+checks the deployed version again, runs `make test-api-smoke` against staging, and publishes one
+record per request at `release-evidence/identity/<version>/<correlation_id>.json` on this
+repository's `release-evidence` branch, also when the version check or the tests fail.
+
+`make test-api-smoke` runs the specs labelled `smoke`, in random order, and fails when none is
+labelled or when any selected spec skips. The set is chosen by risk, then filtered: one to three
+specs per business capability (version, authentication, token exchange, ACLs, authorization,
+the group and service account create, update and delete flows, core reads, request validation),
+each of which passed in every run of a sample of full staging runs, deletes anything it creates,
+and takes under two seconds. A spec added to the set must meet the same rule.
+
+The evidence attests those capabilities on the deployed version. It does not cover user,
+project or organization writes (users share subjects with the nightly run, a project takes about
+40 seconds, and the organization is shared), nor anything that needs a privileged token; the
+kind run covers those.
+
 ## Local KinD Flow
 
 For local kind or Colima usage, use the guide in
