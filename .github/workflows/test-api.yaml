@@ -15,6 +15,10 @@ on:
         description: 'Skip Slack notifications'
         type: boolean
         default: false
+      smoke:
+        description: 'Run only the release evidence smoke set'
+        type: boolean
+        default: false
       focus:
         description: 'Test suite to run'
         required: false
@@ -36,6 +40,7 @@ jobs:
     with:
       environment: uat
       focus: ${{ github.event.inputs.focus || 'All' }}
+      smoke: ${{ github.event.inputs.smoke == 'true' }}
       skip_slack_notifications: ${{ github.event.inputs.skip_slack_notifications == 'true' }}
       use_deployed_version: ${{ github.event_name == 'schedule' || github.event.inputs.use_staging_constellation != 'false' }}
     secrets: inherit

@@ -1,0 +1,175 @@
+name: Release evidence (dispatch)
+
+# A k8s-cluster-nks staging promotion requests an evidence run here via a
+# release-evidence-request dispatch. We wait for the promoted version to deploy
+# to staging, run the callable API suite against it, and publish the result on
+# this repository's release-evidence branch for the caller to read.
+
+on:
+  repository_dispatch:
+    types: [release-evidence-request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-evidence-${{ github.event.client_payload.component }}-${{ github.event.client_payload.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Check the request
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the payload fields
+        env:
+          COMPONENT: ${{ github.event.client_payload.component }}
+          VERSION: ${{ github.event.client_payload.version }}
+          CORRELATION_ID: ${{ github.event.client_payload.correlation_id }}
+        run: |
+          set -euo pipefail
+          # This repository attests identity only; another component's request is refused.
+          bad=0
+          if [ "$COMPONENT" != identity ]; then
+            echo "::error::COMPONENT must be identity"
+            bad=1
+          fi
+          # These become path segments on the release-evidence branch.
+          for name in COMPONENT VERSION CORRELATION_ID; do
+            value="${!name}"
+            if [[ ! "$value" =~ ^[A-Za-z0-9._-]+$ || "$value" == "." || "$value" == ".." ]]; then
+              echo "::error::$name is missing or invalid"
+              bad=1
+            fi
+          done
+          exit "$bad"
+
+  wait-for-deploy:
+    name: Wait for ${{ github.event.client_payload.version }} on staging
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Poll the staging version API
+        env:
+          EXPECTED: ${{ github.event.client_payload.version }}
+          URL: ${{ vars.UAT_API_BASE_URL }}/api/version
+          TOKEN: ${{ secrets.UAT_API_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          exp="${EXPECTED#v}"
+          for i in $(seq 1 30); do
+            # A transient error mid-rollout must not end the wait; treat it as
+            # "not yet" and keep polling until the real timeout.
+            got="$(curl -fsS -H "Authorization: Bearer $TOKEN" "$URL" | jq -r '.version // empty' || true)"
+            got="${got#v}"
+            echo "attempt $i: deployed='$got' expected='$exp'"
+            [ "$got" = "$exp" ] && { echo "deployed"; exit 0; }
+            sleep 30
+          done
+          # The suite's own gate records the outcome; a timeout is a blocked
+          # promotion, not a reason to skip the evidence run.
+          echo "::warning::staging did not report '$exp' within the wait; running the suite anyway"
+
+  evidence:
+    name: Run the suite
+    needs: [validate, wait-for-deploy]
+    if: always() && needs.validate.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/run-api-suite.yaml
+    with:
+      environment: uat
+      expected_version: ${{ github.event.client_payload.version }}
+      smoke: true
+    secrets: inherit
+
+  publish:
+    name: Publish the evidence
+    needs: [validate, evidence]
+    # A blocked promotion must still leave a record.
+    if: always() && needs.validate.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the summary
+        uses: actions/download-artifact@v4
+        with:
+          name: versions-summary-uat
+          path: ${{ runner.temp }}/summary
+        continue-on-error: true
+      - name: Build the record
+        env:
+          COMPONENT: ${{ github.event.client_payload.component }}
+          VERSION: ${{ github.event.client_payload.version }}
+          CORRELATION_ID: ${{ github.event.client_payload.correlation_id }}
+          SOURCE_RUN: ${{ github.event.client_payload.source_run }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # The gate-only summary cannot tell a failed smoke run from a passed
+          # one; the suite job's conclusion carries the test outcome.
+          SUITE_RESULT: ${{ needs.evidence.result }}
+          SUMMARY_FILE: ${{ runner.temp }}/summary/versions-summary.json
+          RECORD: ${{ runner.temp }}/record.json
+        run: |
+          set -euo pipefail
+          if ! summary="$(jq -c . "$SUMMARY_FILE")"; then
+            echo "::warning::no readable versions summary; publishing a null summary"
+            summary='null'
+          fi
+          # The branch is public: versions, results and links only.
+          jq -n \
+            --arg component "$COMPONENT" \
+            --arg version "$VERSION" \
+            --arg correlation_id "$CORRELATION_ID" \
+            --arg source_run "$SOURCE_RUN" \
+            --arg run_url "$RUN_URL" \
+            --arg suite_result "$SUITE_RESULT" \
+            --argjson summary "$summary" \
+            '{component: $component, version: $version, correlation_id: $correlation_id,
+              source_run: $source_run, run_url: $run_url, suite_result: $suite_result,
+              summary: $summary}' \
+            > "$RECORD"
+          cat "$RECORD"
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Commit the record to release-evidence
+        env:
+          COMPONENT: ${{ github.event.client_payload.component }}
+          VERSION: ${{ github.event.client_payload.version }}
+          CORRELATION_ID: ${{ github.event.client_payload.correlation_id }}
+          RECORD: ${{ runner.temp }}/record.json
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898583+github-actions[bot]@users.noreply.github.com"
+          dir="release-evidence/$COMPONENT/$VERSION"
+          dest="$dir/$CORRELATION_ID.json"
+
+          # Runs for other components and versions push to the same branch.
+          # Re-sync to its tip on every attempt so their commits are never lost.
+          for attempt in $(seq 1 5); do
+            if git ls-remote --exit-code --heads origin release-evidence >/dev/null; then
+              git fetch --depth 1 origin release-evidence
+              git checkout -qB "attempt-$attempt" FETCH_HEAD
+            else
+              git checkout -q --orphan "attempt-$attempt"
+              git rm -rfq --ignore-unmatch .
+            fi
+
+            mkdir -p "$dir"
+            cp "$RECORD" "$dest"
+            git add "$dest"
+            if git diff --cached --quiet; then
+              echo "record unchanged at $dest"; exit 0
+            fi
+            git commit -qm "evidence: $COMPONENT $VERSION $CORRELATION_ID"
+            if git push origin HEAD:refs/heads/release-evidence; then
+              echo "published $dest"; exit 0
+            fi
+            echo "push raced on attempt $attempt; re-syncing"
+            sleep $(( attempt * 3 + RANDOM % 5 ))
+          done
+          echo "::error::could not publish $dest after 5 attempts"
+          exit 1
