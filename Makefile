@@ -260,6 +260,15 @@ test-api-suite: test-api-setup
 	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
 	ginkgo run $(SUITE) $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
+# Runs the release-evidence smoke set: the specs labelled smoke. Fails when none is labelled, and
+# when any selected spec skips, so evidence can never pass with less than the whole set run.
+.PHONY: test-api-smoke
+test-api-smoke: test-api-setup
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run -v --randomize-all --fail-on-empty --label-filter='smoke' $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
+	@$(MAKE) --no-print-directory test-api-no-skips
+
 .PHONY: test-api-parallel
 test-api-parallel: test-api-setup
 	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \

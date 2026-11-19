@@ -151,7 +151,7 @@ var _ = Describe("Console Audit View Permissions", func() {
 		})
 
 		Describe("Given a request to list groups", func() {
-			It("audit token should succeed and return a list", func() {
+			It("audit token should succeed and return a list", Label("smoke"), func() {
 				Expect(config.AdminGroupID).NotTo(BeEmpty(),
 					"TEST_ADMIN_GROUP_ID must be set by integration fixtures")
 				Expect(config.UserGroupID).NotTo(BeEmpty(),
@@ -240,7 +240,7 @@ var _ = Describe("Console Audit View Permissions", func() {
 		})
 
 		Describe("Given a POST to create a group", func() {
-			It("audit token should be denied with a forbidden response", func() {
+			It("audit token should be denied with a forbidden response", Label("smoke"), func() {
 				expectAuditRequestForbidden(http.MethodPost,
 					api.NewEndpoints().ListGroups(config.OrgID),
 					api.NewGroupPayload().Build())
@@ -275,7 +275,7 @@ var _ = Describe("Console Audit View Permissions", func() {
 		})
 
 		Describe("Given a PUT to update the organization", func() {
-			It("audit token should be denied with a forbidden response", func() {
+			It("audit token should be denied with a forbidden response", Label("smoke"), func() {
 				original, err := adminClient.GetOrganization(ctx, config.OrgID)
 				Expect(err).NotTo(HaveOccurred())
 

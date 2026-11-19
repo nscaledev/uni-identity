@@ -70,7 +70,7 @@ var _ = Describe("Group Management", func() {
 				GinkgoWriter.Printf("Created group: %s (ID: %s)\n", group.Metadata.Name, groupID)
 			})
 
-			It("should create a group and retrieve it by ID", func() {
+			It("should create a group and retrieve it by ID", Label("smoke"), func() {
 				payload := api.NewGroupPayload().Build()
 				createdGroup, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
@@ -211,7 +211,7 @@ var _ = Describe("Group Management", func() {
 					originalGroup.Metadata.Name, updatedGroup.Metadata.Name)
 			})
 
-			It("should update group role assignments", func() {
+			It("should update group role assignments", Label("smoke"), func() {
 				roles, err := client.ListRoles(ctx, config.OrgID)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -364,7 +364,7 @@ var _ = Describe("Group Management", func() {
 
 	Context("When deleting groups", func() {
 		Describe("Given existing group", func() {
-			It("should delete group successfully", func() {
+			It("should delete group successfully", Label("smoke"), func() {
 				payload := api.NewGroupPayload().Build()
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
@@ -761,7 +761,7 @@ var _ = Describe("Group Subjects", func() {
 		})
 
 		Describe("Given a new group created with a non-existent userID", func() {
-			It("should return invalid request", func() {
+			It("should return invalid request", Label("smoke"), func() {
 				payload := api.NewGroupPayload().
 					WithUserIDs([]string{"00000000-0000-0000-0000-000000000000"}).
 					Build()

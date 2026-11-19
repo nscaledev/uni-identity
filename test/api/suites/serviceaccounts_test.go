@@ -75,7 +75,7 @@ var _ = Describe("Service Account Management", func() {
 
 	Context("When creating service accounts", func() {
 		Describe("Given valid service account data", func() {
-			It("should create a service account and return a one-time access token", func() {
+			It("should create a service account and return a one-time access token", Label("smoke"), func() {
 				payload := api.NewServiceAccountPayload().Build()
 				created, saID := api.CreateServiceAccountWithCleanup(client, ctx, config, payload)
 
@@ -312,7 +312,7 @@ var _ = Describe("Service Account Management", func() {
 
 	Context("When rotating service account tokens", func() {
 		Describe("Given existing service account", func() {
-			It("should rotate the token and return a new one-time access token", func() {
+			It("should rotate the token and return a new one-time access token", Label("smoke"), func() {
 				payload := api.NewServiceAccountPayload().Build()
 				created, saID := api.CreateServiceAccountWithCleanup(client, ctx, config, payload)
 
@@ -346,7 +346,7 @@ var _ = Describe("Service Account Management", func() {
 
 	Context("When deleting service accounts", func() {
 		Describe("Given existing service account", func() {
-			It("should delete and verify the service account is gone", func() {
+			It("should delete and verify the service account is gone", Label("smoke"), func() {
 				payload := api.NewServiceAccountPayload().Build()
 				_, saID := api.CreateServiceAccountWithCleanup(client, ctx, config, payload)
 

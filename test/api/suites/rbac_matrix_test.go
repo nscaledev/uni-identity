@@ -67,7 +67,7 @@ var _ = Describe("RBAC Enforcement", func() {
 
 	Context("When authenticated as an administrator", func() {
 		Describe("Given a request to list groups", func() {
-			It("should return all groups in the organization with complete metadata", func() {
+			It("should return all groups in the organization with complete metadata", Label("smoke"), func() {
 				Expect(config.AdminGroupID).NotTo(BeEmpty(),
 					"TEST_ADMIN_GROUP_ID must be set by integration fixtures")
 				Expect(config.UserGroupID).NotTo(BeEmpty(),
@@ -91,7 +91,7 @@ var _ = Describe("RBAC Enforcement", func() {
 		})
 
 		Describe("Given a request to list groups in a non-member organization", func() {
-			It("should be denied with a forbidden response", func() {
+			It("should be denied with a forbidden response", Label("smoke"), func() {
 				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
 					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
 
@@ -231,7 +231,7 @@ var _ = Describe("RBAC Enforcement", func() {
 		// A synthetic ID suffices — the handler authorizes before it looks the provider up,
 		// which also keeps these specs free of a platform-operator fixture.
 		Describe("Given a request to create an OAuth2 provider", func() {
-			It("should be denied with a forbidden response", func() {
+			It("should be denied with a forbidden response", Label("smoke"), func() {
 				expectRequestForbidden(adminClient, "administrator", http.MethodPost,
 					api.NewEndpoints().ListOauth2Providers(config.OrgID),
 					api.NewOauth2ProviderPayload().Build())
