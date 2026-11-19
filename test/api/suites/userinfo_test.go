@@ -57,7 +57,7 @@ var _ = Describe("Userinfo", func() {
 					"sub claim must be stable for the same token")
 			})
 
-			It("should include the custom authz claims with a valid acctype", func() {
+			It("should include the custom authz claims with a valid acctype", Label("smoke"), func() {
 				userinfo, err := client.GetUserinfo(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
@@ -175,7 +175,7 @@ var _ = Describe("Userinfo", func() {
 				Expect(config.UnauthorisedOrgID).NotTo(BeEmpty(),
 					"UNAUTHORISED_ORG_ID must be set by integration fixtures")
 			})
-			It("should report acctype 'service' in the authz claims", func() {
+			It("should report acctype 'service' in the authz claims", Label("smoke"), func() {
 				userinfo, err := serviceAccountClient.GetUserinfo(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(userinfo.HttpsunikornCloudOrgauthz).NotTo(BeNil())

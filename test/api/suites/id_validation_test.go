@@ -30,7 +30,7 @@ import (
 var _ = Describe("Path parameter ID validation", func() {
 	Context("When an organization ID path parameter is not a valid UUID", func() {
 		Describe("Given a non-UUID organization ID", func() {
-			It("should reject the request with 400 before reaching the handler", func() {
+			It("should reject the request with 400 before reaching the handler", Label("smoke"), func() {
 				path := client.GetEndpoints().GetOrganization("not-a-uuid")
 
 				//nolint:bodyclose // DoRequest handles response body closing internally
