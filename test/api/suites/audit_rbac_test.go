@@ -44,7 +44,8 @@ func expectAuditRequestForbidden(method, path string, payload any) {
 		body = bytes.NewReader(bodyBytes)
 	}
 
-	resp, _, err := auditClient.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	resp, respBody, err := auditClient.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	api.DeleteIfCreated(client, ctx, method, path, resp, respBody)
 	Expect(err).NotTo(HaveOccurred(),
 		"audit %s %s should return 403 Forbidden", method, path)
 	Expect(resp).NotTo(BeNil())

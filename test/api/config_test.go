@@ -17,6 +17,7 @@ limitations under the License.
 package api_test
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,4 +51,16 @@ func TestUserSubjectIsTheStoredForm(t *testing.T) {
 	config := &api.TestConfig{SubjectSuffix: "Nightly"}
 
 	require.Equal(t, "users-create-nightly@example.com", api.UserSubject(config, "users-create"))
+}
+
+// A negative spec sends a create the API must refuse; only an accepted POST leaves an object
+// behind, and only then is there an ID to delete.
+func TestAcceptedCreateIDOnlyForAnAcceptedPost(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"metadata":{"id":"0b1c"}}`)
+
+	require.Equal(t, "0b1c", api.AcceptedCreateID(http.MethodPost, &http.Response{StatusCode: http.StatusCreated}, body))
+	require.Empty(t, api.AcceptedCreateID(http.MethodPost, &http.Response{StatusCode: http.StatusForbidden}, body))
+	require.Empty(t, api.AcceptedCreateID(http.MethodPut, &http.Response{StatusCode: http.StatusOK}, body))
 }

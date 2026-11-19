@@ -21,8 +21,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -226,6 +228,44 @@ func CreateServiceAccountWithCleanup(client *APIClient, ctx context.Context, con
 // UserPayloadBuilder builds user payloads for testing.
 type UserPayloadBuilder struct {
 	user identityopenapi.UserWrite
+}
+
+// AcceptedCreateID returns the ID of the object a POST created, or "" when the request was not
+// a POST, was refused, or named no object.
+func AcceptedCreateID(method string, resp *http.Response, body []byte) string {
+	if method != http.MethodPost || resp == nil || resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return ""
+	}
+
+	var created struct {
+		Metadata struct {
+			ID string `json:"id"`
+		} `json:"metadata"`
+	}
+
+	if err := json.Unmarshal(body, &created); err != nil {
+		return ""
+	}
+
+	return created.Metadata.ID
+}
+
+// DeleteIfCreated deletes, when the spec ends, an object a create the API should have refused
+// made anyway, so a release that wrongly accepts it leaves nothing on a shared environment. The
+// spec still fails on the unexpected status; cleanup should be a client that may delete.
+func DeleteIfCreated(cleanup *APIClient, ctx context.Context, method, collectionPath string, resp *http.Response, body []byte) {
+	id := AcceptedCreateID(method, resp, body)
+	if id == "" {
+		return
+	}
+
+	DeferCleanup(func() {
+		//nolint:bodyclose // DoRequest handles response body closing internally
+		resp, _, err := cleanup.DoRequest(ctx, http.MethodDelete, collectionPath+"/"+id, nil, http.StatusAccepted)
+		if err != nil && (resp == nil || resp.StatusCode >= 300) {
+			Fail(fmt.Sprintf("an accepted create left %s/%s behind: %v", collectionPath, id, err))
+		}
+	})
 }
 
 // UserSubject returns the subject for the user a spec creates under key, in the lower case

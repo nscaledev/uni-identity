@@ -44,7 +44,8 @@ func expectRequestForbidden(c *api.APIClient, actor, method, path string, payloa
 		body = bytes.NewReader(bodyBytes)
 	}
 
-	resp, _, err := c.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	resp, respBody, err := c.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	api.DeleteIfCreated(client, ctx, method, path, resp, respBody)
 	Expect(err).NotTo(HaveOccurred(),
 		"%s %s %s should return 403 Forbidden", actor, method, path)
 	Expect(resp).NotTo(BeNil())

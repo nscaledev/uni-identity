@@ -769,13 +769,9 @@ var _ = Describe("Group Subjects", func() {
 				body, err := json.Marshal(payload)
 				Expect(err).NotTo(HaveOccurred())
 
-				_, _, err = client.DoRequest(
-					ctx,
-					http.MethodPost,
-					api.NewEndpoints().ListGroups(config.OrgID),
-					bytes.NewReader(body),
-					http.StatusBadRequest,
-				)
+				path := api.NewEndpoints().ListGroups(config.OrgID)
+				resp, respBody, err := client.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusBadRequest)
+				api.DeleteIfCreated(client, ctx, http.MethodPost, path, resp, respBody)
 				Expect(err).NotTo(HaveOccurred(),
 					"creating a group with a non-existent userID should return 400")
 			})
