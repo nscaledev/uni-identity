@@ -48,6 +48,7 @@ jobs:
     name: Wait for ${{ github.event.client_payload.version }} on staging
     needs: validate
     runs-on: ubuntu-24.04
+    timeout-minutes: 16
     steps:
       - name: Poll the staging version API
         env:
@@ -57,10 +58,12 @@ jobs:
         run: |
           set -euo pipefail
           exp="${EXPECTED#v}"
-          for i in $(seq 1 30); do
+          i=0
+          while (( SECONDS < 900 )); do
+            i=$((i + 1))
             # A transient error mid-rollout must not end the wait; treat it as
             # "not yet" and keep polling until the real timeout.
-            got="$(curl -fsS -H "Authorization: Bearer $TOKEN" "$URL" | jq -r '.version // empty' || true)"
+            got="$(curl -fsS --max-time 10 -H "Authorization: Bearer $TOKEN" "$URL" | jq -r '.version // empty' || true)"
             got="${got#v}"
             echo "attempt $i: deployed='$got' expected='$exp'"
             [ "$got" = "$exp" ] && { echo "deployed"; exit 0; }
@@ -73,7 +76,7 @@ jobs:
   evidence:
     name: Run the suite
     needs: [validate, wait-for-deploy]
-    if: always() && needs.validate.result == 'success'
+    if: ${{ !cancelled() && needs.validate.result == 'success' }}
     permissions:
       contents: read
       id-token: write
@@ -87,8 +90,8 @@ jobs:
   publish:
     name: Publish the evidence
     needs: [validate, evidence]
-    # A blocked promotion must still leave a record.
-    if: always() && needs.validate.result == 'success'
+    # A blocked promotion must still leave a record; a cancelled request leaves none.
+    if: ${{ !cancelled() && needs.validate.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write

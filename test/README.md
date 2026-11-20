@@ -118,10 +118,16 @@ The workflow's variables and secrets carry the `UAT_` prefix.
 
 A k8s-cluster-nks staging promotion sends a `release-evidence-request` dispatch, handled by
 [`../.github/workflows/release-evidence-dispatch.yml`](../.github/workflows/release-evidence-dispatch.yml).
-It refuses any component but `identity`, waits until staging reports the requested version,
-checks the deployed version again, runs `make test-api-smoke` against staging, and publishes one
-record per request at `release-evidence/identity/<version>/<correlation_id>.json` on this
-repository's `release-evidence` branch, also when the version check or the tests fail.
+It refuses any component but `identity`, waits up to 15 minutes until staging reports the
+requested version, checks the deployed version again, runs `make test-api-smoke` against staging,
+checks the deployed version once more after the tests, and publishes one record per request at
+`release-evidence/identity/<version>/<correlation_id>.json` on this repository's
+`release-evidence` branch, also when the version check or the tests fail. A cancelled request
+publishes nothing.
+
+The record's `suite_result` is `success` only when the smoke set passed and the deployed version
+was the requested version before and after it. A failed Slack or analysis step does not change
+it, and an evidence run does not write to the test history.
 
 `make test-api-smoke` runs the specs labelled `smoke`, in random order, and fails when none is
 labelled or when any selected spec skips. The set is chosen by risk, then filtered: one to three
