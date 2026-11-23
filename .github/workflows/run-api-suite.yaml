@@ -1,8 +1,9 @@
 name: Run API Suite
 # With `expected_version` set, no test runs unless the deployed version matches it, and the
 # versions-summary artifact is uploaded on every outcome: release-evidence-dispatch.yml
-# publishes from it. Callers must pass `secrets: inherit` and grant `id-token: write` (the
-# test job needs it for Teleport).
+# publishes from it. The version is checked again after the tests, report steps cannot fail
+# the test job, and no test history is written. Callers must pass `secrets: inherit` and
+# grant `id-token: write` (the test job needs it for Teleport).
 on:
   workflow_call:
     inputs:
@@ -237,6 +238,17 @@ jobs:
       if: inputs.smoke != true && steps.support.outputs.supported == 'true' && inputs.focus != '' && inputs.focus != 'All'
       run: make test-api-focus FOCUS="$FOCUS"
 
+    # shortcut: a version that moves and comes back during the run is not seen; check per spec if the smoke run grows past seconds.
+    - name: Check the deployed version after the tests
+      if: inputs.expected_version != ''
+      env:
+        EXPECTED: ${{ inputs.expected_version }}
+      run: |
+        got="$(curl -fsS --max-time 10 --retry 3 --retry-all-errors -H "Authorization: Bearer $API_AUTH_TOKEN" "$IDENTITY_BASE_URL/api/version" | jq -r '.version // empty' || true)"
+        if [ "${got#v}" != "${EXPECTED#v}" ]; then
+          echo "::error::deployed version is '${got#v}' after the tests, expected '${EXPECTED#v}'"; exit 1
+        fi
+
     - name: Summarise skipped specs
       if: ${{ !cancelled() && (inputs.smoke == true || steps.support.outputs.supported == 'true') }}
       continue-on-error: true
@@ -268,12 +280,15 @@ jobs:
     - name: Report API Test Results
       uses: nscaledev/quality-tooling/.github/actions/test-results-report@main
       if: ${{ !cancelled() && (inputs.smoke == true || steps.support.outputs.supported == 'true') }}
+      # The evidence result is the test job's conclusion; a report step must not change it.
+      continue-on-error: ${{ inputs.expected_version != '' }}
       with:
         test-results-path: test-results.json
         format: ginkgo-json
         workflow-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
         send-slack: ${{ inputs.skip_slack_notifications != true && 'true' || 'false' }}
+        publish-test-history: ${{ inputs.expected_version == '' && 'true' || 'false' }}
         environment: uat
         deployed-version: ${{ needs.find-uat-deployed-version.outputs.version || needs.find-uat-deployed-version.outputs.ref }}
         title: ${{ steps.sweep.outcome == 'failure' && 'Identity API Test Results (sweep failed)' || 'Identity API Test Results' }}
