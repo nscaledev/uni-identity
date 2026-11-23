@@ -86,6 +86,11 @@ OPENAPI_FILES = \
         pkg/openapi/client.go \
         pkg/openapi/router.go
 
+# The permissions agent client is rebuilt on every make generate, so CI's
+# clean-tree check covers it.
+PERMISSIONS_AGENT_SCHEMA=pkg/permissionsagent/openapi/agent.spec.yaml
+PERMISSIONS_AGENT_CODEGEN_FLAGS=-config pkg/permissionsagent/openapi/config.yaml
+
 MOCKGEN_VERSION=v0.3.0
 GINKGO_VERSION := $(shell awk '$$1 == "github.com/onsi/ginkgo/v2" { print $$2; exit }' go.mod)
 GOMEGA_VERSION := $(shell awk '$$1 == "github.com/onsi/gomega" { print $$2; exit }' go.mod)
@@ -127,6 +132,9 @@ $(BINDIR)/arm64-darwin/%: $(SOURCES) $(GENDIR) | $(BINDIR)/arm64-darwin
 .PHONY: generate
 generate:
 	@go install go.uber.org/mock/mockgen@$(MOCKGEN_VERSION)
+	@go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OPENAPI_CODEGEN_VERSION)
+	$(GOBIN)/oapi-codegen -generate types $(PERMISSIONS_AGENT_CODEGEN_FLAGS) -o pkg/permissionsagent/openapi/types.go $(PERMISSIONS_AGENT_SCHEMA)
+	$(GOBIN)/oapi-codegen -generate client $(PERMISSIONS_AGENT_CODEGEN_FLAGS) -o pkg/permissionsagent/openapi/client.go $(PERMISSIONS_AGENT_SCHEMA)
 	go generate ./...
 
 # Create container images.  Use buildkit here, as it's the future, and it does
@@ -220,7 +228,7 @@ lint: $(GENDIR)
 .PHONY: validate
 validate: $(OPENAPI_FILES)
 	go run github.com/unikorn-cloud/core/hack/validate_openapi
-	go run github.com/unikorn-cloud/core/hack/validate_openapi -path pkg/permissionsagent/openapi/agent.spec.yaml
+	go run github.com/unikorn-cloud/core/hack/validate_openapi -path $(PERMISSIONS_AGENT_SCHEMA)
 
 # Validate the docs can be generated without fail.
 .PHONY: validate-docs

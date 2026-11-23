@@ -12,7 +12,6 @@ import (
 	context "context"
 	reflect "reflect"
 
-	permissionsagent "github.com/unikorn-cloud/identity/pkg/permissionsagent"
 	openapi "github.com/unikorn-cloud/identity/pkg/permissionsagent/openapi"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -41,61 +40,61 @@ func (m *MockAgent) EXPECT() *MockAgentMockRecorder {
 }
 
 // BatchCheck mocks base method.
-func (m *MockAgent) BatchCheck(ctx context.Context, caller permissionsagent.Caller, items []openapi.CheckItem) (*openapi.BatchCheckResult, error) {
+func (m *MockAgent) BatchCheck(ctx context.Context, request openapi.BatchCheckRequest) (*openapi.BatchCheckResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "BatchCheck", ctx, caller, items)
+	ret := m.ctrl.Call(m, "BatchCheck", ctx, request)
 	ret0, _ := ret[0].(*openapi.BatchCheckResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // BatchCheck indicates an expected call of BatchCheck.
-func (mr *MockAgentMockRecorder) BatchCheck(ctx, caller, items any) *gomock.Call {
+func (mr *MockAgentMockRecorder) BatchCheck(ctx, request any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BatchCheck", reflect.TypeOf((*MockAgent)(nil).BatchCheck), ctx, caller, items)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BatchCheck", reflect.TypeOf((*MockAgent)(nil).BatchCheck), ctx, request)
 }
 
 // Check mocks base method.
-func (m *MockAgent) Check(ctx context.Context, caller permissionsagent.Caller, item openapi.CheckItem) (*openapi.CheckResult, error) {
+func (m *MockAgent) Check(ctx context.Context, request openapi.CheckRequest) (*openapi.CheckResult, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Check", ctx, caller, item)
+	ret := m.ctrl.Call(m, "Check", ctx, request)
 	ret0, _ := ret[0].(*openapi.CheckResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Check indicates an expected call of Check.
-func (mr *MockAgentMockRecorder) Check(ctx, caller, item any) *gomock.Call {
+func (mr *MockAgentMockRecorder) Check(ctx, request any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Check", reflect.TypeOf((*MockAgent)(nil).Check), ctx, caller, item)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Check", reflect.TypeOf((*MockAgent)(nil).Check), ctx, request)
 }
 
 // Permissions mocks base method.
-func (m *MockAgent) Permissions(ctx context.Context, caller permissionsagent.Caller, params openapi.ListPermissionsParams) (*openapi.PermissionList, error) {
+func (m *MockAgent) Permissions(ctx context.Context, params openapi.ListPermissionsParams) (*openapi.PermissionList, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Permissions", ctx, caller, params)
+	ret := m.ctrl.Call(m, "Permissions", ctx, params)
 	ret0, _ := ret[0].(*openapi.PermissionList)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Permissions indicates an expected call of Permissions.
-func (mr *MockAgentMockRecorder) Permissions(ctx, caller, params any) *gomock.Call {
+func (mr *MockAgentMockRecorder) Permissions(ctx, params any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Permissions", reflect.TypeOf((*MockAgent)(nil).Permissions), ctx, caller, params)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Permissions", reflect.TypeOf((*MockAgent)(nil).Permissions), ctx, params)
 }
 
 // Status mocks base method.
-func (m *MockAgent) Status(ctx context.Context, caller permissionsagent.Caller) (*openapi.Status, error) {
+func (m *MockAgent) Status(ctx context.Context) (*openapi.Status, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Status", ctx, caller)
+	ret := m.ctrl.Call(m, "Status", ctx)
 	ret0, _ := ret[0].(*openapi.Status)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Status indicates an expected call of Status.
-func (mr *MockAgentMockRecorder) Status(ctx, caller any) *gomock.Call {
+func (mr *MockAgentMockRecorder) Status(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Status", reflect.TypeOf((*MockAgent)(nil).Status), ctx, caller)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Status", reflect.TypeOf((*MockAgent)(nil).Status), ctx)
 }

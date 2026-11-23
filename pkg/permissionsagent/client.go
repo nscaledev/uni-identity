@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -32,27 +33,37 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/permissionsagent/openapi"
 )
 
-// DefaultTimeout bounds one agent call when Options.Timeout is zero.
-const DefaultTimeout = 250 * time.Millisecond
+const (
+	// DefaultTimeout bounds one agent call when Options.Timeout is zero.
+	DefaultTimeout = 250 * time.Millisecond
+
+	// MaxBatchChecks is the most items one BatchCheck may send.
+	MaxBatchChecks = 100
+)
 
 var (
 	// ErrInvalidOptions means New was given options it cannot use.
 	ErrInvalidOptions = errors.New("permissions agent: invalid options")
-	// ErrBadRequest is a 400 from the agent, for example an unknown region_id.
+	// ErrInvalidInput means the call was refused locally, without calling the
+	// agent: no subject, no batch items, or too many.
+	ErrInvalidInput = errors.New("permissions agent: invalid input")
+	// ErrBadRequest is a 400 from the agent, for example an unknown regionId.
 	ErrBadRequest = errors.New("permissions agent: bad request")
-	// ErrUnauthorized is a 401: the token was refused.
+	// ErrUnauthorized is a 401: the agent rejected the caller's own credentials.
 	ErrUnauthorized = errors.New("permissions agent: unauthorized")
-	// ErrForbidden is a 403: the caller may not use the operation, for example
-	// may not act on another subject's behalf.  A denied check is not an error.
+	// ErrForbidden is a 403.  Only status returns it; a denied check is not an
+	// error.
 	ErrForbidden = errors.New("permissions agent: forbidden")
 	// ErrUnavailable means there is no answer: the agent could not be reached,
-	// timed out, or has no fresh copy (502, 503, 504).  Treat it as a denial.
+	// the call hit Options.Timeout, or the agent has no fresh copy (502, 503,
+	// 504).  Treat it as a denial.
 	ErrUnavailable = errors.New("permissions agent: unavailable")
 	// ErrServer is any other error status.
 	ErrServer = errors.New("permissions agent: server error")
 	// ErrResponse means the agent's reply does not match the contract.
 	ErrResponse = errors.New("permissions agent: malformed response")
-	// ErrTrimmed means a trimmed list came back where an untrimmed one is needed.
+	// ErrTrimmed means a trimmed list came back where an untrimmed one was asked
+	// for.
 	ErrTrimmed = errors.New("permissions agent: list is trimmed to a region")
 )
 
@@ -79,28 +90,21 @@ func (e *Error) Unwrap() error {
 	return e.kind
 }
 
-// Caller is who a call is made for.
-type Caller struct {
-	// Token is the user's access token, sent as a bearer token.  The agent
-	// answers for its subject.  Empty sends no Authorization header.
-	Token string
-	// Actor, when set, is the subject acting on the user's behalf.  An item is
-	// then allowed only when both are allowed.  Used by checks only.
-	Actor string
-}
-
 // Agent is the permissions agent API.  Client implements it; tests can fake it.
 type Agent interface {
-	Check(ctx context.Context, caller Caller, item openapi.CheckItem) (*openapi.CheckResult, error)
-	BatchCheck(ctx context.Context, caller Caller, items []openapi.CheckItem) (*openapi.BatchCheckResult, error)
-	Permissions(ctx context.Context, caller Caller, params openapi.ListPermissionsParams) (*openapi.PermissionList, error)
-	Status(ctx context.Context, caller Caller) (*openapi.Status, error)
+	Check(ctx context.Context, request openapi.CheckRequest) (*openapi.CheckResult, error)
+	BatchCheck(ctx context.Context, request openapi.BatchCheckRequest) (*openapi.BatchCheckResult, error)
+	Permissions(ctx context.Context, params openapi.ListPermissionsParams) (*openapi.PermissionList, error)
+	Status(ctx context.Context) (*openapi.Status, error)
 }
 
 // Options configure a Client.
 type Options struct {
 	// URL is the agent's base URL.
 	URL string
+	// Token is the calling service's own bearer token, sent on every call.
+	// Empty sends no Authorization header, for callers that use mTLS only.
+	Token string
 	// Timeout bounds each call.  Zero means DefaultTimeout.
 	Timeout time.Duration
 	// HTTPClient sends the requests, for example one set up for mTLS.  Nil
@@ -110,7 +114,7 @@ type Options struct {
 
 // Client calls a permissions agent over HTTP.
 type Client struct {
-	api     openapi.ClientWithResponsesInterface
+	api     openapi.ClientInterface
 	timeout time.Duration
 }
 
@@ -127,7 +131,16 @@ func New(opts Options) (*Client, error) {
 		httpClient = http.DefaultClient
 	}
 
-	api, err := openapi.NewClientWithResponses(opts.URL, openapi.WithHTTPClient(httpClient))
+	clientOpts := []openapi.ClientOption{openapi.WithHTTPClient(httpClient)}
+
+	if opts.Token != "" {
+		clientOpts = append(clientOpts, openapi.WithRequestEditorFn(func(_ context.Context, req *http.Request) error {
+			req.Header.Set("Authorization", "Bearer "+opts.Token)
+			return nil
+		}))
+	}
+
+	api, err := openapi.NewClient(opts.URL, clientOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -140,134 +153,120 @@ func New(opts Options) (*Client, error) {
 	return &Client{api: api, timeout: timeout}, nil
 }
 
-func bearer(caller Caller) openapi.RequestEditorFn {
-	return func(_ context.Context, req *http.Request) error {
-		if caller.Token != "" {
-			req.Header.Set("Authorization", "Bearer "+caller.Token)
-		}
-
-		return nil
+// Check asks whether the subject may perform one item.
+func (c *Client) Check(ctx context.Context, request openapi.CheckRequest) (*openapi.CheckResult, error) {
+	if request.Subject == "" {
+		return nil, fmt.Errorf("%w: subject is required", ErrInvalidInput)
 	}
+
+	return call[openapi.CheckResult](ctx, c, func(ctx context.Context) (*http.Response, error) {
+		return c.api.Check(ctx, request)
+	})
 }
 
-func actor(caller Caller) *string {
-	if caller.Actor == "" {
-		return nil
+// BatchCheck asks about up to MaxBatchChecks items in one call.  The results
+// are in the order of request.Checks.
+func (c *Client) BatchCheck(ctx context.Context, request openapi.BatchCheckRequest) (*openapi.BatchCheckResult, error) {
+	switch {
+	case request.Subject == "":
+		return nil, fmt.Errorf("%w: subject is required", ErrInvalidInput)
+	case len(request.Checks) == 0:
+		return nil, fmt.Errorf("%w: no items to check", ErrInvalidInput)
+	case len(request.Checks) > MaxBatchChecks:
+		return nil, fmt.Errorf("%w: %d items, at most %d allowed", ErrInvalidInput, len(request.Checks), MaxBatchChecks)
 	}
 
-	return &caller.Actor
-}
-
-// Check asks whether the caller may perform one item.
-func (c *Client) Check(ctx context.Context, caller Caller, item openapi.CheckItem) (*openapi.CheckResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	resp, err := c.api.CheckWithResponse(ctx, &openapi.CheckParams{XActor: actor(caller)}, item, bearer(caller))
-	if err != nil {
-		return nil, transportError(err)
-	}
-
-	return result(resp.HTTPResponse, resp.Body, resp.JSON200)
-}
-
-// BatchCheck asks about many items in one call.  The answers are in the
-// order of items.
-func (c *Client) BatchCheck(ctx context.Context, caller Caller, items []openapi.CheckItem) (*openapi.BatchCheckResult, error) {
-	if len(items) == 0 {
-		return nil, fmt.Errorf("%w: no items to check", ErrBadRequest)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	resp, err := c.api.BatchCheckWithResponse(ctx, &openapi.BatchCheckParams{XActor: actor(caller)}, openapi.BatchCheckRequest{Items: items}, bearer(caller))
-	if err != nil {
-		return nil, transportError(err)
-	}
-
-	out, err := result(resp.HTTPResponse, resp.Body, resp.JSON200)
+	out, err := call[openapi.BatchCheckResult](ctx, c, func(ctx context.Context) (*http.Response, error) {
+		return c.api.BatchCheck(ctx, request)
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	// Answers are matched to items by position, so a short or long reply
+	// Results are matched to items by position, so a short or long reply
 	// would grant or deny the wrong items.
-	if len(out.Allowed) != len(items) {
-		return nil, fmt.Errorf("%w: %d answers for %d items", ErrResponse, len(out.Allowed), len(items))
+	if len(out.Results) != len(request.Checks) {
+		return nil, fmt.Errorf("%w: %d results for %d items", ErrResponse, len(out.Results), len(request.Checks))
 	}
 
 	return out, nil
 }
 
-// Permissions lists what the caller may do in one organization.  Callers that
-// need every service, whatever the region runs, use UntrimmedPermissions.
-func (c *Client) Permissions(ctx context.Context, caller Caller, params openapi.ListPermissionsParams) (*openapi.PermissionList, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	resp, err := c.api.ListPermissionsWithResponse(ctx, &params, bearer(caller))
-	if err != nil {
-		return nil, transportError(err)
+// Permissions lists what the subject may do in one organization.  When params
+// ask for untrimmed, any other form is refused with ErrTrimmed: a trimmed list
+// would hide what the subject holds where other services run.
+func (c *Client) Permissions(ctx context.Context, params openapi.ListPermissionsParams) (*openapi.PermissionList, error) {
+	if params.Subject == "" {
+		return nil, fmt.Errorf("%w: subject is required", ErrInvalidInput)
 	}
 
-	return result(resp.HTTPResponse, resp.Body, resp.JSON200)
-}
-
-// Status reads the agent's state.
-func (c *Client) Status(ctx context.Context, caller Caller) (*openapi.Status, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	resp, err := c.api.GetStatusWithResponse(ctx, bearer(caller))
-	if err != nil {
-		return nil, transportError(err)
-	}
-
-	return result(resp.HTTPResponse, resp.Body, resp.JSON200)
-}
-
-// UntrimmedPermissions lists every permission the caller holds in the
-// organization, in every region, and refuses a list trimmed to a region.
-// Role grants and comparisons with uni RBAC must use this form: a trimmed list
-// would hide what the caller holds where other services run.
-func UntrimmedPermissions(ctx context.Context, a Agent, caller Caller, organizationID string, projectIDs []string) (*openapi.PermissionList, error) {
-	params := openapi.ListPermissionsParams{
-		OrganizationId: organizationID,
-		Untrimmed:      new(true),
-	}
-
-	if len(projectIDs) > 0 {
-		params.ProjectId = &projectIDs
-	}
-
-	list, err := a.Permissions(ctx, caller, params)
+	list, err := call[openapi.PermissionList](ctx, c, func(ctx context.Context) (*http.Response, error) {
+		return c.api.ListPermissions(ctx, &params)
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	if list.Form != openapi.Untrimmed {
+	if params.Untrimmed != nil && *params.Untrimmed && list.Form != openapi.Untrimmed {
 		return nil, fmt.Errorf("%w: form %q", ErrTrimmed, list.Form)
 	}
 
 	return list, nil
 }
 
-func transportError(err error) error {
+// Status reads the agent's state.
+func (c *Client) Status(ctx context.Context) (*openapi.Status, error) {
+	return call[openapi.Status](ctx, c, func(ctx context.Context) (*http.Response, error) {
+		return c.api.GetStatus(ctx)
+	})
+}
+
+// call sends one request under the client timeout and decodes a 200 body, or
+// returns a typed error.
+func call[T any](ctx context.Context, c *Client, send func(context.Context) (*http.Response, error)) (*T, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("permissions agent: %w", err)
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	resp, err := send(callCtx)
+	if err != nil {
+		return nil, transportError(ctx, err)
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, transportError(ctx, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, statusError(resp.StatusCode, body)
+	}
+
+	var out T
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrResponse, err)
+	}
+
+	return &out, nil
+}
+
+// transportError keeps the caller's own cancel or deadline apart from the
+// agent being unavailable: the first is the caller's choice, not an outage.
+func transportError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("permissions agent: %w", ctxErr)
+	}
+
 	return fmt.Errorf("%w: %w", ErrUnavailable, err)
 }
 
-// result returns the decoded 200 body, or a typed error for any other status.
-func result[T any](resp *http.Response, body []byte, ok *T) (*T, error) {
-	if resp.StatusCode == http.StatusOK {
-		if ok == nil {
-			return nil, fmt.Errorf("%w: no JSON body", ErrResponse)
-		}
-
-		return ok, nil
-	}
-
-	e := &Error{StatusCode: resp.StatusCode, kind: kindOf(resp.StatusCode)}
+func statusError(status int, body []byte) error {
+	e := &Error{StatusCode: status, kind: kindOf(status)}
 
 	// The body is best effort: a proxy in front of the agent may not send the
 	// platform error shape.
@@ -281,7 +280,7 @@ func result[T any](resp *http.Response, body []byte, ok *T) (*T, error) {
 		}
 	}
 
-	return nil, e
+	return e
 }
 
 func kindOf(status int) error {

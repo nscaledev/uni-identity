@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	Oauth2AuthenticationScopes = "oauth2Authentication.Scopes"
+	ServiceAuthenticationScopes = "serviceAuthentication.Scopes"
 )
 
 // Defines values for PermissionListForm.
@@ -19,31 +19,52 @@ const (
 	Untrimmed PermissionListForm = "untrimmed"
 )
 
-// BatchCheckRequest A batch of items to check.
+// Defines values for PermissionScope.
+const (
+	ScopeGlobal       PermissionScope = "global"
+	ScopeOrganization PermissionScope = "organization"
+	ScopeProject      PermissionScope = "project"
+)
+
+// Actor The subject acting on the subject's behalf.  When set, an item is
+// allowed only when both are allowed.  It can only narrow the answer.
+type Actor = string
+
+// BatchCheckAnswer The answer to one item of a batch.
+type BatchCheckAnswer struct {
+	// Allowed Whether the item is allowed.
+	Allowed bool `json:"allowed"`
+}
+
+// BatchCheckRequest Items to check for a subject.
 type BatchCheckRequest struct {
-	// Items Items to check, answered in the order given.
-	Items CheckItems `json:"items"`
+	// Actor The subject acting on the subject's behalf.  When set, an item is
+	// allowed only when both are allowed.  It can only narrow the answer.
+	Actor *Actor `json:"actor,omitempty"`
+
+	// Checks Items to check, answered in the order given.
+	Checks []CheckItem `json:"checks"`
+
+	// Subject The subject the agent answers for.
+	Subject Subject `json:"subject"`
 }
 
 // BatchCheckResult The answers to a batch, in the order of the request.
 type BatchCheckResult struct {
-	// Allowed One answer per item, in the order of the request.
-	Allowed []bool `json:"allowed"`
+	// Results One answer per item, in the order of the request.
+	Results []BatchCheckAnswer `json:"results"`
 
 	// Since When the agent took the current copy version.
 	Since Since `json:"since"`
-
-	// Subject The subject the agent answered for, from the access token.
-	Subject string `json:"subject"`
 
 	// Version The version of the permissions copy that gave the answer.  It changes
 	// whenever the copy changes.
 	Version CopyVersion `json:"version"`
 }
 
-// CheckItem One question: may the caller perform `action` on `kind`?  With no
-// `organization_id` the question is global.  With `organization_id` and no
-// `project_id` it is org-wide.  With both it is in one project.
+// CheckItem One question: may the subject perform `action` on `kind`?  With no
+// `organizationId` the question is global.  With `organizationId` and no
+// `projectId` it is org-wide.  With both it is in one project.
 type CheckItem struct {
 	// Action The action, for example create, read, update or delete.
 	Action string `json:"action"`
@@ -52,14 +73,26 @@ type CheckItem struct {
 	Kind string `json:"kind"`
 
 	// OrganizationId The organization the question is in.
-	OrganizationId *string `json:"organization_id,omitempty"`
+	OrganizationId *string `json:"organizationId,omitempty"`
 
-	// ProjectId The project the question is in.  Requires `organization_id`.
-	ProjectId *string `json:"project_id,omitempty"`
+	// ProjectId The project the question is in.  Requires `organizationId`.
+	ProjectId *string `json:"projectId,omitempty"`
 }
 
-// CheckItems Items to check, answered in the order given.
-type CheckItems = []CheckItem
+// CheckRequest One item to check for a subject.
+type CheckRequest struct {
+	// Actor The subject acting on the subject's behalf.  When set, an item is
+	// allowed only when both are allowed.  It can only narrow the answer.
+	Actor *Actor `json:"actor,omitempty"`
+
+	// Check One question: may the subject perform `action` on `kind`?  With no
+	// `organizationId` the question is global.  With `organizationId` and no
+	// `projectId` it is org-wide.  With both it is in one project.
+	Check CheckItem `json:"check"`
+
+	// Subject The subject the agent answers for.
+	Subject Subject `json:"subject"`
+}
 
 // CheckResult The answer to one item.
 type CheckResult struct {
@@ -68,9 +101,6 @@ type CheckResult struct {
 
 	// Since When the agent took the current copy version.
 	Since Since `json:"since"`
-
-	// Subject The subject the agent answered for, from the access token.
-	Subject string `json:"subject"`
 
 	// Version The version of the permissions copy that gave the answer.  It changes
 	// whenever the copy changes.
@@ -84,13 +114,13 @@ type CopyVersion = string
 // OrganizationCopyAge How old the copy is for one organization.
 type OrganizationCopyAge struct {
 	// CopyAgeSeconds Seconds since the organization's part of the copy was last confirmed current.
-	CopyAgeSeconds int `json:"copy_age_seconds"`
+	CopyAgeSeconds int `json:"copyAgeSeconds"`
 
 	// OrganizationId The organization.
-	OrganizationId string `json:"organization_id"`
+	OrganizationId string `json:"organizationId"`
 }
 
-// Permission One allowed (kind, action), org-wide or in one project.
+// Permission One allowed (kind, action) and where it applies.
 type Permission struct {
 	// Action The allowed action.
 	Action string `json:"action"`
@@ -98,30 +128,31 @@ type Permission struct {
 	// Kind The kind of resource.
 	Kind string `json:"kind"`
 
-	// ProjectId The project the entry applies to.  Absent for org-wide entries.
-	ProjectId *string `json:"project_id,omitempty"`
+	// ProjectId The project the entry applies to.  Present only when `scope` is `project`.
+	ProjectId *string `json:"projectId,omitempty"`
+
+	// Scope Where an entry applies: everywhere (`global`), across the organization
+	// (`organization`), or in one project (`project`).
+	Scope PermissionScope `json:"scope"`
 }
 
-// PermissionList What the caller may do in one organization.
+// PermissionList What the subject may do in one organization.
 type PermissionList struct {
 	// Form Whether the list was trimmed to a region (`trimmed`), or lists every
 	// service (`untrimmed`).
 	Form PermissionListForm `json:"form"`
 
 	// OrganizationId The organization the list is for.
-	OrganizationId string `json:"organization_id"`
+	OrganizationId string `json:"organizationId"`
 
-	// Permissions A list of permissions.
-	Permissions Permissions `json:"permissions"`
+	// Permissions The entries.  Empty when the subject has no access in the organization.
+	Permissions []Permission `json:"permissions"`
 
 	// RegionId The region the list was trimmed to.  Present only when `form` is `trimmed`.
-	RegionId *string `json:"region_id,omitempty"`
+	RegionId *string `json:"regionId,omitempty"`
 
 	// Since When the agent took the current copy version.
 	Since Since `json:"since"`
-
-	// Subject The subject the agent answered for, from the access token.
-	Subject string `json:"subject"`
 
 	// Version The version of the permissions copy that gave the answer.  It changes
 	// whenever the copy changes.
@@ -132,8 +163,9 @@ type PermissionList struct {
 // service (`untrimmed`).
 type PermissionListForm string
 
-// Permissions A list of permissions.
-type Permissions = []Permission
+// PermissionScope Where an entry applies: everywhere (`global`), across the organization
+// (`organization`), or in one project (`project`).
+type PermissionScope string
 
 // Since When the agent took the current copy version.
 type Since = time.Time
@@ -141,10 +173,10 @@ type Since = time.Time
 // Status The agent's state.
 type Status struct {
 	// AgentVersion The version of the agent software.
-	AgentVersion string `json:"agent_version"`
+	AgentVersion string `json:"agentVersion"`
 
 	// CopyAgeSeconds Seconds since the copy was last confirmed current.  Absent when no copy is loaded.
-	CopyAgeSeconds *int `json:"copy_age_seconds,omitempty"`
+	CopyAgeSeconds *int `json:"copyAgeSeconds,omitempty"`
 
 	// Fresh Whether the copy is current enough to answer.  When false, other operations return 503.
 	Fresh bool `json:"fresh"`
@@ -153,10 +185,10 @@ type Status struct {
 	Organizations *[]OrganizationCopyAge `json:"organizations,omitempty"`
 
 	// PolicyVersion The version of the policy bundle in use.  Absent when no copy is loaded.
-	PolicyVersion *string `json:"policy_version,omitempty"`
+	PolicyVersion *string `json:"policyVersion,omitempty"`
 
 	// RegionId The agent's own region.
-	RegionId string `json:"region_id"`
+	RegionId string `json:"regionId"`
 
 	// Since When the agent took the current copy version.
 	Since *Since `json:"since,omitempty"`
@@ -166,8 +198,11 @@ type Status struct {
 	Version *CopyVersion `json:"version,omitempty"`
 }
 
-// ActorParameter defines model for actorParameter.
-type ActorParameter = string
+// Subject The subject the agent answers for.
+type Subject = string
+
+// ActorQueryParameter defines model for actorQueryParameter.
+type ActorQueryParameter = string
 
 // OrganizationIDQueryParameter defines model for organizationIDQueryParameter.
 type OrganizationIDQueryParameter = string
@@ -178,67 +213,44 @@ type ProjectIDQueryParameter = []string
 // RegionIDQueryParameter defines model for regionIDQueryParameter.
 type RegionIDQueryParameter = string
 
+// SubjectQueryParameter defines model for subjectQueryParameter.
+type SubjectQueryParameter = string
+
 // UntrimmedQueryParameter defines model for untrimmedQueryParameter.
 type UntrimmedQueryParameter = bool
 
-// ActorForbiddenResponse Generic error message, compatible with oauth2.
-type ActorForbiddenResponse = externalRef0.Error
-
-// BatchCheckResultResponse The answers to a batch, in the order of the request.
-type BatchCheckResultResponse = BatchCheckResult
-
-// CheckResultResponse The answer to one item.
-type CheckResultResponse = CheckResult
-
-// PermissionListResponse What the caller may do in one organization.
-type PermissionListResponse = PermissionList
-
-// StatusResponse The agent's state.
-type StatusResponse = Status
+// CallerUnauthorizedResponse Generic error message, compatible with oauth2.
+type CallerUnauthorizedResponse = externalRef0.Error
 
 // UnavailableResponse Generic error message, compatible with oauth2.
 type UnavailableResponse = externalRef0.Error
 
-// CheckRequest One question: may the caller perform `action` on `kind`?  With no
-// `organization_id` the question is global.  With `organization_id` and no
-// `project_id` it is org-wide.  With both it is in one project.
-type CheckRequest = CheckItem
-
-// CheckParams defines parameters for Check.
-type CheckParams struct {
-	// XActor The subject acting on the user's behalf.  When set, an item is allowed only
-	// when both the user and the actor are allowed.  It can only narrow the
-	// answer.
-	XActor *ActorParameter `json:"X-Actor,omitempty"`
-}
-
-// BatchCheckParams defines parameters for BatchCheck.
-type BatchCheckParams struct {
-	// XActor The subject acting on the user's behalf.  When set, an item is allowed only
-	// when both the user and the actor are allowed.  It can only narrow the
-	// answer.
-	XActor *ActorParameter `json:"X-Actor,omitempty"`
-}
-
 // ListPermissionsParams defines parameters for ListPermissions.
 type ListPermissionsParams struct {
+	// Subject The subject to list permissions for.
+	Subject SubjectQueryParameter `form:"subject" json:"subject"`
+
+	// Actor The subject acting on the subject's behalf.  When set, only what both
+	// hold is listed.  It can only narrow the list.
+	Actor *ActorQueryParameter `form:"actor,omitempty" json:"actor,omitempty"`
+
 	// OrganizationId The organization to list permissions in.
-	OrganizationId OrganizationIDQueryParameter `form:"organization_id" json:"organization_id"`
+	OrganizationId OrganizationIDQueryParameter `form:"organizationId" json:"organizationId"`
 
 	// ProjectId Projects to list per-project permissions for, in addition to the projects
-	// the caller's grants name.  Repeat the parameter for each project.
-	ProjectId *ProjectIDQueryParameter `form:"project_id,omitempty" json:"project_id,omitempty"`
+	// the subject's grants name.  Repeat the parameter for each project.
+	ProjectId *ProjectIDQueryParameter `form:"projectId,omitempty" json:"projectId,omitempty"`
 
 	// RegionId The region to trim the list to.  Defaults to the agent's own region.
 	// Cannot be combined with `untrimmed=true`.
-	RegionId *RegionIDQueryParameter `form:"region_id,omitempty" json:"region_id,omitempty"`
+	RegionId *RegionIDQueryParameter `form:"regionId,omitempty" json:"regionId,omitempty"`
 
 	// Untrimmed List every service, whatever the region runs.
 	Untrimmed *UntrimmedQueryParameter `form:"untrimmed,omitempty" json:"untrimmed,omitempty"`
 }
 
 // CheckJSONRequestBody defines body for Check for application/json ContentType.
-type CheckJSONRequestBody = CheckItem
+type CheckJSONRequestBody = CheckRequest
 
 // BatchCheckJSONRequestBody defines body for BatchCheck for application/json ContentType.
 type BatchCheckJSONRequestBody = BatchCheckRequest

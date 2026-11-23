@@ -91,14 +91,14 @@ func WithRequestEditorFn(fn RequestEditorFn) ClientOption {
 // The interface specification for the client above.
 type ClientInterface interface {
 	// CheckWithBody request with any body
-	CheckWithBody(ctx context.Context, params *CheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	CheckWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	Check(ctx context.Context, params *CheckParams, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	Check(ctx context.Context, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// BatchCheckWithBody request with any body
-	BatchCheckWithBody(ctx context.Context, params *BatchCheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	BatchCheckWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	BatchCheck(ctx context.Context, params *BatchCheckParams, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	BatchCheck(ctx context.Context, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPermissions request
 	ListPermissions(ctx context.Context, params *ListPermissionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -107,8 +107,8 @@ type ClientInterface interface {
 	GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
-func (c *Client) CheckWithBody(ctx context.Context, params *CheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCheckRequestWithBody(c.Server, params, contentType, body)
+func (c *Client) CheckWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckRequestWithBody(c.Server, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +119,8 @@ func (c *Client) CheckWithBody(ctx context.Context, params *CheckParams, content
 	return c.Client.Do(req)
 }
 
-func (c *Client) Check(ctx context.Context, params *CheckParams, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCheckRequest(c.Server, params, body)
+func (c *Client) Check(ctx context.Context, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCheckRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -131,8 +131,8 @@ func (c *Client) Check(ctx context.Context, params *CheckParams, body CheckJSONR
 	return c.Client.Do(req)
 }
 
-func (c *Client) BatchCheckWithBody(ctx context.Context, params *BatchCheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewBatchCheckRequestWithBody(c.Server, params, contentType, body)
+func (c *Client) BatchCheckWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBatchCheckRequestWithBody(c.Server, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -143,8 +143,8 @@ func (c *Client) BatchCheckWithBody(ctx context.Context, params *BatchCheckParam
 	return c.Client.Do(req)
 }
 
-func (c *Client) BatchCheck(ctx context.Context, params *BatchCheckParams, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewBatchCheckRequest(c.Server, params, body)
+func (c *Client) BatchCheck(ctx context.Context, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBatchCheckRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -180,18 +180,18 @@ func (c *Client) GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (
 }
 
 // NewCheckRequest calls the generic Check builder with application/json body
-func NewCheckRequest(server string, params *CheckParams, body CheckJSONRequestBody) (*http.Request, error) {
+func NewCheckRequest(server string, body CheckJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewCheckRequestWithBody(server, params, "application/json", bodyReader)
+	return NewCheckRequestWithBody(server, "application/json", bodyReader)
 }
 
 // NewCheckRequestWithBody generates requests for Check with any type of body
-func NewCheckRequestWithBody(server string, params *CheckParams, contentType string, body io.Reader) (*http.Request, error) {
+func NewCheckRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -216,37 +216,22 @@ func NewCheckRequestWithBody(server string, params *CheckParams, contentType str
 
 	req.Header.Add("Content-Type", contentType)
 
-	if params != nil {
-
-		if params.XActor != nil {
-			var headerParam0 string
-
-			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor", runtime.ParamLocationHeader, *params.XActor)
-			if err != nil {
-				return nil, err
-			}
-
-			req.Header.Set("X-Actor", headerParam0)
-		}
-
-	}
-
 	return req, nil
 }
 
 // NewBatchCheckRequest calls the generic BatchCheck builder with application/json body
-func NewBatchCheckRequest(server string, params *BatchCheckParams, body BatchCheckJSONRequestBody) (*http.Request, error) {
+func NewBatchCheckRequest(server string, body BatchCheckJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewBatchCheckRequestWithBody(server, params, "application/json", bodyReader)
+	return NewBatchCheckRequestWithBody(server, "application/json", bodyReader)
 }
 
 // NewBatchCheckRequestWithBody generates requests for BatchCheck with any type of body
-func NewBatchCheckRequestWithBody(server string, params *BatchCheckParams, contentType string, body io.Reader) (*http.Request, error) {
+func NewBatchCheckRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -270,21 +255,6 @@ func NewBatchCheckRequestWithBody(server string, params *BatchCheckParams, conte
 	}
 
 	req.Header.Add("Content-Type", contentType)
-
-	if params != nil {
-
-		if params.XActor != nil {
-			var headerParam0 string
-
-			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Actor", runtime.ParamLocationHeader, *params.XActor)
-			if err != nil {
-				return nil, err
-			}
-
-			req.Header.Set("X-Actor", headerParam0)
-		}
-
-	}
 
 	return req, nil
 }
@@ -311,7 +281,35 @@ func NewListPermissionsRequest(server string, params *ListPermissionsParams) (*h
 	if params != nil {
 		queryValues := queryURL.Query()
 
-		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "organization_id", runtime.ParamLocationQuery, params.OrganizationId); err != nil {
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "subject", runtime.ParamLocationQuery, params.Subject); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		if params.Actor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "actor", runtime.ParamLocationQuery, *params.Actor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "organizationId", runtime.ParamLocationQuery, params.OrganizationId); err != nil {
 			return nil, err
 		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 			return nil, err
@@ -325,7 +323,7 @@ func NewListPermissionsRequest(server string, params *ListPermissionsParams) (*h
 
 		if params.ProjectId != nil {
 
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "project_id", runtime.ParamLocationQuery, *params.ProjectId); err != nil {
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "projectId", runtime.ParamLocationQuery, *params.ProjectId); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err
@@ -341,7 +339,7 @@ func NewListPermissionsRequest(server string, params *ListPermissionsParams) (*h
 
 		if params.RegionId != nil {
 
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "region_id", runtime.ParamLocationQuery, *params.RegionId); err != nil {
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "regionId", runtime.ParamLocationQuery, *params.RegionId); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err
@@ -453,14 +451,14 @@ func WithBaseURL(baseURL string) ClientOption {
 // ClientWithResponsesInterface is the interface specification for the client with responses above.
 type ClientWithResponsesInterface interface {
 	// CheckWithBodyWithResponse request with any body
-	CheckWithBodyWithResponse(ctx context.Context, params *CheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CheckResponse, error)
+	CheckWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CheckResponse, error)
 
-	CheckWithResponse(ctx context.Context, params *CheckParams, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*CheckResponse, error)
+	CheckWithResponse(ctx context.Context, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*CheckResponse, error)
 
 	// BatchCheckWithBodyWithResponse request with any body
-	BatchCheckWithBodyWithResponse(ctx context.Context, params *BatchCheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error)
+	BatchCheckWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error)
 
-	BatchCheckWithResponse(ctx context.Context, params *BatchCheckParams, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error)
+	BatchCheckWithResponse(ctx context.Context, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error)
 
 	// ListPermissionsWithResponse request
 	ListPermissionsWithResponse(ctx context.Context, params *ListPermissionsParams, reqEditors ...RequestEditorFn) (*ListPermissionsResponse, error)
@@ -472,10 +470,9 @@ type ClientWithResponsesInterface interface {
 type CheckResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *CheckResultResponse
+	JSON200      *CheckResult
 	JSON400      *externalRef0.BadRequestResponse
-	JSON401      *externalRef0.UnauthorizedResponse
-	JSON403      *ActorForbiddenResponse
+	JSON401      *CallerUnauthorizedResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 	JSON503      *UnavailableResponse
 }
@@ -499,10 +496,9 @@ func (r CheckResponse) StatusCode() int {
 type BatchCheckResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *BatchCheckResultResponse
+	JSON200      *BatchCheckResult
 	JSON400      *externalRef0.BadRequestResponse
-	JSON401      *externalRef0.UnauthorizedResponse
-	JSON403      *ActorForbiddenResponse
+	JSON401      *CallerUnauthorizedResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 	JSON503      *UnavailableResponse
 }
@@ -526,10 +522,9 @@ func (r BatchCheckResponse) StatusCode() int {
 type ListPermissionsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *PermissionListResponse
+	JSON200      *PermissionList
 	JSON400      *externalRef0.BadRequestResponse
-	JSON401      *externalRef0.UnauthorizedResponse
-	JSON403      *externalRef0.ForbiddenResponse
+	JSON401      *CallerUnauthorizedResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 	JSON503      *UnavailableResponse
 }
@@ -553,8 +548,8 @@ func (r ListPermissionsResponse) StatusCode() int {
 type GetStatusResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *StatusResponse
-	JSON401      *externalRef0.UnauthorizedResponse
+	JSON200      *Status
+	JSON401      *CallerUnauthorizedResponse
 	JSON403      *externalRef0.ForbiddenResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 }
@@ -576,16 +571,16 @@ func (r GetStatusResponse) StatusCode() int {
 }
 
 // CheckWithBodyWithResponse request with arbitrary body returning *CheckResponse
-func (c *ClientWithResponses) CheckWithBodyWithResponse(ctx context.Context, params *CheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CheckResponse, error) {
-	rsp, err := c.CheckWithBody(ctx, params, contentType, body, reqEditors...)
+func (c *ClientWithResponses) CheckWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CheckResponse, error) {
+	rsp, err := c.CheckWithBody(ctx, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseCheckResponse(rsp)
 }
 
-func (c *ClientWithResponses) CheckWithResponse(ctx context.Context, params *CheckParams, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*CheckResponse, error) {
-	rsp, err := c.Check(ctx, params, body, reqEditors...)
+func (c *ClientWithResponses) CheckWithResponse(ctx context.Context, body CheckJSONRequestBody, reqEditors ...RequestEditorFn) (*CheckResponse, error) {
+	rsp, err := c.Check(ctx, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -593,16 +588,16 @@ func (c *ClientWithResponses) CheckWithResponse(ctx context.Context, params *Che
 }
 
 // BatchCheckWithBodyWithResponse request with arbitrary body returning *BatchCheckResponse
-func (c *ClientWithResponses) BatchCheckWithBodyWithResponse(ctx context.Context, params *BatchCheckParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error) {
-	rsp, err := c.BatchCheckWithBody(ctx, params, contentType, body, reqEditors...)
+func (c *ClientWithResponses) BatchCheckWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error) {
+	rsp, err := c.BatchCheckWithBody(ctx, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseBatchCheckResponse(rsp)
 }
 
-func (c *ClientWithResponses) BatchCheckWithResponse(ctx context.Context, params *BatchCheckParams, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error) {
-	rsp, err := c.BatchCheck(ctx, params, body, reqEditors...)
+func (c *ClientWithResponses) BatchCheckWithResponse(ctx context.Context, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error) {
+	rsp, err := c.BatchCheck(ctx, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -642,7 +637,7 @@ func ParseCheckResponse(rsp *http.Response) (*CheckResponse, error) {
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest CheckResultResponse
+		var dest CheckResult
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -656,18 +651,11 @@ func ParseCheckResponse(rsp *http.Response) (*CheckResponse, error) {
 		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest externalRef0.UnauthorizedResponse
+		var dest CallerUnauthorizedResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest ActorForbiddenResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON403 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse
@@ -703,7 +691,7 @@ func ParseBatchCheckResponse(rsp *http.Response) (*BatchCheckResponse, error) {
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest BatchCheckResultResponse
+		var dest BatchCheckResult
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -717,18 +705,11 @@ func ParseBatchCheckResponse(rsp *http.Response) (*BatchCheckResponse, error) {
 		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest externalRef0.UnauthorizedResponse
+		var dest CallerUnauthorizedResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest ActorForbiddenResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON403 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse
@@ -764,7 +745,7 @@ func ParseListPermissionsResponse(rsp *http.Response) (*ListPermissionsResponse,
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest PermissionListResponse
+		var dest PermissionList
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -778,18 +759,11 @@ func ParseListPermissionsResponse(rsp *http.Response) (*ListPermissionsResponse,
 		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest externalRef0.UnauthorizedResponse
+		var dest CallerUnauthorizedResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest externalRef0.ForbiddenResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON403 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse
@@ -825,14 +799,14 @@ func ParseGetStatusResponse(rsp *http.Response) (*GetStatusResponse, error) {
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest StatusResponse
+		var dest Status
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON200 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest externalRef0.UnauthorizedResponse
+		var dest CallerUnauthorizedResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
