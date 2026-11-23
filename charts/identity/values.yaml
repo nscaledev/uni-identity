@@ -593,56 +593,80 @@ roles:
         compute:instances: [create,read,update,delete]
 
 # Per-service copies of built-in roles, rendered from the roles above.
-# Off by default. Turn them on in an environment where an external system
-# manages group membership with them. When on, they appear in the role list
-# and can be granted like any other unprotected role.
-# For each role and prefix, `<role>-<prefix>` holds the role's scopes whose
-# name starts `<prefix>:`, at the same level, with the same operations.
-# `<role>-<prefix>-off` keeps only the read and delete operations, for a
-# service the organization is no longer entitled to. A role with no scopes is
-# not rendered. None is protected. When on, their names are reserved like
-# built-in role names.
+# Off by default. Turn them on only where an external system owns group
+# membership and project links (see pkg/rbac/README.md). When on, they appear
+# in the role list and can be granted like any other unprotected role.
+# Each scope of a listed role goes to one service: a service that lists the
+# exact scope name wins, else the service with a matching name prefix. A scope
+# no service claims, or that two claim, fails the render. `<role>-<service>`
+# holds that service's scopes, at the same level, with the same operations.
+# A copy with no scopes is not rendered. None is protected. A protected role or
+# a role with global scopes cannot be split. When on, the names are reserved
+# like built-in role names.
 # An external permissions catalogue refers to these roles by ID, so the IDs
 # are fixed: the UUIDv5 of the role name in namespace
 # 6f1c0b5e-8f4b-4a7e-9a39-6d1f2f0e9c11.
 builtinRoleSplits:
   enabled: false
   roles: [administrator, auditor, user, reader]
-  prefixes: [identity, region, compute, kubernetes, storage]
-  offPrefixes: [compute, kubernetes, storage]
+  services:
+    identity:
+      prefixes: [identity]
+    region:
+      prefixes: [region]
+    instances:
+      prefixes: [compute]
+      scopes: [region:servers, region:servers:v2, region:sshcertificateauthorities:v2]
+    networking:
+      scopes:
+        - region:networks
+        - region:networks:v2
+        - region:externalnetworks
+        - region:securitygroups
+        - region:securitygroups:v2
+        - region:loadbalancers:v2
+    storage:
+      prefixes: [storage]
+      scopes:
+        - region:volumes:v2
+        - region:volumeclasses:v2
+        - region:filestorage:v2
+        - region:filestorageclass:v2
+        - region:filestoragedirectoryquotas:v2
+        - region:filestoragesnapshots:v2
+    images:
+      scopes: [region:images]
+    kubernetes:
+      prefixes: [kubernetes, nks]
   ids:
     administrator-identity: 611f1fb8-bf3b-50e0-8477-96e72201932f
     administrator-region: a13f76b9-c909-50bd-9f7c-1d5981af094b
-    administrator-compute: fe393bf0-a10f-5114-86b2-418caf6dae3b
-    administrator-kubernetes: cef0f37e-fdfc-519f-8d8c-2d6caa21405a
+    administrator-instances: 6b1e6f54-cfbb-5b60-9ad9-e50d5b5fbfd3
+    administrator-networking: a9e56687-f3ec-5e51-aeb4-b1a19a0ede24
     administrator-storage: 3f6bf4b9-9fc6-5533-883d-34179d157ef6
-    administrator-compute-off: b902d7fc-9874-5b31-97f4-971b2b5c690f
-    administrator-kubernetes-off: b5affaf4-8e0d-5b92-a931-cf7675fe2805
-    administrator-storage-off: 4a0b788e-59b8-51fe-90c3-d11d326c19b6
+    administrator-images: 7e2af1de-b382-50ad-b630-d1fd428cc49e
+    administrator-kubernetes: cef0f37e-fdfc-519f-8d8c-2d6caa21405a
     auditor-identity: 30a97759-d599-5eb5-990c-fd955f02b156
     auditor-region: 38e5e7a6-37d8-536a-9959-db947f0009c2
-    auditor-compute: ba75409b-1caa-5ac7-8910-4238754e2e1a
-    auditor-kubernetes: 90d818bd-660a-5666-81e0-c8b596350cb3
+    auditor-instances: d89aeed4-c1aa-5b08-973d-de7e1fd51494
+    auditor-networking: 405964d0-105b-527e-bd11-004949fed852
     auditor-storage: 8369c2aa-c087-5081-9bb4-162cbd1f2be0
-    auditor-compute-off: daa18e3a-43f4-50f5-a8b1-faff7f140853
-    auditor-kubernetes-off: db992f85-2f1f-50d6-bebf-f6592fbf2c61
-    auditor-storage-off: f115b482-1bed-5021-9dbf-241d8f03fb65
+    auditor-images: 796029e3-44c0-5b3f-8462-dc750861e6a8
+    auditor-kubernetes: 90d818bd-660a-5666-81e0-c8b596350cb3
     user-identity: b0030cf0-3c09-59fc-853e-0cf74d074cf0
     user-region: f1ea0158-dc39-5d3c-8df3-51a1eab8fa2b
-    user-compute: 7bd28dba-9720-58a3-ba26-51ffb612142a
-    user-kubernetes: e852b301-6c7b-514e-886e-f8d6017561e7
+    user-instances: c9692e73-f69c-5aaa-bbcd-d04a6947ec4c
+    user-networking: 207d0b38-64d0-5b8c-8870-e01ef7896125
     user-storage: 6ba2d0a0-0648-5c0f-a820-07ec187e72b8
-    user-compute-off: 20859fbc-d8c0-5f95-a00e-c43c86a67368
-    user-kubernetes-off: 5d6a4b44-6883-55e5-a1cb-8e2896dd2154
-    user-storage-off: efa42d0b-a96b-5cc4-9572-914359e89789
+    user-images: c9053221-34a8-5cf0-81c4-c5ca046e9f54
+    user-kubernetes: e852b301-6c7b-514e-886e-f8d6017561e7
     reader-identity: 9b38c5e5-917f-5dd5-8e6b-67caadc54d0c
     reader-region: ff5b0d58-d6cc-5fd1-b1af-f98399bc4094
-    reader-compute: 4f58ae2d-4d0a-5776-9fba-521922d9eff1
-    reader-kubernetes: a9ab4b0b-f302-596a-a459-1809f7595221
+    reader-instances: ae566e43-4cfb-5bf0-a1af-6c5ee208df40
+    reader-networking: 187e765b-7405-5deb-a7e6-ec3c39faa65e
     reader-storage: c5d55401-7b8a-5010-84d3-8bda2e4fb38e
-    reader-compute-off: 64a7bb88-1e9f-57ea-9259-80621abdd0b1
-    reader-kubernetes-off: fd9bc48d-beac-5f27-bfb0-93222887c48f
-    reader-storage-off: a916f054-eb02-5277-b024-a2272ed46385
+    reader-images: 6bbf57f2-a751-5ce2-a354-797e14975409
+    reader-kubernetes: a9ab4b0b-f302-596a-a459-1809f7595221
 
 # Optional additional roles that can be injected alongside the defaults.
 # Shape matches the roles map below. Same names will raise an error.

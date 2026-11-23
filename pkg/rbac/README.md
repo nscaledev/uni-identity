@@ -260,24 +260,37 @@ the project and that no project permission reaches organization scope.
 `auditor`, `user` and `reader`. They are not written out; the template derives them from the
 roles above, so they follow any change to those roles.
 
-They are off by default. Set `builtinRoleSplits.enabled: true` in an environment where an
-external system manages group membership with them. When off, the chart renders exactly what it
-rendered without them.
+They are off by default. When off, the chart renders exactly what it rendered without them.
 
-- `<role>-<prefix>`, for prefixes `identity`, `region`, `compute`, `kubernetes` and `storage`,
-  holds the role's scopes whose name starts `<prefix>:`, at the same level, with the same
-  operations.
-- `<role>-<prefix>-off`, for `compute`, `kubernetes` and `storage`, holds the same scopes with
-  only `read` and `delete`: what remains when an organization loses that service. For `reader`
-  this equals `reader-<prefix>`.
-- A copy with no scopes is not rendered. None is protected, so when on, the role list returns them.
+- `builtinRoleSplits.services` maps each service to scope names (`scopes`) and name prefixes
+  (`prefixes`). The services are `identity`, `region`, `instances`, `networking`, `storage`,
+  `images` and `kubernetes`.
+- Each scope of a role goes to one service. An exact scope name wins over a prefix, so
+  `region:servers` goes to `instances` and any `region:` scope not listed goes to `region`.
+  A scope that no service claims, or that two claim, fails the render.
+- `<role>-<service>`, for example `administrator-instances` or `user-storage`, holds the role's
+  scopes for that service, at the same level, with the same operations. Each copy is a subset of
+  its original, and an original's copies together equal it.
+- A copy with no scopes is not rendered. None is protected, so when on, the role list returns
+  them.
+- A protected role, or a role with `global` scopes, cannot be split: the render fails.
 - An external permissions catalogue refers to these roles by ID, so the IDs are fixed: the UUIDv5
   of the role name in namespace `6f1c0b5e-8f4b-4a7e-9a39-6d1f2f0e9c11`, stored in the values file
-  rather than derived from the name hash used for other roles. `TestBuiltinRoleSplitIDs` pins
-  them, and `hack/check_chart_render.sh` checks each copy against its original.
+  rather than derived from the name hash used for other roles. A rendered copy with no ID, or with
+  an ID another Role uses, fails the render. `TestBuiltinRoleSplits` pins the IDs, and
+  `hack/check_chart_render.sh` checks each copy against its original.
 
-Each copy is a subset of its original, so whoever can grant the original can grant the copy.
-They are not part of the grant lattice below.
+Because each copy is a subset of its original, whoever can grant the original can grant the copy.
+The copies are not part of the grant lattice below.
+
+**Turn the flag on only where an external system owns group membership and project links.**
+Linking a group to a project needs only `identity:projects` `update`, with no role check. So
+anyone who holds `administrator-identity` can link a group to more projects and spread the
+group's other roles, such as `user-instances`, to those projects.
+
+**Rollback.** After the flag is turned off, the copies are no longer rendered. A group that still
+holds a copy ID fails every update until that ID is removed from it. Turning the flag back on
+restores the old grants.
 
 ### Grant relationships
 
