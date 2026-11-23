@@ -593,15 +593,19 @@ roles:
         compute:instances: [create,read,update,delete]
 
 # Per-service copies of built-in roles, rendered from the roles above.
+# Off by default. The permissions service sync uses these roles: turn them on
+# in an environment where that sync runs. When on, they appear in the role
+# list and can be granted like any other unprotected role.
 # For each role and prefix, `<role>-<prefix>` holds the role's scopes whose
 # name starts `<prefix>:`, at the same level, with the same operations.
 # `<role>-<prefix>-off` keeps only the read and delete operations, for a
 # service the organization is no longer entitled to. A role with no scopes is
-# not rendered. None is protected. Names are reserved like built-in roles.
+# not rendered. None is protected. When on, their names are reserved like
+# built-in role names.
 # IDs are fixed: the UUIDv5 of the role name in namespace
 # 6f1c0b5e-8f4b-4a7e-9a39-6d1f2f0e9c11. Other systems use the same IDs.
-# Set roles to [] to render none.
 builtinRoleSplits:
+  enabled: false
   roles: [administrator, auditor, user, reader]
   prefixes: [identity, region, compute, kubernetes, storage]
   offPrefixes: [compute, kubernetes, storage]

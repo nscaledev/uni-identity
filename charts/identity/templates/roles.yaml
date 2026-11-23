@@ -10,6 +10,7 @@
 {{- $splitIDs := default (dict) $splitValues.ids }}
 {{- $offPrefixes := default (list) $splitValues.offPrefixes }}
 {{- $splits := dict }}
+{{- if $splitValues.enabled }}
 {{- range $role := default (list) $splitValues.roles }}
 {{- $original := get $base $role }}
 {{- if not $original }}
@@ -47,6 +48,7 @@
 {{- end }}
 {{- if and $off (has $prefix $offPrefixes) }}
 {{- $_ := set $splits (printf "%s-%s-off" $role $prefix) (dict "description" (printf "%s (%s, read and delete only)" $original.description $prefix) "scopes" $off) }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -260,13 +260,17 @@ the project and that no project permission reaches organization scope.
 `auditor`, `user` and `reader`. They are not written out; the template derives them from the
 roles above, so they follow any change to those roles.
 
+They are off by default. The permissions service sync uses these roles, so an environment sets
+`builtinRoleSplits.enabled: true` when that sync runs there. When off, the chart renders exactly
+what it rendered without them.
+
 - `<role>-<prefix>`, for prefixes `identity`, `region`, `compute`, `kubernetes` and `storage`,
   holds the role's scopes whose name starts `<prefix>:`, at the same level, with the same
   operations.
 - `<role>-<prefix>-off`, for `compute`, `kubernetes` and `storage`, holds the same scopes with
   only `read` and `delete`: what remains when an organization loses that service. For `reader`
   this equals `reader-<prefix>`.
-- A copy with no scopes is not rendered. None is protected, so the role list returns them.
+- A copy with no scopes is not rendered. None is protected, so when on, the role list returns them.
 - IDs are fixed UUIDv5 values in the values file, not derived from the name hash used for other
   roles, because other systems use the same IDs. `TestBuiltinRoleSplitIDs` pins them, and
   `hack/check_chart_render.sh` checks each copy against its original.

@@ -326,7 +326,9 @@ load_server() { yq -r "select(.kind == \"Deployment\" and .metadata.name == \"te
 # exactly the original's scopes with that prefix; each <role>-<prefix>-off
 # keeps only their read and delete operations. Expected scopes come from
 # values.yaml, not from the template, so a template bug cannot pass.
-out=$(helm template test "$CHART")
+# They are off by default; builtinRoleSplits.enabled turns them on.
+render_splits() { helm template test "$CHART" --set builtinRoleSplits.enabled=true "$@"; }
+out=$(render_splits)
 
 # rendered_scopes <name> prints "level scope ops" lines for a rendered Role.
 rendered_scopes() {
@@ -387,19 +389,40 @@ done
 [[ -z "$(yq -r 'select(.kind == "Role" and .apiVersion == "identity.unikorn-cloud.org/v1alpha1") | .metadata.labels["unikorn-cloud.org/name"]' <<<"$out" | grep -v '^---$' | sort | uniq -d)" ]] ||
 	die "duplicate Role names"
 
-# Turning the splits off renders no split roles.
-out=$(helm template test "$CHART" --set-json 'builtinRoleSplits.roles=[]')
+# without_splits drops the split Role documents from a render on stdin,
+# leaving every other byte as rendered.
+without_splits() {
+	awk -v re='\n    unikorn-cloud.org/name: (administrator|auditor|user|reader)-(identity|region|compute|kubernetes|storage)(-off)?\n' '
+		/^---$/ { if (doc !~ re) printf "%s", doc; doc = "" }
+		{ doc = doc $0 "\n" }
+		END { if (doc !~ re) printf "%s", doc }
+	'
+}
+
+# Off (the default) renders exactly what the chart rendered before the
+# splits: the "on" render minus the split documents, byte for byte.
+on=$out
+off=$(helm template test "$CHART")
+[[ $(grep -c 'unikorn-cloud.org/name: ' <<<"$on") -eq $(($(grep -c 'unikorn-cloud.org/name: ' <<<"$off") + 32)) ]] ||
+	die "expected the on render to add exactly 32 Roles"
+diff <(printf '%s\n' "$off") <(without_splits <<<"$on") >/dev/null ||
+	die "default render differs from the on render without the splits"
+out=$off
+[[ -z "$(rendered_scopes administrator-compute)" ]] || die "expected no splits by default"
+
+# An empty role list renders no split roles either.
+out=$(render_splits --set-json 'builtinRoleSplits.roles=[]')
 [[ -z "$(rendered_scopes administrator-compute)" ]] || die "expected no splits when builtinRoleSplits.roles is empty"
 
 # A split name is reserved, like a built-in role name.
-if err=$(helm template test "$CHART" --set-json 'additionalRoles={"user-compute":{"description":"x"}}' 2>&1 >/dev/null); then
+if err=$(render_splits --set-json 'additionalRoles={"user-compute":{"description":"x"}}' 2>&1 >/dev/null); then
 	die "expected render failure for additionalRoles key user-compute"
 fi
 grep -qF 'additionalRoles key "user-compute" conflicts with built-in role' <<<"$err" ||
 	die "additionalRoles conflict failed for the wrong reason: $err"
 
 # A split without a fixed ID fails the render rather than falling back.
-if err=$(helm template test "$CHART" --set 'builtinRoleSplits.ids.user-compute=null' 2>&1 >/dev/null); then
+if err=$(render_splits --set 'builtinRoleSplits.ids.user-compute=null' 2>&1 >/dev/null); then
 	die "expected render failure for a split without an ID"
 fi
 grep -qF 'builtinRoleSplits.ids has no ID for "user-compute"' <<<"$err" ||
