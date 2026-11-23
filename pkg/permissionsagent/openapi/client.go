@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/oapi-codegen/runtime"
 	externalRef0 "github.com/unikorn-cloud/core/pkg/openapi"
 )
 
@@ -100,8 +99,10 @@ type ClientInterface interface {
 
 	BatchCheck(ctx context.Context, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// ListPermissions request
-	ListPermissions(ctx context.Context, params *ListPermissionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// ListPermissionsWithBody request with any body
+	ListPermissionsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ListPermissions(ctx context.Context, body ListPermissionsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetStatus request
 	GetStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -155,8 +156,20 @@ func (c *Client) BatchCheck(ctx context.Context, body BatchCheckJSONRequestBody,
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListPermissions(ctx context.Context, params *ListPermissionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListPermissionsRequest(c.Server, params)
+func (c *Client) ListPermissionsWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListPermissionsRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListPermissions(ctx context.Context, body ListPermissionsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListPermissionsRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -259,8 +272,19 @@ func NewBatchCheckRequestWithBody(server string, contentType string, body io.Rea
 	return req, nil
 }
 
-// NewListPermissionsRequest generates requests for ListPermissions
-func NewListPermissionsRequest(server string, params *ListPermissionsParams) (*http.Request, error) {
+// NewListPermissionsRequest calls the generic ListPermissions builder with application/json body
+func NewListPermissionsRequest(server string, body ListPermissionsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewListPermissionsRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewListPermissionsRequestWithBody generates requests for ListPermissions with any type of body
+func NewListPermissionsRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -278,104 +302,12 @@ func NewListPermissionsRequest(server string, params *ListPermissionsParams) (*h
 		return nil, err
 	}
 
-	if params != nil {
-		queryValues := queryURL.Query()
-
-		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "subject", runtime.ParamLocationQuery, params.Subject); err != nil {
-			return nil, err
-		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-			return nil, err
-		} else {
-			for k, v := range parsed {
-				for _, v2 := range v {
-					queryValues.Add(k, v2)
-				}
-			}
-		}
-
-		if params.Actor != nil {
-
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "actor", runtime.ParamLocationQuery, *params.Actor); err != nil {
-				return nil, err
-			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-				return nil, err
-			} else {
-				for k, v := range parsed {
-					for _, v2 := range v {
-						queryValues.Add(k, v2)
-					}
-				}
-			}
-
-		}
-
-		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "organizationId", runtime.ParamLocationQuery, params.OrganizationId); err != nil {
-			return nil, err
-		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-			return nil, err
-		} else {
-			for k, v := range parsed {
-				for _, v2 := range v {
-					queryValues.Add(k, v2)
-				}
-			}
-		}
-
-		if params.ProjectId != nil {
-
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "projectId", runtime.ParamLocationQuery, *params.ProjectId); err != nil {
-				return nil, err
-			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-				return nil, err
-			} else {
-				for k, v := range parsed {
-					for _, v2 := range v {
-						queryValues.Add(k, v2)
-					}
-				}
-			}
-
-		}
-
-		if params.RegionId != nil {
-
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "regionId", runtime.ParamLocationQuery, *params.RegionId); err != nil {
-				return nil, err
-			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-				return nil, err
-			} else {
-				for k, v := range parsed {
-					for _, v2 := range v {
-						queryValues.Add(k, v2)
-					}
-				}
-			}
-
-		}
-
-		if params.Untrimmed != nil {
-
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "untrimmed", runtime.ParamLocationQuery, *params.Untrimmed); err != nil {
-				return nil, err
-			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-				return nil, err
-			} else {
-				for k, v := range parsed {
-					for _, v2 := range v {
-						queryValues.Add(k, v2)
-					}
-				}
-			}
-
-		}
-
-		queryURL.RawQuery = queryValues.Encode()
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	req, err := http.NewRequest("POST", queryURL.String(), body)
 	if err != nil {
 		return nil, err
 	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -460,8 +392,10 @@ type ClientWithResponsesInterface interface {
 
 	BatchCheckWithResponse(ctx context.Context, body BatchCheckJSONRequestBody, reqEditors ...RequestEditorFn) (*BatchCheckResponse, error)
 
-	// ListPermissionsWithResponse request
-	ListPermissionsWithResponse(ctx context.Context, params *ListPermissionsParams, reqEditors ...RequestEditorFn) (*ListPermissionsResponse, error)
+	// ListPermissionsWithBodyWithResponse request with any body
+	ListPermissionsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ListPermissionsResponse, error)
+
+	ListPermissionsWithResponse(ctx context.Context, body ListPermissionsJSONRequestBody, reqEditors ...RequestEditorFn) (*ListPermissionsResponse, error)
 
 	// GetStatusWithResponse request
 	GetStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetStatusResponse, error)
@@ -607,9 +541,17 @@ func (c *ClientWithResponses) BatchCheckWithResponse(ctx context.Context, body B
 	return ParseBatchCheckResponse(rsp)
 }
 
-// ListPermissionsWithResponse request returning *ListPermissionsResponse
-func (c *ClientWithResponses) ListPermissionsWithResponse(ctx context.Context, params *ListPermissionsParams, reqEditors ...RequestEditorFn) (*ListPermissionsResponse, error) {
-	rsp, err := c.ListPermissions(ctx, params, reqEditors...)
+// ListPermissionsWithBodyWithResponse request with arbitrary body returning *ListPermissionsResponse
+func (c *ClientWithResponses) ListPermissionsWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ListPermissionsResponse, error) {
+	rsp, err := c.ListPermissionsWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListPermissionsResponse(rsp)
+}
+
+func (c *ClientWithResponses) ListPermissionsWithResponse(ctx context.Context, body ListPermissionsJSONRequestBody, reqEditors ...RequestEditorFn) (*ListPermissionsResponse, error) {
+	rsp, err := c.ListPermissions(ctx, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}

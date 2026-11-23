@@ -8,9 +8,9 @@ info:
 
     Every check and list request names the `subject` the agent answers for.  A
     request may also name the `actor`: the principal (for example a service
-    account) acting on the subject's behalf.  An item is then allowed only when
-    both the subject and the actor are allowed.  The actor can only narrow an
-    answer, never widen it.
+    account) acting on the subject's behalf.  A check is then allowed only when
+    both the subject and the actor are allowed, and a list is the intersection
+    of what each holds.  The actor can only narrow an answer, never widen it.
 
     A user is named by the identity provider's subject identifier for that
     user, that is the `sub` claim the caller verified.  A service account is
@@ -18,6 +18,8 @@ info:
 
     The agent fails closed: when it has no copy, or its copy is too old, every
     operation except status returns 503 and no answer.
+
+    Batch results are in request order: `results[i]` answers `checks[i]`.
 
     Paths carry the API version.  Within a version, fields are only ever added.
 
@@ -94,7 +96,8 @@ paths:
         Answers up to 100 items in one call, in the order given.  Use this where
         one request would otherwise make a check per item, for example when
         filtering a list.  Each answer is the same as `/v1/check` gives for that
-        item.  One invalid item fails the whole batch with 400.
+        item.  `results[i]` is the answer to `checks[i]`: results are in request
+        order, one per item.  One invalid item fails the whole batch with 400.
       tags:
       - Permissions Agent
       security:
@@ -141,7 +144,7 @@ paths:
           $ref: '#/components/responses/unavailableResponse'
   /v1/permissions:
     description: Lists what a subject may do in one organization.
-    get:
+    post:
       operationId: listPermissions
       summary: List permissions
       description: |-
@@ -149,28 +152,36 @@ paths:
         its scope: `global`, `organization` or `project`.  Global grants appear
         with `scope: global`.  A project entry is left out when the same entry
         is held org-wide.  A subject with no access in the organization gets
-        200 and an empty list.
+        200 and an empty list.  With an `actor`, the list is the intersection:
+        only entries both the subject and the actor hold.
+
+        This is a POST so the subject, which may be an email address, never
+        appears in a URL or an access log.  It reads only.
 
         By default the list is trimmed to one region: services that region does
         not run are left out, so clients do not offer actions the region cannot
         do.  `regionId` names the region; without it the agent's own region is
-        used.  `untrimmed=true` turns the trim off and lists every service; it
+        used.  `untrimmed: true` turns the trim off and lists every service; it
         cannot be combined with `regionId`.  The response field `form` says which
         list was returned.
 
-        An unknown `regionId`, or `untrimmed=true` with a `regionId`, returns
+        An unknown `regionId`, or `untrimmed: true` with a `regionId`, returns
         400.
       tags:
       - Permissions Agent
       security:
       - serviceAuthentication: []
-      parameters:
-      - $ref: '#/components/parameters/subjectQueryParameter'
-      - $ref: '#/components/parameters/actorQueryParameter'
-      - $ref: '#/components/parameters/organizationIDQueryParameter'
-      - $ref: '#/components/parameters/projectIDQueryParameter'
-      - $ref: '#/components/parameters/regionIDQueryParameter'
-      - $ref: '#/components/parameters/untrimmedQueryParameter'
+      requestBody:
+        description: The subject and organization to list.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/permissionsRequest'
+            example:
+              subject: c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c
+              organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
+              untrimmed: true
       responses:
         '200':
           description: The subject's permissions in the organization.
@@ -240,57 +251,6 @@ paths:
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
 components:
-  parameters:
-    subjectQueryParameter:
-      name: subject
-      in: query
-      required: true
-      description: The subject to list permissions for.
-      schema:
-        $ref: '#/components/schemas/subject'
-    actorQueryParameter:
-      name: actor
-      in: query
-      description: |-
-        The principal (for example a service account) acting on the subject's
-        behalf.  When set, only what both hold is listed.  It can only narrow
-        the list.
-      schema:
-        $ref: '#/components/schemas/actor'
-    organizationIDQueryParameter:
-      name: organizationId
-      in: query
-      required: true
-      description: The organization to list permissions in.
-      schema:
-        type: string
-    projectIDQueryParameter:
-      name: projectId
-      in: query
-      description: |-
-        Projects to list per-project permissions for, in addition to the projects
-        the subject's grants name.  Repeat the parameter for each project.
-      style: form
-      explode: true
-      schema:
-        type: array
-        items:
-          type: string
-    regionIDQueryParameter:
-      name: regionId
-      in: query
-      description: |-
-        The region to trim the list to.  Defaults to the agent's own region.
-        Cannot be combined with `untrimmed=true`.
-      schema:
-        type: string
-    untrimmedQueryParameter:
-      name: untrimmed
-      in: query
-      description: List every service, whatever the region runs.
-      schema:
-        type: boolean
-        default: false
   schemas:
     subject:
       description: |-
@@ -302,8 +262,10 @@ components:
     actor:
       description: |-
         The principal (for example a service account) acting on the subject's
-        behalf, in the same form as `subject`.  When set, an item is allowed
-        only when both are allowed.  It can only narrow the answer.
+        behalf, in the same form as `subject`.  When set, a check is allowed
+        only when both the subject and the actor are allowed, and a list holds
+        only the entries both hold (the intersection).  It can only narrow the
+        answer, never widen it.
       type: string
       minLength: 1
     checkItem:
@@ -359,6 +321,30 @@ components:
           maxItems: 100
           items:
             $ref: '#/components/schemas/checkItem'
+    permissionsRequest:
+      description: The subject and organization to list permissions for.
+      type: object
+      required:
+      - subject
+      - organizationId
+      properties:
+        subject:
+          $ref: '#/components/schemas/subject'
+        actor:
+          $ref: '#/components/schemas/actor'
+        organizationId:
+          description: The organization to list permissions in.
+          type: string
+          minLength: 1
+        regionId:
+          description: |-
+            The region to trim the list to.  Defaults to the agent's own region.
+            Cannot be combined with `untrimmed: true`.
+          type: string
+        untrimmed:
+          description: List every service, whatever the region runs.
+          type: boolean
+          default: false
     copyVersion:
       description: |-
         The version of the permissions copy that gave the answer.  It changes

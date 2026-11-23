@@ -27,8 +27,10 @@ const (
 )
 
 // Actor The principal (for example a service account) acting on the subject's
-// behalf, in the same form as `subject`.  When set, an item is allowed
-// only when both are allowed.  It can only narrow the answer.
+// behalf, in the same form as `subject`.  When set, a check is allowed
+// only when both the subject and the actor are allowed, and a list holds
+// only the entries both hold (the intersection).  It can only narrow the
+// answer, never widen it.
 type Actor = string
 
 // BatchCheckAnswer The answer to one item of a batch.
@@ -40,8 +42,10 @@ type BatchCheckAnswer struct {
 // BatchCheckRequest Items to check for a subject.
 type BatchCheckRequest struct {
 	// Actor The principal (for example a service account) acting on the subject's
-	// behalf, in the same form as `subject`.  When set, an item is allowed
-	// only when both are allowed.  It can only narrow the answer.
+	// behalf, in the same form as `subject`.  When set, a check is allowed
+	// only when both the subject and the actor are allowed, and a list holds
+	// only the entries both hold (the intersection).  It can only narrow the
+	// answer, never widen it.
 	Actor *Actor `json:"actor,omitempty"`
 
 	// Checks Items to check, answered in the order given.
@@ -86,8 +90,10 @@ type CheckItem struct {
 // CheckRequest One item to check for a subject.
 type CheckRequest struct {
 	// Actor The principal (for example a service account) acting on the subject's
-	// behalf, in the same form as `subject`.  When set, an item is allowed
-	// only when both are allowed.  It can only narrow the answer.
+	// behalf, in the same form as `subject`.  When set, a check is allowed
+	// only when both the subject and the actor are allowed, and a list holds
+	// only the entries both hold (the intersection).  It can only narrow the
+	// answer, never widen it.
 	Actor *Actor `json:"actor,omitempty"`
 
 	// Check One question: may the subject perform `action` on `kind`?  With no
@@ -174,6 +180,31 @@ type PermissionListForm string
 // (`organization`), or in one project (`project`).
 type PermissionScope string
 
+// PermissionsRequest The subject and organization to list permissions for.
+type PermissionsRequest struct {
+	// Actor The principal (for example a service account) acting on the subject's
+	// behalf, in the same form as `subject`.  When set, a check is allowed
+	// only when both the subject and the actor are allowed, and a list holds
+	// only the entries both hold (the intersection).  It can only narrow the
+	// answer, never widen it.
+	Actor *Actor `json:"actor,omitempty"`
+
+	// OrganizationId The organization to list permissions in.
+	OrganizationId string `json:"organizationId"`
+
+	// RegionId The region to trim the list to.  Defaults to the agent's own region.
+	// Cannot be combined with `untrimmed: true`.
+	RegionId *string `json:"regionId,omitempty"`
+
+	// Subject The subject the agent answers for: the identity provider's `sub` for a
+	// user, or `serviceaccount:<id>` for a service account.  The caller must
+	// take it from an identity it has verified.
+	Subject Subject `json:"subject"`
+
+	// Untrimmed List every service, whatever the region runs.
+	Untrimmed *bool `json:"untrimmed,omitempty"`
+}
+
 // Since When the agent took the current copy version.
 type Since = time.Time
 
@@ -210,28 +241,6 @@ type Status struct {
 // take it from an identity it has verified.
 type Subject = string
 
-// ActorQueryParameter The principal (for example a service account) acting on the subject's
-// behalf, in the same form as `subject`.  When set, an item is allowed
-// only when both are allowed.  It can only narrow the answer.
-type ActorQueryParameter = Actor
-
-// OrganizationIDQueryParameter defines model for organizationIDQueryParameter.
-type OrganizationIDQueryParameter = string
-
-// ProjectIDQueryParameter defines model for projectIDQueryParameter.
-type ProjectIDQueryParameter = []string
-
-// RegionIDQueryParameter defines model for regionIDQueryParameter.
-type RegionIDQueryParameter = string
-
-// SubjectQueryParameter The subject the agent answers for: the identity provider's `sub` for a
-// user, or `serviceaccount:<id>` for a service account.  The caller must
-// take it from an identity it has verified.
-type SubjectQueryParameter = Subject
-
-// UntrimmedQueryParameter defines model for untrimmedQueryParameter.
-type UntrimmedQueryParameter = bool
-
 // CallerForbiddenResponse Generic error message, compatible with oauth2.
 type CallerForbiddenResponse = externalRef0.Error
 
@@ -241,33 +250,11 @@ type CallerUnauthorizedResponse = externalRef0.Error
 // UnavailableResponse Generic error message, compatible with oauth2.
 type UnavailableResponse = externalRef0.Error
 
-// ListPermissionsParams defines parameters for ListPermissions.
-type ListPermissionsParams struct {
-	// Subject The subject to list permissions for.
-	Subject SubjectQueryParameter `form:"subject" json:"subject"`
-
-	// Actor The principal (for example a service account) acting on the subject's
-	// behalf.  When set, only what both hold is listed.  It can only narrow
-	// the list.
-	Actor *ActorQueryParameter `form:"actor,omitempty" json:"actor,omitempty"`
-
-	// OrganizationId The organization to list permissions in.
-	OrganizationId OrganizationIDQueryParameter `form:"organizationId" json:"organizationId"`
-
-	// ProjectId Projects to list per-project permissions for, in addition to the projects
-	// the subject's grants name.  Repeat the parameter for each project.
-	ProjectId *ProjectIDQueryParameter `form:"projectId,omitempty" json:"projectId,omitempty"`
-
-	// RegionId The region to trim the list to.  Defaults to the agent's own region.
-	// Cannot be combined with `untrimmed=true`.
-	RegionId *RegionIDQueryParameter `form:"regionId,omitempty" json:"regionId,omitempty"`
-
-	// Untrimmed List every service, whatever the region runs.
-	Untrimmed *UntrimmedQueryParameter `form:"untrimmed,omitempty" json:"untrimmed,omitempty"`
-}
-
 // CheckJSONRequestBody defines body for Check for application/json ContentType.
 type CheckJSONRequestBody = CheckRequest
 
 // BatchCheckJSONRequestBody defines body for BatchCheck for application/json ContentType.
 type BatchCheckJSONRequestBody = BatchCheckRequest
+
+// ListPermissionsJSONRequestBody defines body for ListPermissions for application/json ContentType.
+type ListPermissionsJSONRequestBody = PermissionsRequest

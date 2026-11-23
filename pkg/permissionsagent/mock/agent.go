@@ -70,18 +70,18 @@ func (mr *MockAgentMockRecorder) Check(ctx, request any) *gomock.Call {
 }
 
 // Permissions mocks base method.
-func (m *MockAgent) Permissions(ctx context.Context, params openapi.ListPermissionsParams) (*openapi.PermissionList, error) {
+func (m *MockAgent) Permissions(ctx context.Context, request openapi.PermissionsRequest) (*openapi.PermissionList, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Permissions", ctx, params)
+	ret := m.ctrl.Call(m, "Permissions", ctx, request)
 	ret0, _ := ret[0].(*openapi.PermissionList)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Permissions indicates an expected call of Permissions.
-func (mr *MockAgentMockRecorder) Permissions(ctx, params any) *gomock.Call {
+func (mr *MockAgentMockRecorder) Permissions(ctx, request any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Permissions", reflect.TypeOf((*MockAgent)(nil).Permissions), ctx, params)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Permissions", reflect.TypeOf((*MockAgent)(nil).Permissions), ctx, request)
 }
 
 // Status mocks base method.

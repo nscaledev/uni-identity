@@ -20,11 +20,15 @@ package permissionsagent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -50,10 +54,14 @@ const (
 	subject        = "c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c"
 	serviceToken   = "service-token"
 	actor          = "serviceaccount:0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e"
+	emailSubject   = "alice@example.com"
 )
 
 //nolint:gochecknoglobals
-var since = time.Date(2026, 11, 20, 10, 15, 0, 0, time.UTC)
+var (
+	since    = time.Date(2026, 11, 20, 10, 15, 0, 0, time.UTC)
+	errVault = errors.New("vault said: secret-value-123")
+)
 
 // seen is one request as the fake agent received it.
 type seen struct {
@@ -147,6 +155,9 @@ func rawServer(status int, contentType, body string) string {
 }
 
 func newClient(opts permissionsagent.Options) *permissionsagent.Client {
+	// The fake agents listen on plain http.
+	opts.AllowInsecureHTTP = true
+
 	c, err := permissionsagent.New(opts)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -181,7 +192,7 @@ var _ = Describe("Permissions agent client", func() {
 
 	BeforeEach(func() {
 		agent = newFakeAgent()
-		client = newClient(permissionsagent.Options{URL: agent.server.URL, Token: serviceToken})
+		client = newClient(permissionsagent.Options{URL: agent.server.URL, TokenSource: permissionsagent.StaticToken(serviceToken)})
 		ctx = context.Background()
 	})
 
@@ -190,6 +201,46 @@ var _ = Describe("Permissions agent client", func() {
 			It("returns an invalid options error", func() {
 				_, err := permissionsagent.New(permissionsagent.Options{})
 				Expect(err).To(MatchError(permissionsagent.ErrInvalidOptions))
+			})
+		})
+
+		Describe("Given a URL that is not a usable http or https URL", func() {
+			DescribeTable("returns an invalid options error",
+				func(raw string) {
+					_, err := permissionsagent.New(permissionsagent.Options{URL: raw})
+					Expect(err).To(MatchError(permissionsagent.ErrInvalidOptions))
+				},
+				Entry("a parse error", "https://%zz"),
+				Entry("another scheme", "ftp://agent.example.com"),
+				Entry("no scheme", "agent.example.com"),
+				Entry("no host", "https://"),
+			)
+		})
+
+		Describe("Given a token source and a plain http URL", func() {
+			It("refuses to send the token in clear text", func() {
+				_, err := permissionsagent.New(permissionsagent.Options{URL: "http://agent.example.com", TokenSource: permissionsagent.StaticToken(serviceToken)})
+				Expect(err).To(MatchError(permissionsagent.ErrInvalidOptions))
+				Expect(err.Error()).NotTo(ContainSubstring(serviceToken))
+			})
+
+			It("allows it when AllowInsecureHTTP is set", func() {
+				_, err := permissionsagent.New(permissionsagent.Options{URL: "http://agent.example.com", TokenSource: permissionsagent.StaticToken(serviceToken), AllowInsecureHTTP: true})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Describe("Given a plain http URL and no token source", func() {
+			It("accepts it", func() {
+				_, err := permissionsagent.New(permissionsagent.Options{URL: "http://agent.example.com"})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Describe("Given an https URL and a token source", func() {
+			It("accepts it", func() {
+				_, err := permissionsagent.New(permissionsagent.Options{URL: "https://agent.example.com", TokenSource: permissionsagent.StaticToken(serviceToken)})
+				Expect(err).NotTo(HaveOccurred())
 			})
 		})
 	})
@@ -261,6 +312,63 @@ var _ = Describe("Permissions agent client", func() {
 				Expect(agent.last().header.Values("Authorization")).To(BeEmpty())
 			})
 		})
+
+		Describe("Given a subject or actor the agent would refuse", func() {
+			DescribeTable("returns an invalid input error without calling the agent or naming the value",
+				func(subjectValue string, actorValue *string) {
+					_, err := client.Check(ctx, openapi.CheckRequest{Subject: subjectValue, Actor: actorValue, Check: item})
+					Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
+					Expect(agent.recorded()).To(BeEmpty())
+
+					if strings.TrimSpace(subjectValue) != "" {
+						Expect(err.Error()).NotTo(ContainSubstring(subjectValue))
+					}
+				},
+				Entry("a whitespace-only subject", " \t ", nil),
+				Entry("a subject with a control character", "alice\n@example.com", nil),
+				Entry("a subject over 512 bytes", strings.Repeat("a", 513), nil),
+				Entry("a service account subject with no ID", "serviceaccount:", nil),
+				Entry("a whitespace-only actor", subject, new("  ")),
+				Entry("an actor with a control character", subject, new("serviceaccount:\x00")),
+				Entry("an actor over 512 bytes", subject, new(strings.Repeat("a", 513))),
+				Entry("a service account actor with no ID", subject, new("serviceaccount:")),
+			)
+
+			It("accepts a subject of exactly 512 bytes", func() {
+				_, err := client.Check(ctx, openapi.CheckRequest{Subject: strings.Repeat("a", 512), Check: item})
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+
+		Describe("Given an item the agent would refuse", func() {
+			DescribeTable("returns an invalid input error without calling the agent",
+				func(check openapi.CheckItem) {
+					_, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Check: check})
+					Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
+					Expect(agent.recorded()).To(BeEmpty())
+				},
+				Entry("no kind", openapi.CheckItem{Action: "read"}),
+				Entry("no action", openapi.CheckItem{Kind: "identity:projects"}),
+				Entry("a project with no organization", openapi.CheckItem{Kind: "identity:projects", Action: "read", ProjectId: new(projectID)}),
+				Entry("a project with an empty organization", openapi.CheckItem{Kind: "identity:projects", Action: "read", OrganizationId: new(""), ProjectId: new(projectID)}),
+			)
+		})
+
+		Describe("Given a reply with no allowed field", func() {
+			DescribeTable("returns a response error, not a denial",
+				func(reply any) {
+					agent.respond(http.StatusOK, reply)
+
+					result, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+					Expect(err).To(MatchError(permissionsagent.ErrResponse))
+					Expect(result).To(BeNil())
+				},
+				Entry("an empty object", map[string]any{}),
+				Entry("version and since only", map[string]any{"version": copyVersion, "since": since}),
+				Entry("allowed is null", map[string]any{"allowed": nil, "version": copyVersion, "since": since}),
+				Entry("a JSON null", nil),
+			)
+		})
 	})
 
 	Context("When checking a batch", func() {
@@ -305,6 +413,32 @@ var _ = Describe("Permissions agent client", func() {
 				result, err := client.BatchCheck(ctx, openapi.BatchCheckRequest{Subject: subject, Checks: items})
 				Expect(err).To(MatchError(permissionsagent.ErrResponse))
 				Expect(result).To(BeNil())
+			})
+		})
+
+		Describe("Given a result with no allowed field", func() {
+			DescribeTable("returns a response error and no results",
+				func(reply any) {
+					agent.respond(http.StatusOK, reply)
+
+					result, err := client.BatchCheck(ctx, openapi.BatchCheckRequest{Subject: subject, Checks: items})
+					Expect(err).To(MatchError(permissionsagent.ErrResponse))
+					Expect(result).To(BeNil())
+				},
+				Entry("one result is empty", map[string]any{"results": []any{map[string]any{"allowed": true}, map[string]any{}}, "version": copyVersion, "since": since}),
+				Entry("one result is null", map[string]any{"results": []any{map[string]any{"allowed": true}, nil}, "version": copyVersion, "since": since}),
+				Entry("a JSON null", nil),
+			)
+		})
+
+		Describe("Given an item the agent would refuse", func() {
+			It("returns an invalid input error without calling the agent", func() {
+				bad := append([]openapi.CheckItem{}, items...)
+				bad = append(bad, openapi.CheckItem{Kind: "identity:projects"})
+
+				_, err := client.BatchCheck(ctx, openapi.BatchCheckRequest{Subject: subject, Checks: bad})
+				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
+				Expect(agent.recorded()).To(BeEmpty())
 			})
 		})
 
@@ -370,16 +504,15 @@ var _ = Describe("Permissions agent client", func() {
 				})
 			})
 
-			It("sends the camelCase query and returns the list with each entry's scope", func() {
-				params := openapi.ListPermissionsParams{
-					Subject:        subject,
+			It("posts the request in the body and returns the list with each entry's scope", func() {
+				request := openapi.PermissionsRequest{
+					Subject:        emailSubject,
 					Actor:          new(actor),
 					OrganizationId: organizationID,
-					ProjectId:      &[]string{projectID},
 					RegionId:       new(regionID),
 				}
 
-				list, err := client.Permissions(ctx, params)
+				list, err := client.Permissions(ctx, request)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(list.Form).To(Equal(openapi.Trimmed))
 				Expect(*list.RegionId).To(Equal(regionID))
@@ -392,14 +525,31 @@ var _ = Describe("Permissions agent client", func() {
 				Expect(*list.Permissions[2].ProjectId).To(Equal(projectID))
 
 				req := agent.last()
-				Expect(req.method).To(Equal(http.MethodGet))
+				Expect(req.method).To(Equal(http.MethodPost))
 				Expect(req.path).To(Equal("/v1/permissions"))
-				Expect(req.query.Get("subject")).To(Equal(subject))
-				Expect(req.query.Get("actor")).To(Equal(actor))
-				Expect(req.query.Get("organizationId")).To(Equal(organizationID))
-				Expect(req.query["projectId"]).To(Equal([]string{projectID}))
-				Expect(req.query.Get("regionId")).To(Equal(regionID))
+				Expect(req.query).To(BeEmpty())
 				Expect(req.header.Get("Authorization")).To(Equal("Bearer " + serviceToken))
+
+				var sent openapi.PermissionsRequest
+				Expect(json.Unmarshal(req.body, &sent)).To(Succeed())
+				Expect(sent).To(Equal(request))
+			})
+		})
+
+		Describe("Given a reply with fields the client does not know", func() {
+			It("ignores them, since the API only adds fields", func() {
+				agent.respond(http.StatusOK, map[string]any{
+					"organizationId": organizationID,
+					"form":           "trimmed",
+					"version":        copyVersion,
+					"since":          since,
+					"newField":       "x",
+					"permissions":    []map[string]any{{"kind": "k", "action": "a", "scope": "organization", "extra": 1}},
+				})
+
+				list, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject, OrganizationId: organizationID})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(list.Permissions).To(HaveLen(1))
 			})
 		})
 
@@ -407,15 +557,50 @@ var _ = Describe("Permissions agent client", func() {
 			It("returns an empty list", func() {
 				agent.respond(http.StatusOK, openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Trimmed, RegionId: new(regionID), Version: copyVersion, Since: since, Permissions: []openapi.Permission{}})
 
-				list, err := client.Permissions(ctx, openapi.ListPermissionsParams{Subject: subject, OrganizationId: organizationID})
+				list, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject, OrganizationId: organizationID})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(list.Permissions).To(BeEmpty())
 			})
 		})
 
+		Describe("Given a reply that does not match the request", func() {
+			DescribeTable("returns a response error and no list",
+				func(reply any) {
+					agent.respond(http.StatusOK, reply)
+
+					list, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject, OrganizationId: organizationID})
+					Expect(err).To(MatchError(permissionsagent.ErrResponse))
+					Expect(list).To(BeNil())
+				},
+				Entry("another organization", openapi.PermissionList{OrganizationId: "other", Form: openapi.Trimmed, Version: copyVersion, Since: since, Permissions: []openapi.Permission{}}),
+				Entry("an empty object", map[string]any{}),
+				Entry("a JSON null", nil),
+				Entry("a project entry with no projectId", openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Trimmed, Version: copyVersion, Since: since, Permissions: []openapi.Permission{
+					{Kind: "k", Action: "a", Scope: openapi.ScopeProject},
+				}}),
+				Entry("a global entry with a projectId", openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Trimmed, Version: copyVersion, Since: since, Permissions: []openapi.Permission{
+					{Kind: "k", Action: "a", Scope: openapi.ScopeGlobal, ProjectId: new(projectID)},
+				}}),
+				Entry("an organization entry with a projectId", openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Trimmed, Version: copyVersion, Since: since, Permissions: []openapi.Permission{
+					{Kind: "k", Action: "a", Scope: openapi.ScopeOrganization, ProjectId: new(projectID)},
+				}}),
+				Entry("an unknown scope", openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Trimmed, Version: copyVersion, Since: since, Permissions: []openapi.Permission{
+					{Kind: "k", Action: "a", Scope: "region"},
+				}}),
+			)
+		})
+
 		Describe("Given no subject", func() {
 			It("returns an invalid input error without calling the agent", func() {
-				_, err := client.Permissions(ctx, openapi.ListPermissionsParams{OrganizationId: organizationID})
+				_, err := client.Permissions(ctx, openapi.PermissionsRequest{OrganizationId: organizationID})
+				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
+				Expect(agent.recorded()).To(BeEmpty())
+			})
+		})
+
+		Describe("Given no organization", func() {
+			It("returns an invalid input error without calling the agent", func() {
+				_, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject})
 				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
 				Expect(agent.recorded()).To(BeEmpty())
 			})
@@ -423,7 +608,7 @@ var _ = Describe("Permissions agent client", func() {
 
 		Describe("Given an actor that is set but empty", func() {
 			It("returns an invalid input error without calling the agent", func() {
-				_, err := client.Permissions(ctx, openapi.ListPermissionsParams{Subject: subject, Actor: new(""), OrganizationId: organizationID})
+				_, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject, Actor: new(""), OrganizationId: organizationID})
 				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
 				Expect(agent.recorded()).To(BeEmpty())
 			})
@@ -431,17 +616,20 @@ var _ = Describe("Permissions agent client", func() {
 	})
 
 	Context("When listing untrimmed permissions", func() {
-		params := openapi.ListPermissionsParams{Subject: subject, OrganizationId: organizationID, Untrimmed: new(true)}
+		request := openapi.PermissionsRequest{Subject: subject, OrganizationId: organizationID, Untrimmed: new(true)}
 
 		Describe("Given the agent returns the untrimmed list", func() {
-			It("asks for untrimmed=true and returns the list", func() {
+			It("asks for untrimmed and returns the list", func() {
 				agent.respond(http.StatusOK, openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Untrimmed, Version: copyVersion, Since: since, Permissions: []openapi.Permission{{Kind: "identity:projects", Action: "read", Scope: openapi.ScopeOrganization}}})
 
-				list, err := client.Permissions(ctx, params)
+				list, err := client.Permissions(ctx, request)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(list.Form).To(Equal(openapi.Untrimmed))
 				Expect(list.Permissions).To(HaveLen(1))
-				Expect(agent.last().query.Get("untrimmed")).To(Equal("true"))
+
+				var sent openapi.PermissionsRequest
+				Expect(json.Unmarshal(agent.last().body, &sent)).To(Succeed())
+				Expect(sent.Untrimmed).To(Equal(new(true)))
 			})
 		})
 
@@ -449,9 +637,23 @@ var _ = Describe("Permissions agent client", func() {
 			It("refuses the list", func() {
 				agent.respond(http.StatusOK, openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Trimmed, RegionId: new(regionID), Version: copyVersion, Since: since, Permissions: []openapi.Permission{}})
 
-				list, err := client.Permissions(ctx, params)
+				list, err := client.Permissions(ctx, request)
 				Expect(err).To(MatchError(permissionsagent.ErrTrimmed))
 				Expect(list).To(BeNil())
+			})
+		})
+
+		Describe("Given untrimmed is set to false", func() {
+			It("sends false and accepts a trimmed list", func() {
+				agent.respond(http.StatusOK, openapi.PermissionList{OrganizationId: organizationID, Form: openapi.Trimmed, RegionId: new(regionID), Version: copyVersion, Since: since, Permissions: []openapi.Permission{}})
+
+				list, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject, OrganizationId: organizationID, Untrimmed: new(false)})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(list.Form).To(Equal(openapi.Trimmed))
+
+				var sent openapi.PermissionsRequest
+				Expect(json.Unmarshal(agent.last().body, &sent)).To(Succeed())
+				Expect(sent.Untrimmed).To(Equal(new(false)))
 			})
 		})
 	})
@@ -517,7 +719,7 @@ var _ = Describe("Permissions agent client", func() {
 			It("returns a bad request error with the agent's description", func() {
 				agent.respond(http.StatusBadRequest, errorBody("invalid_request", "unknown region"))
 
-				_, err := client.Permissions(ctx, openapi.ListPermissionsParams{Subject: subject, OrganizationId: organizationID, RegionId: new("nowhere")})
+				_, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject, OrganizationId: organizationID, RegionId: new("nowhere")})
 				Expect(err).To(MatchError(permissionsagent.ErrBadRequest))
 				Expect(err.Error()).To(ContainSubstring("unknown region"))
 			})
@@ -527,7 +729,7 @@ var _ = Describe("Permissions agent client", func() {
 			It("returns an unavailable error and no list", func() {
 				agent.respond(http.StatusServiceUnavailable, errorBody("server_error", "permissions are not available"))
 
-				list, err := client.Permissions(ctx, openapi.ListPermissionsParams{Subject: subject, OrganizationId: organizationID})
+				list, err := client.Permissions(ctx, openapi.PermissionsRequest{Subject: subject, OrganizationId: organizationID})
 				Expect(err).To(MatchError(permissionsagent.ErrUnavailable))
 				Expect(list).To(BeNil())
 			})
@@ -624,6 +826,171 @@ var _ = Describe("Permissions agent client", func() {
 				Expect(err).NotTo(MatchError(permissionsagent.ErrUnavailable))
 				Expect(agent.recorded()).To(BeEmpty())
 			})
+		})
+	})
+	Context("When the service token comes from a token source", func() {
+		BeforeEach(func() {
+			agent.respond(http.StatusOK, openapi.CheckResult{Allowed: true, Version: copyVersion, Since: since})
+		})
+
+		Describe("Given a source that returns a new token each call", func() {
+			It("sends the current token on every call", func() {
+				var calls atomic.Int32
+
+				c := newClient(permissionsagent.Options{URL: agent.server.URL, TokenSource: func(context.Context) (string, error) {
+					return "token-" + strconv.Itoa(int(calls.Add(1))), nil
+				}})
+
+				_, err := c.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = c.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).NotTo(HaveOccurred())
+
+				requests := agent.recorded()
+				Expect(requests).To(HaveLen(2))
+				Expect(requests[0].header.Get("Authorization")).To(Equal("Bearer token-1"))
+				Expect(requests[1].header.Get("Authorization")).To(Equal("Bearer token-2"))
+			})
+		})
+
+		Describe("Given a source that fails", func() {
+			It("returns an unavailable error with none of the source's text, without calling the agent", func() {
+				c := newClient(permissionsagent.Options{URL: agent.server.URL, TokenSource: func(context.Context) (string, error) {
+					return "", errVault
+				}})
+
+				_, err := c.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).To(MatchError(permissionsagent.ErrUnavailable))
+				Expect(err.Error()).NotTo(ContainSubstring("secret-value-123"))
+				Expect(agent.recorded()).To(BeEmpty())
+			})
+		})
+
+		Describe("Given a source that returns an empty token", func() {
+			It("returns an unauthorized error without calling the agent", func() {
+				c := newClient(permissionsagent.Options{URL: agent.server.URL, TokenSource: permissionsagent.StaticToken("")})
+
+				_, err := c.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).To(MatchError(permissionsagent.ErrUnauthorized))
+				Expect(agent.recorded()).To(BeEmpty())
+			})
+		})
+	})
+
+	Context("When using the default HTTP client", func() {
+		Describe("Given the agent redirects", func() {
+			It("does not follow the redirect", func() {
+				var hits atomic.Int32
+
+				target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					hits.Add(1)
+					w.WriteHeader(http.StatusOK)
+				}))
+				DeferCleanup(target.Close)
+
+				redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+				}))
+				DeferCleanup(redirector.Close)
+
+				c := newClient(permissionsagent.Options{URL: redirector.URL, TokenSource: permissionsagent.StaticToken(serviceToken)})
+
+				_, err := c.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).To(MatchError(permissionsagent.ErrServer))
+				Expect(hits.Load()).To(BeZero())
+			})
+		})
+	})
+
+	Context("When the reply body is too large", func() {
+		Describe("Given a 200 body over 8 MiB", func() {
+			It("returns a response error", func() {
+				big := `{"allowed":true,"version":"` + strings.Repeat("a", 8<<20) + `","since":"2026-11-20T10:15:00Z"}`
+				c := newClient(permissionsagent.Options{URL: rawServer(http.StatusOK, "application/json", big)})
+
+				result, err := c.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).To(MatchError(permissionsagent.ErrResponse))
+				Expect(result).To(BeNil())
+			})
+		})
+	})
+
+	Context("When an error is returned", func() {
+		Describe("Given an error description with control characters", func() {
+			It("strips them from the message", func() {
+				agent.respond(http.StatusBadRequest, errorBody("invalid_request", "bad\n\x1b[31mthing\r"))
+
+				_, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).To(MatchError(permissionsagent.ErrBadRequest))
+				Expect(err.Error()).To(ContainSubstring("bad[31mthing"))
+				Expect(err.Error()).NotTo(ContainSubstring("\n"))
+				Expect(err.Error()).NotTo(ContainSubstring("\x1b"))
+			})
+		})
+
+		Describe("Given a long error description", func() {
+			It("caps it at 256 characters in the message", func() {
+				agent.respond(http.StatusBadRequest, errorBody("invalid_request", strings.Repeat("x", 1000)))
+
+				_, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err.Error()).To(ContainSubstring(strings.Repeat("x", 256)))
+				Expect(err.Error()).NotTo(ContainSubstring(strings.Repeat("x", 257)))
+			})
+		})
+
+		Describe("Given a zero-value Error", func() {
+			It("prints a sensible message", func() {
+				var zero permissionsagent.Error
+				Expect(zero.Error()).To(Equal("permissions agent: error: status 0"))
+			})
+		})
+	})
+
+	Context("When any call fails", func() {
+		Describe("Given an email subject and a service token", func() {
+			DescribeTable("names neither in the error",
+				func(setup func() *permissionsagent.Client) {
+					c := setup()
+
+					_, err := c.Check(ctx, openapi.CheckRequest{Subject: emailSubject, Actor: new(emailSubject), Check: item})
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).NotTo(ContainSubstring(emailSubject))
+					Expect(err.Error()).NotTo(ContainSubstring(serviceToken))
+
+					_, err = c.Permissions(ctx, openapi.PermissionsRequest{Subject: emailSubject, Actor: new(emailSubject), OrganizationId: organizationID})
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).NotTo(ContainSubstring(emailSubject))
+					Expect(err.Error()).NotTo(ContainSubstring(serviceToken))
+				},
+				Entry("the agent is down", func() *permissionsagent.Client {
+					down := httptest.NewServer(http.NotFoundHandler())
+					down.Close()
+
+					return newClient(permissionsagent.Options{URL: down.URL, TokenSource: permissionsagent.StaticToken(serviceToken)})
+				}),
+				Entry("the agent URL has credentials", func() *permissionsagent.Client {
+					down := httptest.NewServer(http.NotFoundHandler())
+					down.Close()
+
+					u, _ := url.Parse(down.URL)
+					u.User = url.UserPassword("user", serviceToken)
+
+					return newClient(permissionsagent.Options{URL: u.String()})
+				}),
+				Entry("the agent echoes the subject and token in a 400", func() *permissionsagent.Client {
+					agent.respond(http.StatusBadRequest, errorBody("invalid_request", "bad subject "+emailSubject+" token "+serviceToken))
+
+					return client
+				}),
+				Entry("the agent replies with a malformed body", func() *permissionsagent.Client {
+					return newClient(permissionsagent.Options{URL: rawServer(http.StatusOK, "application/json", "{not json "+emailSubject), TokenSource: permissionsagent.StaticToken(serviceToken)})
+				}),
+				Entry("the agent replies with an empty object", func() *permissionsagent.Client {
+					agent.respond(http.StatusOK, map[string]any{})
+
+					return client
+				}),
+			)
 		})
 	})
 })
