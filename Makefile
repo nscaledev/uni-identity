@@ -220,6 +220,7 @@ lint: $(GENDIR)
 .PHONY: validate
 validate: $(OPENAPI_FILES)
 	go run github.com/unikorn-cloud/core/hack/validate_openapi
+	go run github.com/unikorn-cloud/core/hack/validate_openapi -path pkg/permissionsagent/openapi/agent.spec.yaml
 
 # Validate the docs can be generated without fail.
 .PHONY: validate-docs

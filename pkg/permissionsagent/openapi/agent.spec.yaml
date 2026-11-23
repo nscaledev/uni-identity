@@ -1,0 +1,495 @@
+openapi: 3.0.3
+info:
+  title: Permissions Agent API
+  description: |-
+    The permissions agent runs in each region and answers authorization questions
+    from a local copy of the platform's permissions.  Nothing on the request path
+    calls a central service.
+
+    The caller passes the user's access token as a bearer token; the agent answers
+    for that user.  A service acting on behalf of the user also sends the
+    `X-Actor` header, and an item is then allowed only when both the user and the
+    actor are allowed.
+
+    The agent fails closed: when it has no copy, or its copy is too old, every
+    operation returns 503 and no answer.
+
+    Paths carry the API version.  Within a version, fields are only ever added.
+  version: 1.0.0
+paths:
+  /v1/check:
+    description: Checks one item.
+    post:
+      operationId: check
+      summary: Check one item
+      description: |-
+        Answers whether the caller may perform one action on one kind, globally,
+        across an organization, or in one project.  The answer is the same in
+        every region: region is not an input.
+      tags:
+      - Permissions Agent
+      security:
+      - oauth2Authentication: []
+      parameters:
+      - $ref: '#/components/parameters/actorParameter'
+      requestBody:
+        $ref: '#/components/requestBodies/checkRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/checkResultResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/actorForbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+        '503':
+          $ref: '#/components/responses/unavailableResponse'
+  /v1/check/batch:
+    description: Checks many items in one call.
+    post:
+      operationId: batchCheck
+      summary: Check many items
+      description: |-
+        Answers many items in one call, in the order given.  Use this where one
+        request would otherwise make a check per item, for example when filtering
+        a list.  Each answer is the same as `/v1/check` gives for that item.
+      tags:
+      - Permissions Agent
+      security:
+      - oauth2Authentication: []
+      parameters:
+      - $ref: '#/components/parameters/actorParameter'
+      requestBody:
+        $ref: '#/components/requestBodies/batchCheckRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/batchCheckResultResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/actorForbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+        '503':
+          $ref: '#/components/responses/unavailableResponse'
+  /v1/permissions:
+    description: Lists what the caller may do in one organization.
+    get:
+      operationId: listPermissions
+      summary: List permissions
+      description: |-
+        Lists every (kind, action) the caller holds in one organization, org-wide
+        or per project.  A project entry is left out when the same entry is held
+        org-wide.
+
+        By default the list is trimmed to one region: services that region does
+        not run are left out, so clients do not offer actions the region cannot
+        do.  `region_id` names the region; without it the agent's own region is
+        used.  `untrimmed=true` turns the trim off and lists every service; it
+        cannot be combined with `region_id`.  The response field `form` says which
+        list was returned.
+
+        An unknown `region_id`, or `untrimmed=true` with a `region_id`, returns
+        400.
+      tags:
+      - Permissions Agent
+      security:
+      - oauth2Authentication: []
+      parameters:
+      - $ref: '#/components/parameters/organizationIDQueryParameter'
+      - $ref: '#/components/parameters/projectIDQueryParameter'
+      - $ref: '#/components/parameters/regionIDQueryParameter'
+      - $ref: '#/components/parameters/untrimmedQueryParameter'
+      responses:
+        '200':
+          $ref: '#/components/responses/permissionListResponse'
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+        '503':
+          $ref: '#/components/responses/unavailableResponse'
+  /v1/status:
+    description: Reports the agent's state.
+    get:
+      operationId: getStatus
+      summary: Get agent status
+      description: |-
+        Reports the agent's version, the version of its permissions copy and
+        policy bundle, how old the copy is, and the agent's own region.  Status is
+        returned even when the copy is missing or too old, so `fresh` says whether
+        the other operations will answer.
+      tags:
+      - Permissions Agent
+      security:
+      - oauth2Authentication: []
+      responses:
+        '200':
+          $ref: '#/components/responses/statusResponse'
+        '401':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/unauthorizedResponse'
+        '403':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+components:
+  parameters:
+    actorParameter:
+      name: X-Actor
+      in: header
+      description: |-
+        The subject acting on the user's behalf.  When set, an item is allowed only
+        when both the user and the actor are allowed.  It can only narrow the
+        answer.
+      schema:
+        type: string
+    organizationIDQueryParameter:
+      name: organization_id
+      in: query
+      required: true
+      description: The organization to list permissions in.
+      schema:
+        type: string
+    projectIDQueryParameter:
+      name: project_id
+      in: query
+      description: |-
+        Projects to list per-project permissions for, in addition to the projects
+        the caller's grants name.  Repeat the parameter for each project.
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          type: string
+    regionIDQueryParameter:
+      name: region_id
+      in: query
+      description: |-
+        The region to trim the list to.  Defaults to the agent's own region.
+        Cannot be combined with `untrimmed=true`.
+      schema:
+        type: string
+    untrimmedQueryParameter:
+      name: untrimmed
+      in: query
+      description: List every service, whatever the region runs.
+      schema:
+        type: boolean
+        default: false
+  schemas:
+    checkItem:
+      description: |-
+        One question: may the caller perform `action` on `kind`?  With no
+        `organization_id` the question is global.  With `organization_id` and no
+        `project_id` it is org-wide.  With both it is in one project.
+      type: object
+      required:
+      - kind
+      - action
+      properties:
+        kind:
+          description: The kind of resource, for example an API endpoint scope name.
+          type: string
+        action:
+          description: The action, for example create, read, update or delete.
+          type: string
+        organization_id:
+          description: The organization the question is in.
+          type: string
+        project_id:
+          description: The project the question is in.  Requires `organization_id`.
+          type: string
+    checkItems:
+      description: Items to check, answered in the order given.
+      type: array
+      minItems: 1
+      items:
+        $ref: '#/components/schemas/checkItem'
+    batchCheckRequest:
+      description: A batch of items to check.
+      type: object
+      required:
+      - items
+      properties:
+        items:
+          $ref: '#/components/schemas/checkItems'
+    copyVersion:
+      description: |-
+        The version of the permissions copy that gave the answer.  It changes
+        whenever the copy changes.
+      type: string
+    since:
+      description: When the agent took the current copy version.
+      type: string
+      format: date-time
+    checkResult:
+      description: The answer to one item.
+      type: object
+      required:
+      - subject
+      - allowed
+      - version
+      - since
+      properties:
+        subject:
+          description: The subject the agent answered for, from the access token.
+          type: string
+        allowed:
+          description: Whether the item is allowed.
+          type: boolean
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+    batchCheckResult:
+      description: The answers to a batch, in the order of the request.
+      type: object
+      required:
+      - subject
+      - allowed
+      - version
+      - since
+      properties:
+        subject:
+          description: The subject the agent answered for, from the access token.
+          type: string
+        allowed:
+          description: One answer per item, in the order of the request.
+          type: array
+          items:
+            type: boolean
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+    permission:
+      description: One allowed (kind, action), org-wide or in one project.
+      type: object
+      required:
+      - kind
+      - action
+      properties:
+        kind:
+          description: The kind of resource.
+          type: string
+        action:
+          description: The allowed action.
+          type: string
+        project_id:
+          description: The project the entry applies to.  Absent for org-wide entries.
+          type: string
+    permissions:
+      description: A list of permissions.
+      type: array
+      items:
+        $ref: '#/components/schemas/permission'
+    permissionListForm:
+      description: |-
+        Whether the list was trimmed to a region (`trimmed`), or lists every
+        service (`untrimmed`).
+      type: string
+      enum:
+      - trimmed
+      - untrimmed
+    permissionList:
+      description: What the caller may do in one organization.
+      type: object
+      required:
+      - subject
+      - organization_id
+      - form
+      - version
+      - since
+      - permissions
+      properties:
+        subject:
+          description: The subject the agent answered for, from the access token.
+          type: string
+        organization_id:
+          description: The organization the list is for.
+          type: string
+        form:
+          $ref: '#/components/schemas/permissionListForm'
+        region_id:
+          description: The region the list was trimmed to.  Present only when `form` is `trimmed`.
+          type: string
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+        permissions:
+          $ref: '#/components/schemas/permissions'
+    organizationCopyAge:
+      description: How old the copy is for one organization.
+      type: object
+      required:
+      - organization_id
+      - copy_age_seconds
+      properties:
+        organization_id:
+          description: The organization.
+          type: string
+        copy_age_seconds:
+          description: Seconds since the organization's part of the copy was last confirmed current.
+          type: integer
+    status:
+      description: The agent's state.
+      type: object
+      required:
+      - agent_version
+      - region_id
+      - fresh
+      properties:
+        agent_version:
+          description: The version of the agent software.
+          type: string
+        policy_version:
+          description: The version of the policy bundle in use.  Absent when no copy is loaded.
+          type: string
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+        region_id:
+          description: The agent's own region.
+          type: string
+        fresh:
+          description: Whether the copy is current enough to answer.  When false, other operations return 503.
+          type: boolean
+        copy_age_seconds:
+          description: Seconds since the copy was last confirmed current.  Absent when no copy is loaded.
+          type: integer
+        organizations:
+          description: Copy age per organization, where it differs by organization.
+          type: array
+          items:
+            $ref: '#/components/schemas/organizationCopyAge'
+  requestBodies:
+    checkRequest:
+      description: The item to check.
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/checkItem'
+          example:
+            kind: identity:projects
+            action: read
+            organization_id: d4600d6e-e965-4b44-a808-84fb2fa36702
+            project_id: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
+    batchCheckRequest:
+      description: The items to check.
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/batchCheckRequest'
+          example:
+            items:
+            - kind: identity:projects
+              action: read
+              organization_id: d4600d6e-e965-4b44-a808-84fb2fa36702
+            - kind: identity:projects
+              action: delete
+              organization_id: d4600d6e-e965-4b44-a808-84fb2fa36702
+              project_id: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
+  responses:
+    checkResultResponse:
+      description: The answer.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/checkResult'
+          example:
+            subject: user@acme.com
+            allowed: true
+            version: 3f2c9a1b7d4e
+            since: 2026-11-20T10:15:00Z
+    batchCheckResultResponse:
+      description: The answers, in the order of the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/batchCheckResult'
+          example:
+            subject: user@acme.com
+            allowed:
+            - true
+            - false
+            version: 3f2c9a1b7d4e
+            since: 2026-11-20T10:15:00Z
+    permissionListResponse:
+      description: The caller's permissions in the organization.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/permissionList'
+          example:
+            subject: user@acme.com
+            organization_id: d4600d6e-e965-4b44-a808-84fb2fa36702
+            form: untrimmed
+            version: 3f2c9a1b7d4e
+            since: 2026-11-20T10:15:00Z
+            permissions:
+            - kind: identity:projects
+              action: read
+            - kind: identity:projects
+              action: delete
+              project_id: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
+    statusResponse:
+      description: The agent's state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/status'
+          example:
+            agent_version: 0.1.0
+            policy_version: 9c1d2e3f4a5b
+            version: 3f2c9a1b7d4e
+            since: 2026-11-20T10:15:00Z
+            region_id: 7c3e8f1a-2b4d-4e6f-8a9b-0c1d2e3f4a5b
+            fresh: true
+            copy_age_seconds: 4
+    actorForbiddenResponse:
+      description: |-
+        The caller may not act on another subject's behalf.  This is not an answer
+        to the check: a denied item is returned as `allowed: false` with 200.
+      content:
+        application/json:
+          schema:
+            $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/error'
+          example:
+            error: forbidden
+            error_description: the caller may not act on behalf of another subject
+            trace_id: 57bc14d9bd461f0b5a72db830149b67a
+    unavailableResponse:
+      description: |-
+        The agent has no permissions copy, or its copy is too old to answer.  The
+        agent fails closed: callers must treat this as no answer, not as allowed.
+      content:
+        application/json:
+          schema:
+            $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/error'
+          example:
+            error: server_error
+            error_description: permissions are not available, try again later
+            trace_id: 57bc14d9bd461f0b5a72db830149b67a
+  securitySchemes:
+    oauth2Authentication:
+      description: Operation requires OAuth 2.0 bearer token authentication.
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://identity.nks.europe-west4.nscale.com/oauth2/v2/authorization
+          tokenUrl: https://identity.nks.europe-west4.nscale.com/oauth2/v2/token
+          scopes: {}
