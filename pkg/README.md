@@ -36,10 +36,13 @@ identity storage layout.
 - [rbac](./rbac/README.md)
 - [authz](./authz/README.md)
 - [client](./client/README.md)
+- [permissionsagent](./permissionsagent/README.md)
 
 These packages define how identity issues and validates tokens, how it resolves
 effective authority, and how internal callers construct outbound requests that
 match the same service-to-service trust model enforced on inbound requests.
+`permissionsagent` holds the API contract and Go client for the regional
+permissions agent; nothing calls it yet.
 Issuer trust decisions match the token `iss` verbatim (exact string compare, per
 OIDC §3.1.3.7) — there is no issuer normalization.
 
