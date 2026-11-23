@@ -9,8 +9,8 @@
 
   This is not a bug in the Go code. `allowGrantProjectScope` documents (handler.go
   lines 291-343) that project-scope grant safety rests on two EXTERNAL invariants:
-  group create needs org-scope `identity:groups` write, and linking a group to a
-  project needs project-scope `identity:projects` update for THAT project. The
+  group create needs org-scope `identity:groups` write, and adding a group link
+  to an existing project needs org-scope `identity:projects` update. The
   local `AllowRole` check alone does not imply a per-project subset relation —
   which is exactly what this file makes precise.
 -/

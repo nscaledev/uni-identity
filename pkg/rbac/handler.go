@@ -390,9 +390,9 @@ func checkProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 // Trust assumption: accepting a permission held in *any* one of the caller's projects is
 // only safe because a granted role cannot take effect in a project the caller does not
 // already administer. Every route that turns an AllowRole result into stored authority is
-// entered behind an organization-scope check that project-scoped authority cannot satisfy,
-// and linking the resulting authority to a project needs authority over that project
-// specifically. The authority-conferring routes are:
+// entered behind an organization-scope check that project-scoped authority cannot satisfy.
+// Linking the resulting authority to a project needs organization-level identity:projects
+// update. The authority-conferring routes are:
 //
 //   - group create and update reach AllowRole through validateRoleIDs, and update also
 //     through validateMemberAdditions when it adds a member, behind organization-scope
@@ -401,18 +401,19 @@ func checkProjectScopeCreate(ctx context.Context, client openapi.ClientWithRespo
 //     puts the user in a group, behind organization-scope identity:users write;
 //   - service account create/update reaches it the same way, behind organization-scope
 //     identity:serviceaccounts write; and
-//   - linking a group to an existing project requires project-scope identity:projects
-//     update for that specific project.
+//   - adding a group link to an existing project requires organization-scope
+//     identity:projects update, which pkg/handler/projects checks on every update that
+//     changes the set of linked groups.
 //
 // Read-only callers reach AllowRole too — the roles list uses it to compute the grantable
 // flag behind identity:roles read. That confers nothing, so the reasoning above does not
 // depend on enumerating it; a new caller only has to be weighed against it if it stores
 // authority.
 //
-// If a role ever grants identity:groups, identity:users or identity:serviceaccounts write
-// at project scope, or project-group linking is relaxed to organization scope, this "any
-// project" acceptance would become a cross-project escalation and must be tightened to a
-// specific target project.
+// A role must not grant identity:groups, identity:users or identity:serviceaccounts write
+// at project scope. The group link guard must not accept project-scope identity:projects
+// update. If either rule breaks, this "any project" acceptance becomes a cross-project
+// escalation. Tighten it to a specific target project.
 func allowGrantProjectScope(ctx context.Context, endpoint string, operation openapi.AclOperation, organizationID ids.OrganizationID) error {
 	if checkOrganizationScope(ctx, endpoint, operation, organizationID.String()) == nil {
 		return nil

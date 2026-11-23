@@ -68,7 +68,7 @@ returns.
 | `identity:serviceaccounts` | List only; `accessToken` emitted solely by create/rotate (regression-tested) | `serviceaccounts/client.go:80-113` |
 | `identity:users` | Org user list; PII (names/emails), no credentials | `users/client.go:246-284` |
 | `identity:groups` | List/get; membership data | `groups/client.go:59-97` |
-| `identity:projects` | List/get; group IDs; visible count on the organization list (`include=projectsCount`) | `projects/client.go:57-70`, `pkg/handler/organization_includes.go` |
+| `identity:projects` | List/get; group IDs; visible count on the organization list (`include=projectsCount`) | `projects/client.go:61-74`, `pkg/handler/organization_includes.go` |
 | `identity:quotas` | Accounting quantities; also on the organization list (`include=quotas`) | `quotas/client.go`, `quotas/convert.go`, `pkg/handler/organization_includes.go` |
 | `identity:allocations` | Allocation quantities | `allocations/client.go:74-105` |
 | `region:regions` | Region metadata; kubeconfig lives only under separate `region:regions/detail` scope | uni-region `handler.go:96,112` |

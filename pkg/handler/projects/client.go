@@ -24,13 +24,17 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -127,11 +131,15 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, pro
 }
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ProjectWrite) (*unikornv1.Project, error) {
+	// The guard reads a repeated ID as no change, so a caller without link permission can send one.
+	// Store each group once, because every copy adds work to each ACL build for that group's members.
+	groupIDs := groupSet(in.Spec.GroupIDs)
+
 	out := &unikornv1.Project{
 		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).Get(),
 		Spec: unikornv1.ProjectSpec{
 			Tags:     conversion.GenerateTagList(in.Metadata.Tags),
-			GroupIDs: in.Spec.GroupIDs,
+			GroupIDs: groupIDs,
 		},
 	}
 
@@ -139,7 +147,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
-	for _, groupID := range in.Spec.GroupIDs {
+	for _, groupID := range groupIDs {
 		var resource unikornv1.Group
 
 		if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, &resource); err != nil {
@@ -173,6 +181,35 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 	return convert(resource), nil
 }
 
+// groupSet returns the IDs sorted, each once.
+func groupSet(groupIDs []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(groupIDs)))
+}
+
+func sameGroupSet(a, b []string) bool {
+	return slices.Equal(groupSet(a), groupSet(b))
+}
+
+func allowGroupLinkChange(ctx context.Context, organizationID ids.OrganizationID, projectID string) error {
+	id, err := uuid.Parse(projectID)
+	if err != nil {
+		return fmt.Errorf("%w: failed to parse project ID", err)
+	}
+
+	target := authz.Target{
+		Endpoint:  "identity:projects",
+		Operation: authz.Action(openapi.Update, "link-groups"),
+		Kind:      authz.Subordinate,
+		ObjectID:  id,
+	}
+
+	if err := rbac.AllowOrganizationScopeOn(ctx, target, organizationID); err != nil {
+		return errors.HTTPForbidden("changing the group links of a project requires organization-level project update permission").WithError(err)
+	}
+
+	return nil
+}
+
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID string, request *openapi.ProjectWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
@@ -182,6 +219,12 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	current, err := c.get(ctx, organization, projectID)
 	if err != nil {
 		return err
+	}
+
+	if !sameGroupSet(current.Spec.GroupIDs, request.Spec.GroupIDs) {
+		if err := allowGroupLinkChange(ctx, organizationID, projectID); err != nil {
+			return err
+		}
 	}
 
 	required, err := c.generate(ctx, organization, request)

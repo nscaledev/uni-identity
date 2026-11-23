@@ -54,9 +54,9 @@ Lean core only.
 
 `project_grant_not_locally_subset` is not a bug report — it is the formal
 statement of what `allowGrantProjectScope`'s doc comment says in prose: project-
-scope grant safety rests on two **external** invariants (group create needs
-org-scope `identity:groups` write; linking a group to a project needs project-
-scope `identity:projects` update for *that* project). The local `AllowRole` check
+scope grant safety rests on two **external** invariants. First, group create needs
+org-scope `identity:groups` write. Second, adding a group link to an existing project needs
+org-scope `identity:projects` update. The local `AllowRole` check
 alone does not imply a per-project subset relation. If either external invariant
 is ever relaxed, project-scope granting becomes cross-project privilege
 escalation. A natural next step is to encode those two invariants as explicit
