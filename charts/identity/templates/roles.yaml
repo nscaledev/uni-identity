@@ -44,10 +44,10 @@
 {{- end }}
 {{- end }}
 {{- if $on }}
-{{- $_ := set $splits (printf "%s-%s" $role $prefix) (dict "description" (printf "%s (%s)" $original.description $prefix) "scopes" $on) }}
+{{- $_ := set $splits (printf "%s-%s" $role $prefix) (dict "description" (trim (printf "%s (%s)" (default "" $original.description) $prefix)) "scopes" $on) }}
 {{- end }}
 {{- if and $off (has $prefix $offPrefixes) }}
-{{- $_ := set $splits (printf "%s-%s-off" $role $prefix) (dict "description" (printf "%s (%s, read and delete only)" $original.description $prefix) "scopes" $off) }}
+{{- $_ := set $splits (printf "%s-%s-off" $role $prefix) (dict "description" (trim (printf "%s (%s, read and delete only)" (default "" $original.description) $prefix)) "scopes" $off) }}
 {{- end }}
 {{- end }}
 {{- end }}

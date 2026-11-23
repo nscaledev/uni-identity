@@ -27,8 +27,9 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// splitIDNamespace is the UUIDv5 namespace for per-service role IDs. Other
-// systems derive the same IDs, so it must never change.
+// splitIDNamespace is the UUIDv5 namespace for per-service role IDs. An
+// external permissions catalogue refers to the roles by ID, so it must never
+// change.
 const splitIDNamespace = "6f1c0b5e-8f4b-4a7e-9a39-6d1f2f0e9c11"
 
 type builtinRoleSplits struct {

@@ -329,6 +329,7 @@ load_server() { yq -r "select(.kind == \"Deployment\" and .metadata.name == \"te
 # They are off by default; builtinRoleSplits.enabled turns them on.
 render_splits() { helm template test "$CHART" --set builtinRoleSplits.enabled=true "$@"; }
 out=$(render_splits)
+on=$out
 
 # rendered_scopes <name> prints "level scope ops" lines for a rendered Role.
 rendered_scopes() {
@@ -381,7 +382,14 @@ for role in $(split_field roles); do
 		splits=$((splits + 1))
 	done
 done
-[[ $splits -eq 32 ]] || die "expected 32 per-service roles, checked $splits"
+expected_splits=$(($(split_field roles | wc -l) * ($(split_field prefixes | wc -l) + $(split_field offPrefixes | wc -l))))
+[[ $expected_splits -gt 0 && $splits -eq $expected_splits ]] || die "expected $expected_splits per-service roles, checked $splits"
+
+# A copy of a role with no description has no leading space.
+out=$(render_splits --set roles.user.description=null)
+[[ "$(role_field user-compute '.metadata.annotations["unikorn-cloud.org/description"]')" == "(compute)" ]] ||
+	die "expected description \"(compute)\" for a copy of a role with no description"
+out=$on
 
 # Role IDs and names stay unique once the splits are added.
 [[ -z "$(yq -r 'select(.kind == "Role" and .apiVersion == "identity.unikorn-cloud.org/v1alpha1") | .metadata.name' <<<"$out" | grep -v '^---$' | sort | uniq -d)" ]] ||
@@ -401,10 +409,11 @@ without_splits() {
 
 # Off (the default) renders exactly what the chart rendered before the
 # splits: the "on" render minus the split documents, byte for byte.
-on=$out
+# This cannot catch a change to the old roles; only a diff against the base
+# render does.
 off=$(helm template test "$CHART")
-[[ $(grep -c 'unikorn-cloud.org/name: ' <<<"$on") -eq $(($(grep -c 'unikorn-cloud.org/name: ' <<<"$off") + 32)) ]] ||
-	die "expected the on render to add exactly 32 Roles"
+[[ $(grep -c 'unikorn-cloud.org/name: ' <<<"$on") -eq $(($(grep -c 'unikorn-cloud.org/name: ' <<<"$off") + expected_splits)) ]] ||
+	die "expected the on render to add exactly $expected_splits Roles"
 diff <(printf '%s\n' "$off") <(without_splits <<<"$on") >/dev/null ||
 	die "default render differs from the on render without the splits"
 out=$off
