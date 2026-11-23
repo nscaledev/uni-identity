@@ -38,6 +38,10 @@ make test-api
 This mode exists for developer workflows and manually triggered jobs that still target a persistent
 environment.
 
+[`../test/README.md`](../test/README.md) lists the variables `test/.env` must set. On a persistent
+environment, keep `TEST_SUBJECT_SUFFIX` fixed: identity never deletes a global user, so each new
+suffix leaves one more record per user the suite creates.
+
 ## Choosing a Local Cluster
 
 You can use either **KinD** (Linux and Mac) or **Colima** (Mac). Both work — the scripts

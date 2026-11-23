@@ -44,7 +44,8 @@ func expectAuditRequestForbidden(method, path string, payload any) {
 		body = bytes.NewReader(bodyBytes)
 	}
 
-	resp, _, err := auditClient.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	resp, respBody, err := auditClient.DoRequest(ctx, method, path, body, http.StatusForbidden)
+	api.DeleteIfCreated(client, ctx, method, path, resp, respBody)
 	Expect(err).NotTo(HaveOccurred(),
 		"audit %s %s should return 403 Forbidden", method, path)
 	Expect(resp).NotTo(BeNil())
@@ -151,7 +152,7 @@ var _ = Describe("Console Audit View Permissions", func() {
 		})
 
 		Describe("Given a request to list groups", func() {
-			It("audit token should succeed and return a list", func() {
+			It("audit token should succeed and return a list", Label("smoke"), func() {
 				Expect(config.AdminGroupID).NotTo(BeEmpty(),
 					"TEST_ADMIN_GROUP_ID must be set by integration fixtures")
 				Expect(config.UserGroupID).NotTo(BeEmpty(),
@@ -240,7 +241,7 @@ var _ = Describe("Console Audit View Permissions", func() {
 		})
 
 		Describe("Given a POST to create a group", func() {
-			It("audit token should be denied with a forbidden response", func() {
+			It("audit token should be denied with a forbidden response", Label("smoke"), func() {
 				expectAuditRequestForbidden(http.MethodPost,
 					api.NewEndpoints().ListGroups(config.OrgID),
 					api.NewGroupPayload().Build())
@@ -275,7 +276,7 @@ var _ = Describe("Console Audit View Permissions", func() {
 		})
 
 		Describe("Given a PUT to update the organization", func() {
-			It("audit token should be denied with a forbidden response", func() {
+			It("audit token should be denied with a forbidden response", Label("smoke"), func() {
 				original, err := adminClient.GetOrganization(ctx, config.OrgID)
 				Expect(err).NotTo(HaveOccurred())
 

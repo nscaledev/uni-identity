@@ -13,6 +13,7 @@ higher-level services call it directly to deploy dependencies. Fix once, fix eve
 | `fixtures/main.go` | CI workflow, `make integration-fixtures` | Creates test resources via the identity API using mTLS. Outputs a `.env` fragment to stdout. |
 | `loadfixtures/` | Load Test workflow | Builds the load test's data (through the identity API, or straight into Kubernetes for the medium and web datasets) and Auth0-shaped tokens. See [`../../test/load/README.md`](../../test/load/README.md). |
 | `internal/fixturelib/` | `fixtures`, `loadfixtures` | Identity API helpers shared by the fixture programs. |
+| `sweep/` | API Tests workflow (`run-api-suite.yaml`) | Deletes the test objects earlier runs left in a deployed environment's test organization, and undoes an organization rename. Reads the suite's configuration; standing `identity-api-tests-*` fixtures never match. |
 
 ## Output contracts
 
@@ -23,9 +24,13 @@ IDENTITY_BASE_URL=https://identity-<suffix>.<ingress-ip>.nip.io
 IDENTITY_NAMESPACE=unikorn-identity-<suffix>
 IDENTITY_RELEASE=identity-<suffix>
 IDENTITY_CA_CERT=/path/to/hack/ci/ca-bundle.pem
+ACL_CACHE_TIMEOUT=5s
 ```
 
 Redirect to a file (`> test/.env.install`) and source it before running fixtures.
+`ACL_CACHE_TIMEOUT` is read from the deployed server's `--acl-cache-timeout` flag
+(set in `test-values.yaml`) and is omitted if the flag isn't set; `make
+integration-fixtures` copies it into `test/.env`.
 
 ### `fixtures` stdout
 
@@ -40,6 +45,7 @@ TEST_ADMIN_SA_ID=<uuid>
 TEST_USER_SA_ID=<uuid>
 ADMIN_AUTH_TOKEN=<jwt>   # administrator role — full org-level identity CRUD
 USER_AUTH_TOKEN=<jwt>    # user role — project-scoped access
+TEST_SUBJECT_SUFFIX=<8 random chars>  # ends every user subject the suite creates
 ```
 
 Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
@@ -52,7 +58,7 @@ Redirect to `test/.env`. The Ginkgo e2e suite reads this file via `viper`.
 | `test-values.yaml` | Helm value overrides for CI: pre-configures the `ci-fixtures` system account |
 | `test-values-runtime-schema-validation-off.yaml` | Extra Helm values for the second CI integration run. Turns response-body validation off, as in production |
 | `load-kind-config.yaml`, `load-audit-policy.yaml` | Load Test only: `kind-config.yaml` plus the kube-apiserver audit log, limited to identity's server ServiceAccount |
-| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider |
+| `load-values.yaml` | Load Test only: trusts the load test's stand-in identity provider, keeps the default ACL cache timeout and lowers the server's CPU request so a rolling restart fits |
 | `ca-bundle.pem` | CA cert extracted by `setup-infra` — **gitignored**, regenerated per cluster |
 
 ## Running locally

@@ -151,7 +151,7 @@ test: test-unit
 
 .PHONY: test-unit
 test-unit:
-	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api -e /test/contracts)
+	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api/suites -e /test/contracts)
 	go tool cover -html cover.out -o cover.html
 
 # Regenerate the RBAC conformance vectors from the Lean formal model in ./formal.
@@ -212,7 +212,9 @@ lint: $(GENDIR)
 	./hack/check_chart_render.sh
 	./hack/check_observability_chart_render.sh
 	./test/load/ceiling_test.sh
+	./test/load/lib_test.sh
 	./test/load/compare_test.sh
+	./test/api/skips_test.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate
@@ -258,6 +260,15 @@ test-api-suite: test-api-setup
 	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
 	ginkgo run $(SUITE) $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
+# Runs the release-evidence smoke set: the specs labelled smoke. Fails when none is labelled, and
+# when any selected spec skips, so evidence can never pass with less than the whole set run.
+.PHONY: test-api-smoke
+test-api-smoke: test-api-setup
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run -v --randomize-all --fail-on-empty --label-filter='smoke' $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
+	@$(MAKE) --no-print-directory test-api-no-skips
+
 .PHONY: test-api-parallel
 test-api-parallel: test-api-setup
 	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
@@ -270,6 +281,19 @@ test-api-ci: test-api-setup
 	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
 	ginkgo run --randomize-all --randomize-suites --race $(GINKGO_INTEGRATION_TEST_FLAGS) --output-interceptor-mode=none ./test/api/suites/
 
+TEST_RESULTS ?= test-results.json
+
+# Lists the specs in a Ginkgo JSON report that called Skip(), by reason.
+.PHONY: test-api-skips
+test-api-skips:
+	@jq -r -f test/api/skips.jq $(TEST_RESULTS)
+
+# Fails when a spec skipped: a run with every fixture (kind) must run every spec.
+.PHONY: test-api-no-skips
+test-api-no-skips:
+	@skips="$$(jq -r -f test/api/skips.jq $(TEST_RESULTS))" || exit 1; \
+	if [ -n "$$skips" ]; then echo "$$skips"; echo "ERROR: specs skipped" >&2; exit 1; fi
+
 .PHONY: test-api-setup
 test-api-setup:
 	@go install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
@@ -278,7 +302,7 @@ test-api-setup:
 # Clean test artifacts
 .PHONY: test-api-clean
 test-api-clean:
-	@rm -f test/api/suites/test-results.json test/api/suites/junit.xml
+	@rm -f test-results.json junit.xml
 
 # Pact library path configuration (OS-specific defaults)
 UNAME_S := $(shell uname -s)
@@ -469,11 +493,12 @@ integration-install:  ## Deploy identity into the current cluster with random na
 .PHONY: integration-fixtures
 integration-fixtures:  ## Create integration fixtures and write test/.env
 	. test/.env.install && \
-	go run ./hack/ci/fixtures/... \
+	{ go run ./hack/ci/fixtures/... \
 	  --base-url "$$IDENTITY_BASE_URL" \
 	  --namespace "$$IDENTITY_NAMESPACE" \
-	  --ca-cert "$$IDENTITY_CA_CERT" \
+	  --ca-cert "$$IDENTITY_CA_CERT" && \
+	  { grep '^ACL_CACHE_TIMEOUT=' test/.env.install || true; }; } \
 	  > test/.env
 
 .PHONY: integration-test
-integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci  ## Full local integration run
+integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci test-api-no-skips  ## Full local integration run

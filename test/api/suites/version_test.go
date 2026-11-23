@@ -34,7 +34,7 @@ import (
 var _ = Describe("Service Version", func() {
 	Context("When reading the deployed service version", func() {
 		Describe("Given a valid bearer token", func() {
-			It("should return the service name and version", func() {
+			It("should return the service name and version", Label("smoke"), func() {
 				version, err := client.GetVersion(ctx)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -50,7 +50,7 @@ var _ = Describe("Service Version", func() {
 		})
 
 		Describe("Given no Authorization header", func() {
-			It("should return unauthorized", func() {
+			It("should return unauthorized", Label("smoke"), func() {
 				unauthConfig := *config
 				unauthConfig.AuthToken = ""
 				unauthClient := api.NewAPIClientWithConfig(&unauthConfig)
