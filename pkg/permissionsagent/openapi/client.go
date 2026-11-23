@@ -473,6 +473,7 @@ type CheckResponse struct {
 	JSON200      *CheckResult
 	JSON400      *externalRef0.BadRequestResponse
 	JSON401      *CallerUnauthorizedResponse
+	JSON403      *CallerForbiddenResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 	JSON503      *UnavailableResponse
 }
@@ -499,6 +500,7 @@ type BatchCheckResponse struct {
 	JSON200      *BatchCheckResult
 	JSON400      *externalRef0.BadRequestResponse
 	JSON401      *CallerUnauthorizedResponse
+	JSON403      *CallerForbiddenResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 	JSON503      *UnavailableResponse
 }
@@ -525,6 +527,7 @@ type ListPermissionsResponse struct {
 	JSON200      *PermissionList
 	JSON400      *externalRef0.BadRequestResponse
 	JSON401      *CallerUnauthorizedResponse
+	JSON403      *CallerForbiddenResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 	JSON503      *UnavailableResponse
 }
@@ -550,7 +553,7 @@ type GetStatusResponse struct {
 	HTTPResponse *http.Response
 	JSON200      *Status
 	JSON401      *CallerUnauthorizedResponse
-	JSON403      *externalRef0.ForbiddenResponse
+	JSON403      *CallerForbiddenResponse
 	JSON500      *externalRef0.InternalServerErrorResponse
 }
 
@@ -657,6 +660,13 @@ func ParseCheckResponse(rsp *http.Response) (*CheckResponse, error) {
 		}
 		response.JSON401 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest CallerForbiddenResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -710,6 +720,13 @@ func ParseBatchCheckResponse(rsp *http.Response) (*BatchCheckResponse, error) {
 			return nil, err
 		}
 		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest CallerForbiddenResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse
@@ -765,6 +782,13 @@ func ParseListPermissionsResponse(rsp *http.Response) (*ListPermissionsResponse,
 		}
 		response.JSON401 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest CallerForbiddenResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
 		var dest externalRef0.InternalServerErrorResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -813,7 +837,7 @@ func ParseGetStatusResponse(rsp *http.Response) (*GetStatusResponse, error) {
 		response.JSON401 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
-		var dest externalRef0.ForbiddenResponse
+		var dest CallerForbiddenResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

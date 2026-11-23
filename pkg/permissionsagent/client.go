@@ -45,14 +45,14 @@ var (
 	// ErrInvalidOptions means New was given options it cannot use.
 	ErrInvalidOptions = errors.New("permissions agent: invalid options")
 	// ErrInvalidInput means the call was refused locally, without calling the
-	// agent: no subject, no batch items, or too many.
+	// agent: no subject, an empty actor, no batch items, or too many.
 	ErrInvalidInput = errors.New("permissions agent: invalid input")
 	// ErrBadRequest is a 400 from the agent, for example an unknown regionId.
 	ErrBadRequest = errors.New("permissions agent: bad request")
-	// ErrUnauthorized is a 401: the agent rejected the caller's own credentials.
+	// ErrUnauthorized is a 401: no caller credentials, or bad ones.
 	ErrUnauthorized = errors.New("permissions agent: unauthorized")
-	// ErrForbidden is a 403.  Only status returns it; a denied check is not an
-	// error.
+	// ErrForbidden is a 403: the caller is authenticated but the agent does not
+	// trust it.  A denied check is not an error.
 	ErrForbidden = errors.New("permissions agent: forbidden")
 	// ErrUnavailable means there is no answer: the agent could not be reached,
 	// the call hit Options.Timeout, or the agent has no fresh copy (502, 503,
@@ -155,8 +155,8 @@ func New(opts Options) (*Client, error) {
 
 // Check asks whether the subject may perform one item.
 func (c *Client) Check(ctx context.Context, request openapi.CheckRequest) (*openapi.CheckResult, error) {
-	if request.Subject == "" {
-		return nil, fmt.Errorf("%w: subject is required", ErrInvalidInput)
+	if err := validSubject(request.Subject, request.Actor); err != nil {
+		return nil, err
 	}
 
 	return call[openapi.CheckResult](ctx, c, func(ctx context.Context) (*http.Response, error) {
@@ -167,9 +167,11 @@ func (c *Client) Check(ctx context.Context, request openapi.CheckRequest) (*open
 // BatchCheck asks about up to MaxBatchChecks items in one call.  The results
 // are in the order of request.Checks.
 func (c *Client) BatchCheck(ctx context.Context, request openapi.BatchCheckRequest) (*openapi.BatchCheckResult, error) {
+	if err := validSubject(request.Subject, request.Actor); err != nil {
+		return nil, err
+	}
+
 	switch {
-	case request.Subject == "":
-		return nil, fmt.Errorf("%w: subject is required", ErrInvalidInput)
 	case len(request.Checks) == 0:
 		return nil, fmt.Errorf("%w: no items to check", ErrInvalidInput)
 	case len(request.Checks) > MaxBatchChecks:
@@ -196,8 +198,8 @@ func (c *Client) BatchCheck(ctx context.Context, request openapi.BatchCheckReque
 // ask for untrimmed, any other form is refused with ErrTrimmed: a trimmed list
 // would hide what the subject holds where other services run.
 func (c *Client) Permissions(ctx context.Context, params openapi.ListPermissionsParams) (*openapi.PermissionList, error) {
-	if params.Subject == "" {
-		return nil, fmt.Errorf("%w: subject is required", ErrInvalidInput)
+	if err := validSubject(params.Subject, params.Actor); err != nil {
+		return nil, err
 	}
 
 	list, err := call[openapi.PermissionList](ctx, c, func(ctx context.Context) (*http.Response, error) {
@@ -219,6 +221,19 @@ func (c *Client) Status(ctx context.Context) (*openapi.Status, error) {
 	return call[openapi.Status](ctx, c, func(ctx context.Context) (*http.Response, error) {
 		return c.api.GetStatus(ctx)
 	})
+}
+
+// validSubject refuses what the agent would answer with 400.
+func validSubject(subject string, actor *string) error {
+	if subject == "" {
+		return fmt.Errorf("%w: subject is required", ErrInvalidInput)
+	}
+
+	if actor != nil && *actor == "" {
+		return fmt.Errorf("%w: actor is set but empty", ErrInvalidInput)
+	}
+
+	return nil
 }
 
 // call sends one request under the client timeout and decodes a 200 body, or

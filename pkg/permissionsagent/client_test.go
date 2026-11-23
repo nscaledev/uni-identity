@@ -47,8 +47,9 @@ const (
 	projectID      = "a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e"
 	regionID       = "7c3e8f1a-2b4d-4e6f-8a9b-0c1d2e3f4a5b"
 	copyVersion    = "3f2c9a1b7d4e"
-	subject        = "user@acme.com"
+	subject        = "c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c"
 	serviceToken   = "service-token"
+	actor          = "serviceaccount:0b1c2d3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e"
 )
 
 //nolint:gochecknoglobals
@@ -226,18 +227,26 @@ var _ = Describe("Permissions agent client", func() {
 
 		Describe("Given a service acting on the subject's behalf", func() {
 			It("sends the actor in the body", func() {
-				_, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Actor: new("service-account@acme.com"), Check: item})
+				_, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Actor: new(actor), Check: item})
 				Expect(err).NotTo(HaveOccurred())
 
 				var sent openapi.CheckRequest
 				Expect(json.Unmarshal(agent.last().body, &sent)).To(Succeed())
-				Expect(*sent.Actor).To(Equal("service-account@acme.com"))
+				Expect(*sent.Actor).To(Equal(actor))
 			})
 		})
 
 		Describe("Given no subject", func() {
 			It("returns an invalid input error without calling the agent", func() {
 				_, err := client.Check(ctx, openapi.CheckRequest{Check: item})
+				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
+				Expect(agent.recorded()).To(BeEmpty())
+			})
+		})
+
+		Describe("Given an actor that is set but empty", func() {
+			It("returns an invalid input error without calling the agent", func() {
+				_, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Actor: new(""), Check: item})
 				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
 				Expect(agent.recorded()).To(BeEmpty())
 			})
@@ -334,6 +343,14 @@ var _ = Describe("Permissions agent client", func() {
 				Expect(agent.recorded()).To(BeEmpty())
 			})
 		})
+
+		Describe("Given an actor that is set but empty", func() {
+			It("returns an invalid input error without calling the agent", func() {
+				_, err := client.BatchCheck(ctx, openapi.BatchCheckRequest{Subject: subject, Actor: new(""), Checks: items})
+				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
+				Expect(agent.recorded()).To(BeEmpty())
+			})
+		})
 	})
 
 	Context("When listing permissions", func() {
@@ -356,7 +373,7 @@ var _ = Describe("Permissions agent client", func() {
 			It("sends the camelCase query and returns the list with each entry's scope", func() {
 				params := openapi.ListPermissionsParams{
 					Subject:        subject,
-					Actor:          new("service-account@acme.com"),
+					Actor:          new(actor),
 					OrganizationId: organizationID,
 					ProjectId:      &[]string{projectID},
 					RegionId:       new(regionID),
@@ -378,7 +395,7 @@ var _ = Describe("Permissions agent client", func() {
 				Expect(req.method).To(Equal(http.MethodGet))
 				Expect(req.path).To(Equal("/v1/permissions"))
 				Expect(req.query.Get("subject")).To(Equal(subject))
-				Expect(req.query.Get("actor")).To(Equal("service-account@acme.com"))
+				Expect(req.query.Get("actor")).To(Equal(actor))
 				Expect(req.query.Get("organizationId")).To(Equal(organizationID))
 				Expect(req.query["projectId"]).To(Equal([]string{projectID}))
 				Expect(req.query.Get("regionId")).To(Equal(regionID))
@@ -399,6 +416,14 @@ var _ = Describe("Permissions agent client", func() {
 		Describe("Given no subject", func() {
 			It("returns an invalid input error without calling the agent", func() {
 				_, err := client.Permissions(ctx, openapi.ListPermissionsParams{OrganizationId: organizationID})
+				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
+				Expect(agent.recorded()).To(BeEmpty())
+			})
+		})
+
+		Describe("Given an actor that is set but empty", func() {
+			It("returns an invalid input error without calling the agent", func() {
+				_, err := client.Permissions(ctx, openapi.ListPermissionsParams{Subject: subject, Actor: new(""), OrganizationId: organizationID})
 				Expect(err).To(MatchError(permissionsagent.ErrInvalidInput))
 				Expect(agent.recorded()).To(BeEmpty())
 			})
@@ -482,7 +507,7 @@ var _ = Describe("Permissions agent client", func() {
 				},
 				Entry("400 is a bad request", http.StatusBadRequest, "invalid_request", permissionsagent.ErrBadRequest),
 				Entry("401 is unauthorized", http.StatusUnauthorized, "access_denied", permissionsagent.ErrUnauthorized),
-				Entry("403 is forbidden", http.StatusForbidden, "forbidden", permissionsagent.ErrForbidden),
+				Entry("403 is forbidden: the caller is not trusted", http.StatusForbidden, "forbidden", permissionsagent.ErrForbidden),
 				Entry("500 is a server error", http.StatusInternalServerError, "server_error", permissionsagent.ErrServer),
 				Entry("503 is unavailable", http.StatusServiceUnavailable, "server_error", permissionsagent.ErrUnavailable),
 			)

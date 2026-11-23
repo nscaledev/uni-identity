@@ -26,8 +26,9 @@ const (
 	ScopeProject      PermissionScope = "project"
 )
 
-// Actor The subject acting on the subject's behalf.  When set, an item is
-// allowed only when both are allowed.  It can only narrow the answer.
+// Actor The principal (for example a service account) acting on the subject's
+// behalf, in the same form as `subject`.  When set, an item is allowed
+// only when both are allowed.  It can only narrow the answer.
 type Actor = string
 
 // BatchCheckAnswer The answer to one item of a batch.
@@ -38,14 +39,17 @@ type BatchCheckAnswer struct {
 
 // BatchCheckRequest Items to check for a subject.
 type BatchCheckRequest struct {
-	// Actor The subject acting on the subject's behalf.  When set, an item is
-	// allowed only when both are allowed.  It can only narrow the answer.
+	// Actor The principal (for example a service account) acting on the subject's
+	// behalf, in the same form as `subject`.  When set, an item is allowed
+	// only when both are allowed.  It can only narrow the answer.
 	Actor *Actor `json:"actor,omitempty"`
 
 	// Checks Items to check, answered in the order given.
 	Checks []CheckItem `json:"checks"`
 
-	// Subject The subject the agent answers for.
+	// Subject The subject the agent answers for: the identity provider's `sub` for a
+	// user, or `serviceaccount:<id>` for a service account.  The caller must
+	// take it from an identity it has verified.
 	Subject Subject `json:"subject"`
 }
 
@@ -81,8 +85,9 @@ type CheckItem struct {
 
 // CheckRequest One item to check for a subject.
 type CheckRequest struct {
-	// Actor The subject acting on the subject's behalf.  When set, an item is
-	// allowed only when both are allowed.  It can only narrow the answer.
+	// Actor The principal (for example a service account) acting on the subject's
+	// behalf, in the same form as `subject`.  When set, an item is allowed
+	// only when both are allowed.  It can only narrow the answer.
 	Actor *Actor `json:"actor,omitempty"`
 
 	// Check One question: may the subject perform `action` on `kind`?  With no
@@ -90,7 +95,9 @@ type CheckRequest struct {
 	// `projectId` it is org-wide.  With both it is in one project.
 	Check CheckItem `json:"check"`
 
-	// Subject The subject the agent answers for.
+	// Subject The subject the agent answers for: the identity provider's `sub` for a
+	// user, or `serviceaccount:<id>` for a service account.  The caller must
+	// take it from an identity it has verified.
 	Subject Subject `json:"subject"`
 }
 
@@ -198,11 +205,15 @@ type Status struct {
 	Version *CopyVersion `json:"version,omitempty"`
 }
 
-// Subject The subject the agent answers for.
+// Subject The subject the agent answers for: the identity provider's `sub` for a
+// user, or `serviceaccount:<id>` for a service account.  The caller must
+// take it from an identity it has verified.
 type Subject = string
 
-// ActorQueryParameter defines model for actorQueryParameter.
-type ActorQueryParameter = string
+// ActorQueryParameter The principal (for example a service account) acting on the subject's
+// behalf, in the same form as `subject`.  When set, an item is allowed
+// only when both are allowed.  It can only narrow the answer.
+type ActorQueryParameter = Actor
 
 // OrganizationIDQueryParameter defines model for organizationIDQueryParameter.
 type OrganizationIDQueryParameter = string
@@ -213,11 +224,16 @@ type ProjectIDQueryParameter = []string
 // RegionIDQueryParameter defines model for regionIDQueryParameter.
 type RegionIDQueryParameter = string
 
-// SubjectQueryParameter defines model for subjectQueryParameter.
-type SubjectQueryParameter = string
+// SubjectQueryParameter The subject the agent answers for: the identity provider's `sub` for a
+// user, or `serviceaccount:<id>` for a service account.  The caller must
+// take it from an identity it has verified.
+type SubjectQueryParameter = Subject
 
 // UntrimmedQueryParameter defines model for untrimmedQueryParameter.
 type UntrimmedQueryParameter = bool
+
+// CallerForbiddenResponse Generic error message, compatible with oauth2.
+type CallerForbiddenResponse = externalRef0.Error
 
 // CallerUnauthorizedResponse Generic error message, compatible with oauth2.
 type CallerUnauthorizedResponse = externalRef0.Error
@@ -230,8 +246,9 @@ type ListPermissionsParams struct {
 	// Subject The subject to list permissions for.
 	Subject SubjectQueryParameter `form:"subject" json:"subject"`
 
-	// Actor The subject acting on the subject's behalf.  When set, only what both
-	// hold is listed.  It can only narrow the list.
+	// Actor The principal (for example a service account) acting on the subject's
+	// behalf.  When set, only what both hold is listed.  It can only narrow
+	// the list.
 	Actor *ActorQueryParameter `form:"actor,omitempty" json:"actor,omitempty"`
 
 	// OrganizationId The organization to list permissions in.

@@ -6,10 +6,15 @@ info:
     from a local copy of the platform's permissions.  Nothing on the request path
     calls a central service.
 
-    Every request names the `subject` the agent answers for.  A service acting
-    on the subject's behalf also names the `actor`; an item is then allowed only
-    when both the subject and the actor are allowed.  The actor can only narrow
-    an answer, never widen it.
+    Every check and list request names the `subject` the agent answers for.  A
+    request may also name the `actor`: the principal (for example a service
+    account) acting on the subject's behalf.  An item is then allowed only when
+    both the subject and the actor are allowed.  The actor can only narrow an
+    answer, never widen it.
+
+    A user is named by the identity provider's subject identifier for that
+    user, that is the `sub` claim the caller verified.  A service account is
+    named `serviceaccount:<id>`.
 
     The agent fails closed: when it has no copy, or its copy is too old, every
     operation except status returns 503 and no answer.
@@ -20,8 +25,15 @@ info:
 
     The caller authenticates to the agent as itself, not as the subject: with a
     service bearer token, with a client certificate (mTLS), or both, as the
-    agent deployment requires.  The agent does not take the subject's access
-    token.  401 means the caller's own credentials were rejected.
+    agent deployment requires.
+
+    - The agent MUST reject a request with no caller credentials, or bad
+      ones, with 401.
+    - The agent MUST accept only callers it is configured to trust.  Valid
+      credentials for any other principal, including a user's own access
+      token from the same issuer, get 403.
+    - The agent takes `subject` and `actor` as given.  Callers MUST take them
+      from an identity they have already verified, never from request input.
   version: 1.0.0
 paths:
   /v1/check:
@@ -38,7 +50,6 @@ paths:
       - Permissions Agent
       security:
       - serviceAuthentication: []
-      x-no-authorization: true
       requestBody:
         description: The item to check.
         required: true
@@ -47,7 +58,7 @@ paths:
             schema:
               $ref: '#/components/schemas/checkRequest'
             example:
-              subject: user@acme.com
+              subject: c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c
               check:
                 kind: identity:projects
                 action: read
@@ -68,6 +79,8 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
         '401':
           $ref: '#/components/responses/callerUnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/callerForbiddenResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
         '503':
@@ -86,7 +99,6 @@ paths:
       - Permissions Agent
       security:
       - serviceAuthentication: []
-      x-no-authorization: true
       requestBody:
         description: The items to check.
         required: true
@@ -95,7 +107,7 @@ paths:
             schema:
               $ref: '#/components/schemas/batchCheckRequest'
             example:
-              subject: user@acme.com
+              subject: c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c
               checks:
               - kind: identity:projects
                 action: read
@@ -121,6 +133,8 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
         '401':
           $ref: '#/components/responses/callerUnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/callerForbiddenResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
         '503':
@@ -150,7 +164,6 @@ paths:
       - Permissions Agent
       security:
       - serviceAuthentication: []
-      x-no-authorization: true
       parameters:
       - $ref: '#/components/parameters/subjectQueryParameter'
       - $ref: '#/components/parameters/actorQueryParameter'
@@ -185,6 +198,8 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
         '401':
           $ref: '#/components/responses/callerUnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/callerForbiddenResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
         '503':
@@ -221,7 +236,7 @@ paths:
         '401':
           $ref: '#/components/responses/callerUnauthorizedResponse'
         '403':
-          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/forbiddenResponse'
+          $ref: '#/components/responses/callerForbiddenResponse'
         '500':
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
 components:
@@ -232,15 +247,16 @@ components:
       required: true
       description: The subject to list permissions for.
       schema:
-        type: string
+        $ref: '#/components/schemas/subject'
     actorQueryParameter:
       name: actor
       in: query
       description: |-
-        The subject acting on the subject's behalf.  When set, only what both
-        hold is listed.  It can only narrow the list.
+        The principal (for example a service account) acting on the subject's
+        behalf.  When set, only what both hold is listed.  It can only narrow
+        the list.
       schema:
-        type: string
+        $ref: '#/components/schemas/actor'
     organizationIDQueryParameter:
       name: organizationId
       in: query
@@ -277,13 +293,19 @@ components:
         default: false
   schemas:
     subject:
-      description: The subject the agent answers for.
+      description: |-
+        The subject the agent answers for: the identity provider's `sub` for a
+        user, or `serviceaccount:<id>` for a service account.  The caller must
+        take it from an identity it has verified.
       type: string
+      minLength: 1
     actor:
       description: |-
-        The subject acting on the subject's behalf.  When set, an item is
-        allowed only when both are allowed.  It can only narrow the answer.
+        The principal (for example a service account) acting on the subject's
+        behalf, in the same form as `subject`.  When set, an item is allowed
+        only when both are allowed.  It can only narrow the answer.
       type: string
+      minLength: 1
     checkItem:
       description: |-
         One question: may the subject perform `action` on `kind`?  With no
@@ -502,8 +524,8 @@ components:
   responses:
     callerUnauthorizedResponse:
       description: |-
-        The caller's own credentials (service token or client certificate) were
-        rejected.  This says nothing about the subject.
+        The request has no caller credentials (service token or client
+        certificate), or bad ones.  This says nothing about the subject.
       content:
         application/json:
           schema:
@@ -511,6 +533,19 @@ components:
           example:
             error: access_denied
             error_description: authentication failed
+            trace_id: 57bc14d9bd461f0b5a72db830149b67a
+    callerForbiddenResponse:
+      description: |-
+        The caller is authenticated but is not a service this agent trusts, for
+        example a user's own access token.  This says nothing about the
+        subject: a subject with no access gets 200.
+      content:
+        application/json:
+          schema:
+            $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/error'
+          example:
+            error: forbidden
+            error_description: caller is not trusted
             trace_id: 57bc14d9bd461f0b5a72db830149b67a
     unavailableResponse:
       description: |-
@@ -528,6 +563,8 @@ components:
     serviceAuthentication:
       description: |-
         The calling service's own bearer token.  An agent deployment may require
-        a client certificate (mTLS) instead of or as well as the token.
+        a client certificate (mTLS) instead of or as well as the token.  No or
+        bad credentials get 401.  Valid credentials for a caller the agent is
+        not configured to trust, including a user's own access token, get 403.
       type: http
       scheme: bearer

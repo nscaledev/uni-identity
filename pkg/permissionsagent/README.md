@@ -31,9 +31,15 @@ Nothing in uni-identity calls the client yet.
 | Status | `GET /v1/status` | agent version, copy and policy versions, copy age, own region |
 
 - Every check and list request names the `subject` (required) and may name an
-  `actor`: in the body for checks, as query parameters for the list.  With an
-  actor, an item is allowed only when both are allowed.  The actor can only
-  narrow an answer.
+  `actor`, the principal (for example a service account) acting on the
+  subject's behalf: in the body for checks, as query parameters for the list.
+  With an actor, an item is allowed only when both are allowed.  The actor can
+  only narrow an answer.
+- Subject and actor format:
+  - a user is the identity provider's subject identifier for that user, that
+    is the `sub` claim the caller verified
+  - a service account is `serviceaccount:<id>`
+- `subject` and `actor` must not be empty; an empty value is 400.
 - An item is `kind` + `action`, with an optional `organizationId` and
   `projectId`.  No organization means a global question; an organization and
   no project means org-wide.
@@ -42,8 +48,8 @@ Nothing in uni-identity calls the client yet.
 - Each list entry has `scope`: `global`, `organization` or `project`.
   `projectId` is set only for `project`.
 - A denied item is `allowed: false` with 200.  A subject with no access in the
-  organization gets 200 and an empty list.  Checks and the list never return
-  403.
+  organization gets 200 and an empty list.  401 and 403 are about the caller,
+  never the subject.
 - JSON fields and query parameters are camelCase, like uni-identity's own API.
   Error bodies use the core error schema.
 - Paths carry the version.  Within `v1`, fields are only ever added.
@@ -62,11 +68,17 @@ Nothing in uni-identity calls the client yet.
 
 - The caller authenticates to the agent as itself, never with the subject's
   access token.
+- The agent rejects a request with no caller credentials, or bad ones, with 401
+  (`ErrUnauthorized`).
+- The agent accepts only callers it is configured to trust.  Valid credentials
+  for any other principal, including a user's own access token from the same
+  issuer, get 403 (`ErrForbidden`).
+- The agent takes `subject` and `actor` as given.  Callers must take them from
+  an identity they have already verified, never from request input.
 - `Options.Token` is the calling service's own bearer token, sent on every call.
-  Leave it empty to send no `Authorization` header.
 - For mTLS, pass an `Options.HTTPClient` set up with the client certificate.
-  The agent deployment decides which of the two it requires.
-- 401 (`ErrUnauthorized`) means the caller's own credentials were rejected.
+  The agent deployment decides whether it needs the token, the certificate or
+  both.  Leave `Options.Token` empty only when the certificate alone is enough.
 
 ## Client Behaviour
 
@@ -76,10 +88,10 @@ Nothing in uni-identity calls the client yet.
 
   | Error | Meaning |
   |---|---|
-  | `ErrInvalidInput` | refused locally, agent not called: no subject, empty batch, more than 100 items |
+  | `ErrInvalidInput` | refused locally, agent not called: no subject, empty actor, empty batch, more than 100 items |
   | `ErrBadRequest` | 400 from the agent |
-  | `ErrUnauthorized` | 401: caller credentials rejected |
-  | `ErrForbidden` | 403, from status only |
+  | `ErrUnauthorized` | 401: no caller credentials, or bad ones |
+  | `ErrForbidden` | 403: caller authenticated but not trusted by this agent |
   | `ErrUnavailable` | agent unreachable, `Options.Timeout` hit, or 502/503/504; 503 means no fresh copy |
   | `ErrServer` | any other error status |
   | `ErrResponse` | reply does not match the contract: not JSON, or wrong batch result count |
@@ -88,7 +100,8 @@ Nothing in uni-identity calls the client yet.
 - **Caller context**: if the caller's own context is cancelled or passes its
   deadline, the error matches `context.Canceled` or `context.DeadlineExceeded`
   and not `ErrUnavailable`.  Only the client's own timeout counts as
-  unavailable.
+  unavailable.  A client timeout matches both `ErrUnavailable` and
+  `context.DeadlineExceeded`, so check `ErrUnavailable` first.
 - **Batch**: `BatchCheck` refuses a reply whose result count does not match the
   items, since results are matched by position.
 - **Untrimmed lists**: when `Permissions` is called with `Untrimmed: true`, it
