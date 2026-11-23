@@ -254,6 +254,26 @@ the scope or the test records the difference. `TestProjectAdministratorEnforceme
 real gates with the ACL of a project administrator. Two more tests check that a grant stops at
 the project and that no project permission reaches organization scope.
 
+### Per-service roles
+
+`builtinRoleSplits` in the values file renders per-service copies of `administrator`,
+`auditor`, `user` and `reader`. They are not written out; the template derives them from the
+roles above, so they follow any change to those roles.
+
+- `<role>-<prefix>`, for prefixes `identity`, `region`, `compute`, `kubernetes` and `storage`,
+  holds the role's scopes whose name starts `<prefix>:`, at the same level, with the same
+  operations.
+- `<role>-<prefix>-off`, for `compute`, `kubernetes` and `storage`, holds the same scopes with
+  only `read` and `delete`: what remains when an organization loses that service. For `reader`
+  this equals `reader-<prefix>`.
+- A copy with no scopes is not rendered. None is protected, so the role list returns them.
+- IDs are fixed UUIDv5 values in the values file, not derived from the name hash used for other
+  roles, because other systems use the same IDs. `TestBuiltinRoleSplitIDs` pins them, and
+  `hack/check_chart_render.sh` checks each copy against its original.
+
+Each copy is a subset of its original, so whoever can grant the original can grant the copy.
+They are not part of the grant lattice below.
+
 ### Grant relationships
 
 A caller may grant a role only if they already hold every permission it contains, at the

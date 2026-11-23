@@ -5,14 +5,75 @@
 {{- fail (printf "additionalRoles key %q conflicts with built-in role" $name) }}
 {{- end }}
 {{- end }}
+{{- /* Per-service splits, see builtinRoleSplits in values.yaml. */}}
+{{- $splitValues := default (dict) .Values.builtinRoleSplits }}
+{{- $splitIDs := default (dict) $splitValues.ids }}
+{{- $offPrefixes := default (list) $splitValues.offPrefixes }}
+{{- $splits := dict }}
+{{- range $role := default (list) $splitValues.roles }}
+{{- $original := get $base $role }}
+{{- if not $original }}
+{{- fail (printf "builtinRoleSplits.roles: unknown role %q" $role) }}
+{{- end }}
+{{- range $prefix := default (list) $splitValues.prefixes }}
+{{- $on := dict }}
+{{- $off := dict }}
+{{- range $level, $endpoints := default (dict) $original.scopes }}
+{{- $onLevel := dict }}
+{{- $offLevel := dict }}
+{{- range $endpoint, $operations := $endpoints }}
+{{- if hasPrefix (printf "%s:" $prefix) $endpoint }}
+{{- $_ := set $onLevel $endpoint $operations }}
+{{- $offOperations := list }}
+{{- range $operations }}
+{{- if or (eq . "read") (eq . "delete") }}
+{{- $offOperations = append $offOperations . }}
+{{- end }}
+{{- end }}
+{{- if $offOperations }}
+{{- $_ := set $offLevel $endpoint $offOperations }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $onLevel }}
+{{- $_ := set $on $level $onLevel }}
+{{- end }}
+{{- if $offLevel }}
+{{- $_ := set $off $level $offLevel }}
+{{- end }}
+{{- end }}
+{{- if $on }}
+{{- $_ := set $splits (printf "%s-%s" $role $prefix) (dict "description" (printf "%s (%s)" $original.description $prefix) "scopes" $on) }}
+{{- end }}
+{{- if and $off (has $prefix $offPrefixes) }}
+{{- $_ := set $splits (printf "%s-%s-off" $role $prefix) (dict "description" (printf "%s (%s, read and delete only)" $original.description $prefix) "scopes" $off) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $name, $_ := $splits }}
+{{- if hasKey $base $name }}
+{{- fail (printf "builtinRoleSplits: %q conflicts with built-in role" $name) }}
+{{- end }}
+{{- if hasKey $additional $name }}
+{{- fail (printf "additionalRoles key %q conflicts with built-in role" $name) }}
+{{- end }}
+{{- if not (get $splitIDs $name) }}
+{{- fail (printf "builtinRoleSplits.ids has no ID for %q" $name) }}
+{{- end }}
+{{- end }}
 {{- $roles := merge (dict) $base }}
 {{- $roles = merge $roles $additional }}
+{{- $roles = merge $roles $splits }}
 {{- range $name, $spec := $roles }}
 ---
 apiVersion: identity.unikorn-cloud.org/v1alpha1
 kind: Role
 metadata:
+  {{- if hasKey $splits $name }}
+  name: {{ get $splitIDs $name }}
+  {{- else }}
   name: {{ include "resource.id" $name }}
+  {{- end }}
   labels:
     {{- include "unikorn.labels" $ | nindent 4 }}
     unikorn-cloud.org/name: {{ $name }}

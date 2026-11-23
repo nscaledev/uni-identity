@@ -592,6 +592,53 @@ roles:
         kubernetes:clusters: [read,update,delete]
         compute:instances: [create,read,update,delete]
 
+# Per-service copies of built-in roles, rendered from the roles above.
+# For each role and prefix, `<role>-<prefix>` holds the role's scopes whose
+# name starts `<prefix>:`, at the same level, with the same operations.
+# `<role>-<prefix>-off` keeps only the read and delete operations, for a
+# service the organization is no longer entitled to. A role with no scopes is
+# not rendered. None is protected. Names are reserved like built-in roles.
+# IDs are fixed: the UUIDv5 of the role name in namespace
+# 6f1c0b5e-8f4b-4a7e-9a39-6d1f2f0e9c11. Other systems use the same IDs.
+# Set roles to [] to render none.
+builtinRoleSplits:
+  roles: [administrator, auditor, user, reader]
+  prefixes: [identity, region, compute, kubernetes, storage]
+  offPrefixes: [compute, kubernetes, storage]
+  ids:
+    administrator-identity: 611f1fb8-bf3b-50e0-8477-96e72201932f
+    administrator-region: a13f76b9-c909-50bd-9f7c-1d5981af094b
+    administrator-compute: fe393bf0-a10f-5114-86b2-418caf6dae3b
+    administrator-kubernetes: cef0f37e-fdfc-519f-8d8c-2d6caa21405a
+    administrator-storage: 3f6bf4b9-9fc6-5533-883d-34179d157ef6
+    administrator-compute-off: b902d7fc-9874-5b31-97f4-971b2b5c690f
+    administrator-kubernetes-off: b5affaf4-8e0d-5b92-a931-cf7675fe2805
+    administrator-storage-off: 4a0b788e-59b8-51fe-90c3-d11d326c19b6
+    auditor-identity: 30a97759-d599-5eb5-990c-fd955f02b156
+    auditor-region: 38e5e7a6-37d8-536a-9959-db947f0009c2
+    auditor-compute: ba75409b-1caa-5ac7-8910-4238754e2e1a
+    auditor-kubernetes: 90d818bd-660a-5666-81e0-c8b596350cb3
+    auditor-storage: 8369c2aa-c087-5081-9bb4-162cbd1f2be0
+    auditor-compute-off: daa18e3a-43f4-50f5-a8b1-faff7f140853
+    auditor-kubernetes-off: db992f85-2f1f-50d6-bebf-f6592fbf2c61
+    auditor-storage-off: f115b482-1bed-5021-9dbf-241d8f03fb65
+    user-identity: b0030cf0-3c09-59fc-853e-0cf74d074cf0
+    user-region: f1ea0158-dc39-5d3c-8df3-51a1eab8fa2b
+    user-compute: 7bd28dba-9720-58a3-ba26-51ffb612142a
+    user-kubernetes: e852b301-6c7b-514e-886e-f8d6017561e7
+    user-storage: 6ba2d0a0-0648-5c0f-a820-07ec187e72b8
+    user-compute-off: 20859fbc-d8c0-5f95-a00e-c43c86a67368
+    user-kubernetes-off: 5d6a4b44-6883-55e5-a1cb-8e2896dd2154
+    user-storage-off: efa42d0b-a96b-5cc4-9572-914359e89789
+    reader-identity: 9b38c5e5-917f-5dd5-8e6b-67caadc54d0c
+    reader-region: ff5b0d58-d6cc-5fd1-b1af-f98399bc4094
+    reader-compute: 4f58ae2d-4d0a-5776-9fba-521922d9eff1
+    reader-kubernetes: a9ab4b0b-f302-596a-a459-1809f7595221
+    reader-storage: c5d55401-7b8a-5010-84d3-8bda2e4fb38e
+    reader-compute-off: 64a7bb88-1e9f-57ea-9259-80621abdd0b1
+    reader-kubernetes-off: fd9bc48d-beac-5f27-bfb0-93222887c48f
+    reader-storage-off: a916f054-eb02-5277-b024-a2272ed46385
+
 # Optional additional roles that can be injected alongside the defaults.
 # Shape matches the roles map below. Same names will raise an error.
 additionalRoles: {}
