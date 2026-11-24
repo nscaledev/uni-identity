@@ -227,10 +227,12 @@ role, test the workload services. A project administrator must not read or chang
 of a project that the group does not link to.
 
 A project administrator can read and update project metadata. A project administrator cannot
-add or remove a group link without organization-level `identity:projects` update. The guard in
-[`pkg/handler/projects`](../handler/projects/README.md) enforces this on every update that
-changes the set of linked groups. Without the guard, project-level update lets a project
-administrator change who has access to the project.
+add a group link, or remove the link to an existing group, without organization-level
+`identity:projects` update. The guard in [`pkg/handler/projects`](../handler/projects/README.md)
+enforces this on every project update. A link to a group that no longer exists gives no access, so
+a project administrator can drop it. Without the guard, project-level update lets a project
+administrator change who has access to the project. The rollout of the guard must finish before any
+group holds the role.
 
 An organization-scoped role such as `administrator` applies to every project in the
 organization, regardless of project links. Linking a group that holds the role to a project
