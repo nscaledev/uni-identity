@@ -99,7 +99,7 @@ The `reader` is similar to the `user` but allows read only access, typically use
 
 The `project-administrator` manages the workloads and the metadata of the projects that are linked to a group that holds the role.
 It can read and update a project, but it cannot create or delete a project.
-It cannot add or remove a group link without organization-level `identity:projects` update.
+It cannot add a group link, or remove the link to an existing group, without organization-level `identity:projects` update.
 A role with organization scope, such as `administrator`, applies to every project regardless of project links.
 Adding a narrower role to a principal does not remove the permissions that the principal holds through a broader role in another group.
 

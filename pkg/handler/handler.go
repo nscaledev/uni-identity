@@ -708,7 +708,7 @@ func (h *Handler) PutApiV1OrganizationsOrganizationIDProjectsProjectID(w http.Re
 		return
 	}
 
-	if err := projects.New(h.client, h.namespace).Update(r.Context(), organizationID, projectID.String(), request); err != nil {
+	if err := projects.New(h.client, h.namespace).Update(r.Context(), organizationID, projectID, request); err != nil {
 		errors.HandleError(w, r, err)
 		return
 	}

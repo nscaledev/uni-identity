@@ -186,45 +186,77 @@ func groupSet(groupIDs []string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(groupIDs)))
 }
 
-func sameGroupSet(a, b []string) bool {
-	return slices.Equal(groupSet(a), groupSet(b))
+// needsLinkAuthority reports whether the change from the stored to the requested links needs
+// organization-level authority. The guard never looks up an added ID, so a refusal tells the
+// caller nothing about it. A link to a group that no longer exists gives no access, so dropping
+// it needs no authority.
+func (c *Client) needsLinkAuthority(ctx context.Context, namespace string, stored, requested []string) (bool, error) {
+	stored, requested = groupSet(stored), groupSet(requested)
+
+	for _, id := range requested {
+		if !slices.Contains(stored, id) {
+			return true, nil
+		}
+	}
+
+	for _, id := range stored {
+		if slices.Contains(requested, id) {
+			continue
+		}
+
+		var group unikornv1.Group
+
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: id}, &group); err != nil {
+			if kerrors.IsNotFound(err) {
+				continue
+			}
+
+			return false, fmt.Errorf("%w: failed to look up a removed group", err)
+		}
+
+		return true, nil
+	}
+
+	return false, nil
 }
 
-func allowGroupLinkChange(ctx context.Context, organizationID ids.OrganizationID, projectID string) error {
-	id, err := uuid.Parse(projectID)
+func (c *Client) allowGroupLinkChange(ctx context.Context, organization *organizations.Meta, projectID ids.ProjectID, stored, requested []string) error {
+	needed, err := c.needsLinkAuthority(ctx, organization.Namespace, stored, requested)
 	if err != nil {
-		return fmt.Errorf("%w: failed to parse project ID", err)
+		return err
+	}
+
+	if !needed {
+		return nil
 	}
 
 	target := authz.Target{
 		Endpoint:  "identity:projects",
 		Operation: authz.Action(openapi.Update, "link-groups"),
 		Kind:      authz.Subordinate,
-		ObjectID:  id,
+		ObjectID:  uuid.UUID(projectID),
 	}
 
-	if err := rbac.AllowOrganizationScopeOn(ctx, target, organizationID); err != nil {
+	if err := rbac.AllowOrganizationScopeOn(ctx, target, organization.ID); err != nil {
 		return errors.HTTPForbidden("changing the group links of a project requires organization-level project update permission").WithError(err)
 	}
 
 	return nil
 }
 
-func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID string, request *openapi.ProjectWrite) error {
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, request *openapi.ProjectWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}
 
-	current, err := c.get(ctx, organization, projectID)
+	current, err := c.get(ctx, organization, projectID.String())
 	if err != nil {
 		return err
 	}
 
-	if !sameGroupSet(current.Spec.GroupIDs, request.Spec.GroupIDs) {
-		if err := allowGroupLinkChange(ctx, organizationID, projectID); err != nil {
-			return err
-		}
+	if err := c.allowGroupLinkChange(ctx, organization, projectID, current.Spec.GroupIDs, request.Spec.GroupIDs); err != nil {
+		return err
 	}
 
 	required, err := c.generate(ctx, organization, request)
@@ -240,6 +272,8 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Labels = required.Labels
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
+	// The API has no pause field, so the request cannot change it.
+	updated.Spec.Pause = current.Spec.Pause
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		if kerrors.IsConflict(err) {

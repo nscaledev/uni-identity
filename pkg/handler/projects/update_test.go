@@ -36,6 +36,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/principal"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -48,8 +49,9 @@ const (
 	groupB        = "6ba7b810-9dad-11d1-80b4-00c04fd430a2"
 	unlinkedGroup = "6ba7b810-9dad-11d1-80b4-00c04fd430a3"
 
-	foreignGroup = "6ba7b810-9dad-11d1-80b4-00c04fd430b1"
-	missingGroup = "6ba7b810-9dad-11d1-80b4-00c04fd430ff"
+	foreignGroup      = "6ba7b810-9dad-11d1-80b4-00c04fd430b1"
+	missingGroup      = "6ba7b810-9dad-11d1-80b4-00c04fd430ff"
+	otherMissingGroup = "6ba7b810-9dad-11d1-80b4-00c04fd430fe"
 
 	otherOrganizationID        = "6ba7b810-9dad-4372-a567-0e02b2c3d499"
 	otherOrganizationNamespace = "baz"
@@ -218,6 +220,11 @@ func TestUpdateGroupLinks(t *testing.T) {
 		{"update in another organization, add a link", otherOrganizationACL(), []string{groupA}, []string{groupA, groupB}, forbidden},
 
 		{"project-only, unchanged dangling link", projectOnly, []string{groupA, missingGroup}, []string{groupA, missingGroup}, invalid},
+		{"project-only, drop a dangling link", projectOnly, []string{groupA, missingGroup}, []string{groupA}, succeeds},
+		{"project-only, drop the only dangling link", projectOnly, []string{missingGroup}, []string{}, succeeds},
+		{"project-only, drop a dangling and a live link", projectOnly, []string{groupA, groupB, missingGroup}, []string{groupA}, forbidden},
+		{"project-only, replace a dangling link with an unknown group", projectOnly, []string{groupA, missingGroup}, []string{groupA, otherMissingGroup}, forbidden},
+		{"organization, drop a dangling link", organizationACL(openapi.Update), []string{groupA, missingGroup}, []string{groupA}, succeeds},
 	}
 
 	for _, test := range tests {
@@ -227,7 +234,7 @@ func TestUpdateGroupLinks(t *testing.T) {
 			cli := setupUpdateFixtures(t, test.stored)
 			before := getProject(t, cli)
 
-			err := projects.New(cli, namespace).Update(callerContext(t, test.acl), ids.MustParseOrganizationID(organizationID), projectID, updateRequest(test.requested))
+			err := projects.New(cli, namespace).Update(callerContext(t, test.acl), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), updateRequest(test.requested))
 			after := getProject(t, cli)
 
 			switch test.want {
@@ -256,21 +263,22 @@ func TestUpdateGroupLinks(t *testing.T) {
 func TestUpdateRecordsGuardOnlyWhenLinksChange(t *testing.T) {
 	t.Parallel()
 
-	update := func(t *testing.T, requested []string) []authz.Decision {
+	update := func(t *testing.T, stored, requested []string) []authz.Decision {
 		t.Helper()
 
 		recorder := &authz.Recorder{}
 		ctx := authz.NewContext(callerContext(t, organizationACL(openapi.Update)), recorder)
-		cli := setupUpdateFixtures(t, []string{groupA, groupB})
+		cli := setupUpdateFixtures(t, stored)
 
-		require.NoError(t, projects.New(cli, namespace).Update(ctx, ids.MustParseOrganizationID(organizationID), projectID, updateRequest(requested)))
+		require.NoError(t, projects.New(cli, namespace).Update(ctx, ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), updateRequest(requested)))
 
 		return recorder.Decisions()
 	}
 
-	require.Empty(t, update(t, []string{groupB, groupA}))
+	require.Empty(t, update(t, []string{groupA, groupB}, []string{groupB, groupA}))
+	require.Empty(t, update(t, []string{groupA, groupB, missingGroup}, []string{groupA, groupB}), "dropping only a dangling link needs no guard decision")
 
-	decisions := update(t, []string{groupA})
+	decisions := update(t, []string{groupA, groupB}, []string{groupA})
 	require.Len(t, decisions, 1)
 
 	decision := decisions[0]
@@ -290,9 +298,69 @@ func TestUpdateRefusalLeavesNoDecision(t *testing.T) {
 	ctx := authz.NewContext(callerContext(t, projectOnlyACL()), recorder)
 	cli := setupUpdateFixtures(t, []string{groupA})
 
-	err := projects.New(cli, namespace).Update(ctx, ids.MustParseOrganizationID(organizationID), projectID, updateRequest(nil))
+	err := projects.New(cli, namespace).Update(ctx, ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), updateRequest(nil))
 	require.True(t, errors.IsForbidden(err))
 	require.Empty(t, recorder.Decisions())
+}
+
+// Only a NotFound answer marks a removed link as dangling. Any other lookup error must stop the
+// update, because the group can still exist.
+func TestUpdateFailsWhenRemovedGroupLookupFails(t *testing.T) {
+	t.Parallel()
+
+	cli := setupUpdateFixtures(t, []string{groupA, missingGroup})
+	before := getProject(t, cli)
+
+	watcher, ok := cli.(client.WithWatch)
+	require.True(t, ok)
+
+	failing := interceptor.NewClient(watcher, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, isGroup := obj.(*identityv1.Group); isGroup && key.Name == missingGroup {
+				return kerrors.NewServiceUnavailable("group lookup failed")
+			}
+
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	err := projects.New(failing, namespace).Update(callerContext(t, projectOnlyACL()), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), updateRequest([]string{groupA}))
+	require.Error(t, err)
+	require.False(t, errors.IsForbidden(err), "a failed lookup is not a refusal, got %v", err)
+	require.False(t, errors.IsBadRequest(err), "a failed lookup is not a bad request, got %v", err)
+	require.Equal(t, before, getProject(t, cli))
+}
+
+func TestUpdateKeepsPause(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		acl       *openapi.Acl
+		requested []string
+	}{
+		{"project-only, same links", projectOnlyACL(), []string{groupA}},
+		{"organization, add a link", organizationACL(openapi.Update), []string{groupA, groupB}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cli := setupUpdateFixtures(t, []string{groupA})
+
+			paused := getProject(t, cli)
+			paused.Spec.Pause = true
+			require.NoError(t, cli.Update(t.Context(), paused))
+
+			require.NoError(t, projects.New(cli, namespace).Update(callerContext(t, test.acl), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), updateRequest(test.requested)))
+
+			after := getProject(t, cli)
+			require.True(t, after.Spec.Pause, "an update must keep the pause flag")
+			require.Equal(t, test.requested, after.Spec.GroupIDs)
+			requireMetadataUpdated(t, readProject(t, cli, projectID))
+		})
+	}
 }
 
 // The guard judges the links it read. A caller without link permission passes the guard when the
@@ -334,7 +402,7 @@ func TestUpdateConflictKeepsConcurrentChange(t *testing.T) {
 				},
 			})
 
-			err := projects.New(racing, namespace).Update(callerContext(t, test.acl), ids.MustParseOrganizationID(organizationID), projectID, updateRequest(test.requested))
+			err := projects.New(racing, namespace).Update(callerContext(t, test.acl), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), updateRequest(test.requested))
 			require.True(t, errors.IsConflict(err), "want 409, got %v", err)
 			require.ElementsMatch(t, concurrentLinks, getProject(t, cli).Spec.GroupIDs)
 		})
@@ -360,7 +428,7 @@ func TestUpdateStoresGroupLinksOnceAndSorted(t *testing.T) {
 
 			cli := setupUpdateFixtures(t, test.stored)
 
-			require.NoError(t, projects.New(cli, namespace).Update(callerContext(t, test.acl), ids.MustParseOrganizationID(organizationID), projectID, updateRequest(test.requested)))
+			require.NoError(t, projects.New(cli, namespace).Update(callerContext(t, test.acl), ids.MustParseOrganizationID(organizationID), ids.MustParseProjectID(projectID), updateRequest(test.requested)))
 			require.Equal(t, []string{groupA, groupB}, getProject(t, cli).Spec.GroupIDs)
 		})
 	}
