@@ -203,23 +203,109 @@ if helm template test "$CHART" --set-string server.runtimeSchemaValidation=false
 	die "expected render failure for string server.runtimeSchemaValidation"
 fi
 
-# The shared endpoint must reach every workload.  The controller-runtime
-# registry is process-local, so configuring only the API server omits the
-# controller metrics from the OTLP export.  Every workload must also carry
-# OTEL_SERVICE_NAME: the exported metrics use platform-generic names, so a
-# series missing service.name cannot be attributed to identity.  All four
-# workloads share that service.name, so each must also set service.instance.id
-# (from the pod name) or their unlabelled runtime series would collide.
+# The shared endpoint must reach every workload, for traces.  The code names
+# the service, so OTEL_SERVICE_NAME would have no effect and must not be set;
+# each workload sets service.instance.id from the pod name so its spans can be
+# told apart.
 out=$(helm template test "$CHART" --set otlp.endpoint=collector.example:4318)
 for workload in server organization-controller oauth2client-controller project-controller; do
 	flag=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].args[] | select(. == \"--otlp-endpoint=collector.example:4318\")" <<<"$out")
 	[[ "$flag" == "--otlp-endpoint=collector.example:4318" ]] || die "expected OTLP endpoint on test-${workload}"
 	service_name=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"OTEL_SERVICE_NAME\") | .value" <<<"$out")
-	[[ "$service_name" == "unikorn-identity" ]] || die "expected OTEL_SERVICE_NAME=unikorn-identity on test-${workload}"
+	[[ -z "$service_name" ]] || die "expected no OTEL_SERVICE_NAME on test-${workload}"
 	attributes=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"OTEL_RESOURCE_ATTRIBUTES\") | .value" <<<"$out")
 	[[ "$attributes" == 'service.instance.id=$(POD_NAME)' ]] || die "expected service.instance.id from POD_NAME on test-${workload}"
 	pod_name_source=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].env[] | select(.name == \"POD_NAME\") | .valueFrom.fieldRef.fieldPath" <<<"$out")
 	[[ "$pod_name_source" == "metadata.name" ]] || die "expected POD_NAME from the downward API on test-${workload}"
+	metrics_port=$(yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-${workload}\") | .spec.template.spec.containers[].ports[] | select(.name == \"prometheus\") | .containerPort" <<<"$out")
+	[[ "$metrics_port" == "8080" ]] || die "expected Prometheus port on test-${workload}"
 done
+
+# Direct Kubernetes reads require a get permission; list/watch only permit
+# informer synchronization and cannot authorize an API-server GET.
+has_server_get() {
+	resource="$1" yq -e '
+		select(.kind == "ClusterRole" and .metadata.name == "test-server") |
+		.rules[] |
+		select(.resources[] == strenv(resource)) |
+		select(.verbs[] == "get")
+	' <<<"$out" >/dev/null
+}
+
+for resource in \
+	groups oauth2clients oauth2providers organizations projects quotas quotametadata \
+	roles serviceaccounts users organizationusers signingkeys secrets; do
+	has_server_get "$resource" || die "expected get permission for server resource: $resource"
+done
+
+# server_verbs prints the sorted verbs the server role grants on a resource.
+server_verbs() {
+	resource="$1" yq -r '
+		select(.kind == "ClusterRole" and .metadata.name == "test-server") |
+		.rules[] |
+		select(.resources[] == strenv(resource)) |
+		.verbs[]
+	' <<<"$out" | sort -u | paste -sd, -
+}
+
+# Only the read cache watches, and only the kinds it holds; without watch on a
+# kind the cache still syncs from list but relists every 30-60 s, and without
+# list it never syncs (startup gives up after its sync timeout).  Core resources are
+# read directly and only with the verbs the server uses.
+watched=$(yq -r '
+	select(.kind == "ClusterRole" and .metadata.name == "test-server") |
+	.rules[] |
+	select(.verbs[] == "watch") |
+	.resources[]
+' <<<"$out" | sort -u | paste -sd, -)
+[[ "$watched" == "allocations,groups,oauth2providers,organizations,organizationusers,projects,quotas,roles,serviceaccounts,signingkeys,users" ]] || die "expected watch only on the read cache kinds for the server, got: $watched"
+[[ "$(server_verbs signingkeys)" == "create,get,list,update,watch" ]] || die "expected only create, get, list, update and watch on signingkeys for the server"
+[[ "$(server_verbs secrets)" == "get" ]] || die "expected only get on secrets for the server"
+[[ "$(server_verbs namespaces)" == "list" ]] || die "expected only list on namespaces for the server"
+# Organization Lease release deletes the Lease; without delete every release
+# fails and the next writer waits for a takeover.
+[[ "$(server_verbs leases)" == "create,delete,get,update" ]] || die "expected only create, delete, get and update on leases for the server"
+[[ -z "$(server_verbs configmaps)" ]] || die "expected no configmaps permission for the server"
+
+# The server reports readiness on /readyz, so a rollout only sends traffic to a
+# replica once it can read the signing key. The probe has its own port, which
+# the Service does not expose, so the ingress cannot reach it.
+rendered=$(helm template test "$CHART")
+server_deployment() { yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-server\") | $1" <<<"$rendered"; }
+[[ "$(server_deployment '.spec.template.spec.containers[0].readinessProbe.httpGet | .path + " " + .port')" == "/readyz health" ]] || die "expected a readiness probe on /readyz on the health port"
+[[ "$(yq -r 'select(.kind == "Service" and .metadata.name == "test-server") | .spec.ports[].targetPort' <<<"$rendered")" == "http" ]] || die "expected the server Service to expose only the http port"
+# pkg/server/shutdown_internal_test.go checks the shutdown fits in this.
+[[ "$(server_deployment '.spec.template.spec.terminationGracePeriodSeconds')" == "60" ]] || die "expected a 60s termination grace period for the server"
+
+# The identity API server defaults to two replicas and its PDB permits one
+# voluntary disruption without preventing a one-replica node drain. Best-effort
+# hostname spreading keeps the replicas on different nodes when possible.
+deployment=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 2$' <<<"$deployment") -eq 1 ]] || die "expected identity server to default to two replicas"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints | length' <<<"$deployment")" == "1" ]] || die "expected one identity server topology spread constraint"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].maxSkew' <<<"$deployment")" == "1" ]] || die "expected identity server topology spread maxSkew of one"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].topologyKey' <<<"$deployment")" == "kubernetes.io/hostname" ]] || die "expected identity server hostname topology spread"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].whenUnsatisfiable' <<<"$deployment")" == "ScheduleAnyway" ]] || die "expected best-effort identity server topology spread"
+[[ "$(yq -r '.spec.template.spec.topologySpreadConstraints[0].labelSelector.matchLabels.app' <<<"$deployment")" == "test-server" ]] || die "expected identity server topology spread selector"
+
+deployment=$(helm template test "$CHART" --set server.replicas=3 | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 3$' <<<"$deployment") -eq 1 ]] || die "expected identity server replica override"
+
+deployment=$(helm template test "$CHART" --set server.replicas=1 | awk 'BEGIN { RS="---" } /kind: Deployment/ && /name: test-server/ { print }')
+[[ $(grep -c '^  replicas: 1$' <<<"$deployment") -eq 1 ]] || die "expected identity server one-replica override"
+
+pdb=$(helm template test "$CHART" | awk 'BEGIN { RS="---" } /kind: PodDisruptionBudget/ && /name: test-server/ { print }')
+[[ $(grep -c '^  maxUnavailable: 1$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB to allow one unavailable pod"
+[[ $(grep -c '^      app: test-server$' <<<"$pdb") -eq 1 ]] || die "expected identity server PDB selector"
+
+# The load test installs with test-values.yaml then load-values.yaml. It must
+# run at production's ACL cache timeout, not the short one the integration
+# tests use.
+out=$(helm template test "$CHART" -f hack/ci/test-values.yaml -f hack/ci/load-values.yaml)
+assert_no_match "$out" "--acl-cache-timeout"
+# The warm-up's rolling restart needs room for one more server pod.
+load_server() { yq -r "select(.kind == \"Deployment\" and .metadata.name == \"test-server\") | $1" <<<"$out"; }
+[[ "$(load_server '.spec.template.spec.containers[0].resources.requests.cpu')" == "250m" ]] || die "expected a 250m CPU request on the load test server"
+[[ "$(load_server '.spec.template.spec.containers[0].resources.limits.cpu')" == "1" ]] || die "expected a 1 CPU limit on the load test server"
 
 echo "chart render checks OK"

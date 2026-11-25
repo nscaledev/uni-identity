@@ -264,6 +264,7 @@ func accumulateGlobalReadPermissions(acl *openapi.Acl, roleIDs []string, roles m
 	for _, roleID := range roleIDs {
 		role, ok := roles[roleID]
 		if !ok {
+			// Unlike group roles, a global binding comes from configuration, so a missing role is a config fault, not cache lag.
 			return fmt.Errorf("%w: role %s referenced by global role binding", errors.ErrConsistency, roleID)
 		}
 

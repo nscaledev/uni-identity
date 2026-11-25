@@ -16,10 +16,22 @@
   "templating": {
     "list": [
       {
+        "name": "datasource",
+        "label": "Datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "regex": ""
+      },
+      {
         "name": "cluster",
         "label": "Cluster",
         "type": "query",
-        "query": "label_values(http_server_request_duration_seconds_count{job=\"unikorn-identity\"}, cluster)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(http_server_request_duration_seconds_count{service=\"unikorn-identity\"}, cluster)",
         "includeAll": true,
         "allValue": ".*",
         "multi": true,
@@ -39,9 +51,17 @@
         "x": 0,
         "y": 0
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -57,9 +77,17 @@
         "x": 6,
         "y": 0
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
           "refId": "A"
         }
       ]
@@ -75,9 +103,17 @@
         "x": 12,
         "y": 0
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * sum(rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
           "refId": "A"
         }
       ]
@@ -93,9 +129,17 @@
         "x": 18,
         "y": 0
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
           "refId": "A"
         }
       ]
@@ -111,9 +155,17 @@
         "x": 0,
         "y": 8
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "sum by (route, status_class) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (route, status_class) (rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -129,9 +181,17 @@
         "x": 12,
         "y": 8
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "100 * sum by (status_class) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=~\"[45]xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * sum by (status_class) (rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\", status_class=~\"[45]xx\"}[5m])) / clamp_min(sum(rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])), 1e-9)",
           "refId": "A"
         }
       ]
@@ -147,9 +207,17 @@
         "x": 0,
         "y": 16
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"5xx\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -165,9 +233,17 @@
         "x": 12,
         "y": 16
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{job=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (route) (rate(http_server_request_duration_seconds_count{service=\"unikorn-identity\", cluster=~\"$cluster\", status_class=\"4xx\"}[5m]))",
           "refId": "A"
         }
       ]
@@ -183,9 +259,17 @@
         "x": 0,
         "y": 24
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
           "refId": "A"
         }
       ]
@@ -201,19 +285,35 @@
         "x": 12,
         "y": 24
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.90, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
           "legendFormat": "p90",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{service=\"unikorn-identity\", cluster=~\"$cluster\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -230,9 +330,17 @@
         "x": 18,
         "y": 24
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "sum by (route) (http_server_active_requests{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (route) (http_server_active_requests{service=\"unikorn-identity\", cluster=~\"$cluster\"})",
           "refId": "A"
         }
       ]

@@ -24,12 +24,16 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/unikorn-cloud/core/pkg/constants"
 	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
+	"github.com/unikorn-cloud/core/pkg/util"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/ids"
@@ -38,7 +42,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -46,6 +49,14 @@ import (
 var (
 	ErrReference = goerrors.New("resource reference error")
 )
+
+func organizationUserNamespace() uuid.UUID {
+	return uuid.MustParse("8e3214bc-cfd9-4b83-9390-8a6512966c12")
+}
+
+func organizationUserSeed(organizationID ids.OrganizationID, userID string) string {
+	return organizationID.String() + ":" + userID
+}
 
 // Client is responsible for user management.
 type Client struct {
@@ -84,9 +95,6 @@ func (c *Client) listGroups(ctx context.Context, organization *organizations.Met
 // the legacy one survives and keeps conferring the group's roles.  The write
 // path asks the same question the gate does (see GroupSpec.HasMemberByID).
 func subjectByID(id string) func(unikornv1.GroupSubject) bool {
-	// Compare canonical forms for the same reason that this matches by ID
-	// alone.  An entry can be in either case.  If a remove misses it, the remove
-	// reports success and the entry keeps conferring the group's roles.
 	canonical := unikornv1.NormalizeSubject(id)
 
 	return func(s unikornv1.GroupSubject) bool {
@@ -163,12 +171,7 @@ func (c *Client) validateGroupAdditions(ctx context.Context, organizationID ids.
 		}
 
 		// A subject already in the group confers its roles, so writing the
-		// UserIDs half grants nothing.  Subjects are matched by ID alone,
-		// mirroring how RBAC resolves membership: a record written before
-		// subject issuers existed carries an empty one yet still confers the
-		// roles, so re-stating that membership must not read as an addition
-		// and be refused.  A UserIDs entry alone confers nothing, so it does
-		// not exempt the write.
+		// legacy UserIDs half grants nothing. UserIDs alone do not grant roles.
 		if group.Spec.HasMemberByID(subjectID) {
 			continue
 		}
@@ -204,10 +207,7 @@ func (c *Client) groupSubject(userSubject string) unikornv1.GroupSubject {
 // other write, so a refusal cannot leave an earlier part of the request
 // applied.
 func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string, groupIDs openapi.GroupIDs, groups *unikornv1.GroupList) error {
-	// The subject is supplied by the caller rather than re-read here: on the
-	// create path the global user was just written to the API server, and a
-	// read back through the cached client can miss it while the informer catches
-	// up, spuriously failing the request. Callers already hold the user.
+	// Callers supply the subject from the user they created or loaded.
 	subject := c.groupSubject(userSubject)
 
 	for i := range groups.Items {
@@ -232,7 +232,7 @@ func (c *Client) updateGroups(ctx context.Context, userSubject, orgUserID string
 			}
 
 			// Reflect the change in the caller's in-memory list so responses can be
-			// built from it without a cached reload that may lag the write.
+			// built from it without a reload.
 			groups.Items[i] = *updated
 		}
 	}
@@ -273,7 +273,7 @@ func (c *Client) generateGlobalUser(ctx context.Context, in *openapi.UserWrite) 
 	}
 
 	out := &unikornv1.User{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, c.namespace).Get(),
+		ObjectMeta: conversion.NewDeterministicObjectMetadata(metadata, c.namespace, unikornv1.GlobalUserNamespace(), in.Spec.Subject).WithLabel(unikornv1.UserSubjectIDLabel, unikornv1.GlobalUserName(in.Spec.Subject)).Get(),
 		Spec: unikornv1.UserSpec{
 			Subject: in.Spec.Subject,
 			State:   unikornv1.UserStateActive,
@@ -297,7 +297,7 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	out := &unikornv1.OrganizationUser{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).WithLabel(constants.UserLabel, userID).Get(),
+		ObjectMeta: conversion.NewDeterministicObjectMetadata(metadata, organization.Namespace, organizationUserNamespace(), organizationUserSeed(organization.ID, userID)).WithLabel(constants.UserLabel, userID).Get(),
 		Spec: unikornv1.OrganizationUserSpec{
 			State: generateUserState(in.Spec.State),
 		},
@@ -308,6 +308,12 @@ func generateOrganizationUser(ctx context.Context, organization *organizations.M
 	}
 
 	return out, nil
+}
+
+// OrganizationUserName is the stored name of the OrganizationUser that joins a
+// global user to an organization. The load-test fixtures derive it the same way.
+func OrganizationUserName(organizationID ids.OrganizationID, userID string) string {
+	return util.GenerateDeterministicResourceID(organizationUserNamespace(), organizationUserSeed(organizationID, userID))
 }
 
 func convertUserState(in unikornv1.UserState) openapi.UserState {
@@ -350,16 +356,13 @@ func convert(in *unikornv1.OrganizationUser, user *unikornv1.User, groups *uniko
 		}
 	}
 
-	// Copy the time: the User can come from the cache without a deep copy,
-	// and the result must share no memory with it.
 	if lastActive != nil {
 		lastActiveTime := lastActive.Time
 		out.Status.LastActive = &lastActiveTime
 	}
 
-	// Report membership the way RBAC resolves it: HasMemberByID matches the
-	// subject list by ID.  An entry in the deprecated UserIDs list alone
-	// confers nothing, so it is not reported.
+	// Report membership the way RBAC resolves it. A legacy UserIDs entry alone
+	// does not confer roles and is not reported.
 	for _, group := range groups.Items {
 		if group.Spec.HasMemberByID(user.Spec.Subject) {
 			out.Spec.GroupIDs = append(out.Spec.GroupIDs, group.Name)
@@ -404,19 +407,25 @@ func (c *Client) getGlobalUserByID(ctx context.Context, id string) (*unikornv1.U
 func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
 	users := &unikornv1.UserList{}
 
-	// Scan the cache without deep copies. Copy only the match, so the caller
-	// owns the result.
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
-	// A subject that differs only in case names the same principal, so match
-	// it.  If the match is exact, onboarding Bob@x.com beside bob@x.com adds a
-	// second global record.  Refuse a subject that folds onto two records,
-	// because a new record for it makes a third.
 	index, ambiguous := unikornv1.MatchSubject(users.Items, subject)
 	if ambiguous {
 		return nil, fmt.Errorf("%w: subject %q matches more than one user", coreerrors.ErrConsistency, subject)
+	}
+
+	matches := 0
+
+	for _, user := range users.Items {
+		if user.Spec.Subject == subject {
+			matches++
+		}
+	}
+
+	if matches > 1 {
+		return nil, fmt.Errorf("%w: multiple legacy users have subject %q", coreerrors.ErrConsistency, subject)
 	}
 
 	if index < 0 {
@@ -424,6 +433,40 @@ func (c *Client) getGlobalUser(ctx context.Context, subject string) (*unikornv1.
 	}
 
 	return users.Items[index].DeepCopy(), nil
+}
+
+func (c *Client) getCanonicalGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+	user := &unikornv1.User{}
+
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: c.namespace, Name: unikornv1.GlobalUserName(subject)}, user); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, ErrReference
+		}
+
+		return nil, fmt.Errorf("%w: failed to get canonical user", err)
+	}
+
+	if unikornv1.NormalizeSubject(user.Spec.Subject) != unikornv1.NormalizeSubject(subject) {
+		return nil, fmt.Errorf("%w: canonical user subject does not match", coreerrors.ErrConsistency)
+	}
+
+	return user, nil
+}
+
+// getConflictingGlobalUser loads the record that won a create race for the
+// deterministic name.
+func (c *Client) getConflictingGlobalUser(ctx context.Context, subject string) (*unikornv1.User, error) {
+	if _, err := c.getCanonicalGlobalUser(ctx, subject); err != nil {
+		return nil, fmt.Errorf("%w: failed to load conflicting user", err)
+	}
+
+	// A legacy record can have been written beside the one that won.
+	user, err := c.getGlobalUser(ctx, subject)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to load conflicting user", err)
+	}
+
+	return user, nil
 }
 
 func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.UserWrite) (*unikornv1.User, error) {
@@ -442,12 +485,19 @@ func (c *Client) getOrCreateGlobalUser(ctx context.Context, request *openapi.Use
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
+		if kerrors.IsAlreadyExists(err) {
+			return c.getConflictingGlobalUser(ctx, request.Spec.Subject)
+		}
+
 		return nil, fmt.Errorf("%w: failed to create user", err)
 	}
 
 	return resource, nil
 }
 
+// getOrganizationUserByGlobalUserID lists by label rather than getting the
+// deterministic name, so a legacy record beside the deterministic one is
+// reported as a consistency error instead of being hidden.
 func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organization *organizations.Meta, globalUserID string) (*unikornv1.OrganizationUser, error) {
 	selector := labels.SelectorFromSet(labels.Set{
 		constants.OrganizationLabel: organization.ID.String(),
@@ -469,6 +519,40 @@ func (c *Client) getOrganizationUserByGlobalUserID(ctx context.Context, organiza
 	}
 }
 
+func (c *Client) getCanonicalOrganizationUser(ctx context.Context, organization *organizations.Meta, globalUserID string) (*unikornv1.OrganizationUser, error) {
+	result := &unikornv1.OrganizationUser{}
+
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: OrganizationUserName(organization.ID, globalUserID)}, result); err != nil {
+		if kerrors.IsNotFound(err) {
+			return nil, ErrReference
+		}
+
+		return nil, fmt.Errorf("%w: failed to get canonical organization user", err)
+	}
+
+	if result.Labels[constants.OrganizationLabel] != organization.ID.String() || result.Labels[constants.UserLabel] != globalUserID {
+		return nil, fmt.Errorf("%w: canonical organization user does not match", coreerrors.ErrConsistency)
+	}
+
+	return result, nil
+}
+
+// getConflictingOrganizationUser loads the record that won a create race for
+// the deterministic name.
+func (c *Client) getConflictingOrganizationUser(ctx context.Context, organization *organizations.Meta, globalUserID string) (*unikornv1.OrganizationUser, error) {
+	if _, err := c.getCanonicalOrganizationUser(ctx, organization, globalUserID); err != nil {
+		return nil, fmt.Errorf("%w: failed to load conflicting organization user", err)
+	}
+
+	// A legacy record can have been written beside the one that won.
+	organizationUser, err := c.getOrganizationUserByGlobalUserID(ctx, organization, globalUserID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: failed to load conflicting organization user", err)
+	}
+
+	return organizationUser, nil
+}
+
 func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *organizations.Meta, request *openapi.UserWrite, globalUserID string) (*unikornv1.OrganizationUser, error) {
 	resource, err := c.getOrganizationUserByGlobalUserID(ctx, organization, globalUserID)
 	if err == nil {
@@ -487,6 +571,10 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 	}
 
 	if err := c.client.Create(ctx, resource); err != nil {
+		if kerrors.IsAlreadyExists(err) {
+			return c.getConflictingOrganizationUser(ctx, organization, globalUserID)
+		}
+
 		return nil, fmt.Errorf("%w: failed to create organization user", err)
 	}
 
@@ -498,10 +586,15 @@ func (c *Client) getOrCreateOrganizationUser(ctx context.Context, organization *
 // first, then add to the organization.
 func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, request *openapi.UserWrite) (*openapi.UserRead, error) {
 	// Any accounts that aren't email based must use kubectl-unikorn to create them,
-	// e.g. users for unikorn services.  A display name or angle brackets are
-	// refused too: nobody can sign in to such a record, and it escapes the dedupe.
+	// e.g. users for unikorn services.
 	if !unikornv1.IsBareAddress(strings.TrimSpace(request.Spec.Subject)) {
 		return nil, errors.OAuth2InvalidRequest("subject address invalid")
+	}
+
+	// The fold below changes only A to Z.  Refuse a subject that a full
+	// lower-casing would change in any other way.
+	if !unikornv1.LowersOnlyASCII(request.Spec.Subject) {
+		return nil, errors.OAuth2InvalidRequest("subject address has a non-ASCII capital letter")
 	}
 
 	// Fold the subject, so that a new global record stores the canonical form.
@@ -554,10 +647,7 @@ func (c *Client) List(ctx context.Context, organizationID ids.OrganizationID) (o
 
 	users := &unikornv1.UserList{}
 
-	// Scan the cache without deep copies.  Only the members of this
-	// organization are read, and convert copies every value it takes from a
-	// User, so the result shares no memory with the cache.
-	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace, UnsafeDisableDeepCopy: ptr.To(true)}); err != nil {
+	if err := c.client.List(ctx, users, &client.ListOptions{Namespace: c.namespace}); err != nil {
 		return nil, fmt.Errorf("%w: failed to list users", err)
 	}
 
@@ -641,8 +731,7 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	}
 
 	// updateGroups applies its membership changes to the in-memory group list, so
-	// the response reflects the update just made without a cached reload that could
-	// still be lagging the writes.
+	// the response reflects the update just made without a reload.
 	return convert(updated, user, groups), nil
 }
 
@@ -671,6 +760,11 @@ func (c *Client) Delete(ctx context.Context, organizationID ids.OrganizationID, 
 	if err != nil {
 		return err
 	}
+
+	// A user's name is its subject, which is only knowable once the resource has
+	// been read.  Naming it here matters most on a deletion: afterwards there is
+	// nothing left to resolve the identifier against.
+	authz.Name(ctx, user.Spec.Subject)
 
 	// Deletion only strips memberships, which confers nothing, so there is no
 	// grant pre-pass to run.

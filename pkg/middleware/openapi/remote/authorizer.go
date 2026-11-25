@@ -198,7 +198,10 @@ func (a *Authorizer) authorizeOAuth2(r *http.Request, scope tokenExchangeOptions
 			return nil, errors.HTTPForbidden("not authorized for the requested scope")
 		}
 
-		return nil, errors.AccessDenied(r, "token exchange failed").WithError(err)
+		// Anything else is identity failing, not the token: a 500, never a
+		// 401, or clients drop credentials and sign in again on every
+		// identity blip. See the README's token exchange section.
+		return nil, fmt.Errorf("passport exchange: %w", err)
 	}
 
 	claims, err := decodePassportClaims(passport)

@@ -110,14 +110,25 @@ The exchange path fails closed. Token-endpoint responses project to the API edge
 - 401 (subject token rejected, `ErrTokenExchangeUnauthorized`) → `access-denied` (401)
 - 400 with RFC 6749 §5.2 `error=invalid_scope` (subject token valid, scope not granted,
   `ErrTokenExchangeForbidden`) → `forbidden` (403)
-- 5xx and transport/timeout failures (`ErrTokenExchangeUnavailable`) → `access-denied` (401),
-  via the catch-all. The middleware deliberately does not surface 502/503/504 to the caller: a
-  transient identity outage must not let a request through, and exposing the upstream status
-  would invite retries that defeat the fail-closed contract.
-- Any other non-2xx outcome — including 400 with a different `error` code, malformed bodies, and
-  unclassified 4xx — also falls through to `access-denied` (401). Same rationale: refuse
-  ambiguous responses rather than guessing at intent.
+- Everything else → `server_error` (500): 5xx and transport or timeout failures
+  (`ErrTokenExchangeUnavailable`), any other non-2xx such as a 400 with another `error` code or
+  an unclassified 4xx (`ErrTokenExchangeFailed`), a 200 with a malformed body
+  (`ErrTokenExchangeInvalidResponse`) or no token (`ErrTokenExchangeMissingAccessToken`), and a
+  request that cannot be built.
 - Malformed or temporally invalid passport after a successful exchange → 500
+
+Only identity's own 401 becomes a 401. A 401 tells the client its credentials are bad, so the
+console drops them and the user signs in again, which loads identity further: answering 401 for an
+identity failure would make a slow identity log every console user out. Every case still
+refuses the request. The middleware does not return 502/503/504 either, as clients are not expected
+to honour `Retry-After`.
+
+Known gap: identity's token endpoint itself still answers 401 when an Auth0 key fetch inside the
+check fails, not only when the token is bad (go-oidc reports the failed fetch as an invalid token),
+and that 401 passes through here unchanged. The token check reads Kubernetes state only from the
+informer cache, so a "not found" there is usually a real rejection but can be informer lag, such as a
+token written moments ago, which clears once the watch delivers it. A missing informer or a cancelled
+context inside the check also comes back as 401, not 5xx.
 
 Passport decoding rejects both expired (`exp` ≤ now) and not-yet-valid (`nbf` > now) tokens. There
 is no fallback to the legacy userinfo path. Passports are consumed in-process and are never

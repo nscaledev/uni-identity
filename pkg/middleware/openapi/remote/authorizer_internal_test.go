@@ -21,6 +21,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -491,36 +492,54 @@ func (s *stubTokenExchange) Exchange(_ context.Context, _ string, _ *tokenExchan
 	return "", s.err
 }
 
+// errBuildExchangeRequest stands in for an exchange request that cannot be built.
+var errBuildExchangeRequest = errors.New("failed to create exchange request")
+
 // TestAuthorizeProjectsExchangeErrors pins the exchange-sentinel → API-edge
-// error mapping so the 401/403 split cannot silently regress.
+// status mapping. Only identity's own rejection is a 401: a 401 makes clients
+// drop credentials, so an identity failure must render as 500.
 func TestAuthorizeProjectsExchangeErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		exchangeErr    error
-		wantForbidden  bool
-		wantAccessDeny bool
+		name        string
+		exchangeErr error
+		wantStatus  int
 	}{
 		{
-			name:           "401 from exchange becomes access denied",
-			exchangeErr:    ErrTokenExchangeUnauthorized,
-			wantAccessDeny: true,
+			name:        "401 from exchange becomes access denied",
+			exchangeErr: ErrTokenExchangeUnauthorized,
+			wantStatus:  http.StatusUnauthorized,
 		},
 		{
-			name:          "forbidden sentinel from exchange becomes 403",
-			exchangeErr:   ErrTokenExchangeForbidden,
-			wantForbidden: true,
+			name:        "forbidden sentinel from exchange becomes 403",
+			exchangeErr: ErrTokenExchangeForbidden,
+			wantStatus:  http.StatusForbidden,
 		},
 		{
-			name:           "generic exchange failure falls back to access denied",
-			exchangeErr:    ErrTokenExchangeFailed,
-			wantAccessDeny: true,
+			name:        "unclassified non-2xx is a server error",
+			exchangeErr: ErrTokenExchangeFailed,
+			wantStatus:  http.StatusInternalServerError,
 		},
 		{
-			name:           "unavailable (5xx/transport) falls back to access denied",
-			exchangeErr:    ErrTokenExchangeUnavailable,
-			wantAccessDeny: true,
+			name:        "5xx or transport failure is a server error",
+			exchangeErr: ErrTokenExchangeUnavailable,
+			wantStatus:  http.StatusInternalServerError,
+		},
+		{
+			name:        "malformed success body is a server error",
+			exchangeErr: ErrTokenExchangeInvalidResponse,
+			wantStatus:  http.StatusInternalServerError,
+		},
+		{
+			name:        "success body without a token is a server error",
+			exchangeErr: ErrTokenExchangeMissingAccessToken,
+			wantStatus:  http.StatusInternalServerError,
+		},
+		{
+			name:        "request that cannot be built is a server error",
+			exchangeErr: errBuildExchangeRequest,
+			wantStatus:  http.StatusInternalServerError,
 		},
 	}
 
@@ -530,22 +549,19 @@ func TestAuthorizeProjectsExchangeErrors(t *testing.T) {
 
 			auth := newTestAuthorizer(&stubTokenExchange{err: tt.exchangeErr})
 
-			info, err := auth.Authorize(scopedAuthInput(t, "org-1", ""))
+			input := scopedAuthInput(t, "org-1", "")
+
+			info, err := auth.Authorize(input)
 			require.Error(t, err)
 			require.Nil(t, info)
 
-			if tt.wantForbidden {
-				assert.True(t, coreerrors.IsForbidden(err),
-					"forbidden sentinel must surface as a 403 at the API edge; got %v", err)
-				assert.False(t, coreerrors.IsAccessDenied(err),
-					"forbidden must not be conflated with access-denied")
-			}
+			recorder := httptest.NewRecorder()
+			coreerrors.HandleError(recorder, input.RequestValidationInput.Request, err)
 
-			if tt.wantAccessDeny {
-				assert.True(t, coreerrors.IsAccessDenied(err),
-					"authentication failures must surface as 401 access_denied; got %v", err)
-				assert.False(t, coreerrors.IsForbidden(err),
-					"authentication failures must not surface as 403")
+			assert.Equal(t, tt.wantStatus, recorder.Code, "exchange error %v rendered the wrong status", tt.exchangeErr)
+
+			if tt.wantStatus == http.StatusInternalServerError {
+				assert.ErrorIs(t, err, tt.exchangeErr, "the cause must stay attached for the log")
 			}
 		})
 	}

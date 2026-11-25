@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "unikorn.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.server.replicas }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-server
@@ -14,6 +14,14 @@ spec:
       labels:
         app: {{ .Release.Name }}-server
     spec:
+      # Keep replicas on separate nodes when capacity permits.
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: {{ .Release.Name }}-server
       containers:
       - name: {{ .Release.Name }}-server
         image: {{ include "unikorn.image" . }}
@@ -21,6 +29,7 @@ spec:
         {{- include "unikorn.core.flags" . | nindent 8 }}
         {{- include "unikorn.cors.flags" . | nindent 8 }}
         {{- include "unikorn.otlp.flags" . | nindent 8 }}
+        {{- include "unikorn.audit.flags" . | nindent 8 }}
         - --host=https://{{ include "unikorn.identity.host" . }}
         - --jose-tls-secret={{ .Release.Name }}-jose-tls
         - --refresh-token-duration={{ printf "%dh" (mul .Values.issuer.maxTokenDurationDays 24) }}
@@ -214,10 +223,25 @@ spec:
         ports:
         - name: http
           containerPort: 6080
+        # Kept out of the Service, so the ingress cannot reach the probe.
+        - name: health
+          containerPort: 6081
+        - name: prometheus
+          containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
         resources:
           {{- .Values.server.resources | toYaml | nindent 10 }}
         securityContext:
           readOnlyRootFilesystem: true
       serviceAccountName: {{ .Release.Name }}-server
+      # Covers the server's shutdown delay, drain and final scrape, see
+      # pkg/server/shutdown.go.
+      terminationGracePeriodSeconds: 60
       securityContext:
         runAsNonRoot: true

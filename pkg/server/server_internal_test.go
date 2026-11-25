@@ -17,10 +17,18 @@ limitations under the License.
 package server
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/require"
+
+	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/identity/pkg/constants"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 )
 
@@ -94,4 +102,83 @@ func TestExpandBareAdminSubjects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDefaultRequestTimeoutFitsOrganizationLease fails if the default server
+// timeouts and the organization Lease timings stop fitting together: a
+// takeover and critical section must end before the request deadline, and
+// Lease cleanup and the response must fit before the write deadline.
+func TestDefaultRequestTimeoutFitsOrganizationLease(t *testing.T) {
+	t.Parallel()
+
+	var serverOptions options.ServerOptions
+
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	serverOptions.AddFlags(flags)
+	require.NoError(t, flags.Parse(nil))
+	require.Positive(t, serverOptions.WriteTimeout)
+
+	deadline, err := requestTimeout(&serverOptions)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, deadline, handlercommon.OrganizationLeaseTakeoverBudget)
+	require.LessOrEqual(t, deadline+handlercommon.OrganizationLeaseReleaseTimeout+responseWriteReserve, serverOptions.WriteTimeout)
+}
+
+func TestRequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name           string
+		requestTimeout time.Duration
+		writeTimeout   time.Duration
+		want           time.Duration
+		wantErr        bool
+	}{
+		{name: "no timeouts installs no deadline"},
+		{name: "write timeout leaves room for release and response", requestTimeout: 30 * time.Second, writeTimeout: 10 * time.Second, want: 8 * time.Second},
+		{name: "shorter request timeout wins", requestTimeout: 6 * time.Second, writeTimeout: 10 * time.Second, want: 6 * time.Second},
+		{name: "write timeout alone", writeTimeout: 10 * time.Second, want: 8 * time.Second},
+		{name: "request timeout alone", requestTimeout: 30 * time.Second, want: 30 * time.Second},
+		{name: "write timeout too short for takeover", requestTimeout: 30 * time.Second, writeTimeout: 5 * time.Second, wantErr: true},
+		{name: "request timeout too short for takeover", requestTimeout: time.Second, writeTimeout: 10 * time.Second, wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := requestTimeout(&options.ServerOptions{RequestTimeout: tc.requestTimeout, WriteTimeout: tc.writeTimeout})
+			if tc.wantErr {
+				require.ErrorIs(t, err, errRequestTimeout)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestRequestDeadlineMiddlewareCancelsRequestContext checks that the deadline
+// reaches the handler's context, which the write timeout alone does not cancel.
+func TestRequestDeadlineMiddlewareCancelsRequestContext(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := requestDeadlineMiddleware(&options.ServerOptions{RequestTimeout: 30 * time.Second, WriteTimeout: 10 * time.Second})
+	require.NoError(t, err)
+
+	start := time.Now()
+
+	var (
+		deadline time.Time
+		ok       bool
+	)
+
+	middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		deadline, ok = r.Context().Deadline()
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+
+	require.True(t, ok)
+	require.WithinDuration(t, start.Add(8*time.Second), deadline, time.Second)
 }

@@ -30,7 +30,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -100,7 +99,7 @@ func newInternalTestClient(t *testing.T, r *userListRecorder) *Client {
 	return New(c, internalTestNamespace, common.IssuerValue{URL: "https://identity.example.com"})
 }
 
-func TestGetGlobalUserListsWithoutDeepCopy(t *testing.T) {
+func TestGetGlobalUserListsWithoutCacheOptions(t *testing.T) {
 	t.Parallel()
 
 	r := &userListRecorder{}
@@ -110,10 +109,10 @@ func TestGetGlobalUserListsWithoutDeepCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, internalTestUserID, user.Name)
 	require.Len(t, r.lists, 1)
-	require.True(t, ptr.Deref(r.lists[0].UnsafeDisableDeepCopy, false))
+	require.Nil(t, r.lists[0].UnsafeDisableDeepCopy)
 }
 
-func TestListReadsUsersWithoutDeepCopy(t *testing.T) {
+func TestListReadsUsersWithoutCacheOptions(t *testing.T) {
 	t.Parallel()
 
 	r := &userListRecorder{}
@@ -124,13 +123,12 @@ func TestListReadsUsersWithoutDeepCopy(t *testing.T) {
 	require.Len(t, users, 1)
 	require.Equal(t, internalTestSubject, users[0].Spec.Subject)
 	require.Len(t, r.lists, 1)
-	require.True(t, ptr.Deref(r.lists[0].UnsafeDisableDeepCopy, false))
+	require.Nil(t, r.lists[0].UnsafeDisableDeepCopy)
 }
 
-// TestConvertSharesNoMemoryWithTheCache pins the rule that makes the no-copy
-// User list safe: convert copies every value it takes from the User, so the
-// response cannot change the cached object.
-func TestConvertSharesNoMemoryWithTheCache(t *testing.T) {
+// TestConvertSharesNoMemoryWithTheUser checks that convert copies every value
+// it takes from the User, so the response cannot change the source object.
+func TestConvertSharesNoMemoryWithTheUser(t *testing.T) {
 	t.Parallel()
 
 	lastAuthentication := metav1.NewTime(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))

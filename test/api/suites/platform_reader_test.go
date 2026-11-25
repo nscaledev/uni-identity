@@ -131,7 +131,7 @@ var _ = Describe("Platform reader role", func() {
 
 	Context("Given the role is protected", func() {
 		Describe("the user-facing role listing", func() {
-			It("does not contain platform-reader", func(ctx SpecContext) {
+			It("does not contain platform-reader", Label("smoke"), func(ctx SpecContext) {
 				roles, err := adminClient.ListRoles(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())

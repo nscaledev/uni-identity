@@ -1,5 +1,8 @@
 {{- if .Values.grafana.dashboards.enabled }}
 {{- $leaderElection := default dict .Values.grafana.dashboards.leaderElection }}
+{{- if and (eq .Values.grafana.dashboards.provisioningMode "operator") (empty .Values.grafana.dashboards.instanceSelector) }}
+{{- fail "grafana.dashboards.instanceSelector is required when provisioningMode is operator" }}
+{{- end }}
 {{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
 {{- $name := base $path | trimSuffix ".json" }}
 {{- if or (ne $name "leader-election") (default false $leaderElection.enabled) }}

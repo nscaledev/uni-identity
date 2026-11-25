@@ -50,25 +50,32 @@ const (
 	ns   = "identity"
 )
 
-// listCall holds the kind and options of one recorded cache list.
+// Readers that the handler lists through.
+const (
+	direct = "direct"
+	cached = "cache"
+)
+
+// listCall holds the reader, kind and options of one recorded list.
 type listCall struct {
+	reader  string
 	kind    string
 	options client.ListOptions
 }
 
-// recorder records the kind and options of each cache list that the code
+// recorder records the reader, kind and options of each list that the code
 // under test makes.
 type recorder struct {
 	lists []listCall
 }
 
-func (r *recorder) funcs() interceptor.Funcs {
+func (r *recorder) funcs(reader string) interceptor.Funcs {
 	return interceptor.Funcs{
 		List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 			options := client.ListOptions{}
 			options.ApplyOptions(opts)
 
-			r.lists = append(r.lists, listCall{kind: fmt.Sprintf("%T", list), options: options})
+			r.lists = append(r.lists, listCall{reader: reader, kind: fmt.Sprintf("%T", list), options: options})
 
 			return inner.List(ctx, list, opts...)
 		},
@@ -141,28 +148,36 @@ func newHandler(t *testing.T, r *recorder, objects ...client.Object) *Handler {
 	scheme := runtime.NewScheme()
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithInterceptorFuncs(r.funcs()).Build()
+	store := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 
-	return &Handler{client: c, namespace: ns}
+	return &Handler{
+		client:    interceptor.NewClient(store, r.funcs(direct)),
+		readCache: interceptor.NewClient(store, r.funcs(cached)),
+		namespace: ns,
+	}
 }
 
-// requireSharedLists asserts that every list disables deep copies and has no
-// selector. Only the QuotaMetadata list reads the identity namespace. Every
-// other list reads all namespaces.
+// requireSharedLists asserts that every list has no selector. The
+// QuotaMetadata list reads the identity namespace directly. Every other list
+// reads all namespaces from the cache without deep copies.
 func requireSharedLists(t *testing.T, r *recorder) {
 	t.Helper()
 
 	quotaMetadataKind := fmt.Sprintf("%T", &unikornv1.QuotaMetadataList{})
 
 	for _, call := range r.lists {
-		require.True(t, ptr.Deref(call.options.UnsafeDisableDeepCopy, false))
 		require.Nil(t, call.options.LabelSelector)
 
 		if call.kind == quotaMetadataKind {
+			require.Equal(t, direct, call.reader)
+			require.Nil(t, call.options.UnsafeDisableDeepCopy)
 			require.Equal(t, ns, call.options.Namespace)
+
 			continue
 		}
 
+		require.Equal(t, cached, call.reader, call.kind)
+		require.True(t, ptr.Deref(call.options.UnsafeDisableDeepCopy, false), call.kind)
 		require.Empty(t, call.options.Namespace)
 	}
 }

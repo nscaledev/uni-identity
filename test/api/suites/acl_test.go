@@ -35,7 +35,7 @@ import (
 var _ = Describe("Access Control Discovery", func() {
 	Context("When getting global ACL", func() {
 		Describe("Given valid authentication", func() {
-			It("should return global ACL with organization permissions", func() {
+			It("should return global ACL with organization permissions", Label("smoke"), func() {
 				acl, err := client.GetGlobalACL(ctx)
 
 				Expect(err).NotTo(HaveOccurred())
@@ -83,7 +83,7 @@ var _ = Describe("Access Control Discovery", func() {
 		})
 
 		Describe("Given invalid authentication", func() {
-			It("should reject requests without valid token", func() {
+			It("should reject requests without valid token", Label("smoke"), func() {
 				unauthClient := coreclient.NewAPIClient(config.BaseURL, "", config.RequestTimeout, &api.GinkgoLogger{})
 				_, _, err := unauthClient.DoRequest(ctx, http.MethodGet, "/api/v1/acl", nil, http.StatusOK)
 
@@ -130,7 +130,7 @@ var _ = Describe("Access Control Discovery", func() {
 		})
 
 		Describe("Given valid organization", func() {
-			It("should return organization-scoped ACL with endpoint permissions", func() {
+			It("should return organization-scoped ACL with endpoint permissions", Label("smoke"), func() {
 				// adminClient is used explicitly: org-ACL content reflects the caller's effective
 				// role within the organization.  An administrator token reliably produces a
 				// non-empty acl.Organization.Endpoints list.
@@ -204,7 +204,7 @@ var _ = Describe("Access Control Discovery", func() {
 				"UNAUTHORISED_ORG_ID must be set by integration fixtures")
 		})
 		Describe("Given the service account's home organisation", func() {
-			It("should return the service account's ACL for its home org", func() {
+			It("should return the service account's ACL for its home org", Label("smoke"), func() {
 				acl, err := serviceAccountClient.GetGlobalACL(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(acl).NotTo(BeNil())

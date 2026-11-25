@@ -1,0 +1,281 @@
+name: Load Test
+
+# Manual only. Runs identity's hot paths at a steady rate in a throwaway kind
+# cluster and gates on how many API-server calls identity makes per request,
+# then finds each path's ceiling (the highest rate with no failed request).
+# With compare on (the default) it also runs the same phases against a release
+# and reports better, worse or same, and each build's ceiling. See test/load/README.md.
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        type: choice
+        description: Dataset size. Medium (about 2,000 organizations) and web (about 20,000) are built in direct mode, with identity's controllers scaled to 0
+        options:
+        - small
+        - medium
+        - web
+        default: small
+      warmup_restarts:
+        description: Times to restart identity's server before the phases, measuring each cold start
+        type: string
+        default: '3'
+      rate:
+        description: Requests per second per phase
+        type: string
+        default: '20'
+      duration:
+        description: Seconds per steady-state phase
+        type: string
+        default: '60'
+      compare:
+        description: Also run the newest release (or baseline) and compare, in the order baseline, candidate, candidate, baseline, then the ceiling of each build (when ceiling is on). Report-only
+        type: boolean
+        default: true
+      baseline:
+        description: Compare only. Git ref to compare against (a tag, a commit, or origin/<branch>). Empty means the newest release tag with no pre-release suffix. The same ref as the candidate is an A/A run
+        type: string
+        default: ''
+      compare_margin_pct:
+        description: Compare only. Percent a metric must differ on both candidate turns to be reported better or worse
+        type: string
+        default: '25'
+      ceiling:
+        description: Find each path's ceiling after the steady state (in compare mode, once for each build)
+        type: boolean
+        default: true
+      ceiling_max:
+        description: Top of the ceiling ramp, requests per second
+        type: string
+        default: '2000'
+
+permissions:
+  contents: read
+
+jobs:
+  load-test:
+    name: Load test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CLUSTER: load-test-${{ github.run_id }}
+      # Fixed so the audit policy can name identity's ServiceAccount. Keep in
+      # step with hack/ci/load-audit-policy.yaml.
+      IDENTITY_NAMESPACE: unikorn-identity-load
+      IDENTITY_RELEASE: identity-load
+      # Must match hack/ci/load-values.yaml and test/load/idp.yaml.
+      ISSUER: http://jwks.load-test-idp.svc.cluster.local/
+      AUDIENCE: https://load-test.invalid/api
+      DATASET: ${{ inputs.dataset }}
+      COMPARE: ${{ inputs.compare }}
+      BASELINE_INPUT: ${{ inputs.baseline }}
+      COMPARE_MARGIN_PCT: ${{ inputs.compare_margin_pct }}
+      # Small goes through identity's API. Medium and web write the records
+      # straight to the Kubernetes API (see test/load/README.md).
+      MODE: ${{ inputs.dataset == 'small' && 'api' || 'direct' }}
+      WARMUP_RESTARTS: ${{ inputs.warmup_restarts }}
+      RATE: ${{ inputs.rate }}
+      DURATION: ${{ inputs.duration }}
+      CEILING: ${{ inputs.ceiling }}
+      CEILING_MAX: ${{ inputs.ceiling_max }}
+      OUT_DIR: load-out
+    steps:
+    - name: Check inputs
+      run: |
+        [[ "${WARMUP_RESTARTS}" =~ ^[0-9]+$ ]] || { echo "warmup_restarts must be a non-negative integer"; exit 1; }
+        [[ "${RATE}" =~ ^[1-9][0-9]*$ ]] || { echo "rate must be a positive integer"; exit 1; }
+        [[ "${DURATION}" =~ ^[1-9][0-9]*$ ]] || { echo "duration must be a positive integer"; exit 1; }
+        [[ "${CEILING_MAX}" =~ ^[1-9][0-9]*$ ]] || { echo "ceiling_max must be a positive integer"; exit 1; }
+        if [[ "${CEILING}" == true ]]; then
+          (( CEILING_MAX > RATE )) || { echo "ceiling_max must be above rate"; exit 1; }
+        fi
+        [[ "${COMPARE_MARGIN_PCT}" =~ ^[1-9][0-9]*$ ]] || { echo "compare_margin_pct must be a positive integer"; exit 1; }
+
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # Tags and history, so a release can be checked out as the baseline.
+        fetch-depth: 0
+
+    - name: Setup Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+
+    - name: Install Helm
+      uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      with:
+        # Same pin as the integration workflow: helm v4.2.1 regressed --wait.
+        version: v4.2.0
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Install k6
+      uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
+      with:
+        k6-version: 1.8.2
+
+    # The config adds the kube-apiserver audit log to hack/ci/kind-config.yaml.
+    - name: Create KinD cluster
+      uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+      with:
+        version: v0.33.0
+        cluster_name: ${{ env.CLUSTER }}
+        config: hack/ci/load-kind-config.yaml
+
+    - name: Install cluster infrastructure
+      env:
+        KIND_CLUSTER: ${{ env.CLUSTER }}
+      run: make integration-infra
+
+    # Compare mode: the baseline's source tree is built into an image beside
+    # the candidate's, tagged apart so neither is mistaken for the other. Only
+    # images are used from the baseline; the chart is the candidate's.
+    # See test/load/README.md.
+    - name: Build the baseline and candidate images
+      if: ${{ inputs.compare }}
+      env:
+        KIND_CLUSTER: ${{ env.CLUSTER }}
+      run: |
+        ref="${BASELINE_INPUT}"
+        if [[ -z "${ref}" ]]; then
+          tags=$(git tag --list 'v*' --sort=-v:refname)
+          ref=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "${tags}" | head -n 1 || true)
+          [[ -n "${ref}" ]] || { echo "no release tag (v1.2.3, no suffix) to use as the baseline; set baseline"; exit 1; }
+        fi
+        sha=$(git rev-parse --verify --quiet --end-of-options "${ref}^{commit}") \
+          || { echo "baseline ${ref} is not a ref or commit in this checkout"; exit 1; }
+        git worktree add --detach "${RUNNER_TEMP}/baseline" "${sha}"
+        {
+          echo "BASELINE_REF=${ref}"
+          echo "CANDIDATE_REF=$(git rev-parse --short=8 HEAD)"
+          echo "BASELINE_TAG=baseline-${sha:0:8}"
+          echo "CANDIDATE_TAG=candidate-$(git rev-parse --short=8 HEAD)"
+        } >> "${GITHUB_ENV}"
+        make -C "${RUNNER_TEMP}/baseline" images-kind-load VERSION="baseline-${sha:0:8}" KIND_CLUSTER="${KIND_CLUSTER}"
+        make images-kind-load VERSION="candidate-$(git rev-parse --short=8 HEAD)" KIND_CLUSTER="${KIND_CLUSTER}"
+
+    # Trusts the stand-in provider below (hack/ci/load-values.yaml).
+    - name: Install identity
+      env:
+        KIND_CLUSTER: ${{ env.CLUSTER }}
+        KIND_SUFFIX: load
+        INTEGRATION_EXTRA_VALUES: hack/ci/load-values.yaml
+      run: make integration-install
+
+    # Direct mode writes the status the controllers would, so they must not run
+    # and race it.
+    - name: Scale identity's controllers to zero
+      if: ${{ inputs.dataset != 'small' }}
+      run: |
+        for controller in organization project oauth2client; do
+          kubectl scale deployment -n "${IDENTITY_NAMESPACE}" "${IDENTITY_RELEASE}-${controller}-controller" --replicas=0
+          kubectl wait --for=delete pod -n "${IDENTITY_NAMESPACE}" -l "app=${IDENTITY_RELEASE}-${controller}-controller" --timeout=120s
+        done
+
+    - name: Create load fixtures
+      run: |
+        set -a; . test/.env.install; set +a
+        mkdir -p "${OUT_DIR}" "${RUNNER_TEMP}/load"
+        go run ./hack/ci/loadfixtures/... \
+          --dataset "${DATASET}" \
+          --mode "${MODE}" \
+          --base-url "${IDENTITY_BASE_URL}" \
+          --namespace "${IDENTITY_NAMESPACE}" \
+          --ca-cert "${IDENTITY_CA_CERT}" \
+          --issuer "${ISSUER}" \
+          --audience "${AUDIENCE}" \
+          --out-dir "${RUNNER_TEMP}/load"
+        # Tokens stay out of the uploaded artifact; only the counts go in.
+        jq .counts "${RUNNER_TEMP}/load/tokens.json" > "${OUT_DIR}/dataset.json"
+
+    - name: Serve the stand-in provider's public keys
+      run: |
+        kubectl apply -f test/load/idp.yaml
+        kubectl create configmap jwks -n load-test-idp \
+          --from-file=jwks.json="${RUNNER_TEMP}/load/jwks.json"
+        kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
+
+    # The project controller is busy for a while after fixtures; load must not
+    # overlap it. Direct mode has no controllers running, and its projects
+    # carry no status.
+    - name: Wait for fixtures to settle
+      if: ${{ inputs.dataset == 'small' }}
+      run: |
+        kubectl wait --for=condition=Available --timeout=15m \
+          organizations.identity.unikorn-cloud.org --all -A
+        kubectl wait --for=condition=Available --timeout=15m \
+          projects.identity.unikorn-cloud.org --all -A
+
+    # Restarts identity's server and records each cold start; it also warms the
+    # server for the phases. See test/load/README.md.
+    - name: Restart identity and measure warm-up
+      if: ${{ !inputs.compare }}
+      run: |
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
+          test/load/warmup.sh
+
+    - name: Run load phases
+      if: ${{ !inputs.compare }}
+      run: |
+        set -a; . test/.env.install; set +a
+        BASE_URL="${IDENTITY_BASE_URL}" \
+        TOKENS="${RUNNER_TEMP}/load/tokens.json" \
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        SERVER_DEPLOYMENT="${IDENTITY_RELEASE}-server" \
+          test/load/run-phases.sh
+
+    # Fixtures and chart are shared: only the server's image changes between
+    # turns (the candidate's chart, CRDs and values stay). Each turn restarts
+    # and measures warm-up on its own. Baseline, candidate, candidate,
+    # baseline; a baseline that cannot become Ready on the candidate's chart,
+    # or cannot run, fails the job.
+    - name: Run baseline and candidate turns
+      if: ${{ inputs.compare }}
+      run: |
+        set -a; . test/.env.install; set +a
+        BASE_URL="${IDENTITY_BASE_URL}" \
+        TOKENS="${RUNNER_TEMP}/load/tokens.json" \
+        NAMESPACE="${IDENTITY_NAMESPACE}" \
+        RELEASE="${IDENTITY_RELEASE}" \
+          test/load/compare-turns.sh
+
+    - name: Collect the API server audit log
+      if: ${{ !cancelled() }}
+      run: |
+        docker exec "${CLUSTER}-control-plane" cat /var/log/kubernetes/kube-apiserver-audit.log \
+          > "${RUNNER_TEMP}/load/audit.log"
+
+    - name: Count identity's API-server calls
+      if: ${{ !cancelled() }}
+      env:
+        IDENTITY_USER: system:serviceaccount:${{ env.IDENTITY_NAMESPACE }}:${{ env.IDENTITY_RELEASE }}-server
+      run: |
+        if [[ "${COMPARE}" == "true" ]]; then
+          test/load/count-turns.sh "${RUNNER_TEMP}/load/audit.log" "${OUT_DIR}"
+        else
+          test/load/count-audit.sh "${RUNNER_TEMP}/load/audit.log" "${OUT_DIR}/phases.json" "${OUT_DIR}/counts.json"
+        fi
+
+    - name: Write job summary
+      if: ${{ !cancelled() }}
+      env:
+        NAMESPACE: ${{ env.IDENTITY_NAMESPACE }}
+        SERVER_DEPLOYMENT: ${{ env.IDENTITY_RELEASE }}-server
+      run: |
+        if [[ "${COMPARE}" == "true" && -s "${OUT_DIR}/turns.json" ]]; then
+          test/load/compare.sh "${OUT_DIR}" >> "$GITHUB_STEP_SUMMARY"
+        elif [[ "${COMPARE}" != "true" && -s "${OUT_DIR}/counts.json" ]]; then
+          test/load/report.sh "${OUT_DIR}" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "No counts were produced; see the failed step." >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Upload results
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: load-test-${{ github.run_id }}
+        path: ${{ env.OUT_DIR }}
+        if-no-files-found: warn

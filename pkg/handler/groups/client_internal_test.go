@@ -28,7 +28,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -70,11 +69,9 @@ func TestDeduplicateGroupSubjects(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
-// TestFindUserBySubjectListsWithoutDeepCopy pins the no-copy User list.  A
-// group write resolves each subject at this deployment's issuer, and each
-// lookup scans every User in the cache, so a copy of each one costs far more
-// than the one User the lookup returns.
-func TestFindUserBySubjectListsWithoutDeepCopy(t *testing.T) {
+// TestFindUserBySubjectListsWithoutCacheOptions checks that the User scan sends
+// no cache-only options to the direct client.
+func TestFindUserBySubjectListsWithoutCacheOptions(t *testing.T) {
 	t.Parallel()
 
 	var lists []client.ListOptions
@@ -101,5 +98,5 @@ func TestFindUserBySubjectListsWithoutDeepCopy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, user.Name, found.Name)
 	require.Len(t, lists, 1)
-	require.True(t, ptr.Deref(lists[0].UnsafeDisableDeepCopy, false))
+	require.Nil(t, lists[0].UnsafeDisableDeepCopy)
 }

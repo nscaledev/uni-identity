@@ -291,7 +291,7 @@ var _ = Describe("Project Discovery", func() {
 
 	Context("When getting project details", func() {
 		Describe("Given valid project ID", func() {
-			It("should return project details", func() {
+			It("should return project details", Label("smoke"), func() {
 				project, err := client.GetProject(ctx, config.OrgID, config.ProjectID)
 
 				Expect(err).NotTo(HaveOccurred())

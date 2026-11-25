@@ -30,6 +30,7 @@ import (
 
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/jose"
+	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -152,14 +153,13 @@ func (a *Authenticator) expiry(now time.Time, info *IssueInfo) time.Time {
 	return now.Add(a.options.AccessTokenDuration)
 }
 
-// updateUser applies change to user, which comes from the informer cache, and
-// writes the result when change reports that it changed the user.
+// updateUser applies change to user and writes the result when change reports
+// that it changed the user.
 //
 // Another writer, for example a concurrent login or the subject migration, can
 // change the record between the read and the write.  The API server then refuses
-// the write with a conflict, and the cache can still hold the version that lost.
-// So updateUser reads the latest version from the API server, applies change to
-// it again and writes once more.  The other change stays.  A second conflict goes
+// the write with a conflict.  So updateUser reads the latest version, applies
+// change to it again and writes once more.  The other change stays.  A second conflict goes
 // back to the caller.  That is the one re-read and re-apply that the platform
 // specification gives for a write conflict inside a request.
 func (a *Authenticator) updateUser(ctx context.Context, user *unikornv1.User, change func(*unikornv1.User) (bool, error)) error {
@@ -174,7 +174,7 @@ func (a *Authenticator) updateUser(ctx context.Context, user *unikornv1.User, ch
 
 	latest := &unikornv1.User{}
 
-	if err := a.directclient.Get(ctx, client.ObjectKeyFromObject(user), latest); err != nil {
+	if err := a.client.Get(ctx, client.ObjectKeyFromObject(user), latest); err != nil {
 		return err
 	}
 
@@ -189,6 +189,8 @@ func (a *Authenticator) updateUser(ctx context.Context, user *unikornv1.User, ch
 // updateSession updates the user record to indicate the current access token and single-use refresh
 // token bound to a specific client.  This ensures only a single session can be active per-client
 // at a time, tokens are automatically revoked when reissued etc.
+//
+//nolint:cyclop
 func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, tokens *Tokens, authorizationCodeID *string) (time.Time, error) {
 	var lastAuthentication *metav1.Time
 
@@ -197,7 +199,37 @@ func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, toke
 		return time.Time{}, err
 	}
 
+	var authorizationCodeErr error
+
 	err = a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
+		// A retry judges the code on the latest record, so a verdict from the
+		// first pass must not survive into it.
+		authorizationCodeErr = nil
+
+		changed := prunePendingAuthorizationCodes(user, time.Now())
+
+		if authorizationCodeID != nil {
+			index := slices.IndexFunc(user.Spec.PendingAuthorizationCodes, func(code unikornv1.PendingAuthorizationCode) bool {
+				return code.CodeID == *authorizationCodeID && code.ClientID == info.Federated.ClientID
+			})
+			if index < 0 {
+				sessionIndex := slices.IndexFunc(user.Spec.Sessions, func(session unikornv1.UserSession) bool {
+					return session.ClientID == info.Federated.ClientID && session.AuthorizationCodeID == *authorizationCodeID
+				})
+				if sessionIndex >= 0 {
+					a.InvalidateToken(ctx, user.Spec.Sessions[sessionIndex].AccessToken)
+					user.Spec.Sessions = append(user.Spec.Sessions[:sessionIndex], user.Spec.Sessions[sessionIndex+1:]...)
+					changed = true
+				}
+
+				authorizationCodeErr = oauth2errors.OAuth2InvalidGrant("authorization code is invalid or has expired")
+
+				return changed, nil
+			}
+
+			user.Spec.PendingAuthorizationCodes = append(user.Spec.PendingAuthorizationCodes[:index], user.Spec.PendingAuthorizationCodes[index+1:]...)
+		}
+
 		session, err := user.Session(info.Federated.ClientID)
 		if err != nil {
 			user.Spec.Sessions = append(user.Spec.Sessions, unikornv1.UserSession{
@@ -233,6 +265,10 @@ func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, toke
 		return time.Time{}, err
 	}
 
+	if authorizationCodeErr != nil {
+		return time.Time{}, authorizationCodeErr
+	}
+
 	lastAuthenticationTime := time.Now()
 
 	if lastAuthentication != nil {
@@ -240,6 +276,36 @@ func (a *Authenticator) updateSession(ctx context.Context, info *IssueInfo, toke
 	}
 
 	return lastAuthenticationTime, nil
+}
+
+const authorizationCodeLifetime = time.Minute
+
+func prunePendingAuthorizationCodes(user *unikornv1.User, now time.Time) bool {
+	before := len(user.Spec.PendingAuthorizationCodes)
+	user.Spec.PendingAuthorizationCodes = slices.DeleteFunc(user.Spec.PendingAuthorizationCodes, func(code unikornv1.PendingAuthorizationCode) bool {
+		return !code.Expiry.After(now)
+	})
+
+	return len(user.Spec.PendingAuthorizationCodes) != before
+}
+
+func (a *Authenticator) addPendingAuthorizationCode(ctx context.Context, user *unikornv1.User, codeID, clientID string) error {
+	return a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
+		prunePendingAuthorizationCodes(user, time.Now())
+
+		// Codes are appended, so the oldest are at the front.
+		if excess := len(user.Spec.PendingAuthorizationCodes) - unikornv1.MaxPendingAuthorizationCodes + 1; excess > 0 {
+			user.Spec.PendingAuthorizationCodes = slices.Delete(user.Spec.PendingAuthorizationCodes, 0, excess)
+		}
+
+		user.Spec.PendingAuthorizationCodes = append(user.Spec.PendingAuthorizationCodes, unikornv1.PendingAuthorizationCode{
+			CodeID:   codeID,
+			ClientID: clientID,
+			Expiry:   metav1.NewTime(time.Now().Add(authorizationCodeLifetime)),
+		})
+
+		return true, nil
+	})
 }
 
 // Issue issues a new JWT access token.
@@ -323,24 +389,36 @@ type VerifyInfo struct {
 
 // Verify checks the access token parses and validates.
 func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, error) {
-	// The verification process is very expensive, so we add a cache in here to
-	// improve interactivity.  Once this is in place, then the network latency becomes
-	// the bottle neck, presumably this is the TLS handshake.  Similar code can be
-	// in the remote client-side verification middleware.
+	claims, _, err := a.verify(ctx, info)
+
+	return claims, err
+}
+
+// verify checks the access token parses and validates. For a federated token
+// it also returns the active user it checked the session against, so callers
+// can use it without reading it again.
+func (a *Authenticator) verify(ctx context.Context, info *VerifyInfo) (*Claims, *unikornv1.User, error) {
+	// Decoding and cryptographic validation are expensive, so cache the claims.
+	// Revocable identity state is checked against the informer cache below.
 	if value, ok := a.tokenCache.Get(info.Token); ok {
 		claims, ok := value.(*Claims)
 		if !ok {
-			return nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
+			return nil, nil, fmt.Errorf("%w: failed to assert cache claims", ErrTokenVerification)
 		}
 
-		return claims, nil
+		user, err := a.verifyRevocableState(ctx, info, claims)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return claims, user, nil
 	}
 
 	// Parse and verify the claims with the public key.
 	claims := &Claims{}
 
 	if err := a.jwtIssuer.DecodeJWEToken(ctx, info.Token, claims, jose.TokenTypeAccessToken); err != nil {
-		return nil, fmt.Errorf("failed to decrypt claims: %w", err)
+		return nil, nil, fmt.Errorf("failed to decrypt claims: %w", err)
 	}
 
 	// Verify the claims.
@@ -353,21 +431,17 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 	}
 
 	if err := claims.ValidateWithLeeway(expected, a.options.TokenVerificationLeeway); err != nil {
-		return nil, fmt.Errorf("failed to validate claims: %w", err)
+		return nil, nil, fmt.Errorf("failed to validate claims: %w", err)
 	}
 
-	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
-		return nil, err
+	user, err := a.verifyRevocableState(ctx, info, claims)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// Ensure the access token is valid for the current user session...
-	if err := a.verifyUserSession(ctx, info, claims); err != nil {
-		return nil, err
-	}
-
-	// The cache entry needs a timeout as a federated user may have had their rights
-	// recinded and we don't know about it, and long lived tokens e.g. service accounts,
-	// could still be valid for months...
+	// Bound the cache entry's lifetime: evict entries eventually to cap memory,
+	// and never let one outlive the token's own expiry, since the cache-hit path
+	// skips the time-based claim checks. Revocation is checked on every hit.
 	timeout := time.Hour
 
 	if tokenExpiresIn := time.Until(claims.Expiry.Time()); tokenExpiresIn < timeout {
@@ -376,7 +450,17 @@ func (a *Authenticator) Verify(ctx context.Context, info *VerifyInfo) (*Claims, 
 
 	a.tokenCache.Add(info.Token, claims, timeout)
 
-	return claims, nil
+	return claims, user, nil
+}
+
+// verifyRevocableState checks identity state that can change before a token
+// expires. It returns the active user for a federated token, and nil otherwise.
+func (a *Authenticator) verifyRevocableState(ctx context.Context, info *VerifyInfo, claims *Claims) (*unikornv1.User, error) {
+	if err := a.verifyServiceAccount(ctx, info, claims); err != nil {
+		return nil, err
+	}
+
+	return a.verifyUserSession(ctx, info, claims)
 }
 
 func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyInfo, claims *Claims) error {
@@ -384,15 +468,8 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 		return nil
 	}
 
-	organization := &unikornv1.Organization{}
-
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: claims.ServiceAccount.OrganizationID}, organization); err != nil {
-		return err
-	}
-
-	serviceAccount := &unikornv1.ServiceAccount{}
-
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: organization.Status.Namespace, Name: claims.Subject}, serviceAccount); err != nil {
+	serviceAccount, err := a.userdb.GetServiceAccount(ctx, claims.ServiceAccount.OrganizationID, claims.Subject)
+	if err != nil {
 		return err
 	}
 
@@ -403,15 +480,15 @@ func (a *Authenticator) verifyServiceAccount(ctx context.Context, info *VerifyIn
 	return nil
 }
 
-func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo, claims *Claims) error {
+func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo, claims *Claims) (*unikornv1.User, error) {
 	if claims.Type != TokenTypeFederated {
-		return nil
+		return nil, nil //nolint:nilnil // only federated tokens have a user
 	}
 
 	// TODO: the subject should be the user ID anyway...
 	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	lookupSession := func(session unikornv1.UserSession) bool {
@@ -420,14 +497,14 @@ func (a *Authenticator) verifyUserSession(ctx context.Context, info *VerifyInfo,
 
 	index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
 	if index < 0 {
-		return fmt.Errorf("%w: no active session for token", ErrTokenVerification)
+		return nil, fmt.Errorf("%w: no active session for token", ErrTokenVerification)
 	}
 
 	if user.Spec.Sessions[index].AccessToken != info.Token {
-		return fmt.Errorf("%w: token invalid for active session", ErrTokenVerification)
+		return nil, fmt.Errorf("%w: token invalid for active session", ErrTokenVerification)
 	}
 
-	return nil
+	return user, nil
 }
 
 // InvalidateToken immediately invalidates the token so it's unusable again.

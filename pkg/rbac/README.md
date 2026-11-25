@@ -55,6 +55,71 @@ ACL construction and handler enforcement both follow that structure. Global perm
 organization and project checks, organization permissions can satisfy some project checks, and
 project permissions remain the narrowest scope.
 
+### Gates and predicates
+
+The same check is asked for two different purposes, and the package exposes each separately.
+
+- The `Allow*` family is a **gate**. It returns an error, and that error becomes the caller's
+  refusal. Use it when the answer decides whether the request proceeds.
+- The `Permits*` family is a **predicate**. It returns a boolean and is defined in terms of the
+  matching gate, so the two cannot drift. Use it when filtering candidates out of a list.
+
+The distinction is not stylistic. A gate refusing is a refused request: the principal asked for
+something and was told no, which is a reportable security event. A predicate refusing is a resource
+being left out of a list because it was never that principal's to see, which is access control
+working normally and happens on every list. Reporting the second as a refusal would bury real
+refusals and tell a monitoring system an attack was under way every time somebody listed a shared
+organization.
+
+Using a gate's `error` as a boolean, as `AllowX(...) == nil`, loses that distinction at exactly the
+point it matters, and is why the predicates exist.
+
+### Recorded decisions
+
+A gate records what it authorised, so that later middleware can say which organisation and project
+an operation affected. That fact cannot be recovered from the URL: v2 APIs address resources by ID
+alone and resolve tenancy from the resource's labels, so only the component that performed the
+check knows it. See [`pkg/authz`](../authz/README.md).
+
+Two rules keep that record honest:
+
+- **Only the public gates record.** Each gate is a thin wrapper over an unexported `check`
+  function, and every internal path uses `check`. A project check that falls back through
+  organisation and global scope is one question, not three, and recording each step would bury the
+  real decision. The same applies to `AllowRole`, which walks every permission a role confers.
+- **Predicates record nothing**, for the reasons above. A list of forty visible resources must not
+  leave forty decisions behind.
+
+Every gate records its outcome, refusals included, and the recorder keeps a refusal only for the
+request's own decision. A gate used as a list filter is a precondition, so its refusals are dropped
+and ordinary listing never looks like an attack. Filters should still use the predicates, which
+record nothing at all. See [`pkg/authz`](../authz/README.md).
+
+### Stating the target explicitly
+
+The `On` family takes a target: the resource type, the resource itself, the access required, the
+action performed, and whether this is the operation the request is or a precondition of it. None of
+that is reliably recoverable from the request afterwards.
+
+- v2 APIs carry no organisation or project in the path.
+- An action sub-resource, such as starting an instance, is a `POST` exactly like creating one, so
+  the method says nothing about what happened.
+- A path ending in a sub-resource, such as a reference on a network, names the sub-resource rather
+  than the thing being changed.
+
+The older gates remain and keep working, so adopting this is incremental and no other service has
+to change. They record the scope, which is the part that matters most, but cannot name an object or
+an action, and their decisions count as preconditions. A consumer can therefore tell a migrated
+call site from an unmigrated one, rather than being silently given a worse record.
+
+`AllowProjectScopeCreateOn` and `AllowProjectScopeCreateReaderOn` are the explicit forms of the
+create gates. Despite the name, those gates guard a project named by untrusted input, such as a v2
+request body, rather than the act of creating: when access comes from an organisation grant they
+confirm the project exists first. What the request does is the target's to say. A global grant
+skips that confirmation, so a record can name a project that does not exist. The Reader form takes
+only the scope from the resource it is given, which is usually a parent, so that resource's
+identifier does not belong in the target.
+
 This scoped structure is used both for direct authorization decisions and for query limiting in list
 operations.
 
@@ -463,9 +528,33 @@ These warnings are not the security control. The security control is the issuer-
 `(srcIss, subject)` match that `resolveGlobalRoleBindings` performs, and the `(srcIss, group)` match
 that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
+## Readers
+
+`New` takes a `client.Reader`, the informer cache in the server. The cache indexes objects by
+namespace and by registered field index only; a List with a label selector and no namespace walks
+every cached object of the kind, so the cost per request would grow with the size of the estate.
+An ACL build therefore lists only inside a namespace it already holds: groups and projects in the
+organization's status namespace, roles in the identity namespace. Projects live in their
+organization's namespace, so the namespaced List returns the same set the organization label did.
+Do not add a label-selected, cluster-wide List here; index it instead (see
+[`pkg/userdb`](../userdb/README.md), "Readers").
+
 ## Invariants
 
 - Effective authority is computed from stored identity state, not invented ad hoc in handlers.
+- Filtering a list uses the `Permits*` predicates, never an `Allow*` gate compared against `nil`.
+  A gate's refusal is a reportable event; a predicate's is routine.
+- A predicate and its gate MUST share one `check*` function, and the predicate MUST call that
+  check, never the gate. Sharing the check is what stops them drifting: computed separately, a
+  principal can be shown a resource in a list that they are then refused, or the reverse. Calling
+  the gate would also drift them in the other direction — the gate records, so a predicate
+  wrapping it leaves a decision behind for every candidate it filters, which is the fan-out this
+  split exists to stop. "Defined in terms of its gate" is not enough, and reads as satisfied by
+  the very thing that breaks it: `PermitsRole` called `AllowRole` and recorded a grant for every
+  role in a list.
+- Every exported gate MUST have a `check*` form, including gates with several success paths.
+  Recording belongs in the gate, so a success path added to the check later cannot become another
+  unaudited way to perform the operation.
 - Protected roles are not part of normal user-facing role administration.
 - Role grantability is bounded by the caller's own effective permissions.
 - ACL intersection for impersonated system-account calls is deliberate least-privilege behaviour.
@@ -513,6 +602,14 @@ that `resolveGroupRoleBindings` performs, both inside `processUserAccountACL`.
 
 - The package is tightly coupled to the identity storage and scoping model, including groups,
   projects, organization mappings, and label-based queries.
+- `New` takes a `client.Reader`; the package never writes. In the server it is the informer cache,
+  so an ACL build makes no API server call. A change to a Role, Group, Project or Organization
+  reaches an ACL within the watch lag, plus the ACL cache timeout where the caller caches ACLs. A
+  project or organization the cache has not seen yet is missing from the ACL until it has: an
+  unscoped ACL build skips (and logs) a membership whose organization is not cached, and a group
+  role that is not cached. A role missing for a global role binding still fails the ACL: those
+  bindings come from configuration, so that is a config fault, not cache lag. A request scoped to an organization still fails if that
+  organization is missing.
 - Group membership is read from `Group.Subjects` only, matched by subject ID. The group and user
   handlers still write the deprecated `Group.UserIDs` field next to each subject, but RBAC does not
   read it. An earlier lookup through `UserIDs` listed every `User` once for each group on each ACL

@@ -27,11 +27,14 @@ import (
 	"github.com/unikorn-cloud/core/pkg/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
+	"github.com/unikorn-cloud/identity/pkg/middleware/authorization"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -788,13 +791,48 @@ func TestGroupRoleBindingWrongIssuerDoesNotMatch(t *testing.T) {
 
 // TestUnmatchedGroupsFallsThroughToMembershipResolution pins that replace
 // semantics do not fire when no group binding matches (a case mismatch here) and
-// that membership resolution proceeds as normal. The fake client has no
-// Organization fixture for "some-org", so the non-replace path's organization
-// lookup fails deterministically on that missing fixture. That failure is the
-// proof: had the implementation treated this as a match, GetACL would return a
-// global-only ACL with no error.
+// that membership resolution proceeds as normal: the organization the subject
+// belongs to appears in the ACL, and the binding's global permissions do not.
 func TestUnmatchedGroupsFallsThroughToMembershipResolution(t *testing.T) {
 	t.Parallel()
+
+	scheme, err := unikornv1.SchemeBuilder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		subject    = "anyone@x.com"
+		orgNS      = "some-org-ns"
+		orgID      = "some-org"
+		memberRole = "member"
+	)
+
+	objects := []client.Object{
+		&unikornv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "admin"},
+			Spec: unikornv1.RoleSpec{Scopes: unikornv1.RoleScopes{
+				Global: []unikornv1.RoleScope{{Name: "org:manage", Operations: []unikornv1.Operation{unikornv1.Read}}},
+			}},
+		},
+		&unikornv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: memberRole},
+			Spec: unikornv1.RoleSpec{Scopes: unikornv1.RoleScopes{
+				Organization: []unikornv1.RoleScope{{Name: "organization:read", Operations: []unikornv1.Operation{unikornv1.Read}}},
+			}},
+		},
+		&unikornv1.Organization{
+			ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: orgID},
+			Status:     unikornv1.OrganizationStatus{Namespace: orgNS},
+		},
+		&unikornv1.Group{
+			ObjectMeta: metav1.ObjectMeta{Namespace: orgNS, Name: "group"},
+			Spec: unikornv1.GroupSpec{
+				RoleIDs:  []string{memberRole},
+				Subjects: []unikornv1.GroupSubject{{ID: subject}},
+			},
+		},
+	}
 
 	opts := &rbac.Options{
 		GlobalGroupRoleBindings: rbac.GlobalGroupRoleBindingsValue{
@@ -802,9 +840,28 @@ func TestUnmatchedGroupsFallsThroughToMembershipResolution(t *testing.T) {
 		},
 	}
 
-	_, err := aclOrErrForSubject(t, opts, "anyone@x.com", "https://staff.example.com/", []string{"some-org"}, []string{"platform engineering"})
-	if err == nil {
-		t.Fatal("expected organization-lookup error proving membership resolution ran (unmatched group incorrectly treated as bound?)")
+	rbacClient := rbac.New(fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(), testNamespace, opts)
+
+	info := &authorization.Info{
+		Userinfo: &openapi.Userinfo{
+			Sub:                       subject,
+			HttpsunikornCloudOrgauthz: &openapi.AuthClaims{Acctype: openapi.User, OrgIds: []string{orgID}},
+		},
+		SrcIss: "https://staff.example.com/",
+		Groups: []string{"platform engineering"},
+	}
+
+	acl, err := rbacClient.GetACL(authorization.NewContext(t.Context(), info), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if acl.Global != nil {
+		t.Fatalf("unmatched group unexpectedly bound: %+v", acl.Global)
+	}
+
+	if acl.Organizations == nil || len(*acl.Organizations) != 1 || (*acl.Organizations)[0].Id != orgID || (*acl.Organizations)[0].Endpoints == nil {
+		t.Fatalf("membership resolution did not run: %+v", acl)
 	}
 }
 

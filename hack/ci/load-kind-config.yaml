@@ -1,0 +1,48 @@
+# kind-config.yaml plus the kube-apiserver audit log, for the load test.
+# Create the cluster from the repository root: the policy path is relative.
+#
+# The node image is pinned because the audit patch below is written for
+# kubeadm's v1beta4 configuration, which kind uses from Kubernetes 1.36.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  extraMounts:
+  - hostPath: hack/ci/load-audit-policy.yaml
+    containerPath: /etc/kubernetes/policies/audit-policy.yaml
+    readOnly: true
+  kubeadmConfigPatches:
+  - |
+    kind: InitConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        node-labels: "ingress-ready=true"
+  kubeadmConfigPatchesJSON6902:
+  - group: kubeadm.k8s.io
+    version: v1beta4
+    kind: ClusterConfiguration
+    patch: |
+      - op: add
+        path: /apiServer/extraArgs/-
+        value:
+          name: audit-policy-file
+          value: /etc/kubernetes/policies/audit-policy.yaml
+      - op: add
+        path: /apiServer/extraArgs/-
+        value:
+          name: audit-log-path
+          value: /var/log/kubernetes/kube-apiserver-audit.log
+      - op: add
+        path: /apiServer/extraVolumes
+        value:
+        - name: audit-policy
+          hostPath: /etc/kubernetes/policies
+          mountPath: /etc/kubernetes/policies
+          readOnly: true
+          pathType: DirectoryOrCreate
+        - name: audit-log
+          hostPath: /var/log/kubernetes
+          mountPath: /var/log/kubernetes
+          readOnly: false
+          pathType: DirectoryOrCreate

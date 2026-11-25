@@ -198,6 +198,27 @@ func (c *APIClient) GetOrganization(ctx context.Context, orgID string) (*identit
 	return &organization, nil
 }
 
+// GetOrganizationWithResponse gets an organization and returns the typed
+// response, so tests can assert on the status code and the error body.
+func (c *APIClient) GetOrganizationWithResponse(ctx context.Context, orgID string) (*identityopenapi.GetApiV1OrganizationsOrganizationIDResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	organizationID, err := ids.ParseOrganizationID(orgID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing organization ID %q: %w", orgID, err)
+	}
+
+	response, err := client.GetApiV1OrganizationsOrganizationIDWithResponse(ctx, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("getting organization: %w", err)
+	}
+
+	return response, nil
+}
+
 // ListProjects lists all projects in an organization.
 func (c *APIClient) ListProjects(ctx context.Context, orgID string) (identityopenapi.Projects, error) {
 	path := c.endpoints.ListProjects(orgID)

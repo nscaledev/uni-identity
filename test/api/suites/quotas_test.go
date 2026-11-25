@@ -30,7 +30,7 @@ import (
 var _ = Describe("Quota Management", func() {
 	Context("When getting organization quotas", func() {
 		Describe("Given valid organization", func() {
-			It("should return complete quota information for all resource types", func() {
+			It("should return complete quota information for all resource types", Label("smoke"), func() {
 				quotasResponse, err := client.GetQuotas(ctx, config.OrgID)
 
 				Expect(err).NotTo(HaveOccurred())

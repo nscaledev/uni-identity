@@ -302,12 +302,12 @@ func (a *Authenticator) dispatchUserinfo(ctx context.Context, r *http.Request, t
 }
 
 // handleValidatorError returns the appropriate error response for validatorForIssuer failures.
-// If the provider cache is not yet synced, it returns 503 Service Unavailable (transient).
+// If Kubernetes cannot read providers, it returns 503 Service Unavailable.
 // Otherwise, it returns 401 Unauthorized (issuer not trusted).
 func (a *Authenticator) handleValidatorError(ctx context.Context, r *http.Request, err error, surface string) error {
-	if goerrors.Is(err, ErrCacheNotReady) {
-		log.FromContext(ctx).Info("provider cache not ready", "surface", surface)
-		return errors.OAuth2ServiceUnavailable("identity service warming up").WithError(err)
+	if goerrors.Is(err, ErrKubernetesReadUnavailable) {
+		log.FromContext(ctx).Info("provider list unavailable", "surface", surface)
+		return errors.OAuth2ServiceUnavailable("identity provider lookup unavailable").WithError(err)
 	}
 
 	return coreerrors.AccessDenied(r, "issuer trust unavailable").WithError(err)
@@ -946,7 +946,7 @@ func (a *Authenticator) validateProjectScope(ctx context.Context, acl *openapi.A
 // the organization's backing namespace.
 func (a *Authenticator) projectInOrganization(ctx context.Context, organizationID, projectID string) (bool, error) {
 	var org unikornv1.Organization
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: organizationID}, &org); err != nil {
+	if err := a.reader.Get(ctx, client.ObjectKey{Namespace: a.namespace, Name: organizationID}, &org); err != nil {
 		if kerrors.IsNotFound(err) {
 			return false, nil
 		}
@@ -959,7 +959,7 @@ func (a *Authenticator) projectInOrganization(ctx context.Context, organizationI
 	}
 
 	var project unikornv1.Project
-	if err := a.client.Get(ctx, client.ObjectKey{Namespace: org.Status.Namespace, Name: projectID}, &project); err != nil {
+	if err := a.reader.Get(ctx, client.ObjectKey{Namespace: org.Status.Namespace, Name: projectID}, &project); err != nil {
 		if kerrors.IsNotFound(err) {
 			return false, nil
 		}

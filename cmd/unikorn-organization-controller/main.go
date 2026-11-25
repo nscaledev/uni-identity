@@ -20,9 +20,10 @@ package main
 
 import (
 	"github.com/unikorn-cloud/core/pkg/manager"
+	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/controllers/organization"
 )
 
 func main() {
-	manager.Run(&organization.Factory{})
+	manager.RunService(constants.Service, &organization.Factory{})
 }

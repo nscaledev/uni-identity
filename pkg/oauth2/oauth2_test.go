@@ -21,6 +21,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -43,7 +45,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const (
@@ -78,7 +80,7 @@ func TestTokens(t *testing.T) {
 		},
 	}
 
-	client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(user).Build()
+	client := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(user).Build()
 
 	josetesting.RotateCertificate(t, client)
 
@@ -87,13 +89,12 @@ func TestTokens(t *testing.T) {
 		RotationPeriod:   josetesting.RefreshPeriod,
 	}
 
-	issuer := jose.NewJWTIssuer(client, josetesting.Namespace, joseOptions)
+	issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, joseOptions)
 
 	ctx := t.Context()
 
 	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
 
-	userDatabase := userdb.NewUserDatabase(client, josetesting.Namespace)
 	rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
 	options := &oauth2.Options{
@@ -101,7 +102,6 @@ func TestTokens(t *testing.T) {
 		RefreshTokenDuration: refreshTokenDuration,
 		TokenLeewayDuration:  accessTokenDuration,
 		TokenCacheSize:       1024,
-		CodeCacheSize:        1024,
 	}
 
 	issuerVal := handlercommon.IssuerValue{
@@ -109,7 +109,7 @@ func TestTokens(t *testing.T) {
 		Hostname: "foo.com",
 	}
 
-	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, client, client, issuer, userDatabase, rbac)
+	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, client, client, issuer, rbac)
 	require.NoError(t, err)
 
 	time.Sleep(2 * josetesting.RefreshPeriod)
@@ -153,6 +153,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 		objects        []client.Object
 		issueInfo      *oauth2.IssueInfo
 		postIssue      func(*testing.T, context.Context, client.Client, *oauth2.Tokens)
+		postVerify     func(*testing.T, context.Context, client.Client, *oauth2.Authenticator, *oauth2.Tokens)
 		expectedSub    string
 		expectedEmail  *string
 		expectedType   openapi.AuthClaimsAcctype
@@ -170,6 +171,19 @@ func TestUserinfoCustomClaims(t *testing.T) {
 						State:   unikornv1.UserStateActive,
 					},
 				},
+			},
+			postVerify: func(t *testing.T, ctx context.Context, c client.Client, authenticator *oauth2.Authenticator, tokens *oauth2.Tokens) {
+				t.Helper()
+
+				user := &unikornv1.User{}
+				require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: josetesting.Namespace, Name: "test-user"}, user))
+				require.Len(t, user.Spec.Sessions, 1)
+				user.Spec.Sessions[0].AccessToken = ""
+				require.NoError(t, c.Update(ctx, user))
+
+				req := httptest.NewRequest(http.MethodGet, "https://test.com/oauth2/v2/userinfo", nil)
+				_, _, err := authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+				require.ErrorIs(t, err, oauth2.ErrTokenVerification)
 			},
 			issueInfo: &oauth2.IssueInfo{
 				Issuer:   "https://test.com",
@@ -332,6 +346,20 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				serviceAccount.Spec.AccessToken = tokens.AccessToken
 				require.NoError(t, c.Update(ctx, serviceAccount))
 			},
+			postVerify: func(t *testing.T, ctx context.Context, c client.Client, authenticator *oauth2.Authenticator, tokens *oauth2.Tokens) {
+				t.Helper()
+
+				serviceAccount := &unikornv1.ServiceAccount{}
+				require.NoError(t, c.Get(ctx, client.ObjectKey{
+					Namespace: josetesting.Namespace + "-org",
+					Name:      "test-service-account",
+				}, serviceAccount))
+				require.NoError(t, c.Delete(ctx, serviceAccount))
+
+				req := httptest.NewRequest(http.MethodGet, "https://test.com/oauth2/v2/userinfo", nil)
+				_, _, err := authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+				require.ErrorIs(t, err, userdb.ErrResourceReference)
+			},
 			expectedSub:    "test-service-account",
 			expectedType:   openapi.Service,
 			expectedOrgIDs: []string{"test-org"},
@@ -353,11 +381,11 @@ func TestUserinfoCustomClaims(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			client := fake.NewClientBuilder().WithScheme(getScheme(t)).WithObjects(tc.objects...).Build()
+			client := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(tc.objects...).Build()
 
 			josetesting.RotateCertificate(t, client)
 
-			issuer := jose.NewJWTIssuer(client, josetesting.Namespace, &jose.Options{
+			issuer := jose.NewJWTIssuer(client, client, josetesting.Namespace, &jose.Options{
 				IssuerSecretName: josetesting.KeySecretName,
 				RotationPeriod:   josetesting.RefreshPeriod,
 			})
@@ -366,7 +394,6 @@ func TestUserinfoCustomClaims(t *testing.T) {
 
 			require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
 
-			userDatabase := userdb.NewUserDatabase(client, josetesting.Namespace)
 			rbac := rbac.New(client, josetesting.Namespace, &rbac.Options{})
 
 			issuerHost := handlercommon.IssuerValue{
@@ -379,8 +406,7 @@ func TestUserinfoCustomClaims(t *testing.T) {
 				RefreshTokenDuration: refreshTokenDuration,
 				TokenLeewayDuration:  accessTokenDuration,
 				TokenCacheSize:       1024,
-				CodeCacheSize:        1024,
-			}, josetesting.Namespace, issuerHost, client, client, issuer, userDatabase, rbac)
+			}, josetesting.Namespace, issuerHost, client, client, issuer, rbac)
 			require.NoError(t, err)
 
 			time.Sleep(2 * josetesting.RefreshPeriod)
@@ -418,6 +444,108 @@ func TestUserinfoCustomClaims(t *testing.T) {
 			} else {
 				assert.Nil(t, userinfo.HttpsunikornCloudOrgauthz.OrgIds)
 			}
+
+			if tc.postVerify != nil {
+				tc.postVerify(t, ctx, client, authenticator, tokens)
+			}
 		})
 	}
+}
+
+// TestUserinfoReadsUserOnce checks that userinfo for a federated token looks
+// the user up once: verification already loads it to check the session, and
+// the organization lookup reuses it.
+func TestUserinfoReadsUserOnce(t *testing.T) {
+	t.Parallel()
+
+	user := &unikornv1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: josetesting.Namespace,
+			Name:      "fake",
+		},
+		Spec: unikornv1.UserSpec{
+			Subject: "barry@foo.com",
+			State:   unikornv1.UserStateActive,
+		},
+	}
+
+	var userReads atomic.Int64
+
+	counting := interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*unikornv1.User); ok {
+				userReads.Add(1)
+			}
+
+			return c.Get(ctx, key, obj, opts...)
+		},
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*unikornv1.UserList); ok {
+				userReads.Add(1)
+			}
+
+			return c.List(ctx, list, opts...)
+		},
+	}
+
+	cli := userdbtest.NewClientBuilder(getScheme(t)).WithObjects(user).WithInterceptorFuncs(counting).Build()
+
+	josetesting.RotateCertificate(t, cli)
+
+	issuer := jose.NewJWTIssuer(cli, cli, josetesting.Namespace, &jose.Options{
+		IssuerSecretName: josetesting.KeySecretName,
+		RotationPeriod:   josetesting.RefreshPeriod,
+	})
+
+	ctx := t.Context()
+
+	require.NoError(t, issuer.Run(ctx, &josetesting.FakeCoordinationClientGetter{}))
+
+	options := &oauth2.Options{
+		AccessTokenDuration:  time.Hour,
+		RefreshTokenDuration: time.Hour,
+		TokenCacheSize:       16,
+	}
+
+	issuerVal := handlercommon.IssuerValue{URL: "https://foo.com", Hostname: "foo.com"}
+
+	authenticator, err := oauth2.New(options, josetesting.Namespace, issuerVal, cli, cli, issuer,
+		rbac.New(cli, josetesting.Namespace, &rbac.Options{}))
+	require.NoError(t, err)
+
+	time.Sleep(2 * josetesting.RefreshPeriod)
+
+	tokens, err := authenticator.Issue(ctx, &oauth2.IssueInfo{
+		Issuer:   "https://foo.com",
+		Audience: "foo.com",
+		Subject:  "barry@foo.com",
+		Type:     oauth2.TokenTypeFederated,
+		Federated: &oauth2.FederatedClaims{
+			UserID:   "fake",
+			ClientID: "client",
+		},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "https://foo.com/oauth2/v2/userinfo", nil)
+
+	// The first call decrypts the token and caches its claims.
+	_, _, err = authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+	require.NoError(t, err)
+
+	// A lookup may take more than one read, so compare with what looking the
+	// user up once costs.
+	userReads.Store(0)
+
+	_, err = userdb.NewUserDatabase(cli, josetesting.Namespace).GetActiveUser(ctx, "barry@foo.com")
+	require.NoError(t, err)
+
+	oneLookup := userReads.Load()
+	require.Positive(t, oneLookup)
+
+	userReads.Store(0)
+
+	_, _, err = authenticator.GetUserinfo(ctx, req, tokens.AccessToken)
+	require.NoError(t, err)
+	require.Equal(t, oneLookup, userReads.Load(), "userinfo should look the user up once")
 }

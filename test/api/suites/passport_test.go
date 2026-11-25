@@ -146,7 +146,7 @@ func expectExchangeOAuth2Error(respBody []byte, expected identityopenapi.Oauth2E
 var _ = Describe("Passport Token Exchange", func() {
 	Context("When exchanging an access token for a passport", func() {
 		Describe("Given valid authentication without scope", func() {
-			It("should return a signed passport with correct metadata", func() {
+			It("should return a signed passport with correct metadata", Label("smoke"), func() {
 				result, err := client.ExchangePassport(ctx, nil)
 
 				Expect(err).NotTo(HaveOccurred())
@@ -235,7 +235,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		})
 
 		Describe("Given valid authentication with organization and project scope", func() {
-			It("should return a passport scoped to the organization and project", func() {
+			It("should return a passport scoped to the organization and project", Label("smoke"), func() {
 				options := &identityopenapi.TokenRequestOptions{
 					XOrganizationId: &config.OrgID,
 					XProjectId:      &config.ProjectID,
@@ -278,7 +278,9 @@ var _ = Describe("Passport Token Exchange", func() {
 
 		Describe("Given project-scoped fixture user authentication", func() {
 			BeforeEach(func() {
-				Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
+				if userClient == nil {
+					Skip("USER_AUTH_TOKEN is required for fixture user passport testing")
+				}
 			})
 
 			It("should return a user passport scoped to the fixture project", func() {
@@ -415,7 +417,7 @@ var _ = Describe("Passport Token Exchange", func() {
 		})
 
 		Describe("Given an invalid source token", func() {
-			It("should return unauthorized access_denied without minting a passport", func() {
+			It("should return unauthorized access_denied without minting a passport", Label("smoke"), func() {
 				form := url.Values{
 					"grant_type":           {tokenExchangeGrantType()},
 					"subject_token":        {"not-a-valid-token"},
@@ -584,7 +586,7 @@ var _ = Describe("Passport Token Exchange", func() {
 
 	Context("When verifying a passport with the published JWKS", func() {
 		Describe("Given a valid passport", func() {
-			It("should verify the signature using the key identified by kid", func() {
+			It("should verify the signature using the key identified by kid", Label("smoke"), func() {
 				result, err := client.ExchangePassport(ctx, &identityopenapi.TokenRequestOptions{
 					XOrganizationId: &config.OrgID,
 				})
@@ -609,7 +611,7 @@ var _ = Describe("Passport Token Exchange", func() {
 
 	Context("When exchanging a service account access token for a passport", func() {
 		Describe("Given a service account in the organization", func() {
-			It("should return a signed service passport with the expected claims", func() {
+			It("should return a signed service passport with the expected claims", Label("smoke"), func() {
 				created, _ := api.CreateServiceAccountWithCleanup(client, ctx, config,
 					api.NewServiceAccountPayload().Build())
 

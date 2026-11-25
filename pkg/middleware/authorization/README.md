@@ -24,6 +24,10 @@ Its main responsibilities are:
   headers and is used primarily for certificate-bound token handling.
 - Client certificate propagation is contextual and explicit, not global process state.
 - This package does not itself authenticate the request; it carries the results of authentication.
+- `Holder` carries the caller out of authentication to a middleware that runs outside it, such as
+  audit: authentication adds the caller to a context that only reaches inward. It is filled once,
+  during the request, and read only after the inner handlers have returned. See
+  [`pkg/middleware/audit`](../audit/README.md).
 
 ## Caveats
 

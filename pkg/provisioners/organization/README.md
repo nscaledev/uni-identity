@@ -22,7 +22,7 @@ realization of the current compatibility-era tenancy and lifecycle model.
 ### Namespace Projection For Current `v1`
 
 The provisioner derives resource labels from the `Organization` CRD, looks up a matching
-namespace, and creates one if none exists.
+namespace through the Kubernetes API reader, and creates one if none exists.
 
 It then writes `Status.Namespace`, which becomes the operational handoff point consumed later by
 the current `v1` handler layer.

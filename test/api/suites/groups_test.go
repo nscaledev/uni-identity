@@ -70,7 +70,7 @@ var _ = Describe("Group Management", func() {
 				GinkgoWriter.Printf("Created group: %s (ID: %s)\n", group.Metadata.Name, groupID)
 			})
 
-			It("should create a group and retrieve it by ID", func() {
+			It("should create a group and retrieve it by ID", Label("smoke"), func() {
 				payload := api.NewGroupPayload().Build()
 				createdGroup, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
@@ -211,7 +211,7 @@ var _ = Describe("Group Management", func() {
 					originalGroup.Metadata.Name, updatedGroup.Metadata.Name)
 			})
 
-			It("should update group role assignments", func() {
+			It("should update group role assignments", Label("smoke"), func() {
 				roles, err := client.ListRoles(ctx, config.OrgID)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -274,8 +274,7 @@ var _ = Describe("Group Management", func() {
 
 				// Create a user and assign them to the group via the users API.
 				// Internally this calls updateGroups, which writes Issuer: "".
-				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("test-user-%s@example.com", time.Now().Format("20060102150405"))).
+				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-issuer")).
 					WithState(identityopenapi.Active).
 					WithGroupIDs([]string{groupID}).
 					Build())
@@ -321,8 +320,7 @@ var _ = Describe("Group Management", func() {
 
 				// Create a user and add them to the group via the users API.
 				// updateGroups writes Issuer: "" onto the subject.
-				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("dangling-subject-test-%s@example.com", time.Now().Format("20060102150405"))).
+				_, userID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-dangling-subject")).
 					WithState(identityopenapi.Active).
 					WithGroupIDs([]string{groupID}).
 					Build())
@@ -366,7 +364,7 @@ var _ = Describe("Group Management", func() {
 
 	Context("When deleting groups", func() {
 		Describe("Given existing group", func() {
-			It("should delete group successfully", func() {
+			It("should delete group successfully", Label("smoke"), func() {
 				payload := api.NewGroupPayload().Build()
 				_, groupID := api.CreateGroupWithCleanup(client, ctx, config, payload)
 
@@ -418,7 +416,10 @@ var _ = Describe("Group Subject Compatibility", func() {
 		}
 
 		BeforeEach(func() {
-			Expect(userClient).NotTo(BeNil(), "USER_AUTH_TOKEN must be set by integration fixtures")
+			if userClient == nil {
+				Skip("USER_AUTH_TOKEN is required for group ACL projection testing")
+			}
+
 			Expect(adminClient).NotTo(BeNil(), "ADMIN_AUTH_TOKEN must be set by integration fixtures")
 			Expect(config.UserSubjectEmail).NotTo(BeEmpty(),
 				"TEST_USER_SUBJECT_EMAIL must be set by integration fixtures")
@@ -487,6 +488,15 @@ var _ = Describe("Group Subject Compatibility", func() {
 				return hasPermission == expected
 			}).WithTimeout(timeout).WithPolling(2*time.Second).Should(BeTrue(),
 				"ACL permission %s/%s should become %t", permission.endpoint, permission.operation, expected)
+
+			// Seeing a revocation shows only that the replica which answered
+			// has dropped the permission. Another replica can keep serving its
+			// cached ACL for up to the cache timeout, and later specs expect
+			// this user to be refused, so wait for every cached copy to expire.
+			// The extra second covers a replica whose watch is slightly behind.
+			if !expected {
+				time.Sleep(config.ACLCacheTimeout + time.Second)
+			}
 		}
 
 		fixtureUserSubject := func() identityopenapi.Subject {
@@ -751,7 +761,7 @@ var _ = Describe("Group Subjects", func() {
 		})
 
 		Describe("Given a new group created with a non-existent userID", func() {
-			It("should return invalid request", func() {
+			It("should return invalid request", Label("smoke"), func() {
 				payload := api.NewGroupPayload().
 					WithUserIDs([]string{"00000000-0000-0000-0000-000000000000"}).
 					Build()
@@ -759,13 +769,9 @@ var _ = Describe("Group Subjects", func() {
 				body, err := json.Marshal(payload)
 				Expect(err).NotTo(HaveOccurred())
 
-				_, _, err = client.DoRequest(
-					ctx,
-					http.MethodPost,
-					api.NewEndpoints().ListGroups(config.OrgID),
-					bytes.NewReader(body),
-					http.StatusBadRequest,
-				)
+				path := api.NewEndpoints().ListGroups(config.OrgID)
+				resp, respBody, err := client.DoRequest(ctx, http.MethodPost, path, bytes.NewReader(body), http.StatusBadRequest)
+				api.DeleteIfCreated(client, ctx, http.MethodPost, path, resp, respBody)
 				Expect(err).NotTo(HaveOccurred(),
 					"creating a group with a non-existent userID should return 400")
 			})
@@ -863,12 +869,10 @@ var _ = Describe("Group Subjects", func() {
 
 		Describe("Given an existing group with two subjects, removing one via PUT", func() {
 			It("should no longer return the removed subject in the GET response", func() {
-				firstUser, firstUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("qa-rem-user-1-%d@nscale.test", time.Now().UnixNano())).
+				firstUser, firstUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-remove-subject-first")).
 					WithState(identityopenapi.Active).
 					Build())
-				secondUser, secondUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload().
-					WithSubject(fmt.Sprintf("qa-rem-user-2-%d@nscale.test", time.Now().UnixNano())).
+				secondUser, secondUserID := api.CreateUserWithCleanup(client, ctx, config, api.NewUserPayload(api.UserSubject(config, "groups-remove-subject-second")).
 					WithState(identityopenapi.Active).
 					Build())
 				firstSubject := internalSubject(firstUser.Spec.Subject)

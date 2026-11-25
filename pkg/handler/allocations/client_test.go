@@ -36,6 +36,7 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,12 +61,11 @@ const (
 type allocationTestFixture struct {
 	client            client.Client
 	allocationsClient *allocations.Client
-	mutex             *sync.Mutex
 }
 
 // syncClient returns a SyncClient instance for testing.
 func (f *allocationTestFixture) syncClient() *allocations.SyncClient {
-	return allocations.NewSync(f.client, testNamespace, f.mutex)
+	return allocations.NewSync(f.client, testNamespace)
 }
 
 // runConcurrent runs fn concurrently n times and returns all errors.
@@ -118,6 +118,7 @@ func setupAllocationTestFixture(t *testing.T) *allocationTestFixture {
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, coordinationv1.AddToScheme(scheme))
 	require.NoError(t, unikornv1.AddToScheme(scheme))
 
 	c := fake.NewClientBuilder().
@@ -208,7 +209,6 @@ func setupAllocationTestFixture(t *testing.T) *allocationTestFixture {
 	return &allocationTestFixture{
 		client:            c,
 		allocationsClient: allocations.New(c, testNamespace),
-		mutex:             &sync.Mutex{},
 	}
 }
 
@@ -293,9 +293,9 @@ func (f *allocationTestFixture) getTotalAllocations(t *testing.T, resourceKind s
 	return total
 }
 
-// TestConcurrentAllocations_SerializedByMutex tests that concurrent allocations
-// are properly serialized by the mutex, preventing race conditions.
-func TestConcurrentAllocations_SerializedByMutex(t *testing.T) {
+// TestConcurrentAllocations_SerializedByOrganizationLease verifies concurrent
+// allocations are serialized by the organization's Kubernetes Lease.
+func TestConcurrentAllocations_SerializedByOrganizationLease(t *testing.T) {
 	t.Parallel()
 
 	f := setupAllocationTestFixture(t)
@@ -338,9 +338,9 @@ func TestConcurrentAllocations_SerializedByMutex(t *testing.T) {
 	assert.Equal(t, int64(10*oneGigabyte), totalMemory, "Total memory allocations should equal quota limit")
 }
 
-// TestConcurrentAllocationUpdates_SerializedByMutex tests that concurrent
-// updates to allocations are properly serialized.
-func TestConcurrentAllocationUpdates_SerializedByMutex(t *testing.T) {
+// TestConcurrentAllocationUpdates_SerializedByOrganizationLease verifies
+// concurrent updates are serialized by the organization's Kubernetes Lease.
+func TestConcurrentAllocationUpdates_SerializedByOrganizationLease(t *testing.T) {
 	t.Parallel()
 
 	f := setupAllocationTestFixture(t)

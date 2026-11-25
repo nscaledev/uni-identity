@@ -42,14 +42,13 @@ import (
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	oauth2errors "github.com/unikorn-cloud/identity/pkg/oauth2/errors"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
-	"github.com/unikorn-cloud/identity/pkg/userdb"
+	"github.com/unikorn-cloud/identity/pkg/userdb/userdbtest"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 const (
@@ -307,14 +306,13 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		Spec: unikornv1.ServiceAccountSpec{},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := userdbtest.NewClientBuilder(scheme).
 		WithObjects(signingSecret, clientCertSecret, caCertSecret,
 			signingKey, user, serviceAccount).
 		Build()
 
 	// Create JWT issuer
-	issuer := jose.NewJWTIssuer(fakeClient, testNamespace, &jose.Options{
+	issuer := jose.NewJWTIssuer(fakeClient, fakeClient, testNamespace, &jose.Options{
 		IssuerSecretName: certificateName,
 	})
 
@@ -326,7 +324,6 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 	oauth2Options := &oauth2.Options{
 		AccessTokenDuration: time.Hour,
 		TokenCacheSize:      10,
-		CodeCacheSize:       10,
 	}
 
 	u, _ := url.Parse(mtlsServer.URL())
@@ -335,9 +332,7 @@ func setupTestEnvironment(t *testing.T) (client.Client, *server, string) {
 		Hostname: u.Host,
 	}
 
-	userdb := userdb.NewUserDatabase(fakeClient, testNamespace)
-
-	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, fakeClient, issuer, userdb, rbacClient)
+	authenticator, err = oauth2.New(oauth2Options, testNamespace, iss, fakeClient, fakeClient, issuer, rbacClient)
 	require.NoError(t, err)
 
 	// Issue a test token
@@ -448,13 +443,12 @@ func generatePlausibleToken(t *testing.T, k8sClient client.Client) string {
 	}
 
 	// Create a separate k8s client with the unauthorized keys
-	unauthorizedClient := fake.NewClientBuilder().
-		WithScheme(k8sClient.Scheme()).
+	unauthorizedClient := userdbtest.NewClientBuilder(k8sClient.Scheme()).
 		WithObjects(unauthorizedSigningSecret, unauthorizedSigningKey).
 		Build()
 
 	// Create issuer with the separate key
-	unauthorizedIssuer := jose.NewJWTIssuer(unauthorizedClient, unauthNamespace, &jose.Options{
+	unauthorizedIssuer := jose.NewJWTIssuer(unauthorizedClient, unauthorizedClient, unauthNamespace, &jose.Options{
 		IssuerSecretName: unauthorizedSigningSecret.Name,
 	})
 	token, err := unauthorizedIssuer.EncodeJWT(t.Context(), map[string]any{"iss": "https://unknown.example.com"})

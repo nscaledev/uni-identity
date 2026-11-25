@@ -120,15 +120,27 @@ README, so this section holds that contract.
 this package because `quotas` and `projects` import `organizations`. An import in the other
 direction would create an import cycle.
 
-The step reads the informer cache with `UnsafeDisableDeepCopy` and no selector:
+The organization list itself, both its global and its membership branch, reads the read cache;
+see [`pkg/handler/organizations`](organizations/README.md). Every other handler reads through the
+direct client, so a resource API reads its own writes.
+
+The step reads without a selector. The Quota, Allocation and Project lists come from the read
+cache with `UnsafeDisableDeepCopy`, because a direct read of every object of a kind on each
+request loads the API server. QuotaMetadata is small and is read directly:
 
 - Quota and Allocation, in all namespaces, when `include` names `quotas`.
 - QuotaMetadata, from the identity namespace, when `include` names `quotas`.
 - Project, in all namespaces, when `include` names `projectsCount`.
 
-The step groups the objects by the organization label. The objects come from the cache without a
-copy and are read-only. Read quantities only with `Value()`, because `String()` and `AsDec()`
-write a cache into the receiver.
+The step groups the objects by the organization label. The cached objects come without a copy
+and are read-only. Read quantities only with `Value()`, because `String()` and `AsDec()` write a
+cache into the receiver. The extras can briefly lag a write, but the ACL in the request context,
+not the cache, decides which rows get them.
+
+Not served from the cache: `common.GetQuota` and `common.GetAllocations` run on the live client
+(every `common.New` caller passes the live client). Each is one label-selected List across all
+namespaces, answered by the API server, so it costs one API call per request and no walk of the
+cache. They are not on the per-request token or ACL path.
 
 A field is present only when `include` names it and the ACL in the request context lets the
 caller see it. A fault in the quota data of one organization, such as two Quota objects or a nil
@@ -175,6 +187,21 @@ Examples include:
 
 So a recurring responsibility of the handler layer is manual cross-resource consistency
 maintenance.
+
+Allocation admission and quota updates are a shared critical section. They use a per-organization
+Lease in the identity namespace, with a three-second duration and a one-second write margin. A
+request that cannot acquire the Lease before its context ends receives HTTP 409 and can retry, as
+does a holder whose read or write is cut off by its bounded context; any other failure keeps its
+own status. A call the Kubernetes client's rate limiter refuses because it could not start before
+the deadline gets the same 409, however the caller wrapped it. Contenders back off between
+attempts, from 50 ms up to 400 ms with jitter, because all organizations' Lease calls on a replica
+share one client rate limiter. The server's request deadline makes that 409 arrive before the write
+timeout. The service deletes a held Lease after either path completes, unless the write itself was
+cut off and may still commit; then, as after a crash, a contender waits one full unchanged Lease
+duration before takeover. A write the rate limiter refused was never sent, so its Lease is deleted
+at once. The read/check/write path uses the direct client.
+Lease acquisitions, critical sections and releases are counted by outcome; see
+[`docs/observability.md`](../../docs/observability.md).
 
 ## Shared Caveat: Atomicity
 

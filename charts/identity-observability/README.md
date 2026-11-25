@@ -1,24 +1,28 @@
 # Identity observability
 
-This chart owns Identity dashboards and the central Loki datasource.
-It owns no ServiceMonitor: Identity exports metrics through OTLP.
+This chart owns Identity's Grafana dashboards and nothing else: no datasources
+and no ServiceMonitor. The platform-owned PodMonitor scrapes Identity.
 
-Use `values-central.yaml` in the central observability cluster. It renders dashboards
-and the datasource. `values-workload.yaml` renders no datasource; enable its
-dashboards only when workload Grafana queries the central Identity metric store.
+The chart carries no deployment details; the deploying repository supplies
+them. Set `grafana.dashboards.enabled` and choose a `provisioningMode`:
+
+- `sidecar` (default) renders ConfigMaps labelled for the Grafana dashboard
+  sidecar (`grafana.dashboards.label`).
+- `operator` also renders a `GrafanaDashboard` per dashboard for
+  grafana-operator. `grafana.dashboards.instanceSelector` is required, and
+  rendering fails without it.
+
+`grafana.dashboards.namespace` defaults to the release namespace.
 
 Set `grafana.dashboards.leaderElection.enabled` only when the metric store receives
 the controllers' leader-election metrics. It adds the optional leadership dashboard.
 
-Dashboards are provisioned in the `UNI/Identity` Grafana folder.
+Dashboards are provisioned in the `UNI/Identity` Grafana folder. Each has a
+`datasource` variable of type prometheus with no saved value; it starts on
+Grafana's default Prometheus datasource and viewers can pick another.
 
-Every dashboard filters on the required `cluster` and `job` labels. OTLP
-collectors and scrape configurations must attach `cluster` and preserve the
-Prometheus-convention OTLP mapping — `job` from the resource's `service.name`,
-`instance` from `service.instance.id` — before metrics reach the store, so
-local and central queries have the same label shape. (A pipeline that scrapes
-a collector's Prometheus exporter needs `honorLabels: true`, or `job` arrives
-renamed to `exported_job`.) Identity's metrics use platform-generic names (the
-OTel HTTP server semantic conventions for the RED families), so
-`job="unikorn-identity"` — set by the identity chart via `OTEL_SERVICE_NAME` —
-is what scopes a query to Identity.
+Every dashboard filters on `cluster` and on `service="unikorn-identity"`, which
+core sets in code on every series identity serves. Identity's metrics use
+platform-generic names (the OTel HTTP server semantic conventions for the RED
+families), so the label, not the metric name, selects identity. Core's
+`docs/metrics.md` defines which labels dashboards can rely on.

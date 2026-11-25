@@ -20,34 +20,47 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	chi "github.com/go-chi/chi/v5"
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/unikorn-cloud/core/pkg/openapi/helpers"
 	"github.com/unikorn-cloud/core/pkg/options"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/cors"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/logging"
+	coremetrics "github.com/unikorn-cloud/core/pkg/server/middleware/metrics"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/opentelemetry"
 	"github.com/unikorn-cloud/core/pkg/server/middleware/routeresolver"
+	"github.com/unikorn-cloud/core/pkg/server/middleware/timeout"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/constants"
 	"github.com/unikorn-cloud/identity/pkg/handler"
+	handlercommon "github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/jose"
 	"github.com/unikorn-cloud/identity/pkg/middleware/audit"
-	redmetrics "github.com/unikorn-cloud/identity/pkg/middleware/metrics"
 	openapimiddleware "github.com/unikorn-cloud/identity/pkg/middleware/openapi"
 	"github.com/unikorn-cloud/identity/pkg/middleware/openapi/local"
 	"github.com/unikorn-cloud/identity/pkg/oauth2"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 	"github.com/unikorn-cloud/identity/pkg/rbac"
+	"github.com/unikorn-cloud/identity/pkg/readiness"
 	"github.com/unikorn-cloud/identity/pkg/userdb"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// responseWriteReserve is the time left after Lease cleanup to write a response
+// before the server's write deadline.
+const responseWriteReserve = time.Second
+
+var errRequestTimeout = errors.New("server timeouts too short")
 
 type Server struct {
 	// CoreOptions are all common across everything e.g. namespace.
@@ -73,6 +86,10 @@ type Server struct {
 
 	// OpenAPIOptions are for OpenAPI processing.
 	OpenAPIOptions openapimiddleware.Options
+
+	// AuditOptions optionally ship audit records to an external collector,
+	// in addition to the structured log, which is always emitted.
+	AuditOptions *audit.Options
 }
 
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
@@ -84,58 +101,83 @@ func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CORSOptions.AddFlags(flags)
 	s.RBACOptions.AddFlags(flags)
 	s.OpenAPIOptions.AddFlags(flags)
+
+	if s.AuditOptions == nil {
+		s.AuditOptions = audit.NewOptions()
+	}
+
+	s.AuditOptions.AddFlags(flags)
 }
 
 func (s *Server) SetupLogging() {
 	s.CoreOptions.SetupLogging()
 }
 
-func (s *Server) SetupOpenTelemetry(ctx context.Context) error {
-	return s.CoreOptions.SetupOpenTelemetry(ctx)
+// newRouter applies the middleware that runs on all requests pre-routing.
+// Ordering is important:
+//   - The request deadline comes first so it bounds everything else.
+//   - OpenTelemetry middleware optionally transmits spans over OTLP, but also
+//     establishes a trace ID that is used to correlate logs with user issues.
+//   - Logging ensures at least all errors are captured by logging telemetry and we
+//     can trigger alerts based on them.
+//   - Metrics records every request, so it goes before the route resolver,
+//     which answers requests it cannot resolve itself.
+//   - Route resolver provides routing and OpenAPI information to child middlewares.
+//   - CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
+func (s *Server) newRouter(schema *helpers.Schema) (*chi.Mux, error) {
+	return s.newRouterWithMeter(schema, otel.Meter(constants.Application))
 }
 
-func (s *Server) GetServer(client client.Client, directclient client.Client) (*http.Server, error) {
-	schema, err := helpers.NewSchema(openapi.GetSwagger)
+func (s *Server) newRouterWithMeter(schema *helpers.Schema, meter metric.Meter) (*chi.Mux, error) {
+	requestDeadline, err := requestDeadlineMiddleware(&s.ServerOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	metrics, err := coremetrics.New(meter)
 	if err != nil {
 		return nil, err
 	}
 
 	router := chi.NewRouter()
+	router.Use(requestDeadline)
+	router.Use(opentelemetry.New(constants.Application, constants.Version).Middleware)
+	router.Use(logging.New().Middleware)
+	router.Use(metrics.Middleware)
+	router.Use(routeresolver.New(schema).Middleware)
+	router.Use(cors.New(&s.CORSOptions).Middleware)
+	router.NotFound(http.HandlerFunc(handler.NotFound))
+	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
 
-	// Middleware specified here is applied to all requests pre-routing.
-	// Ordering is important:
-	// * OpenTelemetry middleware optionally transmits spans over OTLP, but also
-	//   establishes a trace ID that is used to correlate logs with user issues.
-	// * Logging ensures at least all errors are captured by logging telemetry and we
-	//   can trigger alerts based on them.
-	// * Route resolver provides routing and OpenAPI information to child middlewares.
-	// * CORS emulates OPTIONS endpoints based on OpenAPI (requires route resolver).
-	opentelemetry := opentelemetry.New(constants.Application, constants.Version)
-	logging := logging.New()
-	routeresolver := routeresolver.New(schema)
+	return router, nil
+}
 
-	metrics, err := redmetrics.New(otel.Meter(constants.Application))
+// GetServer assembles the HTTP server. Background work it starts, such as the
+// JOSE leader election, stops when ctx ends. The readiness checker gains the
+// conditions the handler graph adds. client writes and serves the reads that
+// decide a write; readCache, the informer cache, serves every other read, so
+// the per-request token check, ACL build and passport exchange make no API
+// server call.
+func (s *Server) GetServer(ctx context.Context, client client.Client, readCache client.Reader, ready *readiness.Checker) (*http.Server, error) {
+	schema, err := helpers.NewSchema(openapi.GetSwagger)
 	if err != nil {
 		return nil, err
 	}
 
-	cors := cors.New(&s.CORSOptions)
-
-	router.Use(opentelemetry.Middleware)
-	router.Use(logging.Middleware)
-	router.Use(routeresolver.Middleware)
-	router.Use(metrics.Middleware)
-	router.Use(cors.Middleware)
-	router.NotFound(http.HandlerFunc(handler.NotFound))
-	router.MethodNotAllowed(http.HandlerFunc(handler.MethodNotAllowed))
-
-	// Setup authn/authz
-	issuer := jose.NewJWTIssuer(client, s.CoreOptions.Namespace, &s.JoseOptions)
-	if err := issuer.Run(context.TODO(), &jose.InClusterCoordinationClientGetter{}); err != nil {
+	router, err := s.newRouter(schema)
+	if err != nil {
 		return nil, err
 	}
 
-	userdb := userdb.NewUserDatabase(client, s.CoreOptions.Namespace)
+	// Setup authn/authz
+	issuer := jose.NewJWTIssuer(client, readCache, s.CoreOptions.Namespace, &s.JoseOptions)
+	if err := issuer.Run(ctx, &jose.InClusterCoordinationClientGetter{}); err != nil {
+		return nil, err
+	}
+
+	ready.Require(readiness.SigningKeyAvailable(issuer))
+
+	userdb := userdb.NewUserDatabase(readCache, s.CoreOptions.Namespace)
 
 	// On main, bare admin entries matched from any authentication path. Mirror
 	// them onto the legacy Auth0 issuer so both pre-existing paths (UNI login,
@@ -148,8 +190,8 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// deprecated auth0-exchange flags.
 	s.RBACOptions.PlatformAdministratorSubjects = expandBareAdminSubjects(s.RBACOptions.PlatformAdministratorSubjects, s.OAuth2Options.Auth0ExchangeIssuer)
 
-	rbac := rbac.New(client, s.CoreOptions.Namespace, &s.RBACOptions)
-	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, directclient, issuer, userdb, rbac)
+	rbac := rbac.New(readCache, s.CoreOptions.Namespace, &s.RBACOptions)
+	oauth2, err := oauth2.New(&s.OAuth2Options, s.CoreOptions.Namespace, s.HandlerOptions.Issuer, client, readCache, issuer, rbac)
 
 	if err != nil {
 		return nil, err
@@ -166,25 +208,33 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	// still runs with a nil map, so the subject-binding advisory keeps working.
 	// Validate treats nil differently from an empty-but-successful map, so it
 	// never reads a failed fetch as "no dead bindings".
-	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(context.TODO(), client, s.CoreOptions.Namespace)
+	trustedNonUNIIssuers, issuersErr := computeTrustedNonUNIIssuers(ctx, readCache, s.CoreOptions.Namespace)
 
 	if issuersErr != nil {
-		log.FromContext(context.TODO()).Info("rbac options advisory check skipped: provider list unavailable", "error", issuersErr)
+		log.FromContext(ctx).Info("rbac options advisory check skipped: provider list unavailable", "error", issuersErr)
 	} else {
-		groupsClaimByIssuer, claimsErr := oauth2.GroupsClaimByIssuer(context.TODO())
+		groupsClaimByIssuer, claimsErr := oauth2.GroupsClaimByIssuer(ctx)
 		if claimsErr != nil {
-			log.FromContext(context.TODO()).Info("group role binding advisory check skipped: groups claim map unavailable", "error", claimsErr)
+			log.FromContext(ctx).Info("group role binding advisory check skipped: groups claim map unavailable", "error", claimsErr)
 		}
 
 		if err := s.RBACOptions.Validate(trustedNonUNIIssuers, groupsClaimByIssuer); err != nil {
-			log.FromContext(context.TODO()).Info("rbac options advisory check failed", "error", err)
+			log.FromContext(ctx).Info("rbac options advisory check failed", "error", err)
 		}
 	}
 
 	// Setup middleware.
 	authorizer := local.NewAuthorizer(oauth2, rbac)
 	validator := openapimiddleware.NewValidator(&s.OpenAPIOptions, authorizer)
-	audit := audit.New(constants.Application, constants.Version)
+
+	// A configured collector that cannot be reached at startup fails the
+	// process rather than silently dropping audit records for its lifetime.
+	auditSinks, err := auditSinks(ctx, client, s.AuditOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	audit := audit.New(constants.Application, constants.Version, auditSinks...)
 
 	// Middleware specified here is applied to all requests post-routing.
 	// NOTE: these are applied in reverse order!!
@@ -197,7 +247,7 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 		},
 	}
 
-	handlerInterface, err := handler.New(client, directclient, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
+	handlerInterface, err := handler.New(client, readCache, s.CoreOptions.Namespace, issuer, oauth2, userdb, rbac, &s.HandlerOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +261,45 @@ func (s *Server) GetServer(client client.Client, directclient client.Client) (*h
 	}
 
 	return server, nil
+}
+
+// requestTimeout returns the request context deadline. The server's write timeout
+// does not cancel the request context, so the deadline ends early enough to release
+// an organization Lease and write the response, success or 409, before it.
+// It must also leave time for a takeover of a crashed holder's Lease.
+func requestTimeout(o *options.ServerOptions) (time.Duration, error) {
+	if o.RequestTimeout <= 0 && o.WriteTimeout <= 0 {
+		return 0, nil
+	}
+
+	result := o.RequestTimeout
+
+	if o.WriteTimeout > 0 {
+		limit := o.WriteTimeout - handlercommon.OrganizationLeaseReleaseTimeout - responseWriteReserve
+		if result <= 0 || limit < result {
+			result = limit
+		}
+	}
+
+	if result < handlercommon.OrganizationLeaseTakeoverBudget {
+		return 0, fmt.Errorf("%w: request deadline %v from --server-request-timeout=%v and --server-write-timeout=%v is shorter than the organization Lease takeover budget %v",
+			errRequestTimeout, result, o.RequestTimeout, o.WriteTimeout, handlercommon.OrganizationLeaseTakeoverBudget)
+	}
+
+	return result, nil
+}
+
+func requestDeadlineMiddleware(o *options.ServerOptions) (func(http.Handler) http.Handler, error) {
+	result, err := requestTimeout(o)
+	if err != nil {
+		return nil, err
+	}
+
+	if result == 0 {
+		return func(next http.Handler) http.Handler { return next }, nil
+	}
+
+	return timeout.Middleware(result), nil
 }
 
 // expandBareAdminSubjects mirrors bare (UNI-sentinel) admin entries onto the
@@ -240,10 +329,9 @@ func expandBareAdminSubjects(subjects []rbac.PlatformAdministratorSubject, legac
 // expandBareAdminSubjects already mirrors bare admin entries onto it, so its
 // presence alone leaves nothing to migrate.
 //
-// A List failure (e.g. informer cache not yet warm) is returned as an error
-// so the caller can skip the advisory check rather than mistake it for a
-// genuinely empty trusted-issuer list.
-func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespace string) ([]string, error) {
+// A List failure is returned as an error so the caller can skip the advisory
+// check rather than mistake it for a genuinely empty trusted-issuer list.
+func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Reader, namespace string) ([]string, error) {
 	var providers unikornv1.OAuth2ProviderList
 
 	if err := cli.List(ctx, &providers, &client.ListOptions{Namespace: namespace}); err != nil {
@@ -277,4 +365,20 @@ func computeTrustedNonUNIIssuers(ctx context.Context, cli client.Client, namespa
 	}
 
 	return result, nil
+}
+
+// auditSinks builds the optional audit sinks.  Nothing configured means no
+// sinks, which is the default and leaves the structured log as the only audit
+// output.
+func auditSinks(ctx context.Context, client client.Client, options *audit.Options) ([]audit.Sink, error) {
+	if options == nil || !options.Enabled() {
+		return nil, nil
+	}
+
+	sink, err := audit.NewHTTPSink(ctx, client, options)
+	if err != nil {
+		return nil, err
+	}
+
+	return []audit.Sink{sink}, nil
 }

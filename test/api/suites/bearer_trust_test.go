@@ -87,7 +87,7 @@ var _ = Describe("OAuth2Provider bearerTrust", func() {
 
 	Context("When a malformed or unknown-issuer bearer is presented to /oauth2/v2/userinfo", func() {
 		Describe("the response", func() {
-			It("is rejected with 401", func() {
+			It("is rejected with 401", Label("smoke"), func() {
 				// Send a syntactically malformed JWS (not a real JWT) as the bearer
 				// token. The server must reject it before any provider lookup because
 				// the token cannot be decoded, let alone matched to a trusted issuer.
@@ -118,7 +118,7 @@ var _ = Describe("OAuth2Provider bearerTrust", func() {
 				GinkgoWriter.Printf("Malformed bearer rejected with %d\n", resp.StatusCode)
 			})
 
-			It("is rejected with 401 for a well-formed JWT from an untrusted issuer", func() {
+			It("is rejected with 401 for a well-formed JWT from an untrusted issuer", Label("smoke"), func() {
 				// A syntactically valid but unsigned/self-signed JWT whose iss does
 				// not match any registered OAuth2Provider should be rejected. We use
 				// a compact JWT header.payload.signature where the signature is

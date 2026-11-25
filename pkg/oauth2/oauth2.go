@@ -91,12 +91,9 @@ type Options struct {
 	// a refresh before any errors can come from the IdP.
 	TokenLeewayDuration time.Duration
 
-	// TokenCacheSize is used to control the size of the LRU cache for token validation
-	// checks.  This bounds the memory use to prevent DoS attacks.
+	// TokenCacheSize controls the LRU cache for decoded token claims. This bounds
+	// memory use while live revocation checks still run for every request.
 	TokenCacheSize int
-
-	// CodeCacheSize is used to set the number of authorization code in flight.
-	CodeCacheSize int
 
 	// ValidatorCacheSize controls how many per-provider auth0.Validator instances
 	// are kept in the LRU cache. Each entry holds a built validator keyed by
@@ -118,12 +115,15 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 	f.DurationVar(&o.TokenVerificationLeeway, "token-verification-leeway", 0, "How much leeway to permit for verification of token validity.")
 	f.DurationVar(&o.TokenLeewayDuration, "token-leeway", time.Minute, "How long to remove from the provider token expiry to account for network and processing latency.")
 	f.IntVar(&o.TokenCacheSize, "token-cache-size", 8192, "How many token cache entries to allow.")
-	f.IntVar(&o.CodeCacheSize, "code-cache-size", 8192, "How many code cache entries to allow.")
+	// Authorization codes live on the User record now; the flag stays parseable
+	// until deployments stop passing it.
+	_ = f.Int("code-cache-size", 8192, "How many code cache entries to allow.")
 	f.IntVar(&o.ValidatorCacheSize, "validator-cache-size", 64, "How many per-provider validator cache entries to allow.")
 	f.StringVar(&o.Auth0ExchangeIssuer, "auth0-exchange-issuer", "", "Auth0 tenant issuer accepted for passport token exchange.")
 	f.StringVar(&o.Auth0ExchangeAudience, "auth0-exchange-audience", "", "Auth0 API audience accepted for passport token exchange.")
 	_ = f.MarkDeprecated("auth0-exchange-issuer", "configure an OAuth2Provider with a bearerTrust block instead")
 	_ = f.MarkDeprecated("auth0-exchange-audience", "configure an OAuth2Provider with a bearerTrust block instead")
+	_ = f.MarkDeprecated("code-cache-size", "ignored, authorization codes are now stored on the User record")
 }
 
 // Authenticator provides Keystone authentication functionality.
@@ -132,12 +132,14 @@ type Authenticator struct {
 
 	namespace string
 
+	// client writes, and serves the reads that decide a write: sign-in,
+	// the token endpoint and refresh.
 	client client.Client
 
-	// directclient gives uncached access to Kubernetes.  A user write that
-	// loses a race reads the user again through it, because the cache can
-	// still hold the version that lost.
-	directclient client.Client
+	// reader is the informer cache. It serves every read on the per-request
+	// token check and passport exchange, so they make no API server call.
+	// See the README's "Readers" section.
+	reader client.Reader
 
 	// commonOptions contains shared handler configuration (issuer, hostname, etc.).
 	issuer common.IssuerValue
@@ -145,18 +147,14 @@ type Authenticator struct {
 	// jwtIssuer allows creation and validation of JWT bearer tokens.
 	jwtIssuer *jose.JWTIssuer
 
-	// userdb has all the operations needed for consulting the user database (User, OrganizationUser, ServiceAccount)
+	// userdb resolves identities from reader, for the per-request path.
 	userdb *userdb.UserDatabase
 
 	// rbac is needed for ACL computation in passport exchange.
 	rbac *rbac.RBAC
 
-	// tokenCache is used to enhance interaction as the validation is a
-	// very expensive operation.
+	// tokenCache retains decoded claims after cryptographic validation.
 	tokenCache *cache.LRUExpireCache
-
-	// codeCache is used to protect against authorization code reuse.
-	codeCache *cache.LRUExpireCache
 
 	// validatorCache memoizes built *auth0.Validator instances, keyed by provider
 	// name + spec fingerprint. Trust membership is never read from this cache;
@@ -174,7 +172,7 @@ type Authenticator struct {
 // is validated. Deprecated --auth0-exchange-{issuer,audience} flags feed a synthetic
 // auth0-legacy provider for backward compatibility; new deployments should use
 // OAuth2Provider bearerTrust blocks instead.
-func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, directclient client.Client, jwtIssuer *jose.JWTIssuer, userdb *userdb.UserDatabase, rbac *rbac.RBAC) (*Authenticator, error) {
+func New(options *Options, namespace string, issuer common.IssuerValue, client client.Client, reader client.Reader, jwtIssuer *jose.JWTIssuer, rbac *rbac.RBAC) (*Authenticator, error) {
 	// The error only reports an invalid instrument configuration; the name,
 	// description, and unit are static and the API returns a usable no-op
 	// counter regardless, so there is nothing actionable to handle.
@@ -193,13 +191,12 @@ func New(options *Options, namespace string, issuer common.IssuerValue, client c
 		options:          options,
 		namespace:        namespace,
 		client:           client,
-		directclient:     directclient,
+		reader:           reader,
 		issuer:           issuer,
 		jwtIssuer:        jwtIssuer,
-		userdb:           userdb,
+		userdb:           userdb.NewUserDatabase(reader, namespace),
 		rbac:             rbac,
 		tokenCache:       cache.NewLRUExpireCache(options.TokenCacheSize),
-		codeCache:        cache.NewLRUExpireCache(options.CodeCacheSize),
 		validatorCache:   newValidatorCache(validatorCacheSize),
 		unroutableTokens: unroutableTokens,
 	}, nil
@@ -643,7 +640,9 @@ func (a *Authenticator) authorizationSilent(r *http.Request, redirector *redirec
 		q.Set("state", query.Get("state"))
 	}
 
-	a.codeCache.Add(newCode, nil, time.Minute)
+	if err := a.addPendingAuthorizationCode(r.Context(), user, oauth2Code.ID, query.Get("client_id")); err != nil {
+		return false
+	}
 
 	redirector.redirect(q)
 
@@ -895,6 +894,8 @@ func normalizeIDTokenSubject(idToken *oidc.IDToken) {
 // authorization back to us.  We then exchange the code for an ID token, and
 // refresh token.  Remember, as far as the client is concerned we're still doing
 // the code grant, so return errors in the redirect query.
+//
+//nolint:cyclop
 func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 
@@ -952,12 +953,20 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A claim with white space at the start or end is refused, not trimmed
+	// (see unikornv1.HasSurroundingSpace).
+	if unikornv1.HasSurroundingSpace(idToken.Email.Email) {
+		redirector.raise(ErrorAccessDenied, "email has white space at the start or end")
+		return
+	}
+
 	// The authorization code and the session cookie store this id_token, and
 	// every token minted from them takes its subject from the claim.  So fold
 	// the claim once, here.
 	normalizeIDTokenSubject(idToken)
 
-	user, err := a.userdb.GetUser(r.Context(), idToken.Email.Email)
+	// Live: the code below is written to this record.
+	user, err := a.getLiveUser(r.Context(), idToken.Email.Email)
 	if err != nil {
 		redirector.raise(ErrorAccessDenied, "user not found")
 		return
@@ -977,11 +986,11 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		IDToken:        idToken,
 	}
 
-	a.authorizationCodeRedirect(w, r, redirector, clientQuery, code)
+	a.authorizationCodeRedirect(w, r, redirector, clientQuery, user, code)
 }
 
 // authorizationCodeRedirect packages up an authorization code and redirects to the client.
-func (a *Authenticator) authorizationCodeRedirect(w http.ResponseWriter, r *http.Request, redirector *redirector, clientQuery url.Values, code *Code) {
+func (a *Authenticator) authorizationCodeRedirect(w http.ResponseWriter, r *http.Request, redirector *redirector, clientQuery url.Values, user *unikornv1.User, code *Code) {
 	codeCipher, err := a.jwtIssuer.EncodeJWEToken(r.Context(), code, jose.TokenTypeAuthorizationCode)
 	if err != nil {
 		redirector.raise(ErrorServerError, "failed to encode authorization code: "+err.Error())
@@ -995,7 +1004,10 @@ func (a *Authenticator) authorizationCodeRedirect(w http.ResponseWriter, r *http
 		q.Set("state", clientQuery.Get("state"))
 	}
 
-	a.codeCache.Add(codeCipher, nil, time.Minute)
+	if err := a.addPendingAuthorizationCode(r.Context(), user, code.ID, clientQuery.Get("client_id")); err != nil {
+		redirector.raise(ErrorServerError, "failed to store authorization code")
+		return
+	}
 
 	// OIDC support silent re-authentication, the expectation is that the user will
 	// be able to reauthenticate for a period without a login prompt, up to the max_age
@@ -1150,8 +1162,8 @@ func (a *Authenticator) validateClientSecret(r *http.Request, query url.Values) 
 	return a.checkClientSecret(r.Context(), client, clientSecret)
 }
 
-// checkClientSecret compares the presented secret with the one in the client's
-// credentials Secret, falling back to status for clients not yet migrated.
+// checkClientSecret compares the presented secret with the credentials Secret,
+// falling back to status while older clients are migrated.
 func (a *Authenticator) checkClientSecret(ctx context.Context, oauth2client *unikornv1.OAuth2Client, clientSecret string) error {
 	expected := oauth2client.Status.Secret
 
@@ -1170,33 +1182,6 @@ func (a *Authenticator) checkClientSecret(ctx context.Context, oauth2client *uni
 	}
 
 	return nil
-}
-
-// revokeSession revokes all tokens for a clientID.
-func (a *Authenticator) revokeSession(ctx context.Context, clientID, codeID, subject string) error {
-	lookupSession := func(session unikornv1.UserSession) bool {
-		return session.ClientID == clientID && session.AuthorizationCodeID == codeID
-	}
-
-	user, err := a.userdb.GetActiveUser(ctx, subject)
-	if err != nil {
-		return err
-	}
-
-	return a.updateUser(ctx, user, func(user *unikornv1.User) (bool, error) {
-		index := slices.IndexFunc(user.Spec.Sessions, lookupSession)
-		if index < 0 {
-			return false, nil
-		}
-
-		// Things can still go wrong between here and issuing the new token, so invalidate
-		// the session now rather than relying on the reissue doing it for us.
-		a.InvalidateToken(ctx, user.Spec.Sessions[index].AccessToken)
-
-		user.Spec.Sessions = append(user.Spec.Sessions[:index], user.Spec.Sessions[index+1:]...)
-
-		return true, nil
-	})
 }
 
 // TokenAuthorizationCode issues a token based on whether the provided code is correct and
@@ -1228,17 +1213,6 @@ func (a *Authenticator) TokenAuthorizationCode(w http.ResponseWriter, r *http.Re
 	if err := a.validateClientSecret(r, clientQuery); err != nil {
 		return nil, err
 	}
-
-	// RFC 6749 4.1.2 - code reuse should revoke any tokens associated with the
-	// authentication code, we just clear out anything associated with the client
-	// session.
-	if _, ok := a.codeCache.Get(codeRaw); !ok {
-		_ = a.revokeSession(r.Context(), clientID, code.ID, code.IDToken.Email.Email)
-
-		return nil, errors.OAuth2InvalidGrant("code is not present in cache")
-	}
-
-	a.codeCache.Remove(codeRaw)
 
 	info := &IssueInfo{
 		Issuer:   a.getInternalIssuer(),
@@ -1312,7 +1286,9 @@ func (a *Authenticator) validateRefreshToken(ctx context.Context, r *http.Reques
 		return session.ClientID == claims.Federated.ClientID
 	}
 
-	user, err := a.userdb.GetActiveUser(ctx, claims.Subject)
+	// Live: the session check below decides a write. The state is checked on
+	// the live copy in the change below.
+	user, err := a.getLiveUser(ctx, claims.Subject)
 	if err != nil {
 		return errors.OAuth2AccessDenied("failed to lookup user").WithError(err)
 	}
@@ -1463,7 +1439,7 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 	}
 
 	// Check the token is from us, for us, and in date.
-	claims, err := a.Verify(ctx, verifyInfo)
+	claims, user, err := a.verify(ctx, verifyInfo)
 	if err != nil {
 		return nil, nil, coreerrors.AccessDenied(r, "token validation failed").WithError(err)
 	}
@@ -1483,7 +1459,8 @@ func (a *Authenticator) GetUserinfo(ctx context.Context, r *http.Request, token 
 
 		authz.Acctype = openapi.User
 
-		orgs, err := a.userdb.GetOrganizationIDs(ctx, claims.Subject)
+		// Verification has already read the active user for this token.
+		orgs, err := a.userdb.GetOrganizationIDsForUser(ctx, user)
 		if err != nil {
 			if goerrors.Is(err, userdb.ErrResourceReference) {
 				return nil, nil, errors.OAuth2AccessDenied("user identity not found or inactive").WithError(err)

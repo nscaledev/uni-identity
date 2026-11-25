@@ -56,7 +56,7 @@ deliberate re-audit before `platform-reader` gains the surface, instead of silen
 
 ### Included scopes
 
-The 33 scopes below are the ones `platform-reader` actually carries, all at global scope with
+The 34 scopes below are the ones `platform-reader` actually carries, all at global scope with
 `[read]` only. This table is the audit's condensed record of what each read surface actually
 returns.
 
@@ -82,6 +82,7 @@ returns.
 | `region:filestorage:v2` | Includes `mountSource`/NFS `mountOptions` — data-plane topology, not credentials (deliberately included) | uni-region `storage/client.go:320,354,151` |
 | `region:filestorageclass:v2` | Catalog | uni-region `storage/client.go:746` |
 | `region:filestoragesnapshots:v2` | File storage snapshot read access | `charts/identity/values.yaml` |
+| `region:filestoragedirectoryquotas:v2` | Directory quota limits, rule subjects (user and group names or IDs) and usage; no credentials | uni-region `storage/directory_quota.go` |
 | `region:sshcertificateauthorities:v2` | CA **public** key only; private material never stored/served | uni-region `sshcertificateauthority/client_v2.go:62-66` |
 | `kubernetes:regions` / `flavors` / `images` | Catalog passthrough | uni-kubernetes `handler.go:112,131,150` |
 | `kubernetes:clustermanagers` | Metadata-only | uni-kubernetes `handler.go:184` |
@@ -172,7 +173,8 @@ kubectl -n unikorn-identity patch roles.identity.unikorn-cloud.org <ID> \
 
 - **Takes effect within `--acl-cache-timeout` (default 1m)** as cached ACLs expire — no
   restart, no deploy. Unlike IdP offboarding, already-issued tokens and passports do not
-  extend the window: the role is read live on the next uncached ACL computation.
+  extend the window: the role is read from the informer cache, which follows the API server
+  within the watch lag, on the next uncached ACL computation.
 - Emptying scopes denies as clean **403s** ("no global-scope permissions"). Deleting the Role
   CRD also works but fails closed as **500s** for every user of the bound issuer — the
   unresolvable-role path above. The patch is the calmer signal for downstream tooling.

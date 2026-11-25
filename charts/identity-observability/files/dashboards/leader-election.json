@@ -13,10 +13,22 @@
   "templating": {
     "list": [
       {
+        "name": "datasource",
+        "label": "Datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "regex": ""
+      },
+      {
         "name": "cluster",
         "label": "Cluster",
         "type": "query",
-        "query": "label_values(leader_election_master_status{job=\"unikorn-identity\"}, cluster)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(leader_election_master_status{service=\"unikorn-identity\", name!=\"\"}, cluster)",
         "includeAll": true,
         "allValue": ".*",
         "multi": true,
@@ -36,9 +48,17 @@
         "x": 0,
         "y": 0
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "sum(max by (name) (leader_election_master_status{job=\"unikorn-identity\", cluster=~\"$cluster\"}))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (name) (leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"}))",
           "refId": "A"
         }
       ]
@@ -54,9 +74,17 @@
         "x": 8,
         "y": 0
       },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "targets": [
         {
-          "expr": "max by (name) (leader_election_master_status{job=\"unikorn-identity\", cluster=~\"$cluster\"})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (name) (leader_election_master_status{service=\"unikorn-identity\", name!=\"\", cluster=~\"$cluster\"})",
           "legendFormat": "{{name}}",
           "refId": "A"
         }

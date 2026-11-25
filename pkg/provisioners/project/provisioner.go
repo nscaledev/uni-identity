@@ -28,8 +28,9 @@ import (
 	"github.com/unikorn-cloud/core/pkg/manager"
 	"github.com/unikorn-cloud/core/pkg/provisioners"
 	"github.com/unikorn-cloud/core/pkg/provisioners/resource"
-	"github.com/unikorn-cloud/core/pkg/provisioners/util"
+	coreprovisioners "github.com/unikorn-cloud/core/pkg/provisioners/util"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	identityprovisioners "github.com/unikorn-cloud/identity/pkg/provisioners"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -73,10 +74,10 @@ func (p *Provisioner) Provision(ctx context.Context) error {
 	}
 
 	// Namespace exists, leave it alone.
-	namespace, err := util.GetResourceNamespace(ctx, labels)
+	namespace, err := identityprovisioners.GetResourceNamespace(ctx, labels)
 	if err != nil {
 		// Some other error, propagate it back up the stack.
-		if !errors.Is(err, util.ErrNamespaceLookup) {
+		if !errors.Is(err, coreprovisioners.ErrNamespaceLookup) {
 			return err
 		}
 	}
@@ -203,10 +204,10 @@ func (p *Provisioner) Deprovision(ctx context.Context) error {
 	}
 
 	// Get the project's namespace.
-	namespace, err := util.GetResourceNamespace(ctx, labels)
+	namespace, err := identityprovisioners.GetResourceNamespace(ctx, labels)
 	if err != nil {
 		// Already dead.
-		if errors.Is(err, util.ErrNamespaceLookup) {
+		if errors.Is(err, coreprovisioners.ErrNamespaceLookup) {
 			return nil
 		}
 

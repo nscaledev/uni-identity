@@ -20,6 +20,7 @@ package authorization
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/unikorn-cloud/core/pkg/errors"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
@@ -75,4 +76,38 @@ func FromContext(ctx context.Context) (*Info, error) {
 	}
 
 	return nil, fmt.Errorf("%w: authorization info is not defined", errors.ErrInvalidContext)
+}
+
+// Holder carries the caller out of authentication to a middleware that runs
+// outside it, such as audit.  Authentication adds the caller to a context
+// that only reaches inward, so an outer middleware cannot read it there; it
+// installs a holder first and reads that afterwards.  Atomic, as an inner
+// handler may hold from another goroutine.
+type Holder struct {
+	info atomic.Pointer[Info]
+}
+
+// Info returns the caller, or nil if none was authenticated.
+func (h *Holder) Info() *Info {
+	return h.info.Load()
+}
+
+type holderKeyType int
+
+//nolint:gochecknoglobals
+var holderKey holderKeyType
+
+// NewHolderContext installs an empty holder.
+func NewHolderContext(ctx context.Context) (context.Context, *Holder) {
+	holder := &Holder{}
+
+	return context.WithValue(ctx, holderKey, holder), holder
+}
+
+// Hold records the caller in the context's holder, and does nothing when
+// there is none.
+func Hold(ctx context.Context, info *Info) {
+	if holder, ok := ctx.Value(holderKey).(*Holder); ok {
+		holder.info.Store(info)
+	}
 }

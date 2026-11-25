@@ -23,9 +23,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/unikorn-cloud/core/pkg/constants"
-	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
-	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
@@ -35,6 +32,7 @@ import (
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -42,6 +40,8 @@ import (
 var (
 	ErrConsistency = goerrors.New("consistency error")
 )
+
+const quotaName = "quota"
 
 // Client is responsible for user management.
 type Client struct {
@@ -79,12 +79,11 @@ func generateQuotaList(in openapi.QuotaWriteList) []unikornv1.ResourceQuota {
 }
 
 func generate(ctx context.Context, organization *organizations.Meta, in *openapi.QuotasWrite) (*unikornv1.Quota, error) {
-	metadata := &coreopenapi.ResourceWriteMetadata{
-		Name: constants.UndefinedName,
-	}
-
 	out := &unikornv1.Quota{
-		ObjectMeta: conversion.NewObjectMetadata(metadata, organization.Namespace).Get(),
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      quotaName,
+			Namespace: organization.Namespace,
+		},
 		Spec: unikornv1.QuotaSpec{
 			Quotas: generateQuotaList(in.Quotas),
 		},
@@ -146,19 +145,56 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID) (*o
 	return c.convert(ctx, result, organizationID)
 }
 
+func (c *Client) create(ctx context.Context, organizationID ids.OrganizationID, common *common.Client, required *unikornv1.Quota) (*unikornv1.Quota, error) {
+	if err := c.client.Create(ctx, required); err == nil {
+		return required, nil
+	} else if !kerrors.IsAlreadyExists(err) {
+		return nil, errors.OAuth2InvalidRequest("unable to create quota").WithError(err)
+	}
+
+	current, virtual, err := common.GetQuota(ctx, organizationID)
+	if err != nil {
+		return nil, errors.OAuth2InvalidRequest("unable to load conflicting quota").WithError(err)
+	}
+
+	if virtual || current.Name != quotaName {
+		return nil, errors.OAuth2InvalidRequest("conflicting quota has unexpected name")
+	}
+
+	return current, nil
+}
+
 func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, request *openapi.QuotasWrite) (*openapi.QuotasRead, error) {
 	if err := c.checkKinds(ctx, request); err != nil {
 		return nil, err
 	}
-
-	common := common.New(c.client)
 
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return nil, err
 	}
 
-	current, virtual, err := common.GetQuota(ctx, organizationID)
+	quota, err := c.write(ctx, organizationID, organization, request)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.convert(ctx, quota, organizationID)
+}
+
+// write checks and stores the quota while holding the organization Lease, which is
+// released before the response is rendered.
+func (c *Client) write(ctx context.Context, organizationID ids.OrganizationID, organization *organizations.Meta, request *openapi.QuotasWrite) (*unikornv1.Quota, error) {
+	return common.WithOrganizationLease(ctx, c.client, c.namespace, organizationID, func(ctx context.Context, lease *common.OrganizationLease) (*unikornv1.Quota, error) {
+		return c.writeLocked(ctx, lease, organizationID, organization, request)
+	})
+}
+
+// writeLocked reads, checks and stores the quota under the organization Lease.
+func (c *Client) writeLocked(ctx context.Context, lease *common.OrganizationLease, organizationID ids.OrganizationID, organization *organizations.Meta, request *openapi.QuotasWrite) (*unikornv1.Quota, error) {
+	commonClient := common.New(c.client)
+
+	current, virtual, err := commonClient.GetQuota(ctx, organizationID)
 	if err != nil {
 		return nil, errors.OAuth2InvalidRequest("unable to read quota").WithError(err)
 	}
@@ -169,11 +205,15 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	}
 
 	if virtual {
-		if err := c.client.Create(ctx, required); err != nil {
-			return nil, errors.OAuth2InvalidRequest("unable to create quota").WithError(err)
+		if err := commonClient.CheckQuotaConsistency(ctx, organizationID, required, nil); err != nil {
+			return nil, err
 		}
 
-		return c.convert(ctx, required, organizationID)
+		if err := lease.Check(ctx); err != nil {
+			return nil, err
+		}
+
+		return c.create(ctx, organizationID, commonClient, required)
 	}
 
 	updated := current.DeepCopy()
@@ -181,7 +221,11 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
 
-	if err := common.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
+	if err := commonClient.CheckQuotaConsistency(ctx, organizationID, updated, nil); err != nil {
+		return nil, err
+	}
+
+	if err := lease.Check(ctx); err != nil {
 		return nil, err
 	}
 
@@ -193,5 +237,5 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 		return nil, fmt.Errorf("%w: failed to patch quotas", err)
 	}
 
-	return c.convert(ctx, updated, organizationID)
+	return updated, nil
 }

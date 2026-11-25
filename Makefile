@@ -151,7 +151,7 @@ test: test-unit
 
 .PHONY: test-unit
 test-unit:
-	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api -e /test/contracts)
+	go test -coverpkg ./... -coverprofile cover.out $(shell go list ./... | grep -v -e /test/api/suites -e /test/contracts)
 	go tool cover -html cover.out -o cover.html
 
 # Regenerate the RBAC conformance vectors from the Lean formal model in ./formal.
@@ -211,6 +211,10 @@ lint: $(GENDIR)
 	for chart in $(CHARTS); do helm lint --strict $$chart; done
 	./hack/check_chart_render.sh
 	./hack/check_observability_chart_render.sh
+	./test/load/ceiling_test.sh
+	./test/load/lib_test.sh
+	./test/load/compare_test.sh
+	./test/api/skips_test.sh
 
 # Validate the server OpenAPI schema is legit.
 .PHONY: validate
@@ -256,6 +260,15 @@ test-api-suite: test-api-setup
 	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
 	ginkgo run $(SUITE) $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
 
+# Runs the release-evidence smoke set: the specs labelled smoke. Fails when none is labelled, and
+# when any selected spec skips, so evidence can never pass with less than the whole set run.
+.PHONY: test-api-smoke
+test-api-smoke: test-api-setup
+	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
+	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
+	ginkgo run -v --randomize-all --fail-on-empty --label-filter='smoke' $(GINKGO_INTEGRATION_TEST_FLAGS) ./test/api/suites/
+	@$(MAKE) --no-print-directory test-api-no-skips
+
 .PHONY: test-api-parallel
 test-api-parallel: test-api-setup
 	@if [ -f test/.env ]; then set -a; . test/.env; set +a; fi; \
@@ -268,6 +281,19 @@ test-api-ci: test-api-setup
 	SSL_CERT_FILE="$${IDENTITY_CA_CERT:-$$SSL_CERT_FILE}" \
 	ginkgo run --randomize-all --randomize-suites --race $(GINKGO_INTEGRATION_TEST_FLAGS) --output-interceptor-mode=none ./test/api/suites/
 
+TEST_RESULTS ?= test-results.json
+
+# Lists the specs in a Ginkgo JSON report that called Skip(), by reason.
+.PHONY: test-api-skips
+test-api-skips:
+	@jq -r -f test/api/skips.jq $(TEST_RESULTS)
+
+# Fails when a spec skipped: a run with every fixture (kind) must run every spec.
+.PHONY: test-api-no-skips
+test-api-no-skips:
+	@skips="$$(jq -r -f test/api/skips.jq $(TEST_RESULTS))" || exit 1; \
+	if [ -n "$$skips" ]; then echo "$$skips"; echo "ERROR: specs skipped" >&2; exit 1; fi
+
 .PHONY: test-api-setup
 test-api-setup:
 	@go install github.com/onsi/ginkgo/v2/ginkgo@$(GINKGO_VERSION)
@@ -276,7 +302,7 @@ test-api-setup:
 # Clean test artifacts
 .PHONY: test-api-clean
 test-api-clean:
-	@rm -f test/api/suites/test-results.json test/api/suites/junit.xml
+	@rm -f test-results.json junit.xml
 
 # Pact library path configuration (OS-specific defaults)
 UNAME_S := $(shell uname -s)
@@ -300,6 +326,14 @@ PROVIDER_VERSION ?= $(REVISION)
 BRANCH ?= $(shell git rev-parse --abbrev-ref HEAD)
 GIT_BRANCH ?= $(BRANCH)
 
+# Provider state handlers create and delete resources in the test namespace, so developer runs target only a
+# kind cluster of their own (named as in CI), through its own kubeconfig, never the ambient context.
+# `kind get kubeconfig` fails when that cluster doesn't exist, so a missing cluster stops the run.
+CONTRACTS_KIND_CLUSTER ?= contract-testing
+CONTRACTS_KUBECONFIG = $(CURDIR)/.kind-$(CONTRACTS_KIND_CLUSTER).kubeconfig
+# The kubeconfig grants admin on that cluster, so only its owner can read it, including one an earlier run wrote.
+CONTRACTS_KIND_KUBECONFIG = (umask 077 && kind get kubeconfig --name $(CONTRACTS_KIND_CLUSTER) > "$(CONTRACTS_KUBECONFIG)" && chmod 600 "$(CONTRACTS_KUBECONFIG)")
+
 # Run provider contract verification tests
 .PHONY: test-contracts-provider
 test-contracts-provider:
@@ -307,9 +341,10 @@ test-contracts-provider:
 	@echo "Provider Version: $(PROVIDER_VERSION)"
 	@echo "Provider Branch: $(GIT_BRANCH)"
 	@echo "Publishing results to Pact Broker: $(PACT_BROKER_URL)"
+	$(CONTRACTS_KIND_KUBECONFIG)
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
-	KUBECONFIG="$(HOME)/.kube/config" \
+	KUBECONFIG="$(CONTRACTS_KUBECONFIG)" \
 	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
@@ -323,9 +358,10 @@ test-contracts-provider:
 .PHONY: test-contracts-provider-verbose
 test-contracts-provider-verbose:
 	@echo "Running provider contract verification with verbose output..."
+	$(CONTRACTS_KIND_KUBECONFIG)
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
-	KUBECONFIG="$(HOME)/.kube/config" \
+	KUBECONFIG="$(CONTRACTS_KUBECONFIG)" \
 	PACT_BROKER_URL="$(PACT_BROKER_URL)" \
 	PACT_BROKER_USERNAME="$(PACT_BROKER_USERNAME)" \
 	PACT_BROKER_PASSWORD="$(PACT_BROKER_PASSWORD)" \
@@ -344,14 +380,15 @@ test-contracts-provider-local:
 		echo "Usage: make test-contracts-provider-local PACT_FILE=/path/to/pact.json"; \
 		exit 1; \
 	fi
+	$(CONTRACTS_KIND_KUBECONFIG)
 	CGO_LDFLAGS="$(PACT_LD_FLAGS)" \
 	$(PACT_LIB_ENV) \
-	KUBECONFIG="$(HOME)/.kube/config" \
+	KUBECONFIG="$(CONTRACTS_KUBECONFIG)" \
 	PACT_FILE="$(PACT_FILE)" \
 	PROVIDER_VERSION="$(PROVIDER_VERSION)" \
 	GIT_BRANCH="$(GIT_BRANCH)" \
 	GOFLAGS="$(PACT_GOFLAGS)" \
-	go test ./test/contracts/provider/... -v -count=1 -p 1
+	go test ./test/contracts/provider/... -v -count=1 -p 1 -args -ginkgo.focus="local files"
 
 # Run provider verification and publish results to Pact Broker (works on both macOS and Linux)
 # Sets CI=true which triggers auto-publishing to Pact Broker
@@ -456,11 +493,12 @@ integration-install:  ## Deploy identity into the current cluster with random na
 .PHONY: integration-fixtures
 integration-fixtures:  ## Create integration fixtures and write test/.env
 	. test/.env.install && \
-	go run ./hack/ci/fixtures/... \
+	{ go run ./hack/ci/fixtures/... \
 	  --base-url "$$IDENTITY_BASE_URL" \
 	  --namespace "$$IDENTITY_NAMESPACE" \
-	  --ca-cert "$$IDENTITY_CA_CERT" \
+	  --ca-cert "$$IDENTITY_CA_CERT" && \
+	  { grep '^ACL_CACHE_TIMEOUT=' test/.env.install || true; }; } \
 	  > test/.env
 
 .PHONY: integration-test
-integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci  ## Full local integration run
+integration-test: kind-cluster integration-infra integration-install integration-fixtures test-api-ci test-api-no-skips  ## Full local integration run

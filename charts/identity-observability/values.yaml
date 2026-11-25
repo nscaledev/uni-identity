@@ -1,17 +1,14 @@
 grafana:
   dashboards:
     enabled: false
+    # sidecar: labelled ConfigMaps for the Grafana dashboard sidecar.
+    # operator: ConfigMaps plus GrafanaDashboard resources for grafana-operator.
     provisioningMode: sidecar
     namespace: ""
     folder: UNI/Identity
     label: grafana_dashboard
     leaderElection:
       enabled: false
-    instanceSelector:
-      matchLabels:
-        service: central-observability
-
-lokiDatasource:
-  enabled: false
-  namespace: ""
-  url: ""
+    # Required in operator mode: selects the Grafana instances that receive
+    # the dashboards.
+    instanceSelector: {}

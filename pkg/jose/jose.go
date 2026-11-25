@@ -95,23 +95,30 @@ func (o *Options) AddFlags(f *pflag.FlagSet) {
 // will rotate every 60 days (by default), so you MUST ensure they are
 // not cached in perpetuity.  Additionally, due to horizontal scale-out
 // these secrets need to be shared between all replicas so that a token
-// issued by one, can be verified by another.  As such if you ever do
-// cache the certificate load, it will need to be coordinated between
-// all instances.
+// issued by one, can be verified by another.  Reads go through the
+// informer cache; each replica's cache lags the API server by its own watch,
+// so a change reaches replicas at slightly different times (see the README's
+// "Readers" section).
 type JWTIssuer struct {
 	options *Options
 
 	// client is the Kubernetes client for certificate management.
 	client client.Client
 
+	// reader reads the signing keys to sign and verify tokens. In the server
+	// it is the informer cache, so a token check makes no API server call.
+	reader client.Reader
+
 	// namespace is where we are running so we can find leases and secrets.
 	namespace string
 }
 
-// NewJWTIssuer returns a new JWT issuer and validator.
-func NewJWTIssuer(client client.Client, namespace string, options *Options) *JWTIssuer {
+// NewJWTIssuer returns a new JWT issuer and validator. client creates and
+// rotates the signing keys; reader reads them for every other use.
+func NewJWTIssuer(client client.Client, reader client.Reader, namespace string, options *Options) *JWTIssuer {
 	return &JWTIssuer{
 		client:    client,
+		reader:    reader,
 		namespace: namespace,
 		options:   options,
 	}
@@ -201,88 +208,91 @@ func (i *JWTIssuer) Run(ctx context.Context, coordinationClientGetter Coordinati
 
 const SigningKeyName = "unikorn-identity-jose"
 
-// StartLeading does certificate rotation handling.
-// NOTE: there is a startup penalty waiting for the first tick, but on the first
-// invocation it's expected there won't be any traffic immediately anyway.
-//
-//nolint:cyclop
+// StartLeading does certificate rotation handling. It reconciles the signing
+// keys as soon as it becomes leader, so a fresh install can sign tokens without
+// waiting a rotation period, then again on every tick.
 func (i *JWTIssuer) StartLeading(ctx context.Context) {
-	log := log.FromContext(ctx)
-
 	ticker := time.NewTicker(i.options.RotationPeriod)
 	defer ticker.Stop()
 
 	for {
+		i.reconcileSigningKeys(ctx)
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// Get the cert-manager secret and extract the private key.
-			var secret corev1.Secret
-
-			if err := i.client.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: i.options.IssuerSecretName}, &secret); err != nil {
-				log.Error(err, "JOSE signing key secret not ready")
-				break
-			}
-
-			privateKey, ok := secret.Data[corev1.TLSPrivateKeyKey]
-			if !ok {
-				log.Info("JOSE signing key secret doesn't contain a private key")
-				break
-			}
-
-			var signingKeys unikornv1.SigningKey
-
-			if err := i.client.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: SigningKeyName}, &signingKeys); err != nil {
-				if !kerrors.IsNotFound(err) {
-					log.Error(err, "unable to get JOSE signing keys")
-					break
-				}
-
-				signingKeys := &unikornv1.SigningKey{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: i.namespace,
-						Name:      SigningKeyName,
-					},
-					Spec: unikornv1.SigningKeySpec{
-						PrivateKeys: []unikornv1.PrivateKey{
-							{
-								PEM: privateKey,
-							},
-						},
-					},
-				}
-
-				if err := i.client.Create(ctx, signingKeys); err != nil {
-					log.Error(err, "failed to create signing keys")
-					break
-				}
-
-				break
-			}
-
-			// Up to date.
-			if slices.Equal(signingKeys.Spec.PrivateKeys[0].PEM, privateKey) {
-				break
-			}
-
-			// The new private key becomes the primary at the head of the
-			// list, and is used to sign. The old primary is retained as it's
-			// used to verify existing issued tokens.
-			keys := []unikornv1.PrivateKey{
-				{
-					PEM: privateKey,
-				},
-				signingKeys.Spec.PrivateKeys[0],
-			}
-
-			signingKeys.Spec.PrivateKeys = keys
-
-			if err := i.client.Update(ctx, &signingKeys); err != nil {
-				log.Error(err, "failed to update JOSE primary key")
-				break
-			}
 		}
+	}
+}
+
+// reconcileSigningKeys keeps the shared signing keys in step with the
+// cert-manager managed secret.
+func (i *JWTIssuer) reconcileSigningKeys(ctx context.Context) {
+	log := log.FromContext(ctx)
+
+	// Get the cert-manager secret and extract the private key.
+	var secret corev1.Secret
+
+	if err := i.client.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: i.options.IssuerSecretName}, &secret); err != nil {
+		log.Error(err, "JOSE signing key secret not ready")
+		return
+	}
+
+	privateKey, ok := secret.Data[corev1.TLSPrivateKeyKey]
+	if !ok {
+		log.Info("JOSE signing key secret doesn't contain a private key")
+		return
+	}
+
+	var signingKeys unikornv1.SigningKey
+
+	if err := i.client.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: SigningKeyName}, &signingKeys); err != nil {
+		if !kerrors.IsNotFound(err) {
+			log.Error(err, "unable to get JOSE signing keys")
+			return
+		}
+
+		signingKeys := &unikornv1.SigningKey{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: i.namespace,
+				Name:      SigningKeyName,
+			},
+			Spec: unikornv1.SigningKeySpec{
+				PrivateKeys: []unikornv1.PrivateKey{
+					{
+						PEM: privateKey,
+					},
+				},
+			},
+		}
+
+		if err := i.client.Create(ctx, signingKeys); err != nil {
+			log.Error(err, "failed to create signing keys")
+		}
+
+		return
+	}
+
+	// Up to date.
+	if slices.Equal(signingKeys.Spec.PrivateKeys[0].PEM, privateKey) {
+		return
+	}
+
+	// The new private key becomes the primary at the head of the
+	// list, and is used to sign. The old primary is retained as it's
+	// used to verify existing issued tokens.
+	keys := []unikornv1.PrivateKey{
+		{
+			PEM: privateKey,
+		},
+		signingKeys.Spec.PrivateKeys[0],
+	}
+
+	signingKeys.Spec.PrivateKeys = keys
+
+	if err := i.client.Update(ctx, &signingKeys); err != nil {
+		log.Error(err, "failed to update JOSE primary key")
 	}
 }
 
@@ -378,7 +388,7 @@ func (i *JWTIssuer) GetJSONWebKey(pem []byte) (*jose.JSONWebKey, *jose.JSONWebKe
 func (i *JWTIssuer) GetJSONWebKeySet(ctx context.Context) (*jose.JSONWebKeySet, *jose.JSONWebKeySet, error) {
 	var signingKeys unikornv1.SigningKey
 
-	if err := i.client.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: SigningKeyName}, &signingKeys); err != nil {
+	if err := i.reader.Get(ctx, client.ObjectKey{Namespace: i.namespace, Name: SigningKeyName}, &signingKeys); err != nil {
 		return nil, nil, err
 	}
 

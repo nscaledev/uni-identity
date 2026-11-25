@@ -21,8 +21,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -227,23 +230,62 @@ type UserPayloadBuilder struct {
 	user identityopenapi.UserWrite
 }
 
-// NewUserPayload creates a new user payload builder with a unique subject.
-func NewUserPayload() *UserPayloadBuilder {
+// AcceptedCreateID returns the ID of the object a POST created, or "" when the request was not
+// a POST, was refused, or named no object.
+func AcceptedCreateID(method string, resp *http.Response, body []byte) string {
+	if method != http.MethodPost || resp == nil || resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return ""
+	}
+
+	var created struct {
+		Metadata struct {
+			ID string `json:"id"`
+		} `json:"metadata"`
+	}
+
+	if err := json.Unmarshal(body, &created); err != nil {
+		return ""
+	}
+
+	return created.Metadata.ID
+}
+
+// DeleteIfCreated deletes, when the spec ends, an object a create the API should have refused
+// made anyway, so a release that wrongly accepts it leaves nothing on a shared environment. The
+// spec still fails on the unexpected status; cleanup should be a client that may delete.
+func DeleteIfCreated(cleanup *APIClient, ctx context.Context, method, collectionPath string, resp *http.Response, body []byte) {
+	id := AcceptedCreateID(method, resp, body)
+	if id == "" {
+		return
+	}
+
+	DeferCleanup(func() {
+		//nolint:bodyclose // DoRequest handles response body closing internally
+		resp, _, err := cleanup.DoRequest(ctx, http.MethodDelete, collectionPath+"/"+id, nil, http.StatusAccepted)
+		if err != nil && (resp == nil || resp.StatusCode >= 300) {
+			Fail(fmt.Sprintf("an accepted create left %s/%s behind: %v", collectionPath, id, err))
+		}
+	})
+}
+
+// UserSubject returns the subject for the user a spec creates under key, in the lower case
+// identity stores. A fixed key, not a unique name, because identity keeps every global user it
+// creates and reuses one by subject.
+func UserSubject(config *TestConfig, key string) string {
+	return strings.ToLower(fmt.Sprintf("%s-%s@example.com", key, config.SubjectSuffix))
+}
+
+// NewUserPayload creates a new user payload builder for the given subject.
+func NewUserPayload(subject string) *UserPayloadBuilder {
 	return &UserPayloadBuilder{
 		user: identityopenapi.UserWrite{
 			Spec: identityopenapi.UserSpec{
-				Subject:  uniqueName("test-user") + "@example.com",
+				Subject:  subject,
 				State:    "active",
 				GroupIDs: []string{},
 			},
 		},
 	}
-}
-
-// WithSubject sets the user subject (email).
-func (b *UserPayloadBuilder) WithSubject(subject string) *UserPayloadBuilder {
-	b.user.Spec.Subject = subject
-	return b
 }
 
 // WithGroupIDs sets the group IDs for the user.

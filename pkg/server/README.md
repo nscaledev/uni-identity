@@ -51,20 +51,28 @@ The ordering here is intentional and should be read as precedent for other API s
 
 The `core` middleware stack is applied directly to the raw router in this order:
 
-1. OpenTelemetry
-2. logging
-3. route resolver
+1. request deadline
+2. OpenTelemetry
+3. logging
 4. RED metrics
-5. CORS
+5. route resolver
+6. CORS
 
 The reasons matter:
 
+- The request deadline runs first so it bounds all later work. The server's write timeout stops
+  response writes but does not cancel the request context, so the deadline is the shorter of
+  `--server-request-timeout` and `--server-write-timeout` minus two seconds. Those two seconds
+  cover organization Lease cleanup and the response write. The server refuses to start if the
+  deadline is shorter than an organization Lease takeover plus its critical section (see
+  [`pkg/handler/allocations`](../handler/allocations/README.md)).
 - OpenTelemetry must run first so trace context exists before anything else happens.
 - Logging must run early so even requests that fail before deep routing or service-specific
   middleware still get captured, and so those logs can include the trace context established
   earlier.
+- RED metrics wrap route resolution so unmatched requests are recorded. The resolver supplies
+  matched requests' stable OpenAPI paths, never resource IDs.
 - Route resolution must happen before middleware that depends on OpenAPI operation/schema metadata.
-- RED metrics run after route resolution so labels contain stable OpenAPI paths, never resource IDs.
 - CORS comes after route resolution because its schema-driven `OPTIONS` behaviour depends on the
   resolved route information.
 
@@ -97,15 +105,28 @@ At a high level, `GetServer()` does the following:
 
 1. build the OpenAPI schema helper
 2. create the raw router
-3. install the shared `core` middleware stack
+3. compute the request deadline and install the shared `core` middleware stack
 4. install generic `NotFound` and `MethodNotAllowed` handling
 5. construct process-wide identity helper services (`jose`, `userdb`, `rbac`, `oauth2`)
 6. construct identity-specific middleware (`local` authorizer, validator, audit)
 7. construct the top-level handler implementation
 8. attach everything through the generated OpenAPI router and return `http.Server`
 
-The command process publishes build metadata for its lifetime and reports ready
-only while it owns the bound HTTP listener.
+The command process publishes build metadata for its lifetime. It serves readiness on
+`/readyz` on a separate health listener (`:6081`), which the Service does not expose, so the
+ingress cannot route to it; other pods can still reach it on the Pod IP unless a NetworkPolicy
+prevents that, and the chart does not install one. A failing probe gets a bare 503; the cause is logged. A replica is ready when
+it is not shutting down and it has read the primary token signing key once. The key is
+cluster-wide state written by the JOSE leader, so on a fresh install every replica stays not
+ready until the first leader has written it. After that first read the probe does not call the
+API server, so an API server slowdown cannot take every replica out of service together.
+Leadership itself, external OIDC providers and the audit collector do not gate readiness.
+
+On SIGTERM the process reports not ready, keeps serving for 5 seconds so endpoint removal reaches
+every node, then stops the background work and drains in-flight requests for up to 10 seconds.
+Metrics stay served for 35 seconds after the drain, longer than the 30 second scrape interval, so
+the drain's requests are scraped. It exits once that has finished. The chart's 60 second
+termination grace period covers all three; `pkg/server/shutdown.go` owns the timings.
 
 This makes the trust pipeline an application-level invariant rather than a handler-by-handler
 convention.
@@ -117,10 +138,22 @@ convention.
 - middleware ordering is part of the package contract because later stages depend on context from
   earlier stages
 - `jose`, `userdb`, `rbac`, and `oauth2` are process-wide shared services in the API server
+- the API server has one synchronized informer cache. The token check, the ACL build, passport
+  exchange and the organization list read only the cache, so they make no API server call. Reads
+  that decide a write, and other handlers' resource reads, use the direct client; see
+  [`pkg/oauth2`](../oauth2/README.md#readers) and [`pkg/handler`](../handler/README.md)
+- each API server replica keeps only state it can rebuild locally: its informer cache and its ACL
+  cache. Authorization codes, sessions, allocation admission and quota changes are decided on
+  direct reads or per-organization Kubernetes Leases. A write, a revocation included, reaches a
+  replica's cached reads within that replica's watch lag
+- JOSE key rotation is leader-elected through its Kubernetes Lease. Every replica reads the shared
+  `SigningKey` resource through its cache, so a rotation reaches it within its watch lag; see
+  [`pkg/jose`](../jose/README.md)
 - generated OpenAPI routing, validation, and schema helpers are load-bearing parts of the runtime
   model
-- API readiness reflects ownership of the bound HTTP listener, not construction
-  of the handler graph
+- API readiness means this replica can serve a request end to end: not shutting down and
+  signing key read. The read cache syncs before the listener binds, so it needs no check. The
+  `unikorn_server_ready` metric reports listener ownership only
 
 ## Caveats
 
@@ -130,6 +163,11 @@ convention.
   give a false picture of how the service actually behaves at runtime.
 - The package is intentionally coupled to the current built-in identity stack. Changing the authn or
   trust model would require coordinated changes across several of the composed subsystems.
+- A lost API server that held an organization Lease delays that organization's allocation or quota
+  requests until a contender has seen the Lease unchanged for its three-second duration and takes
+  it over. The default eight-second request deadline leaves time for that and the critical section;
+  a request that runs out of time gets a retryable HTTP 409. Other organizations and login traffic
+  continue through remaining replicas.
 
 ## Related Documentation
 

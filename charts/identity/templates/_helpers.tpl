@@ -22,16 +22,12 @@ v{{ .Chart.Version }}
 {{- end }}
 
 {{/*
-OTLP resource identity. The exported metrics use platform-generic names, so a
-stored series is attributed to this service by the resource's service.name
-(stored as the job label), not by the metric name. service.instance.id (stored
-as the instance label) keeps per-process series apart: the workloads share one
-service.name, so without it their unlabelled runtime series would collide.
+Trace resource identity. The code names the service, so only the instance is
+set here: service.instance.id tells the workloads' spans apart. Metrics are
+scraped, and take their labels from the code and the scraper, not from this.
 */}}
 {{- define "unikorn.identity.otelEnv" -}}
 env:
-- name: OTEL_SERVICE_NAME
-  value: unikorn-identity
 - name: POD_NAME
   valueFrom:
     fieldRef:

@@ -14,6 +14,10 @@ imagePullSecret: ~
 
 # Allows override of the identity service configuration.
 server:
+  # Number of identity API server replicas. The server is safe to run with
+  # multiple replicas; the controller Deployments remain independently sized.
+  replicas: 2
+
   # An array of extra flags to append to the server configuration.
   extraFlags: ~
 
@@ -288,11 +292,15 @@ roles:
         region:securitygroups:v2: [create,read,update,delete]
         region:servers: [create,read,update,delete]
         region:servers:v2: [create,read,update,delete]
-        region:servers:v2/provider-create-gates: [update]
+        # create configures gates on a new Server and infrastructure-ref pins
+        # it to a host; update satisfies a gate (uni-region#776).
+        region:servers:v2/provider-create-gates: [create,update]
+        region:servers:v2/infrastructure-ref: [create]
         region:volumeclasses:v2: [read]
         region:volumes:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
         region:filestoragesnapshots:v2: [create,read,update,delete]
+        region:filestoragedirectoryquotas:v2: [create,read,update,delete]
         region:filestorageclass:v2: [create,read,update,delete]
         region:sshcertificateauthorities:v2: [create,read,delete]
         kubernetes:regions: [create,read,update,delete]
@@ -346,6 +354,7 @@ roles:
         region:volumeclasses:v2: [read]
         region:filestorage:v2: [read]
         region:filestoragesnapshots:v2: [read]
+        region:filestoragedirectoryquotas:v2: [read]
         region:filestorageclass:v2: [read]
         region:sshcertificateauthorities:v2: [read]
         kubernetes:regions: [read]
@@ -431,6 +440,7 @@ roles:
         region:volumes:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
         region:filestoragesnapshots:v2: [create,read,update,delete]
+        region:filestoragedirectoryquotas:v2: [create,read,update,delete]
         region:filestorageclass:v2: [read]
         region:volumeclasses:v2: [read]
         storage:objectstorageclasses: [read]
@@ -466,6 +476,7 @@ roles:
         region:volumes:v2: [read]
         region:filestorage:v2: [read]
         region:filestoragesnapshots:v2: [read]
+        region:filestoragedirectoryquotas:v2: [read]
         region:filestorageclass:v2: [read]
         region:volumeclasses:v2: [read]
         storage:objectstorageclasses: [read]
@@ -510,6 +521,7 @@ roles:
         region:volumes:v2: [create,read,update,delete]
         region:filestorage:v2: [create,read,update,delete]
         region:filestoragesnapshots:v2: [create,read,update,delete]
+        region:filestoragedirectoryquotas:v2: [create,read,update,delete]
         storage:objectstorageendpoints: [create,read,update,delete]
         storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
         region:sshcertificateauthorities:v2: [create,read,delete]
@@ -542,6 +554,7 @@ roles:
         region:volumes:v2: [read]
         region:filestorage:v2: [read]
         region:filestoragesnapshots:v2: [read]
+        region:filestoragedirectoryquotas:v2: [read]
         storage:objectstorageendpoints: [read]
         storage:objectstorageendpoints/accesskeys: [read]
         region:sshcertificateauthorities:v2: [read]

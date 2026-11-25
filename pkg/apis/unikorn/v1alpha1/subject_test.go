@@ -88,6 +88,76 @@ func TestNormalizeSubjectFoldsASCIILettersOnly(t *testing.T) {
 	assert.Equal(t, "\u0130nfo@x.com", unikornv1.NormalizeSubject("\u0130nfo@X.com"))
 }
 
+// TestLowersOnlyASCII pins the rule that a subject lower-cases the same way under
+// full Unicode rules and under the A to Z fold. Other systems can lower-case an
+// address with full Unicode rules, and a subject that differs there would not
+// keep its identity. The title case, Roman numeral and circled rows are not
+// upper-case letters by Unicode category, but strings.ToLower changes them, so a
+// rule that tests only for upper case fails these rows. A combining mark has no
+// lower case, so it is accepted.
+func TestLowersOnlyASCII(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name, subject string
+		want          bool
+	}{
+		{name: "KELVIN SIGN", subject: "\u212aelly@example.com", want: false},
+		{name: "non-ASCII capital", subject: "\u00c9lodie@example.fr", want: false},
+		{name: "dotted capital I", subject: "\u0130nci@example.com", want: false},
+		{name: "lower-case non-ASCII", subject: "\u00e9lodie@example.fr", want: true},
+		{name: "ASCII mixed case", subject: "Person@Example.com", want: true},
+		{name: "upper-case A", subject: "Aaron@example.com", want: true},
+		{name: "upper-case Z", subject: "Zoe@example.com", want: true},
+		{name: "ASCII characters above Z", subject: "a_b@[192.0.2.1]", want: true},
+		{name: "title case", subject: "\u01c5ivo@example.com", want: false},
+		{name: "Roman numeral", subject: "\u2160van@example.com", want: false},
+		{name: "circled capital", subject: "\u24b6nn@example.com", want: false},
+		{name: "KELVIN SIGN in the domain", subject: "kelly@\u212aample.com", want: false},
+		{name: "astral capital", subject: "\U00010400x@example.com", want: false},
+		{name: "combining mark", subject: "e\u0301lodie@example.fr", want: true},
+		{name: "padded", subject: " padded@example.com ", want: true},
+		{name: "padded KELVIN SIGN", subject: " \u212aelly@example.com ", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, unikornv1.LowersOnlyASCII(tt.subject))
+		})
+	}
+}
+
+// TestHasSurroundingSpace pins the white space that NormalizeSubject removes
+// from a subject.  A sign-in claim with any of it is refused, because trimmed,
+// the claim would name the record of the plain address.
+func TestHasSurroundingSpace(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name, subject string
+		want          bool
+	}{
+		{name: "leading ASCII space", subject: " kelly@example.com", want: true},
+		{name: "trailing ASCII space", subject: "kelly@example.com ", want: true},
+		{name: "leading NO-BREAK SPACE", subject: "\u00a0kelly@example.com", want: true},
+		{name: "trailing NEXT LINE", subject: "kelly@example.com\u0085", want: true},
+		{name: "leading LINE SEPARATOR", subject: "\u2028kelly@example.com", want: true},
+		{name: "leading IDEOGRAPHIC SPACE", subject: "\u3000kelly@example.com", want: true},
+		{name: "trailing IDEOGRAPHIC SPACE", subject: "kelly@example.com\u3000", want: true},
+		{name: "white space only", subject: " ", want: true},
+		{name: "plain address", subject: "kelly@example.com", want: false},
+		{name: "quoted inner space", subject: "\"kelly smith\"@example.com", want: false},
+		{name: "empty", subject: "", want: false},
+		{name: "ZERO WIDTH SPACE, which is not white space", subject: "\u200bkelly@example.com", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, unikornv1.HasSurroundingSpace(tt.subject))
+		})
+	}
+}
+
 func users(subjects ...string) []unikornv1.User {
 	out := make([]unikornv1.User, len(subjects))
 	for i, subject := range subjects {
