@@ -48,7 +48,7 @@ func TestRedirectorRaiseLogs(t *testing.T) {
 	r = r.WithContext(logr.NewContext(r.Context(), logger))
 	w := httptest.NewRecorder()
 
-	newRedirector(w, r, "https://client.example.com/callback", "client-state", "my-client").raise(ErrorAccessDenied, "user not found")
+	newRedirector(w, r, "https://client.example.com/callback", "client-state", "my-client").raise(r.Context(), ErrorAccessDenied, "user not found")
 
 	require.Equal(t, http.StatusFound, w.Code)
 
