@@ -96,6 +96,11 @@ func ProjectNamespace(ctx context.Context, cli client.Client, organizationID ids
 		return nil, err
 	}
 
+	// No namespace means the project is gone, and everything under it with it.
+	if len(resources.Items) == 0 {
+		return nil, servererrors.HTTPNotFound().WithError(fmt.Errorf("%w: project namespace", coreerrors.ErrResourceNotFound))
+	}
+
 	if len(resources.Items) != 1 {
 		return nil, fmt.Errorf("%w: expected to find 1 project namespace", coreerrors.ErrConsistency)
 	}
