@@ -171,7 +171,7 @@ func silentReissue(t *testing.T, idToken *oidc.IDToken) *Code {
 
 	w := httptest.NewRecorder()
 
-	require.True(t, authenticator.authorizationSilent(r, newRedirector(w, r, casingRedirectURI, ""), query))
+	require.True(t, authenticator.authorizationSilent(r, newRedirector(w, r, casingRedirectURI, "", query.Get("client_id")), query))
 
 	location, err := url.Parse(w.Header().Get("Location"))
 	require.NoError(t, err)
