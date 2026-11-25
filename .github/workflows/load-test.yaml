@@ -190,11 +190,7 @@ jobs:
         jq .counts "${RUNNER_TEMP}/load/tokens.json" > "${OUT_DIR}/dataset.json"
 
     - name: Serve the stand-in provider's public keys
-      run: |
-        kubectl apply -f test/load/idp.yaml
-        kubectl create configmap jwks -n load-test-idp \
-          --from-file=jwks.json="${RUNNER_TEMP}/load/jwks.json"
-        kubectl wait --for=condition=Ready pod/jwks -n load-test-idp --timeout=120s
+      run: test/load/serve-idp.sh "${RUNNER_TEMP}/load/jwks.json"
 
     # The project controller is busy for a while after fixtures; load must not
     # overlap it. Direct mode has no controllers running, and its projects
