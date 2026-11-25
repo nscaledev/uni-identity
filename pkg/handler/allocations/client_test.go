@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/unikorn-cloud/core/pkg/constants"
+	coreerrors "github.com/unikorn-cloud/core/pkg/errors"
 	coreopenapi "github.com/unikorn-cloud/core/pkg/openapi"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
@@ -439,6 +440,44 @@ func TestAllocationExceedingQuota_Fails(t *testing.T) {
 	// Verify no allocation was created
 	totalCPU := f.getTotalAllocations(t, "cpu")
 	assert.Equal(t, int64(0), totalCPU)
+}
+
+// TestDeleteAllocation_ProjectNamespaceMissing tests that deleting an allocation
+// whose project namespace is gone returns not found, so deprovisioning callers
+// can treat the allocation as already deleted.
+func TestDeleteAllocation_ProjectNamespaceMissing(t *testing.T) {
+	t.Parallel()
+
+	f := setupAllocationTestFixture(t)
+
+	require.NoError(t, f.client.Delete(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testProjectNS}}))
+
+	err := f.allocationsClient.Delete(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), "test-allocation")
+	require.True(t, errors.IsHTTPNotFound(err), "expected not found, got %v", err)
+}
+
+// TestDeleteAllocation_DuplicateProjectNamespaces tests that more than one
+// project namespace is still reported as a consistency fault.
+func TestDeleteAllocation_DuplicateProjectNamespaces(t *testing.T) {
+	t.Parallel()
+
+	f := setupAllocationTestFixture(t)
+
+	duplicate := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testProjectNS + "-duplicate",
+			Labels: map[string]string{
+				constants.KindLabel:         constants.KindLabelValueProject,
+				constants.OrganizationLabel: testOrgID,
+				constants.ProjectLabel:      testProjectID,
+			},
+		},
+	}
+	require.NoError(t, f.client.Create(t.Context(), duplicate))
+
+	err := f.allocationsClient.Delete(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), "test-allocation")
+	require.ErrorIs(t, err, coreerrors.ErrConsistency)
+	require.False(t, errors.IsHTTPNotFound(err))
 }
 
 // containsAny checks if a string contains any of the provided substrings.
