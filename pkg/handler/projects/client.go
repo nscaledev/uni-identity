@@ -24,13 +24,17 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/unikorn-cloud/core/pkg/server/conversion"
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
+	"github.com/unikorn-cloud/identity/pkg/authz"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
 	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
+	"github.com/unikorn-cloud/identity/pkg/rbac"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -127,11 +131,15 @@ func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, pro
 }
 
 func (c *Client) generate(ctx context.Context, organization *organizations.Meta, in *openapi.ProjectWrite) (*unikornv1.Project, error) {
+	// The guard reads a repeated ID as no change, so a caller without link permission can send one.
+	// Store each group once, because every copy adds work to each ACL build for that group's members.
+	groupIDs := groupSet(in.Spec.GroupIDs)
+
 	out := &unikornv1.Project{
 		ObjectMeta: conversion.NewObjectMetadata(&in.Metadata, organization.Namespace).Get(),
 		Spec: unikornv1.ProjectSpec{
 			Tags:     conversion.GenerateTagList(in.Metadata.Tags),
-			GroupIDs: in.Spec.GroupIDs,
+			GroupIDs: groupIDs,
 		},
 	}
 
@@ -139,7 +147,7 @@ func (c *Client) generate(ctx context.Context, organization *organizations.Meta,
 		return nil, fmt.Errorf("%w: failed to set identity metadata", err)
 	}
 
-	for _, groupID := range in.Spec.GroupIDs {
+	for _, groupID := range groupIDs {
 		var resource unikornv1.Group
 
 		if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: groupID}, &resource); err != nil {
@@ -173,14 +181,81 @@ func (c *Client) Create(ctx context.Context, organizationID ids.OrganizationID, 
 	return convert(resource), nil
 }
 
-func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID string, request *openapi.ProjectWrite) error {
+// groupSet returns the IDs sorted, each once.
+func groupSet(groupIDs []string) []string {
+	return slices.Compact(slices.Sorted(slices.Values(groupIDs)))
+}
+
+// needsLinkAuthority reports whether the change from the stored to the requested links needs
+// organization-level authority. The guard never looks up an added ID, so a refusal tells the
+// caller nothing about it. A link to a group that no longer exists gives no access, so dropping
+// it needs no authority.
+func (c *Client) needsLinkAuthority(ctx context.Context, namespace string, stored, requested []string) (bool, error) {
+	stored, requested = groupSet(stored), groupSet(requested)
+
+	for _, id := range requested {
+		if !slices.Contains(stored, id) {
+			return true, nil
+		}
+	}
+
+	for _, id := range stored {
+		if slices.Contains(requested, id) {
+			continue
+		}
+
+		var group unikornv1.Group
+
+		if err := c.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: id}, &group); err != nil {
+			if kerrors.IsNotFound(err) {
+				continue
+			}
+
+			return false, fmt.Errorf("%w: failed to look up a removed group", err)
+		}
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (c *Client) allowGroupLinkChange(ctx context.Context, organization *organizations.Meta, projectID ids.ProjectID, stored, requested []string) error {
+	needed, err := c.needsLinkAuthority(ctx, organization.Namespace, stored, requested)
+	if err != nil {
+		return err
+	}
+
+	if !needed {
+		return nil
+	}
+
+	target := authz.Target{
+		Endpoint:  "identity:projects",
+		Operation: authz.Action(openapi.Update, "link-groups"),
+		Kind:      authz.Subordinate,
+		ObjectID:  uuid.UUID(projectID),
+	}
+
+	if err := rbac.AllowOrganizationScopeOn(ctx, target, organization.ID); err != nil {
+		return errors.HTTPForbidden("changing the group links of a project requires organization-level project update permission").WithError(err)
+	}
+
+	return nil
+}
+
+func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, request *openapi.ProjectWrite) error {
 	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
 	if err != nil {
 		return err
 	}
 
-	current, err := c.get(ctx, organization, projectID)
+	current, err := c.get(ctx, organization, projectID.String())
 	if err != nil {
+		return err
+	}
+
+	if err := c.allowGroupLinkChange(ctx, organization, projectID, current.Spec.GroupIDs, request.Spec.GroupIDs); err != nil {
 		return err
 	}
 
@@ -197,6 +272,8 @@ func (c *Client) Update(ctx context.Context, organizationID ids.OrganizationID, 
 	updated.Labels = required.Labels
 	updated.Annotations = required.Annotations
 	updated.Spec = required.Spec
+	// The API has no pause field, so the request cannot change it.
+	updated.Spec.Pause = current.Spec.Pause
 
 	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(current, &client.MergeFromWithOptimisticLock{})); err != nil {
 		if kerrors.IsConflict(err) {

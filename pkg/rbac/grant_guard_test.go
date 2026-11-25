@@ -167,10 +167,7 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 	// grantTree encodes the intended delegation relationships between the user-facing
 	// (non-protected) built-in roles. Each granter maps to every role it must be able to
 	// grant, i.e. every role whose permission set it fully contains at the same or a
-	// narrower scope (a role can always grant itself):
-	//
-	//	administrator ─┬─ auditor ─── reader
-	//	               └─ user ────── reader
+	// narrower scope (a role can always grant itself).
 	//
 	// This is the source of truth for the "X is a superset of Y" relationship. It guards
 	// against role-catalogue drift such as the removed application:* endpoints, which were
@@ -178,10 +175,11 @@ func TestBuiltinRoleGrantability(t *testing.T) {
 	// user/reader non-grantable by an administrator. Any endpoint added to a leaf role must
 	// remain covered by every role above it here, or this test fails.
 	grantTree := map[string][]string{
-		"administrator": {"administrator", "auditor", "user", "reader"},
-		"auditor":       {"auditor", "reader"},
-		"user":          {"user", "reader"},
-		"reader":        {"reader"},
+		"administrator":         {"administrator", "auditor", "user", "reader", "project-administrator"},
+		"auditor":               {"auditor", "reader"},
+		"user":                  {"user", "reader"},
+		"reader":                {"reader"},
+		"project-administrator": {"project-administrator", "reader"},
 	}
 
 	roles := loadChartRoles(t)
@@ -278,6 +276,11 @@ func TestBuiltinVolumePermissions(t *testing.T) {
 		},
 		{
 			role:                  "user",
+			volumeClassOperations: readOnly,
+			volumeOperations:      readWrite,
+		},
+		{
+			role:                  "project-administrator",
 			volumeClassOperations: readOnly,
 			volumeOperations:      readWrite,
 		},

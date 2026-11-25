@@ -7,10 +7,11 @@
   themselves perform that permission in the project the grant may end up applied
   to.
 
-  This is not a bug in the Go code. `allowGrantProjectScope` documents (handler.go
-  lines 291-343) that project-scope grant safety rests on two EXTERNAL invariants:
-  group create needs org-scope `identity:groups` write, and linking a group to a
-  project needs project-scope `identity:projects` update for THAT project. The
+  This is not a bug in the Go code. The doc comment of `allowGrantProjectScope`
+  in `pkg/rbac/handler.go` says that project-scope grant safety rests on two
+  EXTERNAL invariants. Group create needs org-scope `identity:groups` write.
+  Linking a group to a project needs org-scope `identity:projects` create on
+  project create, or org-scope `identity:projects` update on project update. The
   local `AllowRole` check alone does not imply a per-project subset relation —
   which is exactly what this file makes precise.
 -/
@@ -112,9 +113,10 @@ theorem caller_cannot_act_in_B :
   facts.
 
   Reading: project-scope granting is NOT a local subset property. The genuine
-  guarantee is conditional on the external linking/group-write invariants
-  documented at handler.go:291-343 — encoding those as explicit hypotheses and
-  proving the conditional theorem is the natural next step.
+  guarantee is conditional on the external linking/group-write invariants in
+  the doc comment of `allowGrantProjectScope` in `pkg/rbac/handler.go`. The
+  natural next step is to encode those as explicit hypotheses and to prove the
+  conditional theorem.
 -/
 theorem project_grant_not_locally_subset :
     ∃ (a : Acl) (r : Role) (org p' e : String) (o : Op),

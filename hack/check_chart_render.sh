@@ -187,6 +187,20 @@ must_fail_group '[{"issuer":"https://staff.example.com/","group":"  ","roles":["
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["no-such-role"]}]' "unknown role"
 must_fail_group '[{"issuer":"https://staff.example.com/","group":"SRE","roles":["platform-administrator"]}]' "on credential scope"
 
+# The built-in project-administrator role renders with its own ID. An additionalRoles
+# entry of the same name fails the render and does not merge into the role.
+out=$(helm template test "$CHART")
+project_administrator_role_id=$(role_id_of project-administrator <<<"$out")
+[[ -n "$project_administrator_role_id" ]] || die "could not resolve role ID for 'project-administrator'"
+assert_one_match "$(yq -r 'select(.kind == "Role") | .metadata.name' <<<"$out")" "^${project_administrator_role_id}$"
+
+if out=$(helm template test "$CHART" --set-json 'additionalRoles={"project-administrator":{"description":"Conflicting role","scopes":{"project":{"identity:projects":["read"]}}}}' 2>&1 >/dev/null); then
+	die "expected render failure for an additionalRoles key named project-administrator, but render succeeded"
+fi
+grep -qF -- "conflicts with built-in role" <<<"$out" || die "render failed, but not for the expected reason
+  expected fragment: conflicts with built-in role
+  actual output:     $out"
+
 # server.runtimeSchemaValidation: the flag renders only for the boolean
 # false.  The default and null keep the binary default.  A string fails the
 # render, so a quoted "false" cannot leave validation on.

@@ -219,11 +219,13 @@ Across the package, the common limitations are:
 
 This is a systemic property of the storage model, not just an isolated flaw in one client.
 
-Authorization is deliberately kept out of that gap on the paths that write group membership.
-`users`, `serviceaccounts` and `groups` settle every grant a request makes before the request
-writes anything, so a refusal applies none of it. What can still leave a partial write is
-infrastructure failure partway through, which is the limitation above and not an authorization
-one. See [`users`](./users/README.md) and [`serviceaccounts`](./serviceaccounts/README.md).
+Authorization is deliberately kept out of that gap on the paths that write group membership and on
+the project update that changes group links. `users`, `serviceaccounts` and `groups` settle every
+grant a request makes before the request writes anything, so a refusal applies none of it.
+`projects` runs its group link guard before it writes anything. What can still leave a partial
+write is infrastructure failure partway through, which is the limitation above and not an
+authorization one. See [`users`](./users/README.md),
+[`serviceaccounts`](./serviceaccounts/README.md) and [`projects`](./projects/README.md).
 
 ## Package Map
 
@@ -235,7 +237,8 @@ one. See [`users`](./users/README.md) and [`serviceaccounts`](./serviceaccounts/
 - [`serviceaccounts`](./serviceaccounts/README.md): organization-local non-human identities with
   token rotation
 - [`groups`](./groups/README.md): primary local delegation unit
-- [`projects`](./projects/README.md): project-scoped selection of delegation units
+- [`projects`](./projects/README.md): project-scoped selection of delegation units, with a guard
+  on changes to the group links
 - [`oauth2providers`](./oauth2providers/README.md): organization-scoped upstream provider
   configuration for the built-in auth flow
 - [`quotas`](./quotas/README.md): organization-wide capacity contract

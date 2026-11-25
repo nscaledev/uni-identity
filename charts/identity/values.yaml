@@ -560,6 +560,37 @@ roles:
         region:sshcertificateauthorities:v2: [read]
         kubernetes:clusters: [read]
         compute:instances: [read]
+  project-administrator:
+    description: Project administrator
+    scopes:
+      organization:
+        identity:quotas: [read]
+        region:regions: [read]
+        region:filestorageclass:v2: [read]
+        region:volumeclasses:v2: [read]
+        storage:objectstorageclasses: [read]
+        region:flavors: [read]
+        region:images: [read]
+        kubernetes:regions: [read]
+        kubernetes:flavors: [read]
+        kubernetes:images: [read]
+        compute:regions: [read]
+        compute:flavors: [read]
+        compute:images: [read]
+      project:
+        identity:projects: [read,update]
+        region:networks:v2: [create,read,update,delete]
+        region:loadbalancers:v2: [create,read,update,delete]
+        region:securitygroups:v2: [create,read,update,delete]
+        region:volumes:v2: [create,read,update,delete]
+        region:filestorage:v2: [create,read,update,delete]
+        region:filestoragesnapshots:v2: [create,read,update,delete]
+        region:filestoragedirectoryquotas:v2: [create,read,update,delete]
+        storage:objectstorageendpoints: [create,read,update,delete]
+        storage:objectstorageendpoints/accesskeys: [create,read,update,delete]
+        region:sshcertificateauthorities:v2: [create,read,delete]
+        kubernetes:clusters: [read,update,delete]
+        compute:instances: [create,read,update,delete]
 
 # Optional additional roles that can be injected alongside the defaults.
 # Shape matches the roles map below. Same names will raise an error.

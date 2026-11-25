@@ -563,6 +563,31 @@ func (c *APIClient) UpdateProject(ctx context.Context, orgID, projectID string, 
 	return putResourceVoid(c, ctx, c.endpoints.GetProject(orgID, projectID), projectID, "project", project)
 }
 
+// UpdateProjectWithResponse updates a project and returns the generated response struct.
+func (c *APIClient) UpdateProjectWithResponse(ctx context.Context, orgID, projectID string, project identityopenapi.ProjectWrite) (*identityopenapi.PutApiV1OrganizationsOrganizationIDProjectsProjectIDResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	organizationID, err := ids.ParseOrganizationID(orgID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing organization ID %q: %w", orgID, err)
+	}
+
+	id, err := ids.ParseProjectID(projectID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing project ID %q: %w", projectID, err)
+	}
+
+	response, err := client.PutApiV1OrganizationsOrganizationIDProjectsProjectIDWithResponse(ctx, organizationID, id, project)
+	if err != nil {
+		return nil, fmt.Errorf("updating project: %w", err)
+	}
+
+	return response, nil
+}
+
 // DeleteProject deletes a project from an organization.
 func (c *APIClient) DeleteProject(ctx context.Context, orgID, projectID string) error {
 	path := c.endpoints.GetProject(orgID, projectID)

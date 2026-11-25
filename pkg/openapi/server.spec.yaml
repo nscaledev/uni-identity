@@ -922,7 +922,16 @@ paths:
           $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
     put:
       description: |-
-        Updates a project.
+        Updates a project.  The request replaces the name, the description, the
+        tags and groupIDs.  To add a group ID, the caller needs
+        organization-level identity:projects update permission.  To remove the
+        ID of a group that exists, the caller needs the same permission.
+        Clearing groupIDs removes each stored ID.  Removing the ID of a group
+        that no longer exists needs only project-scoped update permission.
+        Reordering the IDs or repeating an ID does not change groupIDs.  A
+        caller with only project-scoped update permission can change the name,
+        the description and the tags.  If that caller adds an ID, or removes
+        the ID of a group that exists, the response is 403.
       summary: Update project
       tags:
       - Projects

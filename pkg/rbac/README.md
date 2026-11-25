@@ -175,6 +175,7 @@ administrator grants to groups.
 | `administrator` | full CRUD across identity, region, storage, Kubernetes and compute, except read-only `identity:oauth2providers` | — |
 | `auditor` | read-only across all of the above | — |
 | `user` | org-wide reads, plus `region:images` create/delete | CRUD on workloads: networks, load balancers, security groups, volumes, file storage, object storage, SSH CAs, clusters, instances |
+| `project-administrator` | org-wide reads (`region:images` read only) | the `user` workload block, plus `identity:projects` update |
 | `reader` | org-wide reads (`region:images` read only) | read-only on those same workloads |
 
 Upstream provider configuration is the one organization resource no organization role may
@@ -182,19 +183,20 @@ write. `administrator` and `auditor` both hold `identity:oauth2providers: [read]
 belong to `platform-administrator` at global scope, so an organization cannot delete its
 own provider and lock its users out of login.
 
-`administrator` and `auditor` hold all their authority at organization scope. `user` and
-`reader` keep a thin organization-wide read baseline but place their real workload
-authority in the project block, so it applies only to the projects their group is linked
-to.
+`administrator` and `auditor` hold all their authority at organization scope. `user`,
+`reader` and `project-administrator` keep a thin organization-wide read baseline. They place
+their real workload authority in the project block. It applies only in the projects that are
+linked to a group that holds the role.
 
 Region block-storage scopes preserve that split:
 
 - `region:volumeclasses:v2` follows the Region flavor-discovery model: every user-facing
   built-in role receives organization-scoped read access, while `platform-administrator`
   holds the read operation globally.
-- `region:volumes:v2` is a project-owned lifecycle scope. `user` has project CRUD and
-  `reader` has project read, while `administrator` and `auditor` carry the corresponding
-  organization-wide CRUD and read permissions. `platform-administrator` holds global CRUD.
+- `region:volumes:v2` is a project-owned lifecycle scope. `user` and `project-administrator`
+  have project CRUD and `reader` has project read, while `administrator` and `auditor` carry
+  the corresponding organization-wide CRUD and read permissions. `platform-administrator`
+  holds global CRUD.
 - `compute-service` holds global read-only access to both `region:volumeclasses:v2` and
   `region:volumes:v2`. Compute needs this ceiling when it validates an Instance's VolumeClass
   and project-scoped Volume references while impersonating the caller; it does not receive
@@ -204,6 +206,54 @@ Identity is the rollout dependency for these Region APIs. Deploy the identity ro
 containing both scopes before enabling users to rely on VolumeClass listing or Volume lifecycle
 operations; otherwise Region authorization receives an ACL without the required endpoint grants.
 
+### Project administrator
+
+`project-administrator` manages the workloads and the metadata of a project. Its project
+block is the project block of `user`, plus `identity:projects` update. Its
+organization block is the organization block of `reader`. It holds no global scope and it
+is not protected.
+
+The project block applies only in the projects that are linked to a group that holds the role.
+A group that is linked to no project grants no access to any project or workload. The shared
+discovery reads of the organization block remain.
+
+The role cannot create or delete a project. It cannot write `identity:users`,
+`identity:groups`, `identity:roles`, `identity:serviceaccounts` or `identity:oauth2providers`.
+It holds no `region:images` create or delete permission.
+
+The role grants permissions. It does not enforce project isolation inside a workload service.
+Each workload service must enforce project scope on its own routes. Before any group holds the
+role, test the workload services. A project administrator must not read or change the resources
+of a project that the group does not link to.
+
+A project administrator can read and update project metadata. A project administrator cannot
+add a group link, or remove the link to an existing group, without organization-level
+`identity:projects` update. The guard in [`pkg/handler/projects`](../handler/projects/README.md)
+enforces this on every project update. A link to a group that no longer exists gives no access, so
+a project administrator can drop it. Without the guard, project-level update lets a project
+administrator change who has access to the project. The rollout of the guard must finish before any
+group holds the role.
+
+An organization-scoped role such as `administrator` applies to every project in the
+organization, regardless of project links. Linking a group that holds the role to a project
+does not narrow it. Adding a narrower role to a principal does not remove the permissions that
+the principal holds through a broader role in another group. To narrow a principal, an
+organization administrator must remove the broader role.
+
+**Removing the role.** Before you remove the role from the chart, remove it from every group.
+ACL construction skips a role ID that has no Role resource. Members of a group that still names
+it lose its permissions without an error. A role ID comes from the role name. If a later chart
+adds the role again, it binds to every group that still names it. Keep the group link guard in
+every environment where a group holds the role. An older handler has no group link guard, so a
+project administrator can change group links there.
+
+The tests in `pkg/rbac/project_administrator_test.go` lock the role.
+`TestProjectAdministratorRoleContract` compares the parsed chart role with the roles that it
+derives from. A new project scope on `user` fails the test until the project administrator takes
+the scope or the test records the difference. `TestProjectAdministratorEnforcement` drives the
+real gates with the ACL of a project administrator. Two more tests check that a grant stops at
+the project and that no project permission reaches organization scope.
+
 ### Grant relationships
 
 A caller may grant a role only if they already hold every permission it contains, at the
@@ -212,21 +262,31 @@ Because a grant hands out a subset of what the caller already holds, the built-i
 form a superset lattice:
 
 ```
-administrator ─┬─ auditor ─── reader
-               └─ user ────── reader
+administrator ─┬─ auditor ───────────────── reader
+               ├─ user ──────────────────── reader
+               └─ project-administrator ─── reader
 ```
 
 - `administrator` can grant every user-facing role.
 - `auditor` (read-only) can grant `reader` (also read-only) but not `user`, which needs
   write verbs `auditor` lacks.
-- `user` can grant `reader` — the same project scope with fewer verbs (downscoping) — but
-  not `auditor`, which needs `identity:*` reads `user` lacks.
+- `user` can grant `reader`. The project scope is the same and the verbs are fewer
+  (downscoping). `user` cannot grant `auditor`, which needs `identity:*` reads that `user`
+  lacks. `user` cannot grant `project-administrator`, which needs `identity:projects` update.
+- `project-administrator` can grant itself and `reader`. It cannot grant `user`, which needs
+  `region:images` writes that the role lacks. It cannot grant `auditor`, which needs
+  `identity:*` reads that the role lacks.
 - `reader` can grant only `reader`.
 
-`user` and `auditor` are incomparable, and neither can grant `administrator`. This lattice
-is locked down by `TestBuiltinRoleGrantability`, which drives `AllowRole` from the parsed
-chart values for every ordered role pair, asserting each allowed edge and rejecting every
-non-edge.
+`user`, `auditor` and `project-administrator` are pairwise incomparable, and none of them can
+grant `administrator`. This lattice is locked down by `TestBuiltinRoleGrantability`, which
+drives `AllowRole` from the parsed chart values for every ordered role pair, asserting each
+allowed edge and rejecting every non-edge.
+
+Grantability is a permission-subset result. It does not give permission to call a write
+endpoint of the identity API. A project administrator can pass the check for itself and
+`reader`. It still lacks the organization-scoped writes on `identity:groups`,
+`identity:users` and `identity:serviceaccounts` that assign a role or a member.
 
 ## Actor Model
 

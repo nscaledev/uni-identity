@@ -146,6 +146,8 @@ var _ = Describe("Console Audit View Permissions", func() {
 					"audit token must not be able to grant administrator")
 				Expect(grantable).To(HaveKeyWithValue("user", false),
 					"audit token must not be able to grant user")
+				Expect(grantable).To(HaveKeyWithValue("project-administrator", false),
+					"audit token must not be able to grant project-administrator")
 
 				GinkgoWriter.Printf("Audit: listed %d roles\n", len(roles))
 			})

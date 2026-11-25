@@ -46,7 +46,7 @@ Lean core only.
 | `inter_sound` | Impersonation intersection grants a permission only if **both** principal and service do — the service's *global* set gates every user scope. | "intersection = both sides"; confused-deputy invariant |
 | `inter_no_escalation` | Intersection only ever *removes* authority. | least-privilege |
 | `grant_global_safe`, `grant_org_safe` | At global/org scope, a grantable role confers only permissions the caller already holds. | "a caller may only grant a role if they already hold every permission it contains" |
-| `project_grant_not_locally_subset` | **The "or otherwise":** at *project* scope that subset property is **false** locally — a caller holding a permission in project `A` can produce a grant that, applied to project `B`, confers authority they lack in `B`. | `handler.go:291-343` trust assumption |
+| `project_grant_not_locally_subset` | **The "or otherwise":** at *project* scope that subset property is **false** locally. A caller holding a permission in project `A` can produce a grant that, applied to project `B`, confers authority they lack in `B`. | Trust assumption in the doc comment of `allowGrantProjectScope` in `pkg/rbac/handler.go` |
 | `global_grants_everywhere`, `org_grants_project` | Downward scope flow is monotone. | scope model |
 | `accumulate_monotone` | ACL construction (union) only ever adds authority. | additivity of permissions |
 
@@ -54,9 +54,10 @@ Lean core only.
 
 `project_grant_not_locally_subset` is not a bug report — it is the formal
 statement of what `allowGrantProjectScope`'s doc comment says in prose: project-
-scope grant safety rests on two **external** invariants (group create needs
-org-scope `identity:groups` write; linking a group to a project needs project-
-scope `identity:projects` update for *that* project). The local `AllowRole` check
+scope grant safety rests on two **external** invariants. First, group create needs
+org-scope `identity:groups` write. Second, linking a group to a project needs org-scope
+`identity:projects` create on project create, or org-scope `identity:projects` update on
+project update. The local `AllowRole` check
 alone does not imply a per-project subset relation. If either external invariant
 is ever relaxed, project-scope granting becomes cross-project privilege
 escalation. A natural next step is to encode those two invariants as explicit
