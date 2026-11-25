@@ -22,6 +22,10 @@ resource identity in metadata and labels.
 That makes them the per-resource consumption record that ties an abstract quota number back to an
 actual project-scoped object.
 
+If the project namespace no longer exists, every allocation operation returns HTTP 404, the same as
+a missing allocation. A caller that is deprovisioning can treat that as "already gone". More than
+one matching project namespace is a consistency fault and returns HTTP 500.
+
 ### Serialized Capacity Decisions
 
 Allocation create/update and quota update operations hold a per-organization Kubernetes Lease.
