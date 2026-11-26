@@ -32,8 +32,8 @@ Nothing in uni-identity calls the client yet.
 
 - Every check and list request names the `subject` (required) and may name an
   `actor`, the principal (for example a service account) acting on the
-  subject's behalf, always in the JSON body.  A subject can be an email
-  address, so it never goes in a URL, an access log or error text.
+  subject's behalf, always in the JSON body.  A subject names a person, so it
+  never goes in a URL, an access log or error text.
 - With an actor, a check is allowed only when both the subject and the actor
   are allowed, and the list is the intersection of what each holds.  The actor
   can only narrow an answer.

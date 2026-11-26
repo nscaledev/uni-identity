@@ -155,8 +155,8 @@ paths:
         200 and an empty list.  With an `actor`, the list is the intersection:
         only entries both the subject and the actor hold.
 
-        This is a POST so the subject, which may be an email address, never
-        appears in a URL or an access log.  It reads only.
+        This is a POST so the subject, which names a person, never appears in
+        a URL or an access log.  It reads only.
 
         By default the list is trimmed to one region: services that region does
         not run are left out, so clients do not offer actions the region cannot

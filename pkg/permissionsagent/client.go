@@ -419,7 +419,7 @@ func (c *Client) Status(ctx context.Context) (*openapi.Status, error) {
 }
 
 // validSubject refuses a subject or actor the agent would answer with 400.
-// Errors never name the value: it may be an email address.
+// Errors never name the value: it names a person.
 func validSubject(subject string, actor *string) error {
 	if err := validPrincipal(subject); err != nil {
 		return fmt.Errorf("%w: subject %w", ErrInvalidInput, err)
