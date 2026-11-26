@@ -17,8 +17,10 @@ limitations under the License.
 package server
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"reflect"
 	"testing"
 	"time"
@@ -181,4 +183,59 @@ func TestRequestDeadlineMiddlewareCancelsRequestContext(t *testing.T) {
 
 	require.True(t, ok)
 	require.WithinDuration(t, start.Add(8*time.Second), deadline, time.Second)
+}
+
+// TestIdleConnectionOutlivesReadTimeout checks that, with default flags, the
+// server keeps a keep-alive connection open past its read timeout. A proxy
+// reuses pooled connections for longer than that, and a request sent as the
+// server closes the connection is reset.
+func TestIdleConnectionOutlivesReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	var s Server
+
+	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	s.AddFlags(flags)
+	require.NoError(t, flags.Parse(nil))
+
+	idle := s.ServerOptions.ReadTimeout + 500*time.Millisecond
+
+	server := s.newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	go func() { _ = server.Serve(listener) }()
+
+	t.Cleanup(func() { _ = server.Close() })
+
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+
+	client := &http.Client{Transport: transport}
+	url := "http://" + listener.Addr().String() + "/"
+
+	get := func() bool {
+		var reused bool
+
+		trace := &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused },
+		}
+
+		request, err := http.NewRequestWithContext(httptrace.WithClientTrace(t.Context(), trace), http.MethodGet, url, nil)
+		require.NoError(t, err)
+
+		response, err := client.Do(request)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		require.Equal(t, http.StatusNoContent, response.StatusCode)
+
+		return reused
+	}
+
+	get()
+	time.Sleep(idle)
+	require.True(t, get(), "connection was closed after %v idle", idle)
 }

@@ -69,6 +69,9 @@ type Server struct {
 	// ServerOptions are server specific options e.g. listener address etc.
 	ServerOptions options.ServerOptions
 
+	// ConnectionOptions are server options core does not provide.
+	ConnectionOptions Options
+
 	// HandlerOptions sets options for the HTTP handler.
 	HandlerOptions handler.Options
 
@@ -95,6 +98,7 @@ type Server struct {
 func (s *Server) AddFlags(flags *pflag.FlagSet) {
 	s.CoreOptions.AddFlags(flags)
 	s.ServerOptions.AddFlags(flags)
+	s.ConnectionOptions.AddFlags(flags)
 	s.HandlerOptions.AddFlags(flags)
 	s.JoseOptions.AddFlags(flags)
 	s.OAuth2Options.AddFlags(flags)
@@ -252,15 +256,19 @@ func (s *Server) GetServer(ctx context.Context, client client.Client, readCache 
 		return nil, err
 	}
 
-	server := &http.Server{
+	return s.newHTTPServer(openapi.HandlerWithOptions(handlerInterface, chiServerOptions)), nil
+}
+
+func (s *Server) newHTTPServer(root http.Handler) *http.Server {
+	return &http.Server{
 		Addr:              s.ServerOptions.ListenAddress,
 		ReadTimeout:       s.ServerOptions.ReadTimeout,
 		ReadHeaderTimeout: s.ServerOptions.ReadHeaderTimeout,
 		WriteTimeout:      s.ServerOptions.WriteTimeout,
-		Handler:           openapi.HandlerWithOptions(handlerInterface, chiServerOptions),
+		// Without this, net/http closes idle connections after ReadTimeout.
+		IdleTimeout: s.ConnectionOptions.IdleTimeout,
+		Handler:     root,
 	}
-
-	return server, nil
 }
 
 // requestTimeout returns the request context deadline. The server's write timeout
