@@ -65,6 +65,17 @@ That identity should likely converge with the shared reference model documented 
 platform's existing referenced-resource contract instead of maintaining a parallel allocation-ID
 linkage model.
 
+## Deleting Projects
+
+Allocation create is refused when the project has a `DeletionTimestamp`, with the same error shape as
+a reference create. The check is one Organization read and one Project read, made before the
+organization Lease is taken. Project delete does not take the Lease, so the check does not order
+against it: a create that passes just before the delete can still land. What stops a very late create
+is the project namespace going Terminating. Project deletion itself waits on every allocation it can
+see (see [`pkg/provisioners/project`](../../provisioners/project/README.md)).
+
+Update is allowed on a deleting project, and can grow an allocation as well as shrink it.
+
 ## Invariants
 
 - allocations are the consumption ledger checked against organization quotas

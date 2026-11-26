@@ -417,6 +417,57 @@ func TestAllocationWithinQuota_Succeeds(t *testing.T) {
 	assert.Equal(t, int64(5), totalCPU)
 }
 
+// markProjectDeleting sets the project's DeletionTimestamp, as a delete does when a finalizer holds it.
+func (f *allocationTestFixture) markProjectDeleting(t *testing.T) {
+	t.Helper()
+
+	ctx := newContext(t)
+	key := client.ObjectKey{Namespace: testOrgNS, Name: testProjectID}
+
+	project := &unikornv1.Project{}
+	require.NoError(t, f.client.Get(ctx, key, project))
+
+	project.Finalizers = []string{"test/hold"}
+	require.NoError(t, f.client.Update(ctx, project))
+	require.NoError(t, f.client.Delete(ctx, project))
+	require.NoError(t, f.client.Get(ctx, key, project))
+	require.NotNil(t, project.DeletionTimestamp)
+}
+
+// TestCreateAllocation_DeletingProjectRefused tests that a deleting project takes no new allocations.
+func TestCreateAllocation_DeletingProjectRefused(t *testing.T) {
+	t.Parallel()
+
+	f := setupAllocationTestFixture(t)
+	f.createQuota(t, 10, 10*oneGigabyte)
+	f.markProjectDeleting(t)
+
+	_, err := f.syncClient().Create(newContext(t), ids.MustParseOrganizationID(testOrgID), ids.MustParseProjectID(testProjectID), makeAllocationRequest("test-allocation", "test-cluster-1", 1, oneGigabyte))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project is being deleted")
+	assert.Equal(t, int64(0), f.getTotalAllocations(t, "cpu"))
+}
+
+// TestUpdateAllocation_DeletingProjectAllowed tests that the owner can still update, and so shrink, its allocation.
+func TestUpdateAllocation_DeletingProjectAllowed(t *testing.T) {
+	t.Parallel()
+
+	f := setupAllocationTestFixture(t)
+	f.createQuota(t, 10, 10*oneGigabyte)
+
+	orgID := ids.MustParseOrganizationID(testOrgID)
+	projectID := ids.MustParseProjectID(testProjectID)
+
+	created, err := f.syncClient().Create(newContext(t), orgID, projectID, makeAllocationRequest("test-allocation", "test-cluster-1", 5, oneGigabyte))
+	require.NoError(t, err)
+
+	f.markProjectDeleting(t)
+
+	_, err = f.syncClient().Update(newContext(t), orgID, projectID, created.Metadata.Id, makeAllocationRequest("test-allocation", "test-cluster-1", 2, oneGigabyte))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), f.getTotalAllocations(t, "cpu"))
+}
+
 // TestAllocationExceedingQuota_Fails tests that an allocation exceeding quota fails.
 func TestAllocationExceedingQuota_Fails(t *testing.T) {
 	t.Parallel()

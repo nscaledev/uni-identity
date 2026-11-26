@@ -41,12 +41,29 @@ So the high-level invariant is still important:
 But the specific descendant-sweep mechanism here is highly topology-specific and should not be
 mistaken for the general future pattern.
 
+### Allocation Wait
+
+After the descendant sweep and before the namespace delete, deprovision lists `Allocation`s that
+carry the project's organization and project labels and yields while any are left. It never deletes
+them: a service cleans up its resource, then deletes its own allocation. There is no timeout and no
+state; every pass re-lists. Selection is by label across all namespaces, not by the project
+namespace, because the organization and project namespaces merge later.
+
+The list uses the controller's cached client, so a stale cache can miss an allocation created in
+the last moments. Allocation create is refused on a deleting project (see
+[`pkg/handler/allocations`](../../handler/allocations/README.md)), which leaves only a create that
+lands between the last list and the namespace delete. That gap is accepted, not locked.
+
+Before rolling back to a release without this wait, check no project is held: the old code drops
+every held project's allocations with the namespace.
+
 ## Invariants
 
 - one project should resolve to exactly one projected namespace under the label contract
 - `Status.Namespace` should reflect the namespace actually found or created
 - descendant teardown should complete before namespace deletion is allowed to finish
 - deprovision should yield while descendant deletion is still in progress
+- the namespace is not deleted while the cache shows an allocation with the project's labels; a create the cache sees late can still be dropped with the namespace (accepted gap, see Allocation Wait)
 
 ## Caveats
 

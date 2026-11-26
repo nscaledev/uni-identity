@@ -21,10 +21,14 @@ package project
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"slices"
+	"strings"
 
 	unikornv1core "github.com/unikorn-cloud/core/pkg/apis/unikorn/v1alpha1"
 	coreclient "github.com/unikorn-cloud/core/pkg/client"
+	"github.com/unikorn-cloud/core/pkg/constants"
 	"github.com/unikorn-cloud/core/pkg/manager"
 	"github.com/unikorn-cloud/core/pkg/provisioners"
 	"github.com/unikorn-cloud/core/pkg/provisioners/resource"
@@ -35,6 +39,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 
@@ -109,7 +114,7 @@ func (p *Provisioner) Provision(ctx context.Context) error {
 // so they have a chance to clean up correctly.
 //
 //nolint:cyclop
-func (p *Provisioner) deprovisionDescendants(ctx context.Context, namespace *corev1.Namespace) error {
+func (p *Provisioner) deprovisionDescendants(ctx context.Context, cli client.Client, namespace *corev1.Namespace) error {
 	log := log.FromContext(ctx)
 
 	// TODO: this needs to be configurable, which we have no precedent for
@@ -124,11 +129,6 @@ func (p *Provisioner) deprovisionDescendants(ctx context.Context, namespace *cor
 	manager := manager.FromContext(ctx)
 
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(manager.GetConfig())
-	if err != nil {
-		return err
-	}
-
-	cli, err := coreclient.FromContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -196,6 +196,50 @@ func (p *Provisioner) deprovisionDescendants(ctx context.Context, namespace *cor
 	return nil
 }
 
+// awaitAllocations yields while any Allocation still carries the project's labels.
+// It only lists them: the owning service deletes its own allocation once it has
+// cleaned up its resource. It selects by label across all namespaces, not by the
+// project namespace, and keeps no state. See the README's "Allocation Wait" section.
+func (p *Provisioner) awaitAllocations(ctx context.Context, cli client.Client, projectLabels labels.Set) error {
+	selector := labels.Set{
+		constants.OrganizationLabel: projectLabels[constants.OrganizationLabel],
+		constants.ProjectLabel:      projectLabels[constants.ProjectLabel],
+	}.AsSelector()
+
+	var allocations unikornv1.AllocationList
+
+	if err := cli.List(ctx, &allocations, &client.ListOptions{LabelSelector: selector}); err != nil {
+		return err
+	}
+
+	if len(allocations.Items) == 0 {
+		return nil
+	}
+
+	kinds := map[string]int{}
+
+	for i := range allocations.Items {
+		kind := allocations.Items[i].Labels[constants.ReferencedResourceKindLabel]
+		if kind == "" {
+			kind = "unknown"
+		}
+
+		kinds[kind]++
+	}
+
+	counts := make([]string, 0, len(kinds))
+
+	for _, kind := range slices.Sorted(maps.Keys(kinds)) {
+		counts = append(counts, fmt.Sprintf("%s=%d", kind, kinds[kind]))
+	}
+
+	message := fmt.Sprintf("awaiting %d allocations (%s) to be deleted by their owners", len(allocations.Items), strings.Join(counts, ", "))
+
+	log.FromContext(ctx).Info("awaiting project allocation deletion", "counts", counts)
+
+	return provisioners.Yield(unikornv1core.ConditionReasonDeprovisioning, message)
+}
+
 // Deprovision implements the Provision interface.
 func (p *Provisioner) Deprovision(ctx context.Context) error {
 	labels, err := p.project.ResourceLabels()
@@ -214,7 +258,16 @@ func (p *Provisioner) Deprovision(ctx context.Context) error {
 		return err
 	}
 
-	if err := p.deprovisionDescendants(ctx, namespace); err != nil {
+	cli, err := coreclient.FromContext(ctx)
+	if err != nil {
+		return err
+	}
+
+	if err := p.deprovisionDescendants(ctx, cli, namespace); err != nil {
+		return err
+	}
+
+	if err := p.awaitAllocations(ctx, cli, labels); err != nil {
 		return err
 	}
 
