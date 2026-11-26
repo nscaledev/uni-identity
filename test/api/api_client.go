@@ -817,6 +817,74 @@ func (c *APIClient) UpdateServiceAccount(ctx context.Context, orgID, saID string
 		c, ctx, c.endpoints.GetServiceAccount(orgID, saID), saID, "service account", sa)
 }
 
+// CreateServiceAccountWithResponse creates a service account and returns the
+// generated response struct, so a test can assert on a rejection's typed body.
+func (c *APIClient) CreateServiceAccountWithResponse(ctx context.Context, orgID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.PostApiV1OrganizationsOrganizationIDServiceaccountsResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	organizationID, err := ids.ParseOrganizationID(orgID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing organization ID %q: %w", orgID, err)
+	}
+
+	response, err := client.PostApiV1OrganizationsOrganizationIDServiceaccountsWithResponse(ctx, organizationID, sa)
+	if err != nil {
+		return nil, fmt.Errorf("creating service account: %w", err)
+	}
+
+	return response, nil
+}
+
+// UpdateServiceAccountWithResponse updates a service account and returns the
+// generated response struct, so a test can assert on a rejection's typed body.
+func (c *APIClient) UpdateServiceAccountWithResponse(ctx context.Context, orgID, saID string, sa identityopenapi.ServiceAccountWrite) (*identityopenapi.PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	organizationID, err := ids.ParseOrganizationID(orgID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing organization ID %q: %w", orgID, err)
+	}
+
+	id, err := ids.ParseServiceAccountID(saID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing service account ID %q: %w", saID, err)
+	}
+
+	response, err := client.PutApiV1OrganizationsOrganizationIDServiceaccountsServiceAccountIDWithResponse(ctx, organizationID, id, sa)
+	if err != nil {
+		return nil, fmt.Errorf("updating service account: %w", err)
+	}
+
+	return response, nil
+}
+
+// CreateUserWithResponse creates a user and returns the generated response
+// struct, so a test can assert on a rejection's typed body.
+func (c *APIClient) CreateUserWithResponse(ctx context.Context, orgID string, user identityopenapi.UserWrite) (*identityopenapi.PostApiV1OrganizationsOrganizationIDUsersResponse, error) {
+	client, err := c.generated()
+	if err != nil {
+		return nil, err
+	}
+
+	organizationID, err := ids.ParseOrganizationID(orgID)
+	if err != nil {
+		return nil, fmt.Errorf("parsing organization ID %q: %w", orgID, err)
+	}
+
+	response, err := client.PostApiV1OrganizationsOrganizationIDUsersWithResponse(ctx, organizationID, user)
+	if err != nil {
+		return nil, fmt.Errorf("creating user: %w", err)
+	}
+
+	return response, nil
+}
+
 // DeleteServiceAccount deletes a service account from an organization.
 func (c *APIClient) DeleteServiceAccount(ctx context.Context, orgID, saID string) error {
 	path := c.endpoints.GetServiceAccount(orgID, saID)
