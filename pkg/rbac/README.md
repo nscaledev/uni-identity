@@ -284,9 +284,10 @@ Because each copy is a subset of its original, whoever can grant the original ca
 The copies are not part of the grant lattice below.
 
 **Turn the flag on only where an external system owns group membership and project links.**
-Linking a group to a project needs only `identity:projects` `update`, with no role check. So
-anyone who holds `administrator-identity` can link a group to more projects and spread the
-group's other roles, such as `user-instances`, to those projects.
+Linking a group to a project needs organization-level `identity:projects` `update`. The group
+link guard in [`pkg/handler/projects`](../handler/projects/README.md) checks that permission, not
+the roles the group carries. So anyone who holds `administrator-identity` can link a group to more
+projects and spread the group's other roles, such as `user-instances`, to those projects.
 
 **Rollback.** After the flag is turned off, the copies are no longer rendered. A group that still
 holds a copy ID fails every update until that ID is removed from it. Turning the flag back on
