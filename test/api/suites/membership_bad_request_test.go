@@ -43,6 +43,8 @@ func expectBadRequest(status int, body []byte, json400 *coreopenapi.BadRequestRe
 	Expect(json400.ErrorDescription).To(ContainSubstring(want))
 }
 
+// expectNoUserWithSubject fails if a refused create added the user anyway,
+// deleting it first so a regression leaves nothing on a shared environment.
 func expectNoUserWithSubject(subject string) {
 	GinkgoHelper()
 
@@ -50,7 +52,23 @@ func expectNoUserWithSubject(subject string) {
 	Expect(err).NotTo(HaveOccurred())
 
 	for _, user := range users {
-		Expect(user.Spec.Subject).NotTo(Equal(subject), "a refused create must not add the user")
+		if user.Spec.Subject == subject {
+			DeferCleanup(client.DeleteUser, ctx, config.OrgID, user.Metadata.Id)
+			Fail("a refused create must not add the user " + subject)
+		}
+	}
+}
+
+// expectNoServiceAccountNamed fails if a refused create added the service
+// account anyway, deleting it first so its token does not outlive the spec.
+func expectNoServiceAccountNamed(name string) {
+	GinkgoHelper()
+
+	if sa := findServiceAccount(func(sa identityopenapi.ServiceAccountRead) bool {
+		return sa.Metadata.Name == name
+	}); sa != nil {
+		DeferCleanup(client.DeleteServiceAccount, ctx, config.OrgID, sa.Metadata.Id)
+		Fail("a refused create must not add the service account " + name)
 	}
 }
 
@@ -76,6 +94,8 @@ func expectGroupHasNoMembers(groupID string) {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(group.Spec.UserIDs).To(Or(BeNil(), HaveValue(BeEmpty())),
 		"a refused write must not add a user to the existing group it named")
+	Expect(group.Spec.Subjects).To(Or(BeNil(), HaveValue(BeEmpty())),
+		"a refused write must not add a subject, which is what confers the group's roles")
 	Expect(group.Spec.ServiceAccountIDs).To(BeEmpty(),
 		"a refused write must not add a service account to the existing group it named")
 }
@@ -168,9 +188,7 @@ var _ = Describe("User and service account group validation", func() {
 				}
 
 				expectBadRequest(response.StatusCode(), response.Body, response.JSON400, unknown)
-				Expect(findServiceAccount(func(sa identityopenapi.ServiceAccountRead) bool {
-					return sa.Metadata.Name == payload.Metadata.Name
-				})).To(BeNil(), "a refused create must not add the service account")
+				expectNoServiceAccountNamed(payload.Metadata.Name)
 				expectGroupHasNoMembers(groupID)
 			})
 		})
