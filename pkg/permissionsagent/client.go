@@ -366,7 +366,7 @@ func verifyBatch(body []byte, out *openapi.BatchCheckResult, items int) error {
 	}
 
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return fmt.Errorf("%w: %w", ErrResponse, err)
+		return fmt.Errorf("%w: body is not valid JSON", ErrResponse)
 	}
 
 	for i, result := range raw.Results {
@@ -537,7 +537,7 @@ func call[T any](ctx context.Context, c *Client, secrets []string, send func(con
 
 	var out T
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrResponse, err)
+		return nil, fmt.Errorf("%w: body does not match the contract", ErrResponse)
 	}
 
 	if verify != nil {

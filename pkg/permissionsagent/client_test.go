@@ -369,6 +369,17 @@ var _ = Describe("Permissions agent client", func() {
 				Entry("a JSON null", nil),
 			)
 		})
+
+		Describe("Given a reply whose since field echoes the subject and token", func() {
+			It("keeps both out of the error", func() {
+				agent.respond(http.StatusOK, map[string]any{"allowed": true, "version": copyVersion, "since": subject + serviceToken})
+
+				_, err := client.Check(ctx, openapi.CheckRequest{Subject: subject, Check: item})
+				Expect(err).To(MatchError(permissionsagent.ErrResponse))
+				Expect(err.Error()).NotTo(ContainSubstring(subject))
+				Expect(err.Error()).NotTo(ContainSubstring(serviceToken))
+			})
+		})
 	})
 
 	Context("When checking a batch", func() {
