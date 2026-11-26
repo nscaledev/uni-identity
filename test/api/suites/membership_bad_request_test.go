@@ -100,18 +100,26 @@ func expectGroupHasNoMembers(groupID string) {
 		"a refused write must not add a service account to the existing group it named")
 }
 
-// Each payload names an existing group before the missing one, so a write
-// that applied the groups it could find before failing shows up as a member
-// of the existing group.
-var _ = Describe("User and service account group validation", func() {
+// existingAndUnknownGroup returns a fresh group and an ID no group has. Each
+// payload names the existing group before the missing one, so a write that
+// applied the groups it could find before failing shows up as a member of the
+// existing group.
+func existingAndUnknownGroup() (string, string) {
+	GinkgoHelper()
+
+	_, groupID := api.CreateGroupWithCleanup(client, ctx, config, api.NewGroupPayload().Build())
+
+	return groupID, uuid.NewString()
+}
+
+var _ = Describe("User Management", func() {
 	var (
 		groupID string
 		unknown string
 	)
 
 	BeforeEach(func() {
-		_, groupID = api.CreateGroupWithCleanup(client, ctx, config, api.NewGroupPayload().Build())
-		unknown = uuid.NewString()
+		groupID, unknown = existingAndUnknownGroup()
 	})
 
 	Context("When creating a user", func() {
@@ -173,6 +181,18 @@ var _ = Describe("User and service account group validation", func() {
 				expectGroupHasNoMembers(groupID)
 			})
 		})
+	})
+
+})
+
+var _ = Describe("Service Account Management", func() {
+	var (
+		groupID string
+		unknown string
+	)
+
+	BeforeEach(func() {
+		groupID, unknown = existingAndUnknownGroup()
 	})
 
 	Context("When creating a service account", func() {
