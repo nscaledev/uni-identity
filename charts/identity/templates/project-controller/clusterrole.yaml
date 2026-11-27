@@ -22,6 +22,14 @@ rules:
   - projects/status
   verbs:
   - update
+# Await a project's allocations before deleting its namespace (list only).
+- apiGroups:
+  - identity.unikorn-cloud.org
+  resources:
+  - allocations
+  verbs:
+  - list
+  - watch
 # TODO: when a project is deleted, it needs to know about subordinate
 # resources it can delete gracefully before killing the namespace.  These
 # api groups should be configurable once we can propagate this to the the

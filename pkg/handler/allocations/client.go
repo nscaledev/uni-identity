@@ -27,6 +27,7 @@ import (
 	"github.com/unikorn-cloud/core/pkg/server/errors"
 	unikornv1 "github.com/unikorn-cloud/identity/pkg/apis/unikorn/v1alpha1"
 	"github.com/unikorn-cloud/identity/pkg/handler/common"
+	"github.com/unikorn-cloud/identity/pkg/handler/organizations"
 	"github.com/unikorn-cloud/identity/pkg/ids"
 	"github.com/unikorn-cloud/identity/pkg/openapi"
 
@@ -155,6 +156,12 @@ func (c *SyncClient) Create(ctx context.Context, organizationID ids.Organization
 		return nil, err
 	}
 
+	// A deleting project refuses new allocations, as ReferenceCreate does. This is
+	// outside the Lease: project delete does not take it (see the README).
+	if err := c.checkProjectNotDeleting(ctx, organizationID, projectID); err != nil {
+		return nil, err
+	}
+
 	// TODO: an allocation for the kind/ID must not already exist, you should be
 	// updaing the existing one.  Raise an error.
 	resource, err := generate(ctx, namespace, organizationID, projectID, request)
@@ -187,6 +194,30 @@ func (c *SyncClient) createLocked(ctx context.Context, lease *common.Organizatio
 	}
 
 	return resource, nil
+}
+
+// checkProjectNotDeleting reads the Project and refuses if it is being deleted.
+func (c *SyncClient) checkProjectNotDeleting(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID) error {
+	organization, err := organizations.New(c.client, c.namespace).GetMetadata(ctx, organizationID)
+	if err != nil {
+		return err
+	}
+
+	project := &unikornv1.Project{}
+
+	if err := c.client.Get(ctx, client.ObjectKey{Namespace: organization.Namespace, Name: projectID.String()}, project); err != nil {
+		if kerrors.IsNotFound(err) {
+			return errors.HTTPNotFound().WithError(err)
+		}
+
+		return fmt.Errorf("%w: failed to get project", err)
+	}
+
+	if project.DeletionTimestamp != nil {
+		return errors.OAuth2InvalidRequest("unable to create allocation, project is being deleted")
+	}
+
+	return nil
 }
 
 func (c *Client) Get(ctx context.Context, organizationID ids.OrganizationID, projectID ids.ProjectID, allocationID string) (*openapi.AllocationRead, error) {
