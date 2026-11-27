@@ -5,14 +5,93 @@
 {{- fail (printf "additionalRoles key %q conflicts with built-in role" $name) }}
 {{- end }}
 {{- end }}
+{{- /* Per-service splits, see builtinRoleSplits in values.yaml. */}}
+{{- $splitValues := default (dict) .Values.builtinRoleSplits }}
+{{- $splitIDs := default (dict) $splitValues.ids }}
+{{- $services := default (dict) $splitValues.services }}
+{{- $splits := dict }}
+{{- if $splitValues.enabled }}
+{{- range $role := default (list) $splitValues.roles }}
+{{- $original := get $base $role }}
+{{- if not $original }}
+{{- fail (printf "builtinRoleSplits.roles: unknown role %q" $role) }}
+{{- end }}
+{{- if $original.protected }}
+{{- fail (printf "builtinRoleSplits.roles: %q is protected and cannot be split" $role) }}
+{{- end }}
+{{- if (default (dict) $original.scopes).global }}
+{{- fail (printf "builtinRoleSplits.roles: %q has global scopes and cannot be split" $role) }}
+{{- end }}
+{{- $copies := dict }}
+{{- range $level, $endpoints := default (dict) $original.scopes }}
+{{- range $endpoint, $operations := $endpoints }}
+{{- $exact := list }}
+{{- $prefixed := list }}
+{{- range $service, $match := $services }}
+{{- if has $endpoint (default (list) $match.scopes) }}
+{{- $exact = append $exact $service }}
+{{- end }}
+{{- range $prefix := default (list) $match.prefixes }}
+{{- if hasPrefix (printf "%s:" $prefix) $endpoint }}
+{{- $prefixed = append $prefixed $service }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $owners := $exact }}
+{{- if not $owners }}
+{{- $owners = $prefixed }}
+{{- end }}
+{{- if ne (len $owners) 1 }}
+{{- fail (printf "builtinRoleSplits.services: role %q scope %q must map to one service, got %v" $role $endpoint $owners) }}
+{{- end }}
+{{- $service := first $owners }}
+{{- $copy := get $copies $service | default (dict) }}
+{{- $copyLevel := get $copy $level | default (dict) }}
+{{- $_ := set $copyLevel $endpoint $operations }}
+{{- $_ := set $copy $level $copyLevel }}
+{{- $_ := set $copies $service $copy }}
+{{- end }}
+{{- end }}
+{{- range $service, $scopes := $copies }}
+{{- $_ := set $splits (printf "%s-%s" $role $service) (dict "description" (trim (printf "%s (%s)" (default "" $original.description) $service)) "scopes" $scopes) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $seenIDs := dict }}
+{{- if $splits }}
+{{- range $name, $_ := merge (dict) $base $additional }}
+{{- $_ := set $seenIDs (include "resource.id" $name) $name }}
+{{- end }}
+{{- end }}
+{{- range $name, $_ := $splits }}
+{{- if hasKey $base $name }}
+{{- fail (printf "builtinRoleSplits: %q conflicts with built-in role" $name) }}
+{{- end }}
+{{- if hasKey $additional $name }}
+{{- fail (printf "additionalRoles key %q conflicts with built-in role" $name) }}
+{{- end }}
+{{- $id := get $splitIDs $name }}
+{{- if not $id }}
+{{- fail (printf "builtinRoleSplits.ids has no ID for %q" $name) }}
+{{- end }}
+{{- if hasKey $seenIDs $id }}
+{{- fail (printf "builtinRoleSplits.ids: %q and %q share ID %s" $name (get $seenIDs $id) $id) }}
+{{- end }}
+{{- $_ := set $seenIDs $id $name }}
+{{- end }}
 {{- $roles := merge (dict) $base }}
 {{- $roles = merge $roles $additional }}
+{{- $roles = merge $roles $splits }}
 {{- range $name, $spec := $roles }}
 ---
 apiVersion: identity.unikorn-cloud.org/v1alpha1
 kind: Role
 metadata:
+  {{- if hasKey $splits $name }}
+  name: {{ get $splitIDs $name }}
+  {{- else }}
   name: {{ include "resource.id" $name }}
+  {{- end }}
   labels:
     {{- include "unikorn.labels" $ | nindent 4 }}
     unikorn-cloud.org/name: {{ $name }}

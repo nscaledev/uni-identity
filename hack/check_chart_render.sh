@@ -322,4 +322,175 @@ load_server() { yq -r "select(.kind == \"Deployment\" and .metadata.name == \"te
 [[ "$(load_server '.spec.template.spec.containers[0].resources.requests.cpu')" == "250m" ]] || die "expected a 250m CPU request on the load test server"
 [[ "$(load_server '.spec.template.spec.containers[0].resources.limits.cpu')" == "1" ]] || die "expected a 1 CPU limit on the load test server"
 
+# Per-service splits of the organization roles. The roles, services and
+# expected scopes come from values.yaml, not from the template, so a template
+# bug cannot pass. They are off by default; builtinRoleSplits.enabled turns
+# them on.
+VALUES="$CHART/values.yaml"
+render_splits() { helm template test "$CHART" --set builtinRoleSplits.enabled=true "$@"; }
+
+# split_must_fail <fragment> <helm args...> requires the render to fail with
+# the expected message.
+split_must_fail() {
+	local want="$1" err
+	shift
+	if err=$(render_splits "$@" 2>&1 >/dev/null); then
+		die "expected render failure (fragment: $want), but render succeeded"
+	fi
+	grep -qF -- "$want" <<<"$err" || die "render failed, but not for the expected reason
+  expected fragment: $want
+  actual output:     $err"
+}
+
+split_roles=$(yq -r '.builtinRoleSplits.roles[]' "$VALUES")
+split_services=$(yq -r '.builtinRoleSplits.services | keys | .[]' "$VALUES")
+[[ -n "$split_roles" && -n "$split_services" ]] || die "builtinRoleSplits has no roles or services"
+
+# service_map has "exact <scope> <service>" and "prefix <prefix> <service>" lines.
+service_map=$(
+	yq -r '.builtinRoleSplits.services | to_entries[] | .key as $s | (.value.scopes // [])[] | "exact " + . + " " + $s' "$VALUES"
+	yq -r '.builtinRoleSplits.services | to_entries[] | .key as $s | (.value.prefixes // [])[] | "prefix " + . + " " + $s' "$VALUES"
+)
+
+# original_scopes <role> prints "level scope ops" lines from values.yaml.
+original_scopes() {
+	r="$1" yq -r '
+		.roles[strenv(r)].scopes | to_entries[] | .key as $l | .value | to_entries[] |
+		$l + " " + .key + " " + (.value | join(","))
+	' "$VALUES" | sort
+}
+
+# assign_services prefixes each "level scope ops" line on stdin with the one
+# service that owns the scope: an exact name wins over a prefix. A scope with
+# no owner, or more than one, gets "UNMAPPED".
+assign_services() {
+	awk '
+		NR == FNR {
+			if ($1 == "exact") exact[$2] = exact[$2] " " $3
+			else { np++; prefix[np] = $2; owner[np] = $3 }
+			next
+		}
+		{
+			owners = ""
+			if ($2 in exact) owners = exact[$2]
+			else for (i = 1; i <= np; i++) if (index($2, prefix[i] ":") == 1) owners = owners " " owner[i]
+			if (split(owners, o, " ") != 1) { print "UNMAPPED " $0; next }
+			print o[1] " " $0
+		}
+	' <(printf '%s\n' "$service_map") -
+}
+
+# rendered_scopes <name> prints "level scope ops" lines for a rendered Role.
+rendered_scopes() {
+	n="$1" yq -r '
+		select(.kind == "Role" and .metadata.labels["unikorn-cloud.org/name"] == strenv(n)) |
+		.spec.scopes | to_entries[] | .key as $l | .value[] |
+		$l + " " + .name + " " + (.operations | join(","))
+	' <<<"$out" | sort
+}
+
+# role_field <name> <path> prints a field of the rendered Role.
+role_field() {
+	n="$1" yq -r "select(.kind == \"Role\" and .metadata.labels[\"unikorn-cloud.org/name\"] == strenv(n)) | $2" <<<"$out"
+}
+
+out=$(render_splits)
+on=$out
+splits=0
+split_names=()
+for role in $split_roles; do
+	orig=$(original_scopes "$role")
+	[[ -n "$orig" ]] || die "split role $role has no scopes in values.yaml"
+	assigned=$(assign_services <<<"$orig")
+	if grep -q '^UNMAPPED ' <<<"$assigned"; then
+		die "split role $role has scopes with no single service:
+$(grep '^UNMAPPED ' <<<"$assigned")"
+	fi
+	union=""
+	for service in $split_services; do
+		name="$role-$service"
+		split_names+=("$name")
+		want=$(awk -v s="$service" '$1 == s { print $2 " " $3 " " $4 }' <<<"$assigned" | sort)
+		got=$(rendered_scopes "$name")
+		if [[ -z "$want" ]]; then
+			[[ -z "$got" ]] || die "split $name has no scopes in $role but was rendered"
+			continue
+		fi
+		[[ "$got" == "$want" ]] || die "split $name: scopes differ from $role
+  want: $want
+  got:  $got"
+		[[ -z "$(comm -23 <(printf '%s\n' "$got") <(printf '%s\n' "$orig"))" ]] || die "split $name is not a subset of $role"
+		[[ "$(role_field "$name" '.spec.protected')" == "null" ]] || die "split $name must not be protected"
+		[[ "$(role_field "$name" '.metadata.name')" == "$(n="$name" yq -r '.builtinRoleSplits.ids[strenv(n)]' "$VALUES")" ]] ||
+			die "split $name: ID is not builtinRoleSplits.ids.$name"
+		union+="$got"$'\n'
+		splits=$((splits + 1))
+	done
+	[[ "$(sort <<<"${union%$'\n'}")" == "$orig" ]] || die "the copies of $role together differ from $role"
+done
+[[ $splits -gt 0 ]] || die "expected some per-service roles"
+
+# A copy of a role with no description has no leading space.
+out=$(render_splits --set roles.user.description=null)
+[[ "$(role_field user-instances '.metadata.annotations["unikorn-cloud.org/description"]')" == "(instances)" ]] ||
+	die "expected description \"(instances)\" for a copy of a role with no description"
+out=$on
+
+# Role IDs and names stay unique once the splits are added.
+[[ -z "$(yq -r 'select(.kind == "Role" and .apiVersion == "identity.unikorn-cloud.org/v1alpha1") | .metadata.name' <<<"$out" | grep -v '^---$' | sort | uniq -d)" ]] ||
+	die "duplicate Role IDs"
+[[ -z "$(yq -r 'select(.kind == "Role" and .apiVersion == "identity.unikorn-cloud.org/v1alpha1") | .metadata.labels["unikorn-cloud.org/name"]' <<<"$out" | grep -v '^---$' | sort | uniq -d)" ]] ||
+	die "duplicate Role names"
+
+# without_splits drops the split Role documents from a render on stdin,
+# leaving every other byte as rendered.
+split_re=$(IFS='|'; echo "${split_names[*]}")
+without_splits() {
+	awk -v re="\n    unikorn-cloud.org/name: ($split_re)\n" '
+		/^---$/ { if (doc !~ re) printf "%s", doc; doc = "" }
+		{ doc = doc $0 "\n" }
+		END { if (doc !~ re) printf "%s", doc }
+	'
+}
+
+# Off (the default) renders exactly what the chart rendered before the
+# splits: the "on" render minus the split documents, byte for byte.
+# This cannot catch a change to the old roles; only a diff against the base
+# render does.
+off=$(helm template test "$CHART")
+[[ $(grep -c 'unikorn-cloud.org/name: ' <<<"$on") -eq $(($(grep -c 'unikorn-cloud.org/name: ' <<<"$off") + splits)) ]] ||
+	die "expected the on render to add exactly $splits Roles"
+diff <(printf '%s\n' "$off") <(without_splits <<<"$on") >/dev/null ||
+	die "default render differs from the on render without the splits"
+out=$off
+[[ -z "$(rendered_scopes administrator-instances)" ]] || die "expected no splits by default"
+
+# An empty role list renders no split roles either.
+out=$(render_splits --set-json 'builtinRoleSplits.roles=[]')
+[[ -z "$(rendered_scopes administrator-instances)" ]] || die "expected no splits when builtinRoleSplits.roles is empty"
+
+# A split name is reserved, like a built-in role name.
+split_must_fail 'additionalRoles key "user-storage" conflicts with built-in role' \
+	--set-json 'additionalRoles={"user-storage":{"description":"x"}}'
+
+# A protected role, or one with global scopes, cannot be split.
+split_must_fail 'builtinRoleSplits.roles: "user" is protected and cannot be split' --set roles.user.protected=true
+split_must_fail 'builtinRoleSplits.roles: "user" has global scopes and cannot be split' \
+	--set-json 'roles.user.scopes.global={"identity:quotas":["read"]}'
+
+# Every scope of a split role maps to exactly one service.
+split_must_fail 'role "user" scope "unmapped:things" must map to one service' \
+	--set-json 'roles.user.scopes.project={"unmapped:things":["read"]}'
+split_must_fail 'scope "region:flavors" must map to one service, got [images region]' \
+	--set-json 'builtinRoleSplits.services.images.prefixes=["region"]'
+
+# A rendered split needs its own fixed ID: a missing ID, or one another Role
+# uses, fails the render rather than falling back.
+split_must_fail 'builtinRoleSplits.ids has no ID for "user-storage"' --set 'builtinRoleSplits.ids.user-storage=null'
+user_identity_id=$(yq -r '.builtinRoleSplits.ids["user-identity"]' "$VALUES")
+split_must_fail "share ID $user_identity_id" --set "builtinRoleSplits.ids.user-storage=$user_identity_id"
+reader_id=$(role_id_of reader <<<"$off")
+[[ -n "$reader_id" ]] || die "could not resolve role ID for 'reader'"
+split_must_fail "share ID $reader_id" --set "builtinRoleSplits.ids.user-storage=$reader_id"
+
 echo "chart render checks OK"
