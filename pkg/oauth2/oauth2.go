@@ -281,14 +281,16 @@ type redirector struct {
 	r           *http.Request
 	redirectURI string
 	state       string
+	clientID    string
 }
 
-func newRedirector(w http.ResponseWriter, r *http.Request, redirectURI, state string) *redirector {
+func newRedirector(w http.ResponseWriter, r *http.Request, redirectURI, state, clientID string) *redirector {
 	return &redirector{
 		w:           w,
 		r:           r,
 		redirectURI: redirectURI,
 		state:       state,
+		clientID:    clientID,
 	}
 }
 
@@ -297,8 +299,11 @@ func (e *redirector) redirect(values url.Values) {
 }
 
 // raise redirects to the client's callback URI with an error
-// code in the query.
-func (e *redirector) raise(kind Error, description string) {
+// code in the query.  The response is a 302, which the logging middleware
+// ignores, so log the failure here or it leaves no trace.
+func (e *redirector) raise(ctx context.Context, kind Error, description string) {
+	log.FromContext(ctx).Info("oauth2: redirecting with error", "error", kind, "error_description", description, "client_id", e.clientID)
+
 	values := url.Values{}
 	values.Set("error", string(kind))
 	values.Set("error_description", description)
@@ -488,34 +493,34 @@ var (
 // authorizationValidateRedirecting checks autohorization request parameters after
 // the redirect URI has been validated.  If any of these fail, we redirect but with an
 // error query rather than a code for the client to pick up and run with.
-func authorizationValidateRedirecting(redirector *redirector, query url.Values) bool {
+func authorizationValidateRedirecting(ctx context.Context, redirector *redirector, query url.Values) bool {
 	if query.Has("request") {
-		redirector.raise(ErrorRequestNotSupported, "request object by value not supported")
+		redirector.raise(ctx, ErrorRequestNotSupported, "request object by value not supported")
 		return false
 	}
 
 	if query.Has("request_uri") {
-		redirector.raise(ErrorRequestURINotSupported, "request object by URI not supported")
+		redirector.raise(ctx, ErrorRequestURINotSupported, "request object by URI not supported")
 		return false
 	}
 
 	if query.Has("registration") {
-		redirector.raise(ErrorRegistrationNotSupported, "registration not supported")
+		redirector.raise(ctx, ErrorRegistrationNotSupported, "registration not supported")
 		return false
 	}
 
 	if !slices.Contains(allowedResponseTypes, query.Get("response_type")) {
-		redirector.raise(ErrorUnsupportedResponseType, "response_type must be one of "+strings.Join(allowedResponseTypes, ", "))
+		redirector.raise(ctx, ErrorUnsupportedResponseType, "response_type must be one of "+strings.Join(allowedResponseTypes, ", "))
 		return false
 	}
 
 	if query.Has("response_mode") && !slices.Contains(allowedResponseModes, query.Get("response_mode")) {
-		redirector.raise(ErrorRequestNotSupported, "response_mode must be one of "+strings.Join(allowedResponseModes, ", "))
+		redirector.raise(ctx, ErrorRequestNotSupported, "response_mode must be one of "+strings.Join(allowedResponseModes, ", "))
 		return false
 	}
 
 	if !slices.Contains(allowedCodeChallengeMethods, string(getCodeChallengeMethod(query))) {
-		redirector.raise(ErrorInvalidRequest, "code_challenge_method must be one of "+strings.Join(allowedCodeChallengeMethods, ", "))
+		redirector.raise(ctx, ErrorInvalidRequest, "code_challenge_method must be one of "+strings.Join(allowedCodeChallengeMethods, ", "))
 		return false
 	}
 
@@ -679,11 +684,11 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirector := newRedirector(w, r, client.Spec.RedirectURI, query.Get("state"))
+	redirector := newRedirector(w, r, client.Spec.RedirectURI, query.Get("state"), query.Get("client_id"))
 
 	// Validate the other request parameters based on what we support, on error this
 	// returns control back to the client via the redirect.
-	if !authorizationValidateRedirecting(redirector, query) {
+	if !authorizationValidateRedirecting(r.Context(), redirector, query) {
 		return
 	}
 
@@ -697,7 +702,7 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 	// If that wasn't able to be handled and prompt=none, then we need to return an
 	// interaction_required error.
 	if query.Get("prompt") == "none" {
-		redirector.raise(ErrorInteractionRequired, "login required but no prompt requested")
+		redirector.raise(r.Context(), ErrorInteractionRequired, "login required but no prompt requested")
 		return
 	}
 
@@ -708,13 +713,13 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 
 	state, err := a.jwtIssuer.EncodeJWEToken(r.Context(), stateClaims, jose.TokenTypeLoginDialogState)
 	if err != nil {
-		redirector.raise(ErrorServerError, "failed to encode request state")
+		redirector.raise(r.Context(), ErrorServerError, "failed to encode request state")
 		return
 	}
 
 	supportedTypes, err := a.getProviderTypes(r.Context())
 	if err != nil {
-		redirector.raise(ErrorServerError, "failed to get oauth2 providers")
+		redirector.raise(r.Context(), ErrorServerError, "failed to get oauth2 providers")
 		return
 	}
 
@@ -733,7 +738,7 @@ func (a *Authenticator) Authorization(w http.ResponseWriter, r *http.Request) {
 	// Otherwise use the internal version.
 	body, err := html.Login(loginQuery.Encode())
 	if err != nil {
-		redirector.raise(ErrorServerError, "failed to render login template")
+		redirector.raise(r.Context(), ErrorServerError, "failed to render login template")
 		return
 	}
 
@@ -771,13 +776,13 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirector := newRedirector(w, r, query.Get("redirect_uri"), query.Get("state"))
+	redirector := newRedirector(w, r, query.Get("redirect_uri"), query.Get("state"), query.Get("client_id"))
 
 	// Handle the case where the provider is explicitly specified.
 	if providerType := r.Form.Get("provider"); providerType != "" {
 		provider, err := a.lookupProviderByType(r.Context(), unikornv1.IdentityProviderType(providerType))
 		if err != nil {
-			redirector.raise(ErrorServerError, err.Error())
+			redirector.raise(r.Context(), ErrorServerError, err.Error())
 			return
 		}
 
@@ -789,19 +794,19 @@ func (a *Authenticator) Login(w http.ResponseWriter, r *http.Request) {
 	// Otherwise we need to infer the provider.
 	email := r.Form.Get("email")
 	if email == "" {
-		redirector.raise(ErrorServerError, "email query parameter not specified")
+		redirector.raise(r.Context(), ErrorServerError, "email query parameter not specified")
 		return
 	}
 
 	organization, err := a.lookupOrganization(r.Context(), email)
 	if err != nil {
-		redirector.raise(ErrorServerError, err.Error())
+		redirector.raise(r.Context(), ErrorServerError, err.Error())
 		return
 	}
 
 	provider, err := a.lookupProviderByID(r.Context(), *organization.Spec.ProviderID, organization)
 	if err != nil {
-		redirector.raise(ErrorServerError, err.Error())
+		redirector.raise(r.Context(), ErrorServerError, err.Error())
 		return
 	}
 
@@ -819,7 +824,7 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 	// OIDC requires a nonce, just some random data base64 URL encoded will suffice.
 	nonce, err := randomString(16)
 	if err != nil {
-		redirector.raise(ErrorServerError, "unable to create oidc nonce: "+err.Error())
+		redirector.raise(r.Context(), ErrorServerError, "unable to create oidc nonce: "+err.Error())
 		return
 	}
 
@@ -841,7 +846,7 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 
 	state, err := a.jwtIssuer.EncodeJWEToken(r.Context(), oidcState, jose.TokenTypeLoginState)
 	if err != nil {
-		redirector.raise(ErrorServerError, "failed to encode oidc state: "+err.Error())
+		redirector.raise(r.Context(), ErrorServerError, "failed to encode oidc state: "+err.Error())
 		return
 	}
 
@@ -854,7 +859,7 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 
 	config, err := driver.Config(r.Context(), a.client, configParameters)
 	if err != nil {
-		redirector.raise(ErrorServerError, "unable to create oauth2 config: "+err.Error())
+		redirector.raise(r.Context(), ErrorServerError, "unable to create oauth2 config: "+err.Error())
 		return
 	}
 
@@ -868,7 +873,7 @@ func (a *Authenticator) providerAuthenticationRequest(w http.ResponseWriter, r *
 
 	url, err := driver.AuthorizationURL(config, parameters)
 	if err != nil {
-		redirector.raise(ErrorServerError, "unable to create oauth2 redirect: "+err.Error())
+		redirector.raise(r.Context(), ErrorServerError, "unable to create oauth2 redirect: "+err.Error())
 		return
 	}
 
@@ -915,21 +920,21 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	redirector := newRedirector(w, r, clientQuery.Get("redirect_uri"), clientQuery.Get("state"))
+	redirector := newRedirector(w, r, clientQuery.Get("redirect_uri"), clientQuery.Get("state"), clientQuery.Get("client_id"))
 
 	if query.Has("error") {
-		redirector.raise(Error(query.Get("error")), query.Get("error_description"))
+		redirector.raise(r.Context(), Error(query.Get("error")), query.Get("error_description"))
 		return
 	}
 
 	if !query.Has("code") {
-		redirector.raise(ErrorServerError, "oidc callback does not contain an authorization code")
+		redirector.raise(r.Context(), ErrorServerError, "oidc callback does not contain an authorization code")
 		return
 	}
 
 	provider, err := a.lookupProviderByID(r.Context(), state.OAuth2Provider, nil)
 	if err != nil {
-		redirector.raise(ErrorServerError, "failed to get oauth2 provider")
+		redirector.raise(r.Context(), ErrorServerError, "failed to get oauth2 provider")
 		return
 	}
 
@@ -944,14 +949,14 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 
 	_, idToken, err := providers.New(provider.Spec.Type).CodeExchange(r.Context(), a.client, parameters)
 	if err != nil {
-		redirector.raise(ErrorServerError, "code exchange failed: "+err.Error())
+		redirector.raise(r.Context(), ErrorServerError, "code exchange failed: "+err.Error())
 		return
 	}
 
 	// A claim with white space at the start or end is refused, not trimmed
 	// (see unikornv1.HasSurroundingSpace).
 	if unikornv1.HasSurroundingSpace(idToken.Email.Email) {
-		redirector.raise(ErrorAccessDenied, "email has white space at the start or end")
+		redirector.raise(r.Context(), ErrorAccessDenied, "email has white space at the start or end")
 		return
 	}
 
@@ -963,12 +968,12 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 	// Live: the code below is written to this record.
 	user, err := a.getLiveUser(r.Context(), idToken.Email.Email)
 	if err != nil {
-		redirector.raise(ErrorAccessDenied, "user not found")
+		redirector.raise(r.Context(), ErrorAccessDenied, "user not found")
 		return
 	}
 
 	if user.Spec.State != unikornv1.UserStateActive {
-		redirector.raise(ErrorServerError, "user is not active")
+		redirector.raise(r.Context(), ErrorServerError, "user is not active")
 		return
 	}
 
@@ -988,7 +993,7 @@ func (a *Authenticator) Callback(w http.ResponseWriter, r *http.Request) {
 func (a *Authenticator) authorizationCodeRedirect(w http.ResponseWriter, r *http.Request, redirector *redirector, clientQuery url.Values, user *unikornv1.User, code *Code) {
 	codeCipher, err := a.jwtIssuer.EncodeJWEToken(r.Context(), code, jose.TokenTypeAuthorizationCode)
 	if err != nil {
-		redirector.raise(ErrorServerError, "failed to encode authorization code: "+err.Error())
+		redirector.raise(r.Context(), ErrorServerError, "failed to encode authorization code: "+err.Error())
 		return
 	}
 
@@ -1000,7 +1005,7 @@ func (a *Authenticator) authorizationCodeRedirect(w http.ResponseWriter, r *http
 	}
 
 	if err := a.addPendingAuthorizationCode(r.Context(), user, code.ID, clientQuery.Get("client_id")); err != nil {
-		redirector.raise(ErrorServerError, "failed to store authorization code")
+		redirector.raise(r.Context(), ErrorServerError, "failed to store authorization code")
 		return
 	}
 
