@@ -1,0 +1,556 @@
+openapi: 3.0.3
+info:
+  title: Permissions Agent API
+  description: |-
+    The permissions agent runs in each region and answers authorization questions
+    from a local copy of the platform's permissions.  Nothing on the request path
+    calls a central service.
+
+    Every check and list request names the `subject` the agent answers for.  A
+    request may also name the `actor`: the principal (for example a service
+    account) acting on the subject's behalf.  A check is then allowed only when
+    both the subject and the actor are allowed, and a list is the intersection
+    of what each holds.  The actor can only narrow an answer, never widen it.
+
+    A user is named by the identity provider's subject identifier for that
+    user, that is the `sub` claim the caller verified.  A service account is
+    named `serviceaccount:<id>`.
+
+    The agent fails closed: when it has no copy, or its copy is too old, every
+    operation except status returns 503 and no answer.
+
+    Batch results are in request order: `results[i]` answers `checks[i]`.
+
+    Paths carry the API version.  Within a version, fields are only ever added.
+
+    ## Security
+
+    The caller authenticates to the agent as itself, not as the subject: with a
+    service bearer token, with a client certificate (mTLS), or both, as the
+    agent deployment requires.
+
+    - The agent MUST reject a request with no caller credentials, or bad
+      ones, with 401.
+    - The agent MUST accept only callers it is configured to trust.  Valid
+      credentials for any other principal, including a user's own access
+      token from the same issuer, get 403.
+    - The agent takes `subject` and `actor` as given.  Callers MUST take them
+      from an identity they have already verified, never from request input.
+  version: 1.0.0
+paths:
+  /v1/check:
+    description: Checks one item.
+    post:
+      operationId: check
+      summary: Check one item
+      description: |-
+        Answers whether the subject may perform one action on one kind, globally,
+        across an organization, or in one project.  The answer is the same in
+        every region: region is not an input.  A denied item is `allowed: false`
+        with 200, including for a subject with no access at all.
+      tags:
+      - Permissions Agent
+      security:
+      - serviceAuthentication: []
+      requestBody:
+        description: The item to check.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/checkRequest'
+            example:
+              subject: c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c
+              check:
+                kind: identity:projects
+                action: read
+                organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
+                projectId: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
+      responses:
+        '200':
+          description: The answer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/checkResult'
+              example:
+                allowed: true
+                version: 3f2c9a1b7d4e
+                since: 2026-11-20T10:15:00Z
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: '#/components/responses/callerUnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/callerForbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+        '503':
+          $ref: '#/components/responses/unavailableResponse'
+  /v1/check/batch:
+    description: Checks many items in one call.
+    post:
+      operationId: batchCheck
+      summary: Check many items
+      description: |-
+        Answers up to 100 items in one call, in the order given.  Use this where
+        one request would otherwise make a check per item, for example when
+        filtering a list.  Each answer is the same as `/v1/check` gives for that
+        item.  `results[i]` is the answer to `checks[i]`: results are in request
+        order, one per item.  One invalid item fails the whole batch with 400.
+      tags:
+      - Permissions Agent
+      security:
+      - serviceAuthentication: []
+      requestBody:
+        description: The items to check.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/batchCheckRequest'
+            example:
+              subject: c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c
+              checks:
+              - kind: identity:projects
+                action: read
+                organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
+              - kind: identity:projects
+                action: delete
+                organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
+                projectId: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
+      responses:
+        '200':
+          description: The answers, in the order of the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/batchCheckResult'
+              example:
+                results:
+                - allowed: true
+                - allowed: false
+                version: 3f2c9a1b7d4e
+                since: 2026-11-20T10:15:00Z
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: '#/components/responses/callerUnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/callerForbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+        '503':
+          $ref: '#/components/responses/unavailableResponse'
+  /v1/permissions:
+    description: Lists what a subject may do in one organization.
+    post:
+      operationId: listPermissions
+      summary: List permissions
+      description: |-
+        Lists every (kind, action) the subject holds in one organization, with
+        its scope: `global`, `organization` or `project`.  Global grants appear
+        with `scope: global`.  A project entry is left out when the same entry
+        is held org-wide.  A subject with no access in the organization gets
+        200 and an empty list.  With an `actor`, the list is the intersection:
+        only entries both the subject and the actor hold.
+
+        This is a POST so the subject, which names a person, never appears in
+        a URL or an access log.  It reads only.
+
+        By default the list is trimmed to one region: services that region does
+        not run are left out, so clients do not offer actions the region cannot
+        do.  `regionId` names the region; without it the agent's own region is
+        used.  `untrimmed: true` turns the trim off and lists every service; it
+        cannot be combined with `regionId`.  The response field `form` says which
+        list was returned.
+
+        An unknown `regionId`, or `untrimmed: true` with a `regionId`, returns
+        400.
+      tags:
+      - Permissions Agent
+      security:
+      - serviceAuthentication: []
+      requestBody:
+        description: The subject and organization to list.
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/permissionsRequest'
+            example:
+              subject: c1a7e0b2-5d3f-4a8e-9b6c-2f4d8e1a3b5c
+              organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
+              untrimmed: true
+      responses:
+        '200':
+          description: The subject's permissions in the organization.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/permissionList'
+              example:
+                organizationId: d4600d6e-e965-4b44-a808-84fb2fa36702
+                form: untrimmed
+                version: 3f2c9a1b7d4e
+                since: 2026-11-20T10:15:00Z
+                permissions:
+                - kind: identity:organizations
+                  action: read
+                  scope: global
+                - kind: identity:projects
+                  action: read
+                  scope: organization
+                - kind: identity:projects
+                  action: delete
+                  scope: project
+                  projectId: a4e7fddc-4812-4bfa-94b4-2b1174ac7e0e
+        '400':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/badRequestResponse'
+        '401':
+          $ref: '#/components/responses/callerUnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/callerForbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+        '503':
+          $ref: '#/components/responses/unavailableResponse'
+  /v1/status:
+    description: Reports the agent's state.
+    get:
+      operationId: getStatus
+      summary: Get agent status
+      description: |-
+        Reports the agent's version, the version of its permissions copy and
+        policy bundle, how old the copy is, and the agent's own region.  Status is
+        returned even when the copy is missing or too old, so `fresh` says whether
+        the other operations will answer.
+      tags:
+      - Permissions Agent
+      security:
+      - serviceAuthentication: []
+      responses:
+        '200':
+          description: The agent's state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/status'
+              example:
+                agentVersion: 0.1.0
+                policyVersion: 9c1d2e3f4a5b
+                version: 3f2c9a1b7d4e
+                since: 2026-11-20T10:15:00Z
+                regionId: 7c3e8f1a-2b4d-4e6f-8a9b-0c1d2e3f4a5b
+                fresh: true
+                copyAgeSeconds: 4
+        '401':
+          $ref: '#/components/responses/callerUnauthorizedResponse'
+        '403':
+          $ref: '#/components/responses/callerForbiddenResponse'
+        '500':
+          $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/responses/internalServerErrorResponse'
+components:
+  schemas:
+    subject:
+      description: |-
+        The subject the agent answers for: the identity provider's `sub` for a
+        user, or `serviceaccount:<id>` for a service account.  The caller must
+        take it from an identity it has verified.
+      type: string
+      minLength: 1
+    actor:
+      description: |-
+        The principal (for example a service account) acting on the subject's
+        behalf, in the same form as `subject`.  When set, a check is allowed
+        only when both the subject and the actor are allowed, and a list holds
+        only the entries both hold (the intersection).  It can only narrow the
+        answer, never widen it.
+      type: string
+      minLength: 1
+    checkItem:
+      description: |-
+        One question: may the subject perform `action` on `kind`?  With no
+        `organizationId` the question is global.  With `organizationId` and no
+        `projectId` it is org-wide.  With both it is in one project.
+      type: object
+      required:
+      - kind
+      - action
+      properties:
+        kind:
+          description: The kind of resource, for example an API endpoint scope name.
+          type: string
+        action:
+          description: The action, for example create, read, update or delete.
+          type: string
+        organizationId:
+          description: The organization the question is in.
+          type: string
+        projectId:
+          description: The project the question is in.  Requires `organizationId`.
+          type: string
+    checkRequest:
+      description: One item to check for a subject.
+      type: object
+      required:
+      - subject
+      - check
+      properties:
+        subject:
+          $ref: '#/components/schemas/subject'
+        actor:
+          $ref: '#/components/schemas/actor'
+        check:
+          $ref: '#/components/schemas/checkItem'
+    batchCheckRequest:
+      description: Items to check for a subject.
+      type: object
+      required:
+      - subject
+      - checks
+      properties:
+        subject:
+          $ref: '#/components/schemas/subject'
+        actor:
+          $ref: '#/components/schemas/actor'
+        checks:
+          description: Items to check, answered in the order given.
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/checkItem'
+    permissionsRequest:
+      description: The subject and organization to list permissions for.
+      type: object
+      required:
+      - subject
+      - organizationId
+      properties:
+        subject:
+          $ref: '#/components/schemas/subject'
+        actor:
+          $ref: '#/components/schemas/actor'
+        organizationId:
+          description: The organization to list permissions in.
+          type: string
+          minLength: 1
+        regionId:
+          description: |-
+            The region to trim the list to.  Defaults to the agent's own region.
+            Cannot be combined with `untrimmed: true`.
+          type: string
+        untrimmed:
+          description: List every service, whatever the region runs.
+          type: boolean
+          default: false
+    copyVersion:
+      description: |-
+        The version of the permissions copy that gave the answer.  It changes
+        whenever the copy changes.
+      type: string
+    since:
+      description: When the agent took the current copy version.
+      type: string
+      format: date-time
+    checkResult:
+      description: The answer to one item.
+      type: object
+      required:
+      - allowed
+      - version
+      - since
+      properties:
+        allowed:
+          description: Whether the item is allowed.
+          type: boolean
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+    batchCheckAnswer:
+      description: The answer to one item of a batch.
+      type: object
+      required:
+      - allowed
+      properties:
+        allowed:
+          description: Whether the item is allowed.
+          type: boolean
+    batchCheckResult:
+      description: The answers to a batch, in the order of the request.
+      type: object
+      required:
+      - results
+      - version
+      - since
+      properties:
+        results:
+          description: One answer per item, in the order of the request.
+          type: array
+          items:
+            $ref: '#/components/schemas/batchCheckAnswer'
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+    permissionScope:
+      description: |-
+        Where an entry applies: everywhere (`global`), across the organization
+        (`organization`), or in one project (`project`).
+      type: string
+      enum:
+      - global
+      - organization
+      - project
+      x-enum-varnames:
+      - ScopeGlobal
+      - ScopeOrganization
+      - ScopeProject
+    permission:
+      description: One allowed (kind, action) and where it applies.
+      type: object
+      required:
+      - kind
+      - action
+      - scope
+      properties:
+        kind:
+          description: The kind of resource.
+          type: string
+        action:
+          description: The allowed action.
+          type: string
+        scope:
+          $ref: '#/components/schemas/permissionScope'
+        projectId:
+          description: The project the entry applies to.  Present only when `scope` is `project`.
+          type: string
+    permissionListForm:
+      description: |-
+        Whether the list was trimmed to a region (`trimmed`), or lists every
+        service (`untrimmed`).
+      type: string
+      enum:
+      - trimmed
+      - untrimmed
+    permissionList:
+      description: What the subject may do in one organization.
+      type: object
+      required:
+      - organizationId
+      - form
+      - version
+      - since
+      - permissions
+      properties:
+        organizationId:
+          description: The organization the list is for.
+          type: string
+        form:
+          $ref: '#/components/schemas/permissionListForm'
+        regionId:
+          description: The region the list was trimmed to.  Present only when `form` is `trimmed`.
+          type: string
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+        permissions:
+          description: The entries.  Empty when the subject has no access in the organization.
+          type: array
+          items:
+            $ref: '#/components/schemas/permission'
+    organizationCopyAge:
+      description: How old the copy is for one organization.
+      type: object
+      required:
+      - organizationId
+      - copyAgeSeconds
+      properties:
+        organizationId:
+          description: The organization.
+          type: string
+        copyAgeSeconds:
+          description: Seconds since the organization's part of the copy was last confirmed current.
+          type: integer
+    status:
+      description: The agent's state.
+      type: object
+      required:
+      - agentVersion
+      - regionId
+      - fresh
+      properties:
+        agentVersion:
+          description: The version of the agent software.
+          type: string
+        policyVersion:
+          description: The version of the policy bundle in use.  Absent when no copy is loaded.
+          type: string
+        version:
+          $ref: '#/components/schemas/copyVersion'
+        since:
+          $ref: '#/components/schemas/since'
+        regionId:
+          description: The agent's own region.
+          type: string
+        fresh:
+          description: Whether the copy is current enough to answer.  When false, other operations return 503.
+          type: boolean
+        copyAgeSeconds:
+          description: Seconds since the copy was last confirmed current.  Absent when no copy is loaded.
+          type: integer
+        organizations:
+          description: Copy age per organization, where it differs by organization.
+          type: array
+          items:
+            $ref: '#/components/schemas/organizationCopyAge'
+  responses:
+    callerUnauthorizedResponse:
+      description: |-
+        The request has no caller credentials (service token or client
+        certificate), or bad ones.  This says nothing about the subject.
+      content:
+        application/json:
+          schema:
+            $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/error'
+          example:
+            error: access_denied
+            error_description: authentication failed
+            trace_id: 57bc14d9bd461f0b5a72db830149b67a
+    callerForbiddenResponse:
+      description: |-
+        The caller is authenticated but is not a service this agent trusts, for
+        example a user's own access token.  This says nothing about the
+        subject: a subject with no access gets 200.
+      content:
+        application/json:
+          schema:
+            $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/error'
+          example:
+            error: forbidden
+            error_description: caller is not trusted
+            trace_id: 57bc14d9bd461f0b5a72db830149b67a
+    unavailableResponse:
+      description: |-
+        The agent has no permissions copy, or its copy is too old to answer.  The
+        agent fails closed: callers must treat this as no answer, not as allowed.
+      content:
+        application/json:
+          schema:
+            $ref: 'https://raw.githubusercontent.com/unikorn-cloud/core/v1.17.1/pkg/openapi/common.spec.yaml#/components/schemas/error'
+          example:
+            error: server_error
+            error_description: permissions are not available, try again later
+            trace_id: 57bc14d9bd461f0b5a72db830149b67a
+  securitySchemes:
+    serviceAuthentication:
+      description: |-
+        The calling service's own bearer token.  An agent deployment may require
+        a client certificate (mTLS) instead of or as well as the token.  No or
+        bad credentials get 401.  Valid credentials for a caller the agent is
+        not configured to trust, including a user's own access token, get 403.
+      type: http
+      scheme: bearer

@@ -36,6 +36,8 @@ identity storage layout.
 - [rbac](./rbac/README.md)
 - [authz](./authz/README.md)
 - [client](./client/README.md)
+- [permissionsagent](./permissionsagent/README.md): API contract and Go client
+  for the regional permissions agent; nothing calls it yet
 
 These packages define how identity issues and validates tokens, how it resolves
 effective authority, and how internal callers construct outbound requests that
